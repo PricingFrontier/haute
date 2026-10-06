@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "id": "recovery_rating_casing",
+  "case": "recovery_rating_casing",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "descriptor",
+              "tool": "read_reference",
+              "arguments": {
+                "ids": [
+                  "node:ratingStep"
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "rated",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Rate quotes by region in region_rating.",
+                "ops": [
+                  {
+                    "op": "add_node",
+                    "node_type": "ratingStep",
+                    "name": "region_rating",
+                    "config": {
+                      "tables": [
+                        {
+                          "factors": [
+                            "region"
+                          ],
+                          "outputColumn": "region_factor",
+                          "entries": [
+                            {
+                              "region": "North",
+                              "value": 1.2
+                            },
+                            {
+                              "region": "South",
+                              "value": 0.95
+                            },
+                            {
+                              "region": "East",
+                              "value": 1.05
+                            }
+                          ],
+                          "defaultValue": 1.0
+                        }
+                      ],
+                      "combinedOutputs": [],
+                      "steps": []
+                    }
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "quotes",
+                    "target": "region_rating"
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "rated.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "Saved region_rating with North 1.2, South 0.95 and East 1.05 as you gave them. The data check found that no quote's region matches those entries, so every quote takes the 1.0 default: the data may spell the regions differently, so check the region values before relying on region_factor.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

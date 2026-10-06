@@ -1,10 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
+import { createElement } from "react"
+import { renderHook, render, screen, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
 import useKeyboardShortcuts from "../useKeyboardShortcuts"
+import ModalShell from "../../components/ModalShell"
 import useUIStore from "../../stores/useUIStore"
 import useToastStore from "../../stores/useToastStore"
 import { makeNode } from "../../test-utils/factories"
+import type { NodeTypeValue } from "../../utils/nodeTypes"
 
 function resolvedIdentityGraph(
   nodes: readonly Node[],
@@ -45,6 +48,7 @@ function makeParams(overrides: Partial<Parameters<typeof useKeyboardShortcuts>[0
     closePanel: vi.fn(),
     isInsideSubmodel: false,
     readOnly: false,
+    existingSingletonTypes: new Set<NodeTypeValue>(),
     resolveGraphIdentities: vi.fn(async (
       nodes: readonly Node[],
       edges: readonly Edge[],
@@ -95,6 +99,43 @@ describe("useKeyboardShortcuts", () => {
     expect(params.handleSave).toHaveBeenCalledOnce()
   })
 
+  it("Ctrl+S in a text field commits the field before saving", async () => {
+    const order: string[] = []
+    const input = document.createElement("input")
+    input.addEventListener("blur", () => order.push("field committed"))
+    document.body.append(input)
+    vi.mocked(params.handleSave).mockImplementation(() => { order.push("saved") })
+    try {
+      input.focus()
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "s", ctrlKey: true, bubbles: true }))
+      expect(params.handleSave).not.toHaveBeenCalled()
+      await waitFor(() => expect(params.handleSave).toHaveBeenCalledOnce())
+      expect(order).toEqual(["field committed", "saved"])
+    } finally {
+      input.remove()
+    }
+  })
+
+  it("keeps modal keyboard interactions from closing or changing the background graph", () => {
+    const dialog = document.createElement("div")
+    dialog.setAttribute("role", "dialog")
+    dialog.setAttribute("aria-modal", "true")
+    const button = document.createElement("button")
+    dialog.append(button)
+    document.body.append(dialog)
+    try {
+      fireKeyFrom(button, "Escape")
+      fireKeyFrom(button, "z", { ctrlKey: true })
+      fireKeyFrom(button, "a", { ctrlKey: true })
+      expect(params.closePanel).not.toHaveBeenCalled()
+      expect(params.clearTrace).not.toHaveBeenCalled()
+      expect(params.undo).not.toHaveBeenCalled()
+      expect(params.setNodes).not.toHaveBeenCalled()
+    } finally {
+      dialog.remove()
+    }
+  })
+
   it("Ctrl+Z calls undo", () => {
     fireKey("z", { ctrlKey: true })
     expect(params.undo).toHaveBeenCalledOnce()
@@ -128,7 +169,7 @@ describe("useKeyboardShortcuts", () => {
     const owner = makeNode("submodel_owner", "submodel", {
       selected: true,
       data: {
-        label: "Scoring",
+        label: "scoring",
         nodeType: "submodel",
         config: { definitionId: "definition_scoring", alias: "scoring" },
       },
@@ -136,7 +177,7 @@ describe("useKeyboardShortcuts", () => {
     const copy = makeNode("submodel_copy", "submodel", {
       selected: true,
       data: {
-        label: "Scoring instance",
+        label: "scoring_2",
         nodeType: "submodel",
         config: {
           definitionId: "definition_scoring",
@@ -153,8 +194,9 @@ describe("useKeyboardShortcuts", () => {
     fireKey("Delete")
 
     expect(params.setNodesAndEdges).toHaveBeenCalledOnce()
-    const [nextNodes] = vi.mocked(params.setNodesAndEdges).mock.calls[0]
-    expect((nextNodes as Node[]).map((node) => node.id)).toEqual(["submodel_owner"])
+    const surviving = vi.mocked(params.setNodesAndEdges).mock.calls[0][0] as Node[]
+    expect(surviving.map((node) => node.id)).toEqual(["submodel_owner"])
+    expect(params.setSelectedNode).toHaveBeenCalledWith(null)
     expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/Dissolve Submodel/)
   })
 
@@ -163,7 +205,7 @@ describe("useKeyboardShortcuts", () => {
     const owner = makeNode("submodel_owner", "submodel", {
       selected: true,
       data: {
-        label: "Scoring",
+        label: "scoring",
         nodeType: "submodel",
         config: { definitionId: "definition_scoring", alias: "scoring" },
       },
@@ -356,6 +398,22 @@ describe("useKeyboardShortcuts", () => {
       edges: [],
     }
     fireKey("v", { ctrlKey: true })
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
+  })
+
+  it("Ctrl+V treats a singleton inside another document graph as occupied", () => {
+    const occupiedSingletonTypes = params.existingSingletonTypes as Set<NodeTypeValue>
+    occupiedSingletonTypes.add("apiInput")
+    params.clipboard.current = {
+      nodes: [
+        { id: "api1", position: { x: 0, y: 0 }, data: { label: "Quote Input", nodeType: "apiInput" }, type: "pipelineNode" } as unknown as Node,
+      ],
+      edges: [],
+    }
+
+    fireKey("v", { ctrlKey: true })
+
+    expect(params.resolveGraphIdentities).not.toHaveBeenCalled()
     expect(params.setNodesAndEdges).not.toHaveBeenCalled()
   })
 
@@ -608,6 +666,43 @@ describe("useKeyboardShortcuts", () => {
 
     expect(useUIStore.getState().nodeSearchOpen).toBe(false)
     input.remove()
+  })
+
+  it.each([
+    ["Ctrl+K", { ctrlKey: true }],
+    ["Cmd+K", { metaKey: true }],
+  ])("closes the open node-search palette with %s from inside its modal dialog", (_name, modifier) => {
+    useUIStore.setState({ nodeSearchOpen: true })
+    render(
+      createElement(ModalShell, {
+        ariaLabel: "Search pipeline nodes",
+        onClose: () => {},
+        placement: "top",
+        children: createElement("input", { "aria-label": "Search nodes" }),
+      }),
+    )
+    const event = new KeyboardEvent("keydown", { key: "k", bubbles: true, cancelable: true, ...modifier })
+
+    screen.getByRole("textbox", { name: "Search nodes" }).dispatchEvent(event)
+
+    expect(useUIStore.getState().nodeSearchOpen).toBe(false)
+    expect(event.defaultPrevented).toBe(true)
+  })
+
+  it("leaves Ctrl+K to another open modal dialog", () => {
+    render(
+      createElement(ModalShell, {
+        ariaLabel: "Rename node",
+        onClose: () => {},
+        children: createElement("button", { type: "button" }, "Rename"),
+      }),
+    )
+    const event = new KeyboardEvent("keydown", { key: "k", bubbles: true, cancelable: true, ctrlKey: true })
+
+    screen.getByRole("button", { name: "Rename" }).dispatchEvent(event)
+
+    expect(useUIStore.getState().nodeSearchOpen).toBe(false)
+    expect(event.defaultPrevented).toBe(false)
   })
 
   it("ignores Ctrl+C when target is INPUT", () => {

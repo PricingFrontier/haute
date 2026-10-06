@@ -1,0 +1,437 @@
+from __future__ import annotations
+
+import pytest
+
+from haute._node_config_recovery import (
+    node_config_schema,
+    reconcile_config,
+    validate_recovery_config,
+)
+from haute._types import NodeType
+
+
+def test_data_input_retains_valid_path_and_mode_when_argument_is_invalid() -> None:
+    result = reconcile_config(
+        NodeType.DATA_INPUT,
+        {
+            "inputType": "file",
+            "format": "parquet",
+            "mode": "scan",
+            "path": "quotes.parquet",
+            "arguments": "bad",
+        },
+    )
+    assert result.config["path"] == "quotes.parquet"
+    assert result.config["mode"] == "scan"
+    assert any(change.path == "/arguments" for change in result.changes)
+
+
+@pytest.mark.parametrize("input_type", ["oracle", 1, True, [], {}])
+def test_unknown_discriminant_is_not_defaulted(input_type: object) -> None:
+    result = reconcile_config(NodeType.DATA_INPUT, {"inputType": input_type, "path": "x"})
+    assert "inputType" not in result.config
+    assert "format" not in result.config
+    assert any(issue.code == "unknown_discriminant" for issue in result.issues)
+
+
+@pytest.mark.parametrize(
+    ("node_type", "config"),
+    [
+        (NodeType.DATA_INPUT, {"inputType": [], "inputMapping": {"x": []}}),
+        (NodeType.DATA_OUTPUT, {"outputType": {}, "inputMapping": {"x": []}}),
+        (NodeType.MODEL_SCORE, {"sourceType": [], "inputMapping": {"x": []}}),
+        (NodeType.MODELLING, {"algorithm": {}, "inputMapping": {"x": []}}),
+        (NodeType.OPTIMISER, {"mode": [], "inputMapping": {"x": []}}),
+        (NodeType.OPTIMISER_APPLY, {"sourceType": {}, "inputMapping": {"x": []}}),
+    ],
+)
+def test_shape_invalid_discriminants_do_not_reach_semantic_validators(
+    node_type: NodeType, config: dict[str, object]
+) -> None:
+    issues = validate_recovery_config(node_type, config)
+    assert any(issue.code == "invalid_value" for issue in issues)
+    assert any(issue.code == "unknown_discriminant" for issue in issues)
+
+
+def test_invalid_nested_shape_keeps_field_errors_and_unknown_field_warnings() -> None:
+    issues = validate_recovery_config(NodeType.BANDING, {"factors": [None], "future": True})
+    assert {(issue.path, issue.code, issue.severity) for issue in issues} == {
+        ("factors", "invalid_value", "error"),
+        ("future", "unknown_field", "warning"),
+    }
+
+
+def test_live_switch_default_is_current_scenario_map() -> None:
+    result = reconcile_config(NodeType.LIVE_SWITCH, {}, reset=True)
+    assert result.config == {"input_scenario_map": {}}
+
+
+def test_validation_uses_exact_live_switch_input_names() -> None:
+    issues = validate_recovery_config(
+        NodeType.LIVE_SWITCH, {"input_scenario_map": {"wrong": "live"}}, input_names=["quotes"]
+    )
+    assert any(issue.code == "invalid_reference" for issue in issues)
+
+
+def test_every_node_type_has_a_recovery_schema() -> None:
+    assert {node_type.value for node_type in NodeType} == {
+        node_type.value
+        for node_type in NodeType
+        if node_config_schema(node_type)["type"] == "object"
+    }
+
+
+def test_nested_factor_preserves_valid_sibling_when_one_leaf_is_bad() -> None:
+    result = reconcile_config(
+        NodeType.BANDING,
+        {"factors": [{"banding": "breakpoints", "column": "age", "rightClosed": "no"}]},
+    )
+    assert result.config["factors"] == [{"banding": "breakpoints", "column": "age"}]
+    assert any(change.path == "/factors/0/rightClosed" for change in result.changes)
+
+
+def test_existing_database_branch_is_not_given_file_defaults() -> None:
+    result = reconcile_config(
+        NodeType.DATA_INPUT,
+        {"inputType": "database", "format": "database", "connection": "dsn", "query": "select 1"},
+    )
+    assert "path" not in result.config
+    assert result.config["connection"] == "dsn"
+
+
+def test_structured_contract_is_accepted() -> None:
+    assert not validate_recovery_config(
+        NodeType.POLARS, {"code": "x = df", "contract": {"inputs": ["a"], "outputs": ["b"]}}
+    )
+
+
+@pytest.mark.parametrize(
+    ("node_type", "config", "inputs"),
+    [
+        (
+            NodeType.API_INPUT,
+            {"tables": [{"path": "$[:]", "label": "quotes", "columns": []}]},
+            None,
+        ),
+        (
+            NodeType.DATA_INPUT,
+            {
+                "inputType": "file",
+                "format": "parquet",
+                "mode": "scan",
+                "path": "x.parquet",
+                "arguments": {},
+            },
+            None,
+        ),
+        (
+            NodeType.DATA_INPUT,
+            {
+                "inputType": "database",
+                "format": "database",
+                "connection": "dsn",
+                "query": "select 1",
+            },
+            None,
+        ),
+        (
+            NodeType.DATA_INPUT,
+            {"inputType": "lakehouse", "format": "delta", "mode": "scan", "path": "table"},
+            None,
+        ),
+        (
+            NodeType.DATA_INPUT,
+            {"inputType": "databricks", "http_path": "http", "table": "catalog.schema.table"},
+            None,
+        ),
+        (
+            NodeType.DATA_INPUT,
+            {"inputType": "inline", "format": "records", "mode": "read", "records": [{"x": 1}]},
+            None,
+        ),
+        (
+            NodeType.DATA_OUTPUT,
+            {
+                "outputType": "file",
+                "format": "parquet",
+                "mode": "sink",
+                "path": "x.parquet",
+                "arguments": {},
+            },
+            None,
+        ),
+        (
+            NodeType.DATA_OUTPUT,
+            {
+                "outputType": "database",
+                "format": "database",
+                "connection": "dsn",
+                "table": "target",
+            },
+            None,
+        ),
+        (
+            NodeType.DATA_OUTPUT,
+            {"outputType": "lakehouse", "format": "delta", "mode": "sink", "path": "target"},
+            None,
+        ),
+        (NodeType.POLARS, {"code": "result = df"}, None),
+        (NodeType.EDGE_JOIN, {"how": "left", "on": "id", "suffix": "_right"}, None),
+        (
+            NodeType.MODEL_SCORE,
+            {
+                "sourceType": "run",
+                "run_id": "run",
+                "task": "regression",
+                "output_column": "prediction",
+            },
+            None,
+        ),
+        (
+            NodeType.MODEL_SCORE,
+            {
+                "sourceType": "registered",
+                "registered_model": "model",
+                "version": "1",
+                "task": "regression",
+                "output_column": "prediction",
+            },
+            None,
+        ),
+        (
+            NodeType.MODEL_SCORE,
+            {
+                "sourceType": "file",
+                "model_path": "models/freq.cbm",
+                "task": "regression",
+                "output_column": "prediction",
+            },
+            None,
+        ),
+        (
+            NodeType.BANDING,
+            {
+                "factors": [
+                    {
+                        "banding": "breakpoints",
+                        "column": "age",
+                        "outputColumn": "age_band",
+                        "rules": [{"boundary": "10", "label": "young"}],
+                    }
+                ]
+            },
+            None,
+        ),
+        (
+            NodeType.RATING_STEP,
+            {
+                "tables": [
+                    {
+                        "factors": ["age_band"],
+                        "outputColumn": "rate",
+                        "entries": [{"age_band": "young", "value": "1.1"}],
+                    }
+                ]
+            },
+            None,
+        ),
+        (
+            NodeType.OUTPUT,
+            {
+                "outputMapping": [
+                    {
+                        "source_port": "df",
+                        "source_column": "x",
+                        "output_path": "$[:].x",
+                        "enabled": True,
+                    }
+                ],
+                "outputFormat": "json",
+            },
+            None,
+        ),
+        (NodeType.EXPLORE, {}, None),
+        (NodeType.EXTERNAL_FILE, {"path": "model.pkl", "fileType": "pickle"}, None),
+        (NodeType.LIVE_SWITCH, {"input_scenario_map": {"df": "live"}}, ["df"]),
+        (
+            NodeType.MODELLING,
+            {"target": "y", "algorithm": "catboost", "loss_function": "RMSE"},
+            None,
+        ),
+        (
+            NodeType.OPTIMISER,
+            {"mode": "online", "objective": "premium", "data_input": "df"},
+            ["df"],
+        ),
+        (
+            NodeType.SCENARIO_EXPANDER,
+            {
+                "quote_id": "qid",
+                "column_name": "scenario_value",
+                "step_column": "scenario_index",
+                "min_value": 0.0,
+                "max_value": 1.0,
+                "stepCount": 2,
+            },
+            None,
+        ),
+        (
+            NodeType.OPTIMISER_APPLY,
+            {"sourceType": "file", "artifact_path": "opt.json", "optimiser_mode": "online"},
+            ["df"],
+        ),
+        (
+            NodeType.OPTIMISER_APPLY,
+            {"sourceType": "run", "run_id": "run", "optimiser_mode": "online"},
+            ["df"],
+        ),
+        (
+            NodeType.OPTIMISER_APPLY,
+            {"sourceType": "registered", "registered_model": "model", "optimiser_mode": "online"},
+            ["df"],
+        ),
+        (
+            NodeType.CONSTANT,
+            {
+                "values": [
+                    {"name": "zero", "value": 0},
+                    {"name": "flag", "value": False},
+                    {"name": "nothing", "value": None},
+                ]
+            },
+            None,
+        ),
+    ],
+)
+def test_representative_ordinary_configs_are_valid(
+    node_type: NodeType, config: dict, inputs: list[str] | None
+) -> None:
+    assert not validate_recovery_config(node_type, config, input_names=inputs)
+    recovered = reconcile_config(node_type, {**config, "retired_setting": True})
+    assert all(recovered.config[key] == value for key, value in config.items())
+    assert "retired_setting" not in recovered.config
+    assert any(
+        change.path == "/retired_setting" and change.outcome == "removed"
+        for change in recovered.changes
+    )
+    assert not validate_recovery_config(node_type, recovered.config, input_names=inputs)
+
+
+def test_recover_preserves_valid_absence_of_optional_fields() -> None:
+    # A JSON file input legitimately omits mode; recovery must not inject the
+    # parquet-oriented palette default and break the config (json cannot scan).
+    raw = {
+        "inputType": "file",
+        "format": "json",
+        "path": "quotes.json",
+        "arguments": {},
+        "code": "",
+    }
+    result = reconcile_config(NodeType.DATA_INPUT, dict(raw))
+    assert result.config == raw
+    assert not [change for change in result.changes if change.outcome == "defaulted"]
+    assert not [issue for issue in result.issues if issue.severity == "error"]
+
+
+def test_recover_fills_absent_fields_from_the_palette_of_the_same_branch() -> None:
+    raw = {"inputType": "file", "format": "parquet", "path": "quotes.parquet"}
+    result = reconcile_config(NodeType.DATA_INPUT, dict(raw))
+    # The palette is a parquet file scan, this config's branch, so what the saved
+    # file lacks takes its default; an absent ``steps`` stays absent (code mode).
+    assert result.config == {**raw, "mode": "scan", "arguments": {}}
+    assert {change.path for change in result.changes if change.outcome == "defaulted"} == {
+        "/mode",
+        "/arguments",
+    }
+
+
+def test_recover_gives_a_field_added_since_the_save_its_palette_default() -> None:
+    """A Scenario Expander saved before ``stepCount`` existed comes back runnable."""
+    raw = {
+        "quote_id": "qid",
+        "column_name": "price",
+        "step_column": "scenario_index",
+        "min_value": 0.1,
+        "max_value": 0.3,
+    }
+    result = reconcile_config(NodeType.SCENARIO_EXPANDER, dict(raw))
+    assert result.config == {**raw, "stepCount": 21}
+    assert ("/stepCount", "defaulted") in {(c.path, c.outcome) for c in result.changes}
+    assert not [issue for issue in result.issues if issue.severity == "error"]
+
+
+@pytest.mark.parametrize(
+    ("node_type", "raw"),
+    [
+        pytest.param(NodeType.DATA_INPUT, {"path": "quotes.parquet"}, id="no-discriminant"),
+        pytest.param(
+            NodeType.DATA_INPUT,
+            {"inputType": "file", "format": "parquet", "mode": "read", "path": "q.parquet"},
+            id="other-mode",
+        ),
+        pytest.param(
+            NodeType.MODEL_SCORE, {"sourceType": "run", "run_id": "abc"}, id="other-provider"
+        ),
+    ],
+)
+def test_recover_never_fills_from_another_branch_palette(
+    node_type: NodeType, raw: dict[str, object]
+) -> None:
+    result = reconcile_config(node_type, dict(raw))
+    assert result.config == raw
+    assert not [change for change in result.changes if change.outcome == "defaulted"]
+
+
+def test_recover_missing_required_locator_is_incomplete_not_an_error() -> None:
+    raw = {"inputType": "file", "format": "parquet", "mode": "read", "arguments": {}, "code": ""}
+    result = reconcile_config(NodeType.DATA_INPUT, dict(raw))
+    assert "path" not in result.config
+    assert not [issue for issue in result.issues if issue.severity == "error"]
+
+
+def test_reset_still_seeds_the_full_palette_default() -> None:
+    result = reconcile_config(
+        NodeType.DATA_INPUT, {"inputType": "file", "path": "keep.parquet"}, reset=True
+    )
+    assert result.config["format"] == "parquet"
+    assert result.config["mode"] == "scan"
+    assert result.config["path"] == ""
+
+
+def test_unrecoverable_list_entries_are_excluded_not_null() -> None:
+    first = {
+        "banding": "breakpoints",
+        "column": "age",
+        "outputColumn": "age_band",
+        "rules": [{"boundary": "30", "label": "young"}],
+        "default": "other",
+        "rightClosed": True,
+    }
+    last = {
+        "banding": "categorical",
+        "column": "region",
+        "outputColumn": "region_band",
+        "rules": {"north": "N"},
+        "default": None,
+        "rightClosed": False,
+    }
+    result = reconcile_config(NodeType.BANDING, {"factors": [first, "corrupt", last]})
+    assert result.config["factors"] == [first, last]
+    assert None not in result.config["factors"]
+    (removed,) = [change for change in result.changes if change.path == "/factors/1"]
+    assert removed.outcome == "removed"
+    assert "corrupt" in removed.reason
+    (issue,) = [item for item in result.issues if item.path == "/factors/1"]
+    assert issue.severity == "warning"
+
+
+def test_a_file_sourced_model_score_without_its_file_names_model_path() -> None:
+    issues = validate_recovery_config(NodeType.MODEL_SCORE, {"sourceType": "file"})
+    assert [(issue.path, issue.code) for issue in issues] == [("model_path", "required")]
+
+
+def test_a_load_file_naming_catboost_is_an_unsupported_file_type() -> None:
+    issues = validate_recovery_config(
+        NodeType.EXTERNAL_FILE, {"path": "model.cbm", "fileType": "catboost"}
+    )
+    assert [(issue.path, issue.code) for issue in issues] == [("fileType", "invalid_value")]

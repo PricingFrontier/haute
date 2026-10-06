@@ -14,12 +14,15 @@ from polars.testing import assert_frame_equal
 from haute._database_io import DatabaseConfigError
 from haute._execution_context import ExecutionProfile
 from haute._input_providers import (
+    InferredInputSchema,
     build_input_snapshot,
+    recording_schema_tiers,
     resolve_data_input,
+    signed_source_file,
     source_cache_identity,
     source_signature,
 )
-from haute._polars_io_registry import PolarsIoConfigError
+from haute._polars_io_registry import INFERRED_SCHEMA_ROWS, PolarsIoConfigError
 from haute._source_cache import SourceCacheStore
 
 
@@ -64,6 +67,169 @@ def test_missing_snapshot_is_reported_as_a_config_error(tmp_path: Path) -> None:
 
     with pytest.raises(PolarsIoConfigError, match="^input_snapshot_missing:"):
         resolve_data_input(config, store=SourceCacheStore(tmp_path), base_dir=tmp_path)
+
+
+def _infer(config: dict, tmp_path: Path, store: SourceCacheStore) -> tuple[pl.LazyFrame, dict]:
+    with recording_schema_tiers() as recorded:
+        frame = resolve_data_input(
+            config, store=store, base_dir=tmp_path, schema_tier_node="claims"
+        )
+    return frame, dict(recorded.inferred)
+
+
+def test_schema_only_resolution_infers_a_missing_csv_snapshot_from_the_node_settings(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "claims.csv").write_text("id;amount\n1;10\n2;20\n", encoding="utf-8")
+    config = {
+        "inputType": "file",
+        "format": "csv",
+        "path": "claims.csv",
+        "arguments": {"separator": ";", "schema_overrides": {"id": "str"}},
+    }
+    store = SourceCacheStore(tmp_path)
+
+    frame, inferred = _infer(config, tmp_path, store)
+
+    assert frame.collect_schema() == pl.Schema({"id": pl.String, "amount": pl.Int64})
+    assert inferred == {
+        "claims": InferredInputSchema(format="csv", inference_rows=INFERRED_SCHEMA_ROWS)
+    }
+    assert store.status(source_cache_identity(config, base_dir=tmp_path)).state == "missing"
+
+
+@pytest.mark.parametrize(
+    ("arguments", "rows"),
+    [
+        pytest.param({}, INFERRED_SCHEMA_ROWS, id="unset"),
+        pytest.param({"infer_schema_length": None}, INFERRED_SCHEMA_ROWS, id="whole-file"),
+        pytest.param({"infer_schema_length": 10**9}, INFERRED_SCHEMA_ROWS, id="above-cap"),
+        pytest.param({"infer_schema_length": 50}, 50, id="configured"),
+        # A null schema declares nothing: inference still runs and must stay bounded.
+        pytest.param(
+            {"schema": None, "infer_schema_length": None},
+            INFERRED_SCHEMA_ROWS,
+            id="null-schema-whole-file",
+        ),
+    ],
+)
+def test_inferred_csv_types_come_from_a_bounded_row_count(
+    tmp_path: Path, arguments: dict, rows: int
+) -> None:
+    lines = ["amount", *(str(n) for n in range(INFERRED_SCHEMA_ROWS)), "1.5"]
+    (tmp_path / "claims.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    config = {"inputType": "file", "format": "csv", "path": "claims.csv", "arguments": arguments}
+
+    frame, inferred = _infer(config, tmp_path, SourceCacheStore(tmp_path))
+
+    # The float on the last row lies beyond every bound: a whole-file inference would see it.
+    assert frame.collect_schema() == pl.Schema({"amount": pl.Int64})
+    assert inferred["claims"].inference_rows == rows
+
+
+def test_a_declared_csv_schema_is_used_whole_without_inference(tmp_path: Path) -> None:
+    lines = ["amount", *(str(n) for n in range(INFERRED_SCHEMA_ROWS)), "1.5"]
+    (tmp_path / "claims.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    config = {
+        "inputType": "file",
+        "format": "csv",
+        "path": "claims.csv",
+        "arguments": {"schema": {"amount": "Float64"}, "infer_schema_length": None},
+    }
+
+    frame, inferred = _infer(config, tmp_path, SourceCacheStore(tmp_path))
+
+    assert frame.collect_schema() == pl.Schema({"amount": pl.Float64})
+    assert inferred == {"claims": InferredInputSchema(format="csv", inference_rows=None)}
+
+
+def test_inferred_parquet_reads_file_metadata_without_a_row_bound(tmp_path: Path) -> None:
+    pl.DataFrame({"id": [1], "value": ["a"]}).write_parquet(tmp_path / "claims.parquet")
+    config = {"inputType": "file", "format": "parquet", "mode": "read", "path": "claims.parquet"}
+
+    frame, inferred = _infer(config, tmp_path, SourceCacheStore(tmp_path))
+
+    assert frame.collect_schema() == pl.Schema({"id": pl.Int64, "value": pl.String})
+    assert inferred == {"claims": InferredInputSchema(format="parquet", inference_rows=None)}
+
+
+@pytest.mark.parametrize(
+    ("config", "reason"),
+    [
+        pytest.param(
+            {"inputType": "file", "format": "excel", "path": "claims.xlsx"},
+            "format 'excel' reads only eagerly",
+            id="excel",
+        ),
+        pytest.param(
+            {
+                "inputType": "database",
+                "format": "database",
+                "connection": "HAUTE_TEST_DATABASE_URL",
+                "query": "SELECT 1",
+            },
+            "a database input has no local file to scan",
+            id="database",
+        ),
+        pytest.param(
+            {
+                "inputType": "file",
+                "format": "csv",
+                "mode": "read",
+                "path": "claims.csv",
+                "arguments": {"encoding": "cp1252"},
+            },
+            "only the eager reader accepts its argument(s) ['encoding']",
+            id="csv-read-encoding",
+        ),
+        pytest.param(
+            {
+                "inputType": "file",
+                "format": "csv",
+                "mode": "scan",
+                "path": "claims.csv",
+                "arguments": {"encoding": "cp1252"},
+            },
+            "only the eager reader accepts its argument(s) ['encoding']",
+            id="csv-scan-encoding",
+        ),
+    ],
+)
+def test_inputs_the_scanner_cannot_open_are_refused_with_the_preview_remedy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: dict, reason: str
+) -> None:
+    monkeypatch.setenv("HAUTE_TEST_DATABASE_URL", "sqlite:///does-not-matter.sqlite")
+    (tmp_path / "claims.csv").write_text("id\n1\n", encoding="utf-8")
+
+    with pytest.raises(PolarsIoConfigError) as exc:
+        _infer(config, tmp_path, SourceCacheStore(tmp_path))
+
+    message = str(exc.value)
+    assert message.startswith("input_snapshot_missing:")
+    assert reason in message
+    assert "Preview this input first" in message
+
+
+def test_schema_only_without_a_recorder_keeps_the_missing_snapshot_rejection(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "claims.csv").write_text("id\n1\n", encoding="utf-8")
+    config = {"inputType": "file", "format": "csv", "path": "claims.csv"}
+
+    with pytest.raises(PolarsIoConfigError, match="^input_snapshot_missing: This Data Input"):
+        resolve_data_input(
+            config,
+            store=SourceCacheStore(tmp_path),
+            base_dir=tmp_path,
+            schema_tier_node="claims",
+        )
+
+
+def test_an_inferred_input_whose_file_is_missing_names_it(tmp_path: Path) -> None:
+    config = {"inputType": "file", "format": "csv", "path": "claims.csv"}
+
+    with pytest.raises(PolarsIoConfigError, match="'claims.csv' does not exist"):
+        _infer(config, tmp_path, SourceCacheStore(tmp_path))
 
 
 def test_direct_parquet_reads_the_anchored_source_without_a_snapshot(tmp_path: Path) -> None:
@@ -403,10 +569,12 @@ def test_lakehouse_freshness_is_unknown_without_a_provider_version_token(
     }
 
     assert source_signature(config, base_dir=tmp_path) is None
+    assert signed_source_file(config, base_dir=tmp_path) is None
 
 
 def test_snapshot_reader_lease_survives_refresh_until_execution_context_closes(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from haute._execution_context import ExecutionContext
 
@@ -418,6 +586,9 @@ def test_snapshot_reader_lease_survives_refresh_until_execution_context_closes(
         "mode": "scan",
         "path": "input.ndjson",
     }
+    # This test proves the lease, not the reader grace: every store handle,
+    # including the reader's own, retires at once on release.
+    monkeypatch.setattr(SourceCacheStore, "_retire_grace_elapsed", lambda self, identity: True)
     store = SourceCacheStore(tmp_path)
     first = build_input_snapshot(config, store=store, base_dir=tmp_path)
     context = ExecutionContext(
@@ -436,14 +607,15 @@ def test_snapshot_reader_lease_survives_refresh_until_execution_context_closes(
     )
 
     assert second.generation_id != first.generation_id
-    assert first.data_path.exists()
+    assert all(path.exists() for path in first.data_paths)
     assert leased_frame.collect()["id"].to_list() == [1]
     context.release_admission()
-    assert not first.data_path.parent.exists()
+    assert not first.directory.exists()
 
 
 def test_derived_snapshot_plan_retains_lease_without_execution_context(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = tmp_path / "input.ndjson"
     pl.DataFrame({"id": [1]}).write_ndjson(source)
@@ -453,6 +625,9 @@ def test_derived_snapshot_plan_retains_lease_without_execution_context(
         "mode": "scan",
         "path": "input.ndjson",
     }
+    # This test proves the lease, not the reader grace: every store handle,
+    # including the reader's own, retires at once on release.
+    monkeypatch.setattr(SourceCacheStore, "_retire_grace_elapsed", lambda self, identity: True)
     store = SourceCacheStore(tmp_path)
     first = build_input_snapshot(config, store=store, base_dir=tmp_path)
 
@@ -461,9 +636,9 @@ def test_derived_snapshot_plan_retains_lease_without_execution_context(
     pl.DataFrame({"id": [2]}).write_ndjson(source)
     build_input_snapshot(config, store=store, base_dir=tmp_path, refresh=True)
 
-    assert first.data_path.exists()
+    assert all(path.exists() for path in first.data_paths)
     assert derived.collect()["id"].to_list() == [1]
 
     del derived
     gc.collect()
-    assert not first.data_path.parent.exists()
+    assert not first.directory.exists()

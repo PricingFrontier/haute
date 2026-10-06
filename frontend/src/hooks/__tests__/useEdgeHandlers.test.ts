@@ -3,8 +3,8 @@ import { renderHook, cleanup, act } from "@testing-library/react"
 import type { Node, Edge, Connection } from "@xyflow/react"
 import useEdgeHandlers from "../useEdgeHandlers"
 import useToastStore from "../../stores/useToastStore"
-import { NODE_TYPES } from "../../utils/nodeTypes"
-import { DEFAULT_TARGET_HANDLE } from "../../utils/flowHandles"
+import { NODE_TYPES, type NodeTypeValue } from "../../utils/nodeTypes"
+import { DEFAULT_TARGET_HANDLE, SUBMODEL_INPUT_HANDLE } from "../../utils/flowHandles"
 import { validatePipelineConnection } from "../../utils/connectionValidation"
 import type { SimpleNode } from "../../panels/editors/_shared"
 
@@ -28,6 +28,7 @@ function makeParams() {
     clearTrace: vi.fn(),
     screenToFlowPosition: vi.fn((pos: { x: number; y: number }) => pos),
     graphRefreshingRef: { current: 0 },
+    existingSingletonTypes: new Set<NodeTypeValue>(),
     resolveGraphIdentities: vi.fn(async (
       nodes: readonly Node[],
       edges: readonly Edge[],
@@ -115,14 +116,14 @@ function makeEdgeJoinInsertionParams() {
   return params
 }
 
-function droppedPolarsEvent(): React.DragEvent {
+function droppedNodeEvent(type: NodeTypeValue = NODE_TYPES.POLARS): React.DragEvent {
   return {
     preventDefault: vi.fn(),
     clientX: 300,
     clientY: 400,
     dataTransfer: {
       getData: vi.fn((key: string) => {
-        if (key === "application/reactflow-type") return NODE_TYPES.POLARS
+        if (key === "application/reactflow-type") return type
         if (key === "application/reactflow-config") return "{}"
         return ""
       }),
@@ -176,7 +177,7 @@ describe("useEdgeHandlers", () => {
     })
     const { result } = renderHook(() => useEdgeHandlers(params))
 
-    act(() => result.current.onDrop(droppedPolarsEvent()))
+    act(() => result.current.onDrop(droppedNodeEvent()))
     await flushIdentityCommit()
 
     expect(useToastStore.getState().toasts.at(-1)?.text).toContain(
@@ -630,6 +631,45 @@ describe("useEdgeHandlers", () => {
     })
     expect(useToastStore.getState().toasts).toEqual([
       expect.objectContaining({ type: "error", text: expect.stringMatching(/quotes.*already connected/i) }),
+    ])
+    expect(params.setEdges).not.toHaveBeenCalled()
+  })
+
+  it("onConnectEnd reports the domain reason for an invalid targeted connection", () => {
+    const params = makeParams()
+    params.validateConnection = vi.fn(() => ({
+      ok: false,
+      reason: {
+        kind: "invalid-connection" as const,
+        message: "New public inputs can only be added through the definition owner",
+      },
+    }))
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        mouseUpEvent,
+        connectionEndState({
+          from: "source",
+          to: "target",
+          fromHandleId: "out",
+          toHandleId: SUBMODEL_INPUT_HANDLE,
+          isValid: false,
+        }),
+      )
+    })
+
+    expect(params.validateConnection).toHaveBeenCalledWith({
+      source: "source",
+      sourceHandle: "out",
+      target: "target",
+      targetHandle: SUBMODEL_INPUT_HANDLE,
+    })
+    expect(useToastStore.getState().toasts).toEqual([
+      expect.objectContaining({
+        type: "error",
+        text: "Connection rejected: New public inputs can only be added through the definition owner",
+      }),
     ])
     expect(params.setEdges).not.toHaveBeenCalled()
   })
@@ -1599,22 +1639,22 @@ describe("useEdgeHandlers", () => {
   it("onNodeContextMenu flags a submodel instance copy as deletable", () => {
     const params = makeParams()
     const owner = {
-      id: "instance_owner",
+      id: "scoring",
       data: {
-        label: "Scoring",
+        label: "scoring",
         nodeType: "submodel",
         config: { definitionId: "definition_scoring", alias: "scoring" },
       },
     } as unknown as Node
     const copy = {
-      id: "instance_copy",
+      id: "scoring_2",
       data: {
-        label: "Scoring instance",
+        label: "scoring_2",
         nodeType: "submodel",
         config: {
           definitionId: "definition_scoring",
           alias: "scoring_2",
-          instanceOf: "instance_owner",
+          instanceOf: "scoring",
         },
       },
     } as unknown as Node
@@ -1655,6 +1695,40 @@ describe("useEdgeHandlers", () => {
     })
     expect(params.setContextMenu).toHaveBeenCalledWith(
       expect.objectContaining({ isSingleton: true }),
+    )
+  })
+
+  it("onNodeContextMenu marks a submodel containing a singleton as singleton", () => {
+    const params = makeParams()
+    const node = {
+      id: "inputs",
+      data: {
+        label: "Inputs",
+        nodeType: NODE_TYPES.SUBMODEL,
+        config: { definitionId: "definition_inputs", alias: "inputs" },
+      },
+    } as unknown as Node
+    const submodels = {
+      definition_inputs: {
+        definitionId: "definition_inputs",
+        file: "modules/inputs.py",
+        graph: {
+          nodes: [identifiedNode("quote_input", NODE_TYPES.API_INPUT)],
+          edges: [],
+        },
+        inputPorts: [],
+        outputPorts: [],
+      },
+    }
+    const { result } = renderHook(() => useEdgeHandlers({ ...params, submodels }))
+    const event = { preventDefault: vi.fn(), clientX: 50, clientY: 60 } as unknown as React.MouseEvent
+
+    act(() => {
+      result.current.onNodeContextMenu(event, node)
+    })
+
+    expect(params.setContextMenu).toHaveBeenCalledWith(
+      expect.objectContaining({ isSubmodel: true, isSingleton: true }),
     )
   })
 
@@ -1727,6 +1801,39 @@ describe("useEdgeHandlers", () => {
     )
   })
 
+  it("onDrop rejects a singleton already present elsewhere in the document", () => {
+    const params = makeParams()
+    params.existingSingletonTypes = new Set([NODE_TYPES.API_INPUT])
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onDrop(droppedNodeEvent(NODE_TYPES.API_INPUT))
+    })
+
+    expect(params.resolveGraphIdentities).not.toHaveBeenCalled()
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.at(-1)).toMatchObject({
+      type: "info",
+      text: "Only one Quote Input node is allowed per pipeline",
+    })
+  })
+
+  it("onDrop rechecks the current graph before accepting a stale singleton drag", () => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [identifiedNode("quote_input", NODE_TYPES.API_INPUT)]
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onDrop(droppedNodeEvent(NODE_TYPES.API_INPUT))
+    })
+
+    expect(params.resolveGraphIdentities).not.toHaveBeenCalled()
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.at(-1)?.text).toBe(
+      "Only one Quote Input node is allowed per pipeline",
+    )
+  })
+
   it("keeps a dropped-node creation atomic when identity resolution rejects", async () => {
     const params = makeParams()
     params.resolveGraphIdentities = vi.fn(async () => {
@@ -1734,7 +1841,7 @@ describe("useEdgeHandlers", () => {
     })
     const { result } = renderHook(() => useEdgeHandlers(params))
 
-    act(() => result.current.onDrop(droppedPolarsEvent()))
+    act(() => result.current.onDrop(droppedNodeEvent()))
     await flushIdentityCommit()
 
     expect(params.setNodes).not.toHaveBeenCalled()
@@ -1749,7 +1856,7 @@ describe("useEdgeHandlers", () => {
     params.resolveGraphIdentities = vi.fn(async () => ({ nodes: [], edges: [] }))
     const { result } = renderHook(() => useEdgeHandlers(params))
 
-    act(() => result.current.onDrop(droppedPolarsEvent()))
+    act(() => result.current.onDrop(droppedNodeEvent()))
     await flushIdentityCommit()
 
     expect(params.setNodes).not.toHaveBeenCalled()
@@ -1767,7 +1874,7 @@ describe("useEdgeHandlers", () => {
     })
     const { result } = renderHook(() => useEdgeHandlers(params))
 
-    act(() => result.current.onDrop(droppedPolarsEvent()))
+    act(() => result.current.onDrop(droppedNodeEvent()))
     await vi.waitFor(() => expect(params.resolveGraphIdentities).toHaveBeenCalledOnce())
     params.graphRef.current = { nodes: [], edges: [] }
     await act(async () => {
@@ -2570,5 +2677,213 @@ describe("useEdgeHandlers edge-join insertion candidates", () => {
         text: "Edge join rejected: drop the connection on an existing edge",
       }),
     ])
+  })
+})
+
+describe("useEdgeHandlers connection drop menu", () => {
+  afterEach(() => {
+    cleanup()
+    useToastStore.setState({ toasts: [], _toastCounter: 0 })
+    vi.restoreAllMocks()
+  })
+
+  function makeDropParams(source: Node = identifiedNode("a")) {
+    const params = {
+      ...makeParams(),
+      isPaneAtPoint: vi.fn((_point: { x: number; y: number }) => true),
+      setLastSelectedId: vi.fn(),
+    }
+    params.graphRef.current.nodes = [source]
+    params.screenToFlowPosition.mockImplementation((pos) => ({ x: pos.x + 1000, y: pos.y + 2000 }))
+    return params
+  }
+
+  function releaseOnCanvas(
+    result: { current: ReturnType<typeof useEdgeHandlers> },
+    { fromHandleId = null, fromHandleType = "source" }: {
+      fromHandleId?: string | null
+      fromHandleType?: HandleType
+    } = {},
+  ) {
+    act(() => {
+      result.current.onConnectEnd(mouseUpEvent, {
+        isValid: null,
+        fromNode: { id: "a" },
+        fromHandle: { id: fromHandleId, type: fromHandleType },
+        toNode: null,
+        toHandle: null,
+      } as never)
+    })
+  }
+
+  it("opens at the release point when a source connection ends on empty canvas", () => {
+    const params = makeDropParams()
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    releaseOnCanvas(result, { fromHandleId: "a_out" })
+
+    expect(params.isPaneAtPoint).toHaveBeenCalledWith({ x: 200, y: 150 })
+    expect(result.current.connectionDropMenu).toEqual({
+      x: 200,
+      y: 150,
+      position: { x: 1200, y: 2150 },
+      source: "a",
+      sourceHandle: "a_out",
+    })
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.pushSnapshot).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    {
+      label: "the release is not over the pane",
+      arrange: (p: ReturnType<typeof makeDropParams>) => { p.isPaneAtPoint.mockReturnValue(false) },
+      fromHandleType: "source" as HandleType,
+    },
+    {
+      label: "the gesture started at a target handle",
+      arrange: () => {},
+      fromHandleType: "target" as HandleType,
+    },
+    {
+      label: "the source is a submodel boundary port",
+      arrange: (p: ReturnType<typeof makeDropParams>) => {
+        p.graphRef.current.nodes = [identifiedNode("a", NODE_TYPES.SUBMODEL_PORT)]
+      },
+      fromHandleType: "source" as HandleType,
+    },
+  ])("stays closed when $label", ({ arrange, fromHandleType }) => {
+    const params = makeDropParams()
+    arrange(params)
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    releaseOnCanvas(result, { fromHandleType })
+
+    expect(result.current.connectionDropMenu).toBeNull()
+  })
+
+  it("prefers an edge-join insertion when the release lands on an edge", () => {
+    const params = { ...makeEdgeJoinInsertionParams(), isPaneAtPoint: vi.fn(() => true) }
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(mouseUpEvent, connectionEndState({ from: "c", to: null }))
+    })
+
+    expect(params.isPaneAtPoint).not.toHaveBeenCalled()
+    expect(result.current.connectionDropMenu).toBeNull()
+  })
+
+  it("creates the chosen node wired to the dragged output as one undoable step", async () => {
+    const params = makeDropParams()
+    params.graphRef.current.edges = [
+      { id: "e_x", source: "x", target: "a", sourceHandle: null, targetHandle: null } as Edge,
+    ]
+    const { result } = renderHook(() => useEdgeHandlers(params))
+    releaseOnCanvas(result)
+
+    act(() => result.current.createNodeFromConnectionDrop(NODE_TYPES.BANDING))
+    await flushIdentityCommit()
+
+    expect(result.current.connectionDropMenu).toBeNull()
+    expect(params.resolveGraphIdentities).toHaveBeenCalledOnce()
+    expect(params.pushSnapshot).toHaveBeenCalledOnce()
+    const nodes = params.setNodesRaw.mock.calls[0][0] as Node[]
+    expect(nodes.map((node) => node.id)).toEqual(["a", "banding_1"])
+    const created = nodes[1]
+    expect(created).toMatchObject({
+      position: { x: 1200, y: 2150 },
+      selected: true,
+      data: { nodeType: NODE_TYPES.BANDING, _defaultInputName: "server_banding_1" },
+    })
+    expect(nodes[0].selected).toBe(false)
+    const edges = params.setEdgesRaw.mock.calls[0][0] as Edge[]
+    expect(edges).toHaveLength(2)
+    expect(edges[1]).toMatchObject({
+      source: "a",
+      target: "banding_1",
+      sourceHandle: null,
+      targetHandle: null,
+      data: { _inputName: "server_a" },
+    })
+    expect(params.setSelectedNode).toHaveBeenCalledWith(created)
+    expect(params.setLastSelectedId).toHaveBeenCalledWith("banding_1")
+    expect(params.lastSelectedNodeRef.current).toBe(created)
+    expect(params.nodeIdCounter.current).toBe(1)
+  })
+
+  it("wires an edge join through its base input", async () => {
+    const params = makeDropParams()
+    const { result } = renderHook(() => useEdgeHandlers(params))
+    releaseOnCanvas(result)
+
+    act(() => result.current.createNodeFromConnectionDrop(NODE_TYPES.EDGE_JOIN))
+    await flushIdentityCommit()
+
+    const edges = params.setEdgesRaw.mock.calls[0][0] as Edge[]
+    expect(edges).toEqual([
+      expect.objectContaining({ source: "a", target: `${NODE_TYPES.EDGE_JOIN}_1`, targetHandle: "base" }),
+    ])
+  })
+
+  it("refuses a connection the new node cannot accept before allocating an id", async () => {
+    const params = makeDropParams(identifiedNode("a", NODE_TYPES.API_INPUT))
+    const { result } = renderHook(() => useEdgeHandlers(params))
+    releaseOnCanvas(result)
+
+    act(() => result.current.createNodeFromConnectionDrop(NODE_TYPES.POLARS))
+    await flushIdentityCommit()
+
+    expect(params.resolveGraphIdentities).not.toHaveBeenCalled()
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.nodeIdCounter.current).toBe(0)
+    expect(useToastStore.getState().toasts.at(-1)?.text).toBe(
+      "Connection rejected: apiInput connections require a frame handle",
+    )
+  })
+
+  it("refuses the creation when the graph changes while identities resolve", async () => {
+    const params = makeDropParams()
+    let finishResolution: () => void = () => {}
+    params.resolveGraphIdentities = vi.fn((nodes: readonly Node[]) => new Promise<{ nodes: Node[]; edges: Edge[] }>((resolve) => {
+      finishResolution = () => resolve({ nodes: [...nodes], edges: [] })
+    }))
+    const { result } = renderHook(() => useEdgeHandlers(params))
+    releaseOnCanvas(result)
+
+    act(() => result.current.createNodeFromConnectionDrop(NODE_TYPES.POLARS))
+    params.graphRef.current = { nodes: [...params.graphRef.current.nodes], edges: [] }
+    finishResolution()
+    await flushIdentityCommit()
+
+    expect(params.pushSnapshot).not.toHaveBeenCalled()
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.at(-1)?.text).toBe(
+      "Node creation was not applied because the graph changed while identity resolution was running.",
+    )
+  })
+
+  it("creates nothing when no connection drop is pending", async () => {
+    const params = makeDropParams()
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => result.current.createNodeFromConnectionDrop(NODE_TYPES.POLARS))
+    await flushIdentityCommit()
+
+    expect(params.resolveGraphIdentities).not.toHaveBeenCalled()
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.nodeIdCounter.current).toBe(0)
+  })
+
+  it("closes without changing the graph", () => {
+    const params = makeDropParams()
+    const { result } = renderHook(() => useEdgeHandlers(params))
+    releaseOnCanvas(result)
+
+    act(() => result.current.closeConnectionDropMenu())
+
+    expect(result.current.connectionDropMenu).toBeNull()
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
   })
 })

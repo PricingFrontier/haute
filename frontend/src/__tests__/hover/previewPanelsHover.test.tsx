@@ -68,7 +68,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { cleanup, fireEvent, render } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { readFileSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -96,6 +96,7 @@ const TARGET_FILES = [
   "OptimiserPreview.tsx",
   "OptimiserDataPreview.tsx",
   "ModellingPreview.tsx",
+  "ResultsWorkspace.tsx",
   "PreviewPanelFrame.tsx",
 ] as const
 type TargetFile = (typeof TARGET_FILES)[number]
@@ -248,7 +249,7 @@ describe("preview panels no longer mutate e.currentTarget.style.*", () => {
           `Expected '.currentTarget.style.' substring to be absent from ` +
             `live code in ${file}, but it's still present. ` +
             `This usually means a handler like onMouseEnter={e => e.currentTarget.style.X = ...} ` +
-            `slipped back in — migrate it to a className or a .hover-chrome-style utility.`,
+            `slipped back in - migrate it to a className or a .hover-chrome-style utility.`,
         ).toBe(false)
       })
 
@@ -260,7 +261,10 @@ describe("preview panels no longer mutate e.currentTarget.style.*", () => {
         const source = readSource(file)
         const frameSource = readSource("PreviewPanelFrame.tsx")
         const ownsHoverChrome = file === "PreviewPanelFrame.tsx"
+        // The results workspaces reach the frame through the shared shell.
         const delegatesToFrame = source.includes("PreviewPanelFrame")
+          || (source.includes("ResultsWorkspace")
+            && readSource("ResultsWorkspace.tsx").includes("PreviewPanelFrame"))
         const hoverSource = ownsHoverChrome ? source : frameSource
         const usesHoverChrome = /\bhover-chrome\b/.test(hoverSource)
         const usesTailwindHover = /\bhover:/.test(hoverSource)
@@ -342,7 +346,10 @@ vi.mock("../../hooks/useDragResize", () => ({
 vi.mock("../../stores/useNodeResultsStore", () => {
   const state = {
     trainJobs: {},
+    previews: {},
     getOptimiserPreview: vi.fn(() => null),
+    solveResults: {},
+    solveJobs: {},
     selectFrontierPoint: vi.fn(),
     updateFrontierAfterSelect: vi.fn(),
   }
@@ -353,19 +360,21 @@ vi.mock("../../stores/useNodeResultsStore", () => {
 
 vi.mock("../../stores/useSettingsStore", () => {
   const state = {
-      mlflow: {
-        status: "pending",
-        backend: "",
-        host: "",
-        installed: null,
-        importable: null,
-        trackingConfigured: null,
-        detail: "",
-      },
+    mlflow: {
+      status: "pending",
+      installed: null,
+      importable: null,
+      auto: "",
+      destinations: [],
+      detail: "",
+    },
   }
   const hook = (selector?: (s: typeof state) => unknown) =>
     selector ? selector(state) : state
-  return { default: hook }
+  return {
+    default: hook,
+    useMlflowDestinations: () => ({ ...state.mlflow, status: "loading" as const }),
+  }
 })
 
 vi.mock("../../stores/useToastStore", () => {
@@ -381,6 +390,7 @@ vi.mock("../../api/client", () => ({
   selectFrontierPoint: vi.fn(),
   saveOptimiser: vi.fn(),
   logOptimiserToMlflow: vi.fn(),
+  // DataPreview's status bar reads the snapshot store's size on mount.
 }))
 
 // Stub the heavy sub-components of OptimiserPreview so the render tree
@@ -435,7 +445,8 @@ import type { PreviewData } from "../../panels/DataPreview"
 import type { OptimiserPreviewData } from "../../panels/OptimiserPreview"
 import type { OptimiserSolveResult } from "../../api/types"
 import type { ModellingPreviewData } from "../../panels/ModellingPreview"
-import { makeTrainResult } from "../../test-utils/factories"
+import PreviewPanelFrame from "../../panels/PreviewPanelFrame"
+import { makeTrainResult, makeSolveResult as makeSolveResultFactory } from "../../test-utils/factories"
 
 function makePreviewData(): PreviewData {
   return {
@@ -458,7 +469,7 @@ function makePreviewData(): PreviewData {
 }
 
 function makeSolveResult(): OptimiserSolveResult {
-  return {
+  return makeSolveResultFactory({
     total_objective: 1.5,
     baseline_objective: 1.0,
     constraints: { c1: 0.5 },
@@ -467,12 +478,14 @@ function makeSolveResult(): OptimiserSolveResult {
     converged: true,
     iterations: 10,
     n_quotes: 1000,
-  }
+  })
 }
 
 function makeOptimiserPreviewData(): OptimiserPreviewData {
+  const result = makeSolveResult()
   return {
-    result: makeSolveResult(),
+    result,
+    solvedResult: result,
     jobId: "job-1",
     constraints: { c1: { target: 0.5 } },
     nodeLabel: "Opt Node",
@@ -547,6 +560,24 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
+describe("PreviewPanelFrame refresh hover is class-driven", () => {
+  it("dispatches mouseEnter/mouseLeave without inline opacity mutation", () => {
+    render(
+      <PreviewPanelFrame nodeLabel="Preview Node" onRefresh={vi.fn()}>
+        <div>Preview body</div>
+      </PreviewPanelFrame>,
+    )
+    const refreshBtn = screen.getByTitle("Refresh preview")
+    const before = refreshBtn.style.opacity
+    fireEvent.mouseEnter(refreshBtn)
+    const duringHover = refreshBtn.style.opacity
+    fireEvent.mouseLeave(refreshBtn)
+    const after = refreshBtn.style.opacity
+    expect(duringHover).toBe(before)
+    expect(after).toBe(before)
+  })
+})
+
 describe("DataPreview hover chrome is class-driven", () => {
   it("mouseenter on the drag handle does not imperatively mutate .style.background", async () => {
     const DataPreview = await loadDataPreview()
@@ -598,16 +629,16 @@ describe("OptimiserPreview hover chrome is class-driven", () => {
       container.querySelectorAll("button"),
     ) as HTMLButtonElement[]
     const summaryTab = buttons.find((b) => b.textContent?.trim() === "Summary")
-    const exportTab = buttons.find((b) => b.textContent?.trim() === "Export")
+    const quotesTab = buttons.find((b) => b.textContent?.trim() === "Quotes")
     expect(summaryTab, "Summary tab rendered").toBeTruthy()
-    expect(exportTab, "Export tab rendered").toBeTruthy()
+    expect(quotesTab, "Quotes tab rendered").toBeTruthy()
     // Default tab when frontier is null is Summary.  Summary should
-    // carry the accent styling, Export should carry the chrome styling.
+    // carry the accent styling, Quotes should carry the chrome styling.
     // We just assert the two active/inactive tabs have *different* inline
     // styles — the exact literals may evolve but the distinction must
     // survive the hover migration (because it's state-driven, not hover).
     expect(summaryTab!.getAttribute("style")).not.toEqual(
-      exportTab!.getAttribute("style"),
+      quotesTab!.getAttribute("style"),
     )
   })
 })

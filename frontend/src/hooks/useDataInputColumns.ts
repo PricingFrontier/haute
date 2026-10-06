@@ -135,16 +135,12 @@ export function useDataInputColumns(
     const controller = new AbortController()
     // Fetch fresh columns (cached value shown meanwhile)
     const requestStructuralVersion = structuralVersion
-    const graph = buildGraph(allNodesRef.current, edgesRef.current, submodels, preamble)
-    // Chunk size is a streaming-buffer hint, not a preview input — read at call
-    // time so a chunk-size change does not trigger a column refetch.
-    const chunkSize = useSettingsStore.getState().streamingChunkSize
+    const graph = buildGraph(allNodesRef.current, edgesRef.current, submodels)
     previewNode({
       graph,
       nodeId: dataInput,
       rowLimit: 1,
       source: activeSource,
-      streamingChunkSize: chunkSize,
       signal: controller.signal,
     })
       .then((result) => {

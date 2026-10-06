@@ -17,7 +17,6 @@ import useSettingsStore from "../../stores/useSettingsStore"
 function makeProps(overrides: Partial<Parameters<typeof Toolbar>[0]> = {}) {
   return {
     nodeCount: 5,
-    dirty: false,
     canUndo: true,
     canRedo: false,
     onUndo: vi.fn(),
@@ -25,9 +24,10 @@ function makeProps(overrides: Partial<Parameters<typeof Toolbar>[0]> = {}) {
     onZoomIn: vi.fn(),
     onZoomOut: vi.fn(),
     onOpenUtility: vi.fn(),
-    onOpenImports: vi.fn(),
-    canCreateSubmodel: true,
-    onCreateSubmodel: vi.fn(),
+    onOpenConstants: vi.fn(),
+    submodelAction: "create" as const,
+    canRunSubmodelAction: true,
+    onSubmodelAction: vi.fn(),
     canCreateInstance: true,
     onCreateInstance: vi.fn(),
     onCentre: vi.fn(),
@@ -71,6 +71,12 @@ describe("Toolbar add-source rejection feedback", () => {
     // Form stays open for correction; no phantom source added.
     expect(screen.getByPlaceholderText("name")).toBeInTheDocument()
     expect(useSettingsStore.getState().sources).toEqual(["live", "My_Src"])
+  })
+
+  it("types the new name in the same font, size and padding as the Source button", () => {
+    const input = openAddSourceForm()
+    expect(input).toHaveClass("text-[12px]", "font-medium", "px-2.5")
+    expect(input).not.toHaveClass("font-mono")
   })
 
   it("shows an empty-name message on a blank submit, distinct from the collision message", () => {

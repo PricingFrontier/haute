@@ -46,7 +46,7 @@ export const NAME = /[A-Za-z_][A-Za-z0-9_]*/
 const DOT_NAME = /^\.([A-Za-z_][A-Za-z0-9_]*)/
 
 // Transport shape = array-outer JSON.
-const ARRAY = "[:]" // array comprehension — the only array selector
+const ARRAY = "[:]" // array comprehension - the only array selector
 const ROOT_ARRAY = "$[:]" // the canonical (array-outer) data root
 
 /** One path segment: a JSON key, and whether it iterates an array. Mirror of
@@ -239,7 +239,7 @@ export function validateInputTablePath(path: string): string | null {
     const last = parsed.segments[parsed.segments.length - 1]
     if (parsed.segments.length > 0 && last && !last.isArray) {
       throw new PathError(
-        "table path must end at an array '[:]' — a bare object key is not a " +
+        "table path must end at an array '[:]' - a bare object key is not a " +
           "table (its leaves are columns of the enclosing array level)",
         path,
       )

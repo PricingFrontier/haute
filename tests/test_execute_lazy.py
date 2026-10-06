@@ -3,11 +3,10 @@
 Covers:
   - _prune_live_switch_edges  — scenario-based edge pruning
   - prepare_graph             — topo sort, parent building, id_to_name
-  - _execute_lazy             — lazy execution path
+  - execute_lazy_graph        — lazy execution path (the walker's sink walk)
   - _build_funcs              — function building for eager execution
-  - _execute_eager_core       — eager execution with swallow_errors, timings, memory
+  - walk_graph (display)      — eager execution with recorded failures, timings, memory
   - _apply_selected_columns   — shared column-filter helper (D4)
-  - EagerResult               — named tuple structure
 """
 
 from __future__ import annotations
@@ -16,21 +15,19 @@ import polars as pl
 import pytest
 
 import haute._execute_lazy as execution_core
+import haute._graph_walker as graph_walker
 import haute.projection as projection_planner
 from haute._execute_lazy import (
-    EagerResult,
     NodeBoundaryRunner,
     PreparedExecutionRequest,
     _apply_selected_columns,
     _build_funcs,
-    _checkpoint_filename,
-    _execute_eager_core,
-    _execute_lazy,
     _extract_error_line,
     _prepare_execution,
     _prune_live_switch_edges,
 )
 from haute._execution_context import ExecutionProfile
+from haute._graph_walker import CollectPolicy, WalkResult, walk_graph
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -38,6 +35,7 @@ from haute._types import (
     NodeType,
     PipelineGraph,
 )
+from haute.execution import execute_lazy_graph
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -333,12 +331,10 @@ class TestPreparedExecution:
         source_frame = pl.DataFrame({"x": [1]}).lazy()
 
         boundary = runner.open("transform")
-        inputs = runner.input_frames(boundary, {"source": source_frame})
-        result = runner.invoke(boundary, inputs)
+        result = runner.invoke(boundary, [source_frame])
 
         assert boundary.parent_ids == ("source",)
         assert boundary.incoming_edges == (edge,)
-        assert inputs == [source_frame]
         assert result.collect().to_dict(as_series=False) == {"x": [1], "y": [2]}
 
     def test_node_boundary_runner_rejects_missing_non_source_input(self):
@@ -402,9 +398,10 @@ class TestPreparedExecution:
             return prepare(request)
 
         monkeypatch.setattr(execution_core, "_prepare_execution", capture)
+        monkeypatch.setattr(graph_walker, "_prepare_execution", capture)
 
-        execution_core._execute_lazy(graph, _simple_build_fn)
-        execution_core._execute_eager_core(graph, _simple_build_fn)
+        execute_lazy_graph(graph, _simple_build_fn)
+        walk_graph(graph, _simple_build_fn, policy=CollectPolicy.display())
 
         assert requests == [
             PreparedExecutionRequest(graph=graph),
@@ -423,7 +420,7 @@ class TestExecuteLazy:
             nodes=[_source_node("src"), _transform_node("t")],
             edges=[_e("src", "t")],
         )
-        outputs, order, parents, id_to_name = _execute_lazy(g, _simple_build_fn)
+        outputs, order, parents, id_to_name = execute_lazy_graph(g, _simple_build_fn)
         assert isinstance(outputs["t"], pl.LazyFrame)
         df = outputs["t"].collect()
         assert "y" in df.columns
@@ -439,7 +436,7 @@ class TestExecuteLazy:
             nodes=[_source_node("src"), _transform_node("t")],
             edges=[_e("src", "t")],
         )
-        outputs, _, _, _ = _execute_lazy(g, build_fn)
+        outputs, _, _, _ = execute_lazy_graph(g, build_fn)
         assert isinstance(outputs["src"], pl.LazyFrame)
 
     def test_non_source_with_no_input_raises(self):
@@ -451,14 +448,14 @@ class TestExecuteLazy:
             edges=[],
         )
         with pytest.raises(ValueError, match="No input data available"):
-            _execute_lazy(g, build_fn)
+            execute_lazy_graph(g, build_fn)
 
     def test_target_node_filters_execution(self):
         g = PipelineGraph(
             nodes=[_source_node("a"), _transform_node("b"), _transform_node("c")],
             edges=[_e("a", "b"), _e("b", "c")],
         )
-        outputs, _, _, _ = _execute_lazy(g, _simple_build_fn, target_node_id="b")
+        outputs, _, _, _ = execute_lazy_graph(g, _simple_build_fn, target_node_id="b")
         assert "b" in outputs
         assert "c" not in outputs
 
@@ -476,13 +473,8 @@ class TestExecuteLazy:
             nodes=[_source_node("s")],
             edges=[],
         )
-        _execute_lazy(g, build_fn, preamble_ns={"helper": lambda x: x})
+        execute_lazy_graph(g, build_fn, preamble_ns={"helper": lambda x: x})
         assert "preamble_ns" in captured
-
-
-# ===========================================================================
-# EagerResult
-# ===========================================================================
 
 
 # ===========================================================================
@@ -560,7 +552,7 @@ class TestBuildFuncs:
 
 
 # ===========================================================================
-# _execute_eager_core
+# Display walks (the eager execution preview and trace run)
 # ===========================================================================
 
 
@@ -570,19 +562,19 @@ class TestExecuteEagerCore:
             nodes=[_source_node("src"), _transform_node("t")],
             edges=[_e("src", "t")],
         )
-        result = _execute_eager_core(g, _simple_build_fn)
-        assert isinstance(result, EagerResult)
-        assert result.outputs["src"] is not None
-        assert result.outputs["t"] is not None
-        assert isinstance(result.outputs["t"], pl.DataFrame)
-        assert "y" in result.outputs["t"].columns
+        result = walk_graph(g, _simple_build_fn, policy=CollectPolicy.display())
+        assert isinstance(result, WalkResult)
+        assert result.collected["src"] is not None
+        assert result.collected["t"] is not None
+        assert isinstance(result.collected["t"], pl.DataFrame)
+        assert "y" in result.collected["t"].columns
 
     def test_timings_populated(self):
         g = PipelineGraph(
             nodes=[_source_node("src")],
             edges=[],
         )
-        result = _execute_eager_core(g, _simple_build_fn)
+        result = walk_graph(g, _simple_build_fn, policy=CollectPolicy.display())
         assert "src" in result.timings
         assert result.timings["src"] >= 0
 
@@ -591,7 +583,7 @@ class TestExecuteEagerCore:
             nodes=[_source_node("src")],
             edges=[],
         )
-        result = _execute_eager_core(g, _simple_build_fn)
+        result = walk_graph(g, _simple_build_fn, policy=CollectPolicy.display())
         assert "src" in result.memory_bytes
         assert result.memory_bytes["src"] > 0
 
@@ -611,10 +603,10 @@ class TestExecuteEagerCore:
             nodes=[_source_node("src"), _transform_node("t")],
             edges=[_e("src", "t")],
         )
-        result = _execute_eager_core(g, build_fn, swallow_errors=True)
+        result = walk_graph(g, build_fn, policy=CollectPolicy.display(record_failures=True))
         assert "t" in result.errors
         assert "intentional test error" in result.errors["t"]
-        assert result.outputs["t"] is None
+        assert result.collected["t"] is None
 
     def test_swallow_errors_false_raises(self):
         """With swallow_errors=False (default), errors are raised."""
@@ -633,7 +625,7 @@ class TestExecuteEagerCore:
             edges=[_e("src", "t")],
         )
         with pytest.raises(RuntimeError, match="boom"):
-            _execute_eager_core(g, build_fn, swallow_errors=False)
+            walk_graph(g, build_fn, policy=CollectPolicy.display(record_failures=False))
 
     def test_row_limit_applied_to_lazy_source(self):
         """row_limit should head-truncate source LazyFrames."""
@@ -645,17 +637,17 @@ class TestExecuteEagerCore:
             nodes=[_source_node("src")],
             edges=[],
         )
-        result = _execute_eager_core(g, build_fn, row_limit=5)
-        assert len(result.outputs["src"]) == 5
+        result = walk_graph(g, build_fn, policy=CollectPolicy.display(row_limit=5))
+        assert len(result.collected["src"]) == 5
 
     def test_target_node_filters(self):
         g = PipelineGraph(
             nodes=[_source_node("a"), _transform_node("b"), _transform_node("c")],
             edges=[_e("a", "b"), _e("b", "c")],
         )
-        result = _execute_eager_core(g, _simple_build_fn, target_node_id="b")
-        assert "b" in result.outputs
-        assert "c" not in result.outputs
+        result = walk_graph(g, _simple_build_fn, policy=CollectPolicy.display(), target_node_id="b")
+        assert "b" in result.collected
+        assert "c" not in result.collected
 
     def test_non_source_no_input_raises_eagerly(self):
         def build_fn(node, **kwargs):
@@ -666,7 +658,7 @@ class TestExecuteEagerCore:
             edges=[],
         )
         with pytest.raises(ValueError, match="No input data available"):
-            _execute_eager_core(g, build_fn)
+            walk_graph(g, build_fn, policy=CollectPolicy.display())
 
     def test_eager_handles_dataframe_source(self):
         """A source that returns a DataFrame (not LazyFrame) should work."""
@@ -678,9 +670,9 @@ class TestExecuteEagerCore:
             nodes=[_source_node("src")],
             edges=[],
         )
-        result = _execute_eager_core(g, build_fn)
-        assert isinstance(result.outputs["src"], pl.DataFrame)
-        assert len(result.outputs["src"]) == 2
+        result = walk_graph(g, build_fn, policy=CollectPolicy.display())
+        assert isinstance(result.collected["src"], pl.DataFrame)
+        assert len(result.collected["src"]) == 2
 
     def test_scenario_forwarded_to_build_fn(self):
         captured = {}
@@ -690,7 +682,7 @@ class TestExecuteEagerCore:
             return node.id, lambda: pl.DataFrame({"x": [1]}).lazy(), True
 
         g = PipelineGraph(nodes=[_source_node("s")], edges=[])
-        _execute_eager_core(g, build_fn, source="test_batch")
+        walk_graph(g, build_fn, policy=CollectPolicy.display(), source="test_batch")
         assert captured["s"] == "test_batch"
 
     def test_multiple_errors_captured_with_swallow(self):
@@ -713,7 +705,7 @@ class TestExecuteEagerCore:
             ],
             edges=[_e("s", "t1"), _e("s", "t2")],
         )
-        result = _execute_eager_core(g, build_fn, swallow_errors=True)
+        result = walk_graph(g, build_fn, policy=CollectPolicy.display(record_failures=True))
         assert "t1" in result.errors
         assert "t2" in result.errors
 
@@ -755,12 +747,12 @@ class TestExtractErrorLine:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# error_lines in _execute_eager_core
+# error_lines in a display walk
 # ═══════════════════════════════════════════════════════════════════════════
 
 
 class TestEagerCoreErrorLines:
-    """Test that error_lines is populated in EagerResult."""
+    """Test that error_lines is populated in a display walk's result."""
 
     def test_syntax_error_populates_error_lines(self):
         def build_fn(node, **kwargs):
@@ -778,7 +770,7 @@ class TestEagerCoreErrorLines:
             nodes=[_source_node("src"), _transform_node("t")],
             edges=[_e("src", "t")],
         )
-        result = _execute_eager_core(g, build_fn, swallow_errors=True)
+        result = walk_graph(g, build_fn, policy=CollectPolicy.display(record_failures=True))
         assert result.error_lines["t"] == 3
 
     def test_runtime_error_with_line_populates_error_lines(self):
@@ -795,7 +787,7 @@ class TestEagerCoreErrorLines:
             nodes=[_source_node("src"), _transform_node("t")],
             edges=[_e("src", "t")],
         )
-        result = _execute_eager_core(g, build_fn, swallow_errors=True)
+        result = walk_graph(g, build_fn, policy=CollectPolicy.display(record_failures=True))
         assert result.error_lines["t"] == 5
 
     def test_error_without_line_not_in_error_lines(self):
@@ -812,7 +804,7 @@ class TestEagerCoreErrorLines:
             nodes=[_source_node("src"), _transform_node("t")],
             edges=[_e("src", "t")],
         )
-        result = _execute_eager_core(g, build_fn, swallow_errors=True)
+        result = walk_graph(g, build_fn, policy=CollectPolicy.display(record_failures=True))
         assert "t" not in result.error_lines
 
     def test_successful_node_not_in_error_lines(self):
@@ -820,7 +812,7 @@ class TestEagerCoreErrorLines:
             nodes=[_source_node("src")],
             edges=[],
         )
-        result = _execute_eager_core(g, _simple_build_fn)
+        result = walk_graph(g, _simple_build_fn, policy=CollectPolicy.display())
         assert result.error_lines == {}
 
 
@@ -850,78 +842,14 @@ def _join_build_fn(node: GraphNode, source_names=None, **kwargs):
     return nid, join_fn, False
 
 
-class TestCheckpointing:
-    """Tests for checkpoint_dir parameter on _execute_lazy."""
+class TestJoinsAndFanOuts:
+    """Joins, fan-outs, and join feeders compute correctly on the lazy path.
 
-    @pytest.mark.parametrize(
-        "node_id",
-        [
-            "/absolute",
-            r"C:\absolute",
-            "",
-            ".",
-            "..",
-            "CON",
-            "CON.version",
-            "lpt1.checkpoint",
-            "name:alternate-stream",
-            "x" * 300,
-            "unicode/\N{SNOWMAN}",
-        ],
-    )
-    def test_unsafe_checkpoint_node_ids_map_to_opaque_single_components(self, node_id):
-        filename = _checkpoint_filename(node_id)
+    What a planned run captures at them — and with which columns — is tested in
+    ``test_seed_plans.py`` (capture points) and ``test_capture_projection.py``.
+    """
 
-        assert "/" not in filename
-        assert "\\" not in filename
-        assert filename.startswith("node=")
-        assert filename.endswith(".parquet")
-        assert filename == _checkpoint_filename(node_id)
-
-    def test_unsafe_checkpoint_namespace_cannot_collide_with_readable_node_id(self):
-        unsafe_filename = _checkpoint_filename("../escaped")
-        authored_stem = unsafe_filename.removesuffix(".parquet")
-
-        assert _checkpoint_filename(authored_stem) != unsafe_filename
-
-    def test_case_distinct_node_ids_get_distinct_checkpoints_on_windows(self, tmp_path):
-        """Case-insensitive filesystems must not alias separate graph nodes."""
-        g = PipelineGraph(
-            nodes=[
-                _source_node("s1"),
-                _source_node("s2"),
-                _transform_node("join"),
-                _transform_node("JOIN"),
-            ],
-            edges=[
-                _e("s1", "join"),
-                _e("s2", "join"),
-                _e("s1", "JOIN"),
-                _e("s2", "JOIN"),
-            ],
-        )
-
-        outputs, *_ = _execute_lazy(g, _join_build_fn, checkpoint_dir=tmp_path)
-
-        assert len(list(tmp_path.glob("*.parquet"))) == 2
-        assert _checkpoint_filename("join").casefold() != _checkpoint_filename("JOIN").casefold()
-        assert len(outputs["join"].collect()) == 2
-        assert len(outputs["JOIN"].collect()) == 2
-
-    def test_checkpoint_creates_file_for_multi_input(self, tmp_path):
-        """Multi-input (join) nodes produce checkpoint parquet files."""
-        g = PipelineGraph(
-            nodes=[_source_node("s1"), _source_node("s2"), _transform_node("j")],
-            edges=[_e("s1", "j"), _e("s2", "j")],
-        )
-        outputs, *_ = _execute_lazy(g, _join_build_fn, checkpoint_dir=tmp_path)
-
-        assert (tmp_path / "j.parquet").exists()
-        df = outputs["j"].collect()
-        assert set(df.columns) >= {"key", "a", "b"}
-        assert len(df) == 2
-
-    def test_required_columns_seed_projects_data_input_checkpoint(self, tmp_path):
+    def test_required_columns_seed_projects_data_input(self):
         """A caller-owned data_input demand prevents terminal optimiser poisoning."""
         required = ["quote_id", "scenario_index", "scenario_value", "objective", "constraint"]
 
@@ -979,35 +907,22 @@ class TestCheckpointing:
             ],
         )
 
-        outputs, *_ = _execute_lazy(
+        outputs, *_ = execute_lazy_graph(
             g,
             build_fn,
             target_node_id="opt",
-            checkpoint_dir=tmp_path,
             required_columns_by_node={"data_input": required},
         )
 
-        checkpoint_cols = pl.read_parquet(tmp_path / "join.parquet").columns
-        assert checkpoint_cols == required
         assert outputs["data_input"].collect().columns == required
 
-    def test_no_checkpoint_for_single_input(self, tmp_path):
-        """Single-input transform nodes are NOT checkpointed."""
-        g = PipelineGraph(
-            nodes=[_source_node("s1"), _transform_node("t")],
-            edges=[_e("s1", "t")],
-        )
-        _execute_lazy(g, _simple_build_fn, checkpoint_dir=tmp_path)
-
-        assert not list(tmp_path.glob("*.parquet"))
-
-    def test_no_checkpoint_without_dir(self):
-        """Without checkpoint_dir, multi-input nodes stay lazy (no files)."""
+    def test_join_output_without_a_plan(self):
+        """Without a seed plan nothing is materialised; the join is computed lazily."""
         g = PipelineGraph(
             nodes=[_source_node("s1"), _source_node("s2"), _transform_node("j")],
             edges=[_e("s1", "j"), _e("s2", "j")],
         )
-        outputs, *_ = _execute_lazy(g, _join_build_fn)  # no checkpoint_dir
+        outputs, *_ = execute_lazy_graph(g, _join_build_fn)
 
         df = outputs["j"].collect()
         assert set(df.columns) >= {"key", "a", "b"}
@@ -1044,25 +959,17 @@ class TestCheckpointing:
             edges=[_e("s1", "t"), _e("s2", "t")],
         )
 
-        eager = _execute_eager_core(g, build_fn, enforce_contracts=True).outputs["t"]
-        lazy_outputs, *_ = _execute_lazy(g, build_fn, enforce_contracts=True)
+        eager = walk_graph(
+            g, build_fn, policy=CollectPolicy.display(), enforce_contracts=True
+        ).collected["t"]
+        lazy_outputs, *_ = execute_lazy_graph(g, build_fn, enforce_contracts=True)
         lazy = lazy_outputs["t"].collect()
 
         assert eager["b2"].to_list() == [60]
         assert lazy["b2"].to_list() == [60]
 
-    def test_source_nodes_not_checkpointed(self, tmp_path):
-        """Source nodes are never checkpointed."""
-        g = PipelineGraph(
-            nodes=[_source_node("s1")],
-            edges=[],
-        )
-        _execute_lazy(g, _join_build_fn, checkpoint_dir=tmp_path)
-
-        assert not list(tmp_path.glob("*.parquet"))
-
-    def test_chained_joins_all_checkpointed(self, tmp_path):
-        """Both join nodes in s1+s2→j1, j1+s3→j2 should be checkpointed."""
+    def test_chained_joins_compute_correctly(self):
+        """s1+s2→j1, j1+s3→j2 carries every side's columns through both joins."""
         g = PipelineGraph(
             nodes=[
                 _source_node("s1"),
@@ -1078,53 +985,14 @@ class TestCheckpointing:
                 _e("s3", "j2"),
             ],
         )
-        outputs, *_ = _execute_lazy(g, _join_build_fn, checkpoint_dir=tmp_path)
-
-        checkpoint_names = sorted(f.name for f in tmp_path.glob("*.parquet"))
-        assert checkpoint_names == ["j1.parquet", "j2.parquet"]
+        outputs, *_ = execute_lazy_graph(g, _join_build_fn)
 
         df = outputs["j2"].collect()
         assert set(df.columns) >= {"key", "a", "b", "c"}
         assert len(df) == 2
 
-    @pytest.mark.parametrize(
-        "malicious_node_id",
-        [
-            "../escaped",
-            r"..\escaped",
-            "nested/escaped",
-            r"nested\escaped",
-        ],
-    )
-    def test_checkpoint_filename_cannot_be_controlled_by_node_id(
-        self,
-        tmp_path,
-        malicious_node_id,
-    ):
-        """Checkpoint storage treats graph node ids as data, never as path syntax."""
-        checkpoint_dir = tmp_path / "checkpoints"
-        checkpoint_dir.mkdir()
-        g = PipelineGraph(
-            nodes=[
-                _source_node("s1"),
-                _source_node("s2"),
-                _transform_node(malicious_node_id),
-            ],
-            edges=[
-                _e("s1", malicious_node_id),
-                _e("s2", malicious_node_id),
-            ],
-        )
-
-        outputs, *_ = _execute_lazy(g, _join_build_fn, checkpoint_dir=checkpoint_dir)
-
-        assert len(list(checkpoint_dir.glob("*.parquet"))) == 1
-        assert not (tmp_path / "escaped.parquet").exists()
-        assert not (checkpoint_dir / "nested").exists()
-        assert len(outputs[malicious_node_id].collect()) == 2
-
-    def test_checkpoint_with_selected_columns(self, tmp_path):
-        """selected_columns filtering should apply before checkpointing."""
+    def test_join_with_selected_columns(self):
+        """selected_columns filtering applies to a join's output."""
         g = PipelineGraph(
             nodes=[
                 _source_node("s1"),
@@ -1133,57 +1001,13 @@ class TestCheckpointing:
             ],
             edges=[_e("s1", "j"), _e("s2", "j")],
         )
-        outputs, *_ = _execute_lazy(g, _join_build_fn, checkpoint_dir=tmp_path)
+        outputs, *_ = execute_lazy_graph(g, _join_build_fn)
 
         df = outputs["j"].collect()
         assert df.columns == ["key", "a"]
 
-    def test_live_switch_multi_parent_checkpointed(self, tmp_path):
-        """live_switch with 2 parents IS checkpointed (multi-input trigger).
-
-        Uses a scenario not in the ISM so edge pruning keeps both parents.
-        """
-
-        def build_fn(node, **kwargs):
-            if node.data.nodeType == NodeType.DATA_INPUT:
-                return node.id, lambda: pl.DataFrame({"x": [1, 2]}).lazy(), True
-            return node.id, lambda *dfs: dfs[0], False
-
-        g = PipelineGraph(
-            nodes=[
-                _source_node("live_in"),
-                _source_node("batch_in"),
-                _live_switch_node("sw", {"live_in": "live", "batch_in": "batch"}),
-            ],
-            edges=[_e("live_in", "sw"), _e("batch_in", "sw")],
-        )
-        # scenario="unknown" keeps both edges (ISM fallback)
-        _execute_lazy(g, build_fn, checkpoint_dir=tmp_path, source="unknown")
-
-        assert (tmp_path / "sw.parquet").exists()
-
-    def test_live_switch_single_parent_single_child_not_checkpointed(self, tmp_path):
-        """live_switch with 1 parent and 1 child — NOT checkpointed."""
-
-        def build_fn(node, **kwargs):
-            if node.data.nodeType == NodeType.DATA_INPUT:
-                return node.id, lambda: pl.DataFrame({"x": [1, 2]}).lazy(), True
-            return node.id, lambda *dfs: dfs[0], False
-
-        g = PipelineGraph(
-            nodes=[
-                _source_node("live_in"),
-                _live_switch_node("sw", {"live_in": "live"}, inputs=["live_in"]),
-                _transform_node("t"),
-            ],
-            edges=[_e("live_in", "sw"), _e("sw", "t")],
-        )
-        _execute_lazy(g, build_fn, checkpoint_dir=tmp_path, source="live")
-
-        assert not list(tmp_path.glob("*.parquet"))
-
-    def test_fanout_node_checkpointed(self, tmp_path):
-        """A node with 1 parent but 2+ children is checkpointed (fan-out)."""
+    def test_fanout_data_preserved(self):
+        """A fan-out point gives every child the same data."""
         g = PipelineGraph(
             nodes=[
                 _source_node("s1"),
@@ -1193,38 +1017,15 @@ class TestCheckpointing:
             ],
             edges=[_e("s1", "mid"), _e("mid", "c1"), _e("mid", "c2")],
         )
-        _execute_lazy(g, _simple_build_fn, checkpoint_dir=tmp_path)
-
-        # mid has 2 children → checkpointed
-        assert (tmp_path / "mid.parquet").exists()
-        # c1 and c2 have 1 parent, 0 children → NOT checkpointed
-        assert not (tmp_path / "c1.parquet").exists()
-        assert not (tmp_path / "c2.parquet").exists()
-
-    def test_fanout_data_preserved(self, tmp_path):
-        """Fan-out checkpoint preserves correct data for all children."""
-        g = PipelineGraph(
-            nodes=[
-                _source_node("s1"),
-                _transform_node("mid"),
-                _transform_node("c1"),
-                _transform_node("c2"),
-            ],
-            edges=[_e("s1", "mid"), _e("mid", "c1"), _e("mid", "c2")],
-        )
-        outputs, *_ = _execute_lazy(g, _simple_build_fn, checkpoint_dir=tmp_path)
+        outputs, *_ = execute_lazy_graph(g, _simple_build_fn)
 
         df_c1 = outputs["c1"].collect()
         df_c2 = outputs["c2"].collect()
-        # Both children should see the same data from mid's checkpoint
+        # Both children see the same data from mid
         assert df_c1["y"].to_list() == df_c2["y"].to_list()
 
-    def test_feeds_join_node_checkpointed(self, tmp_path):
-        """A node that feeds into a multi-input (join) node is checkpointed.
-
-        Graph: s1 → t → join ← s2
-        t has 1 parent, 1 child, but that child is a join → checkpoint t.
-        """
+    def test_feeds_join_data_correct(self):
+        """A join feeder's data reaches the join correctly."""
         g = PipelineGraph(
             nodes=[
                 _source_node("s1"),
@@ -1234,90 +1035,11 @@ class TestCheckpointing:
             ],
             edges=[_e("s1", "t"), _e("t", "join"), _e("s2", "join")],
         )
-        _execute_lazy(g, _join_build_fn, checkpoint_dir=tmp_path)
-
-        # t feeds a join → checkpointed
-        assert (tmp_path / "t.parquet").exists()
-        # join is multi-input → checkpointed
-        assert (tmp_path / "join.parquet").exists()
-
-    def test_feeds_join_data_correct(self, tmp_path):
-        """Checkpoint of join-feeder preserves correct results."""
-        g = PipelineGraph(
-            nodes=[
-                _source_node("s1"),
-                _source_node("s2"),
-                _transform_node("t"),
-                _transform_node("join"),
-            ],
-            edges=[_e("s1", "t"), _e("t", "join"), _e("s2", "join")],
-        )
-        outputs, *_ = _execute_lazy(g, _join_build_fn, checkpoint_dir=tmp_path)
+        outputs, *_ = execute_lazy_graph(g, _join_build_fn)
 
         df = outputs["join"].collect()
         assert "key" in df.columns
         assert len(df) == 2
-
-    def test_no_checkpoint_for_leaf_single_parent(self, tmp_path):
-        """A leaf node with 1 parent, no children, not feeding a join → NOT checkpointed."""
-        g = PipelineGraph(
-            nodes=[_source_node("s1"), _transform_node("t"), _transform_node("leaf")],
-            edges=[_e("s1", "t"), _e("t", "leaf")],
-        )
-        _execute_lazy(g, _simple_build_fn, checkpoint_dir=tmp_path)
-
-        assert not list(tmp_path.glob("*.parquet"))
-
-    def test_parent_lazyframe_cleaned_up_after_all_consumers_checkpointed(self, tmp_path):
-        """After both children of S are checkpointed, S should be removed from lazy_outputs.
-
-        Graph:  S → J1 ← s2
-                S → J2 ← s3
-
-        S has 2 children (fan-out) so it is checkpointed.  Then J1 and J2
-        are both multi-input nodes (joins) so they are also checkpointed.
-        Once both J1 and J2 have been checkpointed, S's remaining consumer
-        count hits 0 — its LazyFrame reference should be dropped from
-        lazy_outputs to free Polars/Rust Arrow buffers.
-        """
-        g = PipelineGraph(
-            nodes=[
-                _source_node("s1"),
-                _source_node("s2"),
-                _source_node("s3"),
-                _transform_node("mid"),  # fan-out: feeds both j1 and j2
-                _transform_node("j1"),  # join: mid + s2
-                _transform_node("j2"),  # join: mid + s3
-            ],
-            edges=[
-                _e("s1", "mid"),
-                _e("mid", "j1"),
-                _e("s2", "j1"),
-                _e("mid", "j2"),
-                _e("s3", "j2"),
-            ],
-        )
-        outputs, *_ = _execute_lazy(g, _join_build_fn, checkpoint_dir=tmp_path)
-
-        # mid is a fan-out node (2 children, both joins) → checkpointed
-        assert (tmp_path / "mid.parquet").exists()
-        # j1 and j2 are multi-input → checkpointed
-        assert (tmp_path / "j1.parquet").exists()
-        assert (tmp_path / "j2.parquet").exists()
-
-        # After both consumers of mid have been checkpointed, mid's
-        # LazyFrame should have been evicted from lazy_outputs.
-        assert "mid" not in outputs, (
-            "Parent LazyFrame 'mid' should be cleaned up after all consumers have been checkpointed"
-        )
-
-        # The final outputs (j1, j2) should still be present and correct
-        df_j1 = outputs["j1"].collect()
-        df_j2 = outputs["j2"].collect()
-        assert set(df_j1.columns) >= {"key", "a", "b"}
-        assert set(df_j2.columns) >= {"key", "a", "c"}
-        assert len(df_j1) == 2
-        assert len(df_j2) == 2
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1406,7 +1128,7 @@ class TestExecuteLazyDelegatesToBuildFuncs:
             nodes=[_source_node("src")],
             edges=[],
         )
-        _execute_lazy(g, build_fn)
+        execute_lazy_graph(g, build_fn)
         # _build_funcs always passes row_limit — lazy path sends None
         assert captured["src"]["row_limit"] is None
 
@@ -1424,7 +1146,7 @@ class TestExecuteLazyDelegatesToBuildFuncs:
             nodes=[_source_node("src"), _transform_node("t")],
             edges=[_e("src", "t")],
         )
-        _execute_lazy(g, build_fn)
+        execute_lazy_graph(g, build_fn)
         # node_map should always be passed (not conditionally)
         assert "node_map" in captured["src"]
         assert "node_map" in captured["t"]
@@ -1441,7 +1163,7 @@ class TestExecuteLazyDelegatesToBuildFuncs:
             nodes=[_source_node("src")],
             edges=[],
         )
-        _execute_lazy(g, build_fn, preamble_ns=None)
+        execute_lazy_graph(g, build_fn, preamble_ns=None)
         # preamble_ns is always forwarded (even if None)
         assert "preamble_ns" in captured["src"]
 
@@ -1457,7 +1179,7 @@ class TestExecuteLazyDelegatesToBuildFuncs:
             nodes=[_source_node("src")],
             edges=[],
         )
-        _execute_lazy(g, build_fn, source="test_batch")
+        execute_lazy_graph(g, build_fn, source="test_batch")
         assert captured["src"]["source"] == "test_batch"
 
     def test_lazy_execution_still_works_after_refactor(self):
@@ -1466,7 +1188,7 @@ class TestExecuteLazyDelegatesToBuildFuncs:
             nodes=[_source_node("s"), _transform_node("t")],
             edges=[_e("s", "t")],
         )
-        outputs, order, parents, id_to_name = _execute_lazy(g, _simple_build_fn)
+        outputs, order, parents, id_to_name = execute_lazy_graph(g, _simple_build_fn)
         df = outputs["t"].collect()
         assert "y" in df.columns
         assert df["y"].to_list() == [2, 4, 6]
@@ -1489,13 +1211,13 @@ class TestSelectedColumnsInPaths:
             ],
             edges=[_e("s", "t")],
         )
-        outputs, *_ = _execute_lazy(g, _simple_build_fn)
+        outputs, *_ = execute_lazy_graph(g, _simple_build_fn)
         df = outputs["t"].collect()
         # Only "x" should survive (not "y" which is added by transform)
         assert df.columns == ["x"]
 
     def test_eager_path_applies_selected_columns(self):
-        """_execute_eager_core applies selected_columns using _apply_selected_columns."""
+        """A display walk applies selected_columns using _apply_selected_columns."""
         g = PipelineGraph(
             nodes=[
                 _source_node("s"),
@@ -1503,8 +1225,8 @@ class TestSelectedColumnsInPaths:
             ],
             edges=[_e("s", "t")],
         )
-        result = _execute_eager_core(g, _simple_build_fn)
-        df = result.outputs["t"]
+        result = walk_graph(g, _simple_build_fn, policy=CollectPolicy.display())
+        df = result.collected["t"]
         assert df.columns == ["x"]
 
     def test_eager_available_columns_captured_before_filter(self):
@@ -1516,10 +1238,10 @@ class TestSelectedColumnsInPaths:
             ],
             edges=[_e("s", "t")],
         )
-        result = _execute_eager_core(g, _simple_build_fn)
+        result = walk_graph(g, _simple_build_fn, policy=CollectPolicy.display())
         # available_columns should have all columns (before filtering)
         col_names = [name for name, _ in result.available_columns["t"]]
         assert "x" in col_names
         assert "y" in col_names
         # But the actual output should be filtered
-        assert result.outputs["t"].columns == ["x"]
+        assert result.collected["t"].columns == ["x"]

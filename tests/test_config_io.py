@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,7 @@ from haute._config_io import (
     config_path_for_node,
     find_config_by_func_name,
     has_config_folder,
+    has_optional_config_folder,
     is_windows_reserved_filename,
     load_node_config,
     remove_config_file,
@@ -34,7 +36,7 @@ def _write_node_config_sidecar(
     rel_path = config_path_for_node(node_type, node_name)
     abs_path = base_dir / rel_path
     abs_path.parent.mkdir(parents=True, exist_ok=True)
-    filtered = _prepare_config_for_sidecar(node_type, config)
+    filtered = _prepare_config_for_sidecar(node_type, config, node_label=node_name)
     abs_path.write_text(
         json.dumps(filtered, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
@@ -89,10 +91,19 @@ class TestConfigPathForNode:
             p = config_path_for_node(nt, "test_node")
             assert p == Path(f"config/{folder}/test_node.json")
 
-    @pytest.mark.parametrize("node_type", [NodeType.POLARS, NodeType.EXPLORE])
+    @pytest.mark.parametrize("node_type", [NodeType.EDGE_JOIN, NodeType.EXPLORE])
     def test_no_config_folder_type_raises(self, node_type):
         with pytest.raises(ValueError, match="No config folder"):
             config_path_for_node(node_type, "my_transform")
+
+    def test_polars_sidecar_is_optional(self):
+        # A stepped transform owns ``config/polars/<name>.json``; a code-only
+        # transform has no sidecar, so the folder is optional for the type.
+        assert config_path_for_node(NodeType.POLARS, "my_transform") == Path(
+            "config/polars/my_transform.json"
+        )
+        assert not has_config_folder(NodeType.POLARS)
+        assert has_optional_config_folder(NodeType.POLARS)
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +112,102 @@ class TestConfigPathForNode:
 
 
 class TestSaveAndLoad:
+    @pytest.mark.parametrize(
+        ("node_type", "config"),
+        [
+            pytest.param(
+                NodeType.DATA_INPUT,
+                {
+                    "arguments": {
+                        "schema": {
+                            "_id": "Int64",
+                            "payload": {"type": "Struct", "fields": {"_prevRules": "String"}},
+                        }
+                    }
+                },
+                id="input-schema-and-struct-fields",
+            ),
+            pytest.param(
+                NodeType.DATA_INPUT,
+                {
+                    "inputType": "inline",
+                    "format": "records",
+                    "records": [
+                        {"_id": 1, "payload": {"_cache": [{"_id": "kept"}]}},
+                    ],
+                    "arguments": {},
+                },
+                id="inline-records",
+            ),
+            pytest.param(
+                NodeType.MODELLING,
+                {
+                    "monotone_constraints": {"_id": 1},
+                    "feature_weights": {"_id": 0.5},
+                    "params": {"custom": {"_id": "parameter"}},
+                },
+                id="model-feature-maps-and-parameters",
+            ),
+            pytest.param(
+                NodeType.OPTIMISER,
+                {
+                    "constraints": {"_premium": {"min": 100.0}},
+                    "frontier_ranges": {"_premium": {"min": 100.0, "max": 200.0}},
+                },
+                id="optimiser-constraint-names",
+            ),
+            pytest.param(
+                NodeType.LIVE_SWITCH,
+                {"input_scenario_map": {"_input": "live"}},
+                id="source-switch-input-names",
+            ),
+            pytest.param(
+                NodeType.RATING_STEP,
+                {
+                    "tables": [
+                        {
+                            "factors": ["_id"],
+                            "outputColumn": "factor",
+                            "entries": [{"_id": "A", "value": 1.25, "_note": {"_id": "kept"}}],
+                        }
+                    ]
+                },
+                id="rating-factor-names-and-row-metadata",
+            ),
+        ],
+    )
+    def test_user_mapping_keys_survive_repeated_save(self, tmp_path, node_type, config):
+        original = deepcopy(config)
+        rel = _write_node_config_sidecar(node_type, "settings", config, tmp_path)
+        loaded = load_node_config(rel, base_dir=tmp_path)
+        assert loaded == original
+        first_bytes = (tmp_path / rel).read_bytes()
+        _write_node_config_sidecar(node_type, "settings", loaded, tmp_path)
+        assert (tmp_path / rel).read_bytes() == first_bytes
+        assert config == original
+
+    def test_compact_category_keys_are_data_not_editor_metadata(self, tmp_path):
+        config = {
+            "factors": [
+                {
+                    "banding": "categorical",
+                    "column": "category",
+                    "outputColumn": "band",
+                    "_prevRules": {"breakpoints": []},
+                    "rules": {"_id": "identifier", "_prevRules": "previous", "ordinary": "normal"},
+                }
+            ]
+        }
+        original = deepcopy(config)
+        rel = _write_node_config_sidecar(NodeType.BANDING, "categories", config, tmp_path)
+        saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
+        assert "_prevRules" not in saved["factors"][0]
+        assert saved["factors"][0]["rules"] == config["factors"][0]["rules"]
+        loaded = load_node_config(rel, base_dir=tmp_path)
+        _write_node_config_sidecar(NodeType.BANDING, "categories", loaded, tmp_path)
+        assert json.loads((tmp_path / rel).read_text(encoding="utf-8")) == saved
+        assert config == original
+
     def test_save_creates_directories_and_file(self, tmp_path):
         config = {
             "inputType": "file",
@@ -143,11 +250,12 @@ class TestSaveAndLoad:
         config = {
             "factors": [
                 {
-                    "banding": "continuous",
+                    "banding": "breakpoints",
                     "column": "DrivAge",
                     "outputColumn": "DrivAgeBand",
                     "rules": [
-                        {"op1": ">", "val1": "0", "op2": "<=", "val2": "20", "assignment": "0-20"},
+                        {"boundary": "20", "label": "0-20"},
+                        {"boundary": "", "label": "20+"},
                     ],
                 },
             ],
@@ -210,31 +318,6 @@ class TestSaveAndLoad:
             "": "senior",
         }
         assert load_node_config(rel, base_dir=tmp_path) == config
-
-    def test_banding_continuous_rules_stay_explicit_in_sidecar(self, tmp_path):
-        config = {
-            "factors": [
-                {
-                    "banding": "continuous",
-                    "column": "driver_age",
-                    "outputColumn": "age_band",
-                    "rules": [
-                        {
-                            "op1": ">=",
-                            "val1": "18",
-                            "op2": "<=",
-                            "val2": "25",
-                            "assignment": "18-25",
-                        },
-                    ],
-                },
-            ],
-        }
-
-        rel = _write_node_config_sidecar(NodeType.BANDING, "age_band", config, tmp_path)
-        saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
-
-        assert saved["factors"][0]["rules"] == config["factors"][0]["rules"]
 
     def test_banding_compact_save_rejects_duplicate_categorical_keys(self, tmp_path):
         config = {
@@ -445,7 +528,7 @@ class TestCollectNodeConfigs:
             },
             {
                 "id": "c",
-                "data": {"label": "c", "nodeType": "liveSwitch", "config": {"mode": "live"}},
+                "data": {"label": "c", "nodeType": "liveSwitch", "config": {"inputs": ["a", "b"]}},
             },
             {
                 "id": "d",
@@ -930,7 +1013,8 @@ class TestLoadNodeConfigEdgeCases:
         with pytest.raises(json.JSONDecodeError, match="BOM"):
             load_node_config(str(p))
 
-    def test_banding_continuous_rule_map_raises(self, tmp_path):
+    def test_banding_rule_map_under_an_unsupported_type_raises(self, tmp_path):
+        """Only breakpoints and categorical rules have a compact map form."""
         p = tmp_path / "config" / "banding" / "bad.json"
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(
@@ -1543,3 +1627,162 @@ class TestRatingStepSidecars:
 
         with pytest.raises(ValueError, match="duplicate JSON key 'value'"):
             load_node_config(path)
+
+
+class TestGlobalConstantsFile:
+    """The canonical ``config/global_constants.json`` loader and serialiser."""
+
+    CANONICAL = (
+        "{\n"
+        '  "constants": [\n'
+        "    {\n"
+        '      "name": "inflation",\n'
+        '      "type": "float",\n'
+        '      "value": 1.05\n'
+        "    },\n"
+        "    {\n"
+        '      "name": "constant_x",\n'
+        '      "type": "integer",\n'
+        '      "by_source": {\n'
+        '        "live": 1,\n'
+        '        "nb_batch": 2\n'
+        "      }\n"
+        "    },\n"
+        "    {\n"
+        '      "name": "label",\n'
+        '      "type": "text",\n'
+        '      "value": "café"\n'
+        "    },\n"
+        "    {\n"
+        '      "name": "flag",\n'
+        '      "type": "boolean",\n'
+        '      "value": false\n'
+        "    },\n"
+        "    {\n"
+        '      "name": "as_at",\n'
+        '      "type": "date",\n'
+        '      "by_source": {\n'
+        '        "live": "2026-10-02"\n'
+        "      }\n"
+        "    }\n"
+        "  ]\n"
+        "}\n"
+    )
+
+    def test_the_canonical_file_round_trips_byte_identically(self) -> None:
+        from haute._config_io import global_constants_json, parse_global_constants
+
+        constants = parse_global_constants(self.CANONICAL.encode("utf-8"))
+
+        assert [constant.name for constant in constants] == [
+            "inflation",
+            "constant_x",
+            "label",
+            "flag",
+            "as_at",
+        ]
+        assert constants[1].by_source == {"live": 1, "nb_batch": 2}
+        assert global_constants_json(constants) == self.CANONICAL
+
+    def test_a_float_written_as_a_whole_number_reads_and_writes_as_a_float(self) -> None:
+        from haute._config_io import global_constants_json, parse_global_constants
+
+        raw = json.dumps({"constants": [{"name": "rate", "type": "float", "value": 1}]})
+        constants = parse_global_constants(raw.encode("utf-8"))
+
+        assert constants[0].value == 1.0
+        assert isinstance(constants[0].value, float)
+        assert '"value": 1.0' in global_constants_json(constants)
+
+    def test_load_reads_the_file_and_lets_a_missing_file_raise(self, tmp_path: Path) -> None:
+        from haute._config_io import load_global_constants
+
+        path = tmp_path / "global_constants.json"
+        with pytest.raises(FileNotFoundError):
+            load_global_constants(path)
+        path.write_text(self.CANONICAL, encoding="utf-8")
+
+        assert len(load_global_constants(path)) == 5
+
+    @pytest.mark.parametrize(
+        ("payload", "message"),
+        [
+            ({"constants": [], "extra": 1}, "unknown key(s) ['extra']"),
+            ({}, "must have a 'constants' list"),
+            (
+                {"constants": [{"name": "a", "type": "float", "value": 1, "oops": 1}]},
+                "constant 1 ('a'): unknown key 'oops'",
+            ),
+            (
+                {"constants": [{"name": "a", "type": "float", "value": 1, "by_source": {}}]},
+                "needs exactly one of 'value'",
+            ),
+            ({"constants": [{"name": "a", "type": "float"}]}, "needs exactly one of 'value'"),
+            (
+                {"constants": [{"name": "1a", "type": "float", "value": 1}]},
+                "must start with a letter",
+            ),
+            (
+                {"constants": [{"name": "_a", "type": "float", "value": 1}]},
+                "must start with a letter",
+            ),
+            ({"constants": [{"name": "class", "type": "float", "value": 1}]}, "Python keyword"),
+            (
+                {
+                    "constants": [
+                        {"name": "a", "type": "float", "value": 1},
+                        {"name": "a", "type": "float", "value": 2},
+                    ]
+                },
+                "constant 2 ('a'): the name 'a' is already defined",
+            ),
+            ({"constants": [{"name": "a", "type": "integer", "value": 1.5}]}, "a whole number"),
+            ({"constants": [{"name": "a", "type": "integer", "value": True}]}, "a whole number"),
+            ({"constants": [{"name": "a", "type": "float", "value": "1"}]}, "a finite number"),
+            ({"constants": [{"name": "a", "type": "text", "value": 1}]}, "must be text"),
+            ({"constants": [{"name": "a", "type": "boolean", "value": 1}]}, "true or false"),
+            ({"constants": [{"name": "a", "type": "date", "value": "2026-13-01"}]}, "a real date"),
+            ({"constants": [{"name": "a", "type": "date", "value": "2026-1-1"}]}, "a real date"),
+            (
+                {"constants": [{"name": "a", "type": "float", "by_source": {"": 1}}]},
+                "a source name must be non-empty",
+            ),
+            (
+                {"constants": [{"name": "a", "type": "decimal", "value": 1}]},
+                "type: Input should be",
+            ),
+        ],
+    )
+    def test_an_invalid_file_names_the_entry_and_the_field(
+        self,
+        payload: dict[str, Any],
+        message: str,
+    ) -> None:
+        from haute._config_io import parse_global_constants
+        from haute.errors import ConfigError
+
+        with pytest.raises(ConfigError) as excinfo:
+            parse_global_constants(json.dumps(payload).encode("utf-8"))
+
+        assert str(excinfo.value).startswith("config/global_constants.json ")
+        assert message in str(excinfo.value)
+
+    @pytest.mark.parametrize(
+        ("raw", "message"),
+        [
+            (b'\xef\xbb\xbf{"constants": []}', "Unexpected UTF-8 BOM"),
+            (b'{"constants": [], "constants": []}', "duplicate JSON key 'constants'"),
+            (b"[]", "must hold a JSON object"),
+            (b"\xff\xfe", "not valid JSON"),
+        ],
+    )
+    def test_bytes_that_are_not_one_strict_utf8_json_object_are_refused(
+        self,
+        raw: bytes,
+        message: str,
+    ) -> None:
+        from haute._config_io import parse_global_constants
+        from haute.errors import ConfigError
+
+        with pytest.raises(ConfigError, match=message):
+            parse_global_constants(raw)

@@ -16,7 +16,7 @@ from haute.schemas import (
     DissolveSubmodelRequest,
     ExportScriptRequest,
     Graph,
-    JsonCacheBuildRequest,
+    JsonCacheInferRequest,
     OptimiserApplyRequest,
     OptimiserFrontierRequest,
     OptimiserFrontierSelectRequest,
@@ -89,6 +89,7 @@ class TestEmptyStrings:
         body = {
             "name": "",
             "graph": _minimal_graph_dict(),
+            "base_revision": None,
         }
         resp = client.post("/api/pipeline/save", json=body)
         assert resp.status_code == 400
@@ -133,6 +134,7 @@ class TestEmptyStrings:
         """Empty graph should be caught before attempting trace execution."""
         body = {
             "graph": {"nodes": [], "edges": []},
+            "seed_plan": [],
         }
         resp = client.post("/api/pipeline/trace", json=body)
         assert resp.status_code == 400
@@ -232,6 +234,7 @@ class TestNullValues:
         body = {
             "name": None,
             "graph": _minimal_graph_dict(),
+            "base_revision": None,
         }
         resp = client.post("/api/pipeline/save", json=body)
         assert resp.status_code == 422
@@ -382,7 +385,9 @@ class TestUnicodeEdgeCases:
 
         Real failure: Windows filesystem rejects certain Unicode in filenames.
         """
-        req = SavePipelineRequest(name="test_\U0001f680_pipeline", graph=Graph())
+        req = SavePipelineRequest(
+            name="test_\U0001f680_pipeline", graph=Graph(), base_revision=None
+        )
         assert "\U0001f680" in req.name
 
     def test_null_char_in_node_label(self):
@@ -523,7 +528,7 @@ class TestIntegerOverflow:
         Real failure: row_index used as DataFrame index; if data has < 2^32
         rows, Polars should return an error, not segfault.
         """
-        req = TraceRequest(graph=Graph(), row_index=2**32)
+        req = TraceRequest(graph=Graph(), row_index=2**32, seed_plan=[])
         assert req.row_index == 2**32
 
     def test_frontier_points_large(self):
@@ -538,16 +543,16 @@ class TestIntegerOverflow:
             )
 
     def test_scenario_expander_steps_overflow(self):
-        """steps=2^32 in scenarioExpander config should parse fine in Pydantic."""
+        """stepCount=2^32 in scenarioExpander config should parse fine in Pydantic."""
         node = GraphNode(
             id="se",
             data=NodeData(
                 label="SE",
                 nodeType="scenarioExpander",
-                config={"steps": 2**32, "min_value": 0, "max_value": 1},
+                config={"stepCount": 2**32, "min_value": 0, "max_value": 1},
             ),
         )
-        assert node.data.config["steps"] == 2**32
+        assert node.data.config["stepCount"] == 2**32
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -747,7 +752,10 @@ class TestDuplicateKeys:
         server silently saves under 'test'.
         """
         # Manually construct JSON with duplicate keys
-        raw = '{"name": "first", "name": "second", "graph": {"nodes": [], "edges": []}}'
+        raw = (
+            '{"name": "first", "name": "second", '
+            '"graph": {"nodes": [], "edges": []}, "base_revision": null}'
+        )
         resp = client.post(
             "/api/pipeline/save",
             content=raw,
@@ -812,6 +820,7 @@ class TestBinaryDataInStrings:
         body = {
             "name": "test\x00evil",
             "graph": _minimal_graph_dict(),
+            "base_revision": None,
         }
         resp = client.post("/api/pipeline/save", json=body)
         assert resp.status_code == 400
@@ -901,7 +910,7 @@ class TestPathTraversalInPayloads:
     """Path traversal attempts in JSON body fields should be blocked."""
 
     def test_path_traversal_in_source_file(self, client):
-        """source_file='../../etc/passwd' should be rejected by validate_safe_path.
+        """source_file='../../etc/passwd' should be rejected by contained_path.
 
         Real failure: attacker-controlled source_file causes arbitrary
         file write outside the project root.
@@ -910,6 +919,7 @@ class TestPathTraversalInPayloads:
             "name": "evil",
             "graph": _minimal_graph_dict(),
             "source_file": "../../etc/passwd",
+            "base_revision": None,
         }
         resp = client.post("/api/pipeline/save", json=body)
         assert resp.status_code == 403
@@ -968,6 +978,7 @@ class TestPathTraversalInPayloads:
             "name": "evil",
             "graph": _minimal_graph_dict(),
             "source_file": "/etc/passwd",
+            "base_revision": None,
         }
         resp = client.post("/api/pipeline/save", json=body)
         assert resp.status_code == 403
@@ -1031,9 +1042,9 @@ class TestRequiredFieldValidation:
         with pytest.raises(ValidationError):
             OptimiserFrontierSelectRequest()
 
-    def test_json_cache_build_requires_path(self):
+    def test_json_cache_infer_requires_path(self):
         with pytest.raises(ValidationError):
-            JsonCacheBuildRequest()
+            JsonCacheInferRequest()
 
     def test_utility_write_requires_content(self):
         with pytest.raises(ValidationError):

@@ -2,28 +2,44 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import HTTPException
 
 from haute._api_input_schema import ApiInputSchemaError
+from haute._execution_admission import ExecutionAdmissionError
+from haute._execution_context import ExecutionMemoryLimitExceededError
 from haute._output_assembler import OutputNestingKeyError
 from haute.errors import (
-    ChunkMemoryRiskError,
     ContractResolutionError,
     GroupByExecutionUnsupportedError,
     HauteError,
+    InputPreparationError,
     LiveSwitchScenarioError,
+    NodeConfigError,
     PreambleError,
     RatingExtremaUndefinedError,
     RatingFactorDtypeContractError,
     RatingFactorMissingError,
+    SeedPlanExpiredError,
+    SnapshotCorruptError,
+    SnapshotPlanInputsChangedError,
     TraceCorrelationUnsupportedError,
     is_public_contract_error,
 )
+from haute.routes._memory_messages import memory_limit_user_message
 
 CONTRACT_ERROR_HTTP_STATUS = 422
-CONTRACT_ERROR_TERMINAL_REASON = "contract_error"
+CONTRACT_ERROR_TERMINAL_REASON: Literal["contract_error"] = "contract_error"
+# Automatic input preparation is the one public contract error that can report
+# memory exhaustion. A background job records the same terminal state and the
+# same ``memory_limit`` code the in-thread memory-limited paths already use.
+MEMORY_LIMITED_TERMINAL_REASON: Literal["memory_limited"] = "memory_limited"
+MEMORY_LIMITED_HTTP_STATUS = 507
+MEMORY_LIMITED_ERROR_CODE = "memory_limit"
+# A trace whose preview's seed plan expired conflicts with data that moved
+# underneath it: the preview is refreshed, not the request corrected.
+SEED_PLAN_EXPIRED_HTTP_STATUS = 409
 
 # ``except`` accepts a tuple stored in a variable.  Exporting one canonical
 # tuple prevents synchronous and background adapters from drifting apart.
@@ -31,15 +47,34 @@ PUBLIC_CONTRACT_ERROR_TYPES: tuple[type[HauteError], ...] = (
     ApiInputSchemaError,
     PreambleError,
     ContractResolutionError,
-    ChunkMemoryRiskError,
     GroupByExecutionUnsupportedError,
     TraceCorrelationUnsupportedError,
     RatingExtremaUndefinedError,
     RatingFactorMissingError,
     RatingFactorDtypeContractError,
     LiveSwitchScenarioError,
+    NodeConfigError,
     OutputNestingKeyError,
+    InputPreparationError,
+    SnapshotCorruptError,
+    SnapshotPlanInputsChangedError,
+    SeedPlanExpiredError,
 )
+
+
+def _is_memory_limited_contract_error(exc: BaseException) -> bool:
+    """Whether a public contract error reports memory exhaustion."""
+    return isinstance(exc, InputPreparationError) and exc.reason_code == "memory_limited"
+
+
+def contract_error_terminal_reason(
+    exc: BaseException,
+) -> Literal["contract_error", "memory_limited"]:
+    """Terminal background-job reason for a public contract error."""
+    contract_error_payload(exc)
+    if _is_memory_limited_contract_error(exc):
+        return MEMORY_LIMITED_TERMINAL_REASON
+    return CONTRACT_ERROR_TERMINAL_REASON
 
 
 def contract_error_payload(exc: BaseException) -> dict[str, Any]:
@@ -56,19 +91,50 @@ def contract_error_payload(exc: BaseException) -> dict[str, Any]:
 def contract_error_http_exception(exc: BaseException) -> HTTPException:
     """Map a public contract error to its synchronous-route response."""
 
-    return HTTPException(
-        status_code=CONTRACT_ERROR_HTTP_STATUS,
-        detail=contract_error_payload(exc),
-    )
+    payload = contract_error_payload(exc)
+    return HTTPException(status_code=_contract_error_http_status(exc), detail=payload)
+
+
+def _contract_error_http_status(exc: BaseException) -> int:
+    if _is_memory_limited_contract_error(exc):
+        return MEMORY_LIMITED_HTTP_STATUS
+    if isinstance(exc, SeedPlanExpiredError):
+        return SEED_PLAN_EXPIRED_HTTP_STATUS
+    return CONTRACT_ERROR_HTTP_STATUS
+
+
+def memory_limit_http_exception(
+    exc: ExecutionAdmissionError | ExecutionMemoryLimitExceededError,
+    *,
+    operation_noun: str | None = None,
+) -> HTTPException:
+    """Map a memory refusal or overrun to its 507 response.
+
+    The detail is the exception's structured payload. A job-backed surface
+    passes its *operation_noun* so the detail also carries the curated user
+    message; ``str(exc)`` names internal operations and raw byte counts, so it
+    never becomes the message.
+    """
+    detail = exc.to_payload()
+    if operation_noun is not None:
+        detail["message"] = memory_limit_user_message(exc, operation_noun=operation_noun)
+    return HTTPException(status_code=MEMORY_LIMITED_HTTP_STATUS, detail=detail)
 
 
 def contract_error_job_fields(exc: BaseException) -> dict[str, Any]:
     """Map a public contract error to stable background-job fields."""
 
     payload = contract_error_payload(exc)
+    if _is_memory_limited_contract_error(exc):
+        return {
+            "error": str(exc),
+            "error_detail": payload,
+            "error_code": MEMORY_LIMITED_ERROR_CODE,
+            "http_status_code": MEMORY_LIMITED_HTTP_STATUS,
+        }
     return {
         "error": str(exc),
         "error_detail": payload,
         "error_code": payload["error_code"],
-        "http_status_code": CONTRACT_ERROR_HTTP_STATUS,
+        "http_status_code": _contract_error_http_status(exc),
     }

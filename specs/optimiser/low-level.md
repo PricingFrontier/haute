@@ -4,11 +4,26 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/routes/optimiser.py` | FastAPI router (`/api/optimiser/*`). Owns request/response assembly, frontier-point summary derivation, artifact-payload building/validation for save and MLflow log, and the module-level `_store`/`_solve_service` singletons. |
-| `src/haute/routes/_optimiser_service.py` | `OptimiserSolveService` and its supporting free functions: pipeline execution, schema/value-contract validation, quote-grid construction, solver dispatch (online and ratebook), background frontier-auto-range estimation, ownership-marked apply/ratebook-factor artifact persistence and stale-startup reporting, and ratebook factor-table canonicalisation/serialisation. |
-| `src/haute/routes/_optimiser_limits.py` | Shared response-size and solver-compute budgets: `APPLY_PREVIEW_ROW_LIMIT`, `FRONTIER_POINT_LIMIT`, `FRONTIER_COMPUTE_LIMIT`, `enforce_frontier_compute_budget`, `limited_apply_preview_payload`, `limited_frontier_payload`. |
+| `src/haute/routes/optimiser.py` | FastAPI router (`/api/optimiser/*`). Owns request/response assembly, frontier-point selection, artifact-payload building/validation for save and MLflow log, and the module-level `_store`/`_solve_service` singletons. |
+| `src/haute/routes/_optimiser_service.py` | `OptimiserSolveService`: job admission, pipeline execution, setup orchestration over the steps in `_optimiser_input.py`, solver launch over `_optimiser_solver.py`, and background frontier-auto-range estimation. Each setup step is one orchestration method over a free step in `_optimiser_input.py`: `_recorded_setup_failures` records an `OptimiserSetupError` on the job as its terminal state and answers the matching `HTTPException`; chunk provenance is recorded by `_record_setup_chunking`; a ratebook factor-extraction refusal is recorded by the setup failure mapping instead. It owns no filesystem deletion. |
+| `src/haute/routes/_optimiser_solver.py` | The solver layer: the worker-context guard (`solver_worker_context`, `require_solver_worker_context`), the heavy entry points (`_solve_online`, `_solve_ratebook`, `_compute_frontier`) with `SolveContext`, result finalisation (`_finalize_solve_result`, the inline frontier, scenario-value statistics), and ratebook factor-table canonicalisation, ordering and serialisation. |
+| `src/haute/routes/_optimiser_frontier.py` | The frontier domain: `OptimiserFrontierService` (sweep admission, `start_sweep`/`sweep_status`/`cancel_sweep`, background `_run_sweep` publication, `select_point`, `materialise_ratebook_point`, the point apply (`request_point_apply`, `select_applied_point`; online through price-contour's point apply, ratebook through its canonical evaluation) behind one per-job `LatestWinsQueue`, `solve_result_for_selected_point`, and a `parent_lock` per parent solve) and the pure frontier range, point and artifact-handle helpers. |
+| `src/haute/routes/_optimiser_input.py` | Solve-input planning with no job or result knowledge: the column demand setup plans at each node (`_optimiser_solve_required_columns_by_node`), the retained side inputs and execution target, exact data-input edge resolution (`_resolve_optimiser_input_edge`, `_resolve_optimiser_data_input_id`), the analysis-column plan (`resolve_analysis_plan`, `AnalysisPlan`), the value-contract expressions and their failure details, solver-input chunk sizing (`pipeline_chunk_decision`: the pipeline's streaming chunk size), resident-grid admission (`_admit_resident_grid`), the projected-parquet borrow check, and `_find_optimiser_node`. It also holds the setup steps themselves as free functions that never touch the job store: `resolve_data_input_frame`, `validate_and_project`, `validate_and_project_auto_range`, `validate_input_value_contracts`, `extract_ratebook_factors`, `resolve_analysis_frame`, `write_solver_input` and `build_quote_grid`, plus `grid_construction_failures`, which types a solver-input write or grid-build failure. A refusal is an `OptimiserSetupError` carrying the HTTP status and detail, the terminal reason, the message and the job fields: the HTTP status and detail, or `contract_error_job_fields` for a public contract error. The input estimate's pre-flight and single scan (`estimate_input_metrics`) and its typed answers (`ESTIMATE_MAPPED_ERRORS`, `estimate_failure_http_exception`) live here too, shared by the in-process count and the pool worker. |
+| `src/haute/routes/_optimiser_artifacts.py` | The owned artifact lifecycle: the three ownership-marked artifact families (apply result, ratebook factors, quote analysis) — their roots, handle validation, persistence, loading, job-store cleaners, orphan cleanup and stale-startup reaping (`reap_stale_optimiser_artifacts`) — and setup's temporary files (the solver-input parquet, a worker's ratebook factors and quote-analysis directories, the range reducer's spill directory). |
+| `src/haute/routes/_optimiser_outcomes.py` | The per-quote analysis side table (OPT-V09A): `write_quote_analysis` (the streamed constant-within-quote check, the one-row-per-quote reduction into `quote_analysis.parquet`, the missing-quote count and the cardinality metadata), `AnalysisColumnNotConstantError`, the table's row-count check against the grid (`require_one_row_per_solved_quote`), the scenario-grid record (`scenario_grid_from_values`, `require_scenario_grid`) and the lease-scoped reader `collect_quote_analysis`. See "Analysis-column side table and scenario grid" below. It also holds the bounded choice queries (OPT-V09B): `ChoiceTarget`, the reducers (`ScenarioHistogram`, `SegmentGroupBy`, `TopK`, `RowIndex`), `ChoiceQueryResult`, `ChoiceJoinError`, `lease_apply_frame` and `ChoiceQueryService.choice_query`. See "Bounded choice queries and point materialisation" below. |
+| `src/haute/routes/_optimiser_adjustments.py` | The pure adjustment report (OPT-V10): `adjustment_report` (one scenario-histogram result to a strict `OptimiserAdjustmentReport`: bars per grid step, the up/down/unadjusted and edge shares, inverted-CDF quantiles and means per weighting, refused weightings named in the report's diagnostics errors) and the bounded point-report cache (`cache_point_report`, `MAX_CACHED_ADJUSTMENT_REPORTS`). It reads no file, job or grid. |
+| `src/haute/routes/_optimiser_segments.py` | Segment breakdowns (OPT-V11): the result's segment keys and their cardinality gate (`segment_keys`), the analysis and rating-factor level reducers (`AnalysisSegments`, `FactorLevelSegments`: quantile bins, the top 15 and Other, Missing, the exact level check), the typed response with its weighting rules (`segments_response`), and the routes' service (`SegmentQueries`: a breakdown, and the adjustment-spread index with its per-target cache). See "Segment breakdowns (OPT-V11)" below. |
+| `src/haute/routes/_shared_flights.py` | The two schedulers behind OPT-V09B: `SharedFlights` (single-flight by key, one shared run, per-caller detach) and `LatestWinsQueue` (one run per group with a waiting slot of depth one, the replaced waiter refused with `FlightReplacedError`; with `cancel_abandoned=True`, OPT-PC02, a running flight whose last subscriber leaves is cancelled and becomes *cancelling*), both handing each caller a `FlightSubscription`. |
+| `src/haute/routes/_optimiser_worker.py` | The hard-capped spawn workers that materialise optimiser inputs in process mode: `materialise_solve_input_worker` (solve setup's execute/validate/project/factor-extraction and the solver-input parquet) and `frontier_auto_range_worker` (the auto-range totals), their plain-data requests and outcomes, `SolveInput`, and `OptimiserWorkerFailure`, the child's terminal failure record that the parent replays onto the real job (raised there as `OptimiserWorkerFailureError`). It also holds the warm-pool estimate entrypoint `optimiser_estimate_worker`, which returns an `OptimiserEstimateOutcome` (the counts, or a status and detail) and records nothing. |
+| `src/haute/routes/_optimiser_session.py` | The parent side of the solver session (OPT-W01): `SolverSession` (one dedicated worker per process-mode solve job, its command slot, pins, per-command growth grants, publication under the slot, and the death record written under `RUNTIME_UNAVAILABLE_KEY`), `SessionCommandError`, and `runtime_mode`, the one dispatch the frontier consumers make between the session and the in-process runtime. See "Solver sessions (OPT-W01)" below. |
+| `src/haute/routes/_optimiser_session_worker.py` | The child side of the solver session: the command functions (`build_and_solve`, `sweep`, `apply_point`), their plain-data requests and outcomes, and the child's session state (solver, quote grid, ratebook factor contexts). |
+| `src/haute/routes/_optimiser_limits.py` | Shared response-size and solver-compute budgets: `APPLY_PREVIEW_ROW_LIMIT` (the most rows one Quotes page returns, defined beside the request schema in `haute.schemas` and re-exported here), `QUOTE_PAGE_DEPTH_LIMIT` (the deepest row a Quotes page reaches), `FRONTIER_POINT_LIMIT`, `FRONTIER_COMPUTE_LIMIT`, `enforce_frontier_compute_budget`, `limited_frontier_payload`. |
+| `src/haute/routes/_optimiser_quotes.py` | The Quotes explorer (OPT-V12): the page reducers over the choice frame (`QuotePage`, and `AnalysisQuotePage` when the sort or a filter reads an analysis column: sort with the quote-id tie-break, the quote-id prefix search, the scenario-value range, at-range-edge, analysis-equality and deployed-factor filters, the offset and the depth guard), the typed column roles (`quote_columns`) and the route's service (`QuoteQueries.page`). See "Quotes explorer (OPT-V12)" below. |
+| `src/haute/routes/_frontier_point_summary.py` | The one derivation of a frontier point's solve summary: `frontier_point_summary` (from a `price-contour` frontier row), `apply_frontier_point_summary` (overlays it on a base result) and `FrontierPointDataError` (a malformed point, carrying the HTTP status the route reports). See Frontier point summaries below. |
 | `src/haute/_builders.py` | Cross-component runtime registry owned by [execution-engine](../execution-engine/low-level.md). The optimiser component consumes its optimiser-apply online/ratebook closures; saved artifact validation and trace reconstruction must remain contract-compatible with those closures. |
-| `src/haute/_optimiser_io.py` | Loads a previously saved optimiser artifact for an optimiser-apply node — from a local JSON file (content-hash cached) or from MLflow (run-id/version cached). Analogous to `_mlflow_io.py` and `_io.py`. |
+| `src/haute/_ratebook_collar.py` | The ratebook combined-factor collar: `COMBINED_FACTOR_BOUNDS_KEY`, `combined_factor_bounds_from_grid` (the solve's `[sv_min, sv_max]`), `parse_combined_factor_bounds` and `CombinedFactorBoundsError`, shared by the solver, artifact validation, the runtime apply and the trace. |
+| `src/haute/_price_contour.py` | The one runtime import point for the external `price_contour` library: `price_contour()` verifies the installed build once per process and returns the package; `price_contour_install()` reports the verified version and where it was installed from (the deploy container pin reads it). See The price-contour guard below. |
+| `src/haute/_optimiser_io.py` | Loads a previously saved optimiser artifact for an optimiser-apply node — from a local JSON file (content-hash cached) or from MLflow (`load_mlflow_optimiser_artifact(..., destination="")`, cached on the resolved backend identity plus run-id/version, so the same run on two destinations never aliases and an unresolvable destination fails before any cache lookup). Analogous to `_mlflow_io.py` and `_io.py`. |
 | `src/haute/_optimiser_apply_explainability.py` | Builds a structured trace-detail payload for one clicked optimiser-apply output row, for both online and ratebook modes. Consumed by the tracing subsystem, not exposed as its own route. |
 | `src/haute/schemas.py` | Shared Pydantic contracts owned by [server-api](../server-api/low-level.md) for optimiser solve/estimate/status, auto-range, frontier, apply, save, and MLflow-log routes. |
 | `frontend/src/api/types.ts` | Canonical frontend optimiser response contracts owned by [frontend-shared](../frontend-shared/low-level.md), including `OptimiserSolveResult`; panels, stores, and tests import this type directly without panel-owned aliases. |
@@ -35,10 +50,10 @@ in `optimiser.py`). Instance state:
   so normal, exceptional, cancelled, and thread-start-failure paths cannot release only half of
   the coordination state.
 
-### `SolveContext` (`src/haute/routes/_optimiser_service.py`, frozen dataclass)
+### `SolveContext` (`src/haute/routes/_optimiser_solver.py`, frozen dataclass)
 
 Per-solve context threaded through `_solve_online`/`_solve_ratebook`: job id, node id, mode,
-store, execution context, streaming chunk size, single-flight key, required worker `start_time`,
+store, execution context, single-flight key, required worker `start_time`,
 and a `check_cancelled` callable — the single object both solver code paths use to check for
 cooperative cancellation. The orchestration context may omit `start_time` before
 `_launch_background` resolves it, but both solver entry points fail loudly if they receive a
@@ -46,22 +61,26 @@ context without the resolved value rather than silently resetting elapsed-time a
 
 ### Other dataclasses
 
-- `_StreamingAutoRangePlan` (`src/haute/routes/_optimiser_service.py`, frozen) — a *proven*
-  streaming/chunked auto-range plan:
-  base node id, scenario-expander node id, the intermediate node chain, required columns, and a
-  `ChunkPlan`. Only constructed when every intermediate node is verified row-local (see
-  Edge cases below).
-- `_ChunkSizeDecision` (`src/haute/routes/_optimiser_service.py`, frozen) —
-  `(chunk_size, provenance)`, recording whether a chunk
-  size came from explicit config or a byte-budget policy.
+- `_ChunkSizeDecision` (`src/haute/routes/_optimiser_input.py`, frozen) —
+  `(chunk_size, provenance)` for the solver-input grid build and the ratebook factor contexts.
+  `pipeline_chunk_decision(source)` makes it from `current_streaming_chunk_size()` (the Pipeline
+  Settings value; the optimiser node has no chunk size of its own), recording
+  `{"policy": "pipeline_setting", "chunk_size", "source"}` in the job's `setup_chunking`.
+  The grid build uses `grid_chunk_decision(n_steps)` instead: the builder reads whole quotes,
+  so the setting is raised to `n_steps` rows when it is smaller, and the record adds
+  `pipeline_chunk_size` (the setting) and `n_steps`. `scenario_step_count` reads `n_steps` as one
+  past the largest `scenario_index` in one scan of that column, and the builder receives it
+  explicitly instead of auto-detecting it from its first chunk (which fails below
+  `n_steps + 1` rows). The ratebook factor artifact has one row per quote, so its contexts take
+  the setting as it is.
 - `FrontierAutoRangeContext` (`src/haute/routes/_optimiser_service.py`, frozen) — per-job bundle
-  of chunk size, partition count,
-  execution context, and streaming chunk size for one auto-range run.
-- `_ScenarioFrontierRangeAccumulator` (`src/haute/routes/_optimiser_service.py`) — a
-  disk-bucketed accumulator that combines
-  per-quote scenario min/max across many batches by hash-partitioning into parquet parts and
-  combining them in `finish()`, so auto-range estimation never has to hold the full per-quote
-  range set in memory at once.
+  of the reducer's batch rows (`chunk_size`, defaulting to `current_streaming_chunk_size()`)
+  and execution context for one auto-range run.
+- `_ScenarioFrontierRangeAccumulator` (`src/haute/routes/_optimiser_service.py`) — the exact
+  Float64 range reducer (see "Frontier auto-range estimation"): a carry-over path for
+  quote-grouped batches, verified per batch and at the finish, with a bucketed combine over
+  per-batch parquet partials as its exact fallback, so auto-range never holds one global
+  per-quote table.
 
 No `TypedDict`s are defined anywhere in the component; job-store entries and artifact handles
 are plain `dict[str, Any]`, validated defensively at each read site rather than at a type
@@ -77,16 +96,41 @@ A job is a plain dict living in the shared `JobStore`. Fields this component rea
 `node_label`, `start_time`, `timeout`, `result`, `base_result` (the pre-frontier-point-overlay
 summary, used to reconstruct any frontier point without re-solving), `frontier_data` (the raw,
 unlimited frontier points — distinct from `result["frontier"]`, which is the size-limited
-frontend payload), `frontier_generation` (a non-negative integer initialised to `0` at solve
-completion and incremented by every explicit recompute), `selected_frontier_point`,
-`artifact_handles` (dict of named artifact handles, see below), and, only while heavy state is
-retained, `solver`, `quote_grid`, `solve_result`, `factor_level_counts`, `factor_level_order`,
-`setup_chunking`.
+frontend payload), `frontier_factor_tables` (ratebook only: one `{factor: {level: rate}}` dict per
+retained frontier point, aligned with `frontier_data["points"]`, stored by the solve-time
+frontier and replaced by every recompute; `None` for online jobs), `frontier_generation` (a non-negative integer initialised to `0` at solve
+completion and incremented by every explicit recompute; the same atomic update writes it into
+`result`, `base_result`, `frontier_data` and `result["frontier"]`, so every response that
+carries a result or a frontier reports it — see "Frontier generation" below), `selected_frontier_point`,
+`artifact_handles` (dict of named artifact handles, see below), `publish_summary` (the anchor's
+MLflow summary — `params`/`metrics`/`artifacts` from `solver.summary(solve_result)` — computed
+once in `_finalize_solve_result` before the apply dataframe is persisted, with every Polars
+frame inside it converted to JSON records; `null` if the summary could not be built),
+`input_provenance` (recorded when the solve job is created: `node_id`, the batch `data_source`
+the solve executes against, the graph's `source_file`, and the `graph_fingerprint` the setup
+single-flight key already computes), and, only while heavy state is retained, `solver`,
+`quote_grid`, `solve_result`, `factor_level_counts`, `factor_level_order`, `setup_chunking`.
+`scenario_grid` (recorded by setup right after the grid build, in both modes: the solver
+input's complete grid as `[{optimal_step, scenario_value}]`, see "Analysis-column side table and
+scenario grid"), and `artifact_handles["quote_analysis"]` when analysis columns are configured.
+`artifact_handles["apply_result"]` is the as-solved per-quote frame in both modes (online:
+`SolveResult.dataframe`; ratebook: `RatebookResult.quote_results`, see "Ratebook per-quote
+choices (OPT-V09C)"), and `artifact_handles["ratebook_factors"]` the ratebook factor rows.
+`adjustment_reports` (OPT-V10's point report cache) and `segment_indexes` (OPT-V11's segment index
+cache, by `(frontier_generation, point_index)`) are cleared by a frontier recompute.
+`publish_summary`, `input_provenance` and `scenario_grid` are not heavy keys and survive every
+slimming.
+`_result_finite_validated_for` (private, never in a response) records the
+`(frontier_generation, selected_frontier_point)` whose `result` and `frontier_data` the status
+route last walked clean for NaN and Infinity (see the solve result contract below).
 
 ### Artifact handle shape
 
-`{"kind": "optimiser_apply_result" | "optimiser_ratebook_factors", "version": 1, "format":
-"parquet", "path": str, "directory": str, "row_count": int, ["size_bytes", "columns"]}`. Handles
+`{"kind": "optimiser_apply_result" | "optimiser_ratebook_factors" | "optimiser_quote_analysis",
+"version": 1, "format": "parquet", "path": str, "directory": str, "row_count": int,
+["size_bytes", "columns"]}`. A quote-analysis handle also carries `analysis_source`
+(`"data_input"` or `"side_input"`), `missing_quote_count` and `column_stats` (see
+"Analysis-column side table and scenario grid"). Handles
 are validated structurally on every load/cleanup (`_validate_server_owned_parquet_handle` in
 `src/haute/routes/_optimiser_service.py`) — kind/version/format must match exactly,
 `directory`/`path` must
@@ -102,7 +146,85 @@ A `RuntimeError` subclass raised for every trace-enrichment failure; always caug
 top-level `explain_optimiser_apply_from_config` entry point and turned into an `"error"` status
 payload — it never escapes to the caller.
 
-### Solver worker-context guard (`_optimiser_service.py`)
+### The price-contour guard
+
+`src/haute/_price_contour.py` is the guard. Every runtime use of `price_contour` goes through `price_contour()`; callers look symbols up on
+the returned module at call time (`price_contour().RatebookOptimiser(...)`), so tests that
+patch `price_contour.<name>` keep working. `if TYPE_CHECKING:` imports of library types remain
+allowed; `tests/test_decoupling_contracts.py` rejects any other `price_contour` import in
+`src/haute` and any symbol read off `price_contour()` that the guard does not verify.
+
+The first call (cached with `functools.cache`; a failure is not cached) imports the package and
+its native extension `price_contour._price_contour` and collects **every** problem into one
+`PriceContourCompatibilityError` (a `RuntimeError`):
+
+- no `price-contour` distribution metadata;
+- the module's `__version__` differs from the distribution metadata (a stale or shadowing
+  build, such as `0.0.0+local`);
+- the version is outside `REQUIRED_SPECIFIER`, which equals `pyproject.toml`'s
+  `price-contour` specifier exactly (`>=0.6.0,<0.7`, pinned by
+  `tests/test_dependency_contracts.py`); prereleases are rejected even inside the range;
+- a missing entry of `REQUIRED_SYMBOLS` (every class, function and method haute calls,
+  including 0.6.0's `CancelToken`, `CancelToken.cancel` and `Cancelled`);
+- a keyword haute passes by name that a Python wrapper no longer accepts
+  (`REQUIRED_PARAMETERS`, checked with `inspect.signature`, including `cancel` on
+  `apply_from_grid` and `RatebookOptimiser.evaluate`; PyO3 classes are covered by the symbol
+  check only);
+- a failed import, chained as the error's cause.
+
+The message names the installed version, the required specifier, the module path, the install
+source (`editable checkout <path>` or `direct URL <url>` from PEP 610 `direct_url.json`, else
+`wheel`) and the remedy: `uv sync --locked`, or `uv run maturin develop --release` in a
+checkout. A verified install logs one `price_contour_verified` INFO line with version, source
+and path. The test session verifies the real install once before any test patches it.
+
+The deploy container pins `price-contour==<verified version>` through
+`_pinned_price_contour_dependency` and raises `DeployError` when the build is an editable or
+direct-URL install, because the container reinstalls from the package index by version and
+cannot reproduce it; an incompatible install raises `DeployError` carrying the guard's
+diagnosis.
+
+### The price-contour contract haute relies on (0.6)
+
+The library's own contract is section 13 ("Consumer Contract") of the design-decisions document
+in the price-contour repository, with cancellation in section 14 (0.6.0).
+Haute depends on these parts of it:
+
+- **Canonical ratebook evaluation.** Every ratebook total (solve result and frontier row) is
+  the evaluation of the final factor tables by one kernel: each quote at the grid step nearest
+  the f32 product of its factor rates, clamped to the end steps, an exact midpoint going to the
+  lower step. `RatebookResult.quote_results` is that per-quote frame and
+  `RatebookOptimiser.evaluate(grid, factors, factor_tables)` reproduces it exactly. The
+  combined-factor collar (`combined_factor_bounds`) is the same end-step clamp applied at
+  deployment.
+- **Ratebook frontier points.** `RatebookOptimiser.frontier(...).factor_tables` holds each
+  point's tables, aligned with `points`; each row's totals are those tables' canonical
+  evaluation. Haute keeps the retained points' tables as the job's `frontier_factor_tables` and
+  materialises a selected point from them (see "Frontier computation and point selection").
+- **Absolute bounds.** Frontier rows carry `bound_<c>` (absolute) beside `threshold_<c>` (the
+  user's units, a fraction for `min_pct`/`max_pct`) for every constraint; solve results carry
+  `constraint_bounds`.
+- **One baseline rule.** Every baseline is the scenario value nearest 1.0 (f32, lowest on a
+  tie); totals accumulate f32 values in f64.
+- **Fail loud.** The library raises rather than returning a default for missing frontier
+  totals or λ, a zero-baseline pct constraint, an unknown warm-start λ name, a non-positive
+  candidate range, scenario values that are not strictly increasing, and the reserved
+  constraint names `objective`, `step` and `scenario_value` (which haute's config validation
+  also rejects).
+- **`clamp_rate`** is a search-space diagnostic (the mean share of candidate targets outside
+  the scenario range across the search), not a count of quotes at an edge; that count is
+  `n_quotes_clamped_low` / `n_quotes_clamped_high`.
+- **Cancellation (0.6.0).** `apply_from_grid(..., cancel=)` and
+  `RatebookOptimiser.evaluate(..., cancel=)` take a `CancelToken`. Cancelling it from another
+  thread makes the call, or a first access to the result's lazily built `dataframe` /
+  `quote_results`, raise `Cancelled` (a `RuntimeError`) within milliseconds; nothing partial is
+  returned or cached. Input errors are still `ValueError` on a cancelled token (except a zero
+  baseline under a pct bound, which only the cancellable baseline scan finds), and an
+  uncancelled token changes no result. Only native work polls the token: haute passes the
+  solve's `QuoteGrid` and prepared `RatebookFactorContexts`, never DataFrames, so the whole call
+  is cancellable (see "Bounded choice queries and point materialisation").
+
+### Solver worker-context guard (`_optimiser_solver.py`)
 
 `_SOLVER_WORKER_ACTIVE` is a `contextvars.ContextVar[bool]` (default `False`) that marks the
 current thread of execution as running inside a background solver worker. `solver_worker_context()`
@@ -141,47 +263,133 @@ in `src/haute/routes/_optimiser_service.py`, which:
    `_run_solve_setup_and_launch`) and returns
    `OptimiserSolveResponse(status="started", job_id=...)` immediately.
 
-The setup thread runs inside a `tempfile.TemporaryDirectory` checkpoint directory. Its context
-manager cleans the directory on normal or exceptional context exit; an abrupt process termination
-can still leave OS-temporary files behind.
+The setup thread runs inside a `contextlib.ExitStack` on which `_execute_pipeline` enters the
+run's [seed plan](../caching/low-level.md#seed-plans); the plan's seed leases and capture staging
+are held until the grid is built and released on every exit. No checkpoint directory is written.
 
-1. Admits an `ExecutionContext` (profile `OPTIMISER_SETUP`) — an admission failure here is caught
-   by the setup worker and published as the solve job's `memory_limited` terminal status, not
-   returned as a synchronous HTTP 507 from the already-completed `/solve` submission.
+1. Admits an `ExecutionContext` (profile `OPTIMISER_SOLVE`, a growth grant waiting out the
+   panel's `optimiser_setup:optimiser_estimate`; see "Solver sessions (OPT-W01)") — an admission
+   failure here is caught by the setup worker and published as the solve job's `memory_limited`
+   terminal status, not returned as a synchronous HTTP 507 from the already-completed `/solve`
+   submission.
 2. Runs the pipeline up to the optimiser node via `_execute_pipeline` — see below.
 3. Resolves the configured exact `data_input` name to one incoming edge and selects that edge's
-   source frame via `_resolve_data_input_frame`; node-id matching is not accepted.
+   source frame via `_resolve_data_input_frame`; node-id matching is not accepted. Steps 2 and 3
+   are the optimiser's pipeline stage, `_run_optimiser_input_stage`, which frontier auto-range
+   runs too (see "Frontier auto-range estimation").
 4. Validates schema and value contracts and projects/casts to solver dtypes via
-   `_validate_and_project`.
+   `_validate_and_project`. On the data-input analysis path the configured analysis columns are
+   retained, uncast, beside the solver columns (and only those); on the side-input path the
+   analysis frame is resolved through the same exact edge-name contract and projected to
+   `quote_id` + the analysis columns (`resolve_analysis_frame`).
 5. For ratebook mode only, resolves `banding_source` through the same exact edge-name contract,
    then extracts and persists that edge's factor frame to a parquet artifact (`_extract_factors`).
 6. Explicitly drops the lazy-output references and runs `gc.collect()` before building the grid,
    to release memory ahead of the (often large) grid-build step.
-7. Sinks the scored data to a temp parquet and builds the solver's `QuoteGrid` via
-   `price_contour.build_grid_from_parquet_chunked` (`_build_grid`), choosing a chunk
-   size from either explicit config or a byte-budget policy against the parquet's own metadata.
+7. Writes the scored data to a setup-owned temp parquet, or borrows an unchanged captured
+   snapshot under the plan's lease (`_write_solver_input`), and builds the solver's `QuoteGrid`
+   from that file via `price_contour.build_grid_from_parquet_chunked`
+   (`_build_grid_from_parquet`) in chunks of the Pipeline Settings chunk size raised to one
+   quote's rows (`grid_chunk_decision`), passing the file's `n_steps`. The builder decodes only the solver
+   columns, so retained analysis columns never reach it, and `_build_grid_from_parquet` records
+   the job's `scenario_grid` as soon as the grid exists. When analysis columns are configured,
+   `quote_analysis.parquet` is reduced from the written solver input (or the side-input frame)
+   before that file is removed (`_write_quote_analysis`): by the setup worker right after it
+   writes the solver input in process mode, and by `_build_grid` after the grid in the thread
+   mode; the parent then requires one table row per grid quote. The temp parquet is removed on
+   every exit; a borrowed snapshot never is.
 8. Launches the actual solver thread (`_launch_background`), passing the built
-   `QuoteGrid`, config, and (ratebook) the factors handle and factor-level order.
+   `QuoteGrid`, config, the quote-analysis handle (when one was written) and (ratebook) the
+   factors handle and factor-level order.
 
-`_execute_pipeline` passes the required-column seed to the execution facade, whose typed
-strategy result is attached to the admitted context and drives the same lazy execution and
-dataframe-cache request. Auto-range uses that same `_execute_pipeline` boundary and
-request context; there is no standalone optimiser-owned projection-plan helper or
-second planning policy.
+Steps 2–7's pipeline work is materialisation, and it runs in a hard-capped spawn worker in
+production (`HAUTE_INTERACTIVE_EXECUTION_MODE=process`, the default), as training preparation
+does. The setup thread creates the temp parquet path, opens the seed plan under its admitted
+context (`_open_setup_seed_plan`, which prepares inputs and holds the plan's leases until setup
+exits) and runs `materialise_solve_input_worker` through `_run_optimiser_worker`: the admitted
+headroom (`isolated_execution_budget`) is both the child's execution budget and its native cap,
+and the job's cancellation reason is the worker's stop signal, so cancellation or supersession
+terminates the worker. Every optimiser worker (setup and auto-range) spawns with
+`POLARS_MAX_THREADS` set to `resolve_optimiser_polars_threads()` — min(CPU count, 8), overridden
+by `HAUTE_OPTIMISER_POLARS_THREADS` — because Polars bounds a streaming pipeline by morsels per
+thread, so a scenario expander's fan-out multiplies what each thread holds (measured: the
+scorer's input sink on a 10M x 11 pipeline peaked at 5.3 GiB with 22 threads and 1.8 GiB with 8,
+in the same time). The child adopts the plan (`SeedPlan.adopt`), runs
+`_materialise_solve_input` (`_prepare_solver_frame` — steps 2–6 — then `_write_solver_input`
+with borrowing off, then, with analysis columns, `_write_quote_analysis`) against a private job record in the `optimiser_worker` job store,
+deleted when the child finishes, and returns a `SolveInput` (the parent's
+parquet path, the constraint columns, the ratebook factors handle and the quote-analysis
+handle) or the private record's
+terminal failure. The child never borrows a captured snapshot: a capture it made is released
+when its adopted plan closes, before the parent reads the file. Every location the child writes
+is created and removed by the parent, however the worker exits: the solver-input parquet, the
+marked quote-analysis directory (`_new_quote_analysis_directory`, into which the child writes
+`quote_analysis.parquet`; removed when no job adopts its handle), the marked ratebook factors
+directory (`_new_ratebook_factors_directory`, into which the child
+persists; removed when the job never adopts its handle) and a scratch directory
+(`worker_scratch_directory`) that the child routes all of its Python temporary files into (range
+reducer bucket parts, staged batches, model-scoring temp files), so a stopped, timed-out or killed
+worker leaves nothing behind. The parent checks the returned input is its own file and the
+factors and quote-analysis handles name its own directories. A `MemoryError` a native cap raised in the child, however
+translated, leaves the child as that error, so the parent classifies it as `memory_limited`
+rather than the child's generic mapping reporting a 500. A failure is classified in the
+child by `_record_solve_setup_failure`, the same mapping the setup thread uses, and the parent
+replays the record (terminal reason, message, `error`/`error_code`/`error_detail`/
+`http_status_code`, and the child's metrics adopted as worker evidence) onto the real job.
+Worker-level failures map as training preparation's do: a stopped worker is the job's stop, a
+memory-shaped worker failure (`isolated_worker_failure_is_memory`) is a 507 `memory_limit` with
+`isolated_worker_memory_detail`, and any other is a 500 `error`. Only then is the grid built from
+the file, by the job's solver session (step 7 and step 8 in process mode are the session's
+`build_and_solve` command; see "Solver sessions (OPT-W01)"). The explicit `thread` compatibility mode runs steps 2–7 on the
+setup thread against the real job (`_prepare_solver_frame`, then `_build_grid`), with the same
+failure mapping.
+
+`_execute_pipeline(body, job_id, resources, ...)` opens the run's seed plan on the caller's
+`resources` stack (`open_seed_plan`, which prepares the lineage's snapshot-backed inputs, under
+the job's profile), or adopts the `seed_plan` handoff a
+worker's supervising parent opened from the same `_setup_seed_plan_request`, and executes with
+`prepare_inputs=False`
+and `snapshot_plan=` that plan, passing the required-column seed to the execution facade, whose
+typed strategy result is attached to the admitted context. The plan's consumed nodes are what
+setup reads afterwards: an explicit target alone (the estimate's data input); otherwise the
+execution target `_setup_execution_target_node_id` selects — the resolved `data_input` in online
+mode without a separate analysis input, or the Optimiser itself (ratebook mode, any mode
+with a separate analysis input, or a data source that feeds the Optimiser through parallel
+edges, whose demand `_optimiser_solve_required_columns_by_node` keys on the Optimiser), which
+resolves along its selected `data_input` edge to its producer — and every banding or analysis
+side input from the Optimiser's own edges that the run
+executes,
+`apiInput` ports included. The plan applies capture eligibility itself: a node-output producer
+is seeded or captured, an `apiInput` is built and never captured (its tables have their own
+store), and the two-input Optimiser is a pass-through, so it is neither a join nor captured and
+its unselected inputs are built only because setup consumes them. `_setup_execution_scope` is
+the one target resolution both `_setup_seed_plan_request` and `_execute_pipeline` use. Solve
+setup and auto-range build the request from the same demand
+(`_optimiser_solve_required_columns_by_node`) and the same target, so they make the same seed,
+rebuild and capture decision; no capture widening is passed (`capture_columns_by_node` is
+unset), because a capture made under the solve's demand already carries what the solve reads.
+Auto-range uses that same `_execute_pipeline` boundary and request context; there is no second
+planning policy.
 
 Every failure mode in this thread (cancellation, `HTTPException`, memory-admission error,
 bounded-streaming-unsupported error, or a bare exception) is mapped to a terminal job-store
 transition rather than propagated — nothing in the setup thread's failure path is visible to a
 caller except through the status-polling endpoint.
 
-### Solver execution (`_launch_background` → `_solve_online` / `_solve_ratebook`)
+### Solver execution (`_launch_background` → `_optimiser_solver._solve_online` / `_solve_ratebook`)
+
+In process mode these functions run unchanged inside the solver session's `build_and_solve`
+command against a private job record, and the parent publishes the plain completion fields the
+command returns (see "Solver sessions (OPT-W01)"). The description below is of the functions
+themselves and of the thread compatibility mode's `_launch_background`.
 
 The spawned solver thread updates progress to "Solving", then — inside
-`temporary_streaming_chunk_size(...)` and an execution-context stage — calls:
+an execution-context stage — calls:
 
 - **Online** (`_solve_online`): constructs `price_contour.OnlineOptimiser(objective,
-  constraints, max_iter, tolerance, record_history)` and solves directly against the passed
-  `QuoteGrid`.
+  constraints, max_iter, tolerance, record_history=True)` and solves directly against the passed
+  `QuoteGrid`. Every online solve records its per-iteration `history` (bounded by `max_iter`);
+  there is no configuration flag for it.
 - **Ratebook** (`_solve_ratebook`): requires a persisted ratebook factors handle
   (raises `RuntimeError` otherwise — "Ratebook mode requires a banding source"); validates
   the configured factor columns and configured quote-id column against the artifact's own
@@ -195,13 +403,87 @@ The spawned solver thread updates progress to "Solving", then — inside
   into their canonical, apply-joinable level keys
   (`_ratebook_factor_level_counts_from_artifact` /
   `_ratebook_factor_dtypes_from_artifact` → `_serialise_ratebook_factor_tables`, see Edge
-  cases).
+  cases). It records the solve's **combined-factor collar**,
+  `combined_factor_bounds = {"min": sv[0], "max": sv[-1]}` from the solved grid's
+  `QuoteGrid.scenario_values` (the Float32 grid values widened to Python floats, exactly what
+  the solver scored; `combined_factor_bounds_from_grid` in `src/haute/_ratebook_collar.py`),
+  and reads `clamp_rate` and `cd_iterations` directly off the library result. It maps the
+  library's `per_factor_results` (one `PerFactorRecord` per inner grouped solve, in (CD pass,
+  factor) order) into `ratebook_cd_trace` (see the result contract below). Like an online
+  result, a ratebook result reports the shape of the grid it scored: `n_quotes` and `n_steps`
+  come from the solved `QuoteGrid`, so the result header and the artifact's `input_summary`
+  name them for both modes. See Runtime ratebook apply below.
 
 Both call the shared `_finalize_solve_result`, which builds the API-facing
-`result_dict`, optionally computes an efficient frontier inline (non-fatal on failure — a
-frontier failure is recorded but does not fail the solve), persists the apply-result artifact
-(freeing the in-memory result dataframe as a side effect — see Artifact lifecycle below), and
-atomically transitions the job to `completed`.
+`result_dict` (including `effective_bounds`, see Constraint bounds below), optionally computes an efficient frontier inline (non-fatal on failure — a
+frontier failure is recorded but does not fail the solve), persists the online apply-result
+artifact (online mode only: `_persist_apply_result_artifact` requires a per-quote Polars
+frame and raises `TypeError` otherwise; it frees the in-memory result dataframe as a side
+effect — see Artifact lifecycle below), and atomically transitions the job to `completed`.
+
+**The solve result contract (`OptimiserSolveResult`).** `mode` is `"online"` or `"ratebook"`
+and always present. Beside the totals, baselines, `effective_bounds` and λ (whose constraint
+names must all agree, see Constraint bounds) the result carries:
+
+- `input_summary` (`OptimiserInputSummary`, strict): the job's `input_provenance` (`node_id`,
+  `data_source`, `source_file`, `graph_fingerprint`) plus `solver_settings`
+  (`OptimiserSolverSettings`: `max_iter`, `tolerance`, and
+  `max_cd_iterations`/`cd_tolerance` for ratebook; `frontier_steps` and `frontier_ranges` only
+  when the solve swept a constraint). It is built
+  once in `_finalize_solve_result` by `solve_input_summary(job)` from the solve-time config
+  snapshot and `input_provenance`; a solve job without `input_provenance` fails loudly. The
+  published artifact's `input_summary` and `solver_settings` are read from it (see Save and
+  MLflow log), so there is one summary.
+- `diagnostics_errors: [{diagnostic, error_type, message}]` (`OptimiserDiagnosticError`,
+  `diagnostic` is `"adjustments"`, `"adjustment_weight"`, `"segment_weight"` or `"frontier"`): a
+  diagnostic that
+  could not be produced is recorded here instead of silently becoming `null`. A solve (online
+  or ratebook) whose adjustment report cannot be built keeps `adjustments` `null` and records
+  an `"adjustments"` entry (see "Adjustment reports (OPT-V10)"). `"adjustment_weight"` entries
+  appear only inside a
+  report's own `diagnostics_errors`, one per weighting refused for a negative value or a zero
+  total; `"segment_weight"` entries appear only in a segment breakdown's `diagnostics_errors`
+  (see "Segment breakdowns (OPT-V11)").
+- `adjustments` (`OptimiserAdjustmentReport | null`): the as-solved adjustment report (see
+  "Adjustment reports (OPT-V10)"). A failed inline frontier keeps
+  `frontier_error` ("Frontier unavailable: …") and records the same failure as the `"frontier"`
+  entry. Every entry is also logged (`optimiser_diagnostic_skipped`).
+- `history: [OptimiserHistoryEntry]` (online): every online solve's per-iteration record
+  (`iteration`, `total_objective`, `max_lambda_change`, `all_constraints_satisfied`, `lambdas`,
+  `total_constraints`), always recorded and bounded by `max_iter`; `null` for ratebook results
+  and frontier points.
+- `ratebook_cd_trace: {records, truncated}` (`OptimiserRatebookCdTrace`, strict; ratebook): one
+  record per inner grouped solve of the coordinate descent, in (CD pass, factor) order, each
+  `{cd_iteration (1-based), factor, factor_index, total_objective, total_constraints, lambdas}`
+  taken from price-contour's `PerFactorRecord` (the factor is named by the library, never
+  inferred from position). Every record's `total_constraints` and `lambdas` hold exactly the
+  result's constraint names, and there is at least one record. The trace keeps the last
+  `HAUTE_OPTIMISER_CD_TRACE_LIMIT` records (default 1,000; a malformed value fails loudly) and
+  sets `truncated` when it dropped earlier ones, as `loss_history` does. A record's totals are
+  that inner solve's, on the search's working multiplier, so the last record's objective agrees
+  with the canonical `total_objective` only to about 1e-6 relative. `null` for online results
+  and for frontier points (a materialised ratebook point has no trace). The frontier-select
+  response carries `history` and `ratebook_cd_trace` of the result it returns (the solve's when
+  `point_index` is `null`).
+- `scenario_grid: [OptimiserScenarioGridStep]` (both modes, required): the job's immutable
+  scenario grid, `{optimal_step, scenario_value}` for every step in step order, copied from the
+  job record `_finalize_solve_result` reads (a job without one fails loudly, as a missing
+  `input_provenance` does). Steps are `0..n-1` and values strictly increasing; when `n_steps` is
+  present it equals the grid's length. Frontier-point results carry the solve's grid (they
+  share it).
+- `factor_tables: {table: [OptimiserFactorTableRow]}`: each row is strict, exactly
+  `__factor_group__` (the canonical level key, `level` in Python), `optimal_scenario_value`
+  (finite) and `quote_count` (a non-negative integer). Online results carry `{}`.
+
+`GET /solve/status` and `POST /solve/cancel` walk a completed job's `result` and
+`frontier_data` for NaN or Infinity with `_non_finite_paths` (the walk the artifact validation
+uses) before answering, the way the modelling status route applies `_assert_json_finite`. A
+non-finite value corrects the job from `completed` to `error` ("Optimiser result cannot be
+published: non-finite values at …", naming up to five paths) and clears its `result` and
+`frontier_data`. A clean walk is cached on the job as `_result_finite_validated_for`, the
+`(frontier_generation, selected_frontier_point)` it was made for, because a recompute or a
+selection rewrites the result; a later poll for the same pair skips the walk. The flag is never
+part of a response.
 
 The solver worker classifies failures by the boundary that translated them.
 `_OptimiserSolveInputError` names a user-actionable input-adaptation failure and
@@ -214,53 +496,145 @@ and structured classification layer.
 
 ### Frontier auto-range estimation
 
-`start_frontier_auto_range` uses `_prepare_frontier_auto_range` to validate config/mode, resolve
-chunk size/partition count/timeout, compute the required-column projection, and attempt to
-prove a `_StreamingAutoRangePlan` (`_build_streaming_auto_range_plan`), falling back to
-the classic non-streaming path when the plan cannot be proven (`ProjectionImpossibleError`) or
-raising a 422 when the chunking itself is unsupported (`ChunkPlanUnsupportedError`).
+Auto-range runs solve setup's pipeline stage and reduces its frame; it has no execution path of
+its own. `start_frontier_auto_range` calls `_prepare_frontier_auto_range` in the request thread,
+which validates config/mode (a 400 before any job exists), resolves `timeout`
+(`auto_range_timeout`, else the pipeline settings' optimisation time limit, else none), and resolves the solve's
+column demand once (`_optimiser_solve_required_columns_by_node`); the job and its worker take
+these as arguments and never recompute them.
 
 - `start_frontier_auto_range` — **background**: under `_start_lock`, idempotently
   returns the existing job id if an auto-range job with the same graph fingerprint and node id is
-  already running (request-only `streaming_chunk_size` is not part of this key; unlike
+  already running (unlike
   `start()`'s stricter conflict behaviour), otherwise creates a cancellable job, registers it,
   and spawns a worker thread.
-- `_run_frontier_auto_range_job` dispatches to `_run_streaming_frontier_auto_range_job`
-  (chunk-by-chunk via `iter_chunked_frames`, only reached when a streaming plan was
-  proven) or the classic path (execute pipeline → resolve source → validate/project → batched
-  collection into `_ScenarioFrontierRangeAccumulator` → `finish()`).
-- `frontier_auto_range_status` enforces the job's timeout lazily, on poll — there is no
-  dedicated timeout-watcher thread for auto-range jobs, unlike solves (see below).
+- `_run_frontier_auto_range_job` is the one auto-range job. It owns admission, cancellation,
+  completion and a single failure classification. Entered without a context, as the background
+  launcher enters it, it admits exactly as solve setup does —
+  `admit_growth_grant(operation="frontier_auto_range", profile=OPTIMISER_SOLVE,
+  wait_out_holders=ESTIMATE_HOLDERS, wait_seconds=ESTIMATE_WAIT_SECONDS)`, so it waits out a
+  running input estimate inside the background job — and releases the grant on every exit, so a
+  failed job never leaves its memory reservation to garbage collection. An admission refusal is
+  the job's `memory_limited`. In thread mode, or inside the worker, `_frontier_ranges` runs
+  `_run_optimiser_input_stage` (`_execute_pipeline` under the setup seed plan with the solve's
+  demand, then `_resolve_data_input_frame`), checks the schema and projects the quote id, the
+  objective (when present) and the constraints in their source dtypes
+  (`_validate_and_project_auto_range`, returning an `AutoRangeValueCheck`), and passes the
+  projected frame to `_estimate_scenario_frontier_ranges`. Values are checked per batch, not in a
+  whole-frame query: `AutoRangeValueCheck.add` evaluates the solver's value-contract expressions
+  (null quote ids, NaN, infinite and null values, Float32 overflow) on each batch and totals the
+  counts; once a batch fails, later batches are still counted but no longer reduced, and after the
+  last batch `raise_if_invalid` raises the solver's message with whole-frame totals, recorded as
+  setup's refusal. The quote id keeps its dtype (no Categorical round trip); each reduced batch
+  carries it as String and the constraints as Float32 (`_frontier_range_batch_columns`).
+  `_estimate_scenario_frontier_ranges` reads the frame through `bounded_collect_batches` in
+  batches of `current_streaming_chunk_size()` rows (the Pipeline Settings streaming chunk size; a
+  worker inherits it through `POLARS_STREAMING_CHUNK_SIZE`, and optimiser config has no auto-range
+  size key), with `maintain_order=True` so the frame's quote order (the expander emits a quote's
+  scenarios together and captures keep order) reaches `_reduce_frontier_range_batches`, which
+  reduces every batch into `_ScenarioFrontierRangeAccumulator` and calls `finish()`. The
+  completed result is `status`, `ranges` and `method` (`scenario_envelope`); there is no warning
+  or fallback record.
+- **The reducer is exact in Float64.** Only final per-quote extrema are summed; a quote's
+  extrema from several batches are combined (min of mins, max of maxes) first, and nothing is
+  subtracted. Its budget `G_r` is fixed when it starts: `min(512 MiB, headroom // 4)`, where
+  headroom is the smaller of the execution context's `remaining_memory_bytes()` and
+  `native_headroom_bytes()` (the worker call's native cap ceiling minus its current charge;
+  equal grants do not leave equal allowances, since a worker can near its private-byte cap with
+  RSS to spare), and 512 MiB when neither gives a limit; `HAUTE_OPTIMISER_REDUCER_BUDGET_MB`
+  overrides the 512 MiB term.
+  - *Carry path.* Per batch, one group-by gives each quote's Float32 extrema (cast to Float64),
+    first and last row and row count; the batch is contiguous iff `last - first + 1 == n` for
+    every quote. The batch's last quote is held back and combined with the next batch's first
+    quote when their ids are equal; every other quote is finished, its extrema added to running
+    Float64 sums and its `hash(seed=0)` appended to a buffer of at most `G_r / 18` hashes. At the
+    finish the buffer is sorted and any repeat (a quote that reappeared, or a collision) means
+    the sums are discarded.
+  - *Partials.* While the fallback is available every batch also writes its per-quote partial
+    as one lz4 parquet file in a private temporary directory (`_range_parts_directory`),
+    with a 16-bit bucket (`hash // 2**48`), sorted by bucket, in at most 64 row groups of
+    `ceil(n / 64)` rows, because a violation can appear after earlier batches were reduced.
+  - *Fallback.* A non-contiguous batch (`batch_not_contiguous`), a full hash buffer
+    (`hash_buffer_full`) or a repeat at the finish (`quote_reappeared`) turns the carry path off,
+    logged as `auto_range_reducer_fallback` with the reason. The finish then combines the
+    partials by quote value in `P` bucket-range passes (`P` the smallest power of two keeping
+    `N_p * 4 * b_raw` within `G_r / 2`, `N_p` the partial rows written, `b_raw = w_key + 16c +
+    16`, `w_key` the widest view-aware key width seen, `string_view_bytes_per_row`), reading the
+    files one at a time with the bucket filter, merging buffered pieces into the pass state
+    whenever they reach `G_r / 8` and always once more after the last file, then summing the
+    pass state in Float64. Cancellation is checked between batches, passes and files.
+  - *Minimum budget.* `_reducer_min_budget_bytes(c, w_key, R_b)` is the larger of a measured
+    384 MiB and `8 * (64 * (2c + 2) * 440 + 2 * ceil(R_b / 64) * b_raw)`, re-checked with each
+    batch's key width. Below it the fallback is unavailable: no partials are written (any
+    already written are dropped), the carry path still runs, and a violation fails the job as
+    `memory_limited` (`AutoRangeReducerBudgetError`, reason `reducer_budget_below_minimum`,
+    naming the budget, the minimum, the violation and the setting to raise) before any fallback
+    read.
+  - The empty-frame, null-quote-id and non-finite or inverted range errors are unchanged.
+- In process mode the job computes its totals in one hard-capped worker attempt instead
+  (`_frontier_ranges_in_worker`): it opens the seed plan exactly as solve setup opens it
+  (`_open_setup_seed_plan` with the solve's demand, held until the worker exits), runs
+  `frontier_auto_range_worker` through `_run_optimiser_worker` with the job's remaining timeout as
+  the worker's timeout (its expiry publishes the job's `timed_out`), and completes with the
+  returned totals and the worker's metrics adopted as evidence. The
+  `FrontierAutoRangeWorkerRequest` carries the parent-resolved `config`, `mode`,
+  `timeout` and `required_columns_by_node` with the seed-plan handoff; the
+  child runs this same job with `isolate=False` against a private job record and the adopted
+  plan, never re-planning, with its temporary files (the reducer's partial files) in a
+  parent-owned scratch directory removed after the worker exits. Its terminal failure record is
+  replayed through the job's failure mapping (`OptimiserWorkerFailureError`), and a `MemoryError`
+  behind a failure is a 507 as for setup. Progress messages inside the worker are not relayed;
+  the job reports "Estimating frontier range" until its terminal state.
+- `frontier_auto_range_status` enforces the job's timeout lazily, on poll — solve, frontier-sweep,
+  and auto-range timeouts are all enforced lazily on their respective status polls (`solve_status`,
+  `frontier_status`, `frontier_auto_range_status`), with auto-range additionally checking elapsed
+  time within its worker loop. There is no dedicated timeout-watcher thread.
 - `cancel_frontier_auto_range` delegates to `_stop_frontier_auto_range_job`.
 
-### Frontier computation and point selection (`src/haute/routes/optimiser.py`)
+### Frontier computation and point selection (`src/haute/routes/_optimiser_frontier.py`)
 
-`POST /frontier` (`haute.routes.optimiser.run_frontier`) is split into a synchronous validation
-phase and a background sweep phase, mirroring the solve submission pattern:
+`OptimiserFrontierService` owns the frontier domain: sweep admission, cancellation and
+timeout, publication onto the parent solve, point selection, ratebook point materialisation
+and the retained point apply artifacts. Every frontier state change for one parent solve holds
+that parent's lock (`parent_lock(parent_job_id)`), so a slow artifact read, write or deletion
+for one solve never delays frontier work on another; the routes in
+`src/haute/routes/optimiser.py` only assemble responses. `POST /frontier`
+(`run_frontier`, delegating to `start_sweep`) is split into a synchronous validation phase and
+a background sweep phase, mirroring the solve submission pattern:
 
 1. **Synchronous** (still on the request thread, so contract errors surface as 4xx on this
    request): resolves the job's solver/quote-grid
    runtime state (touching heavy objects back into presence if evicted), enforces the compute
    budget (`haute.routes._optimiser_limits.enforce_frontier_compute_budget` — rejects with 422 before
    the solver is invoked if `n_points_per_dim ** n_constraints` would exceed
-   `FRONTIER_COMPUTE_LIMIT`). Under `_frontier_state_lock`, it then checks
-   `_has_running_frontier_job(body.job_id)`, creates the job, and registers its cancellation
+   `FRONTIER_COMPUTE_LIMIT`). Under the parent's lock, it then checks
+   `_has_running_sweep(body.job_id)`, creates the job, and registers its cancellation
    token as one atomic admission step; a sweep already in flight for this solve job is rejected
    with 409.
 2. Creates a `frontier_recompute`-typed job (`status: "running"`, `parent_job_id` set to the solve
    job id, `timeout` derived from the solve job's own config via `_solve_timeout_from_config`) and
-   spawns a daemon thread running `_run_frontier_sweep` inside `solver_worker_context()`.
+   spawns a daemon thread running `_run_sweep` inside `solver_worker_context()`.
    The route returns immediately with `OptimiserFrontierResponse(status="started",
    job_id=<frontier_job_id>)` — a *different* job id from `body.job_id`, since the frontier sweep
    is tracked as its own job. If `thread.start()` itself raises, the route transitions that
    frontier job to terminal `error`, releases its cancellation-registry entry, and returns a
    sanitised 500 response without starting sweep work.
-3. **Background** (`_run_frontier_sweep`): calls
-   `haute.routes._optimiser_service._compute_frontier`, a thin dispatcher: ratebook passes
+3. **Background** (`_run_sweep`): calls
+   `haute.routes._optimiser_solver._compute_frontier`, a thin dispatcher: ratebook passes
    `ratebook_factors`/`factor_columns` kwargs to `solver.frontier(...)`, while online omits them.
-   A cancellation checkpoint runs before and after the external frontier call. The response is
+   The library sweeps serially (its `parallel` flag stays off): its parallel sweep was 39-89%
+   faster on the measured frontiers but raised peak memory by up to forty times, moved 1-D lambdas
+   by up to 9e-4 relative and changed 2-D points' convergence and lambdas, so it was not adopted
+   (`scripts/benchmarks/opt-p06-frontier-parallelism.json`).
+   A cancellation checkpoint runs before and after the external frontier call, so a cancel is
+   observed when the sweep returns. The response is
    capped via `haute.routes._optimiser_limits.limited_frontier_payload` (caps to
-   `FRONTIER_POINT_LIMIT` while always reporting the true total and truncation flag) and the
+   `FRONTIER_POINT_LIMIT` while always reporting the true total and truncation flag, and attaches
+   `point_summaries`, one `frontier_point_summary` per returned point in point order; a point that
+   cannot be summarised fails the frontier). The payload's `constraint_names` is **every**
+   configured constraint and `swept_axes` is the constraints the sweep varied (the ranges'
+   keys); the solve-time frontier, the recompute sweep and frontier select all summarise every
+   configured constraint, never only the swept ones. The
    result stored as both the size-limited `result["frontier"]` and the raw `frontier_data` field
    on the *parent solve job* (via `_store.atomic_update(parent_job_id, ..., expected_status=
    "completed")` — 409-shaped as a `contract_error` on the frontier job if the solve job's state
@@ -269,15 +643,16 @@ phase and a background sweep phase, mirroring the solve submission pattern:
    materialisation uses that value as its recompute fence, so correctness does not depend on a
    job store preserving nested Python object identity.
    Any previously materialised frontier-point apply artifacts are invalidated (their handles
-   removed from `artifact_handles` and their files cleaned up) since a recomputed frontier makes
-   old point indices meaningless. The stop check, parent update, and frontier-job completion
-   transition share `_frontier_state_lock`; therefore cancel/timeout cannot become terminal
+   removed from `artifact_handles` and released through
+   `JobStore.release_detached_artifact_handles`, which deletes each file at once or when the last
+   reader's lease on it ends) since a recomputed frontier makes old point indices meaningless. The stop check, parent update, and frontier-job completion
+   transition share the parent's lock; therefore cancel/timeout cannot become terminal
    between the check and parent mutation. On success the frontier job itself transitions to `completed`
    with the frontier payload as its own `result` field (a full `OptimiserFrontierResponse`, so a
    status poll and the (historical) inline response shape carry the same fields). Every failure
    path — an `HTTPException` raised inside the sweep (classified `contract_error` for 400/409/422,
    `error` otherwise) or a bare `Exception` — transitions the frontier job to a terminal status via
-   `_frontier_lifecycle` (a dedicated `JobLifecycle(_store)` instance) rather
+   the service's own `JobLifecycle` rather
    than propagating; nothing about a post-validation frontier failure is visible to the caller
    except through polling.
 
@@ -298,72 +673,267 @@ running frontier job to `cancelled`. A terminal job is returned unchanged. The w
 
 `POST /frontier/select` (`haute.routes.optimiser.select_frontier_point`) resolves one frontier
 point's totals/constraints/lambdas into a full result summary
-(`_frontier_point_result_dict`) without re-solving; for a ratebook job with
-`include_ratebook_tables` requested, it additionally *materialises* that point by re-running the
-already-built solver against the point's lambdas
-(`haute.routes.optimiser._materialise_ratebook_frontier_point`) —
-cached if the job's current result already matches that point's lambdas exactly, otherwise
-re-solved and the job updated atomically (409 if the job's state changed concurrently).
+(`_frontier_point_result_dict`, which applies `frontier_point_summary` to the base result, so it
+equals the point's entry in `point_summaries`) without re-solving; for a ratebook job with
+`include_ratebook_tables` requested, it additionally *materialises* that point
+(`OptimiserFrontierService.materialise_ratebook_point`) by attaching the factor tables the
+library's frontier kept for it (`frontier_factor_tables[point_index]`) to the point's row
+summary. It never re-solves and needs no solver, grid or factor contexts: price-contour 0.5
+reports every ratebook frontier row's totals as the canonical evaluation of that point's
+tables, so the row's totals, λ, convergence and clamp rate are the point's exactly, and
+`cd_iterations` is the row's `iterations` (the ratebook frontier's CD pass count). (Re-solving
+with the row's λ, as haute did before 0.5, could land on different tables than the row the user
+picked.) The result is cached when the job's current result already matches that point's
+lambdas exactly, otherwise the job is updated atomically (409 if its state changed
+concurrently). Missing or misaligned `frontier_factor_tables` is a `500`, never a re-solve.
+With `include_adjustments` requested it also answers the point's adjustment report (see
+"Adjustment reports (OPT-V10)"); the route runs off the event loop through
+`run_until_disconnected`, so a client that leaves while the point materialises detaches only
+itself.
+
+### Frontier generation
+
+The job's `frontier_generation` is exposed as `frontier_generation` on `OptimiserSolveResult`
+(the solve status `result`), on `OptimiserFrontierSelectResponse`, and on every computed
+`OptimiserFrontierResponse` (the solve-time frontier, the solve status `frontier`, and a recompute
+sweep's own `result`). It is `0` for a solve and its solve-time frontier and the parent's
+incremented value for a recompute, set on the recompute's frontier payload and its reset result
+under the parent's lock in the same update that increments the job field. Only the
+`status="started"` handle returned by `POST /frontier` has none (`null`); a computed frontier
+without one fails validation. Clients key anything derived from a frontier point (the
+browser's `/apply` cache) by `(job_id, frontier_generation)`, since a recompute reuses point
+indices for different points.
+
+### Typed frontier points (`OptimiserFrontierPoint`)
+
+A frontier's `points` are typed rows, never open objects. `frontier_point_rows(points_df,
+mode=, constraint_names=)` in `_frontier_point_summary.py` converts price-contour's points frame
+once, when the frontier payload is built (`limited_frontier_payload`, which takes the job's
+`mode`): the frame's columns must be exactly `price_contour.frontier_points_schema(mode,
+constraint_names)` (any missing or unexpected column fails the frontier, naming both lists), and
+each row becomes one point in which the per-constraint columns are maps keyed by constraint
+name, in configured order (`thresholds` from `threshold_<c>`, `bounds` from `bound_<c>`, `totals`
+from `total_<c>`, `lambdas` from `lambda_<c>`) and every other column keeps its library name.
+The point carries its `mode`, so the two shapes are distinct models (a plain union, no
+discriminator keyword):
+
+- `OptimiserOnlineFrontierPoint` (`mode: "online"`): `total_objective`, the four maps,
+  `iterations`, `converged`, `solver_path` (`"bisection" | "subgradient"`),
+  `non_convergence_reason` (`"above_envelope" | "bracket_exhausted" |
+  "iteration_budget_exhausted" | null`; null on a converged point) and the eleven `sv_*`
+  statistics (`sv_mean`, `sv_std`, `sv_min`, `sv_p5`, `sv_p25`, `sv_median`, `sv_p75`, `sv_p95`,
+  `sv_max`, `sv_pct_increase`, `sv_pct_decrease`), all required.
+- `OptimiserRatebookFrontierPoint` (`mode: "ratebook"`): `total_objective`, the four maps,
+  `iterations` (the CD pass count), `converged`, `clamp_rate`, `n_quotes_clamped_low` and
+  `n_quotes_clamped_high`, and no `sv_*`.
+
+Both are strict (`extra="forbid"`, no coercion, no NaN or Infinity), and the four maps must hold
+the same constraint names. Each row is validated with its mode's model as it is converted, so a
+malformed library row fails the frontier (`FrontierPointDataError`, a 500) rather than reaching a
+client. `OptimiserFrontierResponse` then enforces **map-key completeness** against its
+`constraint_names`: every point's four maps and every point summary's `constraints`,
+`effective_bounds` and `lambdas` hold exactly those names; `swept_axes` is a subset of them;
+every point has the same mode; and a computed frontier has one summary per point. The stored
+`frontier_data["points"]` are these typed rows, so select, the effective-constraints override
+(`thresholds[name]`) and the MLflow CSV read them by name, never by parsing column prefixes.
+The MLflow `frontier.csv` writes each point back as price-contour's flat row, in
+`frontier_points_schema` column order (`frontier_point_library_row`), so the logged file is the
+library's points table.
+
+### Frontier point summaries
+
+A frontier point's summary holds every result field that differs from the solve it was swept
+from, read from the typed point: total objective, constraint totals for every configured
+constraint, swept or not (`totals`), `effective_bounds` (see Constraint bounds below, from the
+point's `bounds`), `lambdas`, converged, iterations, CD iterations (`null` on the row summary),
+clamp rate (a ratebook point's; `null` online), history, CD trace (`ratebook_cd_trace`, always
+`null`), the adjustment report (`adjustments`, always `null`: a point's report is loaded on
+request through `POST /frontier/select` with `include_adjustments`, see "Adjustment reports
+(OPT-V10)"), factor tables, the non-converged
+warning, the frontier error and `diagnostics_errors` (always `[]`: a point's figures come from
+its row, so the solve's degraded diagnostics do not describe it). Every field is always present
+and `null` where the point has none; applying the summary to a base result removes a `null`
+field. `OptimiserFrontierPointSummary` is strict and its `constraints`, `effective_bounds` and
+`lambdas` must hold the same names. Select summarises the stored
+`frontier_data["constraint_names"]`, which must equal the job's configured constraints (a 500
+otherwise), so a selected ratebook point already carries every configured total when it is
+materialised.
+
+### Constraint bounds (`effective_bounds`)
+
+Every solve result, frontier point summary and select response carries
+`effective_bounds: {name: {"kind": "min" | "max", "bound": float}}` for every configured
+constraint, in configured order: the absolute bound that result was solved at. `kind` comes
+from the configured threshold key (`min`/`min_pct` → `min`, `max`/`max_pct` → `max`;
+`constraint_kinds` in `_frontier_point_summary.py`). `bound` is read from price-contour and
+never derived by haute: a solve result's `constraint_bounds[name]` (`OnlineResult` and
+`RatebookResult` alike) and a frontier row's `bound_<name>`. For a pct constraint the frontier
+`threshold_<name>` is a fraction, and the library's bound is that fraction times the
+constraint's baseline total at the grid's nearest-1.0 step; haute never multiplies a fraction
+by a baseline itself. A missing or non-finite bound, or a bound set that differs from the
+configured constraints, fails loudly. The solve result, point summary and select response
+each validate that `constraints`, `lambdas` and `effective_bounds` (and, on a solve result or
+select response, `baseline_constraints`) hold exactly the same constraint names. `effective_constraints` (the published artifact's
+constraint specs) still comes from `_frontier_point_constraints_override`. The results pane
+judges attainment only against `effective_bounds` (see the
+[frontend spec](../frontend-modelling-optimiser-ui/high-level.md)).
 
 ### Apply preview (`POST /apply`, `haute.routes.optimiser.apply_lambdas`)
 
-Rejects ratebook jobs outright (`_reject_ratebook_apply_detail` — checked before any
-heavy-state lookup, since a ratebook `RatebookResult` has no per-quote dataframe). For online
-jobs, resolves either a specific frontier point (materialising its apply dataframe via
-`_materialise_frontier_point_apply` — persisted once per point index and reused via
-handle lookup thereafter) or the base solve result — from the still-live in-memory
-`solve_result.dataframe` if present, or from the persisted apply-result artifact otherwise. The
-response is capped via `haute.routes._optimiser_limits.limited_apply_preview_payload` (first
-`APPLY_PREVIEW_ROW_LIMIT` rows plus explicit `row_count`/`preview_truncated` metadata).
-Handle insertion re-reads and merges the latest mapping while holding `_frontier_state_lock`.
-Materialisation captures `frontier_generation` before external solver/artifact work and compares
-the integer again before publishing, returning 409 only when a recompute actually advanced it;
-copying or serialising the unchanged `frontier_data` payload does not invalidate the request.
-At most eight `frontier_apply_result:*` handles are retained; the oldest excess handle is
-removed from the job before its owned parquet is deleted.
+Serves both modes: one bounded, sorted and filtered page of the target's chosen scenarios (the
+Quotes explorer, OPT-V12; see "Quotes explorer (OPT-V12)" below for the request, the reducer and
+the response). `point_index` names the target explicitly: a number resolves that frontier point
+and `null` resolves the anchor solve — never the server-side `selected_frontier_point`. A
+ratebook page holds rows of the per-quote frame price-contour evaluated (`quote_results`; see
+"Ratebook per-quote choices (OPT-V09C)"). The route is asynchronous and runs its blocking work
+through `run_until_disconnected`, so a client that leaves stops waiting (see "Bounded choice
+queries and point materialisation").
+
+- *Anchor.* Always the persisted as-solved apply artifact (`artifact_handles["apply_result"]`,
+  held for the job's 24-hour life), read by `ChoiceQueryService.choice_query` inside its lease;
+  a job without the handle is the 400 "Job has no apply artifact handle. Re-run the solve to
+  regenerate it." and a handle whose file is gone the stable 410. The in-memory
+  `solve_result.dataframe` is never read. `from_artifact` is `true`. Totals come from the anchor
+  summary (`base_result`, else `result`).
+- *Frontier point.* `OptimiserFrontierService.request_point_apply` answers at once from the
+  point's retained `frontier_apply_result:<i>` artifact (`from_artifact: true`), or queues its
+  materialisation on the job's `LatestWinsQueue` and the request waits for it (`from_artifact:
+  false`). Then `select_applied_point` records the point as selected (`base_result`,
+  `selected_frontier_point`, `result`) under the parent's lock, refusing with 409 if
+  `frontier_generation` moved since the request captured it, and the page is a `choice_query`
+  over `ChoiceTarget(point_index)`, after which the job must still be at the captured
+  generation (else the frontier-changed 409), so a page never pairs one generation's rows with
+  another's totals. For a ratebook point the recorded result is the materialised one
+  (`materialise_ratebook_point`: the row summary with the point's factor tables), as `POST
+  /frontier/select` with `include_ratebook_tables` records it, so the job's result never shows a
+  point's totals beside the solve's tables.
+
+After answering, a frontier-point request slims only `solve_result`
+(`_clear_result_data_after_user_action`), so `solver` and `quote_grid` stay available for other
+points; an anchor request on a job without frontier points clears all heavy state. Handle
+insertion re-reads and merges the latest mapping while holding the parent's lock.
+Materialisation captures `frontier_generation` before external solver/artifact work and
+compares the integer again before publishing, returning 409 only when a recompute actually
+advanced it; copying or serialising the unchanged `frontier_data` payload does not invalidate the
+request. At most eight `frontier_apply_result:*` handles are retained; the oldest excess handle is
+removed from the job and then released through `JobStore.release_detached_artifact_handles`, so
+its parquet is deleted at once, or when the last reader holding a lease on it finishes.
 
 ### Save and MLflow log (`src/haute/routes/optimiser.py`)
 
-Both `save_result` and `mlflow_log` resolve the applicable `SolveResultLike`
-(from a selected frontier point via `_solve_result_for_selected_frontier_point`, or directly from
-the job's retained `solve_result`), build a shared JSON payload via `_build_artifact_payload`
+Both `save_result` and `mlflow_log` take an explicit target: `point_index: null` is the anchor
+solve and a number is that frontier point; the server-side `selected_frontier_point` is never a
+fallback. Neither route reads, touches or clears heavy job state for the anchor, and neither
+clears any heavy state afterwards. The anchor resolves to
+`_summary_solve_result(_base_result_for_frontier(job))` — the lightweight completion summary,
+which carries lambdas, totals, baselines, `converged`, `iterations` (online), `cd_iterations`,
+`clamp_rate`, `factor_tables`, `factor_dtypes` and `combined_factor_bounds` (ratebook) — and its
+MLflow metrics, params and
+artifacts come from the job's `publish_summary` (a `400` telling the user to re-run the solve
+when it is missing). A frontier point resolves through
+`OptimiserFrontierService.solve_result_for_selected_point`: online points from their stored
+summaries, ratebook points from the cached materialised result or, when not cached, by
+materialising from the job's `frontier_factor_tables` (no runtime state needed). The routes build a shared JSON payload via `_build_artifact_payload`
 (lambdas, objective/constraint totals, baseline totals, convergence/iteration counts,
-column-name config, frontier-selection provenance, and for ratebook the factor tables plus ordered
-dtype descriptors), validate it with `_validate_artifact_payload` (rejects a missing lambda
-mapping, a missing total objective, missing or malformed ratebook factor-table/dtype metadata, or
-*any* non-finite float anywhere in the payload, naming up to 5 offending JSON paths), then either
+column-name config, frontier-selection provenance for a point target only, and for ratebook the
+factor tables plus ordered dtype descriptors taken from the target's own result, `clamp_rate`,
+and the solve's `combined_factor_bounds` — a frontier point shares its solve's grid and so its
+collar), plus the audit
+trail: `solver_settings` (the result's `input_summary.solver_settings`, built from the solve-time
+config snapshot with the solver defaults applied:
+`max_iter` and `tolerance`, plus `max_cd_iterations` and
+`cd_tolerance` for ratebook; `frontier_steps` and `frontier_ranges` when the
+solve swept a constraint), `effective_constraints` (a point's constraint specs with that point's
+thresholds via `_frontier_point_constraints_override`; the configured constraints for the
+anchor), `input_summary` (`n_quotes`/`n_steps` from the result plus the provenance fields of the
+result's own `input_summary`), and `stale_at_publish` (the request's `stale` flag, which the UI sets when
+the node configuration changed since the solve). The existing `constraints` key stays the
+configured constraints, because `OPTIMISER_APPLY` reads it. The payload is validated with
+`_validate_artifact_payload` (rejects a missing lambda
+mapping, a missing total objective, missing or malformed ratebook factor-table/dtype metadata, a
+ratebook `clamp_rate` that is not a finite number, ratebook `combined_factor_bounds` that are not
+exactly `{"min", "max"}` finite numbers with `min <= max` (there is no legacy reader: a ratebook
+artifact without them is invalid), or *any* non-finite float anywhere in the payload, naming up
+to 5 offending JSON paths), then either
 atomically write it to disk
 (`atomic_write_text`, with `allow_nan=False` as a defence-in-depth backstop behind the explicit
 validation) or attach it as an MLflow run artifact alongside metrics/params and (if present) a
-frontier-points CSV. Tracking-URI/registry setup and experiment-name resolution for `mlflow_log`
-go through the same shared `configure_mlflow_tracking()` / `resolve_experiment_name()` /
-`build_run_url()` helpers in `haute.modelling._mlflow_log` that `routes/modelling.py` uses
+frontier-points CSV (`frontier.csv`, the typed points written back as price-contour's flat rows,
+see Typed frontier points). Save resolves `output_path` with `contained_path(_get_project_root(), ...)`
+— a relative path against the project root, the base `/pipeline/read-json` uses, and an absolute
+path only inside it. `OptimiserSaveRequest.overwrite` (default `false`) guards an existing
+destination: under a per-destination lock, an existing file without `overwrite` is a `409` with
+the structured detail `{"error_code": "optimiser_result_exists", "message": ...}` and nothing is
+written. `OptimiserSaveResponse` carries `path` (absolute), `apply_path` (the written file
+relative to the project root with POSIX separators — the value an `OPTIMISER_APPLY` node's
+`artifact_path` takes) and `message`. The MLflow run additionally logs every
+`solver_settings` entry as a `solver_settings.<name>` param and sets the tags
+`stale_at_publish` (`"true"`/`"false"`) and, for a frontier point, one
+`effective_constraint.<name>.<threshold key>` tag per constraint threshold. `mlflow_log` logs through an `MlflowClient` bound to the destination
+`resolve_tracking_backend(destination)` resolves (registry from `registry_uri_for_tracking`),
+selects the experiment with `ensure_experiment`, creates the run with `client.create_run`,
+logs parameters, metrics, tags and artifacts through the client, and terminates the run
+as `FINISHED` or, in a `finally`, `FAILED`. It logs no model, so it never enters
+`mlflow_fluent_operation()`, never waits for another log, and never writes the tracking URI
+into the environment. Experiment-name resolution and the run URL use the same shared
+`resolve_experiment_name()` / `build_run_url(..., tracking_uri=...)` helpers in
+`haute.modelling._mlflow_log` that `routes/modelling.py` uses
 (see [modelling low-level](../modelling/low-level.md#shared-mlflow-trackingexperiment-name-resolution))
 without calling `log_experiment()` itself, since the optimiser's artifact shape (solver params, frontier CSV,
 `optimiser_result.json`) doesn't fit `log_experiment()`'s model-diagnostics-shaped signature.
+`OptimiserMlflowLogRequest.destination` (`""|"databricks"|"server"|"local"`, default `""` =
+the local folder) is authoritative for where the run goes: the job's training-time `mlflow_destination`
+snapshot is never consulted, an unknown value is a `422` before any work, and an unconfigured
+destination fails with `400` carrying the prerequisite-naming `MlflowConfigError` detail and
+writes nothing; the experiment-name default follows the resolved backend. `experiment_name` is
+equally authoritative — the frontend sends the node's current `mlflow_experiment`, and a blank
+value uses the backend default rather than the job's solve-time snapshot. Failures share the
+modelling log route's outcomes (`routes/_mlflow_log_errors.py`): a missing MLflow package is the
+shared `503` checked before any work, a classified remote failure is a `502` with an
+`mlflow_<category>` code and write-specific message, anything unclassified is the generic `500`,
+and only the category and error type are logged. The OPTIMISER node
+config gains the optional `result_export_path` string — the Export pane's save path,
+relative to the project root exactly as `/save` resolves it, with no default — declared on
+the `OptimiserConfig` TypedDict and `OPTIMISER_CONFIG_KEYS` so it round-trips through save,
+parse and codegen, and classified as node config for the execution cache like its MLflow
+siblings; the solve never reads it, so it is not part of the solve's identity. The OPTIMISER node
+config also gains the optional `mlflow_destination` field (absent = the local folder; `databricks`
+or `server` when chosen), declared on the
+`OptimiserConfig` TypedDict and `OPTIMISER_CONFIG_KEYS`, classified as node config for the
+execution cache, and rejected by `validate_node_config` for unknown values; solving never logs
+automatically.
 
-### Artifact lifecycle (persist / validate / load / cleanup)
+### Artifact lifecycle (persist / validate / load / cleanup) (`src/haute/routes/_optimiser_artifacts.py`)
 
-Two artifact families, both rooted under the versioned marker-aware OS-temp hierarchy
+Three artifact families, all rooted under the versioned marker-aware OS-temp hierarchy
 (`<tempdir>/haute/artifacts/v1/optimiser_apply`,
-`<tempdir>/haute/artifacts/v1/optimiser_ratebook_factors`):
+`<tempdir>/haute/artifacts/v1/optimiser_ratebook_factors`,
+`<tempdir>/haute/artifacts/v1/optimiser_quote_analysis`; the third is described in
+"Analysis-column side table and scenario grid"):
 
-- **Persist** (`_persist_apply_result_artifact`, `_persist_ratebook_factors_artifact`,
-  `_persist_ratebook_factors_lazy_artifact` — the lazy variant sinks a
-  `LazyFrame` via `bounded_sink` without ever collecting it into memory): each writes into a
-  freshly created direct child under the artifact root and writes a versioned family-specific
-  ownership marker before writing payload data. For the apply-result case it explicitly nulls the
-  source object's `.dataframe` attribute afterward (logging at debug level if the attribute
-  cannot be cleared) so the heavy dataframe is not held twice, once on disk and once in the job
-  store's retained `solve_result`.
+- **Persist** (`_persist_apply_frame_artifact`, `_persist_apply_result_artifact`,
+  `_persist_ratebook_factors_artifact`, `_persist_ratebook_factors_lazy_artifact` — the lazy
+  variant sinks a `LazyFrame` via `bounded_sink` without ever collecting it into memory): each
+  writes into a freshly created direct child under the artifact root and writes a versioned
+  family-specific ownership marker before writing payload data. `_persist_apply_frame_artifact`
+  writes one per-quote apply frame (a Polars `DataFrame`, anything else a `TypeError`): the online
+  result's `dataframe`, a ratebook result's `quote_results`, or a frontier point's frame.
+  `_persist_apply_result_artifact` is its online wrapper and explicitly nulls the source object's
+  `.dataframe` attribute afterward (logging at debug level if the attribute cannot be cleared) so
+  the heavy dataframe is not held twice, once on disk and once in the job store's retained
+  `solve_result`. price-contour caches a ratebook result's `quote_results` on the result itself,
+  so that frame stays resident with the heavy `solve_result` until heavy-state slimming drops
+  it.
 - **Validate** (`_validate_server_owned_parquet_handle`): re-derives the expected
   directory/path from the handle's own fields and checks they resolve (with a TOCTOU-aware
   strict-resolution-only-if-exists rule, so validating a handle whose artifact was already
   deleted does not itself crash) to a direct child of the artifact root with the expected name
   prefix and filename — every load and cleanup call goes through this check first.
-- **Load** (`_load_apply_result_artifact`, `_load_ratebook_factors_artifact`,
-  `_scan_ratebook_factors_artifact`): eager or lazy re-reads of the persisted
-  parquet. A valid handle whose file is absent is a 410 lifecycle outcome with
+- **Load** (`_scan_apply_result_artifact`, `_load_ratebook_factors_artifact`,
+  `_scan_ratebook_factors_artifact`): lazy (apply result, read only inside a lease and only
+  through bounded plans) or eager (ratebook factors) re-reads of the persisted parquet. The apply
+  scan reads the parquet footer at once, so a corrupt file is the 500 below, not a later
+  collection failure. A valid handle whose file is absent is a 410 lifecycle outcome with
   a stable "no longer available; re-run the solve" detail. Invalid
   server-owned handles and present-but-unreadable parquet remain sanitized 500
   outcomes with distinct stable invalid/corrupt details. Validation and
@@ -373,7 +943,7 @@ Two artifact families, both rooted under the versioned marker-aware OS-temp hier
   [the OPT-D01 decision record](error-detail-policy.md).
 - **Cleanup**: `_cleanup_apply_result_artifact`/`_cleanup_ratebook_factors_artifact` are
   registered with the job store's own artifact-cleaner registry
-  (`register_artifact_cleaner` in `src/haute/routes/_optimiser_service.py`) so a job's TTL/eviction sweep
+  (`register_artifact_cleaner` in `src/haute/routes/_optimiser_artifacts.py`) so a job's TTL/eviction sweep
   in [background-jobs](../background-jobs/high-level.md) can garbage-collect artifacts still
   attached to a job. This component separately handles the **orphan** case — an artifact created
   during a request but never successfully attached to a job, e.g. because a concurrent
@@ -386,7 +956,7 @@ Two artifact families, both rooted under the versioned marker-aware OS-temp hier
 - **Restart cleanup**: the server lifespan reads the strict non-negative
   `HAUTE_ARTIFACT_STALE_SECONDS` interval (default 86,400 seconds) after loading the project
   environment, then passes it to `reap_stale_optimiser_artifacts`. The reaper checks only valid
-  stale markers from the two dedicated roots and logs bounded
+  stale markers from the three dedicated roots and logs bounded
   inspected/removed/failed/reclaimed-byte counts. One tracked worker-thread reap is scheduled
   without delaying readiness; shutdown observes the task.
 
@@ -423,15 +993,66 @@ exact descriptor against its once-resolved apply schema, and raises
 It does not coerce an apply column to the saved dtype and does not run legacy artifacts through
 the neutral-miss path.
 
+### Runtime online apply (`_apply_online` in `src/haute/_builders.py`)
+
+`_apply_online` applies an online artifact through `price_contour.ApplyOptimiser` on the frame
+`_prepare_online_apply_frame` materialises (null quote ids dropped, apply dtypes cast). The
+apply emits one row per quote in ascending order of the `Utf8` quote id, with the literal id
+column `quote_id` whatever the artifact names its input quote-id column. How the result is
+exposed depends on the artifact's constraints (`has_ratio_constraint`):
+
+- A `pl.DataFrame` input is applied eagerly.
+- A ratio constraint linearises against the whole apply-time frame, so the apply always reads
+  every input row and returns its eager result.
+- Otherwise each quote is chosen independently, so the result is a
+  `key_prefix_python_scan` (execution engine) keyed by the quote-id column with the schema
+  `online_apply_output_schema` derives from the artifact: `quote_id` (`Utf8`), `optimal_step`
+  (`Int32`), the optimised value column or its configured rename (`Float32`),
+  `optimal_objective` (`Float32`), `optimal_<constraint>` (`Float32`) per sorted constraint,
+  and the version column when configured. The first three name the chosen scenario row: its
+  quote id, scenario index, and scenario value cast to those dtypes
+  (`online_apply_chosen_row_columns`), which trace correlation reads to find that row in the
+  apply's input (see [tracing](../tracing/low-level.md)). A limit Polars pushes to the scan reads only the
+  quote-id column to choose the first quotes in that order — which elides upstream row-local
+  scoring for that read — and applies to the input filtered to those quotes, so upstream
+  scoring runs only for their scenario rows. Without a limit the apply reads every row.
+
+### Runtime ratebook apply (`_apply_ratebook` in `src/haute/_builders.py`)
+
+`_apply_ratebook` is the one ratebook apply: the executor, generated code (`_node_apply.py`) and
+the deploy scorer all reach it through `_dispatch_apply`. It first parses the artifact's
+`combined_factor_bounds` with `parse_combined_factor_bounds` (`src/haute/_ratebook_collar.py`),
+raising `CombinedFactorBoundsError` (a `ValueError`) when they are missing or malformed. Then,
+per factor table, it validates the dtype contract, joins the rates into
+`{table}_optimised_factor` and fills an unseen level with the neutral `1.0` (after the miss is
+counted and logged). The per-factor columns are never clamped. Their product becomes
+`optimised_factor`, which is then clipped to `[min, max]`: the order is neutral fill → product →
+collar. A product inside the collar, or exactly on an edge, is unchanged bit for bit; a product
+past an edge deploys at that edge, which is the grid-end step the solver evaluated for it. This
+is the ratebook collar decision (Q17, 25 September 2026): the deployed factor never leaves the
+range the solve scored. Inside the range the deployed factor is the
+unsnapped product; the solver evaluated the nearest grid step, so the two agree exactly only on
+grid values.
+
 ### Trace explainability (`src/haute/_optimiser_apply_explainability.py`)
 
 `explain_optimiser_apply_from_config(config, input_row, output_row, *, input_frames,
 source_names)` is the sole public entry point:
 
 1. Loads the artifact the `OPTIMISER_APPLY` node was configured with (`_load_artifact_from_config`
-   — file or MLflow, delegating to `_optimiser_io.py`), reading `mode` from it (defaulting to
+   — file or MLflow, delegating to `_optimiser_io.py` with the node's `mlflow_destination`, absent
+   = the local folder, exactly as the runtime apply in `_node_apply.py` and the deploy scorer's request-time
+   loader do), reading `mode` from it (defaulting to
    `"online"` if absent, but rejecting an explicitly present-but-blank `mode` as a
-   misconfiguration).
+   misconfiguration). A registered source may name an `alias` instead of a `version`
+   (see [mlflow-model-registry](../mlflow-model-registry/low-level.md#registered-model-aliases)).
+   The OPTIMISER_APPLY node config's optional `mlflow_destination`
+   (MLflow source types only) is declared on the `OptimiserApplyConfig` TypedDict and
+   `OPTIMISER_APPLY_CONFIG_KEYS` (round-tripping through save, parse, and the codegen sidecar),
+   classified as an artifact input for the execution cache, and rejected by `validate_node_config`
+   for unknown values. An explicit destination must be configured in the environment that loads
+   the artifact, including deployed scoring and explanations; it never falls back to another
+   backend.
 2. Selects the correct parent lazy frame from `input_frames` (`_select_optimiser_apply_input`,
    shared with the runtime executor in `haute._builders`, so the trace path resolves the same
    input the real apply ran against). A ratebook artifact requires a non-empty
@@ -440,11 +1061,21 @@ source_names)` is the sole public entry point:
    primary frame and ignore `ratebook_input`.
 3. Dispatches to `_explain_online` or `_explain_ratebook`.
 
+Both detail payloads carry the artifact's `constraints` (the configured specs) and, when the
+artifact records them as a mapping, its `effective_constraints` (the thresholds in force for the
+published target, e.g. a frontier point's); an artifact without them omits the key.
+
 RAM cardinality estimation follows the same selector identity when `optimiser_mode` is known to
 be `ratebook`: `ratebook_input` must be present and match one exact executable incoming-edge name.
 It never estimates a missing or stale selector by choosing the first connected frame.
 
-`_explain_online` builds the online apply input frame
+Trace enrichment passes an online apply's inputs from the trace's uncapped lineage plans and a
+ratebook-mode apply's inputs from the frames that produced the clicked row (see
+[tracing](../tracing/low-level.md)). `_explain_online` resolves the clicked quote id from the
+output row's artifact quote-id column when present, else from the literal `quote_id` the apply
+emits; filters the parent frame to that quote unless the artifact has a ratio constraint (whose
+linearisation baseline is the whole input); raises `OptimiserApplyTraceError` when no input row
+remains; builds the online apply input frame
 (`_prepare_online_apply_frame`), constructs a `price_contour.ApplyOptimiser` with the artifact's
 lambdas/constraints/column names, and calls `applier.with_explainer_columns(df)` — the
 `price-contour` API documented in full in
@@ -505,40 +1136,69 @@ whether the table is a composite (joins on multiple columns, split via
 `_split_ratebook_level`) or single-column table, looks up the matching entry via
 `_match_ratebook_entry` (keys normalised through the same dtype descriptor and
 `normalise_rating_key` used at runtime; ties resolved by walking entries in *reverse* to mirror the engine's
-`unique(keep="last")` deduplication), applies the multiplicative neutral element `1.0` and marks
+`unique(keep="last")` deduplication; each ladder entry names the input columns the table
+joined on as `input_columns`), applies the multiplicative neutral element `1.0` and marks
 the factor `unseen` if no entry matches (the engine's own loud-neutral miss-path behaviour, not
-an error), and accumulates a running product. The ladder is reconciled against the actual output
-column at the end; a mismatch raises `OptimiserApplyTraceError`. An artifact with no usable
+an error), and accumulates a running product. After the ladder it applies the artifact's
+`combined_factor_bounds` exactly as `_apply_ratebook` does and reports it as `collar`
+(`min`, `max`, `before` — the running product — `after` — the clamped value — and `applied`,
+true when the product lay outside the bounds). The clamped value is reconciled against the
+actual output column; a mismatch, or missing or malformed bounds, raises
+`OptimiserApplyTraceError`. An artifact with no usable
 factor-table entries also raises because an empty ladder has no value that can be reconciled.
 
 Every raised exception anywhere in this call graph is caught by
-`explain_optimiser_apply_from_config`'s outer `try`/`except` and converted to `_error_detail(...)`
-— an `ImportError` is specifically rewritten into an actionable
-"install the missing library" message (falling back to a generic phrasing if the import
-machinery didn't populate `exc.name`), everything else is logged with `exc_info=True` and
-returned as a generic `status: "error"` payload.
+`explain_optimiser_apply_from_config`'s outer `try`/`except`, logged with `exc_info=True` and
+converted to `_error_detail(...)`, a `status: "error"` payload carrying the exception type and
+message. An unusable `price-contour` install surfaces as the guard's own
+`PriceContourCompatibilityError` (see [The price-contour guard](#the-price-contour-guard)),
+whose message already names every problem and the remedy.
 
 ## Edge cases and invariants
 
+- **Preamble dependencies are pinned per operation.** `_execute_pipeline`, which estimate,
+  solve setup and auto-range each call once, resolves `preamble_execution_fingerprint` once
+  (unless its caller passes one) and passes it to the `_compile_preamble` call of that
+  execution; a later job resolves a fresh fingerprint and computes with edited helpers. See
+  the execution-engine `_compile_preamble` contract.
 - **One blocking solve process-wide, plus graph/node setup single-flight.**
   `_check_no_concurrent_jobs` scans the shared optimiser store and blocks a second solve for any
   graph/node. `estimate`, `frontier_auto_range`, and `frontier_recompute` are explicitly excluded
-  (`_NON_BLOCKING_RUNNING_JOB_TYPES`), so they do not reserve that global solve slot. Independently,
+  (`_NON_BLOCKING_RUNNING_JOB_TYPES`), so they do not reserve that global solve slot, and none of them
+  waits on a running solve: no optimiser path holds a lock across its work to apply the streaming
+  chunk size. Independently,
   the graph/node coordinator prevents a solve setup and a background auto-range setup from
   overlapping on the same graph/node; synchronous estimate does not use that coordinator.
 - **`_ESTIMATE_JOB_TYPE` is assigned by `/estimate`, not by frontier auto-range.**
   `haute.routes.optimiser._optimiser_input_metrics` (backing `POST /api/optimiser/estimate`)
-  creates a short-lived job tagged `job_type = _ESTIMATE_JOB_TYPE` and
-  unconditionally removes it in a `finally: _remove_estimate_job(job_id)` block. This tag is what
-  lets `_NON_BLOCKING_RUNNING_JOB_TYPES` exempt an
-  in-flight `/estimate` call from `_check_no_concurrent_jobs`'s store-wide scan.
-- **std of a single-quote scenario-value distribution is hardcoded to `0.0`.**
-  `_compute_scenario_value_stats` special-cases `n == 1` rather than calling Polars' sample
-  standard deviation (`ddof=1`), which is undefined (`null`) for a single observation and would
-  otherwise crash the subsequent numeric cast; `0.0` is treated as the true population value for
-  a singleton, not a fabricated fallback.
+  validates the config, owns an admitted `OPTIMISER_SETUP` context for the whole count and
+  releases it on every exit. `OptimiserSolveService.estimate_input` does the count: it creates a
+  short-lived job tagged `job_type = _ESTIMATE_JOB_TYPE`, executes the pipeline to the data
+  input, runs `estimate_input_metrics` (one streaming aggregation scan with the null-`quote_id`
+  check folded in) and removes the job in a `finally`. In process mode the count runs on the
+  warm interactive worker pool (`optimiser_estimate_worker`, the pipeline's lineage affinity
+  key, the admission's native and RSS caps, and the pipeline settings' pipeline time
+  limit): the job lives in the worker's private `optimiser_worker` store, and the worker
+  returns the counts or a `(status, detail)` answer (`OptimiserEstimateOutcome`). The route
+  answers a pool memory kill with the typed 507, a timeout with 504, and a crash or unexpected
+  worker error as preview does. In `thread` mode the service counts in-process. An admission,
+  sampled-memory, bounded-streaming or contract failure has its typed answer
+  (`estimate_failure_http_exception`: 507 with optimiser-estimate wording, 422, or the public
+  contract answer), never a generic 500. The job tag is what lets
+  `_NON_BLOCKING_RUNNING_JOB_TYPES` exempt an in-flight in-process `/estimate` call from
+  `_check_no_concurrent_jobs`'s store-wide scan.
+- **`/estimate`'s `total_rows` is null only when the source size is unknown.**
+  `_detailed_ancestor_source_metadata` answers an unknown size itself, with no row count:
+  live data without Parquet backing, or a source whose metadata read raises `OSError`,
+  `TypeError` or `ValueError`. The route does not catch anything else it raises. An
+  unexpected failure is an error response, never an estimate with the total missing.
+- **The adjustment report never silently disappears.** Building an online solve's report
+  raises on a missing choice column, a step outside the grid or no quotes;
+  `_finalize_solve_result` records that (or any other failure) as an `"adjustments"` entry in
+  `diagnostics_errors` and leaves `adjustments` `null`, so a degraded result says why. A refused
+  weighting is named in the report's own `diagnostics_errors`, never dropped silently.
 - **Non-finite value validation happens post-cast, at Float32 precision.** The solver consumes
-  Float32; `_validate_input_value_contracts` checks for NaN/Inf *after* the Float32 cast
+  Float32; `validate_input_value_contracts` checks for NaN/Inf *after* the Float32 cast
   specifically so a Float64 value that only overflows to ±Infinity once down-cast is still caught
   as a contract violation, not silently passed through.
 - **Null-value validation spans every dtype; non-finite validation is float-only.**
@@ -550,25 +1210,24 @@ returned as a generic `status: "error"` payload.
   different dtype gates and are reported as two independently-named detail messages
   (`_NON_FINITE_DETAIL_PREFIX` vs. `_NULL_VALUE_DETAIL_PREFIX`) if both fire.
 - **Frontier sweep concurrency is scoped to the parent solve job, not the graph/node coordination
-  key.** `_has_running_frontier_job` scans for a running `frontier_recompute` job whose
-  `parent_job_id` matches while `_frontier_state_lock` makes the scan and job creation atomic.
+  key.** `_has_running_sweep` scans for a running `frontier_recompute` job whose
+  `parent_job_id` matches while the parent's lock makes the scan and job creation atomic.
   This mechanism is independent of `_graph_node_setup_singleflight` (which keys by graph+node and gates solve/background-auto-range
   submission). `_FRONTIER_RECOMPUTE_JOB_TYPE` is also listed in `_NON_BLOCKING_RUNNING_JOB_TYPES`
   precisely because it never reserved a solve slot when frontier computation ran inline, and the
   background offload preserves that semantics — an in-flight frontier sweep never blocks a new
   solve/estimate/auto-range submission for the same graph/node.
-- **Streaming auto-range only engages for provably row-local pipeline chains.**
-  `_looks_chunk_local_user_code` uses an AST allow-list to decide whether user code between the
-  data-input node and the scenario expander is safe to run per-chunk; anything not provably
-  row-local (global state, ordering-sensitive logic, arbitrary custom code) silently falls back
-  to the full non-streaming estimate path rather than raising — this is a memory/latency
-  trade-off, not a correctness gate.
+- **Auto-range and solve setup cannot drift.** Both call `_run_optimiser_input_stage` with the
+  demand `_optimiser_solve_required_columns_by_node` resolves and build their seed plan through
+  the one `_setup_seed_plan_request`, whose target comes from `_setup_execution_scope`; a data
+  source feeding the Optimiser through parallel edges targets the Optimiser in both, so the
+  demand keyed on it lies inside the executed lineage. Nothing about the graph's row-locality
+  changes how auto-range executes.
 - **Cancellation and graph/node exclusion have separate owners.** `_jobs` owns one cancellation
   token per solve/auto-range job; `_graph_node_setup_singleflight` owns only graph/node exclusion.
   Worker scopes release both once, after the actual worker has stopped, so a cancelled job keeps
   the exclusion lease until it can no longer mutate state.
-- **Generic setup failure detail is boundary-safe.** Explicit grid chunk-size
-  validation remains an actionable 400. Unknown `_execute_pipeline` and
+- **Generic setup failure detail is boundary-safe.** Unknown `_execute_pipeline` and
   `_build_grid` failures are fixed-detail 500s and preserve their raw
   exception only in server logs, as defined by
   [OPT-D01](error-detail-policy.md).
@@ -591,27 +1250,31 @@ returned as a generic `status: "error"` payload.
   missing ratebook banding source, malformed frontier-point data, incomplete job summaries), 404
   (job not found or wrong job type), 409 (concurrent job/graph-node conflict, a frontier sweep
   already running for the target solve job, or an atomic job-store update losing a race against a
-  concurrent state change), 422 (`ProjectionImpossibleError`/`ChunkPlanUnsupportedError`/
-  `BoundedMemoryUnsupportedError`, and the frontier compute-budget rejection), 410 (a valid
+  concurrent state change), 422 (`BoundedMemoryUnsupportedError` from solve setup or a bounded
+  streaming collect, and the frontier compute-budget rejection; a projection gap keeps a
+  full-width boundary, never 422), 410 (a valid
   server-owned handle whose artifact is no longer present), 500 (a background
   worker thread failing to even start; a generic/unclassified pipeline or grid failure; an
   invalid server-owned artifact handle; a corrupt persisted artifact), 507
   (`ExecutionAdmissionError`/`ExecutionMemoryLimitExceededError`
-  wrapped via `_memory_limit_http_exception`, whose payload `message` is the
+  mapped by the shared `memory_limit_http_exception(exc, operation_noun="Auto-range")`,
+  whose payload `message` is the
   shared curated wording from `routes/_memory_messages.memory_limit_user_message`
   — the same shape training and the input-snapshot build use — and the
   memory-limited job's terminal message reuses it rather than the generic
-  exceeded-its-memory-budget fallback). This applies to `POST /frontier` only up through its
+  exceeded-its-memory-budget fallback). Any other exception a request handler raises is not
+  caught in the route: it reaches the application handler, which logs it as
+  `unhandled_exception` and answers the sanitized 500. The frontier apply path first
+  removes the apply artifact that request created, then re-raises. This applies to `POST /frontier` only up through its
   synchronous validation phase (runtime resolution, compute budget, already-running-sweep check);
   once validation and worker launch succeed, the request returns 200 with a `status: "started"`
   body.
-- **Background-thread paths** (the setup thread, the solver thread, the streaming/non-streaming
-  auto-range worker, and — since the frontier sweep offload — the frontier sweep worker) never let
+- **Background-thread paths** (the setup thread, the solver thread, the auto-range worker, and — since the frontier sweep offload — the frontier sweep worker) never let
   an exception propagate out of the thread; every failure branch is caught and converted into a
   `JobLifecycle.transition(...)` call recording a terminal status, a human message, and (for
   `HTTPException`s specifically) the original status code and detail string in the job for later
-  inspection. `_run_frontier_sweep` follows the same pattern via its own `_frontier_lifecycle`
-  instance: an `HTTPException` with status 400/409/422 transitions the frontier job to
+  inspection. `OptimiserFrontierService._run_sweep` follows the same pattern via the service's
+  own `JobLifecycle`: an `HTTPException` with status 400/409/422 transitions the frontier job to
   `contract_error` (preserving `http_status_code`/`error_detail`), any other `HTTPException`
   transitions it to `error`, and a bare `Exception` is logged (`frontier_failed`, `exc_info=True`)
   and also transitions it to `error` with the generic `_INTERNAL_ERROR_DETAIL` message.
@@ -619,7 +1282,7 @@ returned as a generic `status: "error"` payload.
   execution-context-driven cancellation (`_coerce_stopped_terminal_reason` maps it to
   `cancelled`/`superseded`/`timed_out` as appropriate).
 - **Domain exception types specifically handled**: `BoundedMemoryUnsupportedError`,
-  `ChunkPlanUnsupportedError`, `ContractMismatchError`, `ProjectionImpossibleError`,
+  `ContractMismatchError`,
   `SchemaMismatchError` (`haute.errors`); `ExecutionAdmissionError`
   (`haute._execution_admission`); `ExecutionCancelledError`,
   `ExecutionMemoryLimitExceededError` (`haute._execution_context`); `BackgroundJobStoppedError`
@@ -628,8 +1291,8 @@ returned as a generic `status: "error"` payload.
   `OptimiserApplyTraceError` (a `RuntimeError`), for every domain failure (missing artifact
   source, missing/blank artifact or config column, unmatched input row, empty ratebook input
   frame, non-numeric/non-finite factor value, output-column reconciliation mismatch). The public
-  entry point catches `ImportError` separately (to give an actionable "install the missing
-  library" message) and `Exception` generally, converting both into the `status: "error"`
+  entry point catches `Exception` generally (including the guard's
+  `PriceContourCompatibilityError`), converting it into the `status: "error"`
   payload described above — no exception from this module is ever allowed to reach the tracing
   subsystem's caller.
 - **Artifact-load failures never leak library internals.** Every wrapped artifact-load
@@ -640,7 +1303,101 @@ returned as a generic `status: "error"` payload.
 
 ## Testing
 
-- `tests/test_optimiser_contracts.py` verifies optimiser job-store isolation, streaming quote-contiguous projections, factor extraction, low-memory sink behavior, null/interleaved/range validation, and solve/apply totals.
+- `tests/test_optimiser_contracts.py` verifies optimiser job-store isolation, streaming quote-contiguous projections, factor extraction, low-memory sink behavior, null/interleaved/range validation, and solve/apply totals. Its OPT-V04 classes pin the result contract: strict frontier points (extra, missing, coerced or
+  non-finite fields and constraint maps that disagree are rejected), frontier map-key completeness
+  against `constraint_names`, strict factor-table rows and point summaries, the solve result's
+  required `mode`, `input_summary` and `diagnostics_errors` and agreeing constraint maps, a select
+  response with no default totals or baseline, statistics failures and a failed frontier recorded
+  in `diagnostics_errors`, the artifact reading the result's input summary, and the status route's
+  non-finite walk (a NaN or Infinity corrects the job to `error`; a clean walk is cached per
+  generation and selection).
+- `tests/test_optimiser_outcomes.py` covers OPT-V09A end to end through the real input
+  preparation (thread and process mode): a non-solver `region` column configured as an analysis
+  column reaches `quote_analysis.parquet` one row per quote while the solver input and grid are
+  unchanged; a column varying within a quote is refused by name; the side-input path (a
+  separate connected frame joined by `quote_id`, a missing quote marked missing and counted, a
+  frame without `quote_id` refused, execution and preservation of a frame outside the data
+  input's lineage in online mode, the demand narrowed to `quote_id` + the analysis columns);
+  adoption at completion surviving `/apply`, cancellation and failure leaving no file, frontier
+  recompute and user-action slimming keeping it, startup reaping; the cardinality metadata; and
+  the scenario grid on every result. `tests/test_job_store.py` covers `JobStore.lease` and
+  `release_detached_artifact_handles`. Its OPT-V09B classes cover the choice queries over real
+  solves: the histogram reconciling to the solved totals for the as-solved result and a frontier
+  point, the join-count failure, the 1:1 join to the side table, each reducer's bound and
+  validation, admission refusal and single-flight.
+- `tests/test_optimiser_frontier_materialisation.py` covers the point queue: A/B/C rapid
+  stepping with A's request still waiting (one apply at a time, B replaced with 409, C run after
+  A), shared-subscriber disconnect, admission refusal before `apply_from_grid` (the mock is never
+  called), availability for a retained point, an unmaterialised point after heavy-state expiry
+  and a point evicted as the ninth artifact, and an eviction during a read deferred by the
+  reader's lease. For OPT-PC02, with a fake `apply_from_grid` that polls the real `CancelToken`
+  it is handed: a client that leaves cancels the apply and nothing is retained; stepping away
+  cancels A, and waiting B is admitted only after A's admission is released; two consumers on
+  different points both complete with no 409; returning to a cancelling A queues a fresh A in
+  place of B; a cancel during persist removes the written artifact while a cancel inside
+  adoption keeps it; a cancelled run's exception keeps neither the frame nor the library's
+  result alive; a pre-cancelled run never calls the library; a failure or a library
+  `Cancelled` without a haute cancel reaches the caller unchanged; a retained point answers
+  while another point runs, without cancelling it.
+  `tests/test_shared_flights.py` covers `SharedFlights` and `LatestWinsQueue` directly, including
+  the `cancel_abandoned` mode. In process mode, `tests/test_optimiser_solver_session.py` checks
+  that leaving a point cancels its apply inside the session: with a stand-in command and with the
+  real `apply_point`, which must stop on price-contour's token. The artifact directory is
+  removed, nothing is adopted, and the session keeps its runtime and applies the next point. A
+  library `Cancelled` without a haute cancel stays a 500. `tests/test_dedicated_workers.py`
+  covers the worker's cancel cell: a cancelled command stops while the worker lives on, a token
+  cancelled before the command starts stops it at once, a command that registers nothing runs
+  to completion, a cancel never reaches the next command, a failed command keeps nothing alive
+  into the next, a child holding the cell's lock never stalls its owner, and
+  `on_command_cancel` raises outside a worker.
+- `tests/test_optimiser_adjustments.py` covers OPT-V10's statistical contract: bar counts
+  against hand counts on a Float32 linspace grid and on `[0.8, 1.0, 1.3]`, zero-count steps kept
+  as empty bars; an available but unchosen 1.0 giving a 0 unadjusted share while
+  `[0.8, 0.95, 1.2, 1.4]` omits it, over the identical choice frame (grid-sourced, never
+  row-inferred); unchosen endpoints giving 0 edge shares with the bars still spanning the grid;
+  weighted quantiles by the inverted CDF and weighted means against hand values; the up/down
+  comparison at exactly 1.0; a negative weight and a zero total weight recorded in
+  `diagnostics_errors` with that weighting not computed. Over real solves: the as-solved report
+  at finalize, a point report equal to the report of that point's own apply frame, a cached
+  report served after the grid and the point's artifact are gone, a recompute invalidating the
+  cache, the 64-entry bound, the generation fence, and the report surviving grid eviction.
+- `tests/test_optimiser_segments.py` covers OPT-V11: a hand-calculated fixture with positive- and
+  zero-weight levels (weighted figures equal to hand values, the zero-weight level's weighted figures
+  `null` with a diagnostic naming it while its count and unweighted figures stay), counts summing to
+  `n_quotes`, weighted means reconciling to the portfolio mean, Missing (null and absent side-input
+  quotes) and Other, tied quantile edges collapsing into one bin, sparse levels, negative and zero
+  total weights refused, the key catalogue and its gate (numeric keys never refused, the 30-factor
+  cap, the composite width), an unknown key or weight as a 422, a frontier point target,
+  availability (the named 410), the adjustment spread against a hand calculation and its cache;
+  the admission refusal of `k0`…`k2000` (HyperLogLog estimate 1,980) by the margin, and, with an
+  admitted estimate injected, the exact check refusing 2,001 levels before truncation and
+  accepting 2,000.
+- `tests/test_optimiser_quotes.py` covers OPT-V12: over hand-built choice frames, a sort with
+  ties paged in quote-id order in both directions (and nulls last), each filter (the
+  scenario-value range at grid values, at-range-edge from the recorded grid, analysis equality
+  including `null` and a mismatched dtype refused, deployed-factor-differs on a ratebook frame
+  and refused online), the prefix search, the matched count, an offset past the end, the depth
+  guard at exactly 10,000 and one past it, and the column roles of each mode; over real solves
+  through `POST /apply`, the default page, a sort by an analysis column, the limit cap (a 422), a
+  frontier point target (selected, its own rows), the at-range-edge filter after the quote grid
+  is evicted, admission refusal (507) and a ratebook page with its factor product and flag.
+- `tests/test_optimiser_ratebook_choices.py` covers OPT-V09C against the real price-contour
+  library: the "deployed factor differs from evaluated step" flag against a hand count on a frame
+  the kernel evaluated from hand-chosen tables (products on a grid value and on an end value not
+  flagged, within-range rounding flagged, products past either end not flagged), its per-step
+  and report counts, the per-mode schemas (the ratebook one equal to `quote_results_schema`, a
+  damaged or wrong-mode frame refused by name); over real ratebook solves, the as-solved and
+  every frontier point's frame agreeing per quote with the scored input at the chosen step and
+  with the Float32 product of the published rates, and in aggregate with the solve's or the
+  point's totals, `/apply` for the as-solved result and a point (the point selected with its own
+  tables), a point's report through frontier select, the named 410 for an unmaterialised point
+  once the grid has gone, a point whose tables do not reproduce its row refused, composite and
+  numeric factor segments with no analysis columns (counts summing to `n_quotes`, levels and
+  counts equal to the Rates tab's), the level limit, invalid factor breakdowns, and the factor
+  rows' 1:1 correspondence (a dropped, foreign or repeated quote refused).
+- `tests/test_frontier_point_summary.py` covers `frontier_point_rows` (the library frame to typed
+  points, per mode, failing on any schema mismatch or malformed value), the write-back to the
+  library row the MLflow CSV uses, and `frontier_point_summary` over typed points.
 
 Tests live under `tests/` (unit/integration, `tests/performance/` for size/perf assertions), and
 share fixtures from `tests/optimiser_fixtures.py`. No dedicated property-based tests were found
@@ -656,10 +1413,10 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
 `test_optimiser_routes_critical_edges.py`, `test_optimiser_routes_real_library.py`, and
 `tests/performance/test_optimiser_memory_response_perf.py`.
 
-- **`tests/test_optimiser_routes.py`** — by far the largest file (~14k lines, dozens of test
+- **`tests/test_optimiser_routes.py`** — by far the largest file (dozens of test
   classes) covering the full route surface end-to-end against the FastAPI test client: node
   registration/codegen/executor passthrough, solve/status/estimate/apply/save/frontier/
-  frontier-select/mlflow-log routes, ratebook solve, solve-with-history, scenario-value stats,
+  frontier-select/mlflow-log routes, ratebook solve, solve-with-history, the as-solved adjustment report,
   column validation, non-convergence warnings, background-thread error classification, job-state
   guards (cancel/timeout/supersede races), pipeline-execution argument wiring, bounded-sink grid
   building, execute-pipeline cleanup, artifact-payload building (including extended/edge-case
@@ -691,18 +1448,30 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
 - **`tests/test_optimiser_routes_real_library.py`** — runs against the real `price-contour`
   library (not mocked) rather than a stub, organized into `TestRealLibraryShapeContracts` (pins
   that the route's frontier compute budget constant equals the library's own
-  `max_total_points` default — the two must never drift apart), `TestRatebookApplyDetailContract`,
+  `max_total_points` default — the two must never drift apart), `TestRatebookResultContract`,
   `TestOnlineApplyDetailRealSchema`, `TestFrontierComputeBudgetContract`, and
   `TestEstimateSingleScanContract` (pins the "exactly one streaming scan" cost contract for
   `/estimate`); the frontier-touching tests in these classes all go through
   `run_frontier_and_wait` and assert on the polled `result` payload rather than an immediate
   response body.
-- **`tests/test_optimiser_service_coverage.py`** — scenario-expander/optimiser-input streaming
-  contiguity, slim-projection column pruning, ratebook non-source-banding-input preservation
-  across a checkpoint, ratebook factor extraction under a low memory limit, non-finite/null
-  rejection in `_validate_and_project`, quote-block interleaving rejection in grid building, and
-  explicit-frontier-range rejection both at the schema layer and the route layer before the
-  solver is invoked.
+- **`tests/test_optimiser_service_coverage.py`** — apply-result and ratebook-factor artifact
+  handles: validation of kind, version, format, filename, directory containment and null bytes;
+  persistence returning `None` for non-dataframe inputs and cleaning its directory when a write
+  or lazy sink fails; loading and scanning that report a missing artifact and reject a corrupt
+  Parquet file; side-input identity for online versus ratebook modes; and orphan cleanup that
+  logs and swallows failures and dispatches to the ratebook-factor cleaner. (The streaming
+  contiguity, projection, checkpoint, memory-limit, non-finite, interleaving and frontier-range
+  contracts live in `tests/test_optimiser_contracts.py`, above.)
+- **`tests/test_optimiser_seeding.py`** — setup, auto-range, and the input estimate under seed
+  plans, run through `_execute_pipeline` as their callers run it: setup after a batch training
+  run seeds the training run's captured join and builds nothing; a ratebook setup cold builds
+  each node once and captures the data producer and the banding side input — the two-input
+  Optimiser is neither checkpointed nor captured — and warm seeds both and builds nothing; a
+  banding side input from an `apiInput` port is built on every run but never captured, and
+  factor extraction succeeds cold and warm; auto-range, which plans the solve's own demand,
+  publishes the capture the following solve seeds from; the input estimate seeds
+  setup's capture; and a real solve, auto-range, and estimate through the routes create no
+  checkpoint directory.
 - **`tests/test_optimiser_service_validation.py`** — focused unit tests for
   `_validate_and_project`'s non-finite/overflow/null-quote-id detection (including float64→
   float32 overflow rejection) and end-to-end single-/multi-quote real-solver lifecycle tests
@@ -710,6 +1479,11 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
 - **`tests/test_optimiser_apply.py`** — node-type registration, parser inference, codegen,
   executor passthrough for both modes, `ApplyOnlineHelper`/`ApplyRatebookHelper` (composite
   ratebook factor tables and their contract-error cases), and a "bundler" test class.
+  `TestLimitedOnlineApply` pins limited reads: the limited result equals the unlimited
+  prefix and applies to only the selected quotes' rows, an upstream row-local scorer predicts
+  only those quotes' scenario rows, ratio-constraint results are identical under any limit,
+  and `online_apply_output_schema` equals the eager apply's schema with renames, version
+  columns, and a custom quote-id column.
 - **`tests/test_optimiser_apply_artifacts.py`** — the artifact-handle contract directly: round-
   trip persist→load, rejecting a path outside the owned root, rejecting a directory/file
   mismatch, rejecting a relative path.
@@ -720,11 +1494,15 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
   errors, reconciliation-mismatch and missing-output-column error surfacing, explicit-empty
   config-value rejection (`optimised_value_column`, artifact `quote_id`, artifact `mode`),
   Polars-type-mismatch fallback to the Python match path, duplicate-level "last wins" agreement
-  with the runtime engine, and the `ImportError`-without-`exc.name` safe-rendering case.
+  with the runtime engine, and an incompatible `price-contour` install surfacing the guard's
+  diagnosis. Limited
+  traces pin a `max_pct` ratio explanation linearised against the whole portfolio, a custom
+  quote-id column explained from exactly the clicked quote's rows, and
+  `test_trace_correlates_only_the_input_an_apply_reads`.
 - **`tests/test_optimiser_frontier_materialisation.py`** — frontier-point selection/materialisation
   in isolation: cached-summary reuse without touching the solver, malformed/partial frontier-
   point rejection, explicit-point save/mlflow-log without a live solve result, stale-solve-result
-  avoidance, ratebook-point contract error on `/apply`, artifact-vs-response-preview agreement,
+  avoidance, artifact-vs-response-preview agreement,
   distinct data per point index, store-copy-stable generation fencing, and
   config-name-vs-column-name normalisation.
 - **`tests/test_optimiser_ratebook_apply_agreement.py`** — cross-checks that the saved-artifact
@@ -736,7 +1514,12 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
   rejection, and exact save/apply dtype mismatch errors.
 - **`tests/test_optimiser_io.py`** — `load_optimiser_artifact`/`load_mlflow_optimiser_artifact`
   caching behaviour (content-hash cache hit/miss for file loads across the two MLflow source
-  types) and version resolution.
+  types), version resolution, the `destination` argument forwarded to `resolve_backend` for the
+  empty and explicit keys, and the same run on two backend identities producing two distinct cache
+  entries. `tests/test_optimiser_apply.py`, the deploy scorer tests, and
+  `tests/test_optimiser_apply_trace_enrichment.py` pin that every config-driven caller forwards
+  `mlflow_destination`; `tests/test_mlflow_destinations_e2e.py` (mlflow-model-registry) proves the
+  local-folder-while-Databricks-is-configured apply, deployed scoring, and generated-script paths end to end.
 - **`tests/test_optimiser_golden.py`** — golden-snapshot pinning: the `/solve/status` route
   response against `tests/fixtures/ui_contracts/solve_optimiser_response.json`, and
   `_build_artifact_payload` against `tests/fixtures/golden/optimiser_artifact_online.json` /
@@ -746,20 +1529,1097 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
   the cap against the polled `result`, since the sweep itself now runs off the request thread), and
   that completed optimiser jobs get their heavy runtime objects slimmed and owned artifacts
   evicted (a job-store/memory-discipline test, not a wall-clock benchmark).
+- **`tests/test_optimiser_setup_worker.py`** — process-mode materialisation: real spawn workers
+  produce the same online and ratebook solves and the same auto-range totals as the thread path, and remove the setup-owned parquet; an input the thread path would
+  borrow is written to the parent's file; an auto-range worker stopped mid-reduction leaves no
+  scratch files; a stopped setup worker leaves neither scratch, factors nor input files; a
+  `MemoryError` behind a setup or auto-range failure is a 507; with an inline stand-in for the
+  worker, a child's failure is replayed exactly as the thread path records it, a child over its
+  memory budget ends the job `memory_limited` (auto-range and solve setup), a memory-shaped worker
+  failure is a 507, a stopped worker is the job's stop and its stop signal follows the job's
+  cancellation, the worker's own timeout times the job out, an auto-range already out of time
+  never starts its worker, a failed solver-input write removes the ratebook factors the child
+  persisted, and a crashed worker, a timed-out setup worker (which has no timeout) and a
+  malformed outcome are errors. `OptimiserWorkerFailure` keeps only a record's failure fields,
+  and a child failure before any job mapping (admission, a pre-job HTTP error) is classified in
+  the child.
+- **`tests/test_frontier_range_reducer.py`** — the exact auto-range reducer: carry-path totals
+  against a per-quote reference over split and unsplit quotes (including a Hypothesis property),
+  each fallback reason (a non-contiguous batch, a reappearing quote, a full hash buffer) reaching
+  the same totals through the bucketed Float64 finish (colliding hashes cost speed, not
+  accuracy; partial files are bucket-sorted with at most 64 row groups; cancellation is checked
+  between files), its final flush, the budget rule (the cap
+  or a quarter of the smaller of the RSS and native headroom, `native_headroom_bytes()` inside a
+  capped call) and its typed refusal below the minimum, and `string_view_bytes_per_row` against
+  Arrow's buffer sizes.
+- **`tests/performance/test_auto_range_memory.py`** — the auto-range memory bound on the
+  representative fixture (200,000 quotes, a scenario expander and real CatBoost scoring between
+  the data input and the optimiser, the scored frame never cached), each run measured in a
+  fresh interpreter by `tests/performance/_auto_range_memory_probe.py` with the optimiser
+  workers' Polars thread pool and a 50,000-row chunk: sized to the fixture so its scored frame
+  spans many chunks, as a real pipeline's does at 500,000.
 
-Known coverage gap: there is no property-based/fuzz testing of the
-price-contour-emitted level-label tie-breaking logic beyond the specific fixture cases in
-`test_optimiser_ratebook_apply_agreement.py` and
-`test_optimiser_apply_trace_enrichment.py`; the dtype agreement matrix itself is exhaustive
-over the supported dtype families.
+- **`tests/test_optimiser_level_tie_properties.py`** — the generated level-tie family
+  (ENG-T11, ledger W09-S03): for generated Int64, Float64, Float32 and String levels, single
+  and composite, the generator plays price-contour's emission role (`str()` of the typed
+  value) and perturbs the spelling (`repr`, fixed and scientific notation, the widened
+  binary32 representation, the raw float). Properties: every spelling of one typed value
+  saves to one `__factor_group__` key that an independent oracle predicts, distinct typed
+  values never share a key and carry the generator's quote counts, two spellings of one value
+  in one emitted table are refused with the loud `ValueError`, the saved artifact rates every
+  typed row with its own level with the engine and the explainability mirror agreeing and no
+  miss logged, and a duplicate saved key resolves to the last entry in both. Negative
+  controls built with `hypothesis.find`: verbatim (uncanonicalised) labels let the apply
+  path silently keep the last of two rates for one value (the 3b.10 fault the loud check
+  prevents), and a first-entry-wins mirror disagrees with the engine. The real solver's
+  verbatim emission format stays pinned by the fixtures in
+  `test_optimiser_ratebook_apply_agreement.py`; it is not run per example.
+
+The generated family above covers level-label tie-breaking across the supported dtype
+families; the dtype agreement matrix in `test_optimiser_ratebook_apply_agreement.py` and
+`test_optimiser_apply_trace_enrichment.py` remains the exhaustive curated counterpart.
 
 ## Canonical frontier range implementation
 
 The required behaviour is defined in
 [the optimiser high-level contract](high-level.md#canonical-frontier-ranges).
 
-- `src/haute/routes/_optimiser_service.py::_auto_frontier_ranges_from_config` resolves ranges
-  exclusively from `frontier_ranges`; it contains no global-range compatibility branch.
+- `src/haute/routes/_optimiser_solver.py::swept_frontier_ranges` resolves ranges exclusively
+  from `frontier_ranges`, in constraint order, for the swept constraints only (empty when none
+  is swept, which skips the frontier); it contains no global-range compatibility branch and
+  rejects a range naming an unconfigured constraint. The library holds each unswept constraint
+  at its constructor bound (`price_contour`'s Python frontier path).
+- `anchor_swept_constraints` (same module) is applied to the node config at solve start
+  (`OptimiserService.start`), before the job records its config: each swept constraint's single
+  bound is replaced by its range's `min`, so the solve, the job snapshot and everything read from
+  it agree. A range without a numeric `min` leaves the bound for validation.
 - The missing/malformed/range-order failure model remains strict and names the exact constraint.
 - Backend fixtures that exercise frontier computation use per-constraint ranges; historical
   scalar-field fixtures are deleted.
+## Decoded input widths for the resident-grid forecast
+
+Setup chunk sizes are the Pipeline Settings value (see `_ChunkSizeDecision`), not
+a byte budget. The resident-grid forecast (`forecast_resident_grid_bytes`) prices
+each input row from a bounded decoded sample (at most 512 rows), in which strings
+and binary use their decoded resident width, so repeated dictionary values cannot
+make a large decoded batch look like a tiny encoded page. The setup execution
+limits remain authoritative: chunked input still builds a resident solver grid.
+## Reuse and admit the resident grid input
+
+Grid setup reuses a single local Parquet scan when its optimised plan is only
+the scan/projection, without predicates, slices, virtual columns, schema
+overrides, hive partitions, column mapping or deletion files. Its physical
+column dtypes must agree with the projected frame. No-op casts are omitted.
+The current caller keeps its input lease alive; borrowed input is never removed
+by grid cleanup. Multipart or transformed input retains one projected adapter
+file because the installed solver interface accepts one file.
+
+Before constructing the resident grid, estimate numeric vectors, quote IDs,
+sorting/conversion overlap and one reader batch from row count and decoded
+sample widths. In the thread compatibility mode, refuse an estimate exceeding the
+current execution context's remaining allowance with the existing typed
+admission error, which carries the estimate as `estimated_bytes` so its message
+names both sizes. In process mode the estimate is only recorded
+(`grid_forecast_bytes`): the solver session's native cap bounds the build, and a
+solve is never refused on it. The estimate is conservative and does not replace
+runtime limits. The existing solver/frontier
+work keeps sharing its prepared grid; this change adds no parallel grid copies.
+## Analysis-column side table and scenario grid
+
+The behaviour is defined in [the high-level specification](high-level.md#behaviour).
+
+**Configuration.** `OptimiserConfig` declares `analysis_input: str` (one exact connected
+incoming-edge name, resolved by `_resolve_optimiser_input_edge` like `data_input` and
+`banding_source`; absent or empty means the data input) and `analysis_columns: list[str]`
+(optional, at most `MAX_ANALYSIS_COLUMNS = 12`, unique, non-empty, never the configured
+`quote_id` and never a reserved `__haute_` name). Both are in `OPTIMISER_CONFIG_KEYS`; the
+execution cache classifies `analysis_columns` as node config and `analysis_input` as a source
+selection, so changing either makes the node's cached result stale. The shape rules are one
+function, `validate_optimiser_analysis_config` (`src/haute/_config_validation.py`), called by
+`validate_node_config` on save/parse and by `OptimiserSolveService._validate_config` at solve
+start (a `400`); `validate_optimiser_input_selectors` checks `analysis_input` as an optional
+exact selector at save and code generation, and submodel instances rewrite it like the other
+optimiser selectors. `analysis_input` without `analysis_columns` is inert.
+
+**The plan.** `resolve_analysis_plan(graph, node_id, config)` returns `None` without analysis
+columns, else an `AnalysisPlan(columns, path, source_node_id)`. The path is `"data_input"` when
+the resolved analysis edge is the data-input edge (including `analysis_input` unset or naming
+the data input) and `"side_input"` otherwise.
+
+- *Data-input path (carry-through).* `_optimiser_solve_required_columns_by_node` adds the
+  analysis columns to the data input's seed, and `validate_and_project(analysis_columns=...)`
+  requires them (a missing one is a `400` naming it) and keeps exactly them, uncast, after the
+  solver columns, each under `carried_analysis_column(column)` (`__haute_analysis:<column>`,
+  in the reserved prefix no analysis column may use). An analysis column the solver also reads
+  (a constraint or the objective, e.g. a per-quote `exposure`) is therefore projected for both:
+  the solver's copy cast to Float32 as always, the analysis copy in the source dtype, so the
+  solver input is the same as without analysis columns and the side table keeps full
+  precision. The worker's solver-input parquet therefore carries them; `build_quote_grid` and
+  `_admit_resident_grid` read only solver columns, and extraction reads the carried copies back
+  under their own names.
+- *Side-input path.* The execution target becomes the Optimiser itself in online mode too
+  (`_setup_execution_target_node_id`), `_optimiser_side_input_ids` preserves the analysis source
+  in both modes, `_optimiser_solve_required_columns_by_node` seeds it with `quote_id` + the
+  analysis columns (unioned with a banding seed on the same node; skipped when the source also
+  feeds the data input through a parallel edge, which the Optimiser seed keeps full width), and
+  `OptimiserParentDemandRule` demands exactly those columns from the analysis parent.
+  `resolve_analysis_frame` selects the edge's frame, requires `quote_id` under the data input's
+  dtype rules (`_invalid_quote_id_dtype_detail`) and the analysis columns, drops null quote ids
+  (they match no solved quote) and projects to `quote_id` (as String) + the analysis columns.
+  The extraction reduces that lazy projection directly; nothing is staged.
+
+**Extraction** (`write_quote_analysis`, through `_write_quote_analysis`, which types a
+failure as a solver-input write failure is). In process mode the setup worker runs it right
+after writing the solver input, under the worker's native cap and into the directory its parent
+created, so an oversized reduction ends the job `memory_limited` and never grows the server
+process; the thread compatibility mode runs it in `_build_grid` after the grid is built
+(extracting first measured a higher peak in one process, because the grid build does not reuse
+memory the extraction has freed). Every step is a lazy plan; the only collections are one-row
+reductions.
+
+1. *One streamed reduction.* Over the source (the written solver input's `quote_id` +
+   carried analysis columns, renamed back, or the side-input frame's projection), a single `group_by(quote_id)` — grouped on the key as
+   stored — gives each column's `first()` value and a varies flag, and is sunk to a per-quote
+   file (`per_quote.parquet`) in the table's own directory, never collected. The flag is
+   `n_unique > 1` computed without a per-group set: the group's smallest and largest 64-bit
+   value hash (`Expr.hash`, seed 0) differ exactly when two values differ, a null and a NaN
+   each hashing to one value as `n_unique` counts them. Measured against `n_unique` at 1M
+   quotes × 10 steps it holds about 300 MiB less; two different values of one quote colliding
+   (about 2^-64 per pair) is the only way a varying quote could pass.
+2. *Constant within a quote.* The flags are summed to one row per column and collected. A
+   non-zero count raises `AnalysisColumnNotConstantError` (an `OptimiserSetupError`, `400`)
+   naming each column, its varying-quote count and one example quote id (a bounded query of
+   the per-quote file, run only on failure).
+3. *Table.* From the per-quote file, `quote_id` is cast to String. On the side-input path the
+   solved quotes (`unique` over the solver input's `quote_id`) are left-joined to it, so the
+   table has exactly the solved quotes: a quote the frame lacks has null analysis values and
+   `__haute_analysis_row_present = false`, and frame quotes that were not solved are dropped.
+   The data-input path writes the flag as `true`. `bounded_sink` writes
+   `quote_analysis.parquet` into the fresh marked directory under the `optimiser_quote_analysis`
+   root (`analysis_` prefix) and the per-quote file is removed.
+4. *Metadata.* One streamed scan of the written file gives the row count,
+   `missing_quote_count` (rows with the flag false) and, per column,
+   `column_stats[c] = {dtype, approx_n_unique, max_string_bytes}` — `approx_n_unique` is Polars'
+   HyperLogLog estimate, and `max_string_bytes` the largest UTF-8 byte length of a String,
+   Categorical or Enum value (`null` for other dtypes). OPT-V11's cardinality gate reads them
+   from the handle. Once the grid exists, `require_one_row_per_solved_quote` requires the row
+   count to equal its `n_quotes` (a `RuntimeError` otherwise; setup removes the table).
+
+A failure removes what the extraction wrote before it propagates: its own files in a parent's
+directory (which the parent then removes), or the whole directory it created.
+
+With no analysis columns nothing is written and the job has no `quote_analysis` handle.
+
+**Ownership.** Setup owns the handle (and, in process mode, the directory it created for the
+worker) until completion: a setup failure, stop or worker failure removes it in setup's
+`finally`; `_launch_background` passes it to `_solve_online` /
+`_solve_ratebook`, whose `_finalize_solve_result` adopts it into
+`artifact_handles["quote_analysis"]` inside the completion publisher (and removes it if
+completion is lost). `_finalize_solve_result`, and so `_solve_online` / `_solve_ratebook`,
+returns whether it published the completion; the solve worker's `finally` removes the table
+only when that is false (cancel, supersession, timeout, solver failure). It never re-reads
+the job to decide: a job removed just after completion would look like one that never adopted
+the table, and deleting it directly would bypass a reader's lease. Once adopted, only job removal deletes it —
+TTL eviction 24 hours after creation, `delete_job` or `clear_all` — through the registered
+`optimiser_quote_analysis` cleaner; `JobStore.clear_result_data` (heavy-state and user-action
+slimming) never touches `artifact_handles`, and frontier recompute retains every handle that
+is not a `frontier_apply_result:*` handle. Startup reaping covers the root like the other two.
+
+**Leases.** `JobStore.lease(job_id, key)` ([background-jobs](../background-jobs/low-level.md))
+yields the handle while holding a read lease on it; `collect_quote_analysis(store, job_id,
+query)` validates the handle, scans the file and collects the caller's lazy query inside the
+lease, so a job expiring mid-read deletes the file only after the read. A job or handle that
+is gone raises `ArtifactHandleUnavailableError`, which `collect_quote_analysis` answers as the
+stable `410` "no longer available; re-run the solve".
+
+**Scenario grid.** Right after the grid build, setup records
+`scenario_grid = scenario_grid_from_values(quote_grid.scenario_values)` on the job: one
+`{optimal_step: i, scenario_value: v}` per step, `v` being the Float32 grid value widened to a
+Python float, exactly what the solver scored. `scenario_grid_from_values` fails loudly on an
+empty grid, a non-finite value or values that are not strictly increasing.
+`_finalize_solve_result` copies it into the result through `require_scenario_grid(job)`; it is
+never recomputed, and step membership is always by `optimal_step`, never by comparing floats.
+
+**Precision.** Analysis columns keep their source dtype. The solver ingests objective,
+constraint and scenario values as Float32 (`validate_and_project`'s casts); every total,
+reconciliation and breakdown accumulates those Float32 values in Float64.
+
+**Measured scaling.** See "Measured setup memory" below for the method, results and thresholds.
+## Measured setup memory
+
+Whole-process peak RSS of solve setup's processes with and without the quote-analysis
+extraction: each process's own `VmHWM`, never `ru_maxrss`, which Linux carries over `fork` and
+`exec` so a child can report its parent's peak. Measured on 26 September 2026 with
+`scripts/benchmarks/opt-v09a-setup-memory.py` (Polars 1.44.2, price-contour 0.5.0, 22 logical
+CPUs so a 22-thread Polars pool, WSL2 with 31 GiB). The data input is quote-contiguous, 10
+scenario steps per quote, a String quote id, a Float32 objective and one Float32 constraint,
+and two analysis columns (an 8-level String `region` and an Int32 `tier`); the side-input
+cases reduce a separate one-row-per-quote frame of the same two columns, resolved by
+`resolve_analysis_frame`. Each case ran in a fresh process started directly by the benchmark
+(three runs at 1M quotes, range shown; one run at 5M quotes, 50M rows), and ran the production
+functions in production order: the worker validates and projects the data input
+(`validate_and_project`), writes the solver input (`write_solver_input`) and then reduces the
+table (`write_quote_analysis`); the server builds the grid (`build_quote_grid`) from the file
+the worker wrote; thread mode does all of it in one process, the grid resident while the table
+is reduced. Every figure is the whole process's peak, imports included (129 MiB at the start),
+because that is what the worker's cap and the server's headroom see.
+
+| Process, steps | 1M quotes | 5M quotes |
+|---|---|---|
+| Server: grid build, no analysis columns (also the side-input path) | 730 MiB | 1,920 MiB |
+| Server: grid build, the data-input path's file with analysis columns | 708–709 MiB | 1,780 MiB |
+| Setup worker: validate and write the solver input, no analysis | 1,063–1,113 MiB | 2,958 MiB |
+| Setup worker: the same, then the data-input table | 1,204–1,275 MiB | 3,364 MiB |
+| Setup worker: the same, then the side-input table | 1,134–1,196 MiB | 2,832 MiB |
+| Thread mode: validate, write, grid; no analysis | 1,114–1,234 MiB | 2,739 MiB |
+| Thread mode: validate, write, grid, then the data-input table | 1,262–1,305 MiB | 4,832 MiB |
+| Thread mode: validate, write, grid, then the side-input table | 1,130–1,238 MiB | 3,274 MiB |
+
+The benchmark also records each step's own peak (`VmHWM` reset before the step through
+`/proc/self/clear_refs`). The worker's peak is the solver-input write (2,958 MiB at 5M quotes),
+except on the data-input path at 5M quotes, where the reduction peaks slightly above it (3,364
+against 3,282 MiB). The side-input reduction peaks well below the write (1,954 MiB at 5M
+quotes), so the worker's peak does not change on that path; its 5M figure below the
+no-analysis one is run-to-run variation, which is up to 5% at 1M quotes. The server's grid
+build reads fewer rows per chunk from the data-input path's wider file (9.6M against 13.4M rows
+at 1M quotes; the chunk size was then a byte budget over the estimated row width, since replaced by the pipeline setting), so its peak was
+lower on that path, not higher.
+
+The first V09A figures read `ru_maxrss`. They were not inflated by an inherited peak: each case
+was launched from the shell through `uv run`, whose own peak is about 27 MiB, and the fixture
+was written by an earlier, separate process; the server figure they reported (707–708 MiB and
+1,783 MiB) matches the data-input server row above. They measured narrower steps than
+production runs, though: the server only on the file with analysis columns (the path without
+them peaks 3% higher at 1M quotes and 8% higher at 5M), the worker from an already-Categorical
+file without validation (which put its no-analysis peak 14–23% low and the extraction ratios
+up to 1.41×), and thread mode without the solver-input write. The table above replaces them.
+
+The extraction runs in the setup worker, not the server, and these figures confirm that: in
+process mode the server's peak does not rise with analysis columns, whereas the same reduction
+in the server's process (thread mode) raises the peak from the server's 1,920 MiB grid build to
+4,832 MiB at 5M quotes on the data-input path, the reduction alone growing the process by
+3.2 GiB. The design choices behind the reduction were measured at 1M quotes in the first V09A
+run (with `ru_maxrss`, which is sound for a difference between two such runs) and were not
+re-measured: one `group_by` pass instead of a separate check pass (−160 MiB), the hash
+comparison instead of `n_unique` (−300 MiB), and the grid built before, not after, the
+extraction when both share a process (−150 MiB).
+
+Thresholds, which a change to this path must re-measure against with the same method:
+
+- The server process's setup peak with analysis columns stays within 5% of its peak without
+  them (measured 0.97× at 1M quotes and 0.93× at 5M quotes): the extraction never runs in the
+  server in process mode.
+- The setup worker's peak with the extraction stays within 1.25× its peak without it (median
+  against median, measured 1.11× and 1.08× at 1M quotes and 1.14× and 0.96× at 5M quotes for
+  the data-input and side-input paths), and adds at most 150 bytes per quote at 5M quotes
+  (measured 85 on the data-input path and none on the side-input path).
+- The thread compatibility mode, which runs everything in one process, stays within 3× the
+  server's grid-only peak (measured 1.77× at 1M quotes and 2.52× at 5M quotes on the
+  data-input path, 1.71× on the side-input path) and within 2× its own peak without analysis
+  columns (measured 1.76× at 5M quotes on the data-input path and 1.20× on the side-input path).
+
+## Bounded choice queries and point materialisation
+
+The behaviour is defined in [the high-level specification](high-level.md#behaviour). Both
+modes are served: an online target's frame is price-contour's apply frame, a ratebook target's
+its canonical per-quote evaluation (see "Ratebook per-quote choices (OPT-V09C)").
+
+**Targets.** `ChoiceTarget(point_index)` names what a query reads: `None` is the as-solved
+result (`artifact_handles["apply_result"]`), and an integer is that point of the job's current
+frontier (`artifact_handles["frontier_apply_result:<i>"]`), materialised first when it has no
+artifact. It is never the server-side selected point.
+
+**The choice frame.** `ChoiceQueryService.choice_query(job_id, target, reducer,
+cancellation_token=...)` reads the target's apply artifact with `scan_parquet` inside a
+`JobStore.lease` (`lease_apply_frame`). The artifact must have exactly its mode's schema
+(`apply_frame_schema(mode, constraint_names)`, names, order and dtypes): online, `quote_id`
+(String), `optimal_step` (Int32, the index into the job's `scenario_grid`),
+`optimal_scenario_value`, `optimal_objective` and `optimal_<c>` for each configured constraint
+in config order (Float32, as price-contour wrote them); ratebook, the same followed by
+`factor_product` (Float32), `clamped_low` and `clamped_high` (Boolean), which is
+`price_contour.quote_results_schema(constraint_names)`. Any other schema is a `ChoiceJoinError`
+naming the missing, unexpected and mistyped columns. The choice frame is the artifact's columns;
+a ratebook frame adds `deployed_factor_differs` (Boolean, see "Ratebook per-quote choices
+(OPT-V09C)"). `ChoiceFrameSpec` records the `mode`, the constraint names, the analysis columns,
+the scenario grid and, for ratebook, the factor specs (`factor_columns`, each named
+`":".join(columns)` as the Rates tab names its tables).
+
+**The side table, 1:1.** When the job holds `artifact_handles["quote_analysis"]`, a second lease
+is taken on the side table (its key is the configured quote-id column) and its correspondence to
+the chosen rows is asserted before any reducer runs: the handle's recorded `row_count` must equal
+the apply frame's row count, and `_require_same_quotes` compares one streamed key fingerprint of
+each table (`_key_fingerprint`: the row count and the sums of the high and low 32-bit halves of
+each quote id's 64-bit hash, seed 0). Equal fingerprints mean the side table holds exactly the
+chosen quotes, one row each, but for a hash-sum collision (about 2^-64), the same bound OPT-V09A
+accepts for its varies-within-a-quote check; a mismatch raises `ChoiceJoinError` (a
+`RuntimeError`: both tables were written for the same solved quotes, so a disagreement is a defect
+and surfaces as the sanitised 500). The fingerprint holds nothing per quote, where the full join
+it replaces held about 1 GiB at 5M quotes (see "Measured choice-query memory"). The reducers then
+reach the side table through `ChoiceFrames`: `joined()` is the inner 1:1 join on the quote id
+(Polars' `validate="1:1"`, `maintain_order="left"`), used only by a reducer that needs every
+quote's analysis values (the group-by); `with_analysis(rows)` attaches the analysis values to a
+bounded result, reading only those quotes from the side table (`is_in`) and failing with
+`ChoiceJoinError` unless every one is found. The joined rows carry the analysis columns and
+`__haute_analysis_row_present`. An analysis column whose name is a choice-frame column is refused
+with a 400 naming it, since the rows could not keep both.
+
+**Reducers.** A reducer is a frozen dataclass whose lazy plan runs over the choice frame and
+returns a small, bounded result; no API returns the whole frame. Each validates its own
+arguments with a 400 (`MAX_CHOICE_ROWS = 1000` bounds every row count) and supplies its own
+memory estimate. `choice_query` returns `ChoiceQueryResult(rows, total, quotes)`, where `total`
+is the count the rows were taken from and `quotes` the target's number of quotes.
+
+- `ScenarioHistogram()` — one row per step of the job's `scenario_grid`, in step order, including
+  steps no quote chose (zero quotes and zero sums): `optimal_step`, `scenario_value` (from the
+  grid, never from the chosen rows), `quotes`, `optimal_objective` and each `optimal_<c>` as
+  Float64 sums of the Float32 values, and `negative_optimal_objective` and each
+  `negative_optimal_<c>`, the number of the step's quotes whose value is below zero (what
+  OPT-V10's weight guard reads). `total` is the number of quotes. A chosen step outside the
+  grid is a `ChoiceJoinError`.
+- `SegmentGroupBy(columns, limit)` — groups by one or more analysis columns (each must be one;
+  none configured is a 400): the keys, `quotes`, `mean_scenario_value` (Float64 mean) and the
+  Float64 sums, ordered by `quotes` descending and then the keys ascending with nulls last, the
+  first `limit` groups. `total` is the number of groups.
+- `TopK(by, k, descending)` — the `k` quotes with the largest (or smallest) value of `by`, one of
+  `optimal_scenario_value`, `optimal_objective` or `optimal_<c>`, ties broken by `quote_id`;
+  every choice column, with the analysis values attached. `total` is the number of quotes.
+- `RowIndex(offset, limit)` — the rows at positions `[offset, offset + limit)` of the apply
+  frame's quote order; every choice column, with the analysis values attached. `total` is the
+  number of quotes.
+
+The histogram reads only the choice frame; the group-by reads `joined()`; top-k and the row
+index attach the analysis values to their own rows; the factor segments read the factor side
+table (see "Ratebook per-quote choices (OPT-V09C)"). For a ratebook target the histogram also
+counts each step's `deployed_factor_differs` quotes, and the group-by and factor segments count
+each group's.
+
+`ApplyOptimiser.with_explainer_columns` emits `selected`, `is_baseline` and `linearised_<c>` per
+candidate row of one traced quote; none of them is a per-quote chosen value a reducer returns,
+so nothing here derives the same value twice. The Quotes explorer (OPT-V12) returns only
+choice-frame and analysis columns, so the same holds for its columns.
+
+**Precision.** Sums and means cast the Float32 values to Float64 before aggregating, as
+price-contour accumulates its totals. The histogram's sums over every step equal the solve's
+`total_objective` and `constraints` (for a frontier point, that point's totals) to Float64
+rounding.
+
+**Admission.** Inside the leases, each run first computes its own estimate,
+`estimate_choice_query_peak_bytes`, from the apply frame's row count, the decoded widths of a
+512-row sample of each table (`decoded_frame_row_width_bytes`) and the reducer's own shape
+(whether it scans every chosen row, whether it joins the whole side table, and its result
+rows), and then admits an
+`ExecutionProfile.EXPLORE_ANALYSIS` context (`operation="optimiser_choice_query"`, the run's
+cancellation token) with that `WorkEstimate`. `create_admitted_execution_context` refuses an
+estimate above the profile's allowance with `ExecutionAdmissionError`, whose reason names the
+estimate, the allowance and the remedy (raise `HAUTE_EXPLORE_MEMORY_LIMIT_MB`, or ask for fewer
+groups or rows), before anything but the probes has been read; and it reserves the estimate,
+not the profile's whole budget, in flight, so several bounded queries run side by side. The run
+answers the refusal, and an `ExecutionMemoryLimitExceededError` during a collection, as HTTP 507
+with the memory-limit payload. The join check and the reducer collect under the context
+(native cancellation and RSS checks), and admission is released when the run ends.
+
+**Single-flight.** Runs are single-flighted by `(job_id, frontier_generation, target,
+reducer)` through `SharedFlights`: identical concurrent queries share one run and its result or
+error. The run executes on its own thread. Each caller waits on its own `FlightSubscription`;
+a caller whose cancellation token fires (a client that disconnected) detaches only itself, and
+when the last subscriber detaches the run's token is cancelled and its key released, so a later
+identical query starts afresh. A finished run's key is released at once: results are not
+cached.
+
+**Point materialisation.** `OptimiserFrontierService.request_point_apply(job_id, point_index)`
+validates the job (completed), the point and captures `frontier_generation`:
+
+- A retained `frontier_apply_result:<i>` handle answers at once.
+- Otherwise the point is available only while the quote grid is alive
+  (`touch_heavy_objects(("quote_grid",))`; a ratebook point also needs the solver and the factor
+  contexts, `("solver", "quote_grid", "ratebook_factor_contexts")`, heavy state that is kept and
+  slimmed together with the grid); when it is not, the answer is the named 410
+  `{"error_code": "frontier_point_unavailable", "message": ...}`. A point whose artifact was
+  evicted (as the ninth) is therefore re-materialised while the grid lives and a 410 after.
+- Materialisation goes through the job's `LatestWinsQueue(cancel_abandoned=True)`, keyed
+  `(frontier_generation, point_index)`: at most one runs per job, so a point's memory admission
+  and its library call never overlap another's. A request for the running or the waiting key
+  subscribes to it. A request for any other key while one runs takes the single waiting slot and
+  never cancels the running one; the waiter it replaces fails for all of its subscribers with
+  409 `{"error_code": "frontier_point_apply_replaced", "message": ...}`. When the running one
+  ends, the waiter starts. A detaching subscriber leaves only itself; a waiter left with no
+  subscriber is dropped before it starts; a running one whose last subscriber leaves is
+  cancelled (OPT-PC02). The results tabs abort their request when the user steps to another
+  point, so stepping away cancels the point nobody is waiting for, while two views on different
+  points each keep theirs: one finishes and is retained, then the other runs. A cancelled run is
+  *cancelling*: it keeps the lane until its run function returns (after cleanup and admission
+  release), and a new request for its key does not join it but takes the waiting slot like any
+  other key. A request answered from a retained artifact never reaches the queue and cancels
+  nothing.
+- The run re-checks for a handle published meanwhile, reads the grid under the parent's lock
+  with the generation fence (409 when a recompute advanced it; the named 410 when the grid is
+  gone), then admits an `EXPLORE_ANALYSIS` context (`operation="optimiser_point_apply"`) with
+  its own `WorkEstimate` **before** the point's frame is computed, so a refusal (507) never starts
+  the library call. The estimate is `estimate_point_apply_peak_bytes` over the as-solved
+  apply artifact's row count and sampled decoded width, read inside a lease: a point's frame has
+  exactly its shape. The frame is the point's apply: online, `apply_from_grid(grid, lambdas=the
+  point's λ, constraints=...)`'s `dataframe`; ratebook, `solver.evaluate(grid, factor_contexts,
+  frontier_factor_tables[point_index]).quote_results`, whose totals must equal the point's
+  frontier row exactly (price-contour's contract; a difference is a `RuntimeError`, never a
+  silently different point). It then
+  persists and publishes the handle under the parent's lock (generation fence, heavy
+  state present, at most eight point handles). The run never changes the selection; `/apply`
+  selects after it has waited.
+- **Cancellation (OPT-PC02).** In process mode the point runs in the job's solver session, and
+  the flight's token reaches the session's `apply_point` through the dedicated worker's cancel
+  cell (see "Solver sessions (OPT-W01)"), with the same commit point and cleanup. In the
+  `thread` mode, and for a job without a session, the run creates a price-contour `CancelToken` and registers its
+  `cancel` on the run's `ExecutionCancellationToken` with `on_cancel` (which fires at once when
+  the run was already cancelled), then passes it as `cancel=` to `apply_from_grid` or
+  `evaluate`; the library polls it through every phase, including the lazily built frame. The
+  run checks its own token after admission (a cancelled run never calls the library), between
+  computing and persisting the frame, and under the parent lock at the start of publication.
+  Adopting the handle is the one commit point: a cancel seen before it adopts nothing, removes
+  the written artifact and ends the run with `ExecutionCancelledError`; admission is released
+  in every case. A cancellation is raised outside the handler that caught the library's
+  `Cancelled` and after the frame is dropped, because the queue keeps a run's exception in its
+  outcome: its traceback must not hold the frame past admission release while the next point
+  runs. Cancellation is best-effort and does not take the parent lock, so a cancel that
+  lands after the final check loses the race and the finished point is adopted and retained,
+  which is harmless. The library's `Cancelled` becomes `ExecutionCancelledError` only when the
+  run's own token is cancelled; any other failure, and a `Cancelled` without a haute cancel,
+  propagates unchanged.
+- Evicted and recompute-invalidated point handles are released through
+  `JobStore.release_detached_artifact_handles`, so an eviction during a read deletes the file
+  only when the reader's lease ends.
+
+**Availability.** The as-solved target is available for the job's 24-hour life; a job that is
+gone is a 404, and a handle whose file is gone the stable 410 of the artifact lifecycle. A
+point is available while its artifact exists or while the grid is alive; otherwise the named
+410 above. A point handle evicted between `request_point_apply` and the read is the same named
+410, telling the user to select the point again.
+
+**Measured scaling.** See "Measured choice-query memory" below.
+
+## Measured choice-query memory
+
+Growth of the server process's peak RSS over its RSS just before one choice query (the
+process's own `VmHWM` less its RSS at the start; `ru_maxrss` is carried over `fork` and `exec`, so
+it would report the parent's peak), measured on 26 September 2026 with
+`scripts/benchmarks/opt-v09b-choice-query-memory.py` (Polars 1.44.2, price-contour 0.5.0, 22
+logical CPUs so a 22-thread Polars pool, WSL2 with 31 GiB). The as-solved apply artifact holds
+one row per quote as price-contour writes it (a ten-character String quote id, Int32 step, and
+Float32 scenario value, objective and one constraint); the side table holds an 8-level String
+`region` and an Int32 `tier`, in a different quote order. Each query ran in a fresh process:
+three runs at 1M quotes (range shown), one at 5M. The group-by is by `region` and `tier`
+(limit 100), the row index is 1,000 rows from the middle, and top-k is 1,000 quotes by
+objective.
+
+| Query | 1M quotes | 5M quotes | Estimate at 5M |
+|---|---|---|---|
+| Histogram, no side table | 82–83 MiB | 272 MiB | 865 MiB |
+| Row index, no side table | 25 MiB | 25 MiB | 64 MiB |
+| Top-k, no side table | 138–139 MiB | 589 MiB | 865 MiB |
+| Histogram, with the side table | 117–133 MiB | 388 MiB | 865 MiB |
+| Row index, with the side table | 102–115 MiB | 301 MiB | 712 MiB |
+| Top-k, with the side table | 184–194 MiB | 657 MiB | 865 MiB |
+| Group-by, with the side table | 346–363 MiB | 1,271 MiB | 1,875 MiB |
+
+Asserting the side table's correspondence by a whole-table join, as first built, held 971 MiB
+(histogram), 1,041 MiB (row index) and 1,281 MiB (top-k) at 5M quotes; the key fingerprint and
+attaching analysis values to the result rows only brought those to the figures above. The
+group-by still joins every quote, and is the largest. A frontier point's apply grew the process
+by 42 MiB at 1M quotes (10 steps, one constraint), against an estimate of 144 MiB.
+
+Thresholds, which a change to this path must re-measure against with the same method:
+
+- Every measured growth stays at or below the query's own admission estimate
+  (`estimate_choice_query_peak_bytes`), so admission never lets through a query it
+  under-counted; at 1M quotes the closest margin is top-k with the side table (194 against
+  224 MiB).
+- At 5M quotes, per quote: the histogram at most 100 bytes (measured 57 without and 81 with the
+  side table), top-k at most 160 bytes (123 and 138), the group-by at most 320 bytes (267), and
+  the row index at most 64 MiB in all without the side table (25 MiB) and 100 bytes per quote
+  with it (63).
+
+## Adjustment reports (OPT-V10)
+
+The behaviour is defined in [the high-level specification](high-level.md#behaviour). An
+adjustment report describes what the optimiser chose for one target, the as-solved result or
+one frontier point: how many quotes (or how much of a weight) took each scenario value, where
+1.0 is the unadjusted base price. It is a description of the solution, never a comparison with
+current or deployed pricing.
+
+**The pure report** (`src/haute/routes/_optimiser_adjustments.py`).
+`adjustment_report(histogram, spec)` turns one `ScenarioHistogram` result (see "Bounded choice
+queries and point materialisation") into a strict `OptimiserAdjustmentReport`
+(`extra="forbid"`, no NaN or Infinity). It reads nothing else: no file, job or grid. The
+statistical contract:
+
+- **Quantity.** The chosen scenario value of each quote, keyed by its `optimal_step`.
+- **Bars.** One bar per step of the job's recorded `scenario_grid`, in step order, including
+  steps no quote chose (zero quotes, zero weights): `{optimal_step, scenario_value, quotes,
+  weights}`. `scenario_value` is the grid's; `weights` holds, per computed weighting other than
+  quote count, the Float64 sum of that weight over the step's quotes. There is no binning, so a
+  Float32 linspace grid and a non-uniform grid such as `[0.8, 1.0, 1.3]` are described
+  exactly.
+- **Base price.** `has_unadjusted` is whether the grid holds a step whose value is exactly 1.0
+  (the Float32 grid value widened, as recorded). A quote is *adjusted up* when its step's value
+  is above 1.0, *adjusted down* when below, and *unadjusted* when it equals 1.0. Without a 1.0
+  step, unadjusted is not a category: its share is `null`, never 0. With a 1.0 step nobody
+  chose, the unadjusted share is 0.
+- **Population.** Every quote of the target; nothing is excluded.
+- **Weightings** (`weightings`, quote count first). `"quotes"` weighs each quote by 1. Each
+  per-quote value column of the choice frame, `optimal_objective` and `optimal_<c>` in
+  configured order, is also a candidate weighting, evaluated **at the chosen scenario**
+  (labelled "Objective at the chosen scenario" and "<c> at the chosen scenario"). A candidate
+  is computed only when every quote's value is non-negative and the total is positive: a
+  negative value (`ScenarioHistogram`'s `negative_<column>` count is non-zero) is a
+  `diagnostics_errors` entry `{diagnostic: "adjustment_weight", error_type: "NegativeWeight",
+  message}` naming the column and how many quotes are negative, and an all-zero column is
+  `{..., error_type: "ZeroTotalWeight", ...}`; that weighting is then absent from `weightings`
+  and from every bar's `weights`. The quote-count weighting always exists (a target with no
+  quotes is a `ValueError`).
+- **Summary figures per weighting**, with `W` the total weight and `w_s` a step's weight:
+  - `total` (`W`) and `mean`, `Σ w_s · v_s / W` (for quote count, the unweighted mean);
+  - `quantiles` `p5`, `p25`, `p50`, `p75`, `p95` by the **inverted CDF**: the smallest grid value
+    whose cumulative weight reaches `q · W` (the lower quantile, so always a grid value, and a
+    step of zero weight is never one);
+  - `share_up`, `share_down` and `share_unadjusted` (`null` without a 1.0 step), the weight
+    above, below and at 1.0 over `W`;
+  - `share_at_min` and `share_at_max`, the weight at the grid's first and last step over `W`:
+    "at the edge of the scenario range", which flags a solution pinned against the grid bounds.
+    A one-step grid's edge shares are both 1.
+  All sums are Float64 sums of the Float32 values the solver ingested (`math.fsum` over the
+  per-step Float64 sums), so a report's weighted totals equal the target's solved totals to
+  Float64 rounding.
+- `n_quotes` is the target's quote count (the histogram's `total`).
+- `deployed_factor_differs` is, for a ratebook target, the number of quotes flagged "deployed
+  factor differs from evaluated step" (the histogram's `deployed_factor_differs` counts summed;
+  see "Ratebook per-quote choices (OPT-V09C)"), and `null` for an online target, whose deployed
+  scenario is the chosen step itself.
+
+The report is validated where it is built: bars list steps `0..n-1` with strictly increasing
+values, every weighting but `"quotes"` is keyed in every bar's `weights`,
+`share_unadjusted` is `null` exactly when `has_unadjusted` is false, and
+`deployed_factor_differs` is at most `n_quotes`.
+
+**As solved.** `_finalize_solve_result` computes the solve's report before the completion
+is published, from the solve's in-memory per-quote frame through the same reducer
+(`histogram_of_frame(frame, spec)`, which runs `ScenarioHistogram` over the frame's choice
+columns, with the job's `scenario_grid`, configured constraints and mode), and stores it as
+`result["adjustments"]`: online from `SolveResult.dataframe` (`_as_solved_adjustments`),
+ratebook from `RatebookResult.quote_results` (`_ratebook_adjustments`). A report that cannot be
+built (a frame whose schema is not its mode's, a step outside the grid, no quotes) leaves
+`adjustments` `null` and records an `"adjustments"` entry in the result's `diagnostics_errors`,
+in both modes.
+
+**A frontier point.** A point's summary carries `adjustments: null`, so selecting a point
+removes the as-solved report from the displayed result; the point's own report is loaded on
+request. `POST /frontier/select` with `include_adjustments: true` selects the point as before
+and then answers `adjustments` with the point's report for the selected summary's
+`frontier_generation`, so one response never pairs one frontier's totals with another's
+distribution: the job must still be at that generation when the report is read (a recompute
+between selection and the report, cached or not, is the frontier-changed 409). The report
+comes from the job's report cache when it holds `(frontier_generation, point_index)`, otherwise
+through
+`ChoiceQueryService.choice_query(job_id, ChoiceTarget(point_index), ScenarioHistogram())`
+(point materialisation, admission, single-flight, latest-wins and the named 409 and 410, all as
+OPT-V09B specifies, in both modes). The route runs off the event loop and a client that
+disconnects detaches only itself (`run_until_disconnected`). Without a point,
+`adjustments` is the as-solved report whether or not it was requested; with a point and
+without the flag it is `null`.
+
+**The point report cache.** `job["adjustment_reports"]` maps `(frontier_generation,
+point_index)` to a report, in insertion order, for the job's 24-hour lifetime: heavy-state
+slimming and the slimming after a user action never touch it, so a cached report is served
+after the quote grid and the point's apply artifact are gone. A computed report is stored under
+the parent's lock only when the job's `frontier_generation` still equals the selected
+summary's (a recompute in between is the frontier-changed 409, and nothing is stored).
+It holds at most `MAX_CACHED_ADJUSTMENT_REPORTS = 64` reports; storing a 65th drops the oldest.
+A frontier recompute clears it in the same update that advances the generation.
+
+## Ratebook per-quote choices (OPT-V09C)
+
+The behaviour is defined in [the high-level specification](high-level.md#behaviour). A
+ratebook result is described from price-contour's canonical evaluation (0.5.0, "The
+price-contour contract haute relies on"), never from a haute reconstruction: each quote at the
+grid step nearest the Float32 product of its factor rates (`factor_product`), clamped to the end
+steps.
+
+**The as-solved frame.** At completion `_finalize_solve_result` persists
+`RatebookResult.quote_results` as `artifact_handles["apply_result"]`
+(`_persist_apply_frame_artifact`), inside the same completion publisher, with the same
+ownership, lease, cleaner, orphan cleanup and startup reaping as an online apply frame. A
+ratebook result without `quote_results` fails the completion loudly. Its schema is
+`quote_results_schema(constraint_names)`: the online apply frame's columns (`quote_id`, `optimal_step`,
+`optimal_scenario_value`, `optimal_objective`, `optimal_<c>`) followed by
+`factor_product`, `clamped_low` and `clamped_high`, in the grid's quote order.
+
+**A frontier point's frame** is `solver.evaluate(quote_grid, ratebook_factor_contexts,
+frontier_factor_tables[i]).quote_results`, materialised through `request_point_apply` exactly as
+an online point (admission first, one per job, latest-wins, shared per point, at most eight
+retained, the named 410 when it has no artifact and the grid has gone). Before the frame is
+persisted its evaluation's `total_objective` and `total_constraints` must equal the point's
+frontier row (`total_objective`, `totals`) exactly, as price-contour guarantees; a difference is
+a `RuntimeError`. Each retained point's tables are those the frontier kept, so no point is
+re-solved.
+
+**Deployed factor differs from evaluated step.** The solve evaluates each quote at its nearest
+step; the Optimiser Apply node deploys the unsnapped product of the factor rates, clipped to
+`combined_factor_bounds` (the ratebook collar, Q17). They differ only by the rounding to the nearest step inside the
+scenario range: a product past a grid edge deploys at that edge, the step the solver evaluated.
+The per-quote flag `deployed_factor_differs` is therefore
+
+    factor_product != optimal_scenario_value  and  not clamped_low  and  not clamped_high
+
+over the frame's own Float32 columns; the product is never recomputed in haute. A product
+exactly on a grid value, including an end value, is not flagged (the clamp flags are strict). The
+choice frame carries the flag per quote (top-k and the row index return it), the histogram and
+segment reducers count it per group, and the adjustment report states the portfolio count
+(`deployed_factor_differs`).
+
+**Factor segments.** A quote's factor levels come from the persisted ratebook factor rows
+(`artifact_handles["ratebook_factors"]`: the configured quote-id column and every factor
+column, as the banding source held them, one row per solved quote). `FactorSegments(factor,
+limit)` groups the chosen scenarios by one factor spec, named as the Rates tab names it
+(`":".join(columns)`, one of `ChoiceFrameSpec.factor_names`; any other name, an online job, or a
+limit outside `1..MAX_CHOICE_ROWS` is a 400). A composite factor is grouped by **all** its
+constituent columns. It is the second leased side table of `choice_query`: a reducer that reads
+factors (`reads_factors`) takes a lease on `artifact_handles["ratebook_factors"]` (a job or handle
+that is gone is the stable 410 "re-run the solve"), requires the handle's `row_count` to equal the
+chosen rows, and asserts the 1:1 correspondence with the same streamed key fingerprint as the
+analysis table (the quote id cast to String, as price-contour keys its frame), raising
+`ChoiceJoinError` on any difference, before the reducer runs. `ChoiceFrames.with_factors()` is then
+the inner 1:1 join on the quote id (`validate="1:1"`, `maintain_order="left"`). Each row is one
+level: `level`, the label the Rates tab shows for it (`__factor_group__`: each component
+canonicalised by `normalise_rating_key` under the factor column's dtype and joined with the
+unit separator, `_ratebook_factor_level_key`), `quotes`, `mean_scenario_value`, the Float64 sums
+and `deployed_factor_differs`, ordered by `quotes` descending and then the constituent values
+ascending, the first `limit` levels; `total` is the number of levels. The segments need no
+analysis columns: their quote counts sum to `n_quotes`, and each level's count equals that
+level's `quote_count` in the result's factor table. Admission adds the factor table's sampled
+decoded width to the side-table width the estimate reads (`side_row_width_bytes`), and the join
+counts as a whole-table join. An analysis column or a factor column whose name is a choice-frame
+column is refused with a 400, as before.
+
+The Segments tab (OPT-V11) reads its own level reducers over the same factor side table and labels; see "Segment breakdowns (OPT-V11)".
+
+## Segment breakdowns (OPT-V11)
+
+The behaviour is defined in [the high-level specification](high-level.md#behaviour). A segment
+breakdown describes where the optimiser adjusted: for one key, per level, how many quotes there
+are and the chosen scenario values against 1.0, the unadjusted base price. It describes the
+solution only, never a comparison with current or deployed pricing.
+
+**Keys** (`src/haute/routes/_optimiser_segments.py`, `segment_keys`). A result's keys are its
+analysis columns (in configured order) and, for a ratebook result, its rating factors (in
+`factor_columns` order, each named `":".join(columns)` as the Rates tab names it). A rating
+factor whose name is also an analysis column is listed once, as the rating factor, so its levels
+are the Rates tab's. `_finalize_solve_result` records them on the result as `segment_keys`, one
+`{key, source, binning, available, unavailable_reason}` per key: `source` is `"analysis"` or
+`"factor"`; `binning` is `"numeric"` for an analysis column of an integer, float or decimal dtype
+(from the side table's `column_stats`) and `"categorical"` otherwise (every factor, and String,
+Categorical, Enum, Boolean or temporal analysis columns). `segment_keys` survives every slimming
+and is shared by every target: a frontier point has the same quotes and the same levels. The
+**cardinality gate** decides availability, before any query:
+
+- A categorical analysis column is unavailable when its `approx_n_unique` exceeds
+  `ADMITTED_APPROX_LEVELS = 1800` (a margin under the exact limit for the HyperLogLog estimate's
+  error) or its `max_string_bytes` exceeds `MAX_SEGMENT_KEY_BYTES = 256`. A numeric column is
+  binned, so its cardinality never refuses it.
+- A rating factor is unavailable when its factor table (the as-solved result's
+  `factor_tables[name]`, an exact count) has more than `MAX_SEGMENT_LEVELS = 2000` rows, or its
+  longest level label (the full composite `__factor_group__`, UTF-8 bytes) exceeds 256 bytes.
+  Only the first `MAX_FACTOR_SEGMENT_KEYS = 30` factors can be available; a later one is listed
+  as unavailable, saying so.
+- `unavailable_reason` states the measured value and the limit; it is `null` exactly when the
+  key is available.
+
+**Levels** (`AnalysisSegments(column, binning, weight)` and `FactorLevelSegments(factor,
+weight)`, V09B reducers over `ChoiceFrames.joined()` and `with_factors()`). Every quote of the
+target falls in exactly one level:
+
+- *Missing* (`kind: "missing"`, label "Missing", analysis keys only): a quote whose value is
+  null (or NaN, for a float column), or a side-input quote the analysis frame had no row for
+  (`__haute_analysis_row_present` false, OPT-V09A). It is listed last, and only when it has
+  quotes.
+- *Numeric keys*: quantile bins. The bins start at the lower (inverted-CDF) quantiles at 0,
+  0.05, …, 0.95 of the non-missing values (Polars `quantile(q, "lower")`, always observed
+  values), made unique, so tied quantiles collapse into one bin and there are at most
+  `MAX_NUMERIC_BINS = 20` bins; one one-row collection reads them with the maximum. With starts
+  `e0 < e1 < … < ek` and maximum `m`, bin `i < k` holds `e_i <= x < e_(i+1)` (label `[e_i,
+  e_(i+1))`) and the last bin `e_k <= x <= m` (label `[e_k, m]`, or just `e_k` when it is the
+  maximum), so a few frequent values (a flag, a tier) keep separate bins. `kind` is `"bin"`,
+  with `lower` and `upper` the bin's bounds. Bounds are formatted in the column's dtype (an
+  integer as an integer, a Float32 by its shortest Float32 form). Bins are listed in ascending
+  order. A column with no non-missing value has only the Missing level.
+- *Categorical keys*: every distinct non-missing value (as a String; a factor by all its
+  constituent columns) is grouped, ordered by quotes descending and then by value ascending. The
+  **exact post-group-by check** runs on that grouping before any truncation: more than
+  `MAX_SEGMENT_LEVELS = 2000` levels is refused (`SegmentKeyUnavailableError`, a 422) whatever
+  the estimate admitted. Then the first `MAX_CATEGORICAL_LEVELS = 15` are listed (`kind:
+  "value"`; a factor level labelled as the Rates tab labels it, `_ratebook_factor_level_key`)
+  and the rest are summed into one `"Other"` level (`kind: "other"`, `merged_levels` the number
+  it merges, at least 1: exactly 16 levels list 15 and an Other of one; 15 or fewer have no
+  Other), listed after them. The re-aggregation is in the lazy plan: only at most 17 rows
+  are collected.
+- Level figures are additive Float64 sums of the Float32 choice columns: `quotes`, the sum of
+  the scenario value, the counts above and below 1.0, the count at the grid's first or last step
+  (`optimal_step` 0 or `n_steps - 1`), for a ratebook target the `deployed_factor_differs`
+  count, and, under a weighting, the weight's sum, its products with the scenario value and its
+  sums above, below and at the edge, and the count of negative weights. The counts over all
+  levels must equal the target's quote count (a `ChoiceJoinError` otherwise).
+
+**Weighting.** `weight` is `"quotes"` (each quote weighs 1, the default) or one per-quote value
+column of the choice frame, `optimal_objective` or `optimal_<c>`, evaluated **at the chosen
+scenario**, as the adjustment report's weightings are (OPT-V10, Q4). Any other name is a 422. A
+weighting is refused, never computed, when any quote's value is negative
+(`{diagnostic: "segment_weight", error_type: "NegativeWeight", message}` naming the column and
+the count) or the target's total is zero (`ZeroTotalWeight`); every level's `weighted` figures
+are then `null`. Otherwise a **level whose total weight is 0** has `weighted: null` and a
+`ZeroLevelWeight` entry naming the level, while its quote count and unweighted figures stay.
+
+**The response** (`OptimiserSegmentsResponse`, strict). `key`, `source`, `binning`, `weight`,
+`weight_label` ("Quotes", "Objective at the chosen scenario", "<c> at the chosen scenario"),
+`point_index`, `frontier_generation` (the generation the point index refers to), `n_quotes`,
+`n_levels` (bins, or distinct non-missing values before truncation), `mean_scenario_value` (the
+target's unweighted mean) and `weighted_mean_scenario_value` (`null` when the weighting was
+refused), `rows` and `diagnostics_errors`. Each row: `label`, `kind`, `lower`, `upper` (bins
+only), `merged_levels` (Other only), `quotes`, `weight_total` (the level's weight sum; `null`
+when the weighting was refused), `unweighted` and `weighted` figures (`mean_scenario_value`,
+`share_up`, `share_down`, `share_at_edge`; `weighted` `null` as above) and
+`deployed_factor_differs` (a ratebook target's count, `null` online). For `"quotes"` the
+weighted figures equal the unweighted ones. Quote counts sum to `n_quotes`, and the levels'
+weighted means, weighted by their `weight_total`, reconcile to the target's weighted mean.
+
+**`POST /api/optimiser/segments`** (`OPTIMISER_SEGMENTS_ROUTE`) takes
+`OptimiserSegmentsRequest {job_id, point_index (null for the as-solved result), key, weight}`.
+The key must be one of the result's `segment_keys` (else a 422 `{error_code:
+"segment_key_unknown", message}` listing them) and available (else a 422 `{error_code:
+"segment_key_unavailable", message}` with its reason); the exact check's refusal is the same
+422. It runs `ChoiceQueryService.choice_query` over `ChoiceTarget(point_index)`: admission,
+single-flight, point materialisation, the named 409 and 410 and availability all as OPT-V09B
+specifies. The route runs off the event loop and a client that disconnects detaches only itself
+(`run_until_disconnected`). Results are not cached server side.
+
+**`GET /api/optimiser/segments/index?job_id=…&point_index=…`** (`OPTIMISER_SEGMENT_INDEX_ROUTE`)
+ranks the keys by **adjustment spread**: the quote-weighted standard deviation of the levels'
+unweighted mean scenario values, `sqrt(Σ n_l (m_l − M)² / N)` over the levels a breakdown lists
+(bins or the top 15 and Other, and Missing), with `M = Σ n_l m_l / N`. Each available key is one
+query (one lazy pass over the target, weighted by quotes). `OptimiserSegmentIndexResponse` is
+`{point_index, frontier_generation, statistic: {label: "Adjustment spread", description}, keys}`,
+each key `{key, source, binning, available, unavailable_reason, spread}`: the available keys by
+`spread` descending (then key), then the unavailable ones in catalogue order with `spread`
+`null`; a key the exact check refuses during the ranking is listed as unavailable with its
+reason. The index is cached in `job["segment_indexes"]` by `(frontier_generation,
+point_index)`, stored under the parent's lock only when the generation is unchanged (a recompute
+in between is the frontier-changed 409), at most `MAX_CACHED_SEGMENT_INDEXES = 64` (the oldest
+dropped, through the adjustment report cache's `cache_point_report`), never slimmed, and cleared
+by a frontier recompute in the update that advances the generation.
+
+## Quotes explorer (OPT-V12)
+
+The behaviour is defined in [the high-level specification](high-level.md#behaviour). The
+Quotes explorer answers "which quotes, with which chosen scenario": one bounded page of the
+target's chosen scenarios (the as-solved result or one frontier point), sorted, searched and
+filtered on the server over every quote. It describes the solution only, never a comparison
+with current or deployed pricing.
+
+**The request** (`OptimiserApplyRequest`, `extra="forbid"`, so a misspelt field is a 422):
+
+- `job_id`, `point_index` (`null` for the as-solved result) as before;
+- `sort_by`: `null` keeps the apply frame's quote order; otherwise one sortable column of the
+  target (below), and `descending` (default `false`). Rows are sorted by the column and then by
+  `quote_id` ascending, whatever `descending` is, so equal values are always paged in one
+  order; nulls (an analysis value) sort last in both directions;
+- `quote_id_prefix`: the quotes whose id starts with it (case-sensitive; at least one
+  character, `null` for none);
+- `filters` (`OptimiserQuoteFilters`, `extra="forbid"`), every one optional and combined with
+  AND: `scenario_value_min` and `scenario_value_max`, an inclusive range compared with the
+  chosen scenario value widened to Float64 (so a grid value from the recorded `scenario_grid`
+  matches exactly; finite, and a minimum above the maximum is a 400); `at_range_edge`, the
+  quotes whose chosen `optimal_step` is the first or last step of the job's durable
+  `scenario_grid` (so it is answered after the quote grid is evicted, as the adjustment report's
+  edge shares are); `analysis_equals`, `{column: value}` with each column an analysis column of
+  the solve (any other is a 400) and `value` a JSON string, number, boolean or `null`
+  (`null` matches a missing value, including a side-input quote the analysis frame had no row
+  for); `deployed_factor_differs`, the ratebook quotes whose deployed factor differs from the
+  evaluated step (a 400 for an online result);
+- `offset` (`>= 0`, default 0) and `limit` (1 to `APPLY_PREVIEW_ROW_LIMIT = 100`, default 100;
+  a larger limit is a 422, never silently reduced).
+
+An equality value must suit its column's dtype (`equality_filter_supported`): a string for a
+String, Categorical or Enum column, an integer for an integer column, a number for a float
+column (compared in Float64, so the value a page returned matches its own row), a boolean for
+a Boolean column; `null` suits any. A column of any other dtype (temporal, decimal, nested)
+cannot be filtered by equality, and a mismatched value is a 400 naming the column, its dtype
+and the value.
+
+**The sortable columns** are `optimal_scenario_value`, `optimal_objective`, each `optimal_<c>`,
+each analysis column and, for a ratebook target, `factor_product`; any other `sort_by` is a 400
+listing them.
+
+**The depth guard.** A page must end within the first `QUOTE_PAGE_DEPTH_LIMIT = 10,000` rows:
+`offset + limit > 10,000` is refused with a 400 before anything is read, saying to narrow the
+filter or search. It bounds the sort's top-k (`offset + limit` rows held) and the result
+estimate. An offset past the last matching row is not an error: the page is empty and still
+states the counts.
+
+**The reducer** (`src/haute/routes/_optimiser_quotes.py`). `QuotePage(sort_by, descending,
+quote_id_prefix, filters, offset, limit)` is a V09B reducer over the choice frame; when the sort
+or an equality filter reads an analysis column it is `AnalysisQuotePage`, which reads
+`ChoiceFrames.joined()` (`joins_every_quote`, so admission counts the whole side-table join);
+otherwise the plan reads only the choice frame and attaches the analysis values to the page's
+own rows (`with_analysis`). The plan filters, counts the matching rows (one lazy count; the
+target's quote count when nothing filters), sorts with the quote-id tie-break and slices
+`[offset, offset + limit)`, so Polars keeps a top-`(offset + limit)` rather than sorting every
+quote; the result estimate is `offset + limit` rows for a sorted page and `limit` otherwise. A
+page with no sort and no filter reads only its own rows (`scans_every_quote` false), like
+`RowIndex`. It returns `ChoiceQueryResult(rows, total=matched, quotes=n)`. Admission,
+single-flight, point materialisation, the named 409 and 410 and availability are all as
+OPT-V09B specifies: an over-budget page is the 507 memory-limit payload.
+
+**The response** (`OptimiserApplyResponse`). `status`, `total_objective` and `constraints` (the
+target's totals), `from_artifact`, `columns`, `preview` (the page's rows), `row_count` (the
+target's quotes), `matched_row_count` (the quotes matching the search and filters),
+`offset` (the request's), `preview_row_count` (the rows returned) and `preview_row_limit` (the
+request's limit), and `error`. `columns` lists every key of every row, in order, each
+`{name, role, sortable, filterable}` (`OptimiserQuoteColumn`, strict): `quote_id` (`role:
+"id"`), `optimal_scenario_value` (`"scenario"`), `optimal_objective` (`"objective"`), each
+`optimal_<c>` in configured order (`"constraint"`), for a ratebook target `factor_product`
+(`"factor"`) and `deployed_factor_differs` (`"flag"`), then each analysis column in configured
+order (`"analysis"`). `optimal_step`, the clamp flags and the analysis presence marker are not
+returned. `sortable` is whether `sort_by` accepts the column; `filterable` is whether
+`analysis_equals` accepts it (an analysis column of a supported dtype, read from the side
+table's recorded `column_stats`). The response is validated where it is built: `matched_row_count
+<= row_count`, `preview_row_count <= preview_row_limit`, and every row's keys are the column
+names.
+
+
+## Solver sessions (OPT-W01)
+
+In process mode (`HAUTE_INTERACTIVE_EXECUTION_MODE=process`, the default), one dedicated spawn
+worker per solve job, the *solver session*, runs every native price-contour call the solve
+makes and every computation over a per-quote solve frame. That covers:
+
+- the grid build and the ratebook factor contexts;
+- the solve, the inline frontier and the summary;
+- the as-solved adjustment report and the apply-artifact write;
+- frontier recompute and point apply/evaluate.
+
+The server makes no price-contour call and holds no native optimiser object. It receives
+bounded plain data, plus parquet artifacts the session wrote.
+
+The explicit `thread` compatibility mode keeps the in-process path described in the sections
+above (`runtime_mode: "in_process"`), including the resident-grid admission gate, because
+nothing else bounds memory there.
+
+### Modules
+
+- `src/haute/routes/_optimiser_session.py` is the parent side: `SolverSession` and
+  `runtime_mode`.
+- `src/haute/routes/_optimiser_session_worker.py` is the child side: the session commands and
+  the child's session state.
+
+The session is a
+[dedicated worker](../execution-engine/low-level.md#dedicated-workers).
+
+### Budget
+
+Every session admission uses `ExecutionProfile.OPTIMISER_SOLVE` through `admit_growth_grant`
+(see the execution-engine admission section) and waits out
+`optimiser_setup:optimiser_estimate`. The profile's settings:
+
+| Setting | Value |
+|---|---|
+| Adaptive share | 10,000 basis points of `usable` |
+| Floor | 4 GiB |
+| Ceiling | none |
+| Fixed default | 4 GiB |
+| Memory-limit env | `HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_BYTES` / `_MB` |
+| Process-RSS-limit env | `HAUTE_OPTIMISER_SOLVE_PROCESS_RSS_LIMIT_BYTES` / `_MB` |
+
+The setup materialisation worker runs under its own `OPTIMISER_SOLVE` grant, which is released
+when that worker exits. Each session command is then admitted afresh.
+
+### Commands
+
+A command is one of `build_and_solve`, `sweep` or `apply_point`. `SolverSession.run_command`
+runs each command through this sequence:
+
+1. **Acquire the command slot.** The session runs one command at a time. The wait is bounded
+   by the caller's deadline and polls its stop signal, and nothing is reserved while waiting.
+2. **Admit a growth grant `G`.** The in-flight reservation is exactly `G`.
+3. **Send the command with `G`.** Before running it, the child re-applies its native cap as
+   its current backend charge plus `G`.
+4. **Run** the command.
+5. **Publish on the parent side** while the slot is still held: the solve's completion, the
+   sweep's new generation, or the point's handle. Otherwise the result is discarded.
+6. **Release** the reservation, then the slot.
+
+The cap installed for a command stays in place while the session is idle. It is never lifted.
+
+**`build_and_solve(SessionSolveRequest)`**:
+
+1. Builds the grid. It records `grid_forecast_bytes` (the resident-grid estimate) in the
+   command metrics but does not enforce it.
+2. Checks that the quote-analysis table has one row per grid quote.
+3. Runs the unchanged `_solve_online` / `_solve_ratebook` against a private record in the
+   `optimiser_worker` job store (private to the session process). The record is seeded with the parent job's `config`,
+   `input_provenance`, `node_label` and `setup_chunking`, and with the grid's `scenario_grid`.
+4. Returns a `SessionSolveOutcome`. It carries every plain completion field the in-process
+   finalize publishes (result, base result, publish summary, frontier data and factor tables,
+   artifact handles, ratebook level counts/dtypes/level order, setup chunking) and the
+   command's execution metrics.
+
+The child keeps the solver, quote grid and (ratebook) factor contexts in its session state,
+and drops the solve result.
+
+**`sweep(SessionSweepRequest)`** runs `_compute_frontier` against that state. It returns:
+
+- the capped frontier payload, built with generation `0`; the parent stamps the generation it
+  publishes under the parent lock;
+- the ratebook point factor tables.
+
+**`apply_point(SessionPointApplyRequest)`**:
+
+1. Creates a price-contour `CancelToken` and registers its `cancel` with the dedicated
+   worker's `on_command_cancel` for the whole command (OPT-PC02).
+2. Runs `apply_from_grid(..., cancel=)` (online), or `solver.evaluate(..., cancel=)` plus the
+   exact-totals check against the point's frontier row (ratebook; `expected_totals` is passed
+   in), and reads the per-quote frame, which the token also stops.
+3. Raises the library's `Cancelled` when the token was cancelled; otherwise writes the point's
+   apply artifact.
+4. Returns the artifact's handle.
+
+**Result size.** A returned envelope larger than `HAUTE_OPTIMISER_SESSION_RESULT_MAX_BYTES`
+(default 64 MiB) raises the dedicated worker's `WorkerResultTooLargeError` in the child. The command fails as an
+`error`; the result is never truncated.
+
+### Memory failures are fatal in every stage
+
+The solver, adjustment, inline-frontier and summary catches re-raise, in both modes, when
+`memory_error_in(exc)` finds a `MemoryError` behind the exception. Running out of memory is
+therefore never recorded as a diagnostic on a `completed` solve.
+
+### Job record
+
+| Field | Process mode | Thread mode |
+|---|---|---|
+| `runtime_mode` | `"session"` | `"in_process"` |
+| Heavy state | the `SolverSession`, under the heavy key `solver_session` | the native keys, as before |
+
+Consumers dispatch on `runtime_mode`, never on whether a key is present.
+
+When the session's runtime is gone, the job records `runtime_unavailable: {reason,
+memory_evidence, at}`. `reason` is one of `expired`, `solver_session_memory_limited` or
+`solver_session_crashed`.
+
+Every path that drops heavy state detaches the session and closes it outside the store lock
+(see the background-jobs heavy-object policy).
+
+A running command pins the session. If an expiry or clear happens while the session is pinned,
+it is detached and marked closing. It is terminated once the command returns, and the
+command's result is discarded.
+
+### Solve lifecycle
+
+The solve thread:
+
+1. admits;
+2. runs setup;
+3. starts the session, with a bounded start that polls the job's cancellation reason;
+4. runs `build_and_solve`;
+5. publishes the completion, with `solver_session` and `runtime_mode`, through the same
+   `publish_completion` claim the in-process finalize uses.
+
+**Cancellation and timeout** keep their existing immediate terminal transitions, which
+are the only claim needed against a concurrent completion:
+
+- a later `timed_out` outranks `cancelled` by the store's precedence;
+- a completion publishes only over `running`.
+
+The job's cancellation reason is the session's stop signal, so a cancelled or timed-out solve
+terminates the session at once, mid-native-call.
+
+**Solver input.** The session command owns the solver input. It is removed after
+`build_and_solve` returns, or once the session dies.
+
+**Graph/node single-flight** has two release paths:
+
+- after a successful publication, it is released while the session lives on;
+- after cancellation or failure, it is released only once the session has been terminated and
+  joined, and its inputs and orphan handles removed.
+
+### Frontier recompute and point apply
+
+**Frontier recompute** runs `sweep` as an admitted session command. (The in-process sweep
+stays unadmitted, as before.)
+
+Sweep cancellation stays cooperative:
+
+1. The sweep registry marks the sweep cancelled.
+2. The command runs to completion, holding its slot and reservation.
+3. The result is discarded.
+
+The session survives.
+
+**Point apply** runs `apply_point` inside the existing latest-wins flight. The flight counts as
+running while it waits for the session slot. The frontier generation is checked at three
+points:
+
+- after acquiring the slot;
+- before sending the command;
+- before publishing the handle.
+
+A change answers the existing 409 `_FRONTIER_CHANGED_DETAIL`.
+
+The flight's cancellation token (OPT-PC02; see "Bounded choice queries and point
+materialisation") goes to `run_command` as its `cancellation_token`, so it bounds the
+admission wait, and to the dedicated worker, whose cancel cell stops the running
+`apply_point` without ending the session. The flight also checks it after acquiring the slot
+and, under the parent lock, before adopting the handle. A cancelled point apply answers
+`ExecutionCancelledError`; nothing is published, the parent-owned artifact directory is
+removed, admission is released and the session keeps its runtime. A remote `Cancelled` is a
+cancellation only when the flight's token is cancelled, and it is never logged as a solver
+failure. Any other remote error keeps the existing failure mapping.
+
+### Session death
+
+A session that dies during a command answers that command:
+
+| Death | Solve job | Request |
+|---|---|---|
+| Memory death | `memory_limited` | 507, with the memory detail below |
+| Any other death | `error` | 500 |
+
+The job then records `runtime_unavailable`.
+
+After that:
+
+- A later request for an unmaterialised frontier point answers 410
+  `frontier_point_unavailable` with `runtime_reason`; a recompute keeps its existing 400
+  ("Solver and quote grid are not available for this job").
+- Retained point artifacts, save and MLflow log keep working.
+
+A server restart loses the job itself, which answers 404.
+
+### Memory evidence
+
+Each memory death records `memory_evidence`:
+
+- **`cap_confirmed`** requires the memory limiter's own record from the command, one of:
+  - the private cgroup's `memory.events.local` `oom` rising since the cap was installed, read
+    before cgroup cleanup;
+  - a Windows `JOB_OBJECT_MSG_JOB_MEMORY_LIMIT` notification. The child's completion-port
+    watcher counts it into a parent-owned counter, and the parent reads that counter without
+    blocking. An unreadable counter counts as no record.
+- **`watchdog`**: RSS supervision stopped the process, either the parent watchdog or a sampled
+  `ExecutionMemoryLimitExceededError`.
+- **`suspected`**: a `MemoryError`, or the exit-code heuristic, with no limiter record. A
+  Windows fail-fast abort usually lands here.
+- **`none`**: anything else. An unavailable memory sampler keeps its own message and `error`
+  classification.
+
+Wording and payload:
+
+- The job message and the later 410 wording are definite only for `cap_confirmed`, and hedged
+  otherwise.
+- Near-cap charge is recorded as supporting data. It never promotes the evidence.
+- The 507 / `memory_limit` detail carries `memory_evidence` and `stage`.

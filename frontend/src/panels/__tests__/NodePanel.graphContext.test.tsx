@@ -146,7 +146,7 @@ function renderWithGraph(opts: {
 
 // ─── Suite ────────────────────────────────────────────────────────
 
-describe("NodePanel — Phase 2 Package 3C (graph context + fail-loud instanceOf)", () => {
+describe("NodePanel - Phase 2 Package 3C (graph context + fail-loud instanceOf)", () => {
   beforeEach(() => {
     Object.defineProperty(window, "innerWidth", { value: 1920, writable: true, configurable: true })
     useUIStore.setState({ nodePanelWidth: 600, paletteOpen: true })
@@ -159,7 +159,7 @@ describe("NodePanel — Phase 2 Package 3C (graph context + fail-loud instanceOf
 
   // ─── Regression: rendered DOM is unchanged by the refactor ──────
 
-  describe("regression — DOM unchanged when graph data comes from context", () => {
+  describe("regression - DOM unchanged when graph data comes from context", () => {
     it("renders node label in the header, driven by context-supplied graph", () => {
       const node = makeNode()
       renderWithGraph({ node, allNodes: [node] })
@@ -283,7 +283,7 @@ describe("NodePanel — Phase 2 Package 3C (graph context + fail-loud instanceOf
 
   // ─── Fail loud: missing instanceOf ──────────────────────────────
 
-  describe("missing instanceOf — fail loud (#84)", () => {
+  describe("missing instanceOf - fail loud (#84)", () => {
     it("renders a diagnostic naming the missing id when the referenced original is absent", () => {
       const instance = makeNode({
         id: "inst_1",

@@ -15,7 +15,7 @@
 | `src/haute/_git_lock.py` | Reentrant per-repository mutation-lock registry shared by the engine and clone-state helpers. Uses a bounded marker-aware identity cache, a stable project-path key across `git init`, a common-Git-directory key for linked worktrees, and weak lock values so idle repositories are evicted. It never invokes Git. |
 | `src/haute/_git_state.py` | Per-clone, untracked JSON state under `<project_root>/.haute/`: working-branch association (`state.json`), UI preferences (`prefs.json`), last-pushed SHAs (`pushed.json`), delete tombstones (`trash.json`). Fail-soft parsing plus lock-scoped atomic replace; no git subprocess calls. |
 | `src/haute/_gitignore_guard.py` | Shared `.gitignore` deny-list owned by [sandbox-security](../sandbox-security/low-level.md) and append-only `ensure_gitignore_guards()` used both by project initialization and unborn-repository seeding; preserves tracked `*.haute.json` sidecars while excluding per-clone/cache/data/venv state. |
-| `src/haute/routes/git.py` | FastAPI router at `/api/git`. One `def` (sync) handler per endpoint, each a thin `try/except` around a single Git-domain call; converts the domain layer's typed exceptions to HTTP responses via `_handle_git_error`. |
+| `src/haute/routes/git.py` | FastAPI router at `/api/git`. One `def` (sync) handler per Git endpoint, each a thin call into the Git domain; a `GitError` the route does not map itself reaches the application handler, which converts it with `git_error_http_exception`. The `/api/git/storage/*` endpoints hosted in this router are owned by [hosted-project-storage](../hosted-project-storage/low-level.md). |
 
 ## Key types and data structures
 
@@ -63,7 +63,10 @@ only to re-export their stable surface. This keeps the graph acyclic and prevent
 subprocess or clone-state owner from appearing during future work.
 
 **Process boundary.** `_git_core.py` is the sole module that imports or invokes
-`subprocess`. Ordinary local commands use `_run_git`, `_run_git_ok`, or `_run_git_rc`.
+`subprocess` for Git, in the Git modules and everywhere else: a consumer outside the Git
+component, such as the container deploy target's image tag, calls the core too, and a
+repository-hygiene test rejects a Git argument list in any other subprocess-importing
+module. Ordinary local commands use `_run_git`, `_run_git_ok`, or `_run_git_rc`.
 Commands that need an explicit timeout, non-interactive remote environment, replacement
 decoding, or binary output use the overloaded `_run_git_process` adapter. The adapter
 returns an immutable typed result (`str` output by default, `bytes` when `binary=True`) and
@@ -100,22 +103,24 @@ appends only missing exact lines under a `# Haute` block. Existing non-UTF-8 byt
 with replacement for membership testing. It deliberately does not ignore `*.haute.json`,
 because pipeline position sidecars belong on the save ledger.
 
-**`GitWorkingBranchResponse.state`** (computed by `working_branch_status`) is one of six
-literal values: `"no-repository"` (there is no Git repository), `"unset"` (repository
-present, attached HEAD, no working branch recorded), `"detached"` (HEAD has no branch;
-`head_sha` supplies the accurate commit context), `"invalid"` (Git metadata or the recorded
-pair is missing / ineligible / invariant-violating), `"divergent"` (attached HEAD is on
-neither the recorded branch nor its ledger), or `"ready"`. This read is total for missing
-and invalid repository metadata; transport/server failures remain non-200 responses.
+**`GitWorkingBranchResponse.state`** (computed by `working_branch_status`) is one of seven
+literal values: `"git-unavailable"` (no Git binary on PATH; distinct from
+`"no-repository"` so the UI does not offer init), `"no-repository"` (there is no Git
+repository), `"unset"` (repository present, attached HEAD, no working branch recorded),
+`"detached"` (HEAD has no branch; `head_sha` supplies the accurate commit context),
+`"invalid"` (Git metadata or the recorded pair is missing / ineligible /
+invariant-violating), `"divergent"` (attached HEAD is on neither the recorded branch nor
+its ledger), or `"ready"`. This read is total for missing and invalid repository metadata;
+transport/server failures remain non-200 responses.
 
 **HTTP contracts.** Every handler is synchronous `def`, so FastAPI runs git subprocess work
 in its thread pool. Request bodies are the named Pydantic models; omitted fields take the
 defaults shown. Query bounds are enforced by FastAPI and invalid input uses its standard 422
-validation envelope.
+validation envelope. The `/api/git/storage/*` endpoints hosted in this router and the post-commit push enqueue on `POST /api/git/commit` are owned by [hosted-project-storage](../hosted-project-storage/low-level.md).
 
 | Method and path | Input | Success response |
 |---|---|---|
-| `GET /api/git/working-branch` | None | `GitWorkingBranchResponse` (six-state readiness contract above, including `head_sha` when resolvable) |
+| `GET /api/git/working-branch` | None | `GitWorkingBranchResponse` (seven-state readiness contract above, including `head_sha` when resolvable; augmented via `_with_storage_state` with durable-storage fields `storage`, `storage_remote`, `storage_forked_from`, `sync`, and `storage_bind` owned by [hosted-project-storage](../hosted-project-storage/low-level.md)) |
 | `POST /api/git/working-branch` | `GitSetWorkingBranchRequest {branch,create=false}` | `GitSetWorkingBranchResponse {working_branch,state,last_save_sha?}` |
 | `POST /api/git/move` | `GitMoveRequest {sha}` | `GitMoveResponse {sha,short_sha,prior_branch,is_detached=true}` |
 | `POST /api/git/identity` | `GitSetIdentityRequest {user_name,user_email,set_global=false}` | `GitSetIdentityResponse {user_name,user_email,scope}` |
@@ -133,7 +138,7 @@ validation envelope.
 | `GET /api/git/prefs` | None | `GitPrefs {skip_switch_confirm=false}` |
 | `POST /api/git/prefs` | `GitPrefs {skip_switch_confirm=false}` | The persisted `GitPrefs` |
 | `GET /api/git/remotes` | None | `GitRemotesResponse {remotes:[GitRemote {name,url,working,ledger}...],working_branch?}`; `working` and `ledger` are the sole per-leg divergence records and URL userinfo is redacted |
-| `GET /api/git/show/{sha}` | Commit SHA path | Read-only `PipelineGraph` |
+| `GET /api/git/show/{sha}` | Commit SHA path; required query `source_file` (project-relative pipeline file) | Read-only `PipelineGraph` of that file at the commit |
 | `GET /api/git/commit-context/{sha}` | Commit SHA path; query `base=null` | `GitCommitContext`, with `delta_from_base` only when `base` is supplied |
 | `POST /api/git/push` | `GitPushRequest {remote}` | `GitPushResponse {remote,working_branch,ledger_branch,default_branch,bootstrapped_default=false,pushed_refs=[]}`; `default_branch` and `bootstrapped_default` are required response members, and working/ledger non-fast-forward is 409 |
 | `POST /api/git/fast-forward` | `GitFastForwardRequest {remote}` | `GitFastForwardResponse {remote,working_branch,fast_forwarded=[]}` |
@@ -144,9 +149,12 @@ validation envelope.
 **Save.** `commit_save(paths, working, cwd, message)` → `resolve_ledger(working)` (find-or-
 lazily-spawn the ledger at the working branch's current tip, checkout if not already
 current) → `git status --porcelain -- <paths>` to check anything in *paths* actually
-changed (idempotent no-op returns `None`) → `git add -- <paths>` → `git commit -m <msg> --
+changed (idempotent no-op returns `None`) → `git add -- <paths>` → `git diff --cached --name-only --no-renames HEAD -- <paths>` re-check (returns `None` when no path is listed, reconciling a stale index entry that reported a spurious modification; the listed paths, in full, are what the default message names) → `git commit -m <msg> --
 <paths>` (pathspec-scoped, so it commits only those paths' working-tree state regardless of
-what else the user may have pre-staged) → returns the new SHA.
+what else the user may have pre-staged) → returns the new SHA. A canvas save passes no
+message, so the default names the changed files; an assistant apply passes its change
+headline and an assistant undo `Undo: ` and that headline, through
+`SavePipelineService.save_graph_transactionally(commit_message=...)`.
 
 Every public mutation entry point acquires the reentrant repository lock before its first
 precondition read and holds it through Git changes, clone-state writes, and any compensation.
@@ -407,15 +415,15 @@ tips (verifying each still resolves — a tombstone can outlive its objects if t
 were hand-deleted and gc ran), and consumes the trash
 refs + tombstone. The restored pair is NOT auto-adopted as the working branch.
 
-**Historical extraction (`archive_commit` / `commit_pipeline_graph`).** `ls-tree` first
+**Historical extraction (`src/haute/_git_history.py::archive_commit` / `src/haute/routes/_helpers.py::commit_pipeline_graph`).** Bounded extraction is owned by `archive_commit`, while the parse step `commit_pipeline_graph` is owned by [server-api](../server-api/low-level.md). `ls-tree` first
 enumerates the selected commit and filters to `haute.toml`, Python modules, Haute sidecars,
 and files below `config/` or `prompts/`; `git archive` receives only those literal paths.
 Tar extraction is implemented with Python-3.11-compatible regular-file/directory handling
 and validates the complete member list before writing. It rejects traversal, unsupported
 members, more than `_HISTORY_ARCHIVE_MAX_MEMBERS = 10_000` entries, and cumulative
 regular-file size above `_HISTORY_ARCHIVE_MAX_BYTES = 64 * 1024 * 1024`. Malformed or
-over-limit tar data raises `GitHistoryReadError`. Parsing tries each discovered pipeline,
-but if every candidate fails it raises the same typed failure rather than returning
+over-limit tar data raises `GitHistoryReadError`. Parsing reads only the requested
+`source_file` (contained to the extracted tree); a file absent at that commit or one that fails to parse raises the same typed failure rather than returning
 `PipelineGraph()`. Temporary
 directory cleanup retries transient Windows sharing violations and logs an exhausted cleanup
 without replacing a successfully parsed response with a cleanup error.
@@ -506,17 +514,17 @@ not be converted into an empty-remote bootstrap. A later authoritative default f
 update the selected remote-tracking ref and object database before validation refuses, but
 never mutates those user-owned local surfaces.
 
-`routes/git.py`'s `_handle_git_error(e: GitError) -> NoReturn` is the sole error-to-HTTP
-mapping point, dispatched by `isinstance` in most-specific-first order:
+`routes/git.py`'s `git_error_http_exception(e: GitError) -> HTTPException` is the sole
+error-to-HTTP mapping point, applied by the application's `GitError` handler
+(`routes/_error_handlers.py`) and dispatched by `isinstance` in most-specific-first order:
 `GitGuardrailError` → 403, `GitDomainError` → 400 (verbatim message), plain `GitError` → 400
 with the sanitized `_INTERNAL_ERROR_DETAIL` constant (full detail logged server-side only).
 `GitPushRejectedError` and `GitMilestoneForkError` are caught BEFORE the generic `GitError`
 handler in the two routes that can raise them (`git_push`, `git_commit`) and mapped to 409
 with their structured payload's `model_dump()` as `HTTPException.detail`; the wire envelope
-is `{"detail": <GitPushRejection|GitMilestoneFork object>}`. Every route additionally has a catch-all
-`except Exception` that logs with `exc_info=True` and returns a plain 500 with the sanitized
-detail — this is the backstop for anything that isn't a `GitError` at all (e.g. a bug in
-this layer itself).
+is `{"detail": <GitPushRejection|GitMilestoneFork object>}`. Anything that isn't a
+`GitError` at all (e.g. a bug in this layer itself) reaches the server's unexpected-exception
+handler, which logs its traceback and returns a plain 500 with the sanitized detail.
 
 ## Testing
 
@@ -533,7 +541,7 @@ process failures, and precise ref-movement races deterministic.
   modules, organized into
   focused test classes covering: slugification, branch-category naming, ledger
   resolve/spawn, `commit_save` (including idempotent-no-op saves), milestone merge and its
-  invariant checks, git identity get/set, working-branch status across all six states,
+  invariant checks, git identity get/set, working-branch status across all seven readiness states,
   `set_working_branch` including the unborn-repo seed path and its gitignore-guard
   interaction (`TestSeedGitignoreGuards`, `TestSetWorkingBranchUnbornNonDefault`), move-to-
   commit, milestone history and commit-context breadcrumbs, rename-preserving ledger
@@ -555,7 +563,7 @@ process failures, and precise ref-movement races deterministic.
 - **`tests/test_git_improvements.py`** — focused roadmap regressions for the shared
   repository lock (including cached lookup, `git init` identity stability, and weak-registry
   eviction), concurrent real saves, lock-scoped atomic clone-state updates,
-  six-state readiness, locale-stable Git execution, NUL-delimited history fields,
+  seven-state readiness, locale-stable Git execution, NUL-delimited history fields,
   batched commit context, merge-replay refusal, network-free remote listing, targeted
   historical extraction, archive member/byte ceilings, typed archive/parse failures, and
   Windows cleanup retries.
@@ -585,7 +593,7 @@ process failures, and precise ref-movement races deterministic.
   append-only missing-entry repair, and non-UTF-8 input handling.
 - **`tests/test_git_routes.py`** — the HTTP layer: every route's happy path, that all
   handlers are genuinely sync `def` (not `async def`, to avoid event-loop blocking),
-  general-exception-to-500 handling, `_handle_git_error`'s logging and status-code mapping
+  general-exception-to-500 handling, `git_error_http_exception`'s logging and status-code mapping
   for all three error families, and that ref-moving routes correctly wrap their `_git` call
   in `pause_watcher()`. The push route pins `default_branch`,
   `bootstrapped_default`, and `pushed_refs` on bootstrap and established-remote responses,

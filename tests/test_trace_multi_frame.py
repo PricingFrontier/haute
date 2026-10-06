@@ -27,14 +27,12 @@ import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
-from haute._json_flatten import _json_cache_dir
-from haute._json_shred._cache import build_per_port_cache
 from haute._sandbox import _get_project_root, set_project_root
 from haute._trace_correlation import _correlate_rows_posthoc
 from haute._types import NodeType
 from haute.executor import _preview_cache
 from haute.trace import execute_trace
-from tests.conftest import make_graph
+from tests.conftest import build_test_api_input_snapshots, make_graph
 from tests.test_output_nested_roundtrip import _FIXTURE, _api_input_config, _output_mapping
 
 
@@ -68,11 +66,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     data_path = tmp_path / "data" / "data_model_example.json"
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_text(_FIXTURE.read_text())
-    build_per_port_cache(
-        data_path,
-        _api_input_config(data_path),
-        _json_cache_dir(data_path, "working"),
-    )
+    build_test_api_input_snapshots(data_path, _api_input_config(data_path))
     yield data_path
     set_project_root(original)
     _preview_cache.clear()
@@ -175,6 +169,71 @@ def test_edge_join_same_multi_frame_source_uses_physical_port_roles() -> None:
     assert rows["api"] == {"policy_id": "P1", "premium": 999, "rate": 1.2}
 
 
+@pytest.mark.parametrize("edge_order", [("policies", "rates"), ("rates", "policies")])
+def test_row_scope_names_each_port_of_one_source_by_its_own_frame(
+    edge_order: tuple[str, str],
+) -> None:
+    """Two ports of one source feed one program under different input names.
+
+    Keying the input name by node pair gave both ports the name of whichever edge
+    came last, so the ``rates`` port could be treated as the root input and
+    matched on the policies ``x``.
+    """
+    from haute._trace_correlation import RowScopeResolver
+    from haute._types import GraphEdge, GraphNode, NodeData
+    from haute.trace import _trace_lineage_alignments
+
+    code = "df = policies.join(rates, how='cross', maintain_order='left_right')"
+    node_map = {
+        "api": GraphNode(
+            id="api", data=NodeData(label="api", nodeType=NodeType.API_INPUT, config={})
+        ),
+        "priced": GraphNode(
+            id="priced",
+            data=NodeData(label="priced", nodeType=NodeType.POLARS, config={"code": code}),
+        ),
+    }
+    edges = [
+        GraphEdge(id=f"e_{handle}", source="api", target="priced", sourceHandle=handle)
+        for handle in edge_order
+    ]
+    alignments, input_names, child_input_names, _aliases = _trace_lineage_alignments(
+        SimpleNamespace(relevant_edges=edges, node_map=node_map, submodels=None)
+    )
+    policies = pl.LazyFrame({"x": [1]})
+    rates = pl.LazyFrame({"x": [2, 1], "premium": [7, 7]})
+    priced = policies.join(rates, how="cross", maintain_order="left_right")
+    plans = {"api": {"policies": policies, "rates": rates}, "priced": priced}
+    edge_metadata = {("api", "priced"): [(handle, None) for handle in edge_order]}
+    frames: dict[str, Any] = {"priced": priced.head(2).collect()}
+    resolver = RowScopeResolver(
+        node_map=node_map,
+        prefixes={"priced": 2},
+        alignments=alignments,
+        edge_metadata=edge_metadata,
+        input_names=input_names,
+        child_input_names=child_input_names,
+        plans=lambda: plans,
+        frames=frames,
+        head_resolved={"priced"},
+    )
+
+    rows = _correlate_rows_posthoc(
+        frames,
+        order=["api", "priced"],
+        parents_of={"priced": ["api"]},
+        target_node_id="priced",
+        row_index=0,
+        node_map=node_map,
+        edge_metadata=edge_metadata,
+        traced_column="premium",
+        row_scope=resolver,
+    )
+
+    assert frames["priced"].row(0, named=True) == {"x": 1, "x_right": 2, "premium": 7}
+    assert rows["api"] == {"x": 1}
+
+
 def test_trace_through_multi_frame_source_succeeds(project: Path) -> None:
     """Tracing a node downstream of a multi-frame apiInput must correlate
     through the frame the edge's sourceHandle names — not crash."""
@@ -223,7 +282,13 @@ def test_trace_route_multi_frame_not_opaque_500(project: Path) -> None:
 
     resp = client.post(
         "/api/pipeline/trace",
-        json={"graph": graph, "row_index": 0, "target_node_id": "t", "column": "pid2"},
+        json={
+            "seed_plan": [],
+            "graph": graph,
+            "row_index": 0,
+            "target_node_id": "t",
+            "column": "pid2",
+        },
     )
     assert resp.status_code == 200, resp.text
 
@@ -231,6 +296,7 @@ def test_trace_route_multi_frame_not_opaque_500(project: Path) -> None:
     resp = client.post(
         "/api/pipeline/trace",
         json={
+            "seed_plan": [],
             "graph": graph,
             "row_index": 0,
             "target_node_id": "api",
@@ -309,6 +375,71 @@ def _same_source_join_graph(api_config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _aggregated_join_side_graph(api_config: dict[str, Any]) -> dict[str, Any]:
+    """The policies frame is a join's base; the drivers frame, counted per policy, its join side."""
+    return {
+        "nodes": [
+            {
+                "id": "api",
+                "data": {
+                    "label": "api",
+                    "nodeType": NodeType.API_INPUT.value,
+                    "config": api_config,
+                },
+            },
+            {
+                "id": "counts",
+                "data": {
+                    "label": "counts",
+                    "nodeType": "polars",
+                    "config": {
+                        "code": "df = drivers.group_by('policy_id').agg(pl.len().alias('drivers'))"
+                    },
+                },
+            },
+            {
+                "id": "joined",
+                "data": {
+                    "label": "joined",
+                    "nodeType": NodeType.EDGE_JOIN.value,
+                    "config": {"how": "left", "on": ["policy_id"], "suffix": "_right"},
+                },
+            },
+        ],
+        "edges": [
+            {"id": "e_d", "source": "api", "target": "counts", "sourceHandle": "drivers"},
+            {
+                "id": "e_p",
+                "source": "api",
+                "target": "joined",
+                "sourceHandle": "policies",
+                "targetHandle": "base",
+            },
+            {"id": "e_c", "source": "counts", "target": "joined", "targetHandle": "join"},
+        ],
+    }
+
+
+@pytest.mark.parametrize("policy_id", [1001, 1002], ids=["two_drivers", "one_driver"])
+def test_a_source_row_is_given_only_to_the_child_reading_its_frame(
+    project: Path, policy_id: int
+) -> None:
+    """The source's row is the policies row the join's base proves, whichever order
+    the children are listed in; ``counts`` reads the drivers frame, so that row is
+    not its input."""
+    graph = make_graph(_aggregated_join_side_graph(_api_input_config(project)))
+
+    result = execute_trace(
+        graph, row_index=0, target_node_id="joined", row_values={"policy_id": policy_id}
+    )
+
+    steps = {step.node_id: step for step in result.steps}
+    assert result.omissions == []
+    assert steps["api"].output_values == {"policy_id": policy_id}
+    assert steps["joined"].input_values["api.policy_id"] == policy_id
+    assert steps["counts"].input_values == {}
+
+
 def test_trace_multi_edge_output_correlates_source_to_root_frame(project: Path) -> None:
     """Four edges api→out: the source step must correlate against the frame
     that actually identifies the traced row (the root ``policies`` frame),
@@ -359,28 +490,6 @@ def test_trace_same_source_join_resolves_frame_per_traced_column(project: Path) 
 # ---------------------------------------------------------------------------
 
 
-def test_bundle_output_row_count_counts_rows_not_frames() -> None:
-    """A multi-frame node's output row count derives from its frames' rows
-    (max across frames, mirroring the parent-side handling in
-    ``enrich_steps``) — never ``len(dict)``, which counts FRAMES.
-
-    Guards the row-lineage input for a bundle node appearing as an
-    intermediate step; today ``detect_row_lineage_type`` short-circuits
-    apiInput to "created" so the miscount is masked, but the wrong count
-    must not survive to bite the next non-apiInput bundle emitter.
-    """
-    from haute._trace_enrichment import _node_output_row_count
-
-    frames = {
-        "a": pl.DataFrame({"x": [1, 2, 3]}),
-        "b": pl.DataFrame({"y": [1, 2, 3, 4, 5]}),
-    }
-    assert _node_output_row_count(frames) == 5
-    assert _node_output_row_count(pl.DataFrame({"x": [1, 2]})) == 2
-    assert _node_output_row_count(None) == 0
-    assert _node_output_row_count({}) == 0
-
-
 def test_banding_factor_dtypes_scoped_to_consumed_frame(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -388,14 +497,14 @@ def test_banding_factor_dtypes_scoped_to_consumed_frame(
     factor dtypes from that frame only — not a dict-iteration-order merge of
     every emitted frame, where a column name recurring across frames with a
     different dtype wins by table order and drives the Float32-faithful
-    continuous-rule re-match in the wrong numeric domain."""
+    interval re-match in the wrong numeric domain."""
     # Rebuild the cache with the drivers frame's copy of the ancestor key
     # declared float — the policies frame keeps it int, and policies comes
     # FIRST in table (and so dict-iteration) order.
     config = copy.deepcopy(_api_input_config(project))
     drivers_table = next(t for t in config["tables"] if t["label"] == "drivers")
     next(c for c in drivers_table["columns"] if c["name"] == "policy_id")["type"] = "float"
-    build_per_port_cache(project, config, _json_cache_dir(project, "working"))
+    build_test_api_input_snapshots(project, config)
     _preview_cache.clear()
 
     graph = make_graph(
@@ -448,7 +557,7 @@ def test_rating_factor_dtypes_scoped_to_consumed_frame(
     config = copy.deepcopy(_api_input_config(project))
     drivers_table = next(t for t in config["tables"] if t["label"] == "drivers")
     next(c for c in drivers_table["columns"] if c["name"] == "policy_id")["type"] = "float"
-    build_per_port_cache(project, config, _json_cache_dir(project, "working"))
+    build_test_api_input_snapshots(project, config)
     _preview_cache.clear()
 
     graph = make_graph(

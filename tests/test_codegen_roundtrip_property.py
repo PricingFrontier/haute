@@ -8,26 +8,26 @@ The stable artifact invariant is source-focused:
   files from the first pass.
 
 Sidecar JSON bytes are intentionally outside the byte-identical assertion.
-The source is the user-edited artifact; sidecars are normalized storage. In
-particular, generated ``contract="opaque"`` annotations can make a parsed
-graph's next sidecar write include an explicit contract that was absent from a
-first-save GUI graph. This file compares source bytes and semantic config
-values after normalization, not sidecar formatting.
+The source is the user-edited artifact; sidecars are normalized storage. This
+file compares source bytes and semantic config values after normalization, not
+sidecar formatting.
 
 Known W5 tensions intentionally scoped here:
 
-* dataInput first-save non-idempotence with opaque contracts: this suite uses
-  explicit ``contract="opaque"`` in capstone fixtures and asserts source
+* declared opaque contracts: the capstone fixtures declare ``contract="opaque"``
+  on every node. An absent contract and ``"opaque"`` mean the same to every
+  consumer, so codegen omits the keyword: an inline node (Polars, Explore, Edge
+  Join) parses back without a contract while a sidecar keeps what it stored.
+  The comparator treats an opaque contract as absent and asserts source
   idempotence, not sidecar byte idempotence.
-* scaffold/docstring observations: generated scaffolding is not user semantic
-  code, but pipeline names and node docstrings/descriptions are. The
-  comparator asserts pipeline names and descriptions exactly, so module-header
-  and function-docstring injection classes are covered by the corpus/property.
-* submodel path interpolation: submodel container nodes are explicitly budgeted
-  out of this root-decorator property. Adversarial submodel *paths* with
-  quotes/backslashes remain a known raw interpolation surface in
-  ``pipeline.submodel("{path}")``; fuzzing that path would be a production bug
-  report, not a harness fallback.
+* docstring observations: the generated statements (docstring, ``return df``,
+  output declaration) are not user semantic code, but pipeline names and node
+  docstrings/descriptions are. The comparator asserts pipeline names and
+  descriptions exactly, so module-header and function-docstring injection
+  classes are covered by the corpus/property.
+* submodel paths: submodel container nodes are explicitly budgeted out of this
+  root-decorator property. Registration paths are printed by the literal
+  printer (``quote_string``) rather than interpolated into a template.
 * Tier-3 ``_parse_decorator_kwargs_regex`` policy: these properties exercise
   generated AST-valid artifacts. Editor-only recovery for manually corrupted
   files is covered by the pipeline recovery tests.
@@ -38,10 +38,12 @@ from __future__ import annotations
 import ast
 import json
 import tempfile
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 import hypothesis.strategies as st
+import pytest
 from hypothesis import HealthCheck, given, settings
 
 from haute._banding_config import expand_banding_config_from_sidecar
@@ -159,8 +161,8 @@ def _capstone_root_graph(
     * C5: transform and dataInput code boxes use multiline chain assignment.
     * Brace/docstring: descriptions and config strings include braces and
       triple quotes.
-    * Paren scanner: decorator strings include ``(`` and ``)`` before contract
-      injection runs.
+    * Literal printer: decorator strings include ``(``, ``)`` and quotes, which
+      must come back as the same string literal values.
     """
     left = "ui:left-source:7"
     api = "ui/api-input:8"
@@ -297,18 +299,10 @@ def _capstone_root_graph(
                 {
                     "factors": [
                         {
-                            "banding": "continuous",
+                            "banding": "breakpoints",
                             "column": "prediction (gross)",
                             "outputColumn": "score_band",
-                            "rules": [
-                                {
-                                    "op1": ">=",
-                                    "val1": "0",
-                                    "op2": "<",
-                                    "val2": "100",
-                                    "assignment": "{low}",
-                                }
-                            ],
+                            "rules": [{"boundary": "100", "label": "{low}"}],
                             "default": "other",
                         }
                     ]
@@ -353,7 +347,7 @@ def _capstone_root_graph(
                     "column_name": "scenario (value)",
                     "min_value": 0.0,
                     "max_value": 1.0,
-                    "steps": 3,
+                    "stepCount": 3,
                     "step_column": "step_index",
                     "code": _simple_user_code(user_text),
                 }
@@ -374,8 +368,6 @@ def _capstone_root_graph(
                     "constraints": {"loss_ratio": {"max": 0.65}},
                     "max_iter": 7,
                     "tolerance": 0.001,
-                    "chunk_size": 128,
-                    "record_history": False,
                 }
             ),
             description="optimiser " + description,
@@ -617,6 +609,11 @@ def _canonical_config(node_type: NodeType, config: dict[str, Any], remap: dict[s
     normalized = dict(config)
     if normalized.get("code") == "":
         normalized.pop("code")
+    if normalized.get("contract") == "opaque":
+        # An absent contract and "opaque" mean the same to every consumer, so
+        # codegen omits an opaque keyword and an inline node (Polars, Explore,
+        # Edge Join) parses back without one; a sidecar keeps what it stored.
+        normalized.pop("contract")
     if node_type == NodeType.BANDING:
         normalized = expand_banding_config_from_sidecar(normalized)
     if node_type == NodeType.RATING_STEP:
@@ -760,6 +757,61 @@ def test_corpus_roundtrip_semantics_and_source_bytes() -> None:
         _assert_roundtrip_invariants(graph)
 
 
+_SHARED_COLUMN_CONFIG = {
+    "selected_columns": ["_id", "premium (gross)", 'quote " and )'],
+    "column_renames": {"_id": "id", "premium (gross)": "premium net"},
+    "categorical_levels": {"_id": ["_low", "high", None]},
+}
+
+
+@pytest.mark.parametrize("node_type", sorted(ROUNDTRIPPABLE_NODE_TYPES, key=str))
+def test_shared_column_config_roundtrips_for_every_executable_node_type(
+    node_type: NodeType,
+) -> None:
+    """Shared column metadata is opaque authored configuration on every node."""
+    graph = _corpus_graphs()[0].model_copy(deep=True)
+    node = next(node for node in graph.nodes if node.data.nodeType == node_type)
+    node.data.config.update(deepcopy(_SHARED_COLUMN_CONFIG))
+    input_config = deepcopy(node.data.config)
+
+    first, parsed, second = _roundtrip(graph)
+    parsed_node = next(
+        parsed_node
+        for parsed_node in parsed.nodes
+        if _sanitize_func_name(parsed_node.data.label) == _sanitize_func_name(node.data.label)
+    )
+
+    for key, value in _SHARED_COLUMN_CONFIG.items():
+        assert parsed_node.data.config[key] == value
+    assert second == first
+    assert node.data.config == input_config
+
+
+@pytest.mark.parametrize("node_type", (NodeType.POLARS, NodeType.EXPLORE, NodeType.EDGE_JOIN))
+@pytest.mark.parametrize("selected_columns", (None, []))
+def test_inline_nodes_canonicalize_only_empty_column_selection(
+    node_type: NodeType,
+    selected_columns: list[str] | None,
+) -> None:
+    graph = _corpus_graphs()[0].model_copy(deep=True)
+    node = next(node for node in graph.nodes if node.data.nodeType == node_type)
+    for key in _SHARED_COLUMN_CONFIG:
+        node.data.config.pop(key, None)
+    if selected_columns is not None:
+        node.data.config["selected_columns"] = selected_columns
+
+    _first, parsed, _second = _roundtrip(graph)
+    parsed_node = next(
+        parsed_node
+        for parsed_node in parsed.nodes
+        if _sanitize_func_name(parsed_node.data.label) == _sanitize_func_name(node.data.label)
+    )
+
+    assert parsed_node.data.config.get("selected_columns", []) == []
+    assert "column_renames" not in parsed_node.data.config
+    assert "categorical_levels" not in parsed_node.data.config
+
+
 def test_frame_named_api_parameters_are_a_byte_identical_roundtrip_fixpoint() -> None:
     api = _node(
         "api-source",
@@ -882,6 +934,9 @@ def test_edge_join_config_does_not_contain_legacy_reference_fields() -> None:
 
 _adversarial_text = st.sampled_from(ADVERSARIAL_TEXTS)
 _adversarial_nonempty_text = st.sampled_from(tuple(text for text in ADVERSARIAL_TEXTS if text))
+_adversarial_column_name = st.sampled_from(
+    ("_id", 'quote " and )', "brace {field}", "line\nbreak", "東京 Δ")
+)
 
 
 @given(
@@ -889,6 +944,7 @@ _adversarial_nonempty_text = st.sampled_from(tuple(text for text in ADVERSARIAL_
     description=_adversarial_text,
     user_text=_adversarial_text,
     handle_text=_adversarial_text,
+    column_name=_adversarial_column_name,
 )
 @settings(
     max_examples=30,
@@ -900,6 +956,7 @@ def test_hypothesis_roundtrip_semantics_and_source_bytes(
     description: str,
     user_text: str,
     handle_text: str,
+    column_name: str,
 ) -> None:
     graph = _capstone_root_graph(
         pipeline_name=pipeline_name,
@@ -907,6 +964,15 @@ def test_hypothesis_roundtrip_semantics_and_source_bytes(
         user_text=user_text,
         handle_text=handle_text,
     )
+    for node in graph.nodes:
+        if node.data.nodeType in {NodeType.POLARS, NodeType.EXPLORE, NodeType.EDGE_JOIN}:
+            node.data.config.update(
+                {
+                    "selected_columns": [column_name],
+                    "column_renames": {column_name: f"renamed {column_name}"},
+                    "categorical_levels": {column_name: ["_low", "high", None]},
+                }
+            )
     _assert_roundtrip_invariants(graph)
 
 

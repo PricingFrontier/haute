@@ -10,14 +10,20 @@ The strategy shown for a run uses one of these outcomes:
 
 - **Projected**: Haute knows the columns needed downstream and reads only that
   useful subset where the source supports it.
-- **Schema all-except**: a node needs every column except a known set, such as
-  training features after excluding the target, weight, and metadata columns.
+- **Schema all-except**: a node needs every column except a known set.
 - **Admitted eager**: the operation must collect data in memory, but Haute has
   an available estimate that fits the admitted memory headroom.
 - **Streaming boundary**: Haute can continue processing rows in a bounded
   stream, but cannot safely project through this point.
 - **Materialisation boundary**: the operation needs a complete in-memory
-  result. It is admitted only when its estimate fits the available headroom.
+  result. It is admitted when its estimate fits the available headroom; see
+  [Global operations](#global-operations) for what happens without an estimate.
+- **Warned** (strategy `full-width-conservative`): the operation needs a
+  complete in-memory result, but Haute could not estimate it. Because the run
+  executes inside a worker with a hard memory cap, Haute continued under the
+  run's full reserved memory envelope and reported the missing proof as a
+  warning instead of stopping. The result is correct, but the run may use more
+  memory and time than an estimated plan.
 - **Rejected**: Haute will not run the shape for this profile because it cannot
   establish a safe bounded strategy.
 - **Not planned**: this surface does not yet use execution planning. It is not
@@ -37,19 +43,43 @@ Move simple column selection and filtering upstream, declare the columns a
 custom node needs, or split opaque work into a smaller dedicated branch when a
 boundary is unexpectedly costly.
 
-### Group-by operations
+When a preview warns that column projection was limited, the warning names the
+node that stopped Haute narrowing the columns, which is often below the nodes
+that read every column, and suggests what to change there. For code Haute cannot
+follow, referring to each column by name (for example `pl.col("premium")`) or
+moving that step into a node of its own usually clears it.
 
-Haute never generically chunks a group-by. A group-by is admitted only for the
-`preview_eager`, explicit `explore_analysis` cache-materialisation, or `deploy_live`
-profile when an available estimate fits the admitted headroom. Otherwise Haute
-returns a typed rejection; it does not approximate a partial aggregation or silently
-send it through a generic chunk runner. For large grouped work, reduce the input
-first, change the operation, or run it in an environment where the admitted estimate
-fits.
+### Global operations
+
+Global operations (group-by, sort, unique, join, join_asof, top_k, bottom_k,
+reverse, explode, and window expressions) are supported in every workflow. Haute
+treats each one as a materialisation boundary under one admission contract shared by
+previews, Data Output writes, training, optimiser work, Explore,
+assistant value profiling, and both live and batch deployment. A boundary is admitted
+when its estimate fits the workflow's admitted memory headroom. Deploy estimates
+injected request data directly rather than requiring the original development-time
+source to remain readable.
+
+Haute never computes a global operation independently in each generic chunk. A bounded
+write slices a node only when its code is proven row-local; a global operation always
+runs once, under the same admission contract. If the estimate is too large,
+Haute returns a typed memory/admission diagnostic rather than producing a partial or
+approximate result.
+
+If the estimate is unavailable, the outcome depends on whether the run executes under
+a hard memory cap. Previews and traces, Data Output writes, Explore, JSON cache builds,
+training preparation, and multi-row batch scoring in a deployed container all run
+inside a worker with a native memory cap, so Haute runs the operation once under the
+run's full reserved memory envelope and reports the **Warned** outcome naming the
+missing proof. A host with no native memory cap (macOS) cannot give that guarantee, so
+there these surfaces return the typed diagnostic instead. Optimiser stages and single-row live scoring run without that cap, so
+they return the typed diagnostic, and its remediation says so. A Databricks deployment
+scores every request in the serving process, so an operation Haute cannot estimate
+fails the bundle at build time with a correction that points at a container target.
 
 ## Reading diagnostics
 
-The compact profile identifies the strategy. For a boundary or rejection, read
+The compact profile identifies the strategy. For a boundary, warning, or rejection, read
 the **blocking node** and **operator** first, then the **estimated cost** and
 the proposed **remediation**. For example, an estimate that exceeds headroom
 usually calls for narrowing columns, filtering rows earlier, or changing the
@@ -62,6 +92,6 @@ provide is reported as unavailable or `null`; it is never presented as zero.
 
 ## Related guides
 
-- [Polars](nodes/polars.md) for custom transformations and joins.
+- [Transform](nodes/transform.md) for custom transformations and joins.
 - [Edge Join](nodes/edge-join.md) for a visible canvas join.
 - [Model Training](nodes/model-training.md) for training feature selection.

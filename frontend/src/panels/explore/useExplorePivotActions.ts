@@ -18,11 +18,11 @@ import useNodeResultsStore, {
 import useSettingsStore from "../../stores/useSettingsStore"
 import { buildGraph } from "../../utils/buildGraph"
 import {
-  executionErrorDetailMessage,
   executionJobStatusFromReason,
   executionMetricsFromError,
   executionTerminalReasonFromError,
 } from "../../utils/executionDiagnostics"
+import { apiErrorMessage } from "../../api/errors"
 import type { SimpleEdge, SimpleNode } from "../editors"
 import {
   pivotCalculationIdentity,
@@ -60,11 +60,6 @@ function terminalStatus(
   }
 }
 
-function errorMessage(error: unknown): string {
-  if (error instanceof Error && error.message.trim()) return error.message
-  return executionErrorDetailMessage(error) ?? String(error)
-}
-
 /**
  * Shared Pivot execution lifecycle used by both Pivot tables and PivotCharts.
  * Charts own no execution endpoint, job, or cache.
@@ -77,9 +72,6 @@ export default function useExplorePivotActions({
   preamble,
 }: UseExplorePivotActionsInput) {
   const activeSource = useSettingsStore((state) => state.activeSource)
-  const streamingChunkSize = useSettingsStore(
-    (state) => state.streamingChunkSize,
-  )
   const structuralVersion = useGraphStore((state) => state.structuralVersion)
   const startJob = useNodeResultsStore((state) => state.startExplorePivotJob)
   const updateProgress = useNodeResultsStore(
@@ -151,7 +143,7 @@ export default function useExplorePivotActions({
       key: string,
       jobId: string,
       calculationIdentity: string,
-      requestedDataframeCacheKey: string | null,
+      requestedDataVersion: string | null,
     ) => {
       startJob(
         key,
@@ -163,7 +155,7 @@ export default function useExplorePivotActions({
         calculationIdentity,
         activeSource,
         structuralVersion,
-        requestedDataframeCacheKey,
+        requestedDataVersion,
       )
     },
     [activeSource, node.id, nodeLabel, startJob, structuralVersion],
@@ -176,7 +168,7 @@ export default function useExplorePivotActions({
       calculationIdentity: string,
       message: string,
       status: JobStatus,
-      requestedDataframeCacheKey: string | null,
+      requestedDataVersion: string | null,
       failure: ExplorePivotFailure | null = null,
       executionMetrics: ExecutionMetrics | null = null,
     ) => {
@@ -185,7 +177,7 @@ export default function useExplorePivotActions({
         key,
         `failed:${key}:${Date.now()}`,
         calculationIdentity,
-        requestedDataframeCacheKey,
+        requestedDataVersion,
       )
       failJob(
         key,
@@ -199,14 +191,17 @@ export default function useExplorePivotActions({
   const updatePivot = useCallback(
     async (
       pivot: ExplorePivotConfig,
-      requestedDataframeCacheKey: string | null = null,
+      requestedDataVersion: string | null = null,
       autoClaimToken?: number,
     ) => {
-      if (!isPivotConfigured(pivot)) return
-
-      const documentFence = captureDocumentExecutionFence()
-      if (!isDocumentExecutionFenceCurrent(documentFence)) return
       const key = explorePivotResultKey(node.id, pivot.id)
+      const documentFence = captureDocumentExecutionFence()
+      if (!isPivotConfigured(pivot) || !isDocumentExecutionFenceCurrent(documentFence)) {
+        if (autoClaimToken !== undefined) {
+          useNodeResultsStore.getState().releaseExplorePivotStart(key, autoClaimToken)
+        }
+        return
+      }
       const calculationIdentity = pivotCalculationIdentity(pivot)
       const startToken = autoClaimToken
         ?? useNodeResultsStore
@@ -214,7 +209,7 @@ export default function useExplorePivotActions({
           .claimExplorePivotManual(
             key,
             node.id,
-            requestedDataframeCacheKey,
+            requestedDataVersion,
             calculationIdentity,
           )
       // Every submission owns a claim generation. A newer automatic target or
@@ -224,15 +219,16 @@ export default function useExplorePivotActions({
         useNodeResultsStore.getState().pivotStartClaims[key]?.token
           === startToken && isDocumentExecutionFenceCurrent(documentFence)
       setNotice(pivot.id, null)
+      // buildGraph reads the preamble from the store; listing it renews this callback.
+      void preamble
       const submissionGeneration = beginSubmitting(pivot.id)
 
       try {
         const response = await runExplorePivot({
-          graph: buildGraph(allNodes, edges, submodels, preamble),
+          graph: buildGraph(allNodes, edges, submodels),
           node_id: node.id,
           pivot,
           source: activeSource,
-          streamingChunkSize,
         })
         if (!claimCurrent()) return
 
@@ -244,7 +240,7 @@ export default function useExplorePivotActions({
             calculationIdentity,
             message,
             "contract_error",
-            requestedDataframeCacheKey,
+            requestedDataVersion,
             response.failure,
           )
           return
@@ -260,7 +256,7 @@ export default function useExplorePivotActions({
             key,
             jobId,
             calculationIdentity,
-            requestedDataframeCacheKey,
+            requestedDataVersion,
           )
           completeJob(key, response.result, {
             status: "completed",
@@ -282,7 +278,7 @@ export default function useExplorePivotActions({
           key,
           response.job_id,
           calculationIdentity,
-          requestedDataframeCacheKey,
+          requestedDataVersion,
         )
         updateProgress(key, {
           status: "running",
@@ -300,9 +296,9 @@ export default function useExplorePivotActions({
           pivot,
           key,
           calculationIdentity,
-          errorMessage(error),
+          apiErrorMessage(error),
           executionJobStatusFromReason(terminalReason),
-          requestedDataframeCacheKey,
+          requestedDataVersion,
           null,
           executionMetricsFromError(error),
         )
@@ -323,7 +319,6 @@ export default function useExplorePivotActions({
       preamble,
       setNotice,
       startStoredJob,
-      streamingChunkSize,
       submodels,
       updateProgress,
     ],
@@ -343,7 +338,7 @@ export default function useExplorePivotActions({
       } catch (error) {
         // A failed cancellation request does not prove the calculation stopped.
         // Keep the active job so background polling can resolve it.
-        setNotice(pivot.id, { message: errorMessage(error) })
+        setNotice(pivot.id, { message: apiErrorMessage(error) })
       }
     },
     [completeJob, failJob, node.id, setNotice],

@@ -37,7 +37,7 @@ from haute._types import (
 )
 from haute.errors import ContractMismatchError
 from haute.projection import compute_prepared_plan
-from tests._projection_helpers import pair_value
+from tests._projection_helpers import adjacency_edges, pair_value
 from tests.conftest import make_output_config
 
 # ---------------------------------------------------------------------------
@@ -59,6 +59,16 @@ def _output(nid: str, fields: list[str] | None = None) -> GraphNode:
 
 def _banding(nid: str, factors: list[dict] | None = None) -> GraphNode:
     return _node(nid, NodeType.BANDING, factors=factors or [])
+
+
+def _band_factor(column: str, output_column: str) -> dict:
+    """An active breakpoints factor banding *column* into *output_column*."""
+    return {
+        "banding": "breakpoints",
+        "column": column,
+        "outputColumn": output_column,
+        "rules": [{"boundary": "25", "label": "low"}],
+    }
 
 
 def _polars(nid: str) -> GraphNode:
@@ -85,7 +95,7 @@ def _build_children_of(
     order: list[str],
     parents_of: dict[str, list[str]],
 ) -> dict[str, list[str]]:
-    """Mirror the children_of construction done inside ``_execute_lazy``."""
+    """Mirror the children_of construction done by the prepared execution."""
     children_of: dict[str, list[str]] = {nid: [] for nid in order}
     for nid, pids in parents_of.items():
         for pid in pids:
@@ -99,15 +109,13 @@ def _needed_by_node(
     children_of: dict[str, list[str]],
     node_map: dict[str, GraphNode],
     required_columns_by_node=None,
-    *,
-    strict_projection: bool = False,
 ):
     return compute_prepared_plan(
         order,
         children_of,
         node_map,
         required_columns_by_node,
-        strict_projection=strict_projection,
+        relevant_edges=adjacency_edges(order, children_of),
     ).needed_by_node
 
 
@@ -278,7 +286,7 @@ class TestLinearChain:
             _source("src"),
             _banding(
                 "band",
-                factors=[{"column": "age", "outputColumn": "age_band"}],
+                factors=[_band_factor("age", "age_band")],
             ),
             _output("out", fields=["age_band", "extra"]),
         ]
@@ -347,8 +355,8 @@ class TestDiamond:
         """
         nodes = [
             _source("src"),
-            _banding("ba", factors=[{"column": "a", "outputColumn": "a_band"}]),
-            _banding("bb", factors=[{"column": "b", "outputColumn": "b_band"}]),
+            _banding("ba", factors=[_band_factor("a", "a_band")]),
+            _banding("bb", factors=[_band_factor("b", "b_band")]),
             _output("o1", fields=["a_band", "shared"]),
             _output("o2", fields=["b_band", "shared"]),
         ]
@@ -454,8 +462,8 @@ class TestContractAlgebra:
             _banding(
                 "band",
                 factors=[
-                    {"column": "a", "outputColumn": "a_band"},
-                    {"column": "b", "outputColumn": "b_band"},
+                    _band_factor("a", "a_band"),
+                    _band_factor("b", "b_band"),
                 ],
             ),
             _output("out", fields=["a_band", "extra"]),
@@ -484,7 +492,7 @@ class TestContractAlgebra:
             _source("src"),
             _banding(
                 "band",
-                factors=[{"column": "age", "outputColumn": "age_band"}],
+                factors=[_band_factor("age", "age_band")],
             ),
             _output("out", fields=["age_band"]),
         ]
@@ -786,6 +794,7 @@ class TestEdgeCases:
             children_of,
             node_map,
             required_columns_by_node={"join_premiums": required},
+            relevant_edges=adjacency_edges(order, children_of),
         )
 
         assert plan.needed_by_node["join_premiums"] == required
@@ -843,6 +852,7 @@ class TestEdgeCases:
             children_of,
             node_map,
             required_columns_by_node={"ratebook_optimiser": required},
+            relevant_edges=adjacency_edges(order, children_of),
         )
 
         assert plan.needed_by_node["ratebook_optimiser"] == required
@@ -899,6 +909,7 @@ class TestEdgeCases:
             children_of,
             node_map,
             required_columns_by_node={"scored": required},
+            relevant_edges=adjacency_edges(order, children_of),
         )
 
         assert plan.needed_by_node["ratebook_optimiser"] is None
@@ -950,6 +961,7 @@ class TestEdgeCases:
             children_of,
             node_map,
             required_columns_by_node={"ratebook_optimiser": required},
+            relevant_edges=adjacency_edges(order, children_of),
         )
 
         assert plan.needed_by_node["shared"] == {*required, "territory_band"}
@@ -991,6 +1003,7 @@ class TestEdgeCases:
                 children_of,
                 node_map,
                 required_columns_by_node={"ratebook_optimiser": {"quote_id", "expected_income"}},
+                relevant_edges=adjacency_edges(order, children_of),
             )
 
     def test_multi_parent_optimiser_rejects_missing_data_input(self):
@@ -1017,6 +1030,7 @@ class TestEdgeCases:
                 children_of,
                 node_map,
                 required_columns_by_node={"online_optimiser": {"quote_id", "expected_income"}},
+                relevant_edges=adjacency_edges(order, children_of),
             )
 
     def test_multi_parent_optimiser_rejects_disconnected_data_input(self):
@@ -1047,6 +1061,7 @@ class TestEdgeCases:
                 children_of,
                 node_map,
                 required_columns_by_node={"online_optimiser": {"quote_id", "expected_income"}},
+                relevant_edges=adjacency_edges(order, children_of),
             )
 
     def test_multi_parent_ratebook_optimiser_rejects_disconnected_banding_source(self):
@@ -1080,6 +1095,7 @@ class TestEdgeCases:
                 children_of,
                 node_map,
                 required_columns_by_node={"ratebook_optimiser": {"quote_id", "expected_income"}},
+                relevant_edges=adjacency_edges(order, children_of),
             )
 
     def test_multi_parent_inputs_by_parent_preserves_unambiguous_passthrough_parent_columns(self):
@@ -1124,6 +1140,7 @@ class TestEdgeCases:
             children_of,
             node_map,
             required_columns_by_node={"preview_target": required},
+            relevant_edges=adjacency_edges(order, children_of),
         )
 
         assert plan.needed_by_node["join_scoring"] == required
@@ -1195,6 +1212,7 @@ class TestEdgeCases:
             children_of,
             node_map,
             required_columns_by_node={"join_premiums": required},
+            relevant_edges=adjacency_edges(order, children_of),
         )
 
         assert plan.needed_by_node["join_policy_data"] == {
@@ -1245,6 +1263,7 @@ class TestEdgeCases:
             children_of,
             node_map,
             required_columns_by_node={"join": required},
+            relevant_edges=adjacency_edges(order, children_of),
         )
 
         assert plan.needed_by_node["policies"] == {"quote_id", "premium"}
@@ -1282,6 +1301,7 @@ class TestEdgeCases:
                 children_of,
                 node_map,
                 required_columns_by_node={"join": required},
+                relevant_edges=adjacency_edges(order, children_of),
             )
 
     def test_multi_parent_inputs_by_parent_rejects_unknown_parent(self):
@@ -1314,6 +1334,7 @@ class TestEdgeCases:
                 children_of,
                 node_map,
                 required_columns_by_node={"join": required},
+                relevant_edges=adjacency_edges(order, children_of),
             )
 
     def test_multi_parent_inputs_by_parent_rejects_opaque_parent_mapping(self):
@@ -1346,6 +1367,7 @@ class TestEdgeCases:
                 children_of,
                 node_map,
                 required_columns_by_node={"join": required},
+                relevant_edges=adjacency_edges(order, children_of),
             )
 
 
@@ -1372,8 +1394,8 @@ def _equivalence_cases() -> list[tuple[str, Callable[[], tuple[list[str], dict, 
     def diamond_distinct():
         nodes = [
             _source("src"),
-            _banding("ba", factors=[{"column": "a", "outputColumn": "a_band"}]),
-            _banding("bb", factors=[{"column": "b", "outputColumn": "b_band"}]),
+            _banding("ba", factors=[_band_factor("a", "a_band")]),
+            _banding("bb", factors=[_band_factor("b", "b_band")]),
             _output("o1", fields=["a_band", "shared"]),
             _output("o2", fields=["b_band", "shared"]),
         ]
@@ -1546,10 +1568,7 @@ def _build_realistic_200_node_graph() -> tuple[
         outputs = []
         for b in range(count):
             factors = [
-                {
-                    "column": f"{bank_id}_b{b}_c{fi}",
-                    "outputColumn": f"{bank_id}_b{b}_o{fi}",
-                }
+                _band_factor(f"{bank_id}_b{b}_c{fi}", f"{bank_id}_b{b}_o{fi}")
                 for fi in range(factors_per_banding)
             ]
             bid = add(_banding(f"{bank_id}_b{b}", factors=factors), [parent_id])

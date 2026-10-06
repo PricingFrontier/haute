@@ -140,6 +140,7 @@ async def test_save_lock_holds_during_svc_save(monkeypatch: pytest.MonkeyPatch) 
         "name": "test",
         "description": "",
         "source_file": "test.py",
+        "base_revision": None,
     }
 
     transport = httpx.ASGITransport(app=app)

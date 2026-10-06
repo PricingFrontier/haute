@@ -37,22 +37,33 @@ class TestTrain:
         assert result.exit_code == 1
         assert "not found" in result.output.lower()
 
-    def test_safety_validation_failure(self, runner: CliRunner, tmp_path: Path) -> None:
-        script = tmp_path / "evil.py"
-        script.write_text("import os\nos.system('rm -rf /')\njob = None\n")
+    def test_a_training_script_may_read_console_input(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """The script runs in the CLI process, where input() reads the terminal:
+        the server's accident guard does not apply to it."""
+        default = _write_training_script(tmp_path).read_text()
+        script = _write_training_script(
+            tmp_path, body="rows = int(input())\n" + default.replace("1000", "rows")
+        )
 
-        from haute._sandbox import UnsafeCodeError
+        result = runner.invoke(cli, ["train", str(script)], input="1234\n")
 
-        with patch("haute._sandbox.validate_user_code", side_effect=UnsafeCodeError("dangerous")):
-            result = runner.invoke(cli, ["train", str(script)])
-        assert result.exit_code == 1
-        assert "safety" in result.output.lower() or "validation" in result.output.lower()
+        assert result.exit_code == 0, result.output
+        assert "1,234" in result.output or "1234" in result.output
+
+    def test_a_training_script_exit_code_is_kept(self, runner: CliRunner, tmp_path: Path) -> None:
+        script = tmp_path / "stop.py"
+        script.write_text("exit(7)\n", encoding="utf-8")
+
+        result = runner.invoke(cli, ["train", str(script)])
+
+        assert result.exit_code == 7
 
     def test_spec_returns_none(self, runner: CliRunner, tmp_path: Path) -> None:
         script = _write_training_script(tmp_path)
 
         with (
-            patch("haute._sandbox.validate_user_code"),
             patch("importlib.util.spec_from_file_location", return_value=None),
         ):
             result = runner.invoke(cli, ["train", str(script)])
@@ -63,8 +74,7 @@ class TestTrain:
         script = tmp_path / "bad.py"
         script.write_text("raise ValueError('boom')\n")
 
-        with patch("haute._sandbox.validate_user_code"):
-            result = runner.invoke(cli, ["train", str(script)])
+        result = runner.invoke(cli, ["train", str(script)])
         assert result.exit_code == 1
         assert "error" in result.output.lower()
 
@@ -72,16 +82,14 @@ class TestTrain:
         script = tmp_path / "no_job.py"
         script.write_text("x = 42\n")
 
-        with patch("haute._sandbox.validate_user_code"):
-            result = runner.invoke(cli, ["train", str(script)])
+        result = runner.invoke(cli, ["train", str(script)])
         assert result.exit_code == 1
         assert "job" in result.output.lower()
 
     def test_success_with_mocked_job(self, runner: CliRunner, tmp_path: Path) -> None:
         script = _write_training_script(tmp_path)
 
-        with patch("haute._sandbox.validate_user_code"):
-            result = runner.invoke(cli, ["train", str(script)])
+        result = runner.invoke(cli, ["train", str(script)])
         assert result.exit_code == 0, result.output
         assert (
             "model saved" in result.output.lower()
@@ -101,8 +109,7 @@ class TestTrain:
         """
         script = _write_training_script(tmp_path)
 
-        with patch("haute._sandbox.validate_user_code"):
-            result = runner.invoke(cli, ["train", str(script)])
+        result = runner.invoke(cli, ["train", str(script)])
         assert result.exit_code == 0, result.output
         assert "Validation: 200 rows" in result.output
         assert "Test:" not in result.output
@@ -115,8 +122,7 @@ class TestTrain:
             "job.run.side_effect = RuntimeError('CUDA out of memory')\n"
         )
 
-        with patch("haute._sandbox.validate_user_code"):
-            result = runner.invoke(cli, ["train", str(script)])
+        result = runner.invoke(cli, ["train", str(script)])
         assert result.exit_code == 1
         assert "failed" in result.output.lower() or "CUDA" in result.output
 
@@ -138,8 +144,7 @@ class TestTrain:
             ),
         )
 
-        with patch("haute._sandbox.validate_user_code"):
-            result = runner.invoke(cli, ["train", str(script)])
+        result = runner.invoke(cli, ["train", str(script)])
 
         assert result.exit_code == 1
         assert "training succeeded" in result.output.lower()
@@ -171,8 +176,7 @@ class TestTrain:
             "job.run = fake_run\n"
         )
 
-        with patch("haute._sandbox.validate_user_code"):
-            result = runner.invoke(cli, ["train", str(script)])
+        result = runner.invoke(cli, ["train", str(script)])
         assert result.exit_code == 0, result.output
         # Should show features count
         assert "2" in result.output  # 2 features
@@ -188,7 +192,6 @@ class TestTrain:
         mock_spec.loader = None
 
         with (
-            patch("haute._sandbox.validate_user_code"),
             patch("importlib.util.spec_from_file_location", return_value=mock_spec),
         ):
             result = runner.invoke(cli, ["train", str(script)])
@@ -211,10 +214,72 @@ class TestTrain:
             "job.run.return_value = result\n"
         )
 
-        with patch("haute._sandbox.validate_user_code"):
-            result = runner.invoke(cli, ["train", str(script)])
+        result = runner.invoke(cli, ["train", str(script)])
         assert result.exit_code == 0, result.output
         assert "0.1235" in result.output  # 4 decimal places rounded
         assert "0.9877" in result.output
         assert "4" in result.output  # 4 features
         assert "2 categorical" in result.output
+
+
+def test_haute_train_logs_an_exported_script_with_an_experiment(
+    runner: CliRunner, tmp_path: Path, monkeypatch
+) -> None:
+    """MLF-E09: an exported script logs because it names ``mlflow_experiment``.
+
+    ``haute train`` imports the script and runs its ``job`` without executing the
+    ``__main__`` block, so logging must come from the ``TrainingJob`` argument —
+    a logging call in ``__main__`` would silently never run here.
+    """
+    import polars as pl
+    from mlflow.tracking import MlflowClient
+
+    from haute._sandbox import set_project_root
+    from haute.modelling._export import generate_training_script
+
+    for name in ("MLFLOW_TRACKING_URI", "DATABRICKS_MLFLOW_HOST", "DATABRICKS_MLFLOW_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+    monkeypatch.chdir(tmp_path)
+    set_project_root(tmp_path)
+    data = tmp_path / "data.parquet"
+    pl.DataFrame(
+        {
+            "y": [1.0, 2.0, 1.5, 3.0, 2.5, 4.0, 1.0, 2.0],
+            "x": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
+        }
+    ).write_parquet(data)
+    script = tmp_path / "train_freq.py"
+    script.write_text(
+        generate_training_script(
+            {
+                "name": "freq",
+                "target": "y",
+                "feature_columns": ["x"],
+                "algorithm": "catboost",
+                "task": "regression",
+                "loss_function": "RMSE",
+                "params": {"iterations": 2},
+                "evaluation": {
+                    "schema_version": 1,
+                    "strategy": "random",
+                    "seed": 1,
+                    "validation": {"method": "none"},
+                },
+                "mlflow_experiment": "scripted",
+                "output_dir": str(tmp_path / "outputs"),
+            },
+            str(data),
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(cli, ["train", str(script)])
+
+    assert result.exit_code == 0, result.output
+    client = MlflowClient(tracking_uri=(tmp_path / "mlruns").as_uri())
+    experiment = client.get_experiment_by_name("scripted")
+    assert experiment is not None
+    [run] = client.search_runs([experiment.experiment_id])
+    assert run.data.tags["haute.contract_version"] == "1"
+    assert run.data.tags["haute.node_label"] == "freq"

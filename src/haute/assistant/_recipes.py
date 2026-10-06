@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import re
 from collections.abc import Mapping
 from copy import deepcopy
-from pathlib import PurePosixPath
+from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, cast
 
-from haute._cache import canonical_json
 from haute._graph_utils import _sanitize_func_name
 from haute.assistant._wire_ops import OpValidationError, parse_ops
 
@@ -32,6 +30,14 @@ def _freeze(value: Any) -> Any:
     if isinstance(value, list | tuple):
         return tuple(_freeze(item) for item in value)
     return value
+
+
+_CATEGORICAL_VALUE_DESCRIPTION = (
+    "Column value this rule matches, as text: banding casts the column to text before "
+    'matching, so a boolean is "true" or "false", an integer is its digits (e.g. "3"), '
+    "and a string is matched exactly."
+)
+_REFERENCE_JOIN_MODES = ("inner", "left", "right", "full", "semi", "anti")
 
 
 def _descriptor(
@@ -56,30 +62,12 @@ def _descriptor(
             "Simple JSON-field column name to map to the same response field name."
         ),
     }
-    continuous_rule = {
-        "type": "object",
-        "additionalProperties": False,
-        "description": (
-            "One continuous rule with a required first comparison and optional second bound."
-        ),
-        "properties": {
-            "op1": {"enum": ["<", "<=", ">", ">=", "=", "=="]},
-            "val1": {"type": "number"},
-            "op2": {"enum": ["<", "<=", ">", ">=", "=", "=="]},
-            "val2": {"type": "number"},
-            "assignment": string_schema("Band label assigned when the comparisons match."),
-        },
-        "required": ["op1", "val1", "assignment"],
-    }
     categorical_rule = {
         "type": "object",
         "additionalProperties": False,
         "description": "One exact categorical value-to-band assignment.",
         "properties": {
-            "value": {
-                "type": ["string", "number", "boolean"],
-                "description": "Non-null finite JSON scalar matched exactly.",
-            },
+            "value": string_schema(_CATEGORICAL_VALUE_DESCRIPTION),
             "assignment": string_schema("Band label assigned when the value matches."),
         },
         "required": ["value", "assignment"],
@@ -145,15 +133,6 @@ def _descriptor(
         },
         "required": ["output_column", "operation", "base_value"],
     }
-    showcase_source = {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "path": string_schema("Safe project-relative .parquet file path."),
-            "name": graph_name,
-        },
-        "required": ["path", "name"],
-    }
     schemas: dict[str, dict[str, object]] = {
         "categorical_banding": {
             "source": source,
@@ -170,31 +149,12 @@ def _descriptor(
             },
             "default": string_schema("Fallback band label when no rule matches."),
         },
-        "continuous_banding": {
-            "source": source,
-            "name": graph_name,
-            "column": string_schema("Existing numeric input column to band."),
-            "output_column": string_schema(
-                "New output column that receives the band label; not the graph node name."
-            ),
-            "rules": {
-                "type": "array",
-                "minItems": 1,
-                "description": (
-                    "Canonical continuous rules. Each object requires op1 (<, <=, >, >=, "
-                    "=, or ==), numeric val1, and non-empty assignment. A second bound "
-                    "requires both op2 and numeric val2."
-                ),
-                "items": continuous_rule,
-            },
-            "default": string_schema("Fallback band label when no rule matches."),
-        },
         "reference_join": {
             "base_source": string_schema("Existing main/base graph node id."),
             "reference_source": string_schema("Existing joining/reference graph node id."),
             "name": graph_name,
             "how": {
-                "enum": ["inner", "left", "right", "full", "semi", "anti", "cross"],
+                "enum": list(_REFERENCE_JOIN_MODES),
                 "description": "Join mode.",
             },
             "left_on": {
@@ -209,13 +169,6 @@ def _descriptor(
                 "description": "Ordered join columns on the joining/reference input.",
                 "items": string_schema("Joining/reference join column."),
             },
-        },
-        "parquet_showcase": {
-            "base": showcase_source,
-            "reference": showcase_source,
-            "join_name": graph_name,
-            "join_key": string_schema("Column present in both Parquet sources."),
-            "transform_name": graph_name,
         },
         "response_output": {
             "source": source,
@@ -238,8 +191,7 @@ def _descriptor(
     }
     for recipe_id, schema in schemas.items():
         schema["output_name"] = output_name
-        if recipe_id != "parquet_showcase":
-            schema["output_columns"] = output_columns
+        schema["output_columns"] = output_columns
     properties = schemas[identifier]
     return cast(
         Mapping[str, object],
@@ -278,29 +230,10 @@ _RECIPES = tuple(
                 ["discrete_banding"],
             ),
             _descriptor(
-                "continuous_banding",
-                "Create a continuous banding factor.",
-                ["source", "name", "column", "output_column", "rules", "default"],
-                ["continuous_banding"],
-            ),
-            _descriptor(
                 "reference_join",
                 "Join a base flow to a reference source.",
                 ["base_source", "reference_source", "name", "how", "left_on", "right_on"],
                 ["reference_join"],
-            ),
-            _descriptor(
-                "parquet_showcase",
-                "Build a coherent multi-node showcase from two Parquet sources.",
-                [
-                    "base",
-                    "reference",
-                    "join_name",
-                    "join_key",
-                    "transform_name",
-                    "output_name",
-                ],
-                ["minimal_batch", "reference_join"],
             ),
             _descriptor(
                 "response_output",
@@ -319,135 +252,6 @@ _RECIPES = tuple(
     )
 )
 _BY_ID: dict[str, Mapping[str, object]] = {str(item["id"]): item for item in _RECIPES}
-_BANDING_ROUTE_TERMS = frozenset(
-    {"band", "bands", "banded", "banding", "bucket", "bucketed", "bucketing"}
-)
-_SHOWCASE_AUTHORING_TERMS = frozenset({"author", "build", "create", "make"})
-_DATASET_DIRECTORY_PATTERNS = (
-    re.compile(
-        r"\b(?:in|from|under)\s+(?:the\s+)?([A-Za-z0-9_-]+)\s+(?:folder|directory)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\b(?:in|from|under)\s+(?:the\s+)?(?:folder|directory)\s+"
-        r"(?:called|named)\s+([A-Za-z0-9_-]+)\b",
-        re.IGNORECASE,
-    ),
-)
-_JOIN_ROUTE_TERMS = frozenset({"join", "joins", "joined", "joining"})
-_CONTINUOUS_ROUTE_CUES = frozenset(
-    {
-        "continuous",
-        "range",
-        "continuously",
-        "ranges",
-        "breakpoint",
-        "breakpoints",
-        "bucket",
-        "bucketed",
-        "bucketing",
-    }
-)
-_DISCRETE_ROUTE_CUES = frozenset({"categorical", "categories", "category", "discrete"})
-_MATERIAL_RATING_INTENT = re.compile(r"\brating\b.{0,80}\bfactors?\b", re.IGNORECASE)
-_EXPLICITLY_WITHHELD_RATING_MATERIAL = re.compile(
-    r"(?:\b(?:do\s+not|don['’]t|not)\s+(?:supply|provide|specify)\b.{0,120}"
-    r"\b(?:factor\s+values?|missing[- ]factor\s+policy|default)\b"
-    r"|\bwithout\b.{0,120}\b(?:factor\s+values?|missing[- ]factor\s+policy|default)\b)",
-    re.IGNORECASE,
-)
-_EXPLANATION_ONLY_REQUEST = re.compile(
-    r"^\s*(?:please\s+)?(?:explain\b|describe\b|show\s+me\s+how\b|how\b|what\b)",
-    re.IGNORECASE,
-)
-_SEQUENCED_AUTHORING_REQUEST = re.compile(
-    r"(?:[,;]\s*(?:and\s+)?(?:then\s+)?|\b(?:and\s+then|then|also|afterwards)\s+)"
-    r"(?:please\s+)?"
-    r"(?:build|add|change|update|connect|remove|delete|create|rename|configure|edit|author|make)\b",
-    re.IGNORECASE,
-)
-
-
-def is_explanation_only_request(request: str) -> bool:
-    """Return whether the request opens as an explanation, not an instruction."""
-
-    return bool(
-        _EXPLANATION_ONLY_REQUEST.match(request)
-        and _SEQUENCED_AUTHORING_REQUEST.search(request) is None
-    )
-
-
-def request_requires_material_clarification(request: str) -> bool:
-    """Identify an explicit refusal to supply required rating decisions."""
-
-    if is_explanation_only_request(request):
-        return False
-    return bool(
-        _MATERIAL_RATING_INTENT.search(request)
-        and _EXPLICITLY_WITHHELD_RATING_MATERIAL.search(request)
-    )
-
-
-def explicit_dataset_directory(request: str) -> str | None:
-    """Return one safe simple directory explicitly named by the user."""
-
-    for pattern in _DATASET_DIRECTORY_PATTERNS:
-        if (match := pattern.search(request)) is not None:
-            name = match.group(1)
-            if name.casefold() not in {"credentials", "secrets"}:
-                return name
-    return None
-
-
-def route_recipe_request(request: str) -> str | None:
-    """Suggest one conservative recipe for prompt guidance, never as authority."""
-
-    if is_explanation_only_request(request):
-        return None
-    tokens = [token.casefold() for token in re.findall("[A-Za-z]+", request)]
-    token_set = set(tokens)
-    matches: list[str] = []
-    has_banding_term = bool(token_set.intersection(_BANDING_ROUTE_TERMS))
-    has_continuous_cue = bool(token_set.intersection(_CONTINUOUS_ROUTE_CUES)) or bool(
-        re.search(r"(?:<=|>=|<|>)", request)
-    )
-    has_discrete_cue = bool(token_set.intersection(_DISCRETE_ROUTE_CUES))
-    has_showcase_cue = (
-        "showcase" in token_set
-        or any(left == "node" and right == "types" for left, right in zip(tokens, tokens[1:]))
-        or {"many", "types"}.issubset(token_set)
-    )
-    routes_parquet_showcase = (
-        "pipeline" in token_set
-        and bool(token_set.intersection({"parquet", "parquets"}))
-        and bool(token_set.intersection(_SHOWCASE_AUTHORING_TERMS))
-        and has_showcase_cue
-    )
-    routes_continuous_banding = has_banding_term and has_continuous_cue and not has_discrete_cue
-    routes_categorical_banding = has_banding_term and has_discrete_cue and not has_continuous_cue
-    if routes_continuous_banding:
-        matches.append("continuous_banding")
-    if routes_categorical_banding:
-        matches.append("categorical_banding")
-    if token_set.intersection(_JOIN_ROUTE_TERMS):
-        matches.append("reference_join")
-    if any(left == "rating" and right == "step" for left, right in zip(tokens, tokens[1:])):
-        matches.append("rating_step")
-    if routes_parquet_showcase:
-        matches.append("parquet_showcase")
-    has_response_output = any(
-        left == "response" and right == "output" for left, right in zip(tokens, tokens[1:])
-    )
-    if has_response_output and not matches:
-        matches.append("response_output")
-    if (
-        has_banding_term
-        and not routes_continuous_banding
-        and not routes_categorical_banding
-        and matches
-    ):
-        return None
-    return matches[0] if len(matches) == 1 else None
 
 
 def recipe_manifest() -> tuple[Mapping[str, object], ...]:
@@ -497,81 +301,17 @@ def _arguments(recipe_id: str, raw: object) -> dict[str, Any]:
     return values
 
 
-_SUPPORTED_CONTINUOUS_OPERATORS = frozenset({"<", "<=", ">", ">=", "=", "=="})
-_CONTINUOUS_RULE_KEYS = frozenset({"op1", "val1", "op2", "val2", "assignment"})
-
-
-def _validate_continuous_rules(raw: object) -> None:
-    if not isinstance(raw, list) or not raw:
-        raise RecipeError(
-            "recipe_argument_invalid",
-            "Argument 'rules' must be a non-empty list.",
-            argument="rules",
-        )
-    for index, rule in enumerate(raw):
-        argument = f"rules[{index}]"
-        if not isinstance(rule, Mapping):
-            raise RecipeError(
-                "recipe_argument_invalid",
-                f"Argument {argument!r} must be an object.",
-                argument=argument,
-            )
-        unknown = set(rule).difference(_CONTINUOUS_RULE_KEYS)
-        required = {"op1", "val1", "assignment"}
-        if unknown or not required.issubset(rule):
-            raise RecipeError(
-                "recipe_argument_invalid",
-                f"Argument {argument!r} is not a closed continuous rule.",
-                argument=argument,
-            )
-        if rule["op1"] not in _SUPPORTED_CONTINUOUS_OPERATORS:
-            raise RecipeError(
-                "recipe_argument_invalid",
-                f"Argument {argument!r} has an unsupported op1.",
-                argument=argument,
-            )
-        val1 = rule["val1"]
-        if (
-            isinstance(val1, bool)
-            or not isinstance(val1, int | float)
-            or not math.isfinite(float(val1))
-        ):
-            raise RecipeError(
-                "recipe_argument_invalid",
-                f"Argument {argument!r} requires a finite numeric val1.",
-                argument=argument,
-            )
-        assignment = rule["assignment"]
-        if not isinstance(assignment, str) or not assignment.strip():
-            raise RecipeError(
-                "recipe_argument_invalid",
-                f"Argument {argument!r} requires a non-empty assignment.",
-                argument=argument,
-            )
-        has_op2 = "op2" in rule
-        has_val2 = "val2" in rule
-        if has_op2 != has_val2:
-            raise RecipeError(
-                "recipe_argument_invalid",
-                f"Argument {argument!r} requires op2 and val2 together.",
-                argument=argument,
-            )
-        if has_op2:
-            val2 = rule["val2"]
-            if (
-                rule["op2"] not in _SUPPORTED_CONTINUOUS_OPERATORS
-                or isinstance(val2, bool)
-                or not isinstance(val2, int | float)
-                or not math.isfinite(float(val2))
-            ):
-                raise RecipeError(
-                    "recipe_argument_invalid",
-                    f"Argument {argument!r} has an invalid second bound.",
-                    argument=argument,
-                )
-
-
 _CATEGORICAL_RULE_KEYS = frozenset({"value", "assignment"})
+
+
+def _categorical_text_form(value: object) -> str:
+    """The text a non-string rule value must be written as to match its rows."""
+
+    if isinstance(value, bool):
+        return json.dumps("true" if value else "false")
+    if isinstance(value, int):
+        return json.dumps(str(value))
+    return "the text the column holds for that value"
 
 
 def _validate_categorical_rules(raw: object) -> None:
@@ -581,7 +321,7 @@ def _validate_categorical_rules(raw: object) -> None:
             "Argument 'rules' must be a non-empty list.",
             argument="rules",
         )
-    seen_values: set[tuple[type, object]] = set()
+    seen_values: set[str] = set()
     for index, rule in enumerate(raw):
         argument = f"rules[{index}]"
         if not isinstance(rule, Mapping) or set(rule) != _CATEGORICAL_RULE_KEYS:
@@ -591,24 +331,26 @@ def _validate_categorical_rules(raw: object) -> None:
                 argument=argument,
             )
         value = rule["value"]
-        if (
-            value is None
-            or not isinstance(value, str | int | float | bool)
-            or (isinstance(value, float) and not math.isfinite(value))
-        ):
+        if not isinstance(value, str):
             raise RecipeError(
                 "recipe_argument_invalid",
-                f"Argument {argument!r}.value must be a non-null finite JSON scalar.",
+                f"Argument {argument!r}.value must be a string: banding matches the "
+                f"column's text form, so write it as {_categorical_text_form(value)}.",
                 argument=f"{argument}.value",
             )
-        identity = (type(value), value)
-        if identity in seen_values:
+        if not value:
             raise RecipeError(
                 "recipe_argument_invalid",
-                f"Argument {argument!r}.value duplicates an earlier rule.",
+                f"Argument {argument!r}.value must be a non-empty string.",
                 argument=f"{argument}.value",
             )
-        seen_values.add(identity)
+        if value in seen_values:
+            raise RecipeError(
+                "recipe_argument_invalid",
+                f"Argument {argument!r}.value duplicates an earlier rule's value.",
+                argument=f"{argument}.value",
+            )
+        seen_values.add(value)
         assignment = rule["assignment"]
         if not isinstance(assignment, str) or not assignment.strip():
             raise RecipeError(
@@ -626,6 +368,7 @@ def _output_operations(
     *,
     source: str,
     source_port: str,
+    ref: str,
 ) -> list[dict[str, object]]:
     output_name = values.get("output_name")
     raw_columns = values.get("output_columns")
@@ -673,51 +416,11 @@ def _output_operations(
             "op": "add_node",
             "node_type": "output",
             "name": output_name,
-            "ref": "recipe_output",
+            "ref": ref,
             "config": {"outputMapping": mappings, "outputFormat": "json"},
         },
-        {"op": "add_edge", "source": source, "target": "$recipe_output"},
+        {"op": "add_edge", "source": source, "target": f"${ref}"},
     ]
-
-
-_SHOWCASE_SOURCE_KEYS = frozenset({"path", "name"})
-
-
-def _showcase_source(value: object, *, argument: str) -> tuple[str, str]:
-    if not isinstance(value, Mapping) or set(value) != _SHOWCASE_SOURCE_KEYS:
-        raise RecipeError(
-            "recipe_argument_invalid",
-            f"Argument {argument!r} must contain exactly 'path' and 'name'.",
-            argument=argument,
-        )
-    path = value["path"]
-    name = value["name"]
-    if not isinstance(path, str) or not path.strip():
-        raise RecipeError(
-            "recipe_argument_invalid",
-            f"Argument {argument!r}.path must be a non-empty string.",
-            argument=f"{argument}.path",
-        )
-    if not isinstance(name, str) or not name.strip():
-        raise RecipeError(
-            "recipe_argument_invalid",
-            f"Argument {argument!r}.name must be a non-empty string.",
-            argument=f"{argument}.name",
-        )
-    parsed = PurePosixPath(path)
-    if (
-        "\\" in path
-        or re.match(r"^[A-Za-z]:", path)
-        or parsed.is_absolute()
-        or any(part in {"", ".", ".."} for part in parsed.parts)
-        or parsed.suffix.casefold() != ".parquet"
-    ):
-        raise RecipeError(
-            "recipe_argument_invalid",
-            f"Argument {argument!r}.path must be a safe project-relative .parquet path.",
-            argument=f"{argument}.path",
-        )
-    return path, name
 
 
 _RATING_TABLE_KEYS = frozenset({"factors", "output_column", "entries", "default_value"})
@@ -879,11 +582,11 @@ def _rating_config(values: Mapping[str, Any]) -> dict[str, object]:
         "combinedOutputs": combined_outputs,
     }
     try:
-        from haute._rating import _normalise_combined_outputs
+        from haute._rating import normalise_combined_outputs
         from haute._rating_step_config import normalise_rating_step_config
 
         config = normalise_rating_step_config(config)
-        config["combinedOutputs"] = _normalise_combined_outputs(config)
+        config["combinedOutputs"] = normalise_combined_outputs(config)
     except ValueError as exc:
         raise RecipeError(
             "recipe_argument_invalid",
@@ -893,152 +596,29 @@ def _rating_config(values: Mapping[str, Any]) -> dict[str, object]:
     return cast(dict[str, object], config)
 
 
-def plan_recipe(recipe_id: str, args: object) -> dict[str, object]:
-    """Produce canonical primitive operations without reading or mutating a graph."""
+def expand_recipe(recipe_id: str, args: object, *, ref: str) -> list[dict[str, object]]:
+    """Expand one recipe into canonical primitive operations, without reading a graph.
+
+    The node the recipe creates declares the batch-local *ref*; a response output
+    the recipe adds declares *ref* followed by ``_output``. The standalone
+    ``response_output`` recipe's output node is the node it creates, so it
+    declares *ref* itself.
+    """
+
     values = _arguments(recipe_id, args)
+    created: str | None = ref
     if recipe_id == "response_output":
-        ref = None
+        created = None
+        # A `$ref` source stays a ref in the row; the plan resolves it to the
+        # frame name of the node the ref declared.
         operations = _output_operations(
             values,
             source=values["source"],
             source_port=values["source"],
+            ref=ref,
         )
-    elif recipe_id == "parquet_showcase":
-        base_path, base_name = _showcase_source(values["base"], argument="base")
-        reference_path, reference_name = _showcase_source(values["reference"], argument="reference")
-        join_name = values["join_name"]
-        join_key = values["join_key"]
-        transform_name = values["transform_name"]
-        if not isinstance(join_key, str) or not join_key.strip():
-            raise RecipeError(
-                "recipe_argument_invalid",
-                "The parquet showcase join key must be a non-empty column name.",
-                argument="join_key",
-            )
-        key_text = f"{join_key}_text"
-        # The transform's single input is the join node; its edge-derived
-        # parameter name is the sanitised join label. `df` is only the output
-        # variable, so the code must start from that named input.
-        join_input = _sanitize_func_name(join_name)
-        transform_code = (
-            f"df = {join_input}.with_columns(\n"
-            f"    pl.col({json.dumps(join_key)}).cast(pl.String).alias({json.dumps(key_text)}),\n"
-            '    pl.lit("haute_showcase").alias("showcase_stage"),\n'
-            ")"
-        )
-        showcase_values = {
-            **values,
-            "output_columns": [join_key, key_text, "showcase_stage"],
-        }
-        output_name = values["output_name"]
-        names = [base_name, reference_name, join_name, transform_name, output_name]
-        if len(names) != len(set(names)):
-            raise RecipeError(
-                "recipe_argument_invalid",
-                "Every parquet showcase node name must be distinct.",
-                argument="name",
-            )
-        if base_path == reference_path:
-            raise RecipeError(
-                "recipe_argument_invalid",
-                "The base and reference Parquet paths must be distinct.",
-                argument="reference.path",
-            )
-        ref = None
-        operations = [
-            {
-                "op": "add_node",
-                "node_type": "dataInput",
-                "name": base_name,
-                "ref": "recipe_showcase_base",
-                "config": {
-                    "inputType": "file",
-                    "format": "parquet",
-                    "path": base_path,
-                    "mode": "scan",
-                },
-            },
-            {
-                "op": "add_node",
-                "node_type": "dataInput",
-                "name": reference_name,
-                "ref": "recipe_showcase_reference",
-                "config": {
-                    "inputType": "file",
-                    "format": "parquet",
-                    "path": reference_path,
-                    "mode": "scan",
-                },
-            },
-            {
-                "op": "add_node",
-                "node_type": "edgeJoin",
-                "name": join_name,
-                "ref": "recipe_showcase_join",
-                "config": {
-                    "how": "left",
-                    "leftOn": [join_key],
-                    "rightOn": [join_key],
-                },
-            },
-            {
-                "op": "add_edge",
-                "source": "$recipe_showcase_base",
-                "target": "$recipe_showcase_join",
-                "target_handle": "base",
-            },
-            {
-                "op": "add_edge",
-                "source": "$recipe_showcase_reference",
-                "target": "$recipe_showcase_join",
-                "target_handle": "join",
-            },
-            {
-                "op": "add_node",
-                "node_type": "polars",
-                "name": transform_name,
-                "ref": "recipe_showcase_transform",
-                "config": {"code": transform_code},
-            },
-            {
-                "op": "add_edge",
-                "source": "$recipe_showcase_join",
-                "target": "$recipe_showcase_transform",
-            },
-        ]
-        operations.extend(
-            _output_operations(
-                showcase_values,
-                source="$recipe_showcase_transform",
-                source_port=transform_name,
-            )
-        )
-    elif recipe_id == "continuous_banding":
-        _validate_continuous_rules(values["rules"])
-        ref = "recipe_banding"
-        operations = [
-            {
-                "op": "add_node",
-                "node_type": "banding",
-                "name": values["name"],
-                "ref": ref,
-                "config": {
-                    "factors": [
-                        {
-                            "banding": "continuous",
-                            "column": values["column"],
-                            "outputColumn": values["output_column"],
-                            "rules": values["rules"],
-                            "default": values["default"],
-                        }
-                    ]
-                },
-            },
-            {"op": "add_edge", "source": values["source"], "target": f"${ref}"},
-        ]
     elif recipe_id == "categorical_banding":
         _validate_categorical_rules(values["rules"])
-        ref = "recipe_categorical_banding"
         operations = [
             {
                 "op": "add_node",
@@ -1077,9 +657,8 @@ def plan_recipe(recipe_id: str, args: object) -> dict[str, object]:
                 "recipe_argument_invalid",
                 "base_source and reference_source must be distinct nodes.",
             )
-        if values["how"] not in {"inner", "left", "right", "full", "semi", "anti", "cross"}:
+        if values["how"] not in _REFERENCE_JOIN_MODES:
             raise RecipeError("recipe_argument_invalid", "Unsupported reference join mode.")
-        ref = "recipe_reference_join"
         operations = [
             {
                 "op": "add_node",
@@ -1106,7 +685,6 @@ def plan_recipe(recipe_id: str, args: object) -> dict[str, object]:
             },
         ]
     elif recipe_id == "rating_step":
-        ref = "recipe_rating_step"
         operations = [
             {
                 "op": "add_node",
@@ -1119,12 +697,14 @@ def plan_recipe(recipe_id: str, args: object) -> dict[str, object]:
         ]
     else:
         raise AssertionError(f"Unhandled recipe: {recipe_id}")
-    if ref is not None:
+    if created is not None:
         operations.extend(
             _output_operations(
                 values,
-                source=f"${ref}",
-                source_port=values["name"],
+                source=f"${created}",
+                # The created node's id, which names the frame its edge carries.
+                source_port=_sanitize_func_name(values["name"]),
+                ref=f"{created}_output",
             )
         )
     try:
@@ -1133,43 +713,79 @@ def plan_recipe(recipe_id: str, args: object) -> dict[str, object]:
         raise RecipeError(
             "recipe_plan_invalid", "Recipe generated invalid primitive operations."
         ) from exc
-    result: dict[str, object] = {
-        "recipe_id": recipe_id,
-        "version": "1",
-        "operations": operations,
-        "postconditions": [
-            *[
-                {"kind": "node_exists", "node": f"${operation['ref']}"}
-                for operation in operations
-                if operation["op"] == "add_node" and isinstance(operation.get("ref"), str)
-            ],
-            *[
-                {
-                    "kind": "edge_exists",
-                    "source": operation["source"],
-                    "target": operation["target"],
-                    **{
-                        key: operation[key]
-                        for key in ("source_handle", "target_handle")
-                        if key in operation
-                    },
-                }
-                for operation in operations
-                if operation["op"] == "add_edge"
-            ],
-        ],
-    }
-    result["recipe_plan_hash"] = hashlib.sha256(canonical_json(result).encode("utf-8")).hexdigest()
-    return result
+    return operations
+
+
+class RecipeOperationError(RecipeError):
+    """A recipe failure, located at the ``recipe`` operation of the batch that raised it."""
+
+    def __init__(self, error: RecipeError, *, op_index: int, recipe_id: str) -> None:
+        super().__init__(error.code, str(error), **dict(error.context))
+        self.op_index = op_index
+        self.recipe_id = recipe_id
+
+
+@dataclass(frozen=True, slots=True)
+class ExpandedBatch:
+    """A graph-edit batch with each ``recipe`` operation expanded in place.
+
+    ``positions[i]`` is the index, in the batch the model sent, of the
+    operation expanded operation ``i`` came from; ``recipes`` maps the index
+    of each ``recipe`` operation to its recipe id.
+    """
+
+    operations: list[object]
+    positions: tuple[int, ...]
+    recipes: Mapping[int, str]
+
+
+def expand_recipe_operations(ops: object) -> ExpandedBatch:
+    """Expand every ``recipe`` operation of a batch, in place and in batch order.
+
+    The operation at index ``i`` declares the node it creates with its own
+    ``ref``, or ``recipe_<i>`` without one, so no two expansions share a ref.
+    Anything that is not a list passes through unchanged, for the operation
+    parser to refuse.
+    """
+
+    if not isinstance(ops, list):
+        return ExpandedBatch(operations=ops, positions=(), recipes={})  # type: ignore[arg-type]
+    operations: list[object] = []
+    positions: list[int] = []
+    recipes: dict[int, str] = {}
+    for index, operation in enumerate(ops):
+        if not isinstance(operation, Mapping) or operation.get("op") != "recipe":
+            operations.append(operation)
+            positions.append(index)
+            continue
+        recipe_id = operation.get("recipe")
+        if not isinstance(recipe_id, str):
+            raise RecipeOperationError(
+                RecipeError("unknown_recipe", "A recipe operation must name its recipe."),
+                op_index=index,
+                recipe_id="",
+            )
+        recipes[index] = recipe_id
+        ref = operation.get("ref")
+        try:
+            expansion = expand_recipe(
+                recipe_id,
+                operation.get("arguments"),
+                ref=ref if isinstance(ref, str) and ref else f"recipe_{index}",
+            )
+        except RecipeError as exc:
+            raise RecipeOperationError(exc, op_index=index, recipe_id=recipe_id) from exc
+        operations.extend(expansion)
+        positions.extend(index for _operation in expansion)
+    return ExpandedBatch(operations=operations, positions=tuple(positions), recipes=recipes)
 
 
 __all__ = [
+    "ExpandedBatch",
     "RecipeError",
-    "explicit_dataset_directory",
-    "is_explanation_only_request",
-    "plan_recipe",
+    "RecipeOperationError",
+    "expand_recipe",
+    "expand_recipe_operations",
     "recipe_descriptor",
     "recipe_manifest",
-    "request_requires_material_clarification",
-    "route_recipe_request",
 ]

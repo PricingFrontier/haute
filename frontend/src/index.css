@@ -173,14 +173,6 @@
   --banner-success-data: var(--success-hover);
   --banner-success-action: var(--success-hover);
 
-  /* Editor status badge (MlflowStatusBadge in editors/_shared), success
-     tone.  Its success/danger/warning tints deliberately share the .06
-     alpha tier so no tone shouts over the others — keep parity with the
-     danger/warning sides of the tone map when retuning. */
-  --editor-status-success-bg: var(--success-soft-subtle);
-  --editor-status-success-border: var(--success-border);
-  --editor-status-success-text: var(--success);
-
   /* Training data-summary banner (modelling panel), ok state.  Pairs
      with a warning state at the same .06 tint tier — keep parity. */
   --train-summary-success-bg: var(--success-soft-subtle);
@@ -305,6 +297,12 @@
   --chart-impact-muted: #626262;
   --chart-impact-grid: #d7d7d7;
   --chart-impact-axis: #8a8a8a;
+  /* The SHAP beeswarm's feature-value colours on the panel surface: the
+     SHAP convention's low and high poles, and a grey for values with no
+     order that no low-to-high mix can be mistaken for. */
+  --chart-value-low: #008bfb;
+  --chart-value-high: #ff0051;
+  --chart-value-none: var(--text-secondary);
   --chart-series-1: var(--warning-strong);
   --chart-series-2: var(--accent);
   --chart-series-3: var(--success);
@@ -316,6 +314,12 @@
   --model-accent: #a855f7;
   --model-accent-soft: rgba(168,85,247,.15);
   --model-accent-border: rgba(168,85,247,.30);
+  /* The optimiser results workspace accent (tabs, Focus view, selection).
+     Deliberately not a warning hue: the stale strip and breached statuses use
+     the warning palette, and a warning accent would make the whole pane read
+     as a warning. */
+  --optimiser-accent: #14b8a6;
+  --optimiser-accent-soft: rgba(20,184,166,.15);
   --model-log-action: var(--accent);
   --structure-action: #64748b;
   --structure-action-hover: #94a3b8;
@@ -467,11 +471,49 @@ html, body, #root {
   transform: translate(-50%, -50%);
   border-radius: 50%;
 }
-.react-flow__handle:hover {
+/* One shared circle primitive serves both the standard hover marker and the
+   persistent origin marker, so their size, outline, and radius cannot drift. */
+.react-flow__handle:hover,
+.react-flow__handle.output-origin-handle::before,
+.react-flow__handle.input-origin-handle::before {
   width: 10px !important;
   height: 10px !important;
-  background: var(--accent) !important;
+  box-sizing: border-box;
   border: 2px solid var(--bg-elevated) !important;
+  border-radius: 50%;
+}
+/* Visible port origins without changing React Flow's 2px geometry. The same
+   marker is clipped to its node-facing half at rest and opened on hover. */
+.react-flow__handle.output-origin-handle::before,
+.react-flow__handle.input-origin-handle::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: color-mix(in srgb, currentColor 70%, var(--text-primary));
+  pointer-events: none;
+}
+.react-flow__handle.output-origin-handle::before {
+  clip-path: inset(0 50% 0 0);
+}
+.react-flow__handle.input-origin-handle::before {
+  clip-path: inset(0 0 0 50%);
+}
+.react-flow__handle:hover {
+  background: var(--accent) !important;
+}
+.react-flow__handle.output-origin-handle:hover,
+.react-flow__handle.input-origin-handle:hover {
+  width: 2px !important;
+  height: 2px !important;
+  background: transparent !important;
+  border: none !important;
+}
+.react-flow__handle.output-origin-handle:hover::before,
+.react-flow__handle.input-origin-handle:hover::before {
+  clip-path: inset(0);
+  background: currentColor;
 }
 .react-flow__handle.edge-join-handle--suppress-hover::after {
   width: 2px;
@@ -922,6 +964,27 @@ html, body, #root {
 .feature-browser-row--selected {
   background: var(--accent-soft);
   border-left: 2px solid var(--accent);
+}
+
+/* Polars step card header (panels/editors/polarsSteps/StepCard.tsx): a quiet
+   lift on hover, so the whole header reads as the card's handle. */
+.step-card-header:hover {
+  background: var(--chrome-active);
+}
+
+/* Quiet text action in the step forms ("+ Add condition"): accent text that
+   underlines on hover, so secondary actions do not read as more fields. */
+.quiet-action {
+  color: var(--accent);
+}
+.quiet-action:hover {
+  text-decoration: underline;
+}
+
+/* Generated-code line of the step being pointed at (GeneratedCodePanel.tsx). */
+.generated-code-line--active {
+  background: var(--accent-soft-subtle);
+  box-shadow: inset 2px 0 0 var(--accent-ring);
 }
 
 /* Algorithm gateway button (panels/ModellingConfig.tsx) — the large

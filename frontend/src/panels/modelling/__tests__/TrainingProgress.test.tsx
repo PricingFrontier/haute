@@ -1,12 +1,8 @@
-import { describe, it, expect, vi, afterEach } from "vitest"
+import { describe, it, expect, afterEach } from "vitest"
 import { render, screen, cleanup } from "@testing-library/react"
 import { TrainingProgress } from "../TrainingProgress"
 import type { TrainProgress } from "../../../stores/useNodeResultsStore"
 import { makeExecutionMetricsFixture } from "../../../testSupport/executionMetricsFixture"
-
-vi.mock("../../../utils/formatValue", () => ({
-  formatElapsed: vi.fn((s: number) => `${s}s`),
-}))
 
 function makeProgress(overrides: Partial<TrainProgress> = {}): TrainProgress {
   return {
@@ -59,8 +55,8 @@ describe("TrainingProgress", () => {
     expect(container.textContent).toContain("0.1235")
   })
 
-  it("renders the authoritative bounded loss-history snapshot and truncation label", () => {
-    render(
+  it("draws the fit's live loss curve on an x-axis running to its round budget", () => {
+    const { container } = render(
       <TrainingProgress
         trainProgress={makeProgress({
           train_loss_history: [
@@ -73,9 +69,25 @@ describe("TrainingProgress", () => {
     )
 
     expect(screen.getByText("Loss Curve")).toBeInTheDocument()
-    expect(
-      screen.getByText("Showing latest retained loss-history window."),
-    ).toBeInTheDocument()
+    const labels = [...container.querySelectorAll("svg text")].map((text) => text.textContent)
+    expect(labels.at(-1)).toBe("100")
+  })
+
+  it("draws no chart when the history has no training curve", () => {
+    render(
+      <TrainingProgress
+        trainProgress={makeProgress({
+          // Rows without a train_ key: the shape live progress sent before MDL-02.
+          train_loss_history: [
+            { iteration: 40, rmse: 0.8 },
+            { iteration: 50, rmse: 0.7 },
+          ],
+          train_loss_history_truncated: true,
+        })}
+      />,
+    )
+
+    expect(screen.queryByText("Loss Curve")).toBeNull()
   })
 
   it("does not synthesize a chart from the latest loss poll", () => {
@@ -88,6 +100,14 @@ describe("TrainingProgress", () => {
     expect(screen.queryByText("Loss Curve")).toBeNull()
   })
 
+  it("shows elapsed time in the shared duration format", () => {
+    const rendered = render(<TrainingProgress trainProgress={makeProgress({ elapsed_seconds: 4.26 })} />)
+    expect(screen.getByText("4.3 s")).toBeInTheDocument()
+
+    rendered.rerender(<TrainingProgress trainProgress={makeProgress({ elapsed_seconds: 30 })} />)
+    expect(screen.getByText("30 s")).toBeInTheDocument()
+  })
+
   it("shows an estimate only when the store supplies one", () => {
     const rendered = render(
       <TrainingProgress
@@ -95,7 +115,15 @@ describe("TrainingProgress", () => {
         estimatedRemainingSeconds={45}
       />,
     )
-    expect(screen.getByText("Estimated remaining: 45s")).toBeInTheDocument()
+    expect(screen.getByText("Estimated remaining: 45 s")).toBeInTheDocument()
+
+    rendered.rerender(
+      <TrainingProgress
+        trainProgress={makeProgress()}
+        estimatedRemainingSeconds={125}
+      />,
+    )
+    expect(screen.getByText("Estimated remaining: 2m 05s")).toBeInTheDocument()
 
     rendered.rerender(<TrainingProgress trainProgress={makeProgress()} />)
     expect(screen.queryByText(/Estimated remaining/)).toBeNull()
@@ -130,7 +158,7 @@ describe("TrainingProgress", () => {
       />,
     )
 
-    expect(screen.getByText("Memory pressure reached 75% of the training budget.")).toBeInTheDocument()
-    expect(screen.getByText("Headroom used 1.5 KB of 2.0 KB")).toBeInTheDocument()
+    expect(screen.getByText("Training reached 75% of its memory allowance.")).toBeInTheDocument()
+    expect(screen.getByText("Memory remaining: 2.0 KB")).toBeInTheDocument()
   })
 })

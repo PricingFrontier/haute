@@ -23,7 +23,8 @@
  *   - History-aware: `setNodes`, `setEdges`, `setPreamble`,
  *     `setNodesAndEdgesAndSubmodels`, and manual `pushSnapshot`. Each captures
  *     the pre-mutation `{nodes, edges, preamble, submodels}` onto `undoStack`
- *     and clears `redoStack`.
+ *     and clears `redoStack`. An atomic graph commit whose authored fingerprint
+ *     is unchanged (such as generated step-code refresh) preserves both stacks.
  *
  *   - Raw: `setNodesRaw`, `setEdgesRaw`, `setSubmodelsRaw`, `setPreambleRaw`.
  *     history push — used for mid-drag position updates (React Flow's
@@ -57,6 +58,7 @@ import {
 import { shallowNodeDataHash } from "../utils/shallowNodeHash"
 import { nodeData } from "../types/node"
 import type { PipelineEdge } from "../types/node"
+import type { GlobalConstantDraft } from "../utils/globalConstants"
 
 // ─── Types ───────────────────────────────────────────────────────────────
 
@@ -65,6 +67,10 @@ export interface GraphSnapshot {
   edges: PipelineEdge[]
   preamble: string
   submodels: Record<string, unknown>
+  /** The global constants as the Constants pane edits them (absent: none). */
+  globalConstants?: GlobalConstantDraft[]
+  /** Why the constants file failed to load; only a document load sets it. */
+  globalConstantsError?: string | null
 }
 
 /** A version-control operation (branch switch / archive / delete) riding the
@@ -93,6 +99,13 @@ export interface GraphStore {
   preamble: string
   /** Persisted submodel graphs; included in history and dirty fingerprints. */
   submodels: Record<string, unknown>
+  /**
+   * The global constants, in the dirty and structural fingerprints but never
+   * restored by undo or redo (constants edits are not on the undo stack).
+   */
+  globalConstants: GlobalConstantDraft[]
+  /** Why the constants file failed to load; the pane is read-only while set. */
+  globalConstantsError: string | null
   lastSavedSnapshot: GraphSnapshot | null
   undoStack: HistoryEntry[]
   redoStack: HistoryEntry[]
@@ -133,6 +146,8 @@ export interface GraphStore {
   setEdgesRaw: (edges: PipelineEdge[] | ((eds: PipelineEdge[]) => PipelineEdge[])) => void
   setSubmodelsRaw: (submodels: Record<string, unknown>) => void
   setPreambleRaw: (value: string) => void
+  /** Replace the global constants without an undo entry. */
+  setGlobalConstantsRaw: (constants: GlobalConstantDraft[]) => void
 
   /**
    * Replace the complete persisted document and make it the clean saved
@@ -189,7 +204,8 @@ type StructuralEdge = {
  * corrupt history or saved baselines.
  */
 export function captureGraphSnapshot(
-  state: Pick<GraphStore, "nodes" | "edges" | "preamble" | "submodels">,
+  state: Pick<GraphStore, "nodes" | "edges" | "preamble" | "submodels">
+    & { globalConstants?: GlobalConstantDraft[] },
 ): GraphSnapshot {
   return cloneGraphSnapshot(state)
 }
@@ -337,6 +353,7 @@ export function computeStructuralFingerprint(
   nodes: StructuralNode[],
   edges: StructuralEdge[],
   preamble = "",
+  globalConstants: readonly GlobalConstantDraft[] = [],
 ): string {
   const nodeParts = nodes
     .map((n) => `${n.id}:${shallowNodeDataHash(nodeData(n) as unknown as Record<string, unknown>)}`)
@@ -345,6 +362,7 @@ export function computeStructuralFingerprint(
     .map((e) => `${e.source}:${e.sourceHandle ?? ""}->${e.target}:${e.targetHandle ?? ""}`)
     .sort()
   return `nodes:${nodeParts.join("|")}||edges:${edgeParts.join("|")}||preamble:${JSON.stringify(preamble)}`
+    + `||constants:${JSON.stringify(globalConstants)}`
 }
 
 const PANEL_CONTEXT_NODE_DATA_KEYS = [
@@ -356,6 +374,7 @@ const PANEL_CONTEXT_NODE_DATA_KEYS = [
   "func_name",
   "_columns",
   "_availableColumns",
+  "_frameColumns",
   "_schemaWarnings",
 ] as const
 
@@ -393,8 +412,9 @@ function computePersistedFingerprint(
   edges: PipelineEdge[],
   preamble: string,
   submodels: Record<string, unknown>,
+  globalConstants: readonly GlobalConstantDraft[],
 ): string {
-  return serializeSnapshot({ nodes, edges, preamble, submodels })
+  return serializeSnapshot({ nodes, edges, preamble, submodels, globalConstants })
 }
 
 function appendHistoryEntry(stack: HistoryEntry[], entry: HistoryEntry): HistoryEntry[] {
@@ -484,15 +504,17 @@ function createInitialGraphState(): GraphStoreData {
     edges: [],
     preamble: "",
     submodels: {},
+    globalConstants: [],
+    globalConstantsError: null,
     lastSavedSnapshot: null,
     undoStack: [],
     redoStack: [],
     vcBusy: false,
     structuralVersion: 0,
-    structuralFingerprint: computeStructuralFingerprint([], [], ""),
+    structuralFingerprint: computeStructuralFingerprint([], [], "", []),
     panelContextVersion: 0,
     panelContextFingerprint: computePanelContextFingerprint([], []),
-    persistedFingerprint: computePersistedFingerprint([], [], "", {}),
+    persistedFingerprint: computePersistedFingerprint([], [], "", {}, []),
     savedPersistedFingerprint: null,
     dirty: false,
   }
@@ -525,8 +547,9 @@ const useGraphStore = create<GraphStore>()((set, get) => {
             state.edges,
             state.preamble,
             state.submodels,
+            state.globalConstants,
           )
-          const nextFingerprint = computeStructuralFingerprint(nodes, state.edges, state.preamble)
+          const nextFingerprint = computeStructuralFingerprint(nodes, state.edges, state.preamble, state.globalConstants)
           return {
             nodes,
             ...computePanelContextPatch(state, nodes, state.edges),
@@ -558,8 +581,9 @@ const useGraphStore = create<GraphStore>()((set, get) => {
             edges,
             state.preamble,
             state.submodels,
+            state.globalConstants,
           )
-          const nextFingerprint = computeStructuralFingerprint(state.nodes, edges, state.preamble)
+          const nextFingerprint = computeStructuralFingerprint(state.nodes, edges, state.preamble, state.globalConstants)
           return {
             edges,
             ...computePanelContextPatch(state, state.nodes, edges),
@@ -595,8 +619,9 @@ const useGraphStore = create<GraphStore>()((set, get) => {
           edges,
           state.preamble,
           state.submodels,
+          state.globalConstants,
         )
-        const nextFingerprint = computeStructuralFingerprint(nodes, edges, state.preamble)
+        const nextFingerprint = computeStructuralFingerprint(nodes, edges, state.preamble, state.globalConstants)
         return {
           undoStack,
           redoStack: [],
@@ -621,7 +646,6 @@ const useGraphStore = create<GraphStore>()((set, get) => {
 
     setNodesAndEdgesAndSubmodels: (nodesUpdater, edgesUpdater, submodels, preamble) => {
       set((state) => {
-        const undoStack = pushSnapshotInternal()
         const nodes = applyUpdater(state.nodes, nodesUpdater)
         const edges = applyUpdater(state.edges, edgesUpdater)
         const nextPreamble = preamble === undefined ? state.preamble : preamble
@@ -630,11 +654,15 @@ const useGraphStore = create<GraphStore>()((set, get) => {
           edges,
           nextPreamble,
           submodels,
+          state.globalConstants,
         )
-        const nextFingerprint = computeStructuralFingerprint(nodes, edges, nextPreamble)
+        const nextFingerprint = computeStructuralFingerprint(nodes, edges, nextPreamble, state.globalConstants)
+        // A render can refresh generated step code without changing authored
+        // graph state. Apply that cache update without consuming Undo or Redo.
+        const authoredChange = nextPersistedFingerprint !== state.persistedFingerprint
         return {
-          undoStack,
-          redoStack: [],
+          undoStack: authoredChange ? pushSnapshotInternal() : state.undoStack,
+          redoStack: authoredChange ? [] : state.redoStack,
           nodes,
           edges,
           preamble: nextPreamble,
@@ -663,8 +691,9 @@ const useGraphStore = create<GraphStore>()((set, get) => {
           state.edges,
           value,
           state.submodels,
+          state.globalConstants,
         )
-        const nextFingerprint = computeStructuralFingerprint(state.nodes, state.edges, value)
+        const nextFingerprint = computeStructuralFingerprint(state.nodes, state.edges, value, state.globalConstants)
         return {
           undoStack: pushSnapshotInternal(),
           redoStack: [],
@@ -705,6 +734,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
           state.edges,
           state.preamble,
           state.submodels,
+          state.globalConstants,
         )
         const persistedPatch = {
           persistedFingerprint: nextPersistedFingerprint,
@@ -719,7 +749,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
           return { nodes, ...persistedPatch, ...panelContextPatch }
         }
 
-        const nextFingerprint = computeStructuralFingerprint(nodes, state.edges, state.preamble)
+        const nextFingerprint = computeStructuralFingerprint(nodes, state.edges, state.preamble, state.globalConstants)
         return {
           nodes,
           ...persistedPatch,
@@ -747,6 +777,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
           edges,
           state.preamble,
           state.submodels,
+          state.globalConstants,
         )
         const persistedPatch = {
           persistedFingerprint: nextPersistedFingerprint,
@@ -760,7 +791,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
           return { edges, ...persistedPatch, ...panelContextPatch }
         }
 
-        const nextFingerprint = computeStructuralFingerprint(state.nodes, edges, state.preamble)
+        const nextFingerprint = computeStructuralFingerprint(state.nodes, edges, state.preamble, state.globalConstants)
         return {
           edges,
           ...persistedPatch,
@@ -782,6 +813,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
           state.edges,
           state.preamble,
           submodels,
+          state.globalConstants,
         )
         return {
           submodels,
@@ -802,10 +834,44 @@ const useGraphStore = create<GraphStore>()((set, get) => {
           state.edges,
           value,
           state.submodels,
+          state.globalConstants,
         )
-        const nextFingerprint = computeStructuralFingerprint(state.nodes, state.edges, value)
+        const nextFingerprint = computeStructuralFingerprint(state.nodes, state.edges, value, state.globalConstants)
         return {
           preamble: value,
+          persistedFingerprint: nextPersistedFingerprint,
+          dirty: computeDirty(
+            state.lastSavedSnapshot,
+            state.savedPersistedFingerprint,
+            nextPersistedFingerprint,
+          ),
+          ...(nextFingerprint === state.structuralFingerprint
+            ? {}
+            : {
+                structuralFingerprint: nextFingerprint,
+                structuralVersion: state.structuralVersion + 1,
+              }),
+        }
+      })
+    },
+
+    setGlobalConstantsRaw: (constants) => {
+      set((state) => {
+        const nextPersistedFingerprint = computePersistedFingerprint(
+          state.nodes,
+          state.edges,
+          state.preamble,
+          state.submodels,
+          constants,
+        )
+        const nextFingerprint = computeStructuralFingerprint(
+          state.nodes,
+          state.edges,
+          state.preamble,
+          constants,
+        )
+        return {
+          globalConstants: constants,
           persistedFingerprint: nextPersistedFingerprint,
           dirty: computeDirty(
             state.lastSavedSnapshot,
@@ -839,6 +905,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
           loaded.nodes,
           loaded.edges,
           loaded.preamble,
+          loaded.globalConstants ?? [],
         )
         const panelContextFingerprint = computePanelContextFingerprint(
           loaded.nodes,
@@ -849,12 +916,15 @@ const useGraphStore = create<GraphStore>()((set, get) => {
           loaded.edges,
           loaded.preamble,
           loaded.submodels,
+          loaded.globalConstants ?? [],
         )
         return {
           nodes: loaded.nodes,
           edges: loaded.edges,
           preamble: loaded.preamble,
           submodels: loaded.submodels,
+          globalConstants: loaded.globalConstants ?? [],
+          globalConstantsError: loaded.globalConstantsError ?? null,
           lastSavedSnapshot,
           undoStack: [],
           redoStack: [],
@@ -908,13 +978,14 @@ const useGraphStore = create<GraphStore>()((set, get) => {
           .finally(() => set({ vcBusy: false }))
         return
       }
-      const nextFingerprint = computeStructuralFingerprint(prev.nodes, prev.edges, prev.preamble)
+      const nextFingerprint = computeStructuralFingerprint(prev.nodes, prev.edges, prev.preamble, get().globalConstants)
       const nextPanelContextFingerprint = computePanelContextFingerprint(prev.nodes, prev.edges)
       const nextPersistedFingerprint = computePersistedFingerprint(
         prev.nodes,
         prev.edges,
         prev.preamble,
         prev.submodels,
+        get().globalConstants,
       )
       set((state) => ({
         undoStack: newUndo,
@@ -962,13 +1033,14 @@ const useGraphStore = create<GraphStore>()((set, get) => {
           .finally(() => set({ vcBusy: false }))
         return
       }
-      const nextFingerprint = computeStructuralFingerprint(next.nodes, next.edges, next.preamble)
+      const nextFingerprint = computeStructuralFingerprint(next.nodes, next.edges, next.preamble, get().globalConstants)
       const nextPanelContextFingerprint = computePanelContextFingerprint(next.nodes, next.edges)
       const nextPersistedFingerprint = computePersistedFingerprint(
         next.nodes,
         next.edges,
         next.preamble,
         next.submodels,
+        get().globalConstants,
       )
       set((state) => ({
         redoStack: newRedo,
@@ -1000,18 +1072,23 @@ const useGraphStore = create<GraphStore>()((set, get) => {
       set((state) => {
         const lastSavedSnapshot = snapshot === undefined
           ? captureGraphSnapshot(state)
-          : captureGraphSnapshot(snapshot)
+          : captureGraphSnapshot({
+              ...snapshot,
+              globalConstants: snapshot.globalConstants ?? state.globalConstants,
+            })
         const currentPersistedFingerprint = computePersistedFingerprint(
           state.nodes,
           state.edges,
           state.preamble,
           state.submodels,
+          state.globalConstants,
         )
         const savedPersistedFingerprint = computePersistedFingerprint(
           lastSavedSnapshot.nodes,
           lastSavedSnapshot.edges,
           lastSavedSnapshot.preamble,
           lastSavedSnapshot.submodels,
+          lastSavedSnapshot.globalConstants ?? [],
         )
         return {
           lastSavedSnapshot,
@@ -1029,8 +1106,8 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     // ── Pure selectors ──────────────────────────────────────────────────
 
     isDirty: () => {
-      const { lastSavedSnapshot, nodes, edges, preamble, submodels } = get()
-      const current = serializeSnapshot({ nodes, edges, preamble, submodels })
+      const { lastSavedSnapshot, nodes, edges, preamble, submodels, globalConstants } = get()
+      const current = serializeSnapshot({ nodes, edges, preamble, submodels, globalConstants })
       if (lastSavedSnapshot === null) {
         return current !== EMPTY_SNAPSHOT
       }
@@ -1047,7 +1124,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
       if (get().vcBusy) {
         throw new Error(
           "resetForTests called while a VC undo/redo is in flight (vcBusy). " +
-            "Settle that promise first — its completion handlers set() unconditionally " +
+            "Settle that promise first - its completion handlers set() unconditionally " +
             "and would overwrite the fresh reset with stale VC state.",
         )
       }

@@ -1,17 +1,29 @@
-import { memo, useState, useCallback, useRef, useEffect, useMemo, type MouseEvent } from "react"
+import { memo, useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo, type MouseEvent, type ReactNode } from "react"
 import { X, AlertCircle, CheckCircle2, Table2, Search, Layers } from "lucide-react"
 import { getDtypeColor } from "../utils/dtypeColors"
 import { formatValue } from "../utils/formatValue"
 import ExecutionDiagnosticsIndicator from "../components/ExecutionDiagnosticsIndicator"
+import PreviewOutOfDateBadge from "../components/PreviewOutOfDateBadge"
 import type { ColumnInfo } from "../types/node"
-import type { SchemaWarning, NodeTiming, NodeMemory, ExecutionMetrics } from "../api/types"
+import type {
+  SchemaWarning,
+  NodeTiming,
+  NodeMemory,
+  ExecutionMetrics,
+  PreviewProgressResponse,
+  PreviewSeedPlanEntry,
+} from "../api/types"
 import PreviewPanelFrame from "./PreviewPanelFrame"
-import { DEFAULT_PREVIEW_PANEL_DIMENSIONS } from "./previewPanelLayout"
+import { PREVIEW_PANEL_DIMENSIONS } from "./previewPanelLayout"
 
 export interface PreviewData {
   nodeId: string
   nodeLabel: string
   status: "ok" | "error" | "loading"
+  /** Cache preparation progress while waiting to execute the preview. */
+  loading_message?: string
+  /** The running request's step progress, while it is loading. */
+  progress?: PreviewProgressResponse
   row_count: number
   column_count: number
   columns: ColumnInfo[]
@@ -34,10 +46,15 @@ export interface PreviewData {
   frame_columns?: Record<string, ColumnInfo[]>
   /** The frame label currently shown. Drives the dropdown's selected value. */
   selected_frame?: string
+  /** The shared-snapshot generations these rows were computed from. */
+  seed_plan?: PreviewSeedPlanEntry[]
 }
 
 interface DataPreviewProps {
   data: PreviewData | null
+  /** Active node label so its preview frame is available before results arrive. */
+  nodeLabel?: string
+  onRefresh?: () => void
   onCellClick?: (rowIndex: number, column: string, rowValues?: Record<string, unknown>) => void
   tracedCell?: { rowIndex: number; column: string } | null
   embedded?: boolean
@@ -46,6 +63,10 @@ interface DataPreviewProps {
    * provided AND the node carries 2+ frames, the top-bar shows a frame-select
    * dropdown. Omitted (or single-frame node) → no dropdown, unchanged UI. */
   onSelectFrame?: (portLabel: string) => void
+  /** An action shown beside Refresh (Import, for a snapshot-backed Data Input). */
+  inputAction?: ReactNode
+  /** An action shown under a run error (Ask the assistant to fix). */
+  errorAction?: ReactNode
 }
 
 
@@ -58,7 +79,7 @@ const MID_COLUMN_WIDTH = 140
 const MIN_COLUMN_WIDTH = 120
 const COLUMN_OVERSCAN = 3
 const FALLBACK_VIEW_WIDTH = 960
-const FALLBACK_VIEW_HEIGHT = DEFAULT_PREVIEW_PANEL_DIMENSIONS.initialHeight
+const FALLBACK_VIEW_HEIGHT = PREVIEW_PANEL_DIMENSIONS.initialHeight
 const NULL_VALUE_STYLE = { color: 'var(--text-muted)', fontStyle: 'italic' }
 const EMPTY_COLUMNS: ColumnInfo[] = []
 const EMPTY_FRAME_LABELS: string[] = []
@@ -74,6 +95,80 @@ type ColumnWindow = {
 type ColumnSearchEntry = {
   column: ColumnInfo
   normalizedName: string
+}
+
+/**
+ * Where the user left one axis of the table: its offset, or its far end when
+ * it was left there, so a column added to a table scrolled fully right comes
+ * into view.
+ */
+type AxisPlace = { offset: number; atEnd: boolean }
+
+/** Where the user scrolled the table to, kept per axis. */
+type ScrollPlace = { top: AxisPlace; left: AxisPlace }
+
+// Offsets can be fractional, so within a pixel of the end is the end.
+function readAxisPlace(offset: number, maxOffset: number): AxisPlace {
+  return { offset, atEnd: maxOffset > 0 && maxOffset - offset < 1 }
+}
+
+function axisOffset(place: AxisPlace, maxOffset: number): number {
+  return place.atEnd ? maxOffset : place.offset
+}
+
+/** Scrolls `el` to `place`; the browser clamps an offset past the table's end. */
+function scrollToPlace(el: HTMLElement, place: ScrollPlace): void {
+  el.scrollTop = axisOffset(place.top, el.scrollHeight - el.clientHeight)
+  el.scrollLeft = axisOffset(place.left, el.scrollWidth - el.clientWidth)
+}
+
+/**
+ * A running preview: its step progress once the plan is known ("Step 2 of 4 ·
+ * Caching join"), "Preparing inputs" before that, or the preparation message.
+ * Steps are counted with equal weight, so the bar can jump; the label says
+ * which step is running.
+ */
+function PreviewLoading({
+  message,
+  progress,
+}: {
+  message?: string
+  progress?: PreviewProgressResponse
+}) {
+  const running =
+    progress?.phase === "running" && progress.total !== null && progress.total > 0
+      ? { done: progress.done ?? 0, total: progress.total }
+      : null
+  const text = running
+    ? `Step ${Math.min(running.done + 1, running.total)} of ${running.total}${
+        progress?.label ? ` · ${progress.label}` : ""
+      }`
+    : progress?.phase === "preparing"
+      ? message ?? "Preparing inputs…"
+      : message ?? "Executing pipeline..."
+  return (
+    <div className="flex-1 flex flex-col items-center justify-center gap-2">
+      <div role="status" className="text-xs animate-pulse" style={{ color: "var(--text-muted)" }}>
+        {text}
+      </div>
+      {running && (
+        <div
+          role="progressbar"
+          aria-label="Preview progress"
+          aria-valuemin={0}
+          aria-valuemax={running.total}
+          aria-valuenow={running.done}
+          className="h-1 w-48 overflow-hidden rounded"
+          style={{ background: "var(--accent-soft)" }}
+        >
+          <div
+            className="h-full transition-all duration-300"
+            style={{ width: `${(running.done / running.total) * 100}%`, background: "var(--accent)" }}
+          />
+        </div>
+      )}
+    </div>
+  )
 }
 
 function normalizeColumnSearch(value: string): string {
@@ -178,7 +273,7 @@ const DataCell = memo(function DataCell({
   )
 })
 
-export default function DataPreview({ data, onCellClick, tracedCell, embedded = false, nodeType, onSelectFrame }: DataPreviewProps) {
+export default function DataPreview({ data, nodeLabel, onRefresh, onCellClick, tracedCell, embedded = false, nodeType, onSelectFrame, inputAction, errorAction }: DataPreviewProps) {
   const [columnSearch, setColumnSearch] = useState("")
 
   // Frame labels for a multi-frame producer (a multi-table apiInput). The
@@ -238,6 +333,11 @@ export default function DataPreview({ data, onCellClick, tracedCell, embedded = 
   const [viewHeight, setViewHeight] = useState(0)
   const [viewWidth, setViewWidth] = useState(0)
   const rafRef = useRef(0)
+  const scrollPlaceRef = useRef<ScrollPlace | null>(null)
+  // The offset each axis was last put back at, until the user moves that axis.
+  // Putting the table back raises a scroll event, as does a narrower or shorter
+  // table clamping it there, and neither is the user moving it.
+  const placedOffsetsRef = useRef<{ top: number | null; left: number | null }>({ top: null, left: null })
 
   const setScrollContainer = useCallback((node: HTMLDivElement | null) => {
     scrollRef.current = node
@@ -248,11 +348,38 @@ export default function DataPreview({ data, onCellClick, tracedCell, embedded = 
     }
   }, [])
 
+  // Put the table back where the user left it when loading, an error or
+  // collapsing the panel replaces its scroll container (the replacement starts
+  // unscrolled), and when a new result, a column search or a resized panel
+  // changes how far it scrolls. The row and column windows start there; a
+  // frame still pending from before would move them back.
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+    const place = scrollPlaceRef.current
+    if (!el || !place) return
+    scrollToPlace(el, place)
+    placedOffsetsRef.current = { top: el.scrollTop, left: el.scrollLeft }
+    cancelAnimationFrame(rafRef.current)
+    setScrollTop(el.scrollTop)
+    setScrollLeft(el.scrollLeft)
+  }, [scrollElement, data, filteredColumns, viewWidth, viewHeight])
+
   const handleTableScroll = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
     const nextScrollTop = el.scrollTop
     const nextScrollLeft = el.scrollLeft
+    // An axis still at the offset it was put back at keeps its place: the user
+    // scrolled the other axis, or did not scroll at all.
+    const place = scrollPlaceRef.current
+    const placed = placedOffsetsRef.current
+    const keepTop = place !== null && placed.top === nextScrollTop
+    const keepLeft = place !== null && placed.left === nextScrollLeft
+    scrollPlaceRef.current = {
+      top: keepTop ? place.top : readAxisPlace(nextScrollTop, el.scrollHeight - el.clientHeight),
+      left: keepLeft ? place.left : readAxisPlace(nextScrollLeft, el.scrollWidth - el.clientWidth),
+    }
+    placedOffsetsRef.current = { top: keepTop ? placed.top : null, left: keepLeft ? placed.left : null }
     cancelAnimationFrame(rafRef.current)
     rafRef.current = requestAnimationFrame(() => {
       setScrollTop(nextScrollTop)
@@ -292,7 +419,16 @@ export default function DataPreview({ data, onCellClick, tracedCell, embedded = 
     return () => cancelAnimationFrame(ref.current)
   }, [])
 
-  if (!data) return null
+  if (!data) {
+    if (embedded || !nodeLabel) return null
+    return (
+      <PreviewPanelFrame nodeLabel={nodeLabel} nodeType={nodeType} onRefresh={onRefresh} actions={inputAction}>
+        <div className="flex-1 flex items-center justify-center text-xs" style={{ color: "var(--text-muted)" }}>
+          Refresh to preview this node.
+        </div>
+      </PreviewPanelFrame>
+    )
+  }
 
   const returnedRows = data.preview_row_count ?? data.preview.length
   const previewLimit = data.preview_row_limit ?? returnedRows
@@ -341,14 +477,13 @@ export default function DataPreview({ data, onCellClick, tracedCell, embedded = 
     </div>
   ) : null
   const previewContent = data.status === "loading" ? (
-    <div className="flex-1 flex items-center justify-center">
-      <div className="text-xs animate-pulse" style={{ color: 'var(--text-muted)' }}>Executing pipeline...</div>
-    </div>
+    <PreviewLoading message={data.loading_message} progress={data.progress} />
   ) : data.status === "error" ? (
     <div className="flex-1 flex items-center justify-center p-4">
       <div className="text-center">
         <AlertCircle size={24} className="mx-auto mb-2" style={{ color: 'var(--danger)', opacity: 0.5 }} />
         <div className="text-xs max-w-md" style={{ color: 'var(--danger)' }}>{data.error}</div>
+        {errorAction}
       </div>
     </div>
   ) : (
@@ -362,8 +497,12 @@ export default function DataPreview({ data, onCellClick, tracedCell, embedded = 
         let startIdx = 0
         let endIdx = totalRows
         if (shouldVirtualize) {
-          startIdx = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN)
-          endIdx = Math.min(totalRows, Math.ceil((scrollTop + effectiveViewHeight) / ROW_HEIGHT) + OVERSCAN)
+          // Until the browser clamps it, the offset can lie past a shorter
+          // result's end; the window then holds the result's last rows, not a
+          // spacer taller than the result.
+          const rowScrollTop = Math.min(scrollTop, Math.max(0, totalRows * ROW_HEIGHT - effectiveViewHeight))
+          startIdx = Math.max(0, Math.floor(rowScrollTop / ROW_HEIGHT) - OVERSCAN)
+          endIdx = Math.min(totalRows, Math.ceil((rowScrollTop + effectiveViewHeight) / ROW_HEIGHT) + OVERSCAN)
         }
         const topPad = startIdx * ROW_HEIGHT
         const bottomPad = (totalRows - endIdx) * ROW_HEIGHT
@@ -479,6 +618,7 @@ export default function DataPreview({ data, onCellClick, tracedCell, embedded = 
               {data.row_count.toLocaleString()} rows{" \u00b7 "}{data.column_count || columns.length} cols
             </span>
             <ExecutionDiagnosticsIndicator metrics={data.execution_metrics} />
+            <PreviewOutOfDateBadge data={data} />
           </>
         )}
         {data.status === "error" && (
@@ -515,7 +655,17 @@ export default function DataPreview({ data, onCellClick, tracedCell, embedded = 
     <PreviewPanelFrame
       nodeLabel={data.nodeLabel}
       nodeType={nodeType}
-      actions={frameSelectControl}
+      onRefresh={onRefresh}
+      actions={
+        inputAction ? (
+          <>
+            {inputAction}
+            {frameSelectControl}
+          </>
+        ) : (
+          frameSelectControl
+        )
+      }
       collapsedMeta={data.status === "ok" ? `${data.row_count.toLocaleString()} rows \u00b7 ${data.column_count || columns.length} cols` : undefined}
     >
       {previewSection}

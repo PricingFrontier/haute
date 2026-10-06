@@ -11,11 +11,29 @@ import polars as pl
 import pytest
 from fastapi import HTTPException
 
+from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from tests.job_store_support import discard_corrupt_job, seed_job
+from tests.optimiser_fixtures import (
+    SOLVE_SCENARIO_GRID,
+    library_frontier_frame,
+    logged_json_artifacts,
+    make_input_summary,
+    make_online_apply_frame,
+    run_frontier_and_wait,
+    typed_frontier_point,
+    use_local_mlflow_store,
+)
 from tests.optimiser_fixtures import make_select_job as _make_select_job
-from tests.optimiser_fixtures import run_frontier_and_wait
 
 # ``clean_job_store`` lives in tests/conftest.py — single source of truth.
+
+
+def _as_solved_handles() -> dict:
+    """The job's as-solved apply artifact: a point's apply is estimated from it."""
+    from haute.routes._optimiser_artifacts import _persist_apply_result_artifact
+
+    frame = make_online_apply_frame(["q1", "q2"], steps=[0, 1])
+    return {"apply_result": _persist_apply_result_artifact(SimpleNamespace(dataframe=frame))}
 
 
 def _frontier_job(*, artifact_handles: object | None = None) -> dict:
@@ -31,19 +49,25 @@ def _frontier_job(*, artifact_handles: object | None = None) -> dict:
     )
     job = {
         "status": "completed",
+        "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+        "scenario_grid": SOLVE_SCENARIO_GRID,
         "solver": solver,
         "quote_grid": MagicMock(),
         "heavy_objects_expires_at": time.time() + 3600,
         "frontier_data": {
+            "frontier_generation": 0,
             "status": "ok",
             "points": [
-                {
-                    "threshold_volume": 0.95,
-                    "total_volume": 0.95,
-                    "lambda_volume": 0.7,
-                    "total_objective": 200.0,
-                    "converged": True,
-                }
+                typed_frontier_point(
+                    {
+                        "threshold_volume": 0.95,
+                        "bound_volume": 0.95,
+                        "total_volume": 0.95,
+                        "lambda_volume": 0.7,
+                        "total_objective": 200.0,
+                        "converged": True,
+                    }
+                )
             ],
             "n_points": 1,
             "constraint_names": ["volume"],
@@ -55,6 +79,9 @@ def _frontier_job(*, artifact_handles: object | None = None) -> dict:
             "baseline_constraints": {"volume": 0.85},
             "lambdas": {"volume": 0.3},
             "converged": True,
+            "frontier_generation": 0,
+            "diagnostics_errors": [],
+            "input_summary": make_input_summary(),
         },
         "created_at": time.time(),
         "completed_at": time.time(),
@@ -116,36 +143,7 @@ def test_estimate_schema_rejects_numeric_quote_ids() -> None:
     )
 
 
-def test_frontier_lambda_rejects_empty_name() -> None:
-    from haute.routes.optimiser import _add_frontier_point_lambda
-
-    with pytest.raises(HTTPException) as exc_info:
-        _add_frontier_point_lambda({}, "", 0.2, field="lambda")
-
-    assert exc_info.value.status_code == 500
-    assert exc_info.value.detail == (
-        "Frontier point data is malformed: lambda names must be non-empty strings"
-    )
-
-
-def test_frontier_lambda_rejects_conflicting_value() -> None:
-    from haute.routes.optimiser import _add_frontier_point_lambda
-
-    with pytest.raises(HTTPException) as exc_info:
-        _add_frontier_point_lambda(
-            {"volume": 0.2},
-            "volume",
-            0.4,
-            field="lambda_volume",
-        )
-
-    assert exc_info.value.status_code == 500
-    assert exc_info.value.detail == (
-        "Frontier point data is malformed: conflicting lambda for 'volume'"
-    )
-
-
-def test_estimate_returns_input_metrics_when_metadata_lookup_fails(client, tmp_path: Path):
+def _estimate_graph(tmp_path: Path):
     from haute._sandbox import set_project_root
     from tests.conftest import make_edge, make_graph, make_ready_file_input_config
 
@@ -160,7 +158,7 @@ def test_estimate_returns_input_metrics_when_metadata_lookup_fails(client, tmp_p
             "volume": [1.0, 0.9, 1.2, 1.1],
         }
     ).write_parquet(data_path)
-    graph = make_graph(
+    return make_graph(
         {
             "nodes": [
                 {
@@ -191,12 +189,32 @@ def test_estimate_returns_input_metrics_when_metadata_lookup_fails(client, tmp_p
         }
     )
 
-    with (
-        patch(
-            "haute._ram_estimate._detailed_ancestor_source_metadata",
-            side_effect=RuntimeError("metadata unavailable"),
-        ),
-        patch("haute.routes.optimiser.logger.warning") as log_warning,
+
+def test_estimate_metadata_failure_is_an_error(client, tmp_path: Path):
+    """An unexpected metadata failure is reported, never an estimate whose
+    missing total looks like a source of unknown size."""
+    graph = _estimate_graph(tmp_path)
+
+    with patch(
+        "haute._ram_estimate._detailed_ancestor_source_metadata",
+        side_effect=RuntimeError("metadata resolver defect"),
+    ):
+        resp = client.post(
+            "/api/optimiser/estimate",
+            json={"graph": graph.model_dump(), "node_id": "opt"},
+        )
+
+    assert resp.status_code == 500
+
+
+def test_estimate_of_an_unknown_source_size_keeps_the_input_metrics(client, tmp_path: Path):
+    from haute._ram_estimate import _AncestorSourceMetadata
+
+    graph = _estimate_graph(tmp_path)
+
+    with patch(
+        "haute._ram_estimate._detailed_ancestor_source_metadata",
+        return_value=_AncestorSourceMetadata(row_count=None, column_count=0, sources=()),
     ):
         resp = client.post(
             "/api/optimiser/estimate",
@@ -212,10 +230,6 @@ def test_estimate_returns_input_metrics_when_metadata_lookup_fails(client, tmp_p
         "scenarios_per_quote_mean": 2.0,
         "expanded_row_count": 4,
     }
-    assert log_warning.call_count == 1
-    assert log_warning.call_args_list[0].args == ("optimiser_estimate_failed",)
-    assert log_warning.call_args_list[0].kwargs["error"] == "metadata unavailable"
-    assert log_warning.call_args_list[0].kwargs["node_id"] == "opt"
 
 
 def test_apply_rejects_non_mapping_artifact_handles(client, clean_job_store):
@@ -245,7 +259,12 @@ def test_apply_rejects_missing_artifact_summary(client, clean_job_store):
         "missing_apply_summary",
         {
             "status": "completed",
-            "artifact_handles": {"apply_result": {"path": "already-validated-by-patch"}},
+            "artifact_handles": {
+                "apply_result": {
+                    "kind": "optimiser_apply_result",
+                    "path": "already-validated-by-patch",
+                }
+            },
             "result": "not a summary mapping",
             "created_at": time.time(),
             "completed_at": time.time(),
@@ -254,8 +273,8 @@ def test_apply_rejects_missing_artifact_summary(client, clean_job_store):
 
     try:
         with patch(
-            "haute.routes.optimiser._load_apply_result_artifact",
-            return_value=pl.DataFrame({"quote_id": ["q1"]}),
+            "haute.routes._optimiser_artifacts._scan_apply_result_artifact",
+            return_value=pl.LazyFrame({"quote_id": ["q1"]}),
         ):
             resp = client.post(
                 "/api/optimiser/apply",
@@ -274,7 +293,12 @@ def test_apply_rejects_incomplete_artifact_summary(client, clean_job_store):
         "incomplete_apply_summary",
         {
             "status": "completed",
-            "artifact_handles": {"apply_result": {"path": "already-validated-by-patch"}},
+            "artifact_handles": {
+                "apply_result": {
+                    "kind": "optimiser_apply_result",
+                    "path": "already-validated-by-patch",
+                }
+            },
             "result": {"total_objective": "not numeric", "constraints": {"volume": 0.9}},
             "created_at": time.time(),
             "completed_at": time.time(),
@@ -283,8 +307,8 @@ def test_apply_rejects_incomplete_artifact_summary(client, clean_job_store):
 
     try:
         with patch(
-            "haute.routes.optimiser._load_apply_result_artifact",
-            return_value=pl.DataFrame({"quote_id": ["q1"]}),
+            "haute.routes._optimiser_artifacts._scan_apply_result_artifact",
+            return_value=pl.LazyFrame({"quote_id": ["q1"]}),
         ):
             resp = client.post(
                 "/api/optimiser/apply",
@@ -328,16 +352,22 @@ def test_frontier_select_succeeds_when_runtime_is_absent(client, clean_job_store
         "select_runtime_race",
         {
             "status": "completed",
+            "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+            "scenario_grid": SOLVE_SCENARIO_GRID,
             "frontier_data": {
+                "frontier_generation": 0,
                 "status": "ok",
                 "points": [
-                    {
-                        "threshold_volume": 0.95,
-                        "total_volume": 0.95,
-                        "lambda_volume": 0.7,
-                        "total_objective": 200.0,
-                        "converged": True,
-                    }
+                    typed_frontier_point(
+                        {
+                            "threshold_volume": 0.95,
+                            "bound_volume": 0.95,
+                            "total_volume": 0.95,
+                            "lambda_volume": 0.7,
+                            "total_objective": 200.0,
+                            "converged": True,
+                        }
+                    )
                 ],
                 "n_points": 1,
                 "constraint_names": ["volume"],
@@ -345,6 +375,7 @@ def test_frontier_select_succeeds_when_runtime_is_absent(client, clean_job_store
             "result": {
                 "baseline_objective": 90.0,
                 "baseline_constraints": {"volume": 0.85},
+                "frontier_generation": 0,
             },
             "created_at": time.time(),
             "completed_at": time.time(),
@@ -406,7 +437,7 @@ def test_frontier_apply_cleans_new_artifact_after_unexpected_store_failure(
     client,
     clean_job_store,
 ):
-    from haute.routes._optimiser_service import _persist_apply_result_artifact
+    from haute.routes._optimiser_artifacts import _persist_apply_result_artifact
 
     orphan_handle = _persist_apply_result_artifact(
         SimpleNamespace(dataframe=pl.DataFrame({"optimal_scenario_value": [1.0]}))
@@ -414,15 +445,17 @@ def test_frontier_apply_cleans_new_artifact_after_unexpected_store_failure(
     assert orphan_handle is not None
     orphan_path = Path(orphan_handle["path"])
     orphan_dir = Path(orphan_handle["directory"])
-    seed_job(clean_job_store, "select_store_failure", _frontier_job(artifact_handles={}))
-    apply_result = SimpleNamespace(
-        dataframe=pl.DataFrame({"optimal_scenario_value": [1.0]}),
+    seed_job(
+        clean_job_store,
+        "select_store_failure",
+        _frontier_job(artifact_handles=_as_solved_handles()),
     )
+    apply_result = SimpleNamespace(dataframe=make_online_apply_frame(["q1"]))
 
     with (
         patch("price_contour.apply_from_grid", return_value=apply_result),
         patch(
-            "haute.routes.optimiser._persist_apply_result_artifact",
+            "haute.routes._optimiser_frontier._persist_apply_frame_artifact",
             return_value=orphan_handle,
         ),
         patch.object(
@@ -430,53 +463,23 @@ def test_frontier_apply_cleans_new_artifact_after_unexpected_store_failure(
             "atomic_update_if_heavy_present",
             side_effect=RuntimeError("store write failed"),
         ),
-        patch("haute.routes.optimiser.logger.error") as log_error,
+        patch("haute.server.logger.error") as log_error,
     ):
         resp = client.post(
             "/api/optimiser/apply",
             json={"job_id": "select_store_failure", "point_index": 0},
         )
 
-    assert resp.status_code == 500
+    # The request-created artifact is removed before the failure propagates.
     assert not orphan_path.exists()
     assert not orphan_dir.exists()
+    assert resp.status_code == 500
+    assert resp.json()["detail"] == _INTERNAL_ERROR_DETAIL
+    # The application handler logs it; the route no longer catches it.
     log_error.assert_called_once()
-    assert log_error.call_args.args == ("frontier_apply_materialise_failed",)
-    assert log_error.call_args.kwargs["error"] == "store write failed"
-    assert log_error.call_args.kwargs["job_id"] == "select_store_failure"
-    assert log_error.call_args.kwargs["exc_info"] is True
-
-
-def test_save_rechecks_solve_result_after_touch(client, clean_job_store, tmp_path: Path):
-    from haute._sandbox import _get_project_root, set_project_root
-
-    original_root = _get_project_root()
-    seed_job(
-        clean_job_store,
-        "save_missing_after_touch",
-        {
-            "status": "completed",
-            "solve_result": None,
-            "created_at": time.time(),
-            "completed_at": time.time(),
-        },
-    )
-
-    try:
-        set_project_root(tmp_path)
-        with patch.object(clean_job_store, "touch_heavy_objects", return_value=True):
-            resp = client.post(
-                "/api/optimiser/save",
-                json={
-                    "job_id": "save_missing_after_touch",
-                    "output_path": str(tmp_path / "out.json"),
-                },
-            )
-    finally:
-        set_project_root(original_root)
-
-    assert resp.status_code == 400
-    assert resp.json()["detail"] == "Job has no solve result"
+    assert log_error.call_args.args == ("unhandled_exception",)
+    assert log_error.call_args.kwargs["error_class"] == "RuntimeError"
+    assert log_error.call_args.kwargs["path"] == "/api/optimiser/apply"
 
 
 def test_save_reraises_http_exception_from_artifact_build(
@@ -492,7 +495,16 @@ def test_save_reraises_http_exception_from_artifact_build(
         "save_artifact_http_error",
         {
             "status": "completed",
-            "solve_result": SimpleNamespace(),
+            "result": {
+                "lambdas": {},
+                "total_objective": 1.0,
+                "constraints": {},
+                "baseline_objective": 0.0,
+                "baseline_constraints": {},
+                "converged": True,
+                "diagnostics_errors": [],
+                "input_summary": make_input_summary(),
+            },
             "config": {"mode": "online"},
             "node_label": "opt",
             "created_at": time.time(),
@@ -518,52 +530,6 @@ def test_save_reraises_http_exception_from_artifact_build(
 
     assert resp.status_code == 418
     assert resp.json()["detail"] == "artifact rejected"
-
-
-def test_mlflow_log_rechecks_solve_result_after_touch(client, clean_job_store):
-    seed_job(
-        clean_job_store,
-        "mlflow_missing_after_touch",
-        {
-            "status": "completed",
-            "solver": MagicMock(),
-            "solve_result": None,
-            "created_at": time.time(),
-            "completed_at": time.time(),
-        },
-    )
-
-    with patch.object(clean_job_store, "touch_heavy_objects", return_value=True):
-        resp = client.post(
-            "/api/optimiser/mlflow/log",
-            json={"job_id": "mlflow_missing_after_touch"},
-        )
-
-    assert resp.status_code == 400
-    assert resp.json()["detail"] == "Job has no solve result"
-
-
-def test_mlflow_log_rechecks_solver_after_touch(client, clean_job_store):
-    seed_job(
-        clean_job_store,
-        "mlflow_solver_missing_after_touch",
-        {
-            "status": "completed",
-            "solver": None,
-            "solve_result": SimpleNamespace(),
-            "created_at": time.time(),
-            "completed_at": time.time(),
-        },
-    )
-
-    with patch.object(clean_job_store, "touch_heavy_objects", return_value=True):
-        resp = client.post(
-            "/api/optimiser/mlflow/log",
-            json={"job_id": "mlflow_solver_missing_after_touch"},
-        )
-
-    assert resp.status_code == 400
-    assert "re-run the solve" in resp.json()["detail"].lower()
 
 
 # ===========================================================================
@@ -664,18 +630,16 @@ def test_frontier_select_unhandled_exception_logged_and_500(
     """Unexpected errors in select must be logged (with traceback) and
     returned as a generic 500 — never bubbling internal state to the
     client."""
-    from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
-    from haute.routes.optimiser import logger as optimiser_logger
 
     seed_job(clean_job_store, "select_boom", _make_select_job())
 
     # Make the in-route helper raise an unexpected error mid-flow.
     with (
         patch(
-            "haute.routes.optimiser._frontier_point_result_dict",
+            "haute.routes._optimiser_frontier._frontier_point_result_dict",
             side_effect=ZeroDivisionError("kaboom"),
         ),
-        patch.object(optimiser_logger, "error") as log_error,
+        patch("haute.server.logger.error") as log_error,
     ):
         resp = client.post(
             "/api/optimiser/frontier/select",
@@ -684,12 +648,11 @@ def test_frontier_select_unhandled_exception_logged_and_500(
 
     assert resp.status_code == 500
     assert resp.json()["detail"] == _INTERNAL_ERROR_DETAIL
-    # The cause was logged with full context so it can be triaged.
-    assert log_error.call_count == 1
-    assert log_error.call_args.args == ("frontier_select_failed",)
-    assert log_error.call_args.kwargs["job_id"] == "select_boom"
-    assert log_error.call_args.kwargs["error"] == "kaboom"
-    assert log_error.call_args.kwargs["exc_info"] is True
+    # The application handler logs it; the route no longer catches it.
+    log_error.assert_called_once()
+    assert log_error.call_args.args == ("unhandled_exception",)
+    assert log_error.call_args.kwargs["error_class"] == "ZeroDivisionError"
+    assert log_error.call_args.kwargs["path"] == "/api/optimiser/frontier/select"
 
 
 # ---------------------------------------------------------------------------
@@ -705,7 +668,18 @@ def test_run_frontier_returns_409_when_atomic_update_loses_race(
     artefacts created up to this point must be cleaned up and a 409 raised."""
     solver = MagicMock()
     solver.frontier.return_value = SimpleNamespace(
-        points=pl.DataFrame({"total_objective": [100.0], "volume": [0.9], "lambda_volume": [0.25]})
+        points=library_frontier_frame(
+            [
+                {
+                    "total_objective": 100.0,
+                    "total_volume": 0.9,
+                    "lambda_volume": 0.25,
+                    "bound_volume": 0.9,
+                    "converged": True,
+                }
+            ],
+            constraint_names=["volume"],
+        )
     )
     seed_job(
         clean_job_store,
@@ -727,6 +701,8 @@ def test_run_frontier_returns_409_when_atomic_update_loses_race(
                 "baseline_constraints": {"volume": 0.85},
                 "lambdas": {"volume": 0.0},
                 "converged": True,
+                "diagnostics_errors": [],
+                "input_summary": make_input_summary(),
             },
             "artifact_handles": {},
             "created_at": time.time(),
@@ -734,7 +710,9 @@ def test_run_frontier_returns_409_when_atomic_update_loses_race(
         },
     )
 
-    with patch.object(clean_job_store, "atomic_update", return_value=None):
+    # The recompute publishes through the heavy-guarded update (a session job's
+    # frontier needs its session still attached); losing that race is the 409.
+    with patch.object(clean_job_store, "atomic_update_if_heavy_present", return_value=None):
         status = run_frontier_and_wait(
             client,
             {"job_id": "frontier_race"},
@@ -761,30 +739,29 @@ def test_apply_reuses_cached_frontier_apply_artifact_for_online_mode(
     of ``apply_from_grid``).  This is the user-visible "Save result" round-trip
     where the artifact file should be served from disk on the second call.
     """
-    from haute.routes._optimiser_service import _persist_apply_result_artifact
+    from haute.routes._optimiser_artifacts import _persist_apply_result_artifact
 
-    persisted_df = pl.DataFrame(
-        {
-            "quote_id": ["q1", "q2"],
-            "optimal_scenario_value": [1.04, 0.97],
-        }
-    )
+    persisted_df = make_online_apply_frame(["q1", "q2"], steps=[2, 0])
     handle = _persist_apply_result_artifact(SimpleNamespace(dataframe=persisted_df))
     assert handle is not None
 
-    point = {
-        "total_objective": 130.0,
-        "total_volume": 0.93,
-        "lambda_volume": 0.55,
-        "threshold_volume": 0.93,
-        "converged": True,
-    }
+    point = typed_frontier_point(
+        {
+            "total_objective": 130.0,
+            "total_volume": 0.93,
+            "lambda_volume": 0.55,
+            "threshold_volume": 0.93,
+            "bound_volume": 0.93,
+            "converged": True,
+        }
+    )
     seed_job(
         clean_job_store,
         "apply_cached",
         {
             "status": "completed",
             "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+            "scenario_grid": SOLVE_SCENARIO_GRID,
             "frontier_data": {
                 "status": "ok",
                 "points": [point],
@@ -799,6 +776,8 @@ def test_apply_reuses_cached_frontier_apply_artifact_for_online_mode(
                 "baseline_constraints": {"volume": 0.85},
                 "lambdas": {"volume": 0.0},
                 "converged": True,
+                "diagnostics_errors": [],
+                "input_summary": make_input_summary(),
             },
             "artifact_handles": {"frontier_apply_result:0": handle},
             "created_at": time.time(),
@@ -818,8 +797,7 @@ def test_apply_reuses_cached_frontier_apply_artifact_for_online_mode(
     # Response is sourced from the persisted artifact, not a fresh solve.
     assert data["from_artifact"] is True
     assert data["row_count"] == persisted_df.height
-    response_preview = pl.DataFrame(data["preview"])
-    assert response_preview.equals(persisted_df)
+    assert data["preview"] == persisted_df.drop("optimal_step").to_dicts()
     apply_mock.assert_not_called()
     # The artifact file is still on disk afterwards (not consumed).
     assert Path(handle["path"]).is_file()
@@ -830,13 +808,13 @@ def test_apply_reuses_cached_frontier_apply_artifact_for_online_mode(
 # ---------------------------------------------------------------------------
 
 
-def test_apply_returns_400_when_quote_grid_evicted_from_heavy_state(
+def test_apply_returns_named_410_when_quote_grid_evicted_from_heavy_state(
     client,
     clean_job_store,
 ):
-    """If the quote grid's heavy-object TTL has elapsed, applying a frontier
-    point must return a clear 400 instructing the user to re-run the solve.
-    Earlier this path returned a confusing 500.
+    """If the quote grid's heavy-object TTL has elapsed, an unmaterialised
+    frontier point is gone: a named 410 instructing the user to re-run the
+    solve. Earlier this path returned a confusing 500.
     """
     seed_job(
         clean_job_store,
@@ -844,16 +822,20 @@ def test_apply_returns_400_when_quote_grid_evicted_from_heavy_state(
         {
             "status": "completed",
             "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+            "scenario_grid": SOLVE_SCENARIO_GRID,
             "frontier_data": {
                 "status": "ok",
                 "points": [
-                    {
-                        "total_objective": 130.0,
-                        "total_volume": 0.93,
-                        "lambda_volume": 0.55,
-                        "threshold_volume": 0.93,
-                        "converged": True,
-                    }
+                    typed_frontier_point(
+                        {
+                            "total_objective": 130.0,
+                            "total_volume": 0.93,
+                            "lambda_volume": 0.55,
+                            "threshold_volume": 0.93,
+                            "bound_volume": 0.93,
+                            "converged": True,
+                        }
+                    )
                 ],
                 "n_points": 1,
                 "constraint_names": ["volume"],
@@ -866,6 +848,8 @@ def test_apply_returns_400_when_quote_grid_evicted_from_heavy_state(
                 "baseline_constraints": {"volume": 0.85},
                 "lambdas": {"volume": 0.0},
                 "converged": True,
+                "diagnostics_errors": [],
+                "input_summary": make_input_summary(),
             },
             # No quote_grid in the dict, no artifact_handles either — heavy
             # state has been slimmed by TTL.
@@ -876,18 +860,20 @@ def test_apply_returns_400_when_quote_grid_evicted_from_heavy_state(
     )
 
     # ``touch_heavy_objects`` returns False when the required keys are
-    # missing — the dispatcher must surface that as a clean 400.
+    # missing — the dispatcher must surface that as the named 410.
     with patch.object(clean_job_store, "touch_heavy_objects", return_value=False):
         resp = client.post(
             "/api/optimiser/apply",
             json={"job_id": "apply_evicted", "point_index": 0},
         )
 
-    assert resp.status_code == 400
-    assert "quote grid is not available" in resp.json()["detail"].lower()
+    assert resp.status_code == 410
+    detail = resp.json()["detail"]
+    assert detail["error_code"] == "frontier_point_unavailable"
+    assert "quote grid has expired" in detail["message"]
 
 
-def test_apply_returns_400_when_quote_grid_value_is_none_after_touch(
+def test_apply_returns_named_410_when_quote_grid_value_is_none_after_touch(
     client,
     clean_job_store,
 ):
@@ -899,16 +885,20 @@ def test_apply_returns_400_when_quote_grid_value_is_none_after_touch(
         {
             "status": "completed",
             "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+            "scenario_grid": SOLVE_SCENARIO_GRID,
             "frontier_data": {
                 "status": "ok",
                 "points": [
-                    {
-                        "total_objective": 130.0,
-                        "total_volume": 0.93,
-                        "lambda_volume": 0.55,
-                        "threshold_volume": 0.93,
-                        "converged": True,
-                    }
+                    typed_frontier_point(
+                        {
+                            "total_objective": 130.0,
+                            "total_volume": 0.93,
+                            "lambda_volume": 0.55,
+                            "threshold_volume": 0.93,
+                            "bound_volume": 0.93,
+                            "converged": True,
+                        }
+                    )
                 ],
                 "n_points": 1,
                 "constraint_names": ["volume"],
@@ -921,6 +911,8 @@ def test_apply_returns_400_when_quote_grid_value_is_none_after_touch(
                 "baseline_constraints": {"volume": 0.85},
                 "lambdas": {"volume": 0.0},
                 "converged": True,
+                "diagnostics_errors": [],
+                "input_summary": make_input_summary(),
             },
             "quote_grid": None,  # touch passes (key present), value is None
             "artifact_handles": {},
@@ -935,88 +927,15 @@ def test_apply_returns_400_when_quote_grid_value_is_none_after_touch(
             json={"job_id": "apply_none_grid", "point_index": 0},
         )
 
-    assert resp.status_code == 400
-    assert "quote grid is not available" in resp.json()["detail"].lower()
+    assert resp.status_code == 410
+    detail = resp.json()["detail"]
+    assert detail["error_code"] == "frontier_point_unavailable"
+    assert "quote grid has expired" in detail["message"]
 
 
 # ---------------------------------------------------------------------------
 # /apply — persistence returned None (in-memory only path)
 # ---------------------------------------------------------------------------
-
-
-def test_apply_falls_back_to_in_memory_when_persistence_unavailable(
-    client,
-    clean_job_store,
-):
-    """When ``_persist_apply_result_artifact`` returns None (e.g. artifact
-    root is unwritable), the apply must still return the correct preview
-    from the in-memory dataframe — without crashing or persisting a partial
-    artifact handle."""
-    persisted_df = pl.DataFrame({"quote_id": ["q1"], "optimal_scenario_value": [0.99]})
-    apply_result = SimpleNamespace(
-        total_objective=130.0,
-        baseline_objective=90.0,
-        total_constraints={"volume": 0.93},
-        baseline_constraints={"volume": 0.85},
-        lambdas={"volume": 0.55},
-        converged=True,
-        dataframe=persisted_df,
-    )
-    quote_grid = MagicMock()
-    seed_job(
-        clean_job_store,
-        "apply_no_persist",
-        {
-            "status": "completed",
-            "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
-            "frontier_data": {
-                "status": "ok",
-                "points": [
-                    {
-                        "total_objective": 130.0,
-                        "total_volume": 0.93,
-                        "lambda_volume": 0.55,
-                        "threshold_volume": 0.93,
-                        "converged": True,
-                    }
-                ],
-                "n_points": 1,
-                "constraint_names": ["volume"],
-            },
-            "result": {
-                "mode": "online",
-                "total_objective": 95.0,
-                "baseline_objective": 90.0,
-                "constraints": {"volume": 0.85},
-                "baseline_constraints": {"volume": 0.85},
-                "lambdas": {"volume": 0.0},
-                "converged": True,
-            },
-            "quote_grid": quote_grid,
-            "artifact_handles": {},
-            "created_at": time.time(),
-            "completed_at": time.time(),
-        },
-    )
-
-    with (
-        patch("price_contour.apply_from_grid", return_value=apply_result),
-        patch("haute.routes.optimiser._persist_apply_result_artifact", return_value=None),
-    ):
-        resp = client.post(
-            "/api/optimiser/apply",
-            json={"job_id": "apply_no_persist", "point_index": 0},
-        )
-
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["from_artifact"] is False
-    assert data["row_count"] == persisted_df.height
-    response_preview = pl.DataFrame(data["preview"])
-    assert response_preview.equals(persisted_df)
-    # No frontier_apply_result handle was registered (persistence failed).
-    job = clean_job_store.require_job("apply_no_persist")
-    assert "frontier_apply_result:0" not in job.get("artifact_handles", {})
 
 
 # ---------------------------------------------------------------------------
@@ -1032,7 +951,7 @@ def test_apply_cleans_up_orphan_artifact_when_atomic_update_loses_race(
     concurrent state change, the just-written artifact must be cleaned up
     so it does not leak.  The user gets a 409 Conflict, not a 500.
     """
-    persisted_df = pl.DataFrame({"quote_id": ["q1"], "optimal_scenario_value": [0.99]})
+    persisted_df = make_online_apply_frame(["q1"])
     apply_result = SimpleNamespace(
         total_objective=130.0,
         baseline_objective=90.0,
@@ -1050,16 +969,20 @@ def test_apply_cleans_up_orphan_artifact_when_atomic_update_loses_race(
         {
             "status": "completed",
             "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+            "scenario_grid": SOLVE_SCENARIO_GRID,
             "frontier_data": {
                 "status": "ok",
                 "points": [
-                    {
-                        "total_objective": 130.0,
-                        "total_volume": 0.93,
-                        "lambda_volume": 0.55,
-                        "threshold_volume": 0.93,
-                        "converged": True,
-                    }
+                    typed_frontier_point(
+                        {
+                            "total_objective": 130.0,
+                            "total_volume": 0.93,
+                            "lambda_volume": 0.55,
+                            "threshold_volume": 0.93,
+                            "bound_volume": 0.93,
+                            "converged": True,
+                        }
+                    )
                 ],
                 "n_points": 1,
                 "constraint_names": ["volume"],
@@ -1072,9 +995,11 @@ def test_apply_cleans_up_orphan_artifact_when_atomic_update_loses_race(
                 "baseline_constraints": {"volume": 0.85},
                 "lambdas": {"volume": 0.0},
                 "converged": True,
+                "diagnostics_errors": [],
+                "input_summary": make_input_summary(),
             },
             "quote_grid": MagicMock(),
-            "artifact_handles": {},
+            "artifact_handles": _as_solved_handles(),
             "created_at": time.time(),
             "completed_at": time.time(),
         },
@@ -1083,7 +1008,7 @@ def test_apply_cleans_up_orphan_artifact_when_atomic_update_loses_race(
     with (
         patch("price_contour.apply_from_grid", return_value=apply_result),
         patch(
-            "haute.routes.optimiser._persist_apply_result_artifact",
+            "haute.routes._optimiser_frontier._persist_apply_frame_artifact",
             return_value=new_handle,
         ),
         patch.object(
@@ -1092,7 +1017,7 @@ def test_apply_cleans_up_orphan_artifact_when_atomic_update_loses_race(
             return_value=None,
         ),
         patch(
-            "haute.routes.optimiser._cleanup_apply_result_artifact",
+            "haute.routes._optimiser_frontier._cleanup_apply_result_artifact",
         ) as cleanup_mock,
     ):
         resp = client.post(
@@ -1108,107 +1033,93 @@ def test_apply_cleans_up_orphan_artifact_when_atomic_update_loses_race(
 
 
 # ---------------------------------------------------------------------------
-# /mlflow/log — ratebook factor_tables fallback to solve_result
+# /mlflow/log — the ratebook anchor publishes its own factor tables
 # ---------------------------------------------------------------------------
 
 
-def test_mlflow_log_ratebook_falls_back_to_solve_result_factor_tables(
+def test_mlflow_log_ratebook_anchor_uses_its_own_factor_tables(
     client,
     clean_job_store,
+    tmp_path,
+    monkeypatch,
 ):
-    """The artifact payload prefers ``result.factor_tables`` but falls
-    back to ``solve_result.factor_tables`` when the result has been
-    slimmed.  This test pins the fallback path so a future cleanup of
-    ``result`` doesn't silently log empty factor tables to MLflow.
-    """
-    factor_tables = {"region": [{"__factor_group__": "North", "value": 1.0}]}
-    factor_dtypes = {"region": [{"column": "region", "dtype": {"kind": "String"}}]}
-    solve_result = SimpleNamespace(
-        total_objective=100.0,
-        baseline_objective=90.0,
-        total_constraints={"volume": 0.95},
-        baseline_constraints={"volume": 0.85},
-        lambdas={"volume": 0.1},
-        converged=True,
-        clamp_rate=0.02,
-        factor_tables=factor_tables,
-        factor_dtypes=factor_dtypes,
-        cd_iterations=3,
-        iterations=5,
-    )
-    solver = MagicMock()
-    solver.summary.return_value = {
-        "params": {"mode": "ratebook"},
-        "metrics": {"total_objective": 100.0},
-        "artifacts": {"factor_tables": factor_tables},
+    """With a materialised frontier point selected, ``result`` holds that
+    point's tables; logging the anchor must still log the anchor's own."""
+    anchor_tables = {
+        "region": [{"__factor_group__": "North", "optimal_scenario_value": 1.0, "quote_count": 4}]
     }
-
+    point_tables = {
+        "region": [{"__factor_group__": "North", "optimal_scenario_value": 1.3, "quote_count": 4}]
+    }
+    factor_dtypes = {"region": [{"column": "region", "dtype": {"kind": "String"}}]}
+    anchor = {
+        "mode": "ratebook",
+        "total_objective": 100.0,
+        "baseline_objective": 90.0,
+        "constraints": {"volume": 0.95},
+        "baseline_constraints": {"volume": 0.85},
+        "lambdas": {"volume": 0.1},
+        "converged": True,
+        "cd_iterations": 3,
+        "clamp_rate": 0.02,
+        "factor_tables": anchor_tables,
+        "combined_factor_bounds": {"min": 0.9, "max": 1.1},
+        "factor_dtypes": factor_dtypes,
+        "diagnostics_errors": [],
+        "input_summary": make_input_summary(
+            solver_settings={
+                "max_iter": 50,
+                "tolerance": 1e-6,
+                "chunk_size": None,
+                "max_cd_iterations": 10,
+                "cd_tolerance": 0.001,
+            }
+        ),
+    }
     seed_job(
         clean_job_store,
-        "mlflow_fallback",
+        "mlflow_anchor_tables",
         {
             "status": "completed",
             "config": {"mode": "ratebook", "objective": "expected_margin"},
-            # Note: no factor_tables here — forces the fallback.
+            "base_result": anchor,
             "result": {
-                "mode": "ratebook",
-                "total_objective": 100.0,
-                "baseline_objective": 90.0,
-                "constraints": {"volume": 0.95},
-                "baseline_constraints": {"volume": 0.85},
-                "lambdas": {"volume": 0.1},
-                "converged": True,
+                **anchor,
+                "total_objective": 120.0,
+                "factor_tables": point_tables,
+                "selected_frontier_point": 0,
             },
-            "solver": solver,
-            "solve_result": solve_result,
+            "selected_frontier_point": 0,
+            "publish_summary": {
+                "params": {"mode": "ratebook"},
+                "metrics": {"total_objective": 100.0},
+                "artifacts": {"factor_tables": anchor_tables},
+            },
             "node_label": "opt",
             "created_at": time.time(),
             "completed_at": time.time(),
         },
     )
 
-    captured_payloads: list[str] = []
+    store = use_local_mlflow_store(tmp_path, monkeypatch)
 
-    def _capture_log_artifact(artifact_path: str, *args, **kwargs) -> None:
-        # ``mlflow_log`` writes the JSON payload to a tempfile and then
-        # asks mlflow to log it; capture the file content so we can
-        # inspect what would have shipped to MLflow.
-        if artifact_path.endswith("optimiser_result.json"):
-            captured_payloads.append(Path(artifact_path).read_text(encoding="utf-8"))
+    resp = client.post(
+        "/api/optimiser/mlflow/log",
+        json={"job_id": "mlflow_anchor_tables"},
+    )
 
-    fake_mlflow = MagicMock()
-    fake_run = MagicMock()
-    fake_run.info.run_id = "run-x"
-    fake_mlflow.start_run.return_value.__enter__ = MagicMock(return_value=fake_run)
-    fake_mlflow.start_run.return_value.__exit__ = MagicMock(return_value=False)
-    fake_mlflow.log_artifact.side_effect = _capture_log_artifact
-
-    with (
-        patch.dict("sys.modules", {"mlflow": fake_mlflow}),
-        patch(
-            "haute.modelling._mlflow_log.configure_mlflow_tracking",
-            return_value=("file:///tmp", "local"),
-        ),
-        patch("haute.modelling._mlflow_log.resolve_experiment_name", return_value="haute-opt"),
-        patch("haute.modelling._mlflow_log.build_run_url", return_value="http://run-x"),
-        patch.object(clean_job_store, "touch_heavy_objects", return_value=True),
-    ):
-        resp = client.post(
-            "/api/optimiser/mlflow/log",
-            json={"job_id": "mlflow_fallback"},
-        )
-
-    assert resp.status_code == 200
-    assert resp.json()["run_id"] == "run-x"
-    # The captured payload reflects the fallback: factor_tables came from
-    # solve_result, not the (slimmed) result dict.
-    import json as _json
-
-    assert captured_payloads, "expected optimiser_result.json to be logged"
-    payload = _json.loads(captured_payloads[-1])
-    assert payload["factor_tables"] == factor_tables
+    assert resp.status_code == 200, resp.text
+    logged = logged_json_artifacts(store, resp.json()["run_id"], tmp_path / "logged")
+    payload = logged["optimiser_result.json"]
+    assert payload["total_objective"] == 100.0
+    assert payload["factor_tables"] == anchor_tables
     assert payload["factor_dtypes"] == factor_dtypes
     assert payload["clamp_rate"] == 0.02
+    assert payload["combined_factor_bounds"] == {"min": 0.9, "max": 1.1}
+    assert payload["cd_iterations"] == 3
+    assert payload["solver_settings"]["max_cd_iterations"] == 10
+    params = store.get_run(resp.json()["run_id"]).data.params
+    assert params["solver_settings.cd_tolerance"] == "0.001"
 
 
 # ---------------------------------------------------------------------------
@@ -1216,80 +1127,250 @@ def test_mlflow_log_ratebook_falls_back_to_solve_result_factor_tables(
 # ---------------------------------------------------------------------------
 
 
+_RATEBOOK_POINT_TABLES = {"region": {"North": 1.0}}
+_RATEBOOK_FACTOR_DTYPES = {"region": [{"column": "region", "dtype": {"kind": "String"}}]}
+
+
+def _ratebook_materialise_job(**overrides: object) -> dict:
+    """A completed ratebook job with one retained frontier point and its tables.
+
+    Carries no solver, quote grid or factor contexts: materialising a
+    ratebook point reads the tables the frontier kept, never re-solving.
+    """
+    job = {
+        "status": "completed",
+        "config": {"mode": "ratebook", "constraints": {"volume": {"min": 0.9}}},
+        "frontier_data": {
+            "frontier_generation": 0,
+            "status": "ok",
+            "points": [
+                typed_frontier_point(
+                    {
+                        "total_objective": 130.0,
+                        "total_volume": 0.93,
+                        "lambda_volume": 0.55,
+                        "threshold_volume": 0.93,
+                        "bound_volume": 0.93,
+                        "iterations": 4,
+                        "clamp_rate": 0.01,
+                        "converged": True,
+                    },
+                    mode="ratebook",
+                )
+            ],
+            "n_points": 1,
+            "constraint_names": ["volume"],
+        },
+        "frontier_factor_tables": [_RATEBOOK_POINT_TABLES],
+        "result": {
+            "mode": "ratebook",
+            "total_objective": 95.0,
+            "baseline_objective": 90.0,
+            "constraints": {"volume": 0.85},
+            "baseline_constraints": {"volume": 0.85},
+            "lambdas": {"volume": 0.0},
+            "converged": True,
+            "frontier_generation": 0,
+            "diagnostics_errors": [],
+            "input_summary": make_input_summary(),
+        },
+        "factor_columns_valid": [["region"]],
+        "factor_level_counts": {"region": {"North": 1}},
+        "combined_factor_bounds": {"min": 0.1, "max": 10.0},
+        "factor_dtypes": _RATEBOOK_FACTOR_DTYPES,
+        "artifact_handles": {},
+        "created_at": time.time(),
+        "completed_at": time.time(),
+    }
+    job.update(overrides)
+    return job
+
+
+def _select_ratebook_point(client, job_id: str):
+    return client.post(
+        "/api/optimiser/frontier/select",
+        json={"job_id": job_id, "point_index": 0, "include_ratebook_tables": True},
+    )
+
+
+def test_ratebook_materialise_reads_totals_and_tables_from_one_frontier(
+    client,
+    clean_job_store,
+    monkeypatch,
+):
+    """A recompute that publishes between the select route's first read and the
+    materialisation must not pair one point's totals with another's tables:
+    materialisation re-reads the row and its tables together under the parent
+    lock that recompute publishes under."""
+    import haute.routes._optimiser_frontier as frontier_module
+
+    seed_job(clean_job_store, "ratebook_recompute_race", _ratebook_materialise_job())
+    new_point = typed_frontier_point(
+        {
+            "total_objective": 240.0,
+            "total_volume": 1.02,
+            "lambda_volume": 0.3,
+            "threshold_volume": 1.0,
+            "bound_volume": 1.0,
+            "iterations": 6,
+            "clamp_rate": 0.02,
+            "converged": True,
+        },
+        mode="ratebook",
+    )
+    new_tables = {"region": {"North": 1.21}}
+    original = frontier_module._frontier_point_result_dict
+    recomputed = False
+
+    def recompute_after_first_read(job, point_index):
+        nonlocal recomputed
+        result = original(job, point_index)
+        if not recomputed:
+            recomputed = True
+            assert clean_job_store.atomic_update(
+                "ratebook_recompute_race",
+                {
+                    "frontier_data": {
+                        "status": "ok",
+                        "points": [new_point],
+                        "n_points": 1,
+                        "constraint_names": ["volume"],
+                    },
+                    "frontier_factor_tables": [new_tables],
+                },
+                expected_status="completed",
+            )
+        return result
+
+    monkeypatch.setattr(frontier_module, "_frontier_point_result_dict", recompute_after_first_read)
+    resp = _select_ratebook_point(client, "ratebook_recompute_race")
+
+    assert resp.status_code == 200, resp.text
+    selected = resp.json()
+    assert selected["total_objective"] == 240.0
+    assert selected["constraints"] == {"volume": 1.02}
+    assert selected["cd_iterations"] == 6
+    assert [row["optimal_scenario_value"] for row in selected["factor_tables"]["region"]] == [1.21]
+
+
+def test_ratebook_materialise_keeps_unswept_constraint_totals(client, clean_job_store):
+    """A materialised ratebook point (which is what save and MLflow publish)
+    carries the frontier row's total and bound for every configured constraint,
+    swept or not."""
+    job = _ratebook_materialise_job(
+        config={
+            "mode": "ratebook",
+            "constraints": {"volume": {"min": 0.9}, "loss": {"max": 25.0}},
+        }
+    )
+    job["frontier_data"]["points"][0] = typed_frontier_point(
+        {
+            "total_objective": 130.0,
+            "total_volume": 0.93,
+            "lambda_volume": 0.55,
+            "threshold_volume": 0.93,
+            "bound_volume": 0.93,
+            "total_loss": 20.0,
+            "lambda_loss": 0.1,
+            "threshold_loss": 25.0,
+            "bound_loss": 25.0,
+            "iterations": 4,
+        },
+        mode="ratebook",
+    )
+    job["frontier_data"]["constraint_names"] = ["volume", "loss"]
+    job["frontier_data"]["swept_axes"] = ["volume"]
+    job["result"]["constraints"] = {"volume": 0.85, "loss": 21.0}
+    job["result"]["baseline_constraints"] = {"volume": 0.85, "loss": 21.0}
+    seed_job(clean_job_store, "ratebook_unswept", job)
+
+    resp = _select_ratebook_point(client, "ratebook_unswept")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["constraints"] == {"volume": 0.93, "loss": 20.0}
+    assert resp.json()["effective_bounds"] == {
+        "volume": {"kind": "min", "bound": 0.93},
+        "loss": {"kind": "max", "bound": 25.0},
+    }
+    stored = clean_job_store.require_job("ratebook_unswept")["result"]
+    assert stored["constraints"] == {"volume": 0.93, "loss": 20.0}
+
+
+def test_ratebook_materialise_attaches_kept_tables_to_frontier_row_without_heavy_state(
+    client,
+    clean_job_store,
+):
+    """With no solver, grid or factor contexts on the job, a ratebook point
+    materialises from the frontier row and the tables the frontier kept."""
+    seed_job(clean_job_store, "ratebook_no_heavy", _ratebook_materialise_job())
+
+    resp = _select_ratebook_point(client, "ratebook_no_heavy")
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["total_objective"] == 130.0
+    assert data["constraints"] == {"volume": 0.93}
+    assert data["lambdas"] == {"volume": 0.55}
+    assert data["converged"] is True
+    assert data["cd_iterations"] == 4
+    assert data["clamp_rate"] == 0.01
+    assert data["factor_tables"] == {
+        "region": [{"__factor_group__": "North", "optimal_scenario_value": 1.0, "quote_count": 1}]
+    }
+    assert data.get("warning") is None
+    stored = clean_job_store.require_job("ratebook_no_heavy")["result"]
+    assert stored["factor_tables"] == data["factor_tables"]
+    assert stored["factor_dtypes"] == _RATEBOOK_FACTOR_DTYPES
+
+
+@pytest.mark.parametrize(
+    "frontier_factor_tables",
+    [
+        pytest.param(None, id="missing"),
+        pytest.param([_RATEBOOK_POINT_TABLES, _RATEBOOK_POINT_TABLES], id="misaligned"),
+    ],
+)
+def test_ratebook_materialise_rejects_missing_or_misaligned_frontier_factor_tables(
+    client,
+    clean_job_store,
+    frontier_factor_tables,
+):
+    """A ratebook point cannot be materialised without the tables the frontier
+    kept for it; a missing or misaligned list is a loud 500, never a re-solve."""
+    job = _ratebook_materialise_job()
+    if frontier_factor_tables is None:
+        del job["frontier_factor_tables"]
+    else:
+        job["frontier_factor_tables"] = frontier_factor_tables
+    seed_job(clean_job_store, "ratebook_no_tables", job)
+
+    resp = _select_ratebook_point(client, "ratebook_no_tables")
+
+    assert resp.status_code == 500
+    assert resp.json()["detail"] == (
+        "Job frontier factor tables are missing or do not match the frontier points"
+    )
+    assert clean_job_store.require_job("ratebook_no_tables").get("selected_frontier_point") is None
+
+
 def test_ratebook_materialise_emits_non_converged_warning_in_response(
     client,
     clean_job_store,
 ):
-    """When the ratebook re-solve at a frontier point fails to converge,
-    the response and stored result must carry the standard warning so the
-    UI can show it.  Without this, non-convergence is silent."""
-    factor_contexts = SimpleNamespace(n_quotes=1, factor_specs=[["region"]])
-    solver = MagicMock()
-    # Solver returns a non-converged result for the frontier point.
-    solver.solve.return_value = SimpleNamespace(
-        total_objective=120.0,
-        baseline_objective=90.0,
-        total_constraints={"volume": 0.93},
-        baseline_constraints={"volume": 0.85},
-        lambdas={"volume": 0.55},
-        converged=False,
-        cd_iterations=1,
-        clamp_rate=0.0,
-        # Solver-side factor_tables are {factor: {level: scenario_value}}.
-        factor_tables={"region": {"North": 1.0}},
-    )
-    point = {
-        "total_objective": 120.0,
-        "total_volume": 0.93,
-        "lambda_volume": 0.55,
-        "threshold_volume": 0.93,
-        "converged": False,
-    }
-    seed_job(
-        clean_job_store,
-        "ratebook_warn",
-        {
-            "status": "completed",
-            "config": {"mode": "ratebook", "constraints": {"volume": {"min": 0.9}}},
-            "frontier_data": {
-                "status": "ok",
-                "points": [point],
-                "n_points": 1,
-                "constraint_names": ["volume"],
-            },
-            "result": {
-                "mode": "ratebook",
-                "total_objective": 95.0,
-                "baseline_objective": 90.0,
-                "constraints": {"volume": 0.85},
-                "baseline_constraints": {"volume": 0.85},
-                "lambdas": {"volume": 0.0},
-                "converged": True,
-            },
-            "solver": solver,
-            "quote_grid": MagicMock(),
-            "ratebook_factor_contexts": factor_contexts,
-            "factor_columns_valid": [["region"]],
-            "factor_level_counts": {"region": {"North": 1}},
-            "factor_dtypes": {"region": [{"column": "region", "dtype": {"kind": "String"}}]},
-            "artifact_handles": {},
-            "created_at": time.time(),
-            "completed_at": time.time(),
-        },
-    )
+    """When the frontier row at the selected point did not converge, the
+    response and stored result must carry the standard warning so the UI can
+    show it.  Without this, non-convergence is silent."""
+    job = _ratebook_materialise_job()
+    job["frontier_data"]["points"][0]["converged"] = False
+    seed_job(clean_job_store, "ratebook_warn", job)
 
-    resp = client.post(
-        "/api/optimiser/frontier/select",
-        json={
-            "job_id": "ratebook_warn",
-            "point_index": 0,
-            "include_ratebook_tables": True,
-        },
-    )
+    resp = _select_ratebook_point(client, "ratebook_warn")
 
     assert resp.status_code == 200
     data = resp.json()
     assert data["converged"] is False
+    assert data["cd_iterations"] == 4
+    assert data["factor_tables"]["region"][0]["optimal_scenario_value"] == 1.0
     assert data["warning"] is not None
     assert "did not converge" in data["warning"].lower()
     # The same warning is in the stored result (so subsequent reads see it).
@@ -1304,70 +1385,14 @@ def test_ratebook_materialise_rejects_missing_dtype_metadata(
     clean_job_store,
 ):
     """A persisted ratebook cannot be materialised without its dtype contract."""
-    factor_contexts = SimpleNamespace(n_quotes=1, factor_specs=[["region"]])
-    solver = MagicMock()
-    solver.solve.return_value = SimpleNamespace(
-        total_objective=120.0,
-        baseline_objective=90.0,
-        total_constraints={"volume": 0.93},
-        baseline_constraints={"volume": 0.85},
-        lambdas={"volume": 0.55},
-        converged=True,
-        cd_iterations=1,
-        clamp_rate=0.0,
-        factor_tables={"region": {"North": 1.0}},
-    )
-    point = {
-        "total_objective": 120.0,
-        "total_volume": 0.93,
-        "lambda_volume": 0.55,
-        "threshold_volume": 0.93,
-        "converged": True,
-    }
-    seed_job(
-        clean_job_store,
-        "ratebook_missing_dtypes",
-        {
-            "status": "completed",
-            "config": {"mode": "ratebook", "constraints": {"volume": {"min": 0.9}}},
-            "frontier_data": {
-                "status": "ok",
-                "points": [point],
-                "n_points": 1,
-                "constraint_names": ["volume"],
-            },
-            "result": {
-                "mode": "ratebook",
-                "total_objective": 95.0,
-                "baseline_objective": 90.0,
-                "constraints": {"volume": 0.85},
-                "baseline_constraints": {"volume": 0.85},
-                "lambdas": {"volume": 0.0},
-                "converged": True,
-            },
-            "solver": solver,
-            "quote_grid": MagicMock(),
-            "ratebook_factor_contexts": factor_contexts,
-            "factor_columns_valid": [["region"]],
-            "factor_level_counts": {"region": {"North": 1}},
-            "artifact_handles": {},
-            "created_at": time.time(),
-            "completed_at": time.time(),
-        },
-    )
+    job = _ratebook_materialise_job()
+    del job["factor_dtypes"]
+    seed_job(clean_job_store, "ratebook_missing_dtypes", job)
 
-    response = client.post(
-        "/api/optimiser/frontier/select",
-        json={
-            "job_id": "ratebook_missing_dtypes",
-            "point_index": 0,
-            "include_ratebook_tables": True,
-        },
-    )
+    response = _select_ratebook_point(client, "ratebook_missing_dtypes")
 
     assert response.status_code == 500
     assert response.json()["detail"] == "Ratebook factor dtype metadata is missing"
-    solver.solve.assert_called_once()
 
 
 def test_ratebook_materialise_returns_cached_when_lambdas_match_and_no_dataframe_required(
@@ -1378,28 +1403,39 @@ def test_ratebook_materialise_returns_cached_when_lambdas_match_and_no_dataframe
     must reuse the cached result without re-invoking ``solver.solve`` —
     this is the hot-path the UI hits when toggling between tabs.
     """
-    factor_tables = {"region": [{"__factor_group__": "North", "value": 1.0}]}
+    factor_tables = {
+        "region": [{"__factor_group__": "North", "optimal_scenario_value": 1.0, "quote_count": 1}]
+    }
     factor_dtypes = {"region": [{"column": "region", "dtype": {"kind": "String"}}]}
     factor_contexts = SimpleNamespace(n_quotes=1, factor_specs=[["region"]])
     solver = MagicMock()  # Must NOT be called.
-    point = {
-        "total_objective": 130.0,
-        "total_volume": 0.93,
-        "lambda_volume": 0.55,
-        "threshold_volume": 0.93,
-        "converged": True,
-    }
+    point = typed_frontier_point(
+        {
+            "total_objective": 130.0,
+            "total_volume": 0.93,
+            "lambda_volume": 0.55,
+            "threshold_volume": 0.93,
+            "bound_volume": 0.93,
+            "converged": True,
+        },
+        mode="ratebook",
+    )
     cached_result = {
+        "frontier_generation": 0,
         "mode": "ratebook",
         "total_objective": 130.0,
         "baseline_objective": 90.0,
         "constraints": {"volume": 0.93},
         "baseline_constraints": {"volume": 0.85},
+        "effective_bounds": {"volume": {"kind": "min", "bound": 0.93}},
         "lambdas": {"volume": 0.55},
         "converged": True,
         "selected_frontier_point": 0,
         "factor_tables": factor_tables,
+        "combined_factor_bounds": {"min": 0.1, "max": 10.0},
         "factor_dtypes": factor_dtypes,
+        "diagnostics_errors": [],
+        "input_summary": make_input_summary(),
     }
     seed_job(
         clean_job_store,
@@ -1408,6 +1444,7 @@ def test_ratebook_materialise_returns_cached_when_lambdas_match_and_no_dataframe
             "status": "completed",
             "config": {"mode": "ratebook", "constraints": {"volume": {"min": 0.9}}},
             "frontier_data": {
+                "frontier_generation": 0,
                 "status": "ok",
                 "points": [point],
                 "n_points": 1,
@@ -1422,6 +1459,8 @@ def test_ratebook_materialise_returns_cached_when_lambdas_match_and_no_dataframe
                 "baseline_constraints": {"volume": 0.85},
                 "lambdas": {"volume": 0.0},
                 "converged": True,
+                "diagnostics_errors": [],
+                "input_summary": make_input_summary(),
             },
             "selected_frontier_point": 0,
             "solver": solver,
@@ -1429,6 +1468,7 @@ def test_ratebook_materialise_returns_cached_when_lambdas_match_and_no_dataframe
             "ratebook_factor_contexts": factor_contexts,
             "factor_columns_valid": [["region"]],
             "factor_level_counts": {"region": {"North": 1}},
+            "combined_factor_bounds": {"min": 0.1, "max": 10.0},
             "factor_dtypes": factor_dtypes,
             "artifact_handles": {},
             "created_at": time.time(),
@@ -1456,71 +1496,13 @@ def test_ratebook_materialise_returns_409_on_atomic_update_race(
     client,
     clean_job_store,
 ):
-    """Concurrent state change between solve and write surfaces as 409, not
-    a generic 500.  The user gets a clear "re-run the solve" instruction."""
-    factor_contexts = SimpleNamespace(n_quotes=1, factor_specs=[["region"]])
-    solver = MagicMock()
-    solver.solve.return_value = SimpleNamespace(
-        total_objective=130.0,
-        baseline_objective=90.0,
-        total_constraints={"volume": 0.93},
-        baseline_constraints={"volume": 0.85},
-        lambdas={"volume": 0.55},
-        converged=True,
-        cd_iterations=1,
-        clamp_rate=0.0,
-        # Solver-side factor_tables are {factor: {level: scenario_value}}.
-        factor_tables={"region": {"North": 1.0}},
-    )
-    point = {
-        "total_objective": 130.0,
-        "total_volume": 0.93,
-        "lambda_volume": 0.55,
-        "threshold_volume": 0.93,
-        "converged": True,
-    }
-    seed_job(
-        clean_job_store,
-        "ratebook_race",
-        {
-            "status": "completed",
-            "config": {"mode": "ratebook", "constraints": {"volume": {"min": 0.9}}},
-            "frontier_data": {
-                "status": "ok",
-                "points": [point],
-                "n_points": 1,
-                "constraint_names": ["volume"],
-            },
-            "result": {
-                "mode": "ratebook",
-                "total_objective": 95.0,
-                "baseline_objective": 90.0,
-                "constraints": {"volume": 0.85},
-                "baseline_constraints": {"volume": 0.85},
-                "lambdas": {"volume": 0.0},
-                "converged": True,
-            },
-            "solver": solver,
-            "quote_grid": MagicMock(),
-            "ratebook_factor_contexts": factor_contexts,
-            "factor_columns_valid": [["region"]],
-            "factor_level_counts": {"region": {"North": 1}},
-            "factor_dtypes": {"region": [{"column": "region", "dtype": {"kind": "String"}}]},
-            "artifact_handles": {},
-            "created_at": time.time(),
-            "completed_at": time.time(),
-        },
-    )
+    """Concurrent state change between reading the point and writing it
+    surfaces as 409, not a generic 500.  The user gets a clear "re-run the
+    solve" instruction."""
+    seed_job(clean_job_store, "ratebook_race", _ratebook_materialise_job())
 
     with patch.object(clean_job_store, "atomic_update", return_value=None):
-        resp = client.post(
-            "/api/optimiser/frontier/select",
-            json={
-                "job_id": "ratebook_race",
-                "point_index": 0,
-                "include_ratebook_tables": True,
-            },
-        )
+        resp = _select_ratebook_point(client, "ratebook_race")
 
     assert resp.status_code == 409
     detail = resp.json()["detail"]
@@ -1532,125 +1514,73 @@ def test_ratebook_runtime_state_or_raise_rejects_partial_heavy_objects(
     client,
     clean_job_store,
 ):
-    """Touch may report success but the underlying values can still be
-    None under a tight TTL race; the explicit check at line 637 is what
+    """A ratebook frontier recompute needs the solver and quote grid.  Touch
+    may report success but the underlying values can still be None under a
+    tight TTL race; the explicit check in ``ratebook_runtime_state_or_raise``
     catches that and surfaces a 400 rather than an AttributeError 500.
     """
     seed_job(
         clean_job_store,
         "ratebook_partial",
-        {
-            "status": "completed",
-            "config": {"mode": "ratebook", "constraints": {"volume": {"min": 0.9}}},
-            "frontier_data": {
-                "status": "ok",
-                "points": [
-                    {
-                        "total_objective": 130.0,
-                        "total_volume": 0.93,
-                        "lambda_volume": 0.55,
-                        "threshold_volume": 0.93,
-                        "converged": True,
-                    }
-                ],
-                "n_points": 1,
-                "constraint_names": ["volume"],
-            },
-            "result": {
-                "mode": "ratebook",
-                "total_objective": 95.0,
-                "baseline_objective": 90.0,
-                "constraints": {"volume": 0.85},
-                "baseline_constraints": {"volume": 0.85},
-                "lambdas": {"volume": 0.0},
-                "converged": True,
-            },
+        _ratebook_materialise_job(
             # Keys present, values None — the race window.
-            "solver": None,
-            "quote_grid": None,
-            "factors_df": None,
-            "factor_columns_valid": [["region"]],
-            "artifact_handles": {},
-            "created_at": time.time(),
-            "completed_at": time.time(),
-        },
+            solver=None,
+            quote_grid=None,
+            factors_df=None,
+        ),
     )
 
     with patch.object(clean_job_store, "touch_heavy_objects", return_value=True):
         resp = client.post(
-            "/api/optimiser/frontier/select",
-            json={
-                "job_id": "ratebook_partial",
-                "point_index": 0,
-                "include_ratebook_tables": True,
-            },
+            "/api/optimiser/frontier",
+            json={"job_id": "ratebook_partial", "threshold_ranges": {"volume": [0.85, 0.95]}},
         )
 
     assert resp.status_code == 400
     assert "ratebook runtime state is not available" in resp.json()["detail"].lower()
 
 
+@pytest.mark.parametrize(
+    "request_route",
+    [pytest.param("select", id="materialise"), pytest.param("frontier", id="recompute")],
+)
 def test_ratebook_runtime_state_rejects_invalid_factor_columns_metadata(
     client,
     clean_job_store,
+    request_route,
 ):
     """If ``factor_columns_valid`` is malformed (e.g. a list containing
-    non-string entries), the materialise path must surface a 500 with a
-    typed message — not blow up later inside ``solver.solve``."""
-    factors_df = pl.DataFrame({"region": ["North"]})
+    non-string entries), both the materialise path and the recompute path
+    must surface a 500 with a typed message — not blow up later inside the
+    solver."""
     solver = MagicMock()  # Must NOT be called: validation rejects first.
     seed_job(
         clean_job_store,
         "ratebook_bad_factors",
-        {
-            "status": "completed",
-            "config": {"mode": "ratebook", "constraints": {"volume": {"min": 0.9}}},
-            "frontier_data": {
-                "status": "ok",
-                "points": [
-                    {
-                        "total_objective": 130.0,
-                        "total_volume": 0.93,
-                        "lambda_volume": 0.55,
-                        "threshold_volume": 0.93,
-                        "converged": True,
-                    }
-                ],
-                "n_points": 1,
-                "constraint_names": ["volume"],
-            },
-            "result": {
-                "mode": "ratebook",
-                "total_objective": 95.0,
-                "baseline_objective": 90.0,
-                "constraints": {"volume": 0.85},
-                "baseline_constraints": {"volume": 0.85},
-                "lambdas": {"volume": 0.0},
-                "converged": True,
-            },
-            "solver": solver,
-            "quote_grid": MagicMock(),
-            "factors_df": factors_df,
+        _ratebook_materialise_job(
+            solver=solver,
+            quote_grid=MagicMock(),
+            ratebook_factor_contexts=SimpleNamespace(n_quotes=1, factor_specs=[["region"]]),
             # Malformed: list-of-list-of-string is required.
-            "factor_columns_valid": [[42]],
-            "artifact_handles": {},
-            "created_at": time.time(),
-            "completed_at": time.time(),
-        },
+            factor_columns_valid=[[42]],
+        ),
     )
 
-    resp = client.post(
-        "/api/optimiser/frontier/select",
-        json={
-            "job_id": "ratebook_bad_factors",
-            "point_index": 0,
-            "include_ratebook_tables": True,
-        },
-    )
+    if request_route == "select":
+        resp = _select_ratebook_point(client, "ratebook_bad_factors")
+    else:
+        resp = client.post(
+            "/api/optimiser/frontier",
+            json={
+                "job_id": "ratebook_bad_factors",
+                "threshold_ranges": {"volume": [0.85, 0.95]},
+            },
+        )
 
     assert resp.status_code == 500
-    assert "factor column metadata" in resp.json()["detail"].lower()
+    assert resp.json()["detail"] == "Ratebook factor column metadata is invalid"
     solver.solve.assert_not_called()
+    solver.frontier.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -1667,7 +1597,18 @@ def test_run_frontier_rejects_invalid_apply_handle_shape(
     silently dropping the handle."""
     solver = MagicMock()
     solver.frontier.return_value = SimpleNamespace(
-        points=pl.DataFrame({"total_objective": [100.0], "volume": [0.9], "lambda_volume": [0.25]})
+        points=library_frontier_frame(
+            [
+                {
+                    "total_objective": 100.0,
+                    "total_volume": 0.9,
+                    "lambda_volume": 0.25,
+                    "bound_volume": 0.9,
+                    "converged": True,
+                }
+            ],
+            constraint_names=["volume"],
+        )
     )
     seed_job(
         clean_job_store,
@@ -1689,6 +1630,8 @@ def test_run_frontier_rejects_invalid_apply_handle_shape(
                 "baseline_constraints": {"volume": 0.85},
                 "lambdas": {"volume": 0.0},
                 "converged": True,
+                "diagnostics_errors": [],
+                "input_summary": make_input_summary(),
             },
             # Frontier-apply handle exists but is not a dict — corruption.
             "artifact_handles": {"frontier_apply_result:0": "not-a-dict"},

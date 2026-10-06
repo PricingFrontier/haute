@@ -30,11 +30,6 @@ vi.mock("../../panels/editors/_shared", async () => {
 })
 vi.mock("../../api/client", () => ({
   fetchDatabricksSchema: vi.fn(),
-  buildJsonCache: vi.fn(),
-  getJsonCacheProgress: vi.fn().mockResolvedValue({ active: false }),
-  getJsonCacheStatus: vi.fn().mockResolvedValue({ cached: false }),
-  getJsonCacheStatusForSchema: vi.fn().mockResolvedValue({ cached: false }),
-  deleteJsonCache: vi.fn(),
   inferJsonCacheSchema: vi.fn(),
 }))
 vi.mock("../../hooks/useSchemaFetch", () => ({
@@ -103,7 +98,7 @@ const lastConfig = (spy: ReturnType<typeof vi.fn>) =>
     tables: { columns: { name: string; path: string; type: string; selected: boolean }[] }[]
   }
 
-describe("ApiInputEditor — wired FrameTableActions", () => {
+describe("ApiInputEditor - wired FrameTableActions", () => {
   beforeEach(() => installClipboard())
 
   it("per-table Copy emits the columns as tab-separated text", async () => {

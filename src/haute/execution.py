@@ -9,13 +9,13 @@ evolve.
 
 from __future__ import annotations
 
-import atexit
-import shutil
-import tempfile
-import threading
-from collections.abc import Callable, Iterable, Mapping
+import uuid
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, TypeVar
+
+import polars as pl
 
 from haute._api_input_schema import is_json_api_input_path
 from haute._cache import (
@@ -35,33 +35,21 @@ from haute._cache import (
 from haute._cache import (
     _pipeline_dir as _cache_pipeline_dir,
 )
-from haute._dataframe_execution_cache import (
-    CacheArtifactCorruptError,
-    CacheArtifactMissingError,
-    CacheArtifactTooLargeError,
-    DataFrameExecutionCache,
-    DataFrameExecutionCacheEntry,
-    DataFrameExecutionCacheError,
-    DataFrameExecutionCacheKey,
-    DataFrameExecutionCacheRequest,
-    dataframe_execution_cache_key,
-    dataframe_execution_cache_profile,
-    dataframe_execution_policy_fingerprint,
-    materialize_lazy_frame_with_cache,
-)
 from haute._estimate_calibration import calibrate_materialisation_bytes
 from haute._execution_context import ExecutionContext, ExecutionProfile
+from haute._global_constants import node_code_globals
 from haute._graph_utils import upstream_node_ids
-from haute._hashing import HASH_ALGO, content_hash, content_hash_bytes
-from haute._json_flatten import cache_state_signature_for_graph
+from haute._hashing import HASH_ALGO, content_hash_bytes
+from haute._json_shred._source_proof import file_signature
+from haute._native_memory_limit import current_native_memory_backend
 from haute._path_resolution import _infer_project_root, resolve_runtime_file_path
+from haute._polars_selectors import preamble_selector_aliases
 from haute._ram_estimate import (
     MaterialisationEstimate,
     MaterialisationEstimateBasis,
     MaterialisationEstimateState,
     estimate_materialisation_boundaries,
 )
-from haute._stat_gated_cache import StatGatedCache, artifact_cache_key
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -84,29 +72,23 @@ from haute.projection import (
     ProjectionRequest,
     build_execution_strategy_result,
     compute_prepared_plan,
-    group_by_operators_by_node,
+    first_materialising_operators,
+    materialising_operator_sequences_by_node,
     normalise_required_columns_by_node,
     prepare_graph,
     ratebook_factor_required_columns,
     source_scan_projection,
-    strict_projection_required,
     with_api_input_port_projection_boundaries,
     with_materialisation_boundaries,
 )
 
+if TYPE_CHECKING:
+    from haute._chunked_writes import JoinRecipe, WriteRecipe
+    from haute._seed_plans import SeedPlan
+
 __all__ = [
     "AllExceptColumns",
     "BoundedDiagnosticCollection",
-    "CacheArtifactCorruptError",
-    "CacheArtifactMissingError",
-    "CacheArtifactTooLargeError",
-    "DataFrameExecutionCache",
-    "DataFrameExecutionCacheEntry",
-    "DataFrameExecutionCacheError",
-    "DataFrameExecutionCacheKey",
-    "DataFrameExecutionCacheRequest",
-    "dataframe_execution_policy_fingerprint",
-    "dataframe_execution_cache_profile",
     "LazyExecutionResult",
     "DiagnosticDetailState",
     "ExecutionBoundedness",
@@ -118,48 +100,37 @@ __all__ = [
     "ProjectionPlan",
     "ProjectionRequest",
     "build_linear_execution_chain_functions",
-    "build_dataframe_execution_cache_request",
     "canonical_dataframe_execution_graph",
     "dataframe_frame_input_fingerprint",
     "dataframe_graph_input_fingerprint",
     "dataframe_paths_input_fingerprint",
-    "default_dataframe_execution_cache",
-    "dataframe_lazy_execution_policy",
-    "dataframe_execution_cache_key",
     "execute_lazy_graph",
-    "invalidate_dataframe_execution_cache",
-    "materialize_lazy_frame_with_cache",
     "plan_prepared_execution_strategy",
     "plan_execution_strategy",
+    "plan_projection",
     "preview_lineage_cache_key",
     "prune_source_switch_edges",
     "ratebook_factor_required_columns",
+    "source_lineage_graph",
     "source_scan_projection",
 ]
 
-PREVIEW_EXECUTION_SEMANTICS_VERSION = "preview-materialisation:v1"
+PREVIEW_EXECUTION_SEMANTICS_VERSION = "preview-materialisation:v2"
 _PREVIEW_CONTRACT_FINGERPRINT_VERSION = 1
 
 LazyExecutionResult = tuple[dict[str, _Frame], list[str], dict[str, list[str]], dict[str, str]]
 
-_DEFAULT_DATAFRAME_EXECUTION_CACHE_ROOT: Path | None = None
-_DEFAULT_DATAFRAME_EXECUTION_CACHE: DataFrameExecutionCache | None = None
-_DEFAULT_DATAFRAME_EXECUTION_CACHE_LOCK = threading.Lock()
 _AUTO_MATERIALISATION_ESTIMATE = object()
 _DATAFRAME_ROW_HASH_ENCODING = "polars-u64-le:v1"
-_GROUP_BY_MATERIALISATION_PROFILES = frozenset(
-    {
-        ExecutionProfile.PREVIEW_EAGER,
-        ExecutionProfile.EXPLORE_ANALYSIS,
-        ExecutionProfile.DEPLOY_LIVE,
-    }
-)
-
 _SOURCE_PATH_CONFIG_BY_NODE_TYPE: dict[NodeType, str] = {
     NodeType.API_INPUT: "path",
     NodeType.DATA_INPUT: "path",
     NodeType.EXTERNAL_FILE: "path",
 }
+# The node types whose runtime inputs an execution identity signs.
+_RUNTIME_INPUT_NODE_TYPES = frozenset(
+    {*_SOURCE_PATH_CONFIG_BY_NODE_TYPE, NodeType.MODEL_SCORE, NodeType.OPTIMISER_APPLY}
+)
 
 _LOCAL_RUNTIME_INPUT_PATH_FIELDS_BY_NODE_TYPE: dict[NodeType, tuple[str, ...]] = {
     NodeType.API_INPUT: ("path",),
@@ -168,33 +139,6 @@ _LOCAL_RUNTIME_INPUT_PATH_FIELDS_BY_NODE_TYPE: dict[NodeType, tuple[str, ...]] =
     # ``model/model.cbm``), not a path on the Haute project filesystem.
     NodeType.MODEL_SCORE: ("feature_contract_path",),
 }
-
-
-def default_dataframe_execution_cache() -> DataFrameExecutionCache:
-    """Return the process-local backend dataframe execution cache.
-
-    Created lazily on first use so that pure-import callers (CI smoke tests,
-    metadata scanners) do not leave a temp directory behind.  The root is
-    cleaned up at interpreter exit.
-    """
-    global _DEFAULT_DATAFRAME_EXECUTION_CACHE, _DEFAULT_DATAFRAME_EXECUTION_CACHE_ROOT
-    with _DEFAULT_DATAFRAME_EXECUTION_CACHE_LOCK:
-        if _DEFAULT_DATAFRAME_EXECUTION_CACHE is None:
-            root = Path(tempfile.mkdtemp(prefix="haute_dfexec_cache_"))
-            cache = DataFrameExecutionCache(root=root)
-            atexit.register(lambda: shutil.rmtree(root, ignore_errors=True))
-            _DEFAULT_DATAFRAME_EXECUTION_CACHE_ROOT = root
-            _DEFAULT_DATAFRAME_EXECUTION_CACHE = cache
-        return _DEFAULT_DATAFRAME_EXECUTION_CACHE
-
-
-def invalidate_dataframe_execution_cache() -> None:
-    """Clear every materialized backend dataframe artifact owned by this process."""
-
-    with _DEFAULT_DATAFRAME_EXECUTION_CACHE_LOCK:
-        cache = _DEFAULT_DATAFRAME_EXECUTION_CACHE
-    if cache is not None:
-        cache.invalidate()
 
 
 def canonical_dataframe_execution_graph(graph: PipelineGraph) -> PipelineGraph:
@@ -230,8 +174,7 @@ def canonical_dataframe_execution_graph(graph: PipelineGraph) -> PipelineGraph:
                     resolved_config[key] = resolved
                     node_changed = True
         if node_changed:
-            data = node.data.model_copy(update={"config": resolved_config})
-            nodes.append(node.model_copy(update={"data": data}))
+            nodes.append(node.with_config(resolved_config))
             changed = True
         else:
             nodes.append(node)
@@ -247,43 +190,45 @@ def plan_execution_strategy(
     materialisation_estimate: MaterialisationEstimate | None | object = (
         _AUTO_MATERIALISATION_ESTIMATE
     ),
+    runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
+    materialising_node_ids: Iterable[str] | None = None,
+    estimation_graph: PipelineGraph | None = None,
 ) -> ExecutionStrategyResult:
-    """Return the sole route-facing V1 execution-planning result."""
+    """Return the sole route-facing V1 execution-planning result.
+
+    ``materialising_node_ids`` limits admission and estimation to the
+    materialisations the execution will actually perform; a planned execution
+    passes the nodes it builds, so a branch it never builds (or that a seed
+    covers) is neither estimated nor refused. ``estimation_graph`` replaces
+    the request graph for materialisation estimates only — a planned execution
+    passes one whose seeds are Parquet inputs of their leased generations.
+    """
     prepared = prepare_graph(
         request.graph,
         request.target_node_id,
         source=request.source,
     )
     children_of = _children_of(prepared.order, prepared.parents_of)
-    required_columns_by_node = normalise_required_columns_by_node(
-        request.required_columns_by_node,
-        prepared.order,
-    )
-    projection_plan = compute_prepared_plan(
-        prepared.order,
-        children_of,
-        prepared.node_map,
-        required_columns_by_node=required_columns_by_node,
-        strict_projection=strict_projection_required(
-            request.profile,
-            required_columns_by_node,
+    required_columns_by_node, projection_plan = _prepared_projection_plan(prepared, request)
+    materialising_sequences = _only_nodes(
+        materialising_operator_sequences_by_node(
+            prepared.order,
+            prepared.node_map,
+            relevant_edges=prepared.relevant_edges,
+            submodels=prepared.submodels,
         ),
-        relevant_edges=prepared.relevant_edges,
+        materialising_node_ids,
     )
-    projection_plan = with_api_input_port_projection_boundaries(
-        projection_plan,
-        prepared.node_map,
-        prepared.relevant_edges,
-    )
-    group_by_operators = group_by_operators_by_node(prepared.order, prepared.node_map)
+    materialising_operators = first_materialising_operators(materialising_sequences)
     resolved_estimate: MaterialisationEstimate | None
-    if group_by_operators and request.profile in _GROUP_BY_MATERIALISATION_PROFILES:
+    if materialising_operators:
         if materialisation_estimate is _AUTO_MATERIALISATION_ESTIMATE:
-            resolved_estimate = _estimate_group_by_boundaries(
-                request.graph,
-                group_by_operators,
+            resolved_estimate = _estimate_materialising_boundaries(
+                estimation_graph if estimation_graph is not None else request.graph,
+                materialising_sequences,
                 source=request.source,
                 projection_plan=projection_plan,
+                runtime_source_frames_by_node=runtime_source_frames_by_node,
             )
         elif materialisation_estimate is None:
             resolved_estimate = MaterialisationEstimate.unavailable(
@@ -302,7 +247,7 @@ def plan_execution_strategy(
         children_of=children_of,
         node_map=prepared.node_map,
         has_projection_seed=bool(required_columns_by_node),
-        group_by_operators=group_by_operators,
+        materialising_operators=materialising_operators,
         execution_context=execution_context,
         materialisation_estimate=resolved_estimate,
         required_columns_by_node=required_columns_by_node,
@@ -312,22 +257,66 @@ def plan_execution_strategy(
     return result
 
 
-def _estimate_group_by_boundaries(
+def plan_projection(request: ProjectionRequest) -> ProjectionPlan:
+    """Return the column demand *request*'s execution plans at every node.
+
+    The projection half of :func:`plan_execution_strategy`, for a caller that
+    needs another execution's demand — auto-range captures the columns the
+    following solve reads — without planning, estimating, or admitting it.
+    """
+    prepared = prepare_graph(
+        request.graph,
+        request.target_node_id,
+        source=request.source,
+    )
+    return _prepared_projection_plan(prepared, request)[1]
+
+
+def _prepared_projection_plan(
+    prepared: PreparedGraph,
+    request: ProjectionRequest,
+) -> tuple[dict[str, set[str] | AllExceptColumns], ProjectionPlan]:
+    required_columns_by_node = normalise_required_columns_by_node(
+        request.required_columns_by_node,
+        prepared.order,
+    )
+    projection_plan = compute_prepared_plan(
+        prepared.order,
+        _children_of(prepared.order, prepared.parents_of),
+        prepared.node_map,
+        required_columns_by_node=required_columns_by_node,
+        relevant_edges=prepared.relevant_edges,
+        submodels=prepared.submodels,
+        selector_aliases=preamble_selector_aliases(request.graph.preamble or ""),
+    )
+    projection_plan = with_api_input_port_projection_boundaries(
+        projection_plan,
+        prepared.node_map,
+        prepared.relevant_edges,
+    )
+    return required_columns_by_node, projection_plan
+
+
+def _estimate_materialising_boundaries(
     graph: PipelineGraph,
-    node_ids: Iterable[str],
+    boundary_operators: Mapping[str, Sequence[str]],
     *,
     source: str,
     projection_plan: ProjectionPlan | None = None,
+    runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
 ) -> MaterialisationEstimate:
-    """Return the conservative peak across every declared group-by boundary."""
+    """Return the conservative peak across every declared materialisation boundary."""
     peak_bytes = 0
     assumptions: list[str] = []
     basis = MaterialisationEstimateBasis.PROJECTED_COLUMNS
+    depends_on_many_to_many_join = False
     estimates = estimate_materialisation_boundaries(
         graph,
-        node_ids,
+        boundary_operators,
         source=source,
+        boundary_operators=boundary_operators,
         edge_demands=(projection_plan.edge_demands if projection_plan is not None else None),
+        runtime_source_frames_by_node=runtime_source_frames_by_node,
     )
     for node_id, estimate in estimates:
         if estimate.state is MaterialisationEstimateState.UNAVAILABLE:
@@ -337,11 +326,15 @@ def _estimate_group_by_boundaries(
         peak_bytes = max(peak_bytes, estimate.estimated_peak_bytes)
         if estimate.basis is not MaterialisationEstimateBasis.PROJECTED_COLUMNS:
             basis = MaterialisationEstimateBasis.COMPLETE_WIDTH_FALLBACK
+        depends_on_many_to_many_join = (
+            depends_on_many_to_many_join or estimate.depends_on_many_to_many_join
+        )
         assumptions.extend(f"{node_id}: {item}" for item in estimate.assumptions)
     return MaterialisationEstimate.available(
         peak_bytes,
         assumptions=assumptions,
         basis=basis,
+        depends_on_many_to_many_join=depends_on_many_to_many_join,
     )
 
 
@@ -355,7 +348,10 @@ def plan_prepared_execution_strategy(
     execution_context: ExecutionContext | None = None,
     materialisation_estimate: MaterialisationEstimate | None = None,
     schema_only: bool = False,
-    relevant_edges: Iterable[GraphEdge] | None = None,
+    relevant_edges: Iterable[GraphEdge],
+    submodels: Mapping[str, Any] | None = None,
+    selector_aliases: frozenset[str] = frozenset(),
+    materialising_node_ids: Iterable[str] | None = None,
 ) -> ExecutionStrategyResult:
     """Plan projection/streaming strategy for an already prepared graph.
 
@@ -363,10 +359,10 @@ def plan_prepared_execution_strategy(
     collects a frame or invokes a sink. The group-by admission gate below
     bounds peak memory *during materialisation*; schema resolution
     materialises nothing, so under that declaration the gate is not evaluated
-    and no materialisation boundary is inserted. When supplied, prepared
-    ``relevant_edges`` retain API-input port identity for projection diagnostics.
+    and no materialisation boundary is inserted. The prepared
+    ``relevant_edges`` carry API-input port identity for projection diagnostics.
     """
-    prepared_relevant_edges = tuple(relevant_edges) if relevant_edges is not None else None
+    prepared_relevant_edges = tuple(relevant_edges)
     required_columns_by_node = normalise_required_columns_by_node(
         required_columns_by_node,
         order,
@@ -376,16 +372,26 @@ def plan_prepared_execution_strategy(
         children_of,
         dict(node_map),
         required_columns_by_node=required_columns_by_node,
-        strict_projection=strict_projection_required(profile, required_columns_by_node),
         relevant_edges=prepared_relevant_edges,
+        submodels=submodels,
+        selector_aliases=selector_aliases,
     )
-    if prepared_relevant_edges is not None:
-        projection_plan = with_api_input_port_projection_boundaries(
-            projection_plan,
-            node_map,
-            prepared_relevant_edges,
+    projection_plan = with_api_input_port_projection_boundaries(
+        projection_plan,
+        node_map,
+        prepared_relevant_edges,
+    )
+    materialising_operators = first_materialising_operators(
+        _only_nodes(
+            materialising_operator_sequences_by_node(
+                order,
+                node_map,
+                relevant_edges=prepared_relevant_edges,
+                submodels=submodels,
+            ),
+            materialising_node_ids,
         )
-    group_by_operators = group_by_operators_by_node(order, node_map)
+    )
     result = _finalise_execution_strategy(
         projection_plan,
         profile=profile,
@@ -393,7 +399,7 @@ def plan_prepared_execution_strategy(
         children_of=children_of,
         node_map=node_map,
         has_projection_seed=bool(required_columns_by_node),
-        group_by_operators=group_by_operators,
+        materialising_operators=materialising_operators,
         execution_context=execution_context,
         materialisation_estimate=materialisation_estimate,
         required_columns_by_node=required_columns_by_node,
@@ -402,6 +408,20 @@ def plan_prepared_execution_strategy(
     if execution_context is not None:
         execution_context.projection_plan = result
     return result
+
+
+_NodeValue = TypeVar("_NodeValue")
+
+
+def _only_nodes(
+    by_node: Mapping[str, _NodeValue],
+    node_ids: Iterable[str] | None,
+) -> Mapping[str, _NodeValue]:
+    """Keep only the named nodes' entries; ``None`` keeps every entry."""
+    if node_ids is None:
+        return by_node
+    keep = frozenset(node_ids)
+    return {node_id: value for node_id, value in by_node.items() if node_id in keep}
 
 
 def _children_of(
@@ -416,7 +436,25 @@ def _children_of(
     return children
 
 
-def _group_by_rejection(
+MANY_TO_MANY_JOIN_DETAIL = "join_cardinality_many_to_many"
+"""Estimator detail for a join whose only row bound is the many-to-many product."""
+
+_MANY_TO_MANY_JOIN_REMEDIATION = (
+    "The join has no declared validate= contract, so only the many-to-many row "
+    "product bounds it; declare validate='m:1', '1:m', or '1:1' where a key side "
+    "is unique to get a real estimate."
+)
+
+
+def _with_many_to_many_join_remediation(remediation: str, detail: str | None) -> str:
+    """Append the validate= contract advice when the gap is an unbounded join."""
+
+    if detail is None or not detail.endswith(MANY_TO_MANY_JOIN_DETAIL):
+        return remediation
+    return f"{remediation} {_MANY_TO_MANY_JOIN_REMEDIATION}"
+
+
+def _materialisation_rejection(
     *,
     node_id: str,
     operator: str,
@@ -427,21 +465,17 @@ def _group_by_rejection(
     estimate_detail: str | None = None,
 ) -> GroupByExecutionUnsupportedError:
     remediation = {
-        "profile_requires_bounded_execution": (
-            "Remove the group-by, pre-aggregate the source, or run it through an "
-            "admitted preview, Explore-cache, or deploy-live materialisation boundary."
-        ),
         "execution_admission_unavailable": (
             "Create an admitted execution context with positive memory-limit and "
-            "headroom values before running this group-by."
+            f"headroom values before running this '{operator}'."
         ),
         "materialisation_estimate_unavailable": (
             "Provide readable source/schema metadata so Haute can estimate the full "
-            "group-by boundary before execution."
+            f"'{operator}' materialisation boundary before execution."
         ),
         "materialisation_exceeds_headroom": (
             "Increase the configured memory headroom, narrow the input, or pre-aggregate "
-            "the source before this group-by."
+            f"the source before this '{operator}'."
         ),
     }[reason_code]
     if estimate_detail:
@@ -449,8 +483,15 @@ def _group_by_rejection(
         # Discarding that left the analyst with "provide readable metadata" and
         # no way to tell an unreadable file from an unsummarisable source shape.
         remediation = f"{remediation} Estimator reported: {estimate_detail}."
+    if reason_code == "materialisation_estimate_unavailable":
+        # Without a hard cap there is no bounded envelope to run inside.
+        remediation = (
+            f"{remediation} This surface runs without a hard worker memory cap, "
+            "so Haute cannot run the plan conservatively here."
+        )
+    remediation = _with_many_to_many_join_remediation(remediation, estimate_detail)
     return GroupByExecutionUnsupportedError(
-        "Group-by execution is unsupported for the selected execution strategy.",
+        f"Materialisation of '{operator}' could not be admitted for this execution.",
         node_id=node_id,
         operator=operator,
         profile=profile.value,
@@ -458,6 +499,72 @@ def _group_by_rejection(
         remediation=remediation,
         estimated_peak_bytes=estimated_peak_bytes,
         headroom_bytes=headroom_bytes,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _UnprovenMaterialisation:
+    """The plan and diagnostic fields for a boundary with no usable estimate."""
+
+    projection_plan: ProjectionPlan
+    strategy: ExecutionStrategy
+    reason_code: str
+    assumptions: tuple[str, ...]
+    remediation: str
+
+
+def _plan_unproven_materialisation(
+    projection_plan: ProjectionPlan,
+    *,
+    node_id: str,
+    operator: str,
+    profile: ExecutionProfile,
+    materialising_operators: Mapping[str, str],
+    detail: str,
+    headroom_bytes: int,
+) -> _UnprovenMaterialisation:
+    """Run conservatively under a hard cap, or reject when there is no cap.
+
+    Both the estimator reporting no estimate and the planner refusing a
+    many-to-many join's row product land here: neither has a number that bounds
+    the boundary, and the only difference is what the analyst is told to fix.
+    """
+    backend = current_native_memory_backend()
+    if backend is None:
+        raise _materialisation_rejection(
+            node_id=node_id,
+            operator=operator,
+            profile=profile,
+            reason_code="materialisation_estimate_unavailable",
+            estimated_peak_bytes=None,
+            headroom_bytes=headroom_bytes,
+            estimate_detail=detail,
+        )
+    # A hard worker cap bounds the process, so the run continues under
+    # its full reserved envelope instead of being rejected outright.
+    remediation = (
+        "The run continued under its full reserved memory envelope of "
+        f"{headroom_bytes} bytes because the materialisation estimate was "
+        f"unavailable ({detail}). Provide readable source metadata or rewrite "
+        f"'{operator}' at '{node_id}' so Haute can prove the estimate; the run "
+        "may use more memory and time than an estimated boundary."
+    )
+    return _UnprovenMaterialisation(
+        projection_plan=with_materialisation_boundaries(
+            projection_plan,
+            materialising_operators,
+        ),
+        strategy=ExecutionStrategy.FULL_WIDTH_CONSERVATIVE,
+        reason_code="materialisation_estimate_unavailable_conservative",
+        assumptions=(
+            f"proof_gap={detail}",
+            f"reserved_envelope_bytes={headroom_bytes}",
+            f"hard_cap_backend={backend}",
+            "disabled_optimisations=estimate_based_admission",
+        ),
+        # The envelope narrative is capped, then the contract advice is appended
+        # so it is never the half that gets cut.
+        remediation=_with_many_to_many_join_remediation(remediation[:512], detail),
     )
 
 
@@ -469,7 +576,7 @@ def _finalise_execution_strategy(
     children_of: Mapping[str, Iterable[str]],
     node_map: Mapping[str, GraphNode],
     has_projection_seed: bool,
-    group_by_operators: Mapping[str, str],
+    materialising_operators: Mapping[str, str],
     execution_context: ExecutionContext | None,
     materialisation_estimate: MaterialisationEstimate | None,
     required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None,
@@ -485,18 +592,8 @@ def _finalise_execution_strategy(
     headroom_bytes: int | None = None
     assumptions: tuple[str, ...] = ()
 
-    if group_by_operators and not schema_only:
-        node_id, operator = next(iter(group_by_operators.items()))
-        if profile not in _GROUP_BY_MATERIALISATION_PROFILES:
-            raise _group_by_rejection(
-                node_id=node_id,
-                operator=operator,
-                profile=profile,
-                reason_code="profile_requires_bounded_execution",
-                estimated_peak_bytes=None,
-                headroom_bytes=None,
-            )
-
+    if materialising_operators and not schema_only:
+        node_id, operator = next(iter(materialising_operators.items()))
         admission = execution_context.admission if execution_context is not None else None
         if (
             admission is None
@@ -508,7 +605,7 @@ def _finalise_execution_strategy(
             or isinstance(admission.headroom_bytes, bool)
             or admission.headroom_bytes <= 0
         ):
-            raise _group_by_rejection(
+            raise _materialisation_rejection(
                 node_id=node_id,
                 operator=operator,
                 profile=profile,
@@ -521,51 +618,91 @@ def _finalise_execution_strategy(
             materialisation_estimate is None
             or materialisation_estimate.state is MaterialisationEstimateState.UNAVAILABLE
         ):
-            raise _group_by_rejection(
+            detail: str
+            if materialisation_estimate is None:
+                detail = "no materialisation estimate was requested"
+            else:
+                # ``MaterialisationEstimate.unavailable`` rejects an empty reason.
+                assert materialisation_estimate.unavailable_reason is not None
+                detail = materialisation_estimate.unavailable_reason
+            unproven = _plan_unproven_materialisation(
+                projection_plan,
                 node_id=node_id,
                 operator=operator,
                 profile=profile,
-                reason_code="materialisation_estimate_unavailable",
-                estimated_peak_bytes=None,
-                headroom_bytes=headroom_bytes,
-                estimate_detail=(
-                    materialisation_estimate.unavailable_reason
-                    if materialisation_estimate is not None
-                    else "no materialisation estimate was requested"
-                ),
-            )
-        raw_estimated_peak_bytes = materialisation_estimate.estimated_peak_bytes
-        assert raw_estimated_peak_bytes is not None
-        calibrated = calibrate_materialisation_bytes(profile, raw_estimated_peak_bytes)
-        estimated_peak_bytes = calibrated.calibrated_bytes
-        estimate_calibration_factor_basis_points = calibrated.factor_basis_points
-        estimate_admission_basis = materialisation_estimate.basis.value
-        if estimated_peak_bytes > headroom_bytes:
-            raise _group_by_rejection(
-                node_id=node_id,
-                operator=operator,
-                profile=profile,
-                reason_code="materialisation_exceeds_headroom",
-                estimated_peak_bytes=estimated_peak_bytes,
+                materialising_operators=materialising_operators,
+                detail=detail,
                 headroom_bytes=headroom_bytes,
             )
-        projection_plan = with_materialisation_boundaries(
-            projection_plan,
-            group_by_operators,
-        )
-        strategy = ExecutionStrategy.MATERIALISATION_BOUNDARY
-        reason_code = "group_by_materialisation_admitted"
-        remediation = "Keep the admitted boundary within its reported memory headroom."
-        assumptions = (
-            *materialisation_estimate.assumptions,
-            f"raw_estimated_peak_bytes={raw_estimated_peak_bytes}",
-            f"calibrated_estimated_peak_bytes={estimated_peak_bytes}",
-            (
-                "estimate_calibration_factor_basis_points="
-                f"{estimate_calibration_factor_basis_points}"
-            ),
-            f"estimate_admission_basis={estimate_admission_basis}",
-        )
+            projection_plan = unproven.projection_plan
+            strategy = unproven.strategy
+            reason_code = unproven.reason_code
+            assumptions = unproven.assumptions
+            remediation = unproven.remediation
+        else:
+            raw_estimated_peak_bytes = materialisation_estimate.estimated_peak_bytes
+            assert raw_estimated_peak_bytes is not None
+            calibrated = calibrate_materialisation_bytes(profile, raw_estimated_peak_bytes)
+            estimated_peak_bytes = calibrated.calibrated_bytes
+            estimate_calibration_factor_basis_points = calibrated.factor_basis_points
+            estimate_admission_basis = materialisation_estimate.basis.value
+            if (
+                estimated_peak_bytes > headroom_bytes
+                and materialisation_estimate.depends_on_many_to_many_join
+            ):
+                # The row product is not an estimate of anything the join will
+                # actually hold; it is the absence of one. Rejecting on it would
+                # report a measured over-run that was never measured, so the
+                # boundary is treated as unproven instead.
+                unproven = _plan_unproven_materialisation(
+                    projection_plan,
+                    node_id=node_id,
+                    operator=operator,
+                    profile=profile,
+                    materialising_operators=materialising_operators,
+                    detail=f"{node_id}:{MANY_TO_MANY_JOIN_DETAIL}",
+                    headroom_bytes=headroom_bytes,
+                )
+                projection_plan = unproven.projection_plan
+                strategy = unproven.strategy
+                reason_code = unproven.reason_code
+                assumptions = unproven.assumptions
+                remediation = unproven.remediation
+                # The product was never an estimate, so none is reported.
+                raw_estimated_peak_bytes = None
+                estimated_peak_bytes = None
+                estimate_calibration_factor_basis_points = None
+                estimate_admission_basis = None
+            elif estimated_peak_bytes > headroom_bytes:
+                raise _materialisation_rejection(
+                    node_id=node_id,
+                    operator=operator,
+                    profile=profile,
+                    reason_code="materialisation_exceeds_headroom",
+                    estimated_peak_bytes=estimated_peak_bytes,
+                    headroom_bytes=headroom_bytes,
+                )
+            else:
+                projection_plan = with_materialisation_boundaries(
+                    projection_plan,
+                    materialising_operators,
+                )
+                strategy = ExecutionStrategy.MATERIALISATION_BOUNDARY
+                reason_code = "materialisation_admitted"
+                remediation = (
+                    f"Keep the admitted '{operator}' boundary at '{node_id}' within "
+                    "its reported memory headroom."
+                )
+                assumptions = (
+                    *materialisation_estimate.assumptions,
+                    f"raw_estimated_peak_bytes={raw_estimated_peak_bytes}",
+                    f"calibrated_estimated_peak_bytes={estimated_peak_bytes}",
+                    (
+                        "estimate_calibration_factor_basis_points="
+                        f"{estimate_calibration_factor_basis_points}"
+                    ),
+                    f"estimate_admission_basis={estimate_admission_basis}",
+                )
 
     return build_execution_strategy_result(
         projection_plan,
@@ -577,7 +714,7 @@ def _finalise_execution_strategy(
         required_columns_by_node=required_columns_by_node,
         strategy=strategy,
         reason_code=reason_code,
-        boundary_operators=group_by_operators,
+        boundary_operators=materialising_operators,
         remediation=remediation,
         estimated_peak_bytes=estimated_peak_bytes,
         raw_estimated_peak_bytes=raw_estimated_peak_bytes,
@@ -588,77 +725,26 @@ def _finalise_execution_strategy(
     )
 
 
-def _normalise_policy_column_demand(
-    demand: Iterable[str] | AllExceptColumns | None,
-) -> object:
-    if demand is None:
-        return None
-    if isinstance(demand, AllExceptColumns):
-        return {
-            "kind": "all_except",
-            "required_columns": sorted(demand.required_columns),
-            "excluded_columns": sorted(demand.excluded_columns),
-        }
-    if isinstance(demand, str | bytes):
-        raise TypeError("required column policy demand must be an iterable of names")
-    columns: set[str] = set()
-    for column in demand:
-        if not isinstance(column, str) or not column:
-            raise ValueError("required column policy demand must contain non-empty strings")
-        columns.add(column)
-    return sorted(columns)
+def _stat_gated_runtime_path_fingerprint(path: Path) -> Mapping[str, object]:
+    """Return the runtime identity of one local path.
 
-
-def dataframe_lazy_execution_policy(
-    *,
-    target_node_id: str | None,
-    source_by_node: Mapping[str, str] | None = None,
-    required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None = None,
-    preserve_node_ids: Iterable[str] | None = None,
-    enforce_contracts: bool = False,
-    preamble_ns_supplied: bool = False,
-) -> Mapping[str, object]:
-    """Return the non-graph policy payload used for dataframe execution keys."""
-
-    normalised_sources: dict[str, str] = {}
-    for node_id, source in (source_by_node or {}).items():
-        if not isinstance(node_id, str) or not node_id:
-            raise ValueError("source_by_node keys must be non-empty strings")
-        if not isinstance(source, str) or not source:
-            raise ValueError("source_by_node values must be non-empty strings")
-        normalised_sources[node_id] = source
-
-    normalised_required: dict[str, object] = {}
-    for node_id, demand in (required_columns_by_node or {}).items():
-        if not isinstance(node_id, str) or not node_id:
-            raise ValueError("required_columns_by_node keys must be non-empty strings")
-        normalised_required[node_id] = _normalise_policy_column_demand(demand)
-
-    preserved: set[str] = set()
-    for node_id in preserve_node_ids or ():
-        if not isinstance(node_id, str) or not node_id:
-            raise ValueError("preserve_node_ids must contain non-empty strings")
-        preserved.add(node_id)
-
-    return {
-        "target_node_id": target_node_id,
-        "source_by_node": dict(sorted(normalised_sources.items())),
-        "required_columns_by_node": dict(sorted(normalised_required.items())),
-        "preserve_node_ids": sorted(preserved),
-        "enforce_contracts": bool(enforce_contracts),
-        "preamble_ns_supplied": bool(preamble_ns_supplied),
-    }
-
-
-def _runtime_path_fingerprint(path: Path) -> Mapping[str, object]:
+    A file is signed by the shared source proof
+    (:func:`haute._json_shred._source_proof.file_signature`): its content hash
+    is computed once per unchanged freshness token and shared with every other
+    consumer of the same file (a Data Input or API Input snapshot's freshness,
+    a utility hash), so preview/trace keys cost a hash per edit, not per
+    request. A missing path or a directory is signed by its stat alone. OS
+    errors propagate: an unreadable input fails the request loudly rather than
+    fingerprinting as something it is not.
+    """
     resolved = path.resolve()
     if not resolved.exists():
         return {
             "path": str(resolved),
             "exists": False,
         }
-    stat = resolved.stat()
     if not resolved.is_file():
+        stat = resolved.stat()
         return {
             "path": str(resolved),
             "exists": True,
@@ -666,89 +752,16 @@ def _runtime_path_fingerprint(path: Path) -> Mapping[str, object]:
             "size": stat.st_size,
             "mtime_ns": stat.st_mtime_ns,
         }
+    signature = file_signature(resolved)
     return {
         "path": str(resolved),
         "exists": True,
         "is_file": True,
-        "size": stat.st_size,
-        "mtime_ns": stat.st_mtime_ns,
+        "size": signature.size,
+        "mtime_ns": signature.mtime_ns,
         "hash_algo": HASH_ALGO,
-        "content_hash": content_hash(resolved),
+        "content_hash": signature.digest,
     }
-
-
-_runtime_path_fingerprint_cache: StatGatedCache[str, Mapping[str, object]] = StatGatedCache(
-    artifact_kind="Runtime input file"
-)
-
-
-def _stat_gated_runtime_path_fingerprint(path: Path) -> Mapping[str, object]:
-    """Process-wide stat-gated memo over :func:`_runtime_path_fingerprint`.
-
-    Preview/trace cache keys are recomputed on every request, so content-
-    hashing every file-backed input per preview would scale request cost
-    with data size instead of edit rate.  When ``(mtime_ns, size)`` is
-    unchanged the memoised payload is reused; any metadata change re-hashes
-    content through the shared, single-flight double-stat race guard.
-
-    File metadata is not a complete correctness boundary: a rewrite that
-    preserves both size and mtime while changing bytes is below the gate's
-    resolution (the documented :class:`~haute._cache.GraphFingerprintMemo`
-    trade).  Missing paths and directories are never memoised — their
-    fingerprints are pure stat material already.  OS errors from stat or
-    read propagate unchanged: an unreadable input must fail the request
-    loudly rather than silently fingerprint as something it is not.
-    """
-    resolved = path.resolve()
-    if not resolved.is_file():
-        return _runtime_path_fingerprint(resolved)
-    return _runtime_path_fingerprint_cache.get_or_load(
-        artifact_cache_key(resolved),
-        str(resolved),
-        lambda: _runtime_path_fingerprint(resolved),
-    )
-
-
-def _json_source_runtime_path_fingerprint(path: Path) -> Mapping[str, object]:
-    """Return runtime identity from the JSON cache's authoritative source proof.
-
-    The JSON strategy estimator and loader already require the exact SHA-256
-    signature maintained by ``_json_shred``. Reusing that record here prevents
-    preview/trace identity from streaming the same source a second time through
-    the generic xxHash boundary. Missing paths and non-files preserve the generic
-    payload and error semantics.
-    """
-    resolved = path.resolve()
-    if not resolved.is_file():
-        return _runtime_path_fingerprint(resolved)
-
-    from haute._json_shred._source_proof import _data_file_signature
-
-    signature = _data_file_signature(resolved)
-    return {
-        "path": str(resolved),
-        "exists": True,
-        "is_file": True,
-        "size": signature["size"],
-        "mtime_ns": signature["mtime_ns"],
-        "hash_algo": "sha256",
-        "content_hash": signature["sha256"],
-    }
-
-
-def _runtime_file_fingerprint(
-    node: GraphNode,
-    path_field: str,
-    path: Path,
-) -> Mapping[str, object]:
-    """Return the versioned content identity for one node runtime file."""
-    if (
-        node.data.nodeType == NodeType.API_INPUT
-        and path_field == "path"
-        and is_json_api_input_path(str(path))
-    ):
-        return _json_source_runtime_path_fingerprint(path)
-    return _stat_gated_runtime_path_fingerprint(path)
 
 
 def dataframe_paths_input_fingerprint(paths: Mapping[str, str]) -> Mapping[str, object]:
@@ -838,6 +851,8 @@ def _local_runtime_input_path_fields(node: GraphNode) -> tuple[str, ...]:
         and node.data.config.get("sourceType") == "file"
     ):
         fields.append("artifact_path")
+    if node.data.nodeType == NodeType.MODEL_SCORE and node.data.config.get("sourceType") == "file":
+        fields.append("model_path")
     return tuple(fields)
 
 
@@ -854,15 +869,121 @@ def _runtime_input_path_fields(node: GraphNode) -> tuple[str, ...]:
     return tuple(fields)
 
 
+def _snapshot_source_signature(
+    graph: PipelineGraph,
+    config: Mapping[str, object],
+) -> str | None:
+    """Current source signature of a snapshot-backed input (``None`` when none)."""
+    from haute._builders import _configured_pipeline_dir
+    from haute._input_providers import source_signature
+
+    try:
+        return source_signature(
+            config,
+            base_dir=_cache_pipeline_dir(graph) or _configured_pipeline_dir(),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _snapshot_source_file(graph: PipelineGraph, config: Mapping[str, object]) -> Path | None:
+    """The file :func:`_snapshot_source_signature` hashes (``None`` when none).
+
+    Called only for an input whose generation pointer resolved, whose cache
+    identity already validated and anchored this configuration.
+    """
+    from haute._builders import _configured_pipeline_dir
+    from haute._input_providers import signed_source_file
+
+    return signed_source_file(
+        config,
+        base_dir=_cache_pipeline_dir(graph) or _configured_pipeline_dir(),
+    )
+
+
+def mlflow_backend_signature(config: Mapping[str, object]) -> object:
+    """Secret-free identity of the backend an MLflow-sourced node reads from.
+
+    Returns ``resolve_backend(<node destination>).identity`` — never the
+    tracking URI, which may carry environment credentials — or an
+    ``{"unresolved": <reason>}`` marker when the destination's prerequisites
+    are missing, so a warm entry minted from a resolvable state can never be
+    served once configuration is removed. Execution itself still raises.
+    """
+    from haute._mlflow_utils import resolve_backend
+    from haute.errors import MlflowConfigError
+
+    destination = str(config.get("mlflow_destination", "") or "")
+    try:
+        return resolve_backend(destination).identity
+    except MlflowConfigError as exc:
+        return {"unresolved": str(exc)}
+
+
+def _mlflow_registered_version_signature(config: Mapping[str, object]) -> object:
+    """The concrete version a registered-model source targets right now.
+
+    An alias, ``"latest"`` or an empty version resolves through the registry,
+    and its target moves while the node config stays identical; keying on the
+    reference text would replay predictions from the version it left. A
+    concrete version is immutable and needs no lookup. A failed lookup returns
+    an ``{"unresolved": <exception type>, "attempt": <random id>}`` marker —
+    never the message, which can carry a server URL. The random id makes every
+    failed lookup a distinct identity, so an entry written after one failure
+    (for example when the registry recovers before the model load) is never
+    served during a later failure; execution itself reports the failure.
+    """
+    version = str(config.get("version", "") or "")
+    alias = str(config.get("alias", "") or "")
+    if not alias and version not in ("", "latest"):
+        return version
+    from haute._mlflow_utils import resolve_mlflow_source
+
+    try:
+        _run_id, resolved_version, _mlflow, _client, _backend = resolve_mlflow_source(
+            source_type="registered",
+            registered_model=str(config.get("registered_model", "") or ""),
+            version=version,
+            destination=str(config.get("mlflow_destination", "") or ""),
+            alias=alias,
+        )
+    except Exception as exc:
+        return {"unresolved": type(exc).__name__, "attempt": uuid.uuid4().hex}
+    return resolved_version
+
+
 def _runtime_input_fingerprint_entry(
     graph: PipelineGraph,
     node: GraphNode,
 ) -> Mapping[str, object]:
+    """Identity material for one node's runtime inputs.
+
+    Beyond the signed files and the node's runtime-input config fields, an
+    MLflow-sourced ``MODEL_SCORE`` or ``OPTIMISER_APPLY`` node records the
+    *resolved* backend identity, because its stored config (``run_id``,
+    ``version``, ``sourceType``, ``mlflow_destination``) stays identical when
+    the server URL, the local folder, or the node's destination changes
+    underneath it. A registered source also records the version its alias or
+    ``latest`` reference currently targets.
+    """
     config = node.data.config
-    files = {
-        path_field: _runtime_file_fingerprint(node, path_field, path)
+    files: dict[str, object] = {
+        path_field: _stat_gated_runtime_path_fingerprint(path)
         for path_field, path in _runtime_file_signature_paths(graph, node).items()
     }
+    if "snapshot_pointer" in files:
+        # A snapshot-backed input is signed by its generation pointer *and* the
+        # current source signature, so a rewritten source misses every cache
+        # and reaches automatic preparation instead of serving a stale
+        # generation from a warm entry.
+        files["source_signature"] = _snapshot_source_signature(graph, config)
+    if node.data.nodeType in (
+        NodeType.MODEL_SCORE,
+        NodeType.OPTIMISER_APPLY,
+    ) and config.get("sourceType") in ("run", "registered"):
+        files["mlflow_backend"] = mlflow_backend_signature(config)
+        if config.get("sourceType") == "registered":
+            files["registered_version"] = _mlflow_registered_version_signature(config)
     return checked_cache_identity_record(
         CacheIdentityRecord.RUNTIME_INPUT_ENTRY,
         {
@@ -872,6 +993,31 @@ def _runtime_input_fingerprint_entry(
             "files": files,
         },
     )
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeInputIdentity:
+    """The runtime inputs of one scope, read once.
+
+    Hashing it, with or without extra entries, reads nothing: a fingerprint
+    built from it describes the inputs as they were when it was read, however
+    long ago that was.
+    """
+
+    payload: Mapping[str, object]
+
+    def fingerprint(self, extra: Mapping[str, object] | None = None) -> str:
+        inputs = checked_cache_inputs(
+            CacheConsumer.RUNTIME_GRAPH_INPUT,
+            {**self.payload, "extra": dict(sorted((extra or {}).items()))},
+        )
+        digest = content_hash_bytes(inputs.canonical_bytes)
+        return f"runtime-input:v{inputs.contract.version}:{digest}"
+
+    @property
+    def digest(self) -> str:
+        """The identity itself, for comparing two reads of the same scope."""
+        return self.fingerprint()
 
 
 def dataframe_graph_input_fingerprint(
@@ -890,6 +1036,24 @@ def dataframe_graph_input_fingerprint(
     component is not a standalone execution identity: callers pair it with
     their checked graph or lineage fingerprint.
     """
+    return dataframe_graph_input_identity(
+        graph,
+        target_node_id=target_node_id,
+        source=source,
+        ignore_node_ids=ignore_node_ids,
+        memo=memo,
+    ).fingerprint(extra_fingerprints)
+
+
+def dataframe_graph_input_identity(
+    graph: PipelineGraph,
+    *,
+    target_node_id: str | None,
+    source: str,
+    ignore_node_ids: Iterable[str] = (),
+    memo: GraphFingerprintMemo | None = None,
+) -> RuntimeInputIdentity:
+    """Read the runtime inputs :func:`dataframe_graph_input_fingerprint` signs."""
 
     graph = canonical_dataframe_execution_graph(graph)
     if target_node_id is not None and target_node_id not in graph.node_map:
@@ -912,30 +1076,47 @@ def dataframe_graph_input_fingerprint(
             ],
         }
     )
-    runtime_input_node_types = set(_SOURCE_PATH_CONFIG_BY_NODE_TYPE) | {
-        NodeType.MODEL_SCORE,
-        NodeType.OPTIMISER_APPLY,
-    }
     source_entries = [
         _runtime_input_fingerprint_entry(scoped_graph, node)
         for node in sorted(scoped_graph.nodes, key=lambda item: item.id)
-        if node.data.nodeType in runtime_input_node_types
+        if node.data.nodeType in _RUNTIME_INPUT_NODE_TYPES
     ]
-    inputs = checked_cache_inputs(
-        CacheConsumer.RUNTIME_GRAPH_INPUT,
+    return RuntimeInputIdentity(
         {
             "source": source,
             "sources": source_entries,
-            "json_cache_signature": cache_state_signature_for_graph(scoped_graph),
             "preamble_fingerprint": preamble_execution_fingerprint(
                 scoped_graph.preamble,
                 pipeline_dir=_cache_pipeline_dir(scoped_graph),
                 memo=memo,
             ),
-            "extra": dict(sorted((extra_fingerprints or {}).items())),
-        },
+        }
     )
-    return f"runtime-input:v{inputs.contract.version}:{content_hash_bytes(inputs.canonical_bytes)}"
+
+
+def runtime_input_signed_paths(graph: PipelineGraph) -> tuple[Path, ...]:
+    """The resolved local files :func:`dataframe_graph_input_identity` signs for every node.
+
+    Each node's signed paths, and for a snapshot-backed input the original
+    source file its source signature hashes beside the generation pointer,
+    listed only while it exists: a source that is gone is signed as missing,
+    not as a file. Read from configuration plus that existence check, so
+    listing them touches no file's content. The preamble's imported utility
+    modules, which the identity signs through the preamble fingerprint, are
+    not listed.
+    """
+    canonical = canonical_dataframe_execution_graph(graph)
+    paths: set[Path] = set()
+    for node in canonical.nodes:
+        if node.data.nodeType not in _RUNTIME_INPUT_NODE_TYPES:
+            continue
+        signed = _runtime_file_signature_paths(canonical, node)
+        paths.update(path.resolve() for path in signed.values())
+        if "snapshot_pointer" in signed:
+            source = _snapshot_source_file(canonical, node.data.config)
+            if source is not None:
+                paths.add(source.resolve())
+    return tuple(sorted(paths, key=str))
 
 
 def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict[str, Path]:
@@ -945,24 +1126,30 @@ def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict
     gets read, nothing else:
 
     * **apiInput** - signs the configured raw path for both flat files
-      and JSON/JSONL. JSON-shape inputs prefer a valid per-frame parquet
-      cache and otherwise shred that raw file directly; signing it prevents
-      a stale preview from hiding either fresh direct data or a raw-file error.
+      and structured (JSON, JSONL, NDJSON, XML) sources. A structured source
+      executes from its tables' input snapshots, so it also signs each
+      emitting table's generation pointer: a rebuild, refresh, or clear of a
+      table invalidates execution caches, and a rewritten source misses them
+      and reaches automatic preparation.
     * **dataInput** — direct Parquet signs the configured source; snapshot-backed
       inputs sign the active generation pointer, so only an explicit refresh
       invalidates execution caches.
     * **everything else** — the per-node config path fields shared with
       :func:`_local_runtime_input_path_fields`: ``externalFile`` paths,
-      ``modelScore`` feature-contract paths, and file-sourced
+      ``modelScore`` feature-contract paths and model files, and file-sourced
       ``optimiserApply`` artifacts. MLflow artifact identifiers are config
-      identity, not local files.
+      identity, not local files. A file-sourced ``modelScore`` without an
+      explicit contract also signs both contract candidates beside its model
+      (``contract_candidate:<n>``), so replacing, adding or deleting the
+      contract it would score under changes the identity.
     """
     node_type = node.data.nodeType
     config = node.data.config
     if node_type == NodeType.API_INPUT:
         raw_path = config.get("path")
         if isinstance(raw_path, str) and raw_path:
-            return {"path": _runtime_path_from_graph_config(graph, raw_path)}
+            path = _runtime_path_from_graph_config(graph, raw_path)
+            return {"path": path, **_api_input_table_pointer_paths(config, path)}
         return {}
     if node_type == NodeType.DATA_INPUT:
         from haute._polars_io_registry import data_input_is_direct
@@ -991,11 +1178,52 @@ def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict
         raw = config.get(path_field)
         if isinstance(raw, str) and raw:
             paths[path_field] = _runtime_path_from_graph_config(graph, raw)
+    if "model_path" in paths and not config.get("feature_contract_path"):
+        from haute._mlflow_io import model_contract_candidates
+
+        for index, candidate in enumerate(model_contract_candidates(paths["model_path"])):
+            # Contained before it is hashed: a sibling that resolves outside the
+            # project through a symlink is refused, never read.
+            paths[f"contract_candidate:{index}"] = resolve_runtime_file_path(
+                str(candidate), source_file=graph.source_file, prefer="project"
+            )
     return paths
 
 
-def _lineage_runtime_graph(graph: PipelineGraph, prepared: PreparedGraph) -> PipelineGraph:
-    """Return the source-pruned target lineage used for runtime-input hashing."""
+def _api_input_table_pointer_paths(config: Mapping[str, Any], path: Path) -> dict[str, Path]:
+    """The generation pointer of each emitting table of a structured API input.
+
+    Keyed ``snapshot_pointer:<label>``. A flat-file source, or a schema the
+    node builder will reject, has none.
+    """
+    if not is_json_api_input_path(str(path)) or not isinstance(config.get("tables"), list):
+        return {}
+    from haute._api_input_schema import ApiInputSchemaError
+    from haute._json_shred._snapshots import api_input_snapshot_source
+    from haute._sandbox import _get_project_root
+    from haute._source_cache import SourceCacheStore
+
+    try:
+        source = api_input_snapshot_source(config, path)
+    except (ApiInputSchemaError, TypeError, ValueError):
+        return {}
+    store = SourceCacheStore(_get_project_root())
+    return {
+        f"snapshot_pointer:{table.label}": store.identity_path(table.identity) / "current.json"
+        for table in source.tables
+    }
+
+
+def source_lineage_graph(
+    graph: PipelineGraph, target_node_id: str | None, *, source: str
+) -> PipelineGraph:
+    """Return *target_node_id* and its lineage as the executor runs it for *source*.
+
+    The executor's own live-switch pruning (``prepare_graph``) drops every
+    switch input *source* does not read, so a branch it never executes is
+    neither signed nor hashed by an identity built on this graph.
+    """
+    prepared = prepare_graph(graph, target_node_id, source=source)
     relevant_ids = set(prepared.order)
     return graph.model_copy(
         update={
@@ -1023,16 +1251,20 @@ def _preview_contract_fingerprint(
     return f"preview-contract-v{_PREVIEW_CONTRACT_FINGERPRINT_VERSION}:{digest}"
 
 
-def _lineage_runtime_input_fingerprint(
+def lineage_runtime_input_identity(
     graph: PipelineGraph,
-    prepared: PreparedGraph,
     *,
+    target_node_id: str | None,
     source: str,
-    memo: GraphFingerprintMemo | None,
-) -> str:
-    relevant_graph = _lineage_runtime_graph(graph, prepared)
-    return dataframe_graph_input_fingerprint(
-        relevant_graph,
+    memo: GraphFingerprintMemo | None = None,
+) -> RuntimeInputIdentity:
+    """Read the runtime inputs of *target_node_id*'s source-pruned lineage.
+
+    The identity the preview/trace cache key signs; a caller that must key an
+    entry by the inputs its execution read, not by a later read, keeps it.
+    """
+    return dataframe_graph_input_identity(
+        source_lineage_graph(graph, target_node_id, source=source),
         target_node_id=None,
         source=source,
         memo=memo,
@@ -1051,9 +1283,26 @@ def preview_lineage_cache_key(
     enforce_contracts: bool,
     materialisation_scope: str,
     memo: GraphFingerprintMemo | None = None,
+    runtime_input_identity: RuntimeInputIdentity | None = None,
+    seed_plan_fingerprint: str | None = None,
 ) -> str:
-    """Return the sole preview/trace cache identity for one target lineage."""
+    """Return the sole preview/trace cache identity for one target lineage.
+
+    *seed_plan_fingerprint* names the snapshot generations the execution
+    seeded from; it joins the runtime-input fingerprint, so an entry computed
+    from one seed generation is never served for another. An execution that
+    seeds nothing passes ``None`` and computes, and is keyed as, the same data
+    as one without a plan. *runtime_input_identity*, when given, is the read
+    of the lineage's inputs to sign instead of reading them again.
+    """
     prepared = prepare_graph(graph, target_node_id, source=source)
+    identity = (
+        runtime_input_identity
+        if runtime_input_identity is not None
+        else lineage_runtime_input_identity(
+            graph, target_node_id=target_node_id, source=source, memo=memo
+        )
+    )
     request = LineageCacheKeyRequest(
         graph=graph,
         prepared=prepared,
@@ -1068,71 +1317,12 @@ def preview_lineage_cache_key(
             materialisation_scope=materialisation_scope,
         ),
         selected_live_switch_path=selected_live_switch_path(prepared),
-        runtime_input_fingerprint=_lineage_runtime_input_fingerprint(
-            graph,
-            prepared,
-            source=source,
-            memo=memo,
+        runtime_input_fingerprint=identity.fingerprint(
+            {"seed_plan": seed_plan_fingerprint} if seed_plan_fingerprint is not None else None
         ),
         execution_semantics_version=PREVIEW_EXECUTION_SEMANTICS_VERSION,
     )
     return lineage_cache_key(request)
-
-
-def build_dataframe_execution_cache_request(
-    graph: PipelineGraph,
-    *,
-    node_ids: Iterable[str],
-    namespace: str,
-    source: str,
-    profile: ExecutionProfile | str,
-    input_fingerprint: str,
-    target_node_id: str | None,
-    source_by_node: Mapping[str, str] | None = None,
-    required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None = None,
-    preserve_node_ids: Iterable[str] | None = None,
-    enforce_contracts: bool = False,
-    preamble_ns_supplied: bool = False,
-    cache: DataFrameExecutionCache | None = None,
-    streaming_chunk_size: int | None = None,
-    fast_checkpoint: bool = True,
-) -> DataFrameExecutionCacheRequest:
-    """Build a validated cache request for one lazy execution run."""
-
-    graph = canonical_dataframe_execution_graph(graph)
-    node_id_list = list(node_ids)
-    if not node_id_list:
-        raise ValueError("node_ids must contain at least one node ID")
-    policy = dataframe_lazy_execution_policy(
-        target_node_id=target_node_id,
-        source_by_node=source_by_node,
-        required_columns_by_node=required_columns_by_node,
-        preserve_node_ids=preserve_node_ids,
-        enforce_contracts=enforce_contracts,
-        preamble_ns_supplied=preamble_ns_supplied,
-    )
-    memo = GraphFingerprintMemo()
-    keys_by_node: dict[str, DataFrameExecutionCacheKey] = {}
-    for node_id in node_id_list:
-        demand = (required_columns_by_node or {}).get(node_id)
-        required_columns = None if isinstance(demand, AllExceptColumns) else demand
-        keys_by_node[node_id] = dataframe_execution_cache_key(
-            graph,
-            node_id=node_id,
-            namespace=namespace,
-            source=source,
-            profile=profile,
-            input_fingerprint=input_fingerprint,
-            required_columns=required_columns,
-            execution_policy=policy,
-            memo=memo,
-        )
-    return DataFrameExecutionCacheRequest(
-        cache=cache if cache is not None else default_dataframe_execution_cache(),
-        keys_by_node=keys_by_node,
-        streaming_chunk_size=streaming_chunk_size,
-        fast_checkpoint=fast_checkpoint,
-    )
 
 
 def execute_lazy_graph(
@@ -1142,49 +1332,79 @@ def execute_lazy_graph(
     target_node_id: str | None = None,
     preamble_ns: dict[str, Any] | None = None,
     source: str = "live",
-    checkpoint_dir: Path | None = None,
     enforce_contracts: bool = False,
     preserve_node_ids: set[str] | frozenset[str] | None = None,
     required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None = None,
     execution_context: ExecutionContext | None = None,
     source_by_node: Mapping[str, str] | None = None,
-    dataframe_cache_request: DataFrameExecutionCacheRequest | None = None,
     schema_only: bool = False,
+    runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
+    prepare_inputs: bool = True,
+    snapshot_plan: SeedPlan | None = None,
+    join_recipes: dict[str, JoinRecipe] | None = None,
+    write_recipes: dict[str, WriteRecipe] | None = None,
+    unshaped_frames: dict[str, pl.LazyFrame] | None = None,
 ) -> LazyExecutionResult:
-    """Execute a graph lazily through the shared production engine.
+    """Execute a graph lazily: one sink walk of the graph walker.
 
     Set ``schema_only`` when the caller resolves schemas through
     ``collect_schema()`` and never collects a frame or invokes a sink; see
     ``plan_prepared_execution_strategy`` for what that declaration relaxes.
+    Supply ``runtime_source_frames_by_node`` when source nodes are injected
+    DataFrames and group-by admission must estimate those request-local inputs.
+    A ``snapshot_plan`` (``haute._seed_plans``) makes the run seed from and
+    capture into shared snapshots; without one nothing is captured.
+    ``join_recipes``, when given, receives the recipe of every edge join the
+    run builds, so a caller writing one in full can write it in chunks;
+    ``write_recipes``, when given, receives the recipe of every single-input
+    node the run builds, so a caller writing one in full can write it in chunks;
+    ``unshaped_frames`` receives, for every node that selects or renames its
+    columns, its frame before that step.
     """
-    from haute._execute_lazy import _execute_lazy
+    from haute._graph_walker import CollectPolicy, walk_graph
 
-    return _execute_lazy(
+    walked = walk_graph(
         graph,
         build_node_fn,
+        policy=CollectPolicy.sink(),
         target_node_id=target_node_id,
         preamble_ns=preamble_ns,
         source=source,
-        checkpoint_dir=checkpoint_dir,
         enforce_contracts=enforce_contracts,
-        preserve_node_ids=preserve_node_ids,
+        preserve_node_ids=preserve_node_ids or (),
         required_columns_by_node=required_columns_by_node,
         execution_context=execution_context,
         source_by_node=source_by_node,
-        dataframe_cache_request=dataframe_cache_request,
         schema_only=schema_only,
+        runtime_source_frames_by_node=runtime_source_frames_by_node,
+        prepare_inputs=prepare_inputs,
+        snapshot_plan=snapshot_plan,
     )
+    if join_recipes is not None:
+        join_recipes.update(walked.join_recipes)
+    if write_recipes is not None:
+        write_recipes.update(walked.write_recipes)
+    if unshaped_frames is not None:
+        unshaped_frames.update(walked.unshaped_frames)
+    return walked.frames, walked.order, walked.parents_of, walked.id_to_name
 
 
 def prune_source_switch_edges(
     edges: list[GraphEdge],
     node_map: dict[str, GraphNode],
     source: str,
+    *,
+    submodels: Mapping[str, Any] | None = None,
 ) -> list[GraphEdge]:
     """Return graph edges pruned to the active source-switch branch."""
     from haute._execute_lazy import _prune_live_switch_edges
 
-    return _prune_live_switch_edges(edges, node_map, source)
+    return _prune_live_switch_edges(
+        edges,
+        node_map,
+        source,
+        submodels=submodels,
+    )
 
 
 def build_linear_execution_chain_functions(
@@ -1260,7 +1480,7 @@ def build_linear_execution_chain_functions(
         incoming_edges_by_target=incoming_edges_by_target,
         all_incoming_edges_by_target=all_incoming_edges_by_target,
         all_node_map=graph.node_map,
-        preamble_ns=preamble_ns,
+        preamble_ns=node_code_globals(preamble_ns, graph, routing_source),
         source=build_source,
         required_output_columns_by_node=required_output_columns_by_node,
         reuse_loaded_model_by_node=reuse_loaded_model_by_node,

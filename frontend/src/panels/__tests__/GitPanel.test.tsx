@@ -234,6 +234,10 @@ describe("GitPanel", () => {
       expect(row).toHaveTextContent("config/a.json") // old
       expect(row).toHaveTextContent("config/b.json") // new (stacked below)
     })
+    // The status icon's name already is its tooltip text: no duplicate description.
+    const statusIcon = screen.getByTestId("git-panel-file").querySelector("[aria-label='Renamed']")
+    expect(statusIcon).not.toBeNull()
+    expect(statusIcon).not.toHaveAttribute("aria-describedby")
   })
 
   it("collapses an expanded milestone on a second click", async () => {
@@ -258,7 +262,7 @@ describe("GitPanel", () => {
     expect(screen.getByTestId("git-panel-pending-save")).toHaveTextContent("pending save")
   })
 
-  it("selects (highlights) a save only on click — nothing is auto-selected on open", async () => {
+  it("selects (highlights) a save only on click - nothing is auto-selected on open", async () => {
     mockGetPendingSaves.mockResolvedValue({
       saves: [
         { sha: "a", short_sha: "aabc", message: "a", timestamp: now(), files: [] },

@@ -5,18 +5,20 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/_submodel_instances.py` | Canonical reusable-instance resolver and validator, qualified-id expansion, schema-led reference rewriting, public-port binding, create-instance alias allocation, and targeted occurrence flattening. |
-| `src/haute/_submodel_paths.py` | Validate route-level names, resolve recorded submodel references relative to the active pipeline directory, enforce project containment, and return typed malformed/outside-project errors plus the directory used as config base. |
+| `src/haute/_submodel_paths.py` | Validate route-level names, resolve recorded submodel references relative to the active pipeline directory, enforce project containment, and return typed malformed/outside-project errors plus the directory used as config base; `definition_pipeline_dir` turns a registration path into a definition file's `pipeline_dir` and `is_pipeline_dir` validates one. |
 | `src/haute/_pipeline_revision.py` | Build deterministic canonical-graph revisions and the separate raw-artifact editor-document revision used by recovery-aware compare-and-swap. |
-| `src/haute/_flatten.py` | Public flatten/dissolve entry point: validates and expands canonical occurrences through `_submodel_instances.py`. |
+| `src/haute/_flatten.py` | Public flatten/dissolve entry point: validates and expands canonical occurrences through `_submodel_instances.py`. `flatten_executable_graph` is the entry every route running a browser graph uses: it refuses a graph with an executable-name violation (codegen naming rule) before flattening, while internal flattening (a staged dissolve, save) uses `flatten_graph`, since a partly dissolved graph repeats a shared definition's child names. |
 | `src/haute/routes/_submodel_ops.py` | Pure (no I/O) graph transform: extract selected nodes out of a `PipelineGraph` into a new submodel, producing the updated parent graph and submodel metadata. |
 | `src/haute/routes/submodel.py` | FastAPI router (`/api/submodel/*`): transform-only `POST /create` and `POST /dissolve`, plus read-only persisted `GET /{definition_id}`. It validates the current parent revision and maps failures without writing files. |
 
 Related but external to this component:
-- `src/haute/_parser_submodels.py` (expression-parsing) — parses
+- `src/haute/_parser_submodels.py` ([expression-parsing](../expression-parsing/low-level.md)) — parses
   `pipeline.submodel(...)` calls and submodel `.py` files, and calls into
   canonical reusable-instance helpers to build the hierarchical view at parse
   time. Parsed child graphs retain their declared description,
-  preamble, and column-zero preserved blocks. It rejects nested references
+  preamble, and column-zero preserved blocks. It checks the constructor's
+  `pipeline_dir` against the file's folder below the registering pipeline (a
+  missing keyword means the file sits beside it). It rejects nested references
   and duplicate declared submodel names before invoking the graph helpers, so
   this component never receives a deliberately truncated hierarchy.
 - `src/haute/routes/_save_pipeline.py::SavePipelineService` (server-api) —
@@ -33,9 +35,9 @@ occurrence-owned state:
 
 ```text
 SubmodelEndpoint { nodeId: NodeId, handleId: HandleId | null }
-SubmodelInputPort { portId: PortId, label: string,
-                    targets: non-empty ordered list[SubmodelEndpoint] }
-SubmodelOutputPort { portId: PortId, label: string,
+SubmodelInputPort { name: str,
+                    targets: ordered list[SubmodelEndpoint] }
+SubmodelOutputPort { name: str,
                      source: SubmodelEndpoint }
 SubmodelDefinition { definitionId, file, graph,
                      inputPorts[], outputPorts[], ...metadata }
@@ -47,9 +49,21 @@ PipelineGraph { nodes[], edges[], submodels: map[definitionId, definition] }
 operations only. It deliberately has no legacy dictionary `[]`, `get`, or
 in-place `update` surface.
 
-Each `SUBMODEL` node is one occurrence and its node id is its immutable
-`instanceId`. Its config is validated as `SubmodelInstanceConfig`; node label
-and position remain ordinary mutable node fields. No parallel instance registry
+An empty `SubmodelInputPort.targets` list represents a declared public frame
+that has not yet been routed inside the definition. The declaration remains
+serialisable when unbound. When an occurrence binds that port, the canonical
+Save validation, hierarchical codegen, and execution expansion all raise a
+contextual `ParseError` instead of silently dropping the incoming edge or
+emitting a `connect` call that binds nothing; the normal parent-first flow
+routes it in the drilled view before Save. `POST /api/pipeline/save` reports
+that rejection, and every other structural save-time `ParseError`, as a 400
+carrying the error's own context, never as an opaque 500.
+
+Each `SUBMODEL` node is one occurrence and its node id is its name (`node.id == label == alias == name`).
+Its config is validated as `SubmodelInstanceConfig`; an occurrence's
+display name is its alias (`node.data.label == config.alias` is enforced on
+validation, raising `ParseError` on mismatch), and its position remains an
+ordinary mutable node field. No parallel instance registry
 is permitted. For each definition exactly one occurrence has no `instanceOf`
 and owns definition editing. Every other occurrence has a non-empty
 `instanceOf` that points directly to that owner. The resolver rejects owner
@@ -63,10 +77,10 @@ the new occurrence position from each selected node; expansion adds the target
 occurrence position back. This makes one shared layout reusable at any number of
 independent parent-canvas positions without coordinate drift.
 
-Public handles are constructed only as `in__<portId>` and `out__<portId>`.
-Port ids are opaque and immutable; internal node ids and labels are not public
-port ids. Inputs fan out to their ordered targets, outputs have exactly one
-source, port ids are unique across the definition, and every endpoint must
+Public handles are constructed only as `in__<name>` and `out__<name>`.
+Port names are canonical identifiers; internal node ids and labels are not public
+port names. Inputs fan out to their ordered targets, outputs have exactly one
+source, port names are unique across both input and output ports in the definition, and every endpoint must
 refer to a node in the definition graph.
 
 The source form persists identity on both sides of the relationship:
@@ -74,23 +88,19 @@ The source form persists identity on both sides of the relationship:
 ```python
 pipeline.submodel(
     "modules/scoring.py",
-    definition_id="definition_...",
-    instance_id="instance_...",
-    alias="scoring_primary",
+    "scoring_primary",
 )
 
 pipeline.submodel(
     "modules/scoring.py",
-    definition_id="definition_...",
-    instance_id="instance_copy_...",
-    alias="scoring_secondary",
-    instance_of="instance_...",
+    "scoring_secondary",
+    instance_of="scoring_primary",
 )
 ```
 
 Generated and authored definition source must persist its `definition_id` and
 structured public port declarations. Every parent registration must persist
-`definition_id`, `instance_id`, and `alias`, plus `instance_of` for every
+its path and occurrence name, plus `instance_of` for every
 read-only instance. Missing identity is a parse error;
 the parser never derives it. Duplicate aliases in one parent, conflicting
 definition ids for one resolved path, and one definition id resolving to
@@ -106,14 +116,16 @@ Expansion is a pure transform per instance:
    to qualified runtime ids and from each bound public input port id to its
    upstream parent identity. Rewrite cloned child configs through that map.
    Also rewrite remaining parent consumers from the selected occurrence's
-   canonical `<alias>__<outputPortId>` identity to the qualified runtime
-   output source. An unbound, ambiguous, or otherwise stale declared reference
+   public output port name to the qualified runtime output source. When
+   this changes the physical name of an ordinary Polars input, preserve the
+   public logical name with `inputMapping`. An unbound, ambiguous, or otherwise stale declared reference
    is an error. Unregistered opaque fields are unchanged, never guessed.
 4. Expand each input binding to the port's ordered targets and each output
    binding from the port's single source, preserving authored endpoint handles
    and regenerating deterministic edge ids.
-5. Assert that no occurrence or parent-to-internal-child endpoint remains and
-   deduplicate only truly identical expanded edges.
+5. By construction, every selected occurrence node is removed and each
+   incident boundary edge rewritten to internal endpoints; deduplicate only truly
+   identical expanded edges.
 
 Create-instance and remove-instance are I/O-free graph operations. Creation
 normalises the selected source to its owner and persists that id in
@@ -126,20 +138,31 @@ audit remains the sole deletion gate.
 Definition edits validate all live occurrences and their bindings as one
 transaction. Interface-breaking edits are rejected before any parent or child
 file is written and report every affected instance/port.
+The owner's drilled Input inspector is the explicit interface-retirement path.
+Removing one listed frame deletes its `SubmodelInputPort`, every synthetic child route for that port, and
+every `in__<name>` parent binding targeting an occurrence of the definition
+in one history transaction. This operation is intentionally distinct from
+ordinary boundary-edge deletion, which retains the shared in-use guard.
+Input boundary history projections retain that definition-wide parent-binding
+slice, and the parent edge order it was projected from, so Undo and Redo
+restore the interface, its parent connections, and their original positions
+together. Parent edge order is persisted state — the dirty fingerprint
+compares it and codegen emits `connect` calls in it — so a restored binding
+returns to its own position rather than to the end of the parent edge list.
 
-Required regression coverage is added before implementation and includes:
+Existing test suites cover multi-instance occurrences across backend and frontend boundaries:
 
-- two instances of one definition with different positions and bindings;
-- definition parse-once and file emit-once behavior;
-- stable parse/codegen/parse ids and aliases;
-- collision-free qualified runtime ids and reversible origins;
-- schema-led rewrites for every declared node-id-bearing config field;
-- invalid definition, port, endpoint, alias, and stale-reference failures;
-- dissolve-one/remove-one preserving the sibling occurrence and definition;
-  interface-breaking edit preflight.
-- frontend create-instance identity persistence, editable-owner/shared-edit
-  warning, read-only instance mutation guards, public-handle rendering, and
-  interface-breaking edit preflight.
+- two instances of one definition with distinct positions and bindings (`tests/test_submodel_instances.py`);
+- definition parse-once and file emit-once behaviour (`tests/test_submodel_identity.py`);
+- stable parse/codegen/parse ids and aliases (`tests/test_submodel_ops.py`);
+- collision-free qualified runtime ids and reversible origins (`tests/test_submodel_identity.py`);
+- schema-led rewrites for every declared node-id-bearing config field (`tests/test_submodel_instances.py`);
+- invalid definition, port, endpoint, alias, and stale-reference failures (`tests/test_submodel_ops.py`);
+- dissolve-one/remove-one preserving sibling occurrences and definitions (`tests/test_submodel_routes.py`);
+- frontend view projection, public-handle rendering, and multi-occurrence input bindings (`frontend/src/utils/__tests__/submodelViewGraph.test.ts`);
+- boundary connection editing, input-port removal, and parent-binding cleanup (`frontend/src/utils/__tests__/submodelBoundaryEditing.test.ts`);
+- native deletion policy across definition owners and copies (`frontend/src/utils/__tests__/submodelDeletionPolicy.test.ts`);
+- save-route rejection of invalid or unrouted bindings (`tests/test_submodel_persistence.py`).
 
 ### Route request and response models
 
@@ -183,9 +206,20 @@ missing marker) for the parent source/sidecar and every resolved child
 source/sidecar. Canonical-JSON encode that payload and hash the bytes. Because
 the parsed graph includes resolved node config content and sidecar positions,
 dependency changes alter the revision even when the parent source text does
-not. `parse_pipeline_to_graph` attaches this revision to every live graph
-response and WebSocket refresh; a successful save reparses the committed
-document and returns the new revision.
+not.
+
+### `pipeline_recovery_revision(*, project_root, artifacts, known_bytes=None)`
+
+Hash raw, contained artifacts without requiring a canonical graph. Live editor
+documents (`load_pipeline_editor_document`) and WebSocket refreshes carry this
+recovery revision (`pipeline_recovery_revision`) as their `source_revision`, and
+mutating endpoints (including submodel creation, dissolution, and save) use it
+for compare-and-swap concurrency checks; a successful save reparses the
+committed document and returns the new revision. It constructs a role-qualified
+manifest from project-relative paths, recording explicit `present` (with content hash),
+`missing`, or `unreadable` (with error type) states. Repeated references to the
+same resolved path in the same role collapse to one manifest entry, and `known_bytes`
+supplies pre-read bytes to authenticate exact caller content against concurrent changes.
 
 ### `flatten_graph(graph, *, target_instance_id=None)`
 
@@ -206,9 +240,21 @@ document and returns the new revision.
    binding to the selected input port's ordered targets and each outgoing
    binding from the selected output port's one source, preserving authored
    endpoint handles and all hidden-port components in deterministic edge ids.
+   Rewrite every schema-owned incoming-frame reference from the public boundary
+   name to the expanded physical name: exact selector fields,
+   `input_scenario_map` keys, instance `inputMapping` values, and every OUTPUT
+   `outputMapping[].source_port`. A malformed referenced mapping fails with
+   contextual `ParseError`; it is never retained as a stale logical name.
+   A rename that collides on a target's input names or on an OUTPUT mapping
+   fails with `ParseError`; malformed mapping shapes are validated on renamed
+   nodes. Two distinct old input names for one target mapping to one new name
+   is a collision, as is a rewritten `outputMapping` in which two active
+   entries become identical in `(source_port, source_column, output_path)` or
+   two entries share `output_path` and `source_port` with different
+   `source_column`.
 5. Remove only selected occurrence nodes and their incident boundary edges.
-   Deduplicate exact six-field edge identities, assert that no selected
-   occurrence endpoint remains, and merge definition support code once. A
+   Deduplicate exact six-field edge identities (by construction, no selected
+   occurrence endpoint remains after rewriting incident edges), and merge definition support code once. A
    definition preamble is appended only when its stripped line block is not
    already contained (whole-line, contiguous) in the merged parent preamble —
    exact-blob identity would re-append after a staged dissolve, and substring
@@ -223,31 +269,37 @@ document and returns the new revision.
    fewer than two children, or any selected `SUBMODEL` node without mutating
    the input graph.
 2. Derive `definitionId = alias = sm_name` and
-   `modules/<sm_name>.py`, and allocate a fresh opaque immutable occurrence id
-   `submodel_instance_<uuid4 hex>`. Reject definition-id, alias,
-   remaining-parent-node-id, and case-insensitive file collisions.
+   `modules/<sm_name>.py`, and set the occurrence id to `sm_name`.
+   Reject definition-id, alias, remaining-parent-node-id, and
+   case-insensitive file collisions.
 3. Partition edges into internal, cross-boundary, and external sets while
    preserving graph order.
 4. Build structured public ports. Incoming edges sharing one external logical
    frame become one input port with ordered internal targets and exactly one
    parent binding. Outgoing edges sharing one internal source endpoint become
-   one output port. Allocate opaque `input_N`/`output_N` ids independent of
-   child ids and labels.
-5. Before storing the definition, rewrite each boundary-fed child's
-   `input_scenario_map` keys and `inputMapping` values from the external input
-   name to the sanitised public port id. Rewrite `inputMapping` keys on
-   instances of that child as well. Reject malformed mappings, ambiguous
-   renames, or key collisions atomically.
+   one output port. Each port's name is the executable input name the boundary
+   edge carried before grouping (`edge_input_name`), so child and parent
+   consumer code requires no generated rename; a name already minted for the
+   new definition, in either direction, gets the suffix `_2`, `_3`, ... A
+   boundary edge whose source has no executable identity refuses creation with
+   `SubmodelValidationError(code="invalid_input_binding", status_code=400)`.
+5. The port models validate every name as a canonical identifier
+   (`_sanitize_func_name(name) == name`) and the definition rejects a name used
+   twice across both directions, so the graph is never built with an
+   ambiguous interface. Codegen still rejects a duplicate derived input name at
+   save.
 6. Compute the selected bounding-box centre as the occurrence position and
    subtract it from every selected child position before storing the definition
    graph. Internal positions are therefore occurrence-local.
 7. Create one typed `SubmodelDefinition` and one `SUBMODEL` occurrence whose
    config is exactly `{definitionId, alias}`. Rewire parent edges only through
-   `in__<portId>`/`out__<portId>` handles, preserving still-hidden authored
-   ports in both edge data and deterministic ids. For every outgoing boundary,
-   rewrite schema-declared references on its remaining parent consumer from
-   the selected internal source id to the canonical
-   `<alias>__<outputPortId>` identity in the same pure transform.
+   `in__<name>`/`out__<name>` handles, preserving still-hidden authored
+   ports in both edge data and deterministic ids. Remaining parent consumers
+   keep the input name they were authored with: the public output port name
+   becomes the physical input. If that changes the name, the previous name
+   is recorded as the logical name through `inputMapping`, with schema-owned
+   selectors rewritten, exactly as
+   flattening does across the same boundary (F13).
 8. Return a new parent graph with the prior registry entries preserved plus the
    definition and occurrence. Return `SubmodelGraphResult` metadata for the
    transform-only route; the input graph is untouched.
@@ -314,6 +366,17 @@ Acquires `save_lock` and runs the body in a threadpool:
 
 ## Edge cases and invariants
 
+Registrations that resolve to the same contained source file share one definition,
+including equivalent dot-segment spellings and filesystem-normalized casing.
+The parser carries this resolved association into occurrence construction rather
+than matching the authored path strings a second time.
+
+Changing a definition's output count across the one/multiple boundary recomputes
+parent edge names for every occurrence. Existing consumer bindings are reconciled
+atomically with those identities: coded transforms retain their exact authored
+code through logical `inputMapping` bindings; input mappings, scenario maps, and
+scalar input selectors follow renamed edges. A collision refuses the entire edit.
+
 - **Duplicate/nonexistent node ids in `node_ids` fail atomically.** Duplicate
   ids return a safe `400` and any unknown id returns `409`; neither case
   extracts the valid subset.
@@ -326,16 +389,17 @@ Acquires `save_lock` and runs the body in a threadpool:
   the bindings.
 - **Flatten validates before dropping anything.** Every occurrence must resolve
   a definition, every boundary handle must name a declared port with the right
-  direction, and every public endpoint must exist. Missing, wrong-prefixed, or
-  stale bindings raise contextual `ParseError` before output construction.
+  direction, every bound input port must have at least one internal target, and
+  every public endpoint must exist. Missing, wrong-prefixed, unrouted, or stale
+  bindings raise contextual `ParseError` before output construction.
 - **Flatten is identity-preserving when the graph has no occurrences.** An
   explicit unknown `target_instance_id` is an error rather than a no-op.
 - **Inbound edge-join roles survive flattening.** A public input port targeting
   an edge-join endpoint restores its authored base/join `targetHandle` and
   rewrites the port-id role reference to the bound upstream parent identity.
 - **Outbound edge-join roles survive extraction and flattening.** A remaining
-  edge join fed by one or more selected sources uses distinct canonical
-  `<alias>__<outputPortId>` role identities while hierarchical, then qualified
+  edge join fed by one or more selected sources uses the public output port
+  name while hierarchical, then qualified
   runtime source ids after expansion; two outputs of one occurrence never
   collapse to the shared occurrence id.
 - **`_submodel_paths.py` checks the resolved pipeline-relative path before
@@ -376,22 +440,34 @@ Acquires `save_lock` and runs the body in a threadpool:
 | Drill-down parent does not contain the exact definition id, or its recorded `.py` is missing | `HTTPException(404, <definition detail>)` | `_get_submodel_blocking`. |
 | Empty/NUL-containing reference, explicit `..` reference component, or route name containing `/` or `\` | `MalformedSubmodelPathError` → `HTTPException(400)` | `_submodel_paths.py`, mapped by drill-down/dissolve. |
 | Recorded reference resolves outside project root | `SubmodelPathOutsideProjectError` → `HTTPException(403)` | `_submodel_paths.py`, mapped by drill-down/dissolve. |
-| Null handle on an inbound edge targeting a selected submodel | Edge omitted as an unassigned editor draft | `flatten_graph`; preview/trace continue without inventing a child mapping, and dissolve removes the draft with the occurrence. |
+| Null handle on an inbound edge targeting a selected submodel | `ParseError` with definition/instance/edge context | `flatten_graph` raises through `resolve_submodel_instances` (matching `_port_name`); the transform returns no graph and touches no files. |
 | Missing or wrong-prefixed public handle, undeclared port id, or invalid definition endpoint passed to `flatten_graph` | `ParseError` with definition/instance/edge context | `_submodel_instances` validation; the transform returns no graph and touches no files. |
 | Sanitised node-name collision | `HTTPException(400, <specific collision detail>)` | `SavePipelineService` validation, before writes. |
-| Any write step in the later explicit Save transaction fails (config write, sidecar write, module delete) | Best-effort rollback by `SavePipelineService`, original error re-raised | The server's generic exception middleware produces `500 {"detail": "Internal server error"}`; a failed compensating operation is logged and can leave partial state. See [server-api](../server-api/high-level.md). |
+| Any write step in the later explicit Save transaction fails (config write, sidecar write, module delete) | Best-effort rollback by `SavePipelineService`, original error re-raised | The server's unexpected-exception handler produces `500 {"detail": _INTERNAL_ERROR_DETAIL}`; a failed compensating operation is logged and can leave partial state. See [server-api](../server-api/high-level.md). |
 | Child is hand-authored/shared, ownership is ambiguous, or reference audit is incomplete | Later explicit Save retains the source and sidecar | Uncertainty never authorises deletion. |
 
 ## Testing
 
-Tests live in `tests/test_submodel_instances.py`, `tests/test_submodel_ops.py`,
+Tests live in `tests/test_submodel_identity.py`, `tests/test_submodel_instances.py`, `tests/test_submodel_ops.py`,
 `tests/test_submodel_routes.py`, `tests/test_submodel_route_contracts.py`,
 `tests/test_submodel_outport_invariant.py`,
 `tests/test_submodel.py`, `tests/test_edge_join.py`, `tests/test_flatten.py`,
 `tests/test_flattening_dedup.py`, `tests/test_pipeline_revision.py`, and
 `tests/test_submodel_persistence.py`, with related parser coverage in
-`tests/test_parser_submodels.py`.
+`tests/test_parser_submodels.py`, and frontend coverage in
+`frontend/src/utils/__tests__/submodelBoundaryEditing.test.ts`,
+`frontend/src/utils/__tests__/submodelDeletionPolicy.test.ts`, and
+`frontend/src/utils/__tests__/submodelViewGraph.test.ts`.
 
+- `tests/test_submodel_identity.py` — the SUB-L03 contract: an owner and a copy
+  parse to occurrences whose node id, label and alias are the name and whose
+  `definitionId` is the child file's declaration; `definition_id=`,
+  `instance_id=` and `alias=` keywords, a missing name and a non-canonical
+  name fail to parse with the fix named; codegen emits
+  `pipeline.submodel(path, name[, instance_of=owner])` and round-trips
+  byte-identically; a stale editor node id never reaches generated code;
+  runtime ids read `submodel_runtime/<name>/<child>`; grouping mints the name
+  as the node id; sidecar positions are keyed by the alias.
 - `tests/test_submodel_ops.py` — unit tests of `create_submodel_graph` against
   hand-built graphs (via `tests/conftest.py::make_graph`): basic extraction,
   structured input/output port construction and parent boundary rewiring,
@@ -418,11 +494,23 @@ Tests live in `tests/test_submodel_instances.py`, `tests/test_submodel_ops.py`,
   per-child source generation, child preamble and preserved-block round trips,
   compilable parent output, parsing, and request/response model contracts.
 - `tests/test_edge_join.py` — create/codegen integration for multiple public
-  outputs feeding distinct edge-join roles through `out__<portId>` handles.
+  outputs feeding distinct edge-join roles through `out__<name>` handles.
+- `tests/test_submodel_port_names.py` — the SUB-L01 contract: port models carry
+  exactly `name`, names must be canonical identifiers, a `portId` or `label`
+  key fails to parse (and the DSL raises) with the fix named, codegen emits
+  `name` only, the identity request and recovery document carry no label or
+  identity-map field, and no port-id or label token survives in `src/haute`.
+- `tests/test_submodel_occurrence_names.py` — the SUB-L02 contract: one name per
+  submodel occurrence (the alias), `node.data.label == config.alias` is enforced on
+  validation, non-canonical aliases are rejected at the DSL, parser, and config
+  levels, `pipeline.submodel()` rejects `label=`, codegen emits `alias=` without
+  `label=` and enforces the collision gate across occurrence aliases, recovery uses
+  the alias only, and graph merge derives node label directly from the alias.
 - `tests/test_submodel_instances.py` — canonical definition and occurrence
   validation, parse/codegen round trips, public-port expansion, targeted
-  flattening, shared-definition retention, and explicit rejection of missing
-  identity or malformed topology.
+  flattening, shared-definition retention, OUTPUT source-port migration across
+  a public boundary, and explicit rejection of missing identity or malformed
+  topology.
 - `tests/test_flattening_dedup.py` — parity between parser-driven flattening
   and the shared `flatten_graph` implementation, including single-node,
   multi-node, chained, nested, and hierarchical-then-flat cases.
@@ -439,6 +527,12 @@ Tests live in `tests/test_submodel_instances.py`, `tests/test_submodel_ops.py`,
 - `tests/test_parser_submodels.py` — expression parsing, recursive loading,
   canonical child metadata, cross-boundary port reconstruction, and
   hierarchical/flat parser behaviour.
+- `frontend/src/utils/__tests__/submodelBoundaryEditing.test.ts` — boundary
+  connection editing, input-port removal, and parent-binding cleanup.
+- `frontend/src/utils/__tests__/submodelDeletionPolicy.test.ts` — deletion
+  policy guarding definition owners and instance copies.
+- `frontend/src/utils/__tests__/submodelViewGraph.test.ts` — submodel view graph
+  projection, public port boundaries, and multi-occurrence input bindings.
 
 Canonical-only identities are pinned throughout these suites: submodel paths
 are project-relative, boundary edge ids include port identity, and recorded

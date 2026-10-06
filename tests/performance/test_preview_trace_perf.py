@@ -123,7 +123,12 @@ df = features.with_columns(
                 NodeType.POLARS,
                 {
                     "code": """
-df = freq.join(sev, on=["policy_id", "territory_key"], how="inner")
+df = freq.join(
+    sev,
+    on=["policy_id", "territory_key"],
+    how="inner",
+    validate="1:1",
+)
 """,
                 },
             ),
@@ -388,7 +393,7 @@ def test_trace_cold_execution_records_stage_costs(
     )
 
 
-def test_trace_reuses_preview_cache_then_hits_trace_cache(
+def test_cold_trace_then_trace_cache_hit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     request: pytest.FixtureRequest,
@@ -403,27 +408,25 @@ def test_trace_reuses_preview_cache_then_hits_trace_cache(
         max_preview_rows=_MAX_PREVIEW_ROWS,
     )
     assert preview[_TARGET_NODE].status == "ok"
-    preview_lookups: list[str] = []
 
-    class RecordingPreview:
-        def get(self, fingerprint: str) -> dict[str, Any] | None:
-            preview_lookups.append(fingerprint)
-            return _preview_cache.get(fingerprint)
-
-    preview_reader = RecordingPreview()
-
-    calls = {"materialize": 0, "cold_execute": 0}
+    calls = {"materialize": 0, "cold_execute": 0, "plan_builds": 0}
     correlation_seconds: list[float] = []
     original_materialize = trace_mod._materialize_eager_outputs
     original_correlate = trace_mod._correlate_rows_posthoc
+    original_execute = trace_mod.walk_graph
 
     def counting_materialize(*args: Any, **kwargs: Any) -> Any:
         calls["materialize"] += 1
         return original_materialize(*args, **kwargs)
 
-    def forbidden_cold_execute(*args: Any, **kwargs: Any) -> Any:
-        calls["cold_execute"] += 1
-        raise AssertionError("trace should reuse preview outputs, not execute the DAG")
+    def counting_execute(*args: Any, **kwargs: Any) -> Any:
+        # Building the uncapped lineage plans a row-scoped lookup reads collects
+        # nothing; only the first trace's materialising execution runs the DAG.
+        if kwargs["policy"].collect == frozenset():
+            calls["plan_builds"] += 1
+        else:
+            calls["cold_execute"] += 1
+        return original_execute(*args, **kwargs)
 
     def timed_correlate(*args: Any, **kwargs: Any) -> Any:
         start = time.perf_counter()
@@ -433,7 +436,7 @@ def test_trace_reuses_preview_cache_then_hits_trace_cache(
             correlation_seconds.append(time.perf_counter() - start)
 
     monkeypatch.setattr(trace_mod, "_materialize_eager_outputs", counting_materialize)
-    monkeypatch.setattr(trace_mod, "_execute_eager_core", forbidden_cold_execute)
+    monkeypatch.setattr(trace_mod, "walk_graph", counting_execute)
     monkeypatch.setattr(trace_mod, "_correlate_rows_posthoc", timed_correlate)
 
     with structlog.testing.capture_logs() as first_logs:
@@ -445,7 +448,6 @@ def test_trace_reuses_preview_cache_then_hits_trace_cache(
             column="premium",
             row_limit=_ROW_LIMIT,
             row_values=preview[_TARGET_NODE].preview[7],
-            preview=preview_reader,
         )
         first_seconds = time.perf_counter() - start
     start = time.perf_counter()
@@ -461,21 +463,22 @@ def test_trace_reuses_preview_cache_then_hits_trace_cache(
             column="risk_bucket",
             row_limit=_ROW_LIMIT,
             row_values=preview[_TARGET_NODE].preview[19],
-            preview=preview_reader,
         )
         second_seconds = time.perf_counter() - start
     start = time.perf_counter()
     second_payload = _serialize_and_validate_trace(second)
     second_serialization_seconds = time.perf_counter() - start
 
-    assert calls == {"materialize": 1, "cold_execute": 0}
-    assert len(preview_lookups) == 1
+    assert calls["materialize"] == 1
+    assert calls["cold_execute"] == 1
+    # Lineage plans are built at most once per trace request, and never cached.
+    assert calls["plan_builds"] <= 1
     assert len(correlation_seconds) == 2
     assert first.output_value == preview[_TARGET_NODE].preview[7]["premium"]
     assert second.output_value == preview[_TARGET_NODE].preview[19]["risk_bucket"]
     assert first_payload["output_value"] == first.output_value
     assert second_payload["output_value"] == second.output_value
-    assert first.execution_origin == "preview_cache"
+    assert first.execution_origin == "fresh_execution"
     assert second.execution_origin == "trace_cache"
     first_correlation = [
         record for record in first_logs if record.get("event") == "trace_correlation_completed"
@@ -484,7 +487,7 @@ def test_trace_reuses_preview_cache_then_hits_trace_cache(
         record for record in second_logs if record.get("event") == "trace_correlation_completed"
     ]
     assert len(first_correlation) == len(second_correlation) == 1
-    assert first_correlation[0]["execution_origin"] == "preview_cache"
+    assert first_correlation[0]["execution_origin"] == "fresh_execution"
     assert second_correlation[0]["execution_origin"] == "trace_cache"
     for event in (*first_correlation, *second_correlation):
         _assert_correlation_work_bounds(
@@ -501,15 +504,14 @@ def test_trace_reuses_preview_cache_then_hits_trace_cache(
         request,
         graph_shape="join",
         rows=_ROW_LIMIT,
-        preview_reuse_ms=round(first_seconds * 1000, 3),
-        preview_reuse_correlation_ms=round(correlation_seconds[0] * 1000, 3),
-        preview_reuse_serialization_ms=round(first_serialization_seconds * 1000, 3),
+        cold_trace_ms=round(first_seconds * 1000, 3),
+        cold_trace_correlation_ms=round(correlation_seconds[0] * 1000, 3),
+        cold_trace_serialization_ms=round(first_serialization_seconds * 1000, 3),
         trace_cache_hit_ms=round(second_seconds * 1000, 3),
         trace_cache_correlation_ms=round(correlation_seconds[1] * 1000, 3),
         trace_cache_serialization_ms=round(second_serialization_seconds * 1000, 3),
     )
 
-    assert first_seconds < 0.8, f"preview-backed first trace took {first_seconds:.3f}s"
     assert second_seconds < 0.3, f"trace-cache hit took {second_seconds:.3f}s"
 
 
@@ -654,8 +656,10 @@ def test_reordered_typed_correlation_10k_bounds(
 
 
 def test_ambiguous_correlation_10k_bounds(request: pytest.FixtureRequest) -> None:
-    parent = pl.DataFrame({"bucket": ["same"] * _ROW_LIMIT})
-    target = parent.sort("bucket").with_columns(observed=pl.col("bucket"))
+    # The candidates differ in `id`, which the target drops, so the tie is
+    # genuinely ambiguous (rows identical in every column are shown instead).
+    parent = pl.DataFrame({"bucket": ["same"] * _ROW_LIMIT, "id": range(_ROW_LIMIT)})
+    target = parent.sort("bucket").select("bucket").with_columns(observed=pl.col("bucket"))
     work = CorrelationWork()
     diagnostics: list[dict[str, Any]] = []
     unresolved: dict[str, tuple[str, int]] = {}
@@ -672,7 +676,7 @@ def test_ambiguous_correlation_10k_bounds(request: pytest.FixtureRequest) -> Non
             "target": _node(
                 "target",
                 NodeType.POLARS,
-                {"code": 'df = source.sort("bucket")'},
+                {"code": 'df = source.sort("bucket").select("bucket")'},
             ),
         },
         diagnostics=diagnostics,
@@ -701,6 +705,41 @@ def test_ambiguous_correlation_10k_bounds(request: pytest.FixtureRequest) -> Non
         **_correlation_work_evidence(work),
     )
     assert correlation_seconds < 0.5, f"ambiguous correlation took {correlation_seconds:.3f}s"
+
+
+def test_identical_correlation_10k_bounds(request: pytest.FixtureRequest) -> None:
+    # Every candidate is identical, so correlation proves it with one counting
+    # pass over the whole parent and shows the shared values.
+    parent = pl.DataFrame({"bucket": ["same"] * _ROW_LIMIT})
+    target = parent.sort("bucket").with_columns(observed=pl.col("bucket"))
+    diagnostics: list[dict[str, Any]] = []
+
+    start = time.perf_counter()
+    rows = _correlate_rows_posthoc(
+        {"source": parent, "target": target},
+        ["source", "target"],
+        {"source": [], "target": ["source"]},
+        "target",
+        0,
+        node_map={
+            "source": _node("source", NodeType.DATA_INPUT, {}),
+            "target": _node("target", NodeType.POLARS, {"code": 'df = source.sort("bucket")'}),
+        },
+        diagnostics=diagnostics,
+    )
+    correlation_seconds = time.perf_counter() - start
+
+    assert rows["source"] == {"bucket": "same"}
+    assert [(item["code"], item["candidate_count"]) for item in diagnostics] == [
+        ("identical_row_match", _ROW_LIMIT)
+    ]
+    _record_perf_evidence(
+        request,
+        graph_shape="identical",
+        rows=_ROW_LIMIT,
+        correlation_ms=round(correlation_seconds * 1000, 3),
+    )
+    assert correlation_seconds < 0.5, f"identical correlation took {correlation_seconds:.3f}s"
 
 
 async def _wait_for_thread_event(event: threading.Event, label: str) -> None:
@@ -807,6 +846,9 @@ async def test_route_supersession_rejects_obsolete_preview_and_trace_work(
             "row_index": 0,
             "row_limit": 100,
             "source": "live",
+            # Required: the generations the explained preview read. This trace
+            # explains a preview that read none, so the plan is empty.
+            "seed_plan": [],
         }
 
     transport = httpx.ASGITransport(app=app)

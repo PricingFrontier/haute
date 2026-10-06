@@ -22,6 +22,8 @@ function controllerOptions(node: Node, resolveNodeIdentities: (nodes: readonly N
     readOnly: false,
     reservedApiInputFrameLabels: new Set<string>(),
     resolveNodeIdentities,
+    resolveRenameIdentities: resolveNodeIdentities,
+    readNamingContextKey: () => "naming context",
     commitGraph: vi.fn(),
     setSelectedNode: vi.fn(),
     addToast: vi.fn(),
@@ -32,6 +34,28 @@ describe("useGraphCommitController pending commits", () => {
   afterEach(() => {
     cleanup()
     vi.clearAllMocks()
+  })
+
+  it.each(["document", "readOnly", "unmount"])("refuses an API-input update after %s invalidates it", async (change) => {
+    const node = makeNode("api", "apiInput")
+    const resolution = deferred<Node[]>()
+    const resolver = vi.fn(() => resolution.promise)
+    const options = controllerOptions(node, resolver)
+    const hook = renderHook(() => useGraphCommitController(options))
+    act(() => { expect(hook.result.current.onUpdateNode("api", { ...node.data })).toEqual({ ok: true }) })
+    const waiting = hook.result.current.waitForPendingCommits()
+    if (change === "unmount") hook.unmount()
+    else {
+      if (change === "document") options.readDocumentIdentity = () => "new-document"
+      else options.readOnly = true
+      hook.rerender()
+    }
+    await act(async () => {
+      resolution.resolve([node])
+      await expect(waiting).resolves.toMatchObject({ ok: false })
+    })
+    expect(options.commitGraph).not.toHaveBeenCalled()
+    expect(resolver).toHaveBeenCalledOnce()
   })
 
   it("registers API-input updates synchronously and waits for their commit", async () => {
@@ -73,6 +97,30 @@ describe("useGraphCommitController pending commits", () => {
 
     await expect(rename!).resolves.toMatchObject({ ok: false })
     await expect(waiting).resolves.toMatchObject({ ok: false })
+  })
+})
+
+describe("useNodeRenameSession shape check", () => {
+  it.each(["", "   ", "a`b", "line\nbreak", "x".repeat(201)])(
+    "refuses %j inline without asking the server, as the Rename dialog does",
+    async (label) => {
+      const onRenameNode = vi.fn(async () => ({ ok: true as const }))
+      const { result } = renderHook(() => useNodeRenameSession("node"))
+
+      act(() => result.current.commit(label, onRenameNode))
+
+      expect(onRenameNode).not.toHaveBeenCalled()
+      expect(result.current.error).toEqual(expect.any(String))
+    },
+  )
+
+  it("sends the trimmed name", async () => {
+    const onRenameNode = vi.fn(async () => ({ ok: true as const }))
+    const { result } = renderHook(() => useNodeRenameSession("node"))
+
+    await act(async () => result.current.commit("  Claims  ", onRenameNode))
+
+    expect(onRenameNode).toHaveBeenCalledWith("node", "Claims")
   })
 })
 

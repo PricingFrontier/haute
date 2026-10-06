@@ -13,6 +13,8 @@
  */
 import type { Node } from "@xyflow/react"
 import type { PipelineEdge } from "../types/node"
+import type { GlobalConstant, GlobalConstantDraft } from "./globalConstants"
+import { authoredPolarsConfig, isSteppedConfig } from "./polarsStepInputs"
 
 // ---------------------------------------------------------------------------
 // Field stripping
@@ -34,21 +36,32 @@ const REACT_FLOW_NODE_UI_FIELDS = [
 
 const REACT_FLOW_EDGE_UI_FIELDS = ["selected"] as const
 
-const LIVE_HISTORY_NODE_IDENTITY_FIELDS = new Set([
+const LIVE_HISTORY_NODE_METADATA_FIELDS = new Set([
   "_functionName",
+  "_recoveryId",
+  "_sourceFile",
   "_defaultInputName",
   "_sourceHandleInputNames",
   "_configReference",
+  "_parentBindingScope",
+  "_parentEdgeOrder",
 ])
 
 const LIVE_HISTORY_EDGE_IDENTITY_FIELDS = new Set(["_inputName"])
 const NO_RETAINED_METADATA = new Set<string>()
 
-function stripNodeUiFields(n: Node): Record<string, unknown> {
+function stripNodeUiFields(n: Node, forFingerprint = false): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(n as unknown as Record<string, unknown>)) {
     if ((REACT_FLOW_NODE_UI_FIELDS as readonly string[]).includes(k)) continue
     out[k] = k === "data" ? stripNodeDataMetadataFields(v) : v
+  }
+  const data = out.data as Record<string, unknown> | undefined
+  const config = data?.config as Record<string, unknown> | undefined
+  if (forFingerprint && data !== undefined && config !== undefined && isSteppedConfig(String(data.nodeType), config)) {
+    // Steps are authored; their generated body and validation result are caches.
+    // Keep both in requests/history, but do not count re-materialisation as an edit.
+    data.config = authoredPolarsConfig(config)
   }
   return out
 }
@@ -78,7 +91,7 @@ function stripNodeHistoryFields(n: Node): Record<string, unknown> {
   for (const [key, value] of Object.entries(n as unknown as Record<string, unknown>)) {
     if ((REACT_FLOW_NODE_UI_FIELDS as readonly string[]).includes(key)) continue
     out[key] = key === "data"
-      ? stripNodeDataMetadataFields(value, LIVE_HISTORY_NODE_IDENTITY_FIELDS)
+      ? stripNodeDataMetadataFields(value, LIVE_HISTORY_NODE_METADATA_FIELDS)
       : value
   }
   return out
@@ -121,24 +134,35 @@ function stripNodeDataMetadataFields(
   return out
 }
 
-function stripGraphMetadataTransientFields(value: unknown): unknown {
+function stripGraphMetadataTransientFields(value: unknown, forFingerprint = false): unknown {
   if (value === null || typeof value !== "object") return value
-  if (Array.isArray(value)) return value.map(stripGraphMetadataTransientFields)
+  if (Array.isArray(value)) return value.map((child) => stripGraphMetadataTransientFields(child, forFingerprint))
 
   const record = value as Record<string, unknown>
+  const isSubmodelDefinition =
+    typeof record.definitionId === "string"
+    && typeof record.file === "string"
+    && typeof record.graph === "object"
+    && record.graph !== null
+    && Array.isArray(record.inputPorts)
+    && Array.isArray(record.outputPorts)
+  if (isSubmodelDefinition) {
+    return Object.fromEntries(
+      Object.entries(record)
+        .filter(([key]) => !key.startsWith("_"))
+        .map(([key, child]) => [key, stripGraphMetadataTransientFields(child, forFingerprint)]),
+    )
+  }
   if (typeof record.source === "string" && typeof record.target === "string") {
     return stripEdgeUiFields(record as unknown as PipelineEdge)
   }
   if (typeof record.id === "string" && "data" in record) {
-    return stripNodeUiFields(record as unknown as Node)
+    return stripNodeUiFields(record as unknown as Node, forFingerprint)
   }
 
-  const stripped: Record<string, unknown> = {}
-  for (const [key, child] of Object.entries(record)) {
-    if (key === "_inputPortInputNames") continue
-    stripped[key] = stripGraphMetadataTransientFields(child)
-  }
-  return stripped
+  return Object.fromEntries(
+    Object.entries(record).map(([key, child]) => [key, stripGraphMetadataTransientFields(child, forFingerprint)]),
+  )
 }
 
 function stripGraphHistoryTransientFields(value: unknown): unknown {
@@ -177,7 +201,15 @@ function cloneGraphValue<T>(value: T, seen = new WeakMap<object, unknown>()): T 
   const clone: Record<string, unknown> = {}
   seen.set(objectValue, clone)
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    clone[key] = cloneGraphValue(child, seen)
+    const clonedChild = cloneGraphValue(child, seen)
+    // JSON keys are data, including the legacy Object prototype setter name.
+    if (key === "__proto__") {
+      Object.defineProperty(clone, key, {
+        value: clonedChild, enumerable: true, configurable: true, writable: true,
+      })
+    } else {
+      clone[key] = clonedChild
+    }
   }
   return clone as T
 }
@@ -200,11 +232,7 @@ export function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalize)
   const entries = Object.entries(value as Record<string, unknown>)
   entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-  const out: Record<string, unknown> = {}
-  for (const [k, v] of entries) {
-    out[k] = canonicalize(v)
-  }
-  return out
+  return Object.fromEntries(entries.map(([key, child]) => [key, canonicalize(child)]))
 }
 
 // ---------------------------------------------------------------------------
@@ -212,12 +240,56 @@ export function canonicalize(value: unknown): unknown {
 // ---------------------------------------------------------------------------
 
 /**
+ * Clone a live editor graph into the strict canonical payload accepted by
+ * backend graph schemas. Presentation fields and server-owned editor identity
+ * metadata are removed recursively from root and embedded definition graphs.
+ */
+export function toCanonicalGraphPayload(input: {
+  nodes: readonly Node[]
+  edges: readonly PipelineEdge[]
+  submodels?: Record<string, unknown>
+  preamble?: string
+  global_constants?: readonly GlobalConstant[]
+  global_constants_error?: string | null
+}): {
+  nodes: Node[]
+  edges: PipelineEdge[]
+  submodels: Record<string, unknown> | undefined
+  preamble: string | undefined
+  global_constants?: GlobalConstant[]
+  global_constants_error?: string | null
+} {
+  return {
+    ...(input.global_constants === undefined
+      ? {}
+      : { global_constants: structuredClone([...input.global_constants]) }),
+    ...(input.global_constants_error === undefined
+      ? {}
+      : { global_constants_error: input.global_constants_error }),
+    nodes: input.nodes.map(
+      (node) => cloneGraphValue(stripNodeUiFields(node)) as Node,
+    ),
+    edges: input.edges.map(
+      (edge) => cloneGraphValue(stripEdgeUiFields(edge)) as PipelineEdge,
+    ),
+    submodels: input.submodels === undefined
+      ? undefined
+      : cloneGraphValue(
+        stripGraphMetadataTransientFields(input.submodels),
+      ) as Record<string, unknown>,
+    preamble: input.preamble,
+  }
+}
+
+/**
  * Canonical serialization of a graph snapshot used for dirty-derivation.
  *
- * Scope: `{nodes, edges, preamble, submodels}` — the complete persisted,
- * user-editable graph surface. Preserved blocks remain out of scope because
+ * Scope: `{nodes, edges, preamble, submodels, globalConstants}` — the complete
+ * persisted, user-editable graph surface. Preserved blocks remain out of scope because
  * they round-trip outside the graph store, while submodels are editable in
  * the GUI and must participate in dirty detection.
+ * A stepped Polars node's code and validation result are generated caches;
+ * they remain in requests/history but do not contribute to this fingerprint.
  *
  * Determinism: equal inputs produce equal strings even if the caller
  * constructed the object with keys in a different order.
@@ -227,13 +299,15 @@ export function serializeSnapshot(input: {
   edges: readonly PipelineEdge[]
   preamble: string
   submodels: Record<string, unknown>
+  globalConstants?: readonly GlobalConstantDraft[]
 }): string {
   return JSON.stringify(
     canonicalize({
-      nodes: input.nodes.map(stripNodeUiFields),
+      nodes: input.nodes.map((node) => stripNodeUiFields(node, true)),
       edges: input.edges.map(stripEdgeUiFields),
       preamble: input.preamble,
-      submodels: stripGraphMetadataTransientFields(input.submodels),
+      submodels: stripGraphMetadataTransientFields(input.submodels, true),
+      globalConstants: input.globalConstants ?? [],
     }),
   )
 }
@@ -250,13 +324,18 @@ export function cloneGraphSnapshot(input: {
   edges: readonly PipelineEdge[]
   preamble: string
   submodels: Record<string, unknown>
+  globalConstants?: readonly GlobalConstantDraft[]
 }): {
   nodes: Node[]
   edges: PipelineEdge[]
   preamble: string
   submodels: Record<string, unknown>
+  globalConstants?: GlobalConstantDraft[]
 } {
   return {
+    ...(input.globalConstants === undefined
+      ? {}
+      : { globalConstants: structuredClone([...input.globalConstants]) }),
     nodes: input.nodes.map(
       (node) => cloneGraphValue(stripNodeHistoryFields(node)) as Node,
     ),

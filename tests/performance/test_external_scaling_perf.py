@@ -47,7 +47,6 @@ class _MlflowSearch:
             "experiment_ids": ["representative"],
             "filter_string": "status = 'FINISHED'",
             "max_results": 100,
-            "output_format": "list",
         }
         return self.runs
 
@@ -86,7 +85,13 @@ def test_mlflow_run_discovery_maximum_cardinality_budget(
     """The capped N+1 path is cheap locally and never exceeds 101 provider calls."""
     search = _MlflowSearch(_representative_runs(100))
     artifacts = _MlflowArtifacts()
-    monkeypatch.setattr(mlflow_routes, "_ensure_tracking", lambda: (search, artifacts))
+    client = SimpleNamespace(
+        search_runs=search.search_runs,
+        list_artifacts=artifacts.list_artifacts,
+    )
+    monkeypatch.setattr(
+        mlflow_routes, "_ensure_tracking", lambda destination="": (SimpleNamespace(), client)
+    )
 
     with structlog.testing.capture_logs() as logs:
         started_at = time.perf_counter()
@@ -133,6 +138,10 @@ class _FakeNotFoundError(Exception):
     pass
 
 
+class _FakeAlreadyExistsError(Exception):
+    pass
+
+
 class _Reader:
     def __init__(self, payload: bytes) -> None:
         self._payload = payload
@@ -160,7 +169,9 @@ class _CountingFiles:
             raise _FakeNotFoundError(path) from None
 
     def upload(self, path: str, contents: Any, overwrite: bool = False) -> None:
-        assert overwrite is True
+        assert overwrite in (True, False)
+        if not overwrite and path in self.store:
+            raise _FakeAlreadyExistsError(path)
         time.sleep(0.002)
         payload = contents.read()
         self.store[path] = payload
@@ -254,6 +265,11 @@ def test_uc_full_bundle_history_scaling_budget(
         "_is_not_found",
         lambda exc: isinstance(exc, _FakeNotFoundError),
     )
+    monkeypatch.setattr(
+        _uc_transport,
+        "_is_already_exists",
+        lambda exc: isinstance(exc, _FakeAlreadyExistsError),
+    )
     monkeypatch.setattr(_uc_transport, "_writer", _uc_transport._WriterState())
 
     samples: list[dict[str, float | int]] = []
@@ -283,7 +299,7 @@ def test_uc_full_bundle_history_scaling_budget(
         _uc_transport._writer.heartbeat.stop()
 
     bundle_uploads = [item for item in files.uploads if "/bundles/" in item[0]]
-    pointer_uploads = [item for item in files.uploads if item[0].endswith("/HEAD.json")]
+    pointer_uploads = [item for item in files.uploads if "/pointers/" in item[0]]
     bundle_sizes = [sample["bundle_bytes"] for sample in samples]
 
     assert len(bundle_uploads) == 3

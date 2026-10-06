@@ -12,9 +12,11 @@ from types import SimpleNamespace
 import pytest
 
 import haute.routes.optimiser as optimiser_routes
+from haute.routes._optimiser_solver import solve_input_summary
 from haute.routes.optimiser import _build_artifact_payload
 from haute.schemas import OptimiserStatusResponse
 from tests.job_store_support import seed_job
+from tests.optimiser_fixtures import make_frontier_point
 
 _UI_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "ui_contracts"
 _GOLDEN_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "golden"
@@ -64,7 +66,7 @@ def test_solve_status_route_matches_ui_contract_fixture() -> None:
             "progress": fixture["progress"],
             "message": fixture["message"],
             "elapsed_seconds": fixture["elapsed_seconds"],
-            "result": validated.result,
+            "result": validated.result.model_dump(mode="python") if validated.result else None,
             "frontier_data": frontier,
             "created_at": time.time(),
         },
@@ -91,11 +93,25 @@ def test_build_artifact_payload_matches_online_golden_snapshot(
             "quote_id": "quote_id",
             "scenario_index": "scenario_index",
             "scenario_value": "scenario_value",
-            "chunk_size": 4096,
         },
-        "selected_frontier_point": 1,
-        "frontier_data": {"n_points": 4},
+        "selected_frontier_point": 0,
+        "frontier_data": {
+            "n_points": 4,
+            "constraint_names": ["loss"],
+            "points": [
+                make_frontier_point(thresholds={"loss": 0.85}),
+                make_frontier_point(thresholds={"loss": 0.92}),
+            ],
+        },
+        "input_provenance": {
+            "node_id": "my_opt",
+            "data_source": "batch",
+            "source_file": "main.py",
+            "graph_fingerprint": "f00d",
+        },
     }
+    # The solve result's own summary, built once when the solve completed.
+    job["base_result"] = {"n_quotes": 250, "n_steps": 5, "input_summary": solve_input_summary(job)}
     solve_result = SimpleNamespace(
         lambdas={"loss": 0.3},
         total_objective=125.0,
@@ -107,7 +123,13 @@ def test_build_artifact_payload_matches_online_golden_snapshot(
         cd_iterations=None,
     )
 
-    payload = _build_artifact_payload(job, solve_result, version_override="opt_v1")
+    payload = _build_artifact_payload(
+        job,
+        solve_result,
+        version_override="opt_v1",
+        point_index=1,
+        stale_at_publish=True,
+    )
 
     assert payload == _load_golden_fixture("optimiser_artifact_online")
 
@@ -125,14 +147,25 @@ def test_build_artifact_payload_matches_ratebook_golden_snapshot(
             "quote_id": "policy_id",
             "scenario_index": "scenario_idx",
             "scenario_value": "scenario_value",
-            "chunk_size": 100000,
+            "max_cd_iterations": 6,
         },
-        "result": {
-            "factor_tables": {
-                "region": [{"__factor_group__": "North", "optimal_scenario_value": 1.1}]
-            },
-            "factor_dtypes": {"region": [{"column": "region", "dtype": {"kind": "String"}}]},
+        "input_provenance": {
+            "node_id": "ratebook_opt",
+            "data_source": "batch",
+            "source_file": None,
+            "graph_fingerprint": "beef",
         },
+    }
+    job["result"] = {
+        "n_quotes": 400,
+        "n_steps": 7,
+        "input_summary": solve_input_summary(job),
+        "factor_tables": {
+            "region": [
+                {"__factor_group__": "North", "optimal_scenario_value": 1.1, "quote_count": 400}
+            ]
+        },
+        "factor_dtypes": {"region": [{"column": "region", "dtype": {"kind": "String"}}]},
     }
     solve_result = SimpleNamespace(
         lambdas={"volume": 0.4},
@@ -144,6 +177,7 @@ def test_build_artifact_payload_matches_ratebook_golden_snapshot(
         iterations=11,
         cd_iterations=4,
         clamp_rate=0.05,
+        combined_factor_bounds={"min": 0.9, "max": 1.1},
     )
 
     payload = _build_artifact_payload(job, solve_result, version_override="rb_v1")

@@ -55,8 +55,8 @@ In scope:
   consumer-facing view of the token layer, not the layer itself.
 - Chrome widgets and app-shell surfaces: `ErrorBoundary`, `Toast`,
   `ModalShell`, `Tooltip`, `ContextMenu`, `KeyboardShortcuts`, `Toolbar`,
-  `ImportsPanel`, `BackgroundJobPolling`, `NodeSearch`, `BreadcrumbBar`.
-  `ImportsPanel` is the sole pipeline-imports editor.
+  `GlobalConstantsPanel`, `BackgroundJobPolling`, `NodeSearch`, `BreadcrumbBar`.
+  `GlobalConstantsPanel` is the sole global-constants editor.
 - Small generic hooks with no domain knowledge: `useClickOutside`,
   `useDragResize`, `useJobPolling` (+ its orchestrator
   `useBackgroundJobs`), `useMlflowBrowser`, `useSchemaFetch`,
@@ -66,7 +66,10 @@ In scope:
   (`utils/formatBytes.ts`, `utils/formatTime.ts`, `utils/formatValue.ts`,
   `utils/color.ts`, `utils/dtypeColors.ts`, `utils/portableKey.ts`,
   `utils/chartHelpers.ts`, `utils/formatTrace.ts`,
-  `utils/mlflowOptimiser.ts`).
+  `utils/mlflowOptimiser.ts`). Each repeated concern has one helper: error
+  text (`api/errors.ts`), byte counts (`utils/formatBytes.ts`), durations
+  (`utils/formatValue.ts`) and the object guard (`types/guards.ts`); lint
+  rejects a new local copy.
 - The application bootstrap (`main.tsx`).
 
 Explicitly out of scope (owned elsewhere, even though the files live under
@@ -144,8 +147,9 @@ never enters JavaScript, request headers assembled by the client, or a
 WebSocket URL. Bundle-split modules such as `api/dispersion.ts` reuse the
 generic transport and own local response parsers so they remain outside the
 initial chunk. `runDispersionEstimate` fronts a backend job that runs off the
-request thread: it polls a `.../status/{job_id}` endpoint on a fixed interval
-and resolves only once the job reaches a terminal status, so callers can
+request thread: it waits through the shared `waitForJob`, polling a
+`.../status/{job_id}` endpoint on a fixed interval, and resolves only once the
+job reaches a terminal status, so callers can
 still `await` a single promise for what is, on the wire, a start-then-poll
 sequence — distinct from `useJobPolling`/`useBackgroundJobs`, which track
 jobs the user can navigate away from and revisit.
@@ -159,16 +163,17 @@ calibration consistency, compatibility handling, and stable projection into the
 UI type. Strategy diagnostics retain known status fields and bounded
 unavailable/truncated detail; an unsupported version becomes unavailable, while
 a malformed matching version throws rather than being repaired by a feature panel.
-Capability order and unsupported legs remain intact, cache
-readiness/freshness/progress are separate typed values, and removed
-compatibility endpoints or legacy node types have no client wrappers.
+Capability order and unsupported legs remain intact, and cache
+readiness/freshness/progress are separate typed values.
 
 **Result caching.** `useNodeResultsStore` is the only place preview rows,
-optimiser solves, training runs, and explore reports are kept once computed.
-Each result category (`previews`, `solveResults`, `trainResults`,
-`exploreResults`) is bounded to a fixed entry count and evicted by
-least-recently-touched, except the currently pinned/open node's entry, which
-survives eviction pressure. A config-hash (`hashConfig`) lets panels detect
+optimiser solves, training runs, explore reports, and pivot matrices are kept
+once computed. Each result category (`previews`, `solveResults`, `trainResults`,
+`exploreResults`, `pivotResults`) is bounded to a fixed entry count and evicted
+by least-recently-touched. In all five caches the currently pinned/open node's
+entries survive eviction pressure; the pivot trimmer excludes the pinned node's
+entries entirely from eviction candidates. A
+config-hash (`hashConfig`) lets panels detect
 "this result is stale relative to the current node config" without deleting
 the old result. Despite its historical name, `hashConfig` is the exact
 deterministic canonical JSON identity: root-only transient fields are
@@ -194,11 +199,10 @@ named data sources plus which is active, and a 30-second file-listing cache.
 Adding a source runs the label through browser-owned `portableKey()`. Case is
 preserved; if distinct labels converge after punctuation handling, the store
 detects the occupied key and refuses the second addition. `addSource` returns a discriminated `AddSourceResult`
-(`{ok: true, key}` or `{ok: false, reason: "empty" | "duplicate", key?}`)
-rather than a bare `string | null`, so a caller like `Toolbar` can tell
-the user *why* the add was rejected — blank name vs. a label that
-sanitises onto an already-existing key — instead of the form silently
-closing with no feedback.
+(`{ok: true, key}` or `{ok: false, reason: "empty" | "duplicate", key?}`),
+allowing callers like `Toolbar` to surface *why* the add was rejected —
+blank name vs. a label that sanitises onto an already-existing key — rather
+than closing with no feedback.
 
 **Toasts.** `useToastStore` deduplicates by exact `(type, text)` match while
 an identical toast is still on screen; the toast queue is capped at 10
@@ -215,10 +219,17 @@ parent re-renders update callback refs without refocusing the dialog or
 rebuilding its listener. `Tooltip` is a zero-delay, self-clamping hover
 label that repositions to avoid clipping the viewport edge. `ContextMenu` is
 the right-click node menu with roving-tabindex arrow-key navigation.
-`Toolbar` is the app's top chrome: it displays the package-derived browser
-version alongside the source selector, row-limit/chunk-size inputs, undo/redo,
-timing/memory breakdowns, the Submodel/Instance selection actions, and Save
-and Commit as two sibling filled buttons.
+`Toolbar` is the app's top chrome: it organizes controls into a 56px 2-tier stacked
+column layout. The brand section displays the lowercase brand heading and
+package-derived browser version, aligned to the node palette
+boundary (x = 181px). Adjacent columns house the source selector stacked above a
+Pipeline control that shares its width and opens the pipeline settings pane
+(preview/chunk row limits and the cached-data inventory), integer-ms timing and memory breakdowns, undo/redo with
+text labels, zoom in/out, centre/layout, Submodel/Instance selection actions, Utility above Constants,
+assistant and a Help menu (Documentation, Hotkeys, Report a bug), and the working branch indicator stacked above
+equal-width Save and Commit buttons. The Pipeline control reports the pipeline's live state:
+the calculation mode while the server is reachable, and "Offline" once live sync has lost
+the server. The toolbar carries no unsaved-changes indicator.
 `NodeSearch` is the Ctrl+K command palette, windowed to
 render only visible rows for large graphs; the application loads its module
 only when the palette is opened, so this user-triggered surface is not part
@@ -230,15 +241,54 @@ semantic tokens that all panels consume; it also owns native-control, scrollbar,
 Flow interaction defaults. `NodeTypeIcon` displays the canonical icon/colour and maps an
 unknown node type to Polars. `ToggleButtonGroup` is a real single-choice radio
 group: only the selected option is in the tab order and Arrow keys/Home/End change both
-selection and focus. The shared form primitives associate labels with controls, honour
+selection and focus. An option can be disabled with a reason: it is greyed, neither a click
+nor Arrow/Home/End selects it (they skip to the next enabled option), and the reason is its
+tooltip. The shared form primitives associate labels with controls, honour
 disabled state, and buffer text locally until an explicit commit boundary, so typing into a
 graph-backed configuration cannot create one undo entry per character.
 
-**Pipeline imports.** The active imports UI is the right-side `ImportsPanel`, opened from the
-toolbar and rendered by the app's mutually-exclusive right-panel cascade. It delegates editing
-to `CodeEditor` and calls its parent for every editor change; the app applies those changes with
-the graph store's raw preamble setter, so importing text immediately affects derived dirty state
-without making an undo entry per keystroke.
+**Pipeline imports.** The Utility pane's file list starts with a fixed `Imports` entry, which
+edits the pipeline's preamble with `CodeEditor`, notes that `import polars as pl` and
+`import haute` are always included, has no delete button and never goes through the utility
+file routes. The app applies every change with the graph store's raw preamble setter, so
+importing text immediately affects derived dirty state without making an undo entry per
+keystroke.
+
+**Global constants pane.** The toolbar's Constants button, under Utility, opens the Global
+Constants pane in the right-hand panel; it edits the pipeline's
+[global constants](../pipeline-config/high-level.md#behaviour). It is one table, so every
+constant's value for every source shows at once: a row per constant in file order, with columns
+for its name, its type (Integer, Decimal, Text, True/false or Date), a "Split by source" switch,
+one column per pipeline source in the toolbar's source order, the number of nodes that read it
+(naming them on hover) and a bin that deletes it. A uniform constant's one value spans every
+source column; a split constant has a cell per source. Add constant appends an empty uniform
+`float` (Decimal) constant with a generated free name (`constant_1`, `constant_2`, …). Values
+are edited with the input that fits the type (a number field, text, true/false, a date). The pane validates as the analyst types, and marks each invalid name, duplicate name and invalid
+value, outlining the cell and listing the reason under the table. It marks a split constant's
+source value as missing (a dashed cell, also listed) when the source has none, or has an empty one
+for a type other than text (an empty text value is a value), and the toolbar's Save stays
+available. Save is refused while any constant is invalid.
+
+- Switching "Split by source" on fills every source's value with the uniform value. Switching it
+  off keeps the `live` value; when another source's value differs, the pane first asks for
+  confirmation, naming the values it discards.
+- Changing the type keeps each value that converts exactly (an integer to a float, a whole
+  float to an integer, any value to text) and empties the rest, which the pane then marks.
+- Each constant lists the nodes that read it, through code or steps, in the canvas and in
+  every submodel. Deleting or renaming a constant that is read first asks for confirmation,
+  naming those nodes; a name commits when its field loses focus. A rename leaves code text
+  alone, so save refuses the old name's code reads until they are edited.
+- Adding a source gives each split constant an empty, missing value for it. Removing a source
+  whose values some split constants hold first asks for confirmation, naming them, and then
+  removes those values. A `by_source` key that is not a pipeline source is listed in the pane's
+  warning line, with a button that removes it.
+- When the constants file failed to load, the pane shows the load error and is read-only, and
+  save sends no constants.
+
+Constants edits are not on the canvas undo stack, but they are in the dirty state, so an edit
+marks the pipeline unsaved. Every execution request (preview, training, the optimiser, Explore,
+Data Output and Output) carries the valid constants and the load error, and a save carries the
+constants.
 
 **Leaf helpers.** Chart ticks and optimiser-mode inference are deterministic and side-effect
 free. Trace formatting makes special values and calculation substitution visible rather than
@@ -272,7 +322,7 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   primitives so call sites reference purpose, not shade; components use
   `var(--...)` rather than literal colours (the role-layer boundary is
   guarded by the tokenization gate in
-  `__tests__/cssColorTokenization.test.ts`). `theme/colors.ts` follows
+  `frontend/src/__tests__/cssColorTokenization.test.ts`). `theme/colors.ts` follows
   the same rule where TypeScript needs a colour value, re-exporting
   `var(--...)` strings rather than hex — except for the small
   `NODE_GROUP_COLORS`, `PIVOT_CHART_COLORS`, and
@@ -293,14 +343,10 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   its modelling train/status/estimate methods, and the bundle checker treats
   that parser chunk as lazy-only and rejects a startup modulepreload.
 - **A cached result's staleness key is `configHash` + `source` +
-  `structuralVersion`, never `configHash` alone.** `CachedExploreResult`
-  already tracked all three; solve/train results and
-  `useStaleConfigEstimate`'s cached-result contract used to compare
-  `configHash` alone, which let a cached solve/train/estimate result from
-  one data source silently read as current after switching to another —
-  same config hash, wrong source's data. Both were widened to the same
-  three-field key in one change rather than leaving two different
-  staleness definitions in the codebase.
+  `structuralVersion`, never `configHash` alone.** Cache entries (`CachedExploreResult`,
+  `CachedSolveResult`, `CachedTrainResult`) and `useStaleConfigEstimate` compare all three
+  dimensions because a matching config hash under a different data source or graph
+  revision would otherwise falsely read as current.
 
 ## Interactions
 
@@ -325,6 +371,16 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   those results reach `useNodeResultsStore` even after the user navigates
   away from the node that started them; this depends on the backend's job
   endpoints described in [background-jobs](../background-jobs/high-level.md).
+- Every job wait goes through `hooks/jobPollingController.ts`. Jobs the store
+  tracks use `JobPollingController`; a job awaited inside one operation (an
+  input-snapshot build or its cancellation, a dispersion estimate, an
+  optimiser auto range) uses `waitForJob`. Each awaited wait takes the abort
+  signal of the component or request that owns it, so an unmounted panel or a
+  cancelled request stops polling, and each is bounded: by the controller's
+  24-hour lifetime, or by a shorter deadline where the caller has one. A
+  server-side job deadline ends the wait through the job's own terminal
+  status. ESLint rejects `for (;;)`, `while (true)` and `setInterval` in
+  browser source, so a new loop cannot poll outside the shared module.
 
 ## Failure model
 
@@ -355,7 +411,7 @@ therefore fail at the caller, consistent with the application's fail-loud policy
 - Cache-limit misconfiguration (`MAX_CACHED_*` set to a non-positive
   integer) throws immediately from `assertValidCacheLimit` rather than
   silently disabling eviction.
-- `runDispersionEstimate`'s embedded poll loop rejects with
+- `runDispersionEstimate`'s job wait rejects with
   an `ApiError` carrying the job's message on any non-`running`/non-`completed` terminal
   status, and with a plain `Error` if a `"completed"` status arrives
   without a result/value payload — a job that finishes without the data
@@ -368,7 +424,14 @@ therefore fail at the caller, consistent with the application's fail-loud policy
 - `ErrorBoundary` is the last line of defence for render-time exceptions:
   it logs via `console.error` and shows a "Try again" fallback scoped to
   the boundary it wraps, so one panel's crash is visible and recoverable
-  without reloading the whole app.
+  without reloading the whole app. The exception is a lazily loaded chunk
+  that fails to load: a page names the chunk files of the build it was
+  served from, a rebuild replaces them, and retrying in that page cannot
+  succeed, so the fallback says "Haute has been updated" and offers a Reload
+  that reloads the page. A reload loses unsaved canvas changes and the app has
+  no unload guard, so while the graph has unsaved changes the fallback asks for
+  a save first (Ctrl+S) and its button reads "Reload without saving". Vite's `vite:preloadError` failures are recorded at
+  start-up and surface through that same fallback.
 
 ## Pipeline editor document trust boundary
 
@@ -381,6 +444,10 @@ Recovery wire objects are never passed to canonical graph request builders.
 `useDocumentStatusStore` atomically owns the authoritative load state, capabilities, diagnostics,
 raw revision, current readable source, source-selection trust, graph-synchronisation state, and any
 current system load failure. The request-facing revision ref is updated before graph publication.
+Save requests send that revision as `base_revision`. A `409` `stale_document_revision`
+response keeps the local graph dirty, marks the document unsynchronised, and shows the sync
+banner until the user reloads or discards local edits; the client never retries with an
+overwrite.
 Authored `degraded` and `source_only` responses are successful load states and do not emit the generic
 load-failure toast; transport, permission, unreadable-file, and malformed-response failures retain an
 explicit read-only failure surface and cannot leave a retained canvas looking current.
@@ -391,14 +458,11 @@ rejects graph replacement. A `parse_error` is a sanitized system failure for the
 document: it marks the graph unsynchronised and activates the load-failure surface until the next
 valid document update. Authored recovery states never arrive through that frame.
 Degraded preview calls use the recovery-preview transport with source, revision, and target identity
-only. A current source-only state and an optional in-memory last-renderable snapshot retain separate
-revisions and are never merged.
+only. A source-only state keeps no earlier renderable snapshot.
 
-Minimal repair responses cross a separate strict parser boundary. Dry-run
-validation requires the remove-only discriminator, source/target identities,
-64-hex plan hash, bounded artifact patches, retained artifacts, warnings, and
-predicted load state. Apply validation requires the same plan identity plus a
-complete valid editor document. The browser never accepts replacement bytes,
-source spans, migration instructions, or a recovery graph as an apply payload;
-it sends only server identities, revision, explicit config-deletion choice,
-and the confirmed plan hash.
+Minimal repair responses cross a separate strict parser boundary. Apply
+validation requires the action-specific discriminator, the applied artifacts,
+bounded artifact patches and a complete valid editor document. The browser never
+accepts replacement bytes, source spans, migration instructions, or a recovery
+graph as an apply payload; it sends only server identities, revision, and the
+update/reset/recover action or explicit removal config-deletion choice.

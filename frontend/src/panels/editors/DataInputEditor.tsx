@@ -1,14 +1,13 @@
 import { CommittedTextArea, EditorLabel } from "../../components/form"
-import ToggleButtonGroup from "../../components/ToggleButtonGroup"
 import type { IoCapabilityGroup, IoFormatCapability } from "../../api/types"
 import { WarehousePicker, CatalogTablePicker } from "./_DatabricksSelector"
-import InputSnapshotCacheButton from "./_InputSnapshotCacheButton"
 import IoFormatEditor, { IoArgumentsEditor } from "./_IoFormatEditor"
+import { hasNonEmptyString, ioBranchConfig } from "./_ioProvider"
+import IoProviderPicker from "./_IoProviderPicker"
 import { useIoCapabilities } from "./_ioFormats"
 import { INPUT_STYLE, SchemaPreview } from "./_shared"
 import type { OnReplaceConfig, OnUpdateConfig } from "./_shared"
 import { useSchemaFetch } from "../../hooks/useSchemaFetch"
-import { dataInputIsDirect } from "../../utils/dataInputMode"
 
 const INPUT_COMMON_KEYS = [
   "instanceOf",
@@ -18,10 +17,17 @@ const INPUT_COMMON_KEYS = [
   "categorical_levels",
   "contract",
   "code",
+  // Post-load steps survive a provider or format change exactly as code does.
+  "steps",
 ] as const
+
+// Editor state the step machinery writes beside `steps`; never persisted, so
+// never retained across a provider change, but never a configuration error.
+const STEP_EDITOR_STATE_KEYS = ["_steps_error", "_steps_discarded"] as const
 
 const DATABRICKS_KEYS = new Set([
   ...INPUT_COMMON_KEYS,
+  ...STEP_EDITOR_STATE_KEYS,
   "inputType",
   "http_path",
   "table",
@@ -29,92 +35,20 @@ const DATABRICKS_KEYS = new Set([
   "arguments",
 ])
 
-function retainedCommonConfig(config: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(
-    INPUT_COMMON_KEYS.flatMap((key) =>
-      config[key] === undefined ? [] : [[key, config[key]]],
-    ),
-  )
-}
-
-function initialFieldValue(field: IoCapabilityGroup["input_fields"][number]): unknown {
-  return field.kind === "records" ? [] : ""
-}
-
-function selectedInputFormat(
-  group: IoCapabilityGroup,
-  requested?: IoFormatCapability,
-): IoFormatCapability | undefined {
-  if (requested?.input) return requested
-  return group.formats.find((format) => format.input !== null)
-}
-
 function inputBranchConfig(
   config: Record<string, unknown>,
   group: IoCapabilityGroup,
   requestedFormat?: IoFormatCapability,
   preserveProviderFields = false,
 ): Record<string, unknown> {
-  const format = selectedInputFormat(group, requestedFormat)
-  const capability = format?.input
-  const fields = Object.fromEntries(
-    group.input_fields.flatMap((field) => {
-      if (preserveProviderFields && config[field.name] !== undefined) {
-        return [[field.name, config[field.name]]]
-      }
-      return field.required
-        ? [[field.name, initialFieldValue(field)]]
-        : []
-    }),
-  )
-  return {
-    ...retainedCommonConfig(config),
-    inputType: group.name,
-    ...(format ? { format: format.name } : {}),
-    ...(capability?.modes[0] ? { mode: capability.modes[0] } : {}),
-    arguments: {},
-    ...fields,
-  }
-}
-
-function hasNonEmptyString(value: unknown): boolean {
-  return typeof value === "string" && value.trim().length > 0
-}
-
-function providerFieldsReady(
-  group: IoCapabilityGroup,
-  config: Record<string, unknown>,
-): boolean {
-  if (group.name === "database") {
-    const hasConnection = hasNonEmptyString(config.connection)
-    const hasUri = hasNonEmptyString(config.uri)
-    return hasConnection !== hasUri && hasNonEmptyString(config.query)
-  }
-  return group.input_fields
-    .filter((field) => field.required)
-    .every((field) =>
-      field.kind === "records"
-        ? Array.isArray(config[field.name])
-        : hasNonEmptyString(config[field.name]),
-    )
-}
-
-function formatAndModeReady(
-  group: IoCapabilityGroup,
-  format: IoFormatCapability | undefined,
-  config: Record<string, unknown>,
-): boolean {
-  if (group.name === "databricks") return true
-  const capability = format?.input
-  if (!capability || capability.engines_missing.length > 0) return false
-  if (capability.modes.length === 0) return true
-  const configuredMode = typeof config.mode === "string" ? config.mode : ""
-  if (!configuredMode) return capability.modes.length === 1
-  // The capability payload advertises only the default mode; the backend
-  // (resolve_input_mode) is the authority on availability and fails loudly,
-  // so a stored explicit mode is ready whenever it is in the closed
-  // vocabulary — membership here would wrongly block backend-valid `read`.
-  return configuredMode === "scan" || configuredMode === "read"
+  return ioBranchConfig({
+    direction: "input",
+    config,
+    group,
+    commonKeys: INPUT_COMMON_KEYS,
+    requestedFormat,
+    preserveProviderFields,
+  })
 }
 
 function databricksConfigurationErrors(config: Record<string, unknown>): string[] {
@@ -179,31 +113,29 @@ export default function DataInputEditor({
   const groups = (capabilities?.groups ?? []).filter((group) => group.input_available)
   const group = groups.find((candidate) => candidate.name === config.inputType)
   const format = group?.formats.find((candidate) => candidate.name === config.format)
-  // Config-driven, mirroring the runtime derivation: a stored `read`-mode
-  // Parquet input is snapshot-backed and needs the cache control too.
-  const requiresSnapshot =
-    group !== undefined &&
-    (group.name === "databricks" || format !== undefined) &&
-    !dataInputIsDirect(config)
-  const requiredReady =
-    group !== undefined &&
-    providerFieldsReady(group, config) &&
-    formatAndModeReady(group, format, config)
   const databricksErrors =
     group?.name === "databricks" ? databricksConfigurationErrors(config) : []
   const schemaRequired =
     group?.name === "file" && format?.input?.needs_schema_when_bounded === true
   const configuredPath = typeof config.path === "string" ? config.path.trim() : ""
+  const configuredArguments =
+    typeof config.arguments === "object" && config.arguments !== null && !Array.isArray(config.arguments)
+      ? config.arguments as Record<string, unknown>
+      : {}
+  // The columns are detected with the node's own reader settings; the schema
+  // argument is what detection fills in, so it takes no part.
+  const { schema: _declaredSchema, ...readerArguments } = configuredArguments
   const {
     schema,
     loading: schemaLoading,
     error: schemaError,
     fetchForPath: fetchSchemaForPath,
-  } = useSchemaFetch(schemaRequired && configuredPath ? configuredPath : undefined)
-  const configuredArguments =
-    typeof config.arguments === "object" && config.arguments !== null && !Array.isArray(config.arguments)
-      ? config.arguments as Record<string, unknown>
-      : {}
+  } = useSchemaFetch(
+    schemaRequired && configuredPath
+      ? configuredPath
+      : undefined,
+    schemaRequired && format ? { format: format.name, arguments: readerArguments } : undefined,
+  )
   const hasSchemaMapping =
     typeof configuredArguments.schema === "object" &&
     configuredArguments.schema !== null &&
@@ -211,44 +143,16 @@ export default function DataInputEditor({
 
   return (
     <div className="px-4 py-3 space-y-3">
-      {error && (
-        <p style={{ color: "var(--danger-text)" }}>
-          Could not load IO capabilities: {error}
-        </p>
-      )}
-
-      {config.inputType !== undefined && !group && capabilities && (
-        <section
-          aria-label="Configuration errors"
-          className="rounded-lg p-2 text-[11px]"
-          style={{
-            background: "var(--danger-soft)",
-            border: "1px solid var(--danger-border)",
-            color: "var(--danger-text)",
-          }}
-        >
-          Unknown Data Input provider {JSON.stringify(config.inputType)}.
-        </section>
-      )}
-
-      <div>
-        <EditorLabel as="div">Provider</EditorLabel>
-        <div className="mt-1">
-          <ToggleButtonGroup
-            value={group?.name ?? ""}
-            onChange={(name) => {
-              const next = groups.find((candidate) => candidate.name === name)
-              if (next) onReplaceConfig(inputBranchConfig(config, next))
-            }}
-            options={groups.map((candidate) => ({
-              key: candidate.name,
-              label: candidate.label,
-            }))}
-            accentColor={accentColor}
-            ariaLabel="Provider"
-          />
-        </div>
-      </div>
+      <IoProviderPicker
+        direction="input"
+        config={config}
+        groups={groups}
+        group={group}
+        capabilitiesLoaded={capabilities !== null}
+        error={error}
+        accentColor={accentColor}
+        onSelect={(next) => onReplaceConfig(inputBranchConfig(config, next))}
+      />
 
       {group?.name === "databricks" ? (
         <div className="space-y-3">
@@ -298,7 +202,7 @@ export default function DataInputEditor({
               style={INPUT_STYLE}
             />
             <p className="mt-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
-              Optional projection/filter clause. Haute supplies the validated table.
+              Optional. A SELECT list without FROM, such as SELECT policy_id, premium. Haute adds FROM and the chosen table.
             </p>
           </div>
           <IoArgumentsEditor
@@ -320,14 +224,6 @@ export default function DataInputEditor({
           accentColor={accentColor}
         />
       ) : null}
-
-      {requiresSnapshot && group && (
-        <InputSnapshotCacheButton
-          config={config}
-          admittedEager={format?.input?.snapshot_build === "admitted_eager"}
-          requiredReady={requiredReady}
-        />
-      )}
 
       {schemaRequired && configuredPath && (
         <section aria-label="Detected schema" className="space-y-2">

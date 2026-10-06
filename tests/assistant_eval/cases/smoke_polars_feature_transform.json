@@ -1,0 +1,44 @@
+{
+  "schema_version": 5,
+  "id": "smoke_polars_feature_transform",
+  "fixture_version": "2",
+  "project_fixture": "ordinary_pricing",
+  "area": "steps",
+  "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
+  "turns": [
+    {
+      "request": "After quotes, add a Transform named risk_features that adds a boolean column experienced_driver, true when driver_age is at least 25. Connect quotes to risk_features.",
+      "expectations": {
+        "outcome": "applied",
+        "saves": true,
+        "required_node_types": [
+          "polars"
+        ],
+        "forbidden_node_types": [],
+        "required_edges": [
+          {
+            "source": "quotes",
+            "target": "risk_features",
+            "target_handle": null
+          }
+        ],
+        "require_connected_graph": true,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [],
+        "node_configs": {},
+        "execution": [
+          {
+            "node": "risk_features",
+            "scenario": "live",
+            "golden": "quotes = pl.scan_csv('data/quotes.csv')\ndf = quotes.with_columns((pl.col('driver_age') >= 25).alias('experienced_driver'))\n",
+            "order_free": false
+          }
+        ],
+        "efficiency": null,
+        "data_findings": null
+      }
+    }
+  ]
+}

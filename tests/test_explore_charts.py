@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import math
+from typing import Any
 
 import pytest
 
@@ -76,19 +77,36 @@ def test_rejects_versionless_cards_instead_of_migrating() -> None:
         validate_explore_charts([{"id": "old", "enabled": False}], context="test")
 
 
-def test_full_v1_is_deeply_detached_including_nested_future_fields() -> None:
+def test_full_v1_is_deeply_detached() -> None:
     raw = _chart()
-    raw["future"] = {"nested": [{"answer": 42}]}
-    raw["category"]["future"] = ["ok"]  # type: ignore[index]
-    raw["value_encodings"][0]["future"] = {"style": ["ok"]}  # type: ignore[index]
-    raw["axes"]["primary"]["future"] = {"axis": ["ok"]}  # type: ignore[index]
     validated = validate_explore_charts([raw], context="test")
     assert validated == [raw]
     assert validated[0] is not raw
-    assert validated[0]["future"] is not raw["future"]
     assert validated[0]["category"] is not raw["category"]
     assert validated[0]["value_encodings"][0] is not raw["value_encodings"][0]
     assert validated[0]["axes"]["primary"] is not raw["axes"]["primary"]
+
+
+@pytest.mark.parametrize(
+    "level",
+    [
+        lambda chart: chart,
+        lambda chart: chart["category"],
+        lambda chart: chart["value_encodings"][0],
+        lambda chart: chart["axes"]["primary"],
+        lambda chart: chart["axes"]["secondary"],
+        lambda chart: chart["legend"],
+    ],
+    ids=["card", "category", "value_encoding", "primary_axis", "secondary_axis", "legend"],
+)
+def test_rejects_an_unknown_field_at_every_level(level: Any) -> None:
+    # No forward-compatibility passthrough: a field no model declares is named
+    # and refused, never carried unread.
+    chart = _chart()
+    level(chart)["future"] = "compact"
+
+    with pytest.raises(ConfigError, match="unknown field .future."):
+        validate_explore_charts([chart], context="test")
 
 
 @pytest.mark.parametrize(
@@ -120,8 +138,11 @@ def test_full_v1_is_deeply_detached_including_nested_future_fields() -> None:
             lambda c: c["value_encodings"][0].update(stack_normalize=True),  # type: ignore[index]
             "requires a stack group",
         ),
-        (lambda c: c["value_encodings"][0].update(series_key="wrong"), "identity field"),  # type: ignore[index]
-        (lambda c: c["series_overrides"][0].update(value_id="wrong"), "identity field"),  # type: ignore[index]
+        (
+            lambda c: c["value_encodings"][0].update(series_key="wrong"),
+            "unknown field .series_key.",
+        ),  # type: ignore[index]
+        (lambda c: c["series_overrides"][0].update(value_id="wrong"), "unknown field .value_id."),  # type: ignore[index]
         (lambda c: c["axes"]["primary"].update(number_format="date"), "unsupported number format"),  # type: ignore[index]
         (lambda c: c["axes"]["primary"].pop("minimum"), "requires minimum"),  # type: ignore[index]
         (lambda c: c["axes"]["primary"].pop("maximum"), "requires maximum"),  # type: ignore[index]
@@ -147,12 +168,12 @@ def test_rejects_invalid_v1_known_fields(mutate: object, message: str) -> None:
         (["chart"], "entries must be dicts"),
         ([{"enabled": True}], "version must be 1"),
         ([{"id": "old", "enabled": True, "name": "no"}], "version must be 1"),
-        ([{"id": "old", "enabled": True, "future": object()}], "simple literals"),
-        ([{**_chart(), "future": math.nan}], "simple literals"),
-        ([{**_chart(), 1: "not-a-string-key"}], "simple literals"),
+        ([{"id": "old", "enabled": True, "future": object()}], "unknown field .future."),
+        ([{**_chart(), "future": math.nan}], "unknown field .future."),
+        ([{**_chart(), 1: "not-a-string-key"}], "string keys"),
         (
             [{**_chart(), "category": {**_chart()["category"], "future": object()}}],
-            "simple literals",
+            "unknown field .future.",
         ),
         ([_chart(), _chart()], "duplicate chart id"),
         ([_chart(), {**_chart(), "id": "other", "name": " claims "}], "duplicate chart name"),

@@ -24,7 +24,7 @@ const save = (sha: string): GitLedgerSave => ({
 
 const entryFor = (branch: string): BranchHistoryEntry => {
   const milestones = [
-    { sha: `${branch}-m1`, short_sha: "m1", message: "m1", timestamp: "2026-07-08T00:00:00Z", version_label: null },
+    { sha: `${branch}-m1`, short_sha: "m1", message: "m1", timestamp: "2026-07-08T00:00:00Z", version_label: null, is_root: false },
   ]
   const pending: GitLedgerSave[] = []
   return {

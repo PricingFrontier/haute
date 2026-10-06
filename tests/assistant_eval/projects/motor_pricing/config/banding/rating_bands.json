@@ -1,0 +1,37 @@
+{
+  "factors": [
+    {
+      "banding": "breakpoints",
+      "column": "driver_age",
+      "outputColumn": "age_band",
+      "rules": {
+        "24": "17-24",
+        "59": "25-59",
+        "": "60+"
+      },
+      "default": "unknown"
+    },
+    {
+      "banding": "breakpoints",
+      "column": "inception_date",
+      "outputColumn": "inception_year",
+      "rules": {
+        "2024-12-31": "2024",
+        "": "2025+"
+      },
+      "default": "unknown"
+    },
+    {
+      "banding": "categorical",
+      "column": "region_code",
+      "outputColumn": "region",
+      "rules": {
+        "NE": "North",
+        "NW": "North",
+        "SE": "South",
+        "LON": "London"
+      },
+      "default": "Other"
+    }
+  ]
+}

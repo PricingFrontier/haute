@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import polars as pl
 
 from haute._logging import get_logger
+from haute.errors import ConfigError, HauteValidationError
+
+if TYPE_CHECKING:
+    from haute._model_source import ModelSource
 
 logger = get_logger(component="model_explainability")
 
@@ -37,8 +41,13 @@ def _as_float(
     return result
 
 
-def _catboost_pool_for_row(scoring_model: Any, input_row: dict[str, Any]) -> Any:
-    """Build a one-row CatBoost Pool using Haute's scoring feature contract."""
+def _catboost_pool_for_row(scoring_model: Any, input_row: dict[str, Any]) -> tuple[Any, float]:
+    """Build a one-row CatBoost Pool using Haute's scoring feature contract.
+
+    Returns the pool and the row's raw-score baseline (``0.0`` without an
+    offset): the raw prediction includes the baseline, but CatBoost's
+    ShapValues do not.
+    """
     from catboost import Pool
 
     from haute._mlflow_io import _prepare_predict_frame
@@ -76,16 +85,32 @@ def _catboost_pool_for_row(scoring_model: Any, input_row: dict[str, Any]) -> Any
             raise ModelExplanationError(
                 f"offset column {offset_column!r} must be finite; got None."
             )
-        baseline = np.asarray([baseline_value], dtype=float)
+        from haute.modelling._algorithms import offset_baseline
+
+        offset_link = getattr(scoring_model, "offset_link", None)
+        if offset_link is None:
+            raise ModelExplanationError(
+                f"offset column {offset_column!r} has no recorded link; retrain the model."
+            )
+        try:
+            baseline = offset_baseline(
+                [baseline_value],
+                column=offset_column,
+                link=offset_link,
+                context="CatBoost SHAP explanation",
+            )
+        except HauteValidationError as exc:
+            raise ModelExplanationError(str(exc)) from exc
     else:
         baseline = None
     cat_indices = [features.index(column) for column in cat_cols]
-    return Pool(
+    pool = Pool(
         x_data,
         cat_features=cat_indices if cat_indices else None,
         feature_names=features,
         baseline=baseline,
     )
+    return pool, float(baseline[0]) if baseline is not None else 0.0
 
 
 def _normalise_shap_values(shap_values: Any, feature_count: int) -> np.ndarray:
@@ -111,8 +136,20 @@ def _assert_finite_shap_row(shap_row: np.ndarray) -> None:
         raise ModelExplanationError("CatBoost SHAP explanation returned non-finite values.")
 
 
-def _prediction_tolerance(value: float) -> float:
-    return max(1e-6, abs(value) * 1e-6)
+#: Relative bound for raw margins rebuilt from XGBoost contributions, which the
+#: engine accumulates in float32.
+FLOAT32_CONTRIBUTION_TOLERANCE = 1e-5
+
+#: Families whose served margin is a float32 sum, checked against contributions
+#: with :data:`FLOAT32_CONTRIBUTION_TOLERANCE` (t-boost scores float32 features).
+_FLOAT32_MARGIN_FLAVORS = frozenset({"xgboost", "tboost"})
+#: Families whose contributions are additive model terms (an interaction is one term).
+_ADDITIVE_TERM_FLAVORS = frozenset({"ebm", "tboost"})
+
+
+def prediction_tolerance(value: float, *, relative: float = 1e-6) -> float:
+    """The absolute tolerance every prediction-parity check allows around *value*."""
+    return max(relative, abs(value) * relative)
 
 
 def _catboost_single_prediction_value(prediction: Any) -> float:
@@ -197,26 +234,32 @@ def explain_catboost_prediction(
         )
 
     features = list(scoring_model.feature_names)
-    pool = _catboost_pool_for_row(scoring_model, input_row)
+    pool, row_baseline = _catboost_pool_for_row(scoring_model, input_row)
     shap_row = _normalise_shap_values(
         raw_model.get_feature_importance(data=pool, type="ShapValues"),
         len(features),
     )
     _assert_finite_shap_row(shap_row)
 
-    base_value = float(shap_row[-1])
+    # The bias carries the row's offset, as it does for the wrapper families:
+    # CatBoost's expected value excludes the Pool baseline its prediction adds.
+    base_value = float(shap_row[-1]) + row_baseline
     contribution_values = shap_row[:-1]
-    prediction_from_shap = float(shap_row.sum())
+    prediction_from_shap = float(contribution_values.sum()) + base_value
     # Additivity is always checked raw-vs-raw: ShapValues sum to the
     # raw-formula prediction for every CatBoost loss.
     model_prediction = _catboost_raw_prediction(raw_model, pool)
 
+    # A regression's link names the transform from the raw score its SHAP
+    # values sum to, to the prediction; a classifier's label is no transform.
+    link: str | None = None
     if task == "regression":
         has_link = _catboost_regression_has_link_transform(raw_model)
         response_prediction = (
             _catboost_response_prediction(raw_model, pool) if has_link else model_prediction
         )
         output_space = "raw_formula_val" if has_link else "prediction"
+        link = "log" if has_link else "identity"
     else:
         response_prediction = model_prediction
         output_space = "raw_formula_val"
@@ -231,14 +274,14 @@ def explain_catboost_prediction(
     output_difference = None if output_value is None else float(output_value - response_prediction)
 
     model_difference = float(model_prediction - prediction_from_shap)
-    tolerance = _prediction_tolerance(prediction_from_shap)
+    tolerance = prediction_tolerance(prediction_from_shap)
     if abs(model_difference) > tolerance:
         raise ModelExplanationError(
             "CatBoost SHAP explanation does not match the model prediction: "
             f"SHAP reconstructs {prediction_from_shap}, model predicts {model_prediction}."
         )
     if task == "regression" and output_difference is not None:
-        response_tolerance = _prediction_tolerance(response_prediction)
+        response_tolerance = prediction_tolerance(response_prediction)
         if abs(output_difference) > response_tolerance:
             raise ModelExplanationError(
                 "CatBoost SHAP explanation does not match the traced prediction: "
@@ -275,7 +318,7 @@ def explain_catboost_prediction(
         item["rank"] = rank
         contributions.append(item)
 
-    return {
+    explanation: dict[str, Any] = {
         "type": "catboost_shap",
         "method": "catboost_shap",
         "status": "ok",
@@ -294,6 +337,10 @@ def explain_catboost_prediction(
         "truncated": truncated,
         "omitted_count": omitted_count,
     }
+    if link is not None:
+        explanation["link"] = link
+        explanation["model_prediction_value"] = response_prediction
+    return explanation
 
 
 def _rustystats_frame_for_row(scoring_model: Any, input_row: dict[str, Any]) -> pl.DataFrame:
@@ -408,7 +455,7 @@ def explain_rustystats_glm_prediction(
     )
     effective_prediction = model_prediction if traced_prediction is None else traced_prediction
 
-    tolerance = _prediction_tolerance(contribution_prediction)
+    tolerance = prediction_tolerance(contribution_prediction)
     model_difference = float(model_prediction - contribution_prediction)
     if abs(model_difference) > tolerance:
         raise ModelExplanationError(
@@ -476,7 +523,7 @@ def explain_rustystats_glm_prediction(
     assert sum_contributions is not None
     assert prediction_from_contributions is not None
     reconstructed_output = float(base_value + sum_contributions)
-    output_tolerance = _prediction_tolerance(prediction_from_contributions)
+    output_tolerance = prediction_tolerance(prediction_from_contributions)
     if abs(reconstructed_output - prediction_from_contributions) > output_tolerance:
         raise ModelExplanationError(
             "RustyStats GLM explanation does not reconstruct the model output: "
@@ -509,37 +556,193 @@ def explain_rustystats_glm_prediction(
     }
 
 
-def _config_requests_supported_explanation(config: dict[str, Any]) -> bool:
-    source_type = config.get("sourceType")
-    if source_type not in {"run", "registered"}:
-        return False
-    artifact_path = str(config.get("artifact_path", ""))
-    return artifact_path.endswith((".cbm", ".rsglm"))
+def _inverse_link(link: str, margin: float) -> float:
+    if link == "log":
+        return float(np.exp(margin))
+    if link == "logit":
+        return float(1.0 / (1.0 + np.exp(-margin)))
+    return margin
+
+
+def explain_native_prediction(
+    scoring_model: Any,
+    input_row: dict[str, Any],
+    *,
+    task: str = "regression",
+    prediction_value: Any = None,
+    max_contributions: int | None = None,
+) -> dict[str, Any]:
+    """Native contributions for one traced prediction of an XGBoost, LightGBM, EBM or t-boost model.
+
+    The bias carries the row's offset (and an EBM's or t-boost's intercept), so bias plus
+    contributions is the raw margin; its inverse link must reproduce the served
+    response, or the positive-class probability for a classifier. XGBoost
+    accumulates its contributions in float32, so its margin check uses the named
+    float32 bound. An EBM or t-boost model contributes one additive score per
+    term (t-boost: per table), and an interaction stays a single term.
+    """
+    import polars as pl
+
+    from haute._model_flavors import is_registered_flavor, model_family
+
+    flavor = str(getattr(scoring_model, "flavor", ""))
+    family = model_family(flavor) if is_registered_flavor(flavor) else None
+    if family is None or not family.self_describing or family.explanation is None:
+        raise ModelExplanationError(
+            "Native contribution explanation requires an XGBoost, LightGBM, EBM or t-boost model."
+        )
+    label = family.label
+    model = scoring_model.raw_model
+    features = list(model.features)
+    columns = [*features, *([model.offset_column] if model.offset_column else [])]
+    missing = [column for column in columns if column not in input_row]
+    if missing:
+        raise ModelExplanationError(
+            f"{label} explanation input is missing columns: {', '.join(missing)}"
+        )
+    row = pl.DataFrame(
+        {column: [input_row[column]] for column in columns},
+        strict=False,
+    )
+    contributions = model.contributions(row)
+    values = np.asarray(contributions.values[0], dtype=np.float64)
+    bias = float(contributions.bias[0])
+    if not np.isfinite(values).all() or not np.isfinite(bias):
+        raise ModelExplanationError(f"{label} contributions are not finite.")
+    margin = float(model.predict_margin(row)[0])
+    reconstructed = float(bias + values.sum())
+    tolerance = (
+        prediction_tolerance(margin, relative=FLOAT32_CONTRIBUTION_TOLERANCE)
+        if flavor in _FLOAT32_MARGIN_FLAVORS
+        else prediction_tolerance(margin)
+    )
+    if abs(reconstructed - margin) > tolerance:
+        raise ModelExplanationError(
+            f"{label} explanation does not match the model margin: "
+            f"contributions reconstruct {reconstructed}, model margin is {margin}."
+        )
+    response = float(model.predict_response(row)[0])
+    linked = _inverse_link(model.link, margin)
+    if abs(linked - response) > prediction_tolerance(response):
+        raise ModelExplanationError(
+            f"{label} explanation's inverse link does not reproduce the model response: "
+            f"{linked} versus {response}."
+        )
+    traced = _as_float(
+        prediction_value if task == "regression" else None,
+        field_name="prediction_value",
+        strict=task == "regression" and prediction_value is not None,
+    )
+    output_difference = None if traced is None else float(traced - response)
+    if output_difference is not None and abs(output_difference) > prediction_tolerance(response):
+        raise ModelExplanationError(
+            f"{label} explanation does not match the traced prediction: "
+            f"model predicts {response}, traced output is {traced}."
+        )
+
+    categorical = frozenset(model.categorical_levels)
+    terms: list[tuple[str, ...]] = list(contributions.terms)
+    ranked = []
+    for index, (term, value) in enumerate(zip(terms, values, strict=True)):
+        name = " & ".join(term)
+        entry: dict[str, Any] = {
+            "feature": name,
+            "feature_index": index,
+            "feature_value": (
+                input_row.get(term[0])
+                if len(term) == 1
+                else {feature: input_row.get(feature) for feature in term}
+            ),
+            # ``contribution`` is the method-neutral value; ``shap_value`` is
+            # the field every trace consumer reads, whatever the method.
+            "contribution": float(value),
+            "abs_contribution": float(abs(value)),
+            "shap_value": float(value),
+            "abs_shap_value": float(abs(value)),
+            "is_categorical": any(feature in categorical for feature in term),
+            "_feature_index": index,
+        }
+        if flavor in _ADDITIVE_TERM_FLAVORS:
+            entry["term"] = name
+            entry["term_type"] = "main" if len(term) == 1 else "interaction"
+            entry["term_features"] = list(term)
+        ranked.append(entry)
+    ranked.sort(key=lambda item: (-float(item["abs_contribution"]), int(item["_feature_index"])))
+    truncated = max_contributions is not None and len(ranked) > max_contributions
+    omitted_count = len(ranked) - max_contributions if truncated and max_contributions else 0
+    if truncated and max_contributions is not None:
+        ranked = ranked[:max_contributions]
+    shown = []
+    for rank, item in enumerate(ranked, start=1):
+        item = dict(item)
+        item.pop("_feature_index", None)
+        item["rank"] = rank
+        shown.append(item)
+
+    output_space = {"identity": "response", "log": "log", "logit": "log_odds"}[model.link]
+    method = family.explanation
+    return {
+        "type": method,
+        "method": method,
+        "status": "ok",
+        "link": model.link,
+        "output_space": output_space,
+        "prediction_space": "probability" if task == "classification" else "response",
+        "base_value": bias,
+        "sum_contributions": float(values.sum()),
+        "contribution_sum": float(values.sum()),
+        "prediction_from_contributions": reconstructed,
+        "model_output_value": margin,
+        "model_prediction_value": response,
+        "prediction_value": prediction_value if prediction_value is not None else response,
+        "output_difference": output_difference,
+        "feature_count": len(features),
+        "term_count": len(terms),
+        "feature_values": {feature: input_row.get(feature) for feature in features},
+        "contributions": shown,
+        "truncated": truncated,
+        "omitted_count": omitted_count,
+    }
+
+
+def _source_requests_supported_explanation(source: ModelSource) -> bool:
+    """Whether the family *source*'s artifact loads as registers an explanation.
+
+    Raises:
+        ConfigError: the artifact has a suffix no family registers.
+    """
+    from haute._model_flavors import family_for_artifact
+    from haute._model_source import FileModelSource
+
+    artifact = source.model_path if isinstance(source, FileModelSource) else source.artifact_path
+    return family_for_artifact(artifact).explanation is not None
 
 
 def explanation_error_metadata_for_config(config: dict[str, Any]) -> dict[str, str]:
     """Return stable error metadata for the configured explanation method.
 
     Caller (``enrich_model_score``) only invokes this after
-    :func:`_config_requests_supported_explanation` has returned True, so the
-    artifact path is guaranteed to end in ``.rsglm`` or ``.cbm``.  We still
-    enumerate both branches explicitly so adding a third supported flavour in
-    future means extending this function alongside the loader.
+    :func:`explain_model_score_from_config` raised a
+    :class:`ModelExplanationError`, which happens only for a source whose
+    artifact path names a family that registers an explanation, so the
+    method is that family's registered one.
 
     The function is on the *error-handling* path: it must always return a
-    well-formed dict even when ``_config_requests_supported_explanation`` and
+    well-formed dict even when ``_source_requests_supported_explanation`` and
     this lookup disagree — otherwise an internal mismatch crashes the entire
     trace step through the outer ``except Exception`` in ``enrich_model_score``.
-    Hit the unreachable branch with a ``logger.warning`` so a regression
-    (e.g. a new flavour added to one half of the contract but not the other)
-    is visible without poisoning the user's trace.
+    Hit the unreachable branch with a ``logger.warning`` so a regression is
+    visible without poisoning the user's trace.
     """
-    artifact_path = str(config.get("artifact_path", ""))
-    if artifact_path.endswith(".rsglm"):
-        method = "rustystats_glm_contributions"
-    elif artifact_path.endswith(".cbm"):
-        method = "catboost_shap"
-    else:
+    from haute._model_flavors import family_for_artifact
+
+    artifact_key = "model_path" if config.get("sourceType") == "file" else "artifact_path"
+    artifact_path = str(config.get(artifact_key, ""))
+    try:
+        method = family_for_artifact(artifact_path).explanation
+    except ConfigError:
+        method = None
+    if method is None:
         logger.warning(
             "explanation_error_metadata_unsupported_artifact",
             artifact_path=artifact_path,
@@ -556,34 +759,54 @@ def explain_model_score_from_config(
     prediction_column: str,
     prediction_value: Any,
 ) -> dict[str, Any] | None:
-    """Load the configured model and return trace explanation detail."""
-    if not _config_requests_supported_explanation(config):
+    """Load the configured model and return trace explanation detail.
+
+    ``None`` for a node with no source chosen or a model with no supported
+    explanation. A source config that does not parse raises its ``ConfigError``.
+    """
+    from haute._builders import _configured_pipeline_dir
+    from haute._model_flavors import model_family
+    from haute._model_source import load_scoring_model, parse_model_source, scoring_contract_path
+
+    source = parse_model_source(config)
+    if source is None or not _source_requests_supported_explanation(source):
         return None
 
-    from haute._mlflow_io import load_mlflow_model
-
-    scoring_model = load_mlflow_model(
-        source_type=config.get("sourceType", "run"),
-        run_id=config.get("run_id", ""),
-        artifact_path=config.get("artifact_path", ""),
-        registered_model=config.get("registered_model", ""),
-        version=config.get("version", "latest"),
-        task=config.get("task", "regression"),
+    task = config.get("task", "regression")
+    base_dir = _configured_pipeline_dir()
+    scoring_model = load_scoring_model(
+        source,
+        task,
+        feature_contract_path=scoring_contract_path(source, config, base_dir),
+        base_dir=base_dir,
     )
     effective_prediction = (
         prediction_value if prediction_value is not None else output_row.get(prediction_column)
     )
-    if getattr(scoring_model, "flavor", "") == "catboost":
+    family = model_family(scoring_model.flavor)
+    if family.explanation is None:
+        return None
+    if family.self_describing:
+        return explain_native_prediction(
+            scoring_model,
+            input_row,
+            task=task,
+            prediction_value=effective_prediction,
+        )
+    if family.explanation == "catboost_shap":
         return explain_catboost_prediction(
             scoring_model,
             input_row,
-            task=config.get("task", "regression"),
+            task=task,
             prediction_value=effective_prediction,
         )
-    if getattr(scoring_model, "flavor", "") == "rustystats":
+    if family.explanation == "rustystats_glm_contributions":
         return explain_rustystats_glm_prediction(
             scoring_model,
             input_row,
             prediction_value=effective_prediction,
         )
-    return None
+    raise ValueError(
+        f"Model family {family.flavor!r} registers explanation {family.explanation!r}, "
+        "which no explainer implements."
+    )

@@ -51,37 +51,6 @@ _TIME_PATTERN = re.compile(
 _MISSING = object()
 
 
-def _is_simple_literal(value: Any) -> bool:
-    """Return whether *value* can safely round-trip through code generation."""
-
-    if value is None or isinstance(value, (str, bool, int)):
-        return True
-    if isinstance(value, float):
-        return math.isfinite(value)
-    if isinstance(value, list):
-        return all(_is_simple_literal(item) for item in value)
-    if isinstance(value, dict):
-        return all(isinstance(key, str) and _is_simple_literal(item) for key, item in value.items())
-    return False
-
-
-def _copy_simple_dict(
-    value: dict[Any, Any], *, context: str, index: int, scope: str
-) -> dict[str, Any]:
-    copied: dict[str, Any] = {}
-    for key, item in value.items():
-        if not isinstance(key, str) or not _is_simple_literal(item):
-            raise ConfigError(
-                f"Explore pivot {scope} fields must use string keys and simple literals.",
-                context=context,
-                index=index,
-                key=repr(key),
-                actual_type=type(item).__name__,
-            )
-        copied[key] = copy.deepcopy(item)
-    return copied
-
-
 def _copy_known_dict(
     value: dict[Any, Any],
     *,
@@ -90,17 +59,21 @@ def _copy_known_dict(
     index: int,
     scope: str,
 ) -> dict[str, Any]:
-    """Deep-copy a typed object while applying literal rules to future fields only."""
+    """Deep-copy a typed object, rejecting any field it does not declare.
+
+    The canonical-input rule allows no forward-compatibility passthrough, so a
+    field outside *known_keys* is named and refused rather than carried unread.
+    """
 
     copied: dict[str, Any] = {}
     for key, item in value.items():
-        if not isinstance(key, str) or (key not in known_keys and not _is_simple_literal(item)):
+        if not isinstance(key, str) or key not in known_keys:
             raise ConfigError(
-                f"Explore pivot {scope} fields must use string keys and simple literals.",
+                f"Explore pivot {scope} has an unknown field {key!r}.",
                 context=context,
                 index=index,
                 key=repr(key),
-                actual_type=type(item).__name__,
+                known=sorted(known_keys),
             )
         copied[key] = copy.deepcopy(item)
     return copied

@@ -57,23 +57,31 @@ function buildCanonicalSubmodelViewGraph(
     throw new Error(`Submodel boundary id collides with a child node for ${submodelName}`)
   }
 
-  const inputHandles = new Set(definition.inputPorts.map((port) => `in__${port.portId}`))
-  const outputHandles = new Set(definition.outputPorts.map((port) => `out__${port.portId}`))
+  const inputHandles = new Set(definition.inputPorts.map((port) => `in__${port.name}`))
+  const outputHandles = new Set(definition.outputPorts.map((port) => `out__${port.name}`))
+  const occurrenceIds = new Set([instanceId, ...parentNodes.flatMap((node) => {
+    const candidateConfig = node.data.config
+    return node.data.nodeType === "submodel"
+      && isSubmodelInstanceConfig(candidateConfig)
+      && candidateConfig.definitionId === definition.definitionId
+      ? [node.id]
+      : []
+  })])
   for (const edge of parentEdges as PipelineEdge[]) {
     if (
-      edge.target === instanceId
+      occurrenceIds.has(edge.target)
       && (typeof edge.targetHandle !== "string" || !inputHandles.has(edge.targetHandle))
     ) {
       throw new Error(
-        `Submodel instance ${instanceId} has undeclared input handle ${String(edge.targetHandle)}`,
+        `Submodel instance ${edge.target} has undeclared input handle ${String(edge.targetHandle)}`,
       )
     }
     if (
-      edge.source === instanceId
+      occurrenceIds.has(edge.source)
       && (typeof edge.sourceHandle !== "string" || !outputHandles.has(edge.sourceHandle))
     ) {
       throw new Error(
-        `Submodel instance ${instanceId} has undeclared output handle ${String(edge.sourceHandle)}`,
+        `Submodel instance ${edge.source} has undeclared output handle ${String(edge.sourceHandle)}`,
       )
     }
   }
@@ -85,38 +93,41 @@ function buildCanonicalSubmodelViewGraph(
   const occupiedEdgeIds = new Set(childEdges.map((edge) => edge.id))
 
   for (const port of definition.inputPorts) {
-    const handle = `in__${port.portId}`
-    const consumers = (parentEdges as PipelineEdge[]).filter(
-      (edge) => edge.target === instanceId && edge.targetHandle === handle,
+    const handle = `in__${port.name}`
+    const definitionConsumers = (parentEdges as PipelineEdge[]).filter(
+      (edge) => occurrenceIds.has(edge.target) && edge.targetHandle === handle,
+    )
+    const activeConsumers = definitionConsumers.filter(
+      (edge) => edge.target === instanceId,
     )
     inputPorts.push({
-      id: port.portId,
-      label: port.label,
-      parentEdges: consumers,
+      id: port.name,
+      label: port.name,
+      parentEdges: definitionConsumers,
     })
-    for (const consumer of consumers) {
+    for (const consumer of activeConsumers) {
       if (!inputExternalIds.includes(consumer.source)) inputExternalIds.push(consumer.source)
     }
     for (const [index, target] of port.targets.entries()) {
       if (!childIds.has(target.nodeId)) {
         throw new Error(
-          `Submodel definition ${definition.definitionId} input port ${port.portId} references missing child ${target.nodeId}`,
+          `Submodel definition ${definition.definitionId} input port ${port.name} references missing child ${target.nodeId}`,
         )
       }
       syntheticEdges.push({
         id: uniqueEdgeId(
-          stableId("input-edge", [instanceId, port.portId, target.nodeId, String(index)]),
+          stableId("input-edge", [instanceId, port.name, target.nodeId, String(index)]),
           occupiedEdgeIds,
         ),
         source: inputId,
-        sourceHandle: port.portId,
+        sourceHandle: port.name,
         target: target.nodeId,
         targetHandle: target.handleId,
         data: {
           submodelBoundary: {
             direction: "input",
-            portId: port.portId,
-            parentEdges: consumers,
+            name: port.name,
+            parentEdges: activeConsumers,
           },
         } satisfies SubmodelBoundaryEdgeData,
       })
@@ -126,10 +137,10 @@ function buildCanonicalSubmodelViewGraph(
   for (const port of definition.outputPorts) {
     if (!childIds.has(port.source.nodeId)) {
       throw new Error(
-        `Submodel definition ${definition.definitionId} output port ${port.portId} references missing child ${port.source.nodeId}`,
+        `Submodel definition ${definition.definitionId} output port ${port.name} references missing child ${port.source.nodeId}`,
       )
     }
-    const handle = `out__${port.portId}`
+    const handle = `out__${port.name}`
     const consumers = (parentEdges as PipelineEdge[]).filter(
       (edge) => edge.source === instanceId && edge.sourceHandle === handle,
     )
@@ -137,7 +148,7 @@ function buildCanonicalSubmodelViewGraph(
       if (!outputExternalIds.includes(consumer.target)) outputExternalIds.push(consumer.target)
     }
     syntheticEdges.push({
-      id: uniqueEdgeId(stableId("output-edge", [instanceId, port.portId]), occupiedEdgeIds),
+      id: uniqueEdgeId(stableId("output-edge", [instanceId, port.name]), occupiedEdgeIds),
       source: port.source.nodeId,
       sourceHandle: port.source.handleId,
       target: outputId,
@@ -145,7 +156,7 @@ function buildCanonicalSubmodelViewGraph(
       data: {
         submodelBoundary: {
           direction: "output",
-          portId: port.portId,
+          name: port.name,
           parentConsumerEdges: consumers,
         },
       } satisfies SubmodelBoundaryEdgeData,
@@ -162,6 +173,7 @@ function buildCanonicalSubmodelViewGraph(
         inputExternalIds,
         instanceId,
         definition.definitionId,
+        (parentEdges as PipelineEdge[]).map((edge) => edge.id),
       ),
       boundaryNode(
         outputId,
@@ -186,6 +198,7 @@ function boundaryNode(
   externalNodeIds: string[],
   instanceId: string,
   definitionId: string,
+  parentEdgeOrder: string[] = [],
 ): Node<BoundaryData> {
   return {
     id,
@@ -198,6 +211,12 @@ function boundaryNode(
       definitionId,
       portDirection: direction,
       ports,
+      ...(direction === "input"
+        ? {
+            _parentBindingScope: "definition" as const,
+            _parentEdgeOrder: parentEdgeOrder,
+          }
+        : {}),
       externalNodeIds,
     },
   }

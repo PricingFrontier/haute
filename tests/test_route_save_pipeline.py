@@ -18,15 +18,51 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from haute._types import GraphNode, NodeData, PipelineGraph, SubmodelDefinition
+from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph, SubmodelDefinition
 from haute.routes._save_pipeline import SavePipelineService
 from haute.schemas import SavePipelineRequest
+from tests.conftest import current_source_revision, make_output_config
 from tests.conftest import make_edge as _make_edge
-from tests.conftest import make_output_config
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("existing", [True, False])
+def test_save_rejects_source_changed_before_artifact_capture(tmp_path, monkeypatch, existing):
+    from haute.parser import parse_pipeline_file
+    from haute.routes._save_pipeline import StaleDocumentRevisionError
+
+    source = tmp_path / "main.py"
+    source.write_text(
+        'import haute\nimport polars as pl\npipeline = haute.Pipeline("main")\n'
+        '@pipeline.polars\ndef data():\n    return pl.LazyFrame({"x": [1]})\n',
+        encoding="utf-8",
+    )
+    graph = parse_pipeline_file(source)
+    revision = current_source_revision(source, tmp_path) if existing else None
+    external = source.read_bytes() + b"\n# newer external authored work\n"
+    if not existing:
+        source.unlink()
+    original_capture = SavePipelineService._capture_artifact_identities
+
+    def drift_then_capture(self, path):
+        source.write_bytes(external)
+        return original_capture(self, path)
+
+    monkeypatch.setattr(SavePipelineService, "_capture_artifact_identities", drift_then_capture)
+    with pytest.raises(StaleDocumentRevisionError):
+        SavePipelineService(project_root=tmp_path).save(
+            SavePipelineRequest(
+                graph=graph,
+                name="main",
+                description="saved edit",
+                source_file="main.py",
+                base_revision=revision,
+            )
+        )
+    assert source.read_bytes() == external
 
 
 def _file_input_config(path: str) -> dict:
@@ -46,6 +82,32 @@ def _file_input_config(path: str) -> dict:
         "mode": mode,
         "path": path,
         "arguments": {},
+    }
+
+
+def _quote_input_config(*labels: str) -> dict:
+    """A JSON Quote Input config with one typed table per label."""
+    return {
+        "path": "quote.json",
+        "tables": [
+            {
+                "path": "$[:]",
+                "label": label,
+                "emit": True,
+                "row_id_column": None,
+                "columns": [
+                    {
+                        "name": "quote_id",
+                        "path": "$[:].quote_id",
+                        "type": "str",
+                        "status": "Confirmed",
+                        "selected": True,
+                        "levels": None,
+                    }
+                ],
+            }
+            for label in labels
+        ],
     }
 
 
@@ -112,6 +174,42 @@ class TestValidateSingletons:
         assert "API Input" in exc_info.value.detail
         assert "found 2" in exc_info.value.detail
 
+    def test_api_input_in_root_and_submodel_raises_400(self, tmp_path: Path) -> None:
+        """Singletons are unique across the flattened executable pipeline."""
+        graph = _make_submodel_graph(
+            _make_node("child_api", "Child API", "apiInput", {"path": "child.parquet"}),
+            root_nodes=(_make_node("root_api", "Root API", "apiInput", {"path": "root.parquet"}),),
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            SavePipelineService(tmp_path).validate_graph(graph, source_file="main.py")
+        assert exc_info.value.status_code == 400
+        assert "API Input" in exc_info.value.detail
+        assert "found 2" in exc_info.value.detail
+
+    def test_api_input_in_repeated_submodel_raises_400(self, tmp_path: Path) -> None:
+        """Each occurrence contributes its singleton nodes to execution."""
+        graph = _make_submodel_graph(
+            _make_node("child_api", "Child API", "apiInput", {"path": "child.parquet"}),
+        )
+        owner_id = "pricing"
+        graph.nodes.append(
+            _make_node(
+                "pricing_copy",
+                "pricing_copy",
+                "submodel",
+                {
+                    "definitionId": "pricing",
+                    "alias": "pricing_copy",
+                    "instanceOf": owner_id,
+                },
+            )
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            SavePipelineService(tmp_path).validate_graph(graph, source_file="main.py")
+        assert exc_info.value.status_code == 400
+        assert "API Input" in exc_info.value.detail
+        assert "found 2" in exc_info.value.detail
+
     def test_duplicate_output_raises_400(self) -> None:
         """Two Output nodes should raise 400."""
         graph = _make_graph(
@@ -123,16 +221,26 @@ class TestValidateSingletons:
         assert exc_info.value.status_code == 400
         assert "Output" in exc_info.value.detail
 
-    def test_duplicate_live_switch_raises_400(self) -> None:
-        """Two Live Switch nodes should raise 400."""
+    def test_several_source_switches_pass(self) -> None:
+        """A pipeline may hold more than one Source Switch."""
         graph = _make_graph(
             _make_node("ls1", "Switch 1", "liveSwitch", {"live": "a", "batch": "b"}),
             _make_node("ls2", "Switch 2", "liveSwitch", {"live": "c", "batch": "d"}),
         )
+        SavePipelineService._validate_singletons(graph)
+
+    def test_source_switch_instance_raises_400(self, tmp_path: Path) -> None:
+        """An instance cannot route: its inputs are not the switch's input names."""
+        graph = _make_graph(
+            _make_node("ls1", "Switch 1", "liveSwitch", {"input_scenario_map": {"a": "live"}}),
+            _make_node("ls2", "Switch 2", "liveSwitch", {"instanceOf": "ls1"}),
+        )
         with pytest.raises(HTTPException) as exc_info:
-            SavePipelineService._validate_singletons(graph)
+            SavePipelineService(tmp_path).validate_graph(graph, source_file="main.py")
         assert exc_info.value.status_code == 400
-        assert "Source Switch" in exc_info.value.detail
+        assert "'Switch 2' cannot be an instance of the Source Switch 'Switch 1'" in (
+            exc_info.value.detail
+        )
 
     def test_no_singletons_passes(self) -> None:
         """A graph with only transform nodes passes validation."""
@@ -149,7 +257,7 @@ class TestValidateSingletons:
 
 
 # ---------------------------------------------------------------------------
-# _validate_unique_sanitized_names
+# _validate_executable_names
 # ---------------------------------------------------------------------------
 
 
@@ -160,7 +268,7 @@ class TestValidateUniqueSanitizedNames:
             _make_node("a", "Alpha", "polars"),
             _make_node("b", "Beta", "polars"),
         )
-        SavePipelineService._validate_unique_sanitized_names(graph)
+        SavePipelineService._validate_executable_names(graph)
 
     def test_dash_underscore_collision_raises_400(self) -> None:
         """'my-node' and 'my_node' both sanitize to 'my_node'."""
@@ -169,7 +277,7 @@ class TestValidateUniqueSanitizedNames:
             _make_node("b", "my_node", "polars"),
         )
         with pytest.raises(HTTPException) as exc_info:
-            SavePipelineService._validate_unique_sanitized_names(graph)
+            SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
         assert "my_node" in exc_info.value.detail
 
@@ -180,7 +288,7 @@ class TestValidateUniqueSanitizedNames:
             _make_node("b", "Transform", "polars"),
         )
         with pytest.raises(HTTPException) as exc_info:
-            SavePipelineService._validate_unique_sanitized_names(graph)
+            SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
         assert "Transform" in exc_info.value.detail
 
@@ -191,7 +299,7 @@ class TestValidateUniqueSanitizedNames:
             _make_node("b", "my_node", "polars"),
         )
         with pytest.raises(HTTPException) as exc_info:
-            SavePipelineService._validate_unique_sanitized_names(graph)
+            SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
         assert "my_node" in exc_info.value.detail
 
@@ -203,7 +311,7 @@ class TestValidateUniqueSanitizedNames:
             _make_node("c", "my node", "polars"),
         )
         with pytest.raises(HTTPException) as exc_info:
-            SavePipelineService._validate_unique_sanitized_names(graph)
+            SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
         assert "my_node" in exc_info.value.detail
 
@@ -218,7 +326,7 @@ class TestValidateUniqueSanitizedNames:
             _make_node("b", "caf", "polars"),
         )
         # Must not raise — the labels are now distinct after sanitisation.
-        SavePipelineService._validate_unique_sanitized_names(graph)
+        SavePipelineService._validate_executable_names(graph)
 
     def test_empty_labels_collide(self) -> None:
         """Multiple nodes with empty labels all sanitize to 'unnamed_node'."""
@@ -227,7 +335,7 @@ class TestValidateUniqueSanitizedNames:
             _make_node("b", "", "polars"),
         )
         with pytest.raises(HTTPException) as exc_info:
-            SavePipelineService._validate_unique_sanitized_names(graph)
+            SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
         assert "unnamed_node" in exc_info.value.detail
 
@@ -238,17 +346,17 @@ class TestValidateUniqueSanitizedNames:
             _make_node("b", "transform", "dataInput"),
         )
         with pytest.raises(HTTPException) as exc_info:
-            SavePipelineService._validate_unique_sanitized_names(graph)
+            SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
 
     def test_empty_graph_passes(self) -> None:
         """An empty graph has no collisions."""
         graph = _make_graph()
-        SavePipelineService._validate_unique_sanitized_names(graph)
+        SavePipelineService._validate_executable_names(graph)
 
 
 # ---------------------------------------------------------------------------
-# _validate_unique_sanitized_names — recursive (submodel-aware) scope
+# _validate_executable_names — recursive (submodel-aware) scope
 # ---------------------------------------------------------------------------
 
 
@@ -268,7 +376,7 @@ def _make_submodel_graph(
     if include_placeholder:
         all_root.append(
             _make_node(
-                f"submodel_instance__{sm_name}",
+                sm_name,
                 sm_name,
                 "submodel",
                 {"definitionId": sm_name, "alias": sm_name},
@@ -303,6 +411,243 @@ class TestValidateOptimiserInputSelectors:
         assert not (tmp_path / "pipeline.py").exists()
 
 
+class TestValidateScenarioExpanderGridSize:
+    """The grid size has no incomplete form (a new node carries an explicit
+    count), so save refuses a config the builder would reject."""
+
+    @staticmethod
+    def _grid(config: dict, *extra: GraphNode) -> PipelineGraph:
+        return _make_graph(
+            _make_node(
+                "quotes",
+                "quotes",
+                "constant",
+                {"values": [{"name": "quote_id", "value": "1"}]},
+            ),
+            _make_node("grid", "price_grid", "scenarioExpander", config),
+            *extra,
+            edges=[_make_edge("quotes", "grid")],
+        )
+
+    _VALID = {
+        "quote_id": "quote_id",
+        "column_name": "price",
+        "step_column": "scenario_index",
+        "min_value": 0.1,
+        "max_value": 0.3,
+        "stepCount": 3,
+        "steps": [],
+    }
+
+    @pytest.mark.parametrize(
+        ("step_count", "message"),
+        [
+            (None, "requires stepCount"),
+            (0, "stepCount >= 1"),
+            (2.5, "whole number"),
+        ],
+    )
+    def test_a_refused_save_names_the_setting_and_writes_nothing(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        step_count: float | None,
+        message: str,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        service = SavePipelineService(tmp_path)
+        main = tmp_path / "main.py"
+
+        def save(config: dict) -> None:
+            service.save(
+                SavePipelineRequest(
+                    name="main",
+                    description="",
+                    graph=self._grid(config),
+                    preamble="",
+                    source_file="main.py",
+                    base_revision=current_source_revision(main, tmp_path),
+                )
+            )
+
+        save(self._VALID)
+        before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+        assert tmp_path / "config/expander/price_grid.json" in before
+        invalid = {key: value for key, value in self._VALID.items() if key != "stepCount"}
+        if step_count is not None:
+            invalid["stepCount"] = step_count
+
+        with pytest.raises(HTTPException) as exc_info:
+            save(invalid)
+
+        assert exc_info.value.status_code == 400
+        assert "price_grid" in exc_info.value.detail
+        assert "stepCount" in exc_info.value.detail
+        assert message in exc_info.value.detail
+        after = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+        assert after == before
+
+    def test_an_instance_is_checked_through_its_original(self, tmp_path: Path) -> None:
+        """An instance carries only a reference; the original's grid size is what runs."""
+        instance = _make_node(
+            "grid_copy", "price_grid_copy", "scenarioExpander", {"instanceOf": "grid"}
+        )
+
+        SavePipelineService(tmp_path).validate_graph(
+            self._grid(self._VALID, instance), source_file="pipeline.py"
+        )
+
+    def test_a_fresh_palette_node_is_still_saveable(self, tmp_path: Path) -> None:
+        """An unfinished Scenario Expander (only its palette defaults) saves."""
+        import json
+
+        defaults = json.loads(
+            (Path(__file__).resolve().parents[1] / "src/haute/node_defaults.json").read_text()
+        )["scenarioExpander"]
+        graph = _make_graph(_make_node("grid", "price_grid", "scenarioExpander", defaults))
+
+        SavePipelineService(tmp_path).validate_graph(graph, source_file="pipeline.py")
+
+
+class TestValidateModellingValues:
+    """A malformed modelling value can never train, so save refuses it; an
+    unfinished node is incomplete, not malformed, and still saves."""
+
+    @staticmethod
+    def _graph(config: dict) -> PipelineGraph:
+        return _make_graph(_make_node("m", "train", "modelling", config))
+
+    @pytest.mark.parametrize(
+        ("config", "message"),
+        [
+            pytest.param(
+                {"algorithm": "GLM", "family": "Poisson"},
+                "Unknown algorithm 'GLM'",
+                id="algorithm-case",
+            ),
+            pytest.param({"algorithm": "gbm"}, "Unknown algorithm 'gbm'", id="unknown-algorithm"),
+            pytest.param(
+                {"algorithm": "glm", "family": "poison"},
+                "Unknown GLM family 'poison'",
+                id="unknown-family",
+            ),
+            pytest.param(
+                {"algorithm": "glm", "family": "poisson", "link": "logit"},
+                "Link 'logit' is not valid for the poisson family",
+                id="family-link",
+            ),
+            pytest.param(
+                {"algorithm": "catboost", "loss_function": "Gamma"},
+                "CatBoost does not support the Gamma loss",
+                id="family-loss",
+            ),
+        ],
+    )
+    def test_a_malformed_value_is_refused_naming_the_node(
+        self, tmp_path: Path, config: dict, message: str
+    ) -> None:
+        with pytest.raises(HTTPException) as exc_info:
+            SavePipelineService(tmp_path).validate_graph(
+                self._graph(config), source_file="pipeline.py"
+            )
+
+        assert exc_info.value.status_code == 400
+        assert "'train'" in exc_info.value.detail
+        assert message in exc_info.value.detail
+
+    @pytest.mark.parametrize(
+        "config",
+        [
+            pytest.param({}, id="palette-empty"),
+            pytest.param({"algorithm": "glm"}, id="glm-without-family"),
+            pytest.param({"algorithm": "catboost", "target": "claims"}, id="no-loss"),
+        ],
+    )
+    def test_an_incomplete_node_still_saves(self, tmp_path: Path, config: dict) -> None:
+        SavePipelineService(tmp_path).validate_graph(self._graph(config), source_file="pipeline.py")
+
+
+class TestValidateDeclaredConfigKeys:
+    def test_validate_graph_rejects_an_undeclared_key_before_writing(self, tmp_path: Path) -> None:
+        """A key the node type does not declare would be lost on save, so the
+        save is refused and names the node and the key instead."""
+        graph = _make_graph(
+            _make_node(
+                "out",
+                "quote_response",
+                "output",
+                {**make_output_config(["premium"]), "legacyFlag": True},
+            ),
+        )
+        service = SavePipelineService(tmp_path)
+
+        with pytest.raises(HTTPException) as exc_info:
+            service.validate_graph(graph, source_file="pipeline.py")
+
+        assert exc_info.value.status_code == 400
+        assert "quote_response" in exc_info.value.detail
+        assert "legacyFlag" in exc_info.value.detail
+
+    def test_a_refused_save_leaves_every_existing_file_unchanged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "main.py").write_text(
+            'import haute\npipeline = haute.Pipeline("main")\n', encoding="utf-8"
+        )
+
+        def save(config: dict) -> None:
+            SavePipelineService(tmp_path).save(
+                SavePipelineRequest(
+                    name="main",
+                    description="",
+                    graph=_make_graph(_make_node("out", "quote_response", "output", config)),
+                    preamble="",
+                    source_file="main.py",
+                    base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
+                )
+            )
+
+        save(make_output_config(["premium"]))
+        before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+        from haute._config_io import config_path_for_node
+        from haute._types import NodeType
+
+        assert tmp_path / config_path_for_node(NodeType.OUTPUT, "quote_response") in before
+
+        with pytest.raises(HTTPException) as exc_info:
+            save({**make_output_config(["premium"]), "legacyFlag": True})
+
+        assert exc_info.value.status_code == 400
+        assert "legacyFlag" in exc_info.value.detail
+        after = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+        assert after == before
+
+    def test_an_undeclared_key_inside_a_submodel_is_rejected(self, tmp_path: Path) -> None:
+        graph = _make_submodel_graph(
+            _make_node("child", "child_transform", "polars", {"code": "df = df", "stale": 1}),
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            SavePipelineService(tmp_path).validate_graph(graph, source_file="main.py")
+
+        assert exc_info.value.status_code == 400
+        assert "child_transform" in exc_info.value.detail
+        assert "stale" in exc_info.value.detail
+
+    def test_editor_state_keys_do_not_block_a_save(self, tmp_path: Path) -> None:
+        graph = _make_graph(
+            _make_node(
+                "out",
+                "quote_response",
+                "output",
+                {**make_output_config(["premium"]), "_columns": ["premium"]},
+            ),
+        )
+
+        SavePipelineService._validate_declared_config_keys(graph)
+
+
 class TestValidateUniqueSanitizedNamesRecursiveScope:
     """Global (root + submodel) scope for the save-side name guard.
 
@@ -324,7 +669,7 @@ class TestValidateUniqueSanitizedNamesRecursiveScope:
             root_nodes=(_make_node("root", "Foo Bar", "polars", {"code": "df"}),),
         )
         with pytest.raises(HTTPException) as exc_info:
-            SavePipelineService._validate_unique_sanitized_names(graph)
+            SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
         assert "Foo_Bar" in exc_info.value.detail
 
@@ -336,7 +681,7 @@ class TestValidateUniqueSanitizedNamesRecursiveScope:
             root_nodes=(_make_node("root", "Foo", "polars", {"code": "df"}),),
         )
         with pytest.raises(HTTPException) as exc_info:
-            SavePipelineService._validate_unique_sanitized_names(graph)
+            SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
         assert "Foo" in exc_info.value.detail
 
@@ -349,19 +694,20 @@ class TestValidateUniqueSanitizedNamesRecursiveScope:
             _make_node("c2", "my_node", "polars", {"code": "df"}),
         )
         with pytest.raises(HTTPException) as exc_info:
-            SavePipelineService._validate_unique_sanitized_names(graph)
+            SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
         assert "my_node" in exc_info.value.detail
 
-    def test_submodel_placeholder_matching_its_child_passes(self) -> None:
-        """A submodel named after one of its own children is legal: the
-        placeholder's runtime id is ``submodel__<name>`` (never collides)
-        and no ``def`` is emitted for it.  Guard must NOT over-reject."""
+    def test_submodel_occurrence_matching_its_child_raises_400(self) -> None:
+        """An occurrence alias is a name like any node's: one name, one node,
+        across the pipeline and its submodels (NAME-01)."""
         graph = _make_submodel_graph(
             _make_node("pricing", "pricing", "polars", {"code": "df"}),
             sm_name="pricing",
         )
-        SavePipelineService._validate_unique_sanitized_names(graph)
+        with pytest.raises(HTTPException) as exc_info:
+            SavePipelineService._validate_executable_names(graph)
+        assert "take one name, `pricing`" in exc_info.value.detail
 
     def test_root_node_vs_placeholder_same_label_still_raises_400(self) -> None:
         """Pin current root-graph semantics: a root node whose label matches
@@ -372,7 +718,7 @@ class TestValidateUniqueSanitizedNamesRecursiveScope:
             root_nodes=(_make_node("root", "pricing", "polars", {"code": "df"}),),
         )
         with pytest.raises(HTTPException) as exc_info:
-            SavePipelineService._validate_unique_sanitized_names(graph)
+            SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
 
     def test_child_duplicated_in_root_nodes_raises_400(self) -> None:
@@ -386,7 +732,7 @@ class TestValidateUniqueSanitizedNamesRecursiveScope:
             include_placeholder=False,
         )
         with pytest.raises(HTTPException) as exc_info:
-            SavePipelineService._validate_unique_sanitized_names(graph)
+            SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
 
     def test_distinct_names_across_modules_pass(self) -> None:
@@ -396,7 +742,7 @@ class TestValidateUniqueSanitizedNamesRecursiveScope:
             _make_node("c2", "Adjust", "polars", {"code": "df"}),
             root_nodes=(_make_node("root", "Load Data", "polars", {"code": "df"}),),
         )
-        SavePipelineService._validate_unique_sanitized_names(graph)
+        SavePipelineService._validate_executable_names(graph)
 
     def test_save_rejects_cross_module_collision_with_400(self, tmp_path: Path) -> None:
         """End-to-end through ``save()``: the guard fires before codegen, so
@@ -411,11 +757,43 @@ class TestValidateUniqueSanitizedNamesRecursiveScope:
             description="",
             graph=graph,
             source_file="main.py",
+            base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
         )
         with pytest.raises(HTTPException) as exc_info:
             svc.save(req)
         assert exc_info.value.status_code == 400
         assert "Foo_Bar" in exc_info.value.detail
+
+
+class TestValidateQuoteInputTablesDoNotShadowNodes:
+    """A Quote Input table's frame handle is an input name, so no node may share it.
+
+    The parser infers an edge from any parameter named like a node, so a
+    consumer's `quotes` parameter would bind the frame and a node `quotes`
+    both, and the saved file would not reload.
+    """
+
+    def test_a_table_labelled_like_a_submodel_child_raises_400(self) -> None:
+        graph = _make_submodel_graph(
+            _make_node("quotes", "quotes", "polars", {"code": "df"}),
+            root_nodes=(_make_node("quote", "Quote", "apiInput", _quote_input_config("quotes")),),
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            SavePipelineService._validate_quote_input_tables_do_not_shadow_nodes(graph)
+
+        assert exc_info.value.status_code == 400
+        detail = exc_info.value.detail
+        assert "table 'quotes'" in detail and "Quote Input 'Quote'" in detail
+        assert "node 'quotes'" in detail
+
+    def test_a_table_labelled_like_its_own_quote_input_passes(self) -> None:
+        graph = _make_graph(
+            _make_node("quote", "quote", "apiInput", _quote_input_config("quote", "drivers")),
+            _make_node("rated", "rated", "polars", {"code": "df = quote"}),
+        )
+
+        SavePipelineService._validate_quote_input_tables_do_not_shadow_nodes(graph)
 
 
 # ---------------------------------------------------------------------------
@@ -438,12 +816,14 @@ class TestResolveSourceFile:
         result = svc._resolve_source_file("pipeline.py")
         assert result == (tmp_path / "pipeline.py").resolve()
 
-    def test_traversal_raises_403(self, tmp_path: Path) -> None:
-        """A path that escapes the project root should raise 403."""
+    def test_traversal_is_refused_by_the_containment_check(self, tmp_path: Path) -> None:
+        """An escaping source file is refused by the one containment check; the
+        application handler answers it with 403 (tests/test_path_containment.py)."""
+        from haute.errors import PathOutsideProjectError
+
         svc = SavePipelineService(tmp_path)
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(PathOutsideProjectError):
             svc._resolve_source_file("../../etc/passwd")
-        assert exc_info.value.status_code == 403
 
 
 # ---------------------------------------------------------------------------
@@ -452,6 +832,92 @@ class TestResolveSourceFile:
 
 
 class TestSaveSimpleGraph:
+    @pytest.mark.parametrize("node_type", ["polars", "edgeJoin", "explore"])
+    def test_saved_column_settings_preserve_preview_results(self, tmp_path, monkeypatch, node_type):
+        from haute.executor import execute_graph
+        from haute.parser import parse_pipeline_file
+
+        monkeypatch.chdir(tmp_path)
+        source = _make_node(
+            "source",
+            "source",
+            "dataInput",
+            {
+                "inputType": "inline",
+                "format": "records",
+                "mode": "read",
+                "records": [{"_id": 1, "_category": "low", "unused": 9}],
+                "arguments": {"schema": {"_id": "Int64", "_category": "String", "unused": "Int64"}},
+                "contract": "opaque",
+            },
+        )
+        metadata = {
+            "selected_columns": ["_category", "_id"],
+            "column_renames": {"_category": "category", "_id": "id"},
+            "categorical_levels": {"category": ["low", "high", None]},
+        }
+        config = {**metadata, "contract": "opaque"}
+        nodes = [source, _make_node("result", "result", node_type, config)]
+        edges = [GraphEdge(id="input", source="source", target="result")]
+        if node_type == "edgeJoin":
+            config.update({"how": "left", "on": ["_id"]})
+            nodes.append(
+                _make_node(
+                    "lookup",
+                    "lookup",
+                    "dataInput",
+                    {
+                        "inputType": "inline",
+                        "format": "records",
+                        "mode": "read",
+                        "records": [{"_id": 1}],
+                        "arguments": {"schema": {"_id": "Int64"}},
+                        "contract": "opaque",
+                    },
+                )
+            )
+            edges[0].targetHandle = "base"
+            edges.append(
+                GraphEdge(id="lookup_input", source="lookup", target="result", targetHandle="join")
+            )
+        else:
+            # A transform names its input; Explore code sees its input as df.
+            config["code"] = "df = source" if node_type == "polars" else "df = df.select(pl.all())"
+        # NodeData validates/copies config, so assign the completed settings.
+        nodes[1].data.config = config
+        graph = PipelineGraph(nodes=nodes, edges=edges)
+        expected_preview = [{"category": "low", "id": 1}]
+        before = execute_graph(graph, target_node_id="result")["result"]
+        assert before.status == "ok", before.error
+        assert before.preview == expected_preview
+
+        service = SavePipelineService(tmp_path)
+        path = tmp_path / "main.py"
+        for save_index in range(3):
+            if save_index == 2:
+                # Clearing saved settings must remove their old effects, too.
+                metadata = {"selected_columns": [], "column_renames": {}, "categorical_levels": {}}
+                graph.node_map["result"].data.config.update(metadata)
+                expected_preview = source.data.config["records"]
+            saved = service.save(
+                SavePipelineRequest(
+                    graph=graph,
+                    name="main",
+                    source_file="main.py",
+                    base_revision=current_source_revision(path, tmp_path),
+                )
+            )
+            assert saved.status == "saved"
+            graph = parse_pipeline_file(path)
+            for key, value in metadata.items():
+                default = [] if key == "selected_columns" else None
+                assert graph.node_map["result"].data.config.get(key, default) == value
+            assert graph.node_map["source"].data.config["records"] == source.data.config["records"]
+            after = execute_graph(graph, target_node_id="result")["result"]
+            assert after.status == "ok", after.error
+            assert after.preview == expected_preview
+            assert [column.name for column in after.columns] == list(expected_preview[0])
+
     def test_save_single_file_graph(self, tmp_path: Path) -> None:
         """save() generates code, writes .py and .haute.json sidecar."""
         svc = SavePipelineService(tmp_path)
@@ -467,6 +933,7 @@ class TestSaveSimpleGraph:
             source_file="my_pipeline.py",
             sources=["live"],
             active_source="live",
+            base_revision=current_source_revision(tmp_path / "my_pipeline.py", tmp_path),
         )
 
         with patch.object(svc, "_validate_api_inputs_have_schemas"):
@@ -530,6 +997,7 @@ class TestSaveSimpleGraph:
             description="",
             graph=graph,
             source_file="my_pipeline.py",
+            base_revision=current_source_revision(tmp_path / "my_pipeline.py", tmp_path),
         )
 
         with (
@@ -544,7 +1012,7 @@ class TestSaveSimpleGraph:
         assert "inputs_by_parent" not in content
         assert "join_policy_data" not in content
         # The declared inputs themselves are preserved.
-        assert "'inputs': ['premium', 'quote_id']" in content
+        assert '"inputs": ["premium", "quote_id"]' in content
         # The drop is surfaced, not silent.
         omitted = [log for log in logs if log["event"] == "contract_inputs_by_parent_omitted_stale"]
         assert len(omitted) == 1
@@ -561,6 +1029,7 @@ class TestSaveSimpleGraph:
             description="",
             graph=graph,
             source_file="test_pipe.py",
+            base_revision=current_source_revision(tmp_path / "test_pipe.py", tmp_path),
         )
 
         with patch.object(svc, "_validate_api_inputs_have_schemas"):
@@ -588,6 +1057,7 @@ class TestSaveSimpleGraph:
             description="",
             graph=graph,
             source_file="broken.py",
+            base_revision=current_source_revision(tmp_path / "broken.py", tmp_path),
         )
 
         with pytest.raises(HTTPException) as exc_info:
@@ -633,6 +1103,7 @@ class TestWriteCodeMultiFile:
             description="",
             graph=graph,
             source_file="main.py",
+            base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
         )
 
         with patch("haute.codegen.graph_to_code_multi", return_value=fake_files):
@@ -653,6 +1124,7 @@ class TestWriteCodeMultiFile:
             description="",
             graph=graph,
             source_file="pipe.py",
+            base_revision=current_source_revision(tmp_path / "pipe.py", tmp_path),
         )
         py_path = tmp_path / "pipe.py"
 
@@ -687,6 +1159,7 @@ class TestWriteCodeMultiFile:
             description="",
             graph=graph,
             source_file="main.py",
+            base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
         )
 
         with patch("haute.codegen.graph_to_code_multi", return_value=fake_files):
@@ -709,7 +1182,7 @@ class TestWriteConfigFiles:
         graph = _make_graph(
             _make_node("src", "source", "dataInput", {"path": "data.parquet"}),
         )
-        child = _make_node("banding", "child_banding", "banding", {"bands": []})
+        child = _make_node("banding", "child_banding", "banding", {"factors": []})
         graph.submodels = {"pricing": _submodel_definition("pricing", child)}
 
         svc._write_config_files(graph)
@@ -720,7 +1193,7 @@ class TestWriteConfigFiles:
     def test_writes_config_files_from_submodel_graph(self, tmp_path: Path) -> None:
         """Config collection includes canonical definition graphs."""
         svc = SavePipelineService(tmp_path)
-        deep_child = _make_node("deep", "deep_banding", "banding", {"bands": []})
+        deep_child = _make_node("deep", "deep_banding", "banding", {"factors": []})
         graph = _make_graph()
         graph.submodels = {"inner": _submodel_definition("inner", deep_child)}
 
@@ -786,7 +1259,7 @@ class TestWriteConfigFiles:
         """Submodel child configs are owned and stale-cleaned like parent configs."""
         svc = SavePipelineService(tmp_path)
         graph_with_child = _make_graph()
-        child = _make_node("banding", "child_banding", "banding", {"bands": []})
+        child = _make_node("banding", "child_banding", "banding", {"factors": []})
         graph_with_child.submodels = {"pricing": _submodel_definition("pricing", child)}
         graph_without_child = _make_graph()
         graph_without_child.submodels = {"pricing": _submodel_definition("pricing")}
@@ -806,7 +1279,7 @@ class TestWriteConfigFiles:
         svc = SavePipelineService(tmp_path)
         py_path = tmp_path / "pipeline.py"
         py_path.write_text("# parsed by patched helper\n")
-        child = _make_node("banding", "child_banding", "banding", {"bands": []})
+        child = _make_node("banding", "child_banding", "banding", {"factors": []})
         disk_graph = _make_graph()
         disk_graph.submodels = {"pricing": _submodel_definition("pricing", child)}
 
@@ -896,7 +1369,7 @@ class TestRemoveStaleConfigFiles:
         svc = SavePipelineService(tmp_path)
 
         graph = _make_graph(
-            _make_node("b1", "my_banding", "banding", {"bands": []}),
+            _make_node("b1", "my_banding", "banding", {"factors": []}),
         )
         svc._write_config_files(graph)  # Writes config/banding/my_banding.json
 
@@ -949,7 +1422,7 @@ class TestRemoveStaleConfigFiles:
 
         # Active node → fresh config (written by _write_config_files).
         graph = _make_graph(
-            _make_node("b1", "current_banding", "banding", {"bands": []}),
+            _make_node("b1", "current_banding", "banding", {"factors": []}),
         )
         svc._write_config_files(graph)
 
@@ -1033,6 +1506,7 @@ class TestSaveEndpointIntegration:
                 "description": "Integration test",
                 "graph": graph,
                 "source_file": "saved_test.py",
+                "base_revision": current_source_revision(tmp_path / "saved_test.py", tmp_path),
             },
         )
         assert resp.status_code == 200
@@ -1074,10 +1548,135 @@ class TestSaveEndpointIntegration:
                 "description": "",
                 "graph": graph,
                 "source_file": "bad_pipe.py",
+                "base_revision": None,
             },
         )
         assert resp.status_code == 400
         assert "API Input" in resp.json()["detail"]
+
+    def test_save_quote_input_table_labelled_like_a_node_returns_400(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        """A parameter named `quotes` would bind both the frame and the node `quotes`."""
+
+        def node(nid: str, node_type: str, config: dict) -> dict:
+            return {
+                "id": nid,
+                "type": "pipelineNode",
+                "position": {"x": 0, "y": 0},
+                "data": {"label": nid, "nodeType": node_type, "config": config},
+            }
+
+        graph = {
+            "nodes": [
+                node("quote", "apiInput", _quote_input_config("quotes")),
+                node("quotes", "polars", {"code": "df = pl.LazyFrame({'x': [1]})"}),
+                node("aged", "polars", {"code": "df = quotes"}),
+            ],
+            "edges": [
+                {"id": "e1", "source": "quote", "target": "aged", "sourceHandle": "quotes"},
+            ],
+        }
+        resp = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "clash",
+                "description": "",
+                "graph": graph,
+                "source_file": "clash.py",
+                "base_revision": None,
+            },
+        )
+
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert "table 'quotes'" in detail
+        assert "Quote Input 'quote'" in detail
+        assert "node 'quotes'" in detail
+        assert not (tmp_path / "clash.py").exists()
+
+    def test_save_parent_binding_to_unrouted_input_returns_actionable_400(
+        self,
+        client: TestClient,
+    ) -> None:
+        """A structural ParseError must reach the client, not become an opaque 500.
+
+        Dropping onto an owner's generic input socket declares the public port
+        before it is routed, so this is a state the editor reaches by an
+        ordinary gesture; the message has to name the edge, occurrence and port.
+        """
+        graph = {
+            "nodes": [
+                {
+                    "id": "src",
+                    "type": "pipelineNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "label": "Source",
+                        "nodeType": "dataInput",
+                        "config": _file_input_config("data.parquet"),
+                    },
+                },
+                {
+                    "id": "scoring",
+                    "type": "pipelineNode",
+                    "position": {"x": 200, "y": 0},
+                    "data": {
+                        "label": "scoring",
+                        "nodeType": "submodel",
+                        "config": {
+                            "definitionId": "definition_scoring",
+                            "alias": "scoring",
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "bind",
+                    "source": "src",
+                    "target": "scoring",
+                    "targetHandle": "in__policy",
+                }
+            ],
+            "submodels": {
+                "definition_scoring": {
+                    "definitionId": "definition_scoring",
+                    "file": "modules/scoring.py",
+                    "graph": {
+                        "nodes": [
+                            {
+                                "id": "child",
+                                "data": {
+                                    "label": "Child",
+                                    "nodeType": "polars",
+                                    "config": {"code": "df = df"},
+                                },
+                            }
+                        ],
+                        "edges": [],
+                    },
+                    "inputPorts": [{"name": "policy", "targets": []}],
+                    "outputPorts": [],
+                },
+            },
+        }
+        resp = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "unrouted_pipe",
+                "description": "",
+                "graph": graph,
+                "source_file": "unrouted_pipe.py",
+                "base_revision": None,
+            },
+        )
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert "no internal targets" in detail
+        assert "edge_id=bind" in detail
+        assert "instance_id=scoring" in detail
+        assert "port_name=policy" in detail
 
     def test_save_empty_source_file_returns_400(self, client: TestClient) -> None:
         """Empty source_file should return 400."""
@@ -1103,6 +1702,7 @@ class TestSaveEndpointIntegration:
                 "description": "",
                 "graph": graph,
                 "source_file": "",
+                "base_revision": None,
             },
         )
         assert resp.status_code == 400
@@ -1171,6 +1771,7 @@ class TestSaveEndpointIntegration:
                 "description": "",
                 "graph": graph,
                 "source_file": "bad_edge_join.py",
+                "base_revision": current_source_revision(tmp_path / "bad_edge_join.py", tmp_path),
             },
         )
 
@@ -1226,6 +1827,7 @@ class TestSaveEndpointIntegration:
                 "source_file": "main.py",
                 "sources": ["live"],
                 "active_source": "live",
+                "base_revision": current_source_revision(tmp_path / "main.py", tmp_path),
             },
         )
         assert save.status_code == 200, save.text
@@ -1330,18 +1932,33 @@ class TestValidateApiInputsHaveSchemas:
         svc._validate_api_inputs_have_schemas(graph, warnings)
         assert any("Infer Tables" in w for w in warnings)
 
-    def test_mirrors_ndjson_api_input_cache(self, tmp_path: Path) -> None:
-        svc = SavePipelineService(tmp_path)
-        graph = _make_graph(
-            _make_node("api", "api_input", "apiInput", {"path": "input.ndjson"}),
+    def test_save_leaves_cache_state_untouched(self, tmp_path: Path) -> None:
+        """A structured API Input's tables are input snapshots: save writes none."""
+        (tmp_path / "input.ndjson").write_text('{"id": 1}\n', encoding="utf-8")
+        config = {
+            "path": "input.ndjson",
+            "tables": [
+                {
+                    "path": "$[:]",
+                    "label": "quotes",
+                    "emit": True,
+                    "columns": [{"name": "id", "path": "$[:].id", "type": "int", "selected": True}],
+                }
+            ],
+        }
+        graph = _make_graph(_make_node("api", "api_input", "apiInput", config))
+
+        saved = SavePipelineService(tmp_path).save(
+            SavePipelineRequest(
+                graph=graph,
+                name="main",
+                source_file="main.py",
+                base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
+            )
         )
 
-        with patch("haute._json_flatten.mirror_cache_to_committed") as mirror:
-            svc._mirror_api_input_caches(graph)
-
-        mirror.assert_called_once_with(
-            str((tmp_path / "input.ndjson").resolve()), graph.nodes[0].data.config
-        )
+        assert saved.status == "saved"
+        assert not (tmp_path / ".haute_cache").exists()
 
     def test_skips_empty_path(self, tmp_path: Path) -> None:
         svc = SavePipelineService(tmp_path)
@@ -1376,7 +1993,7 @@ class TestRemoveStaleConfigDiffPath:
 
         # First save: graph with banding node.
         graph1 = _make_graph(
-            _make_node("b1", "first_banding", "banding", {"bands": []}),
+            _make_node("b1", "first_banding", "banding", {"factors": []}),
         )
         svc._write_config_files(graph1)
         first_config = tmp_path / "config" / "banding" / "first_banding.json"
@@ -1385,7 +2002,7 @@ class TestRemoveStaleConfigDiffPath:
         # Second save: graph with different banding node.  Simulate the
         # disk snapshot: prev = what the first save wrote (first_banding).
         graph2 = _make_graph(
-            _make_node("b2", "second_banding", "banding", {"bands": []}),
+            _make_node("b2", "second_banding", "banding", {"factors": []}),
         )
         svc._prev_config_files = {"config/banding/first_banding.json": "{}"}
         svc._write_config_files(graph2)
@@ -1400,7 +2017,7 @@ class TestRemoveStaleConfigDiffPath:
         svc = SavePipelineService(tmp_path)
 
         graph = _make_graph(
-            _make_node("b1", "stable_banding", "banding", {"bands": []}),
+            _make_node("b1", "stable_banding", "banding", {"factors": []}),
         )
         svc._write_config_files(graph)
         svc._remove_stale_config_files(graph)
@@ -1503,6 +2120,7 @@ class TestWriteCodeOptions:
             graph=graph,
             source_file="pipe.py",
             preamble="# Custom preamble\n",
+            base_revision=current_source_revision(tmp_path / "pipe.py", tmp_path),
         )
         py_path = tmp_path / "pipe.py"
 
@@ -1524,6 +2142,7 @@ class TestWriteCodeOptions:
             graph=graph,
             source_file="pipe.py",
             preamble=None,
+            base_revision=current_source_revision(tmp_path / "pipe.py", tmp_path),
         )
         py_path = tmp_path / "pipe.py"
 
@@ -1568,6 +2187,7 @@ class TestSaveWithPipelineRoot:
             description="",
             graph=graph,
             source_file="rating/main.py",
+            base_revision=current_source_revision(rating_root / "main.py", tmp_path),
         )
 
         with patch(
@@ -1617,6 +2237,7 @@ class TestSaveWithPipelineRoot:
             description="",
             graph=graph,
             source_file="other/main.py",
+            base_revision=current_source_revision(other_root / "main.py", tmp_path),
         )
 
         with patch(
@@ -1631,3 +2252,661 @@ class TestSaveWithPipelineRoot:
 
         assert exc_info.value.status_code == 400
         assert "source_file" in exc_info.value.detail
+
+
+# ---------------------------------------------------------------------------
+# Stale Save Preconditions (ENG-T02)
+# ---------------------------------------------------------------------------
+
+
+def _snapshot_files(root: Path) -> dict[str, bytes]:
+    """Capture every file under root excluding __pycache__."""
+    files: dict[str, bytes] = {}
+    for p in root.rglob("*"):
+        if p.is_file() and "__pycache__" not in p.parts:
+            files[p.relative_to(root).as_posix()] = p.read_bytes()
+    return files
+
+
+def _make_graph_payload(extra_node_label: str | None = None) -> dict:
+    """Build a valid graph payload with an optional extra polars node."""
+    nodes = [
+        {
+            "id": "base_node",
+            "type": "pipelineNode",
+            "position": {"x": 0, "y": 0},
+            "data": {
+                "label": "base_node",
+                "nodeType": "polars",
+                "config": {"code": ""},
+            },
+        }
+    ]
+    if extra_node_label is not None:
+        nodes.append(
+            {
+                "id": f"node_{extra_node_label}",
+                "type": "pipelineNode",
+                "position": {"x": 100, "y": 0},
+                "data": {
+                    "label": extra_node_label,
+                    "nodeType": "polars",
+                    "config": {"code": ""},
+                },
+            }
+        )
+    return {"nodes": nodes, "edges": []}
+
+
+class TestStaleSavePrecondition:
+    @pytest.fixture()
+    def client(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+        monkeypatch.chdir(tmp_path)
+        from haute.server import app
+
+        return TestClient(app)
+
+    def test_stale_base_revision_is_rejected_and_newer_bytes_survive(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+    ) -> None:
+        """A stale base revision is rejected and on-disk files are untouched."""
+        resp0 = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "my_pipeline",
+                "description": "Initial",
+                "graph": _make_graph_payload(),
+                "source_file": "my_pipeline.py",
+                "base_revision": None,
+            },
+        )
+        assert resp0.status_code == 200
+        r_a = resp0.json()["source_revision"]
+        assert r_a is not None
+
+        py_file = tmp_path / "my_pipeline.py"
+        py_file.write_text(
+            py_file.read_text(encoding="utf-8") + "\n# external edit\n",
+            encoding="utf-8",
+        )
+
+        before = _snapshot_files(tmp_path)
+
+        resp_stale = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "my_pipeline",
+                "description": "Stale edit",
+                "graph": _make_graph_payload("extra"),
+                "source_file": "my_pipeline.py",
+                "base_revision": r_a,
+            },
+        )
+        assert resp_stale.status_code == 409
+        assert resp_stale.json()["detail"].startswith("stale_document_revision:")
+
+        after = _snapshot_files(tmp_path)
+        assert after == before
+
+    def test_fresh_base_revision_saves_and_returns_new_revision(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+    ) -> None:
+        """Saving with a fresh base revision succeeds and returns an updated revision."""
+        resp1 = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "fresh_pipeline",
+                "description": "Initial",
+                "graph": _make_graph_payload(),
+                "source_file": "fresh_pipeline.py",
+                "base_revision": None,
+            },
+        )
+        assert resp1.status_code == 200
+        r1 = resp1.json()["source_revision"]
+        assert r1 is not None
+
+        resp2 = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "fresh_pipeline",
+                "description": "Updated",
+                "graph": _make_graph_payload("extra"),
+                "source_file": "fresh_pipeline.py",
+                "base_revision": r1,
+            },
+        )
+        assert resp2.status_code == 200
+        r2 = resp2.json()["source_revision"]
+        assert r2 is not None
+        assert r2 != r1
+
+    @pytest.mark.parametrize(
+        ("first_label", "second_label"),
+        [("b", "c"), ("c", "b")],
+    )
+    def test_two_clients_from_same_base_only_first_arrival_saves(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+        first_label: str,
+        second_label: str,
+    ) -> None:
+        """When two edits share the same base revision, only the first arrival saves."""
+        resp0 = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "shared_pipeline",
+                "description": "Base",
+                "graph": _make_graph_payload(),
+                "source_file": "shared_pipeline.py",
+                "base_revision": None,
+            },
+        )
+        assert resp0.status_code == 200
+        r_a = resp0.json()["source_revision"]
+        assert r_a is not None
+
+        resp_first = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "shared_pipeline",
+                "description": f"Edit {first_label}",
+                "graph": _make_graph_payload(first_label),
+                "source_file": "shared_pipeline.py",
+                "base_revision": r_a,
+            },
+        )
+        assert resp_first.status_code == 200
+
+        resp_second = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "shared_pipeline",
+                "description": f"Edit {second_label}",
+                "graph": _make_graph_payload(second_label),
+                "source_file": "shared_pipeline.py",
+                "base_revision": r_a,
+            },
+        )
+        assert resp_second.status_code == 409
+        assert resp_second.json()["detail"].startswith("stale_document_revision:")
+
+        on_disk = (tmp_path / "shared_pipeline.py").read_text(encoding="utf-8")
+        assert f"def {first_label}(" in on_disk
+        assert f"def {second_label}(" not in on_disk
+
+    def test_config_only_external_edit_blocks_stale_save(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+    ) -> None:
+        """External modification to a node's config sidecar invalidates base revision."""
+        graph = {
+            "nodes": [
+                {
+                    "id": "src",
+                    "type": "pipelineNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataInput",
+                        "config": _file_input_config("data.parquet"),
+                    },
+                },
+            ],
+            "edges": [],
+        }
+        resp = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "cfg_pipeline",
+                "description": "Config pipeline",
+                "graph": graph,
+                "source_file": "cfg_pipeline.py",
+                "base_revision": None,
+            },
+        )
+        assert resp.status_code == 200
+        r_a = resp.json()["source_revision"]
+        assert r_a is not None
+
+        config_file = tmp_path / "config" / "data_input" / "source.json"
+        assert config_file.exists()
+        cfg_data = json.loads(config_file.read_text(encoding="utf-8"))
+        cfg_data["path"] = "modified.parquet"
+        modified_bytes = json.dumps(cfg_data, indent=2).encode("utf-8")
+        config_file.write_bytes(modified_bytes)
+
+        assert current_source_revision(tmp_path / "cfg_pipeline.py", tmp_path) != r_a
+
+        resp_stale = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "cfg_pipeline",
+                "description": "Config pipeline edit",
+                "graph": graph,
+                "source_file": "cfg_pipeline.py",
+                "base_revision": r_a,
+            },
+        )
+        assert resp_stale.status_code == 409
+        assert resp_stale.json()["detail"].startswith("stale_document_revision:")
+        assert config_file.read_bytes() == modified_bytes
+
+    def test_creation_requires_null_base_revision(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+    ) -> None:
+        """Creating a new file requires base_revision=None; existing requires a token."""
+        resp1 = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "creation_pipeline",
+                "description": "Absent with token",
+                "graph": _make_graph_payload(),
+                "source_file": "creation_pipeline.py",
+                "base_revision": "stale_token_12345",
+            },
+        )
+        assert resp1.status_code == 409
+        assert resp1.json()["detail"].startswith("stale_document_revision:")
+
+        resp2 = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "creation_pipeline",
+                "description": "Absent with None",
+                "graph": _make_graph_payload(),
+                "source_file": "creation_pipeline.py",
+                "base_revision": None,
+            },
+        )
+        assert resp2.status_code == 200
+        assert (tmp_path / "creation_pipeline.py").exists()
+
+        resp3 = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "creation_pipeline",
+                "description": "Existing with None",
+                "graph": _make_graph_payload("extra"),
+                "source_file": "creation_pipeline.py",
+                "base_revision": None,
+            },
+        )
+        assert resp3.status_code == 409
+        assert resp3.json()["detail"].startswith("stale_document_revision:")
+
+    def test_deleted_target_conflicts_with_old_revision(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+    ) -> None:
+        """Saving with an old revision against a deleted file is rejected."""
+        resp1 = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "deleted_pipeline",
+                "description": "Initial",
+                "graph": _make_graph_payload(),
+                "source_file": "deleted_pipeline.py",
+                "base_revision": None,
+            },
+        )
+        assert resp1.status_code == 200
+        old_rev = resp1.json()["source_revision"]
+        assert old_rev is not None
+
+        py_file = tmp_path / "deleted_pipeline.py"
+        assert py_file.exists()
+        py_file.unlink()
+
+        resp2 = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "deleted_pipeline",
+                "description": "Save after delete",
+                "graph": _make_graph_payload(),
+                "source_file": "deleted_pipeline.py",
+                "base_revision": old_rev,
+            },
+        )
+        assert resp2.status_code == 409
+        assert resp2.json()["detail"].startswith("stale_document_revision:")
+
+    def test_external_edit_between_precondition_and_first_write_is_rejected(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """External edit between precondition and first write is rejected."""
+        resp0 = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "mid_tx_pipeline",
+                "description": "Initial",
+                "graph": _make_graph_payload(),
+                "source_file": "mid_tx_pipeline.py",
+                "base_revision": None,
+            },
+        )
+        assert resp0.status_code == 200
+        rev_r = resp0.json()["source_revision"]
+        assert rev_r is not None
+
+        py_file = tmp_path / "mid_tx_pipeline.py"
+        original_compute = SavePipelineService._compute_disk_prev_config_files
+
+        def _compute_wrapper(service_self: SavePipelineService, p_path: Path) -> dict[str, str]:
+            py_file.write_text(
+                py_file.read_text(encoding="utf-8") + "\n# external mid-transaction\n",
+                encoding="utf-8",
+            )
+            return original_compute(service_self, p_path)
+
+        monkeypatch.setattr(
+            SavePipelineService,
+            "_compute_disk_prev_config_files",
+            _compute_wrapper,
+        )
+
+        before = _snapshot_files(tmp_path)
+
+        resp_edit = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "mid_tx_pipeline",
+                "description": "Edit",
+                "graph": _make_graph_payload("extra"),
+                "source_file": "mid_tx_pipeline.py",
+                "base_revision": rev_r,
+            },
+        )
+        assert resp_edit.status_code == 409
+        detail = resp_edit.json()["detail"]
+        assert detail.startswith("stale_document_revision:")
+        assert "committing" in detail
+
+        assert py_file.read_text(encoding="utf-8").endswith("\n# external mid-transaction\n")
+
+        after = _snapshot_files(tmp_path)
+        expected = dict(before)
+        expected["mid_tx_pipeline.py"] = py_file.read_bytes()
+        assert after == expected
+
+    def test_rollback_leaves_an_external_edit_that_landed_mid_transaction(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Rollback does not clobber an external edit that landed mid-transaction."""
+        resp0 = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "rollback_pipeline",
+                "description": "Initial",
+                "graph": _make_graph_payload(),
+                "source_file": "rollback_pipeline.py",
+                "base_revision": None,
+            },
+        )
+        assert resp0.status_code == 200
+        rev_r = resp0.json()["source_revision"]
+        assert rev_r is not None
+
+        py_file = tmp_path / "rollback_pipeline.py"
+        distinctive_bytes = b"# distinctive external bytes mid-transaction\n"
+        original_write_sidecar = SavePipelineService._write_sidecar
+
+        def _sidecar_wrapper(*args, **kwargs):
+            touched = kwargs.get("touched")
+            if touched is None and len(args) >= 5:
+                touched = args[4]
+            if touched is not None:
+                py_file.write_bytes(distinctive_bytes)
+                raise RuntimeError("forced sidecar failure")
+            return original_write_sidecar(*args, **kwargs)
+
+        # Keep the static calling convention so args[4] really is ``touched``.
+        monkeypatch.setattr(SavePipelineService, "_write_sidecar", staticmethod(_sidecar_wrapper))
+
+        from haute.server import app
+
+        no_raise_client = TestClient(app, raise_server_exceptions=False)
+        resp_edit = no_raise_client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "rollback_pipeline",
+                "description": "Edit with polars node",
+                "graph": _make_graph_payload("extra_polars"),
+                "source_file": "rollback_pipeline.py",
+                "base_revision": rev_r,
+            },
+        )
+        assert resp_edit.status_code >= 500
+
+        assert py_file.read_bytes() == distinctive_bytes
+        assert not (tmp_path / "config" / "polars" / "extra_polars.json").exists()
+        assert not (tmp_path / "config" / "polars" / "node_extra_polars.json").exists()
+        assert not (tmp_path / "config").exists() or not list((tmp_path / "config").rglob("*.json"))
+
+
+# ---------------------------------------------------------------------------
+# Global constants
+# ---------------------------------------------------------------------------
+
+_CONSTANTS_SOURCE = (
+    '"""Pipeline: main"""\n\n'
+    "import haute\n"
+    "import polars as pl\n\n"
+    'pipeline = haute.Pipeline("main")\n\n\n'
+    "@pipeline.polars\n"
+    "def quotes() -> pl.LazyFrame:\n"
+    '    df = pl.LazyFrame({"age": [30, 70]})\n'
+    "    return df\n"
+)
+
+
+def _constants_project(tmp_path: Path, source: str = _CONSTANTS_SOURCE) -> Path:
+    main = tmp_path / "main.py"
+    main.write_text(source, encoding="utf-8")
+    return main
+
+
+def _save_constants_graph(
+    tmp_path: Path,
+    graph: PipelineGraph,
+    *,
+    preamble: str | None = None,
+    sources: list[str] | None = None,
+):
+    from tests.conftest import current_source_revision
+
+    return SavePipelineService(project_root=tmp_path).save(
+        SavePipelineRequest(
+            graph=graph,
+            name="main",
+            preamble=preamble,
+            source_file="main.py",
+            sources=sources or ["live"],
+            base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
+        )
+    )
+
+
+def _with_constants(graph: PipelineGraph, constants: list[dict]) -> PipelineGraph:
+    return PipelineGraph.model_validate({**graph.model_dump(), "global_constants": constants})
+
+
+def _with_node_code(graph: PipelineGraph, code: str) -> PipelineGraph:
+    payload = graph.model_dump()
+    payload["nodes"][0]["data"]["config"]["code"] = code
+    return PipelineGraph.model_validate(payload)
+
+
+class TestSaveGlobalConstants:
+    RATE = [{"name": "rate", "type": "float", "value": 1.05}]
+
+    def test_the_file_and_the_generated_lines_come_and_go_with_the_constants(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from haute.parser import parse_pipeline_file
+
+        main = _constants_project(tmp_path)
+        constants_path = tmp_path / "config" / "global_constants.json"
+
+        _save_constants_graph(tmp_path, _with_constants(parse_pipeline_file(main), self.RATE))
+
+        saved = main.read_text(encoding="utf-8")
+        assert 'global_constants="config/global_constants.json"' in saved
+        assert "\nglobal_constants = pipeline.global_constants\n" in saved
+        assert json.loads(constants_path.read_text(encoding="utf-8")) == {
+            "constants": [{"name": "rate", "type": "float", "value": 1.05}]
+        }
+
+        _save_constants_graph(tmp_path, _with_constants(parse_pipeline_file(main), []))
+
+        assert not constants_path.exists()
+        assert "global_constants" not in main.read_text(encoding="utf-8")
+
+    def test_a_file_that_fails_to_load_survives_an_unrelated_save_untouched(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from haute.parser import parse_pipeline_file
+
+        main = _constants_project(tmp_path)
+        _save_constants_graph(tmp_path, _with_constants(parse_pipeline_file(main), self.RATE))
+        # Node code reads the constant before the file breaks.
+        _save_constants_graph(
+            tmp_path,
+            _with_node_code(
+                parse_pipeline_file(main),
+                'df = pl.LazyFrame({"age": [30]}).with_columns(pl.lit(global_constants.rate))',
+            ),
+        )
+        constants_path = tmp_path / "config" / "global_constants.json"
+        broken = b'{"constants": [ not json'
+        constants_path.write_bytes(broken)
+        graph = parse_pipeline_file(main)
+        assert graph.global_constants == []
+        assert graph.global_constants_error is not None
+
+        response = _save_constants_graph(
+            tmp_path,
+            _with_node_code(
+                graph,
+                'df = pl.LazyFrame({"age": [31]}).with_columns(pl.lit(global_constants.rate))',
+            ),
+        )
+
+        assert response.status == "saved"
+        assert constants_path.read_bytes() == broken
+        saved = main.read_text(encoding="utf-8")
+        assert 'global_constants="config/global_constants.json"' in saved
+        assert "\nglobal_constants = pipeline.global_constants\n" in saved
+        assert '"age": [31]' in saved
+
+    def test_constants_cannot_overwrite_a_file_that_failed_to_load(self, tmp_path: Path) -> None:
+        from haute.parser import parse_pipeline_file
+
+        main = _constants_project(tmp_path)
+        _save_constants_graph(tmp_path, _with_constants(parse_pipeline_file(main), self.RATE))
+        constants_path = tmp_path / "config" / "global_constants.json"
+        constants_path.write_bytes(b"{")
+        graph = _with_constants(parse_pipeline_file(main), self.RATE)
+
+        with pytest.raises(HTTPException) as excinfo:
+            _save_constants_graph(tmp_path, graph)
+
+        assert excinfo.value.status_code == 400
+        assert "Fix or remove the file" in str(excinfo.value.detail)
+        assert constants_path.read_bytes() == b"{"
+
+    def test_a_split_constant_missing_a_source_saves_with_a_warning(self, tmp_path: Path) -> None:
+        from haute.parser import parse_pipeline_file
+
+        main = _constants_project(tmp_path)
+        graph = _with_constants(
+            parse_pipeline_file(main),
+            [{"name": "loading", "type": "float", "by_source": {"live": 1.0}}],
+        )
+
+        response = _save_constants_graph(tmp_path, graph, sources=["live", "nb_batch"])
+
+        assert "Global constant 'loading' has no value for source 'nb_batch'." in response.warnings
+
+    @pytest.mark.parametrize(
+        ("mutate", "message"),
+        [
+            pytest.param(
+                lambda graph: PipelineGraph.model_validate(
+                    {
+                        **graph.model_dump(),
+                        "nodes": [
+                            {
+                                **graph.model_dump()["nodes"][0],
+                                "data": {
+                                    **graph.model_dump()["nodes"][0]["data"],
+                                    "label": "global_constants",
+                                },
+                            }
+                        ],
+                    }
+                ),
+                "takes the name `global_constants`",
+                id="node-name",
+            ),
+            pytest.param(
+                lambda graph: _with_node_code(graph, "global_constants = 1\ndf = pl.LazyFrame()"),
+                "code binds 'global_constants'",
+                id="node-code-binding",
+            ),
+            pytest.param(
+                lambda graph: _with_node_code(
+                    graph, "df = pl.LazyFrame({'x': [global_constants.missing]})"
+                ),
+                "reads global constant(s) ['missing']",
+                id="undefined-read",
+            ),
+        ],
+    )
+    def test_what_would_shadow_or_miss_a_constant_is_refused(
+        self,
+        tmp_path: Path,
+        mutate,
+        message: str,
+    ) -> None:
+        from haute.parser import parse_pipeline_file
+
+        main = _constants_project(tmp_path)
+        before = main.read_bytes()
+
+        with pytest.raises(HTTPException) as excinfo:
+            _save_constants_graph(tmp_path, mutate(parse_pipeline_file(main)))
+
+        assert excinfo.value.status_code == 400
+        assert message in str(excinfo.value.detail)
+        assert main.read_bytes() == before
+
+    def test_a_preamble_that_binds_the_name_is_refused(self, tmp_path: Path) -> None:
+        from haute.parser import parse_pipeline_file
+
+        main = _constants_project(tmp_path)
+
+        with pytest.raises(HTTPException) as excinfo:
+            _save_constants_graph(
+                tmp_path, parse_pipeline_file(main), preamble="global_constants = {}"
+            )
+
+        assert excinfo.value.status_code == 400
+        assert "The preamble binds 'global_constants'" in str(excinfo.value.detail)

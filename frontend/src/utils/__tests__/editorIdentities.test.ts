@@ -1,12 +1,17 @@
 import type { Edge, Node } from "@xyflow/react"
 import { describe, expect, it, vi } from "vitest"
 
-import type { EditorIdentityBatchResponse } from "../../api/types"
+import type {
+  EditorIdentityBatchResponse,
+  EditorIdentityRequestNode,
+} from "../../api/types"
 import type { SubmodelDefinition } from "../../types/node"
 import {
+  EditorNameCollisionError,
   applyEditorIdentityResponse,
   attachEditorEdgeIdentities,
   buildEditorIdentityRequest,
+  resolveCanonicalGraphIdentities,
   resolveEditorGraphIdentities,
 } from "../editorIdentities"
 
@@ -22,7 +27,7 @@ function node(
 }
 
 describe("editor identity resolution", () => {
-  it("builds a strict batch from authored labels and structural source handles", () => {
+  it("builds a strict batch with occurrence name and public submodel port handles", () => {
     const api = node("api", "class", "apiInput", {
       tables: [
         {
@@ -49,14 +54,13 @@ describe("editor identity resolution", () => {
       graph: { nodes: [], edges: [] },
       inputPorts: [],
       outputPorts: [{
-        portId: "written-premium",
-        label: "Written premium",
+        name: "written-premium",
         source: { nodeId: "result", handleId: null },
       }],
     }
 
     expect(buildEditorIdentityRequest(
-      [api, occurrence],
+      [api, node("ordinary", "Polars", "polars"), occurrence],
       { "pricing-definition": definition },
       RESERVED,
     )).toEqual({
@@ -65,15 +69,20 @@ describe("editor identity resolution", () => {
           node_id: "api",
           label: "class",
           node_type: "apiInput",
-          submodel_alias: null,
           source_handles: ["quotes"],
+        },
+        {
+          node_id: "ordinary",
+          label: "Polars",
+          node_type: "polars",
+          source_handles: [],
         },
         {
           node_id: "pricing",
           label: "Tarif café",
           node_type: "submodel",
-          submodel_alias: "pricing_secondary",
           source_handles: ["out__written-premium"],
+          alias: "pricing_secondary",
         },
       ],
     })
@@ -85,9 +94,13 @@ describe("editor identity resolution", () => {
       node("api", "Quotes", "apiInput"),
     ]
     const response: EditorIdentityBatchResponse = {
+      violations: null,
       identities: [
         {
           node_id: "ordinary",
+          label: "class café",
+          alias: null,
+          collision: null,
           function_name: "node_class_cafe",
           config_reference: "config/polars/node_class_cafe.json",
           default_input_name: "node_class_cafe",
@@ -95,6 +108,9 @@ describe("editor identity resolution", () => {
         },
         {
           node_id: "api",
+          label: "Quotes",
+          alias: null,
+          collision: null,
           function_name: "quotes",
           config_reference: "config/quote_input/quotes.json",
           default_input_name: null,
@@ -139,8 +155,12 @@ describe("editor identity resolution", () => {
     const nodes = [node("source", "class", "polars")]
     const edges = [{ id: "edge", source: "source", target: "target" }]
     const resolve = vi.fn(async (): Promise<EditorIdentityBatchResponse> => ({
+      violations: null,
       identities: [{
         node_id: "source",
+        label: "class",
+        alias: null,
+        collision: null,
         function_name: "node_class",
         config_reference: null,
         default_input_name: "node_class",
@@ -158,5 +178,163 @@ describe("editor identity resolution", () => {
     expect(resolve).toHaveBeenCalledOnce()
     expect(result.nodes[0].data._functionName).toBe("node_class")
     expect(result.edges[0].data?._inputName).toBe("node_class")
+  })
+
+  it("resolves root and canonical definition scopes without retaining the boundary node", async () => {
+    const child = node("__submodel_input_ports__", "Child", "polars")
+    const definition: SubmodelDefinition = {
+      definitionId: "pricing", file: "modules/pricing.py",
+      graph: {
+        nodes: [child], edges: [{ id: "child-edge", source: child.id, target: "sink" }],
+        pipeline_name: "Pricing child", pipeline_description: null,
+        preamble: "from haute import submodel", source_file: "modules/pricing.py",
+        preserved_blocks: ["# keep this"],
+      },
+      inputPorts: [{ name: "policy", targets: [{ nodeId: child.id, handleId: null }] }],
+      outputPorts: [],
+    }
+    const root = node("instance", "Pricing", "submodel", { definitionId: "pricing", alias: "pricing" })
+    const resolve = vi.fn(async (request): Promise<EditorIdentityBatchResponse> => ({
+      violations: null,
+      identities: request.nodes.map((requestNode: EditorIdentityRequestNode) => ({
+        node_id: requestNode.node_id,
+        label: requestNode.label,
+        alias: null,
+        collision: null,
+        function_name: `fn_${requestNode.node_id}`,
+        config_reference: null,
+        default_input_name: `in_${requestNode.node_id}`,
+        source_handle_input_names: requestNode.node_type === "submodelPort" ? { policy: "policy_input" } : {},
+      })),
+    }))
+
+    const result = await resolveCanonicalGraphIdentities({
+      nodes: [root], edges: [], submodels: { pricing: definition },
+      reservedApiInputFrameLabels: RESERVED, resolve,
+    })
+
+    expect(resolve).toHaveBeenCalledTimes(2)
+    expect(resolve.mock.calls.map(([request]) => request.nodes.map(
+      (item: EditorIdentityRequestNode) => item.node_id,
+    ))).toEqual([
+      ["instance"], ["__submodel_input_ports__", "__submodel_input_ports___1"],
+    ])
+    expect(resolve.mock.calls[1]?.[0].nodes.at(-1)).toMatchObject({
+      node_type: "submodelPort",
+      source_handles: ["policy"],
+    })
+    expect(result.nodes[0].data._functionName).toBe("fn_instance")
+    expect(result.submodels.pricing.graph.nodes[0].data._functionName).toBe("fn___submodel_input_ports__")
+    expect(result.submodels.pricing.graph.edges[0].data?._inputName).toBe("in___submodel_input_ports__")
+    expect(result.submodels.pricing.graph.nodes).toHaveLength(1)
+    expect(result.submodels.pricing.graph).toMatchObject({
+      pipeline_name: "Pricing child", pipeline_description: null,
+      preamble: "from haute import submodel", source_file: "modules/pricing.py",
+      preserved_blocks: ["# keep this"],
+    })
+    expect(result.submodels.pricing.graph).not.toHaveProperty("warning")
+    expect(result.submodels.pricing.graph).not.toBe(definition.graph)
+    expect(definition.graph.nodes[0].data).not.toHaveProperty("_functionName")
+    expect(definition.graph).toEqual({
+      nodes: [child], edges: [{ id: "child-edge", source: child.id, target: "sink" }],
+      pipeline_name: "Pricing child", pipeline_description: null,
+      preamble: "from haute import submodel", source_file: "modules/pricing.py",
+      preserved_blocks: ["# keep this"],
+    })
+  })
+
+  it("rejects a submodel node without alias", () => {
+    const occurrence = node("pricing", "Tarif café", "submodel", {
+      definitionId: "pricing-definition",
+    })
+    const definition: SubmodelDefinition = {
+      definitionId: "pricing-definition",
+      file: "modules/pricing.py",
+      graph: { nodes: [], edges: [] },
+      inputPorts: [],
+      outputPorts: [],
+    }
+    expect(() =>
+      buildEditorIdentityRequest(
+        [occurrence],
+        { "pricing-definition": definition },
+        RESERVED,
+      ),
+    ).toThrow("Cannot resolve editor identity for submodel pricing: malformed occurrence")
+  })
+})
+
+describe("naming against the document", () => {
+  const context = { nodes: [], edges: [], submodels: undefined, preamble: undefined }
+  const identity = (nodeId: string, label: string, alias: string | null, collision: string | null) => ({
+    node_id: nodeId,
+    label,
+    alias,
+    collision,
+    function_name: label.replaceAll(" ", "_"),
+    config_reference: null,
+    default_input_name: alias === null ? label.replaceAll(" ", "_") : null,
+    source_handle_input_names: {},
+  })
+
+  it("sends the naming context and applies the labels and aliases the server allocated", async () => {
+    const definition: SubmodelDefinition = {
+      definitionId: "rates",
+      file: "modules/rates.py",
+      graph: { nodes: [], edges: [] },
+      inputPorts: [],
+      outputPorts: [],
+    }
+    const copy = node("copy", "X copy", "polars")
+    const pasted = node("pasted", "rates copy", "submodel", { definitionId: "rates", alias: "rates" })
+    const resolve = vi.fn(async (): Promise<EditorIdentityBatchResponse> => ({
+      violations: [],
+      identities: [identity("copy", "X copy 2", null, null), identity("pasted", "rates_2", "rates_2", null)],
+    }))
+
+    const resolved = await resolveEditorGraphIdentities({
+      nodes: [copy, pasted],
+      edges: [],
+      submodels: { rates: definition },
+      reservedApiInputFrameLabels: RESERVED,
+      naming: { graph: context, allocate: true, scope: null },
+      resolve,
+    })
+
+    expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ graph: context, allocate: true }))
+    expect(resolved.nodes.map((n) => n.data.label)).toEqual(["X copy 2", "rates_2"])
+    expect(resolved.nodes[1].data.config).toMatchObject({ definitionId: "rates", alias: "rates_2" })
+  })
+
+  it("refuses the whole batch when the server names a collision", async () => {
+    const renamed = node("first", "pl", "polars")
+    const message = "Node 'pl' (the pipeline) takes the name `pl`, which the generated module binds to polars."
+    const resolve = vi.fn(async (): Promise<EditorIdentityBatchResponse> => ({
+      violations: [],
+      identities: [identity("first", "pl", null, message)],
+    }))
+
+    await expect(resolveEditorGraphIdentities({
+      nodes: [renamed],
+      edges: [],
+      submodels: {},
+      reservedApiInputFrameLabels: RESERVED,
+      naming: { graph: context, allocate: false, scope: null },
+      resolve,
+    })).rejects.toEqual(new EditorNameCollisionError("first", message))
+  })
+})
+
+describe("naming inside a drilled submodel", () => {
+  it("scopes every node to the definition being edited", () => {
+    const request = buildEditorIdentityRequest(
+      [node("child", "rate child", "polars")],
+      {},
+      RESERVED,
+      { graph: { nodes: [], edges: [], submodels: undefined, preamble: undefined }, allocate: true, scope: "rates" },
+    )
+
+    expect(request.nodes[0]).toMatchObject({ node_id: "child", submodel: "rates" })
+    expect(request.allocate).toBe(true)
   })
 })

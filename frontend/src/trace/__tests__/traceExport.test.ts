@@ -31,6 +31,7 @@ function traceFixture(): TraceResult {
         input_values: {},
         output_values: { base: 100 },
         column_relevant: true,
+        contributed_columns: [], derivations: [],
         expression: null,
         calculation: null,
         node_detail: null,
@@ -50,6 +51,7 @@ function traceFixture(): TraceResult {
         input_values: { base: 100 },
         output_values: { technical_premium: 123.456789 },
         column_relevant: true,
+        contributed_columns: [], derivations: [],
         expression: null,
         calculation: { substituted_text: "100 * 1.23456789", result_value: 123.456789, input_values: { base: 100 } },
         node_detail: {
@@ -95,11 +97,12 @@ function traceFixture(): TraceResult {
         match_columns: ["quote_id"],
         ignored_columns: [],
         matched_row_indices: [1, 2],
+        seed_node_ids: [],
       },
     ],
     generated_at: "2026-07-23T12:34:56+00:00",
     pipeline_source: "pricing/pipeline.py",
-    execution_origin: "preview_cache",
+    execution_origin: "trace_cache",
   }
 }
 
@@ -109,10 +112,11 @@ describe("trace export projection", () => {
     const evidence = rows.filter((row) => row.section === "step" || row.section === "omission")
 
     expect(evidence.map((row) => row.topologicalRank)).toEqual([
-      0, 0, 0, 0, 0, 0, 0, 0,
+      0, 0, 0, 0, 0, 0, 0, 0, 0,
       1, 1,
-      2, 2, 2, 2, 2, 2, 2, 2,
+      2, 2, 2, 2, 2, 2, 2, 2, 2,
     ])
+    expect(rows.filter((row) => row.field === "derivations").map((row) => row.value)).toEqual(["[]", "[]"])
     expect(rows).toContainEqual(expect.objectContaining({
       section: "trace",
       field: "output_value",
@@ -126,6 +130,18 @@ describe("trace export projection", () => {
       .toContain('"default_used":true')
     expect(rows.find((row) => row.section === "omission" && row.field === "reason")?.value)
       .toBe("duplicate_exact_match")
+  })
+
+  it("exports \"One of N identical rows\" only for a step that is one of several identical rows", () => {
+    const trace = traceFixture()
+    trace.steps[0] = { ...trace.steps[0], identical_row_count: 3 }
+    const rows = buildTraceExportRows(trace)
+
+    expect(rows.filter((row) => row.field === "identical_rows")).toEqual([
+      expect.objectContaining({ section: "step", nodeId: trace.steps[0].node_id }),
+    ])
+    expect(traceToMarkdown(trace)).toContain("One of 3 identical rows")
+    expect(traceToCsv(trace)).toContain("One of 3 identical rows")
   })
 
   it("escapes Markdown and CSV without changing the projected values", () => {

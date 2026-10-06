@@ -6,6 +6,10 @@ Pure default-value assertions removed (Pydantic guarantees those).
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import textwrap
+
 import pytest
 from pydantic import ValidationError
 
@@ -16,16 +20,58 @@ from haute.schemas import (
     GraphEdge,
     GraphNode,
     GraphNodeData,
-    OptimiserEstimateRequest,
-    OptimiserFrontierAutoRangeRequest,
-    OptimiserFrontierRequest,
-    OptimiserSolveRequest,
+    PipelineSettingsValues,
     PreviewNodeRequest,
+    PreviewSeedPlanEntry,
     SavePipelineRequest,
     TraceRequest,
-    TrainRequest,
     WriteOutputRequest,
 )
+
+_LIST_UNBUILT_MODELS = textwrap.dedent(
+    """
+    import haute.server
+    from pydantic import BaseModel
+
+    def models(cls):
+        for sub in cls.__subclasses__():
+            yield sub
+            yield from models(sub)
+
+    for model in set(models(BaseModel)):
+        if model.__module__.startswith("haute") and not model.__pydantic_complete__:
+            print(f"{model.__module__}.{model.__qualname__}")
+    """
+)
+
+
+def test_every_haute_model_is_built_at_import() -> None:
+    # A model left for pydantic to build lazily is completed by the first request
+    # that uses it, and two request threads doing so at once can leave it without
+    # a validator. A fresh interpreter, because any earlier use in this process
+    # would already have built the model.
+    result = subprocess.run(
+        [sys.executable, "-c", _LIST_UNBUILT_MODELS],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=True,
+    )
+    assert result.stdout.split() == []
+
+
+@pytest.mark.parametrize("created_at", ["2026-09-22T12:00:00", "2026-09-22T12:00:00+01:00"])
+def test_preview_seed_plan_rejects_timestamps_without_utc_offset(created_at: str) -> None:
+    with pytest.raises(ValidationError, match="created_at must include a UTC offset"):
+        PreviewSeedPlanEntry(
+            node_id="join",
+            node_label="Join",
+            identity_digest="a" * 64,
+            generation_id="generation",
+            columns=None,
+            created_at=created_at,
+            kind="seeded",
+        )
 
 
 def test_execution_cache_proof_rejects_an_incoherent_miss_total() -> None:
@@ -71,7 +117,7 @@ class TestValidation:
             WriteOutputRequest(graph=Graph())
 
     def test_save_pipeline_accepts_minimal(self):
-        r = SavePipelineRequest(graph=Graph())
+        r = SavePipelineRequest(graph=Graph(), base_revision=None)
         assert r.name == "main"
 
     def test_preview_node_requires_node_id(self):
@@ -79,8 +125,13 @@ class TestValidation:
             PreviewNodeRequest(graph=Graph())
 
     def test_trace_request_accepts_minimal(self):
-        r = TraceRequest(graph=Graph())
+        r = TraceRequest(seed_plan=[], graph=Graph())
         assert r.row_index == 0
+
+    def test_trace_request_requires_its_previews_seed_plan(self):
+        # A trace names the generations its preview read, even when none.
+        with pytest.raises(ValidationError, match="seed_plan"):
+            TraceRequest(graph=Graph())
 
 
 class TestCompositeStructure:
@@ -145,127 +196,123 @@ class TestPreviewNodeRequestBoundaries:
 class TestTraceRequestBoundaries:
     def test_row_index_negative_fails(self):
         with pytest.raises(ValidationError):
-            TraceRequest(graph=Graph(), row_index=-1)
+            TraceRequest(seed_plan=[], graph=Graph(), row_index=-1)
 
     def test_row_index_zero_succeeds(self):
-        r = TraceRequest(graph=Graph(), row_index=0)
+        r = TraceRequest(seed_plan=[], graph=Graph(), row_index=0)
         assert r.row_index == 0
 
     def test_row_limit_zero_fails(self):
         with pytest.raises(ValidationError):
-            TraceRequest(graph=Graph(), row_limit=0)
+            TraceRequest(seed_plan=[], graph=Graph(), row_limit=0)
 
     def test_row_limit_above_max_fails(self):
         with pytest.raises(ValidationError):
-            TraceRequest(graph=Graph(), row_limit=10001)
+            TraceRequest(seed_plan=[], graph=Graph(), row_limit=10001)
 
     def test_row_limit_min_boundary(self):
-        r = TraceRequest(graph=Graph(), row_limit=1)
+        r = TraceRequest(seed_plan=[], graph=Graph(), row_limit=1)
         assert r.row_limit == 1
 
 
 class TestSavePipelineRequestDefaults:
     def test_name_defaults_to_main(self):
-        r = SavePipelineRequest()
+        r = SavePipelineRequest(base_revision=None)
         assert r.name == "main"
 
     def test_graph_defaults_to_empty(self):
-        r = SavePipelineRequest()
+        r = SavePipelineRequest(base_revision=None)
         assert isinstance(r.graph, Graph)
         assert r.graph.nodes == []
         assert r.graph.edges == []
 
     def test_explicit_name_overrides_default(self):
-        r = SavePipelineRequest(name="custom")
+        r = SavePipelineRequest(name="custom", base_revision=None)
         assert r.name == "custom"
 
-
-_SCHEMA_CASES_WITH_NODE_ID = [
-    PreviewNodeRequest,
-    TraceRequest,
-    WriteOutputRequest,
-    TrainRequest,
-    OptimiserSolveRequest,
-    OptimiserEstimateRequest,
-    OptimiserFrontierAutoRangeRequest,
-    OptimiserFrontierRequest,
-]
-
-
-def _kwargs_for(schema_cls: type) -> dict:
-    if schema_cls is TraceRequest:
-        return {"graph": Graph()}
-    if schema_cls is OptimiserFrontierRequest:
-        return {"job_id": "j"}
-    return {"graph": Graph(), "node_id": "n"}
-
-
-class TestStreamingChunkSizeField:
-    """The optional ``streaming_chunk_size`` field on request schemas."""
-
-    @pytest.mark.parametrize("schema_cls", _SCHEMA_CASES_WITH_NODE_ID)
-    def test_default_is_none(self, schema_cls):
-        r = schema_cls(**_kwargs_for(schema_cls))
-        assert r.streaming_chunk_size is None
-
-    @pytest.mark.parametrize("schema_cls", _SCHEMA_CASES_WITH_NODE_ID)
-    def test_accepts_positive_int(self, schema_cls):
-        r = schema_cls(**_kwargs_for(schema_cls), streaming_chunk_size=12345)
-        assert r.streaming_chunk_size == 12345
-
-    @pytest.mark.parametrize("schema_cls", _SCHEMA_CASES_WITH_NODE_ID)
-    def test_accepts_lower_boundary(self, schema_cls):
-        r = schema_cls(**_kwargs_for(schema_cls), streaming_chunk_size=1)
-        assert r.streaming_chunk_size == 1
-
-    @pytest.mark.parametrize("schema_cls", _SCHEMA_CASES_WITH_NODE_ID)
-    def test_accepts_upper_boundary(self, schema_cls):
-        r = schema_cls(**_kwargs_for(schema_cls), streaming_chunk_size=10_000_000)
-        assert r.streaming_chunk_size == 10_000_000
-
-    @pytest.mark.parametrize("schema_cls", _SCHEMA_CASES_WITH_NODE_ID)
-    def test_rejects_zero(self, schema_cls):
+    def test_omitting_base_revision_raises_validation_error(self):
         with pytest.raises(ValidationError):
-            schema_cls(**_kwargs_for(schema_cls), streaming_chunk_size=0)
+            SavePipelineRequest()
 
-    @pytest.mark.parametrize("schema_cls", _SCHEMA_CASES_WITH_NODE_ID)
-    def test_rejects_negative(self, schema_cls):
-        with pytest.raises(ValidationError):
-            schema_cls(**_kwargs_for(schema_cls), streaming_chunk_size=-1)
 
-    @pytest.mark.parametrize("schema_cls", _SCHEMA_CASES_WITH_NODE_ID)
-    def test_rejects_above_upper_boundary(self, schema_cls):
-        with pytest.raises(ValidationError):
-            schema_cls(**_kwargs_for(schema_cls), streaming_chunk_size=10_000_001)
+class TestPipelineSettingsValues:
+    """The PATCH body of ``/api/pipeline-settings``: the file's keys, each optional."""
 
-    @pytest.mark.parametrize("schema_cls", _SCHEMA_CASES_WITH_NODE_ID)
-    def test_rejects_non_int(self, schema_cls):
-        with pytest.raises(ValidationError):
-            schema_cls(**_kwargs_for(schema_cls), streaming_chunk_size="big")
+    def test_every_key_is_optional_and_null_is_distinct_from_absent(self):
+        assert PipelineSettingsValues().model_dump(exclude_unset=True) == {}
+        body = PipelineSettingsValues.model_validate({"preview_memory_gb": None})
+        assert body.model_dump(exclude_unset=True) == {"preview_memory_gb": None}
 
-    @pytest.mark.parametrize("schema_cls", _SCHEMA_CASES_WITH_NODE_ID)
-    @pytest.mark.parametrize("bool_value", [True, False])
-    def test_rejects_bool(self, schema_cls, bool_value):
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            ("chunk_rows", 1),
+            ("chunk_rows", 10_000_000),
+            ("caching", False),
+            ("cache_size_gb", 0.5),
+            ("preview_memory_gb", 12),
+            ("kept_free_gb", 0),
+            ("pipeline_time_limit_minutes", 10_080),
+            ("modelling_time_limit_minutes", 0.25),
+            ("optimisation_time_limit_minutes", 90),
+        ],
+    )
+    def test_accepts_values_in_range(self, key, value):
+        assert getattr(PipelineSettingsValues.model_validate({key: value}), key) == value
+
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            ("chunk_rows", 0),
+            ("chunk_rows", 10_000_001),
+            ("chunk_rows", True),
+            ("chunk_rows", "big"),
+            ("caching", "yes"),
+            ("caching", 1),
+            ("cache_size_gb", 0),
+            ("cache_size_gb", False),
+            ("preview_memory_gb", -1),
+            ("kept_free_gb", -0.5),
+            ("kept_free_gb", True),
+            ("pipeline_time_limit_minutes", 0),
+            ("pipeline_time_limit_minutes", 10_081),
+            ("optimisation_time_limit_minutes", True),
+        ],
+    )
+    def test_rejects_values_out_of_range_and_bools_for_numbers(self, key, value):
         with pytest.raises(ValidationError):
-            schema_cls(**_kwargs_for(schema_cls), streaming_chunk_size=bool_value)
+            PipelineSettingsValues.model_validate({key: value})
+
+    def test_rejects_an_unknown_key(self):
+        with pytest.raises(ValidationError):
+            PipelineSettingsValues.model_validate({"chunk_row": 1000})
 
 
 class TestAssistantMessageRequest:
-    def test_accepts_session_and_message_only(self):
+    def test_accepts_session_message_and_source_file(self):
         from haute.schemas import AssistantMessageRequest
 
         request = AssistantMessageRequest(
             session_id="session-1",
             message="Author this pipeline",
+            source_file="main.py",
         )
         assert request.session_id == "session-1"
         assert request.message == "Author this pipeline"
+        assert request.source_file == "main.py"
 
     @pytest.mark.parametrize(
         "payload",
         [
-            {"session_id": "s", "message": "m", "unknown": True},
-            {"session_id": "s", "message": "m", "confirmation": {"plan_hash": "a" * 64}},
+            {"session_id": "s", "message": "m"},
+            {"session_id": "s", "message": "m", "source_file": ""},
+            {"session_id": "s", "message": "m", "source_file": "main.py", "unknown": True},
+            {
+                "session_id": "s",
+                "message": "m",
+                "source_file": "main.py",
+                "confirmation": {"plan_hash": "a" * 64},
+            },
         ],
     )
     def test_request_is_closed(self, payload):
@@ -291,3 +338,46 @@ class TestAssistantStatus:
                 mutations_enabled=True,
                 mutations_reason=None,
             )
+
+
+class TestAssistantTurnOutcome:
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"kind": "applied", "detail": None, "changes": ["a" * 64, "b" * 64]},
+            {"kind": "answered", "detail": None, "changes": []},
+            {"kind": "needs_input", "detail": "Which column?", "changes": []},
+            {"kind": "needs_input", "detail": "Which band edges?", "changes": ["a" * 64]},
+            {"kind": "blocked", "detail": "The file is missing.", "changes": ["a" * 64]},
+            {"kind": "committed_unverified", "detail": "Verification failed.", "changes": []},
+            {
+                "kind": "incomplete",
+                "detail": "A dry-run validated a plan that was never applied.",
+                "changes": [],
+            },
+        ],
+    )
+    def test_valid_outcomes(self, payload):
+        from haute.schemas import AssistantTurnOutcome
+
+        assert AssistantTurnOutcome.model_validate(payload).model_dump() == payload
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"kind": "applied", "detail": "extra", "changes": ["a" * 64]},
+            {"kind": "needs_input", "detail": None, "changes": []},
+            {"kind": "blocked", "detail": "  ", "changes": []},
+            {"kind": "committed_unverified", "changes": []},
+            {"kind": "incomplete", "detail": None, "changes": []},
+            {"kind": "finished", "detail": None, "changes": []},
+            {"kind": "applied", "detail": None, "changes": []},
+            {"kind": "answered", "detail": None, "changes": ["a" * 64]},
+            {"kind": "blocked", "detail": "The file is missing."},
+        ],
+    )
+    def test_detail_must_match_the_kind(self, payload):
+        from haute.schemas import AssistantTurnOutcome
+
+        with pytest.raises(ValidationError):
+            AssistantTurnOutcome.model_validate(payload)

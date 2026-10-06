@@ -1,9 +1,11 @@
 import type { Edge, Node, XYPosition } from "@xyflow/react"
+import { isSteppedTransformConfig, renameStepInputs } from "./polarsStepInputs"
 import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
 import { NODE_TYPES } from "./nodeTypes"
 import { appEdge, appNode, selectOnlyNode } from "./flowElements"
 import { EDGE_JOIN_BASE_HANDLE, EDGE_JOIN_JOIN_HANDLE } from "./edgeJoinRoles"
 import { edgeInputName, UNRESOLVED_INPUT_NAME } from "./apiInputPorts"
+import { isPlainObject } from "../types/guards"
 
 export type EdgeJoinFailureReason =
   | "target-edge-not-found"
@@ -377,11 +379,13 @@ function assertDownstreamInputMappingCanBeRewritten(
   if (!target) return
 
   const config = { ...(target.data.config as Record<string, unknown> | undefined) }
+  // A stepped transform rewrites its step references in place (no mapping).
+  if (isSteppedTransformConfig(config)) return
   const rawInputMapping = config.inputMapping
-  if (rawInputMapping !== undefined && !isRecord(rawInputMapping)) {
+  if (rawInputMapping !== undefined && !isPlainObject(rawInputMapping)) {
     throw new Error("Cannot rewrite a malformed inputMapping; expected an object")
   }
-  const hasInputMapping = isRecord(rawInputMapping)
+  const hasInputMapping = isPlainObject(rawInputMapping)
   const shouldCreateMapping = target.data.nodeType === NODE_TYPES.POLARS && !config.instanceOf
   if (!hasInputMapping && !shouldCreateMapping) return
 
@@ -412,11 +416,20 @@ function rewriteDownstreamInputMapping(
   if (node.id !== targetEdge.target) return node
 
   const config = { ...(node.data.config as Record<string, unknown> | undefined) }
+  if (isSteppedTransformConfig(config)) {
+    // A stepped transform addresses inputs by edge name inside its steps and
+    // never carries inputMapping, so the join name replaces the old input
+    // reference directly.
+    const renamed = renameStepInputs(config.steps, new Map([[oldCurrentInputName, newCurrentInputName]]))
+    if (!renamed.ok) throw new Error(`Cannot rewrite stepped transform inputs: "${renamed.duplicate}" would be referenced by more than one input`)
+    if (!renamed.changed) return node
+    return { ...node, data: { ...node.data, config: { ...config, steps: renamed.steps } } }
+  }
   const rawInputMapping = config.inputMapping
-  if (rawInputMapping !== undefined && !isRecord(rawInputMapping)) {
+  if (rawInputMapping !== undefined && !isPlainObject(rawInputMapping)) {
     throw new Error("Cannot rewrite a malformed inputMapping; expected an object")
   }
-  const hasInputMapping = isRecord(rawInputMapping)
+  const hasInputMapping = isPlainObject(rawInputMapping)
   const shouldCreateMapping = node.data.nodeType === NODE_TYPES.POLARS && !config.instanceOf
   if (!hasInputMapping && !shouldCreateMapping) return node
 
@@ -462,11 +475,11 @@ function rewriteDownstreamInputsByParentContract(
 ): Node {
   if (node.id !== targetEdge.target) return node
   const config = node.data.config
-  if (!isRecord(config)) return node
+  if (!isPlainObject(config)) return node
   const contract = config.contract
-  if (!isRecord(contract)) return node
+  if (!isPlainObject(contract)) return node
   const inputsByParent = contract.inputs_by_parent
-  if (!isRecord(inputsByParent)) return node
+  if (!isPlainObject(inputsByParent)) return node
   if (!Object.prototype.hasOwnProperty.call(inputsByParent, targetEdge.source)) return node
 
   const nextInputsByParent: Record<string, unknown> = {}
@@ -487,10 +500,6 @@ function rewriteDownstreamInputsByParentContract(
       },
     },
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
 function assertSameOrderedIds(

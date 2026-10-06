@@ -1,8 +1,8 @@
 """Node builder registry — per-type factory functions for graph execution.
 
 Each builder receives a ``NodeBuildContext`` and returns
-``(func_name, callable, is_source)`` — consumed by
-``_execute_eager_core`` / ``_execute_lazy`` in ``graph_utils.py``.
+``(func_name, callable, is_source)`` — consumed by the graph walker
+(``_graph_walker.walk_graph``).
 
 Extracted from ``executor.py`` to keep the orchestration module focused
 on ``execute_graph``, ``_eager_execute``, and ``write_data_output``.
@@ -13,15 +13,15 @@ the single source of truth shared with ``_codegen_builders.py``.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 import polars as pl
 
 import haute.projection as projection
-from haute._code_extraction import INCOMPLETE_TRANSFORM_MESSAGE
+from haute._code_extraction import INCOMPLETE_STEPS_MESSAGE, INCOMPLETE_TRANSFORM_MESSAGE
 from haute._config_validation import (
     reject_removed_config_keys,
     resolve_exact_input_index,
@@ -45,30 +45,42 @@ from haute._edge_join import (
     resolve_edge_join_role_indices,
 )
 from haute._execution_context import ExecutionProfile, current_execution_context
-from haute._graph_utils import _sanitize_func_name
+from haute._graph_utils import _sanitize_func_name, build_instance_mapping, edge_input_name
 from haute._io import _select_columns
 from haute._logging import get_logger
 from haute._node_apply import (
-    _DEFAULT_SCENARIO_STEPS,
     apply_optimiser_apply_from_config,
     assemble_output_from_config,
+    constant_frame,
+    expand_scenarios_bounded,
     expand_scenarios_from_config,
     load_external_object_from_config,
     resolve_api_input_from_config,
+    scenario_step_count,
     select_live_switch_input,
 )
 from haute._output_assembler import (
     OutputMappingSchemaError,
     is_active_mapping_entry,
 )
+from haute._polars_steps import (
+    STEPPED_NODE_TYPES,
+    STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE,
+    PolarsStepError,
+    render_polars_steps,
+    step_input_names,
+)
+from haute._price_contour import price_contour
+from haute._ratebook_collar import COMBINED_FACTOR_BOUNDS_KEY, parse_combined_factor_bounds
 from haute._rating import (
-    _apply_banding_factors,
     _apply_rating_step_outputs,
     _apply_rating_table,
     _combine_rating_columns,
     _normalise_banding_factors,
-    _normalise_combined_outputs,
+    apply_banding_factors,
+    banding_factor_is_active,
     is_rating_dtype_descriptor,
+    normalise_combined_outputs,
     rating_dtype_descriptor,
 )
 from haute._rating_step_config import normalise_rating_tables
@@ -76,13 +88,20 @@ from haute._registry import (
     MODELLING_NODE_SEMANTICS,
     NODE_REGISTRY,
     NodeInputPolicy,
+    RecomputeCost,
 )
 from haute._registry import (
     register_exec as _register_exec_in_registry,
 )
-from haute._types import GraphNode, NodeType, _Frame
+from haute._types import (
+    GraphEdge,
+    GraphNode,
+    NodeType,
+    PipelineGraph,
+    _Frame,
+)
 from haute._user_exec import _exec_user_code
-from haute.errors import RatingFactorDtypeContractError
+from haute.errors import ConfigError, RatingFactorDtypeContractError
 
 logger = get_logger(component="executor")
 
@@ -95,12 +114,19 @@ def _source_scan_projection(
     columns: frozenset[str] | set[str] | None,
     config: Mapping[str, Any],
     *,
+    code: str,
+    source_columns: Iterable[str] | None,
     node_id: str | None = None,
 ) -> projection.SourceScanProjection:
     if profile in {None, ExecutionProfile.PREVIEW_EAGER.value}:
         projected = projection.SourceScanProjection(columns=None)
     else:
-        projected = projection.source_scan_projection(config, columns)
+        projected = projection.source_scan_projection(
+            config,
+            columns,
+            code=code,
+            source_columns=source_columns,
+        )
     _record_source_scan_projection_evidence(node_id, columns, projected)
     return projected
 
@@ -119,6 +145,47 @@ def _record_source_scan_projection_evidence(
                 None if projected.columns is None else len(projected.columns)
             ),
         )
+
+
+def apply_source_scan(
+    frame: pl.LazyFrame,
+    *,
+    profile: str | None,
+    required_output_columns: frozenset[str] | set[str] | None,
+    config: Mapping[str, Any],
+    code: str,
+    preamble_ns: dict[str, Any] | None,
+    node_id: str,
+) -> _Frame:
+    """Project an opened source scan, then run its post-load code.
+
+    ``selected_columns`` is deliberately absent here: the executor applies it
+    once, after this call, in every profile.  The physical scan carries planner
+    demand only, carried back through the post-load code: it reads the columns
+    that code consumes, never the ones it creates, and stays full width when the
+    code is outside the column lineage model.
+    """
+    projected = _source_scan_projection(
+        profile,
+        required_output_columns,
+        config,
+        code=code,
+        source_columns=frame.collect_schema().names(),
+        node_id=node_id,
+    )
+    frame = _select_columns(
+        frame,
+        None if projected.columns is None else tuple(projected.columns),
+    )
+    if code:
+        return _exec_user_code(
+            code,
+            ["df"],
+            (frame,),
+            extra_ns=preamble_ns,
+            alias_first_input_as_df=True,
+        )
+    return frame
 
 
 def _allow_empty_source_path(profile: str | None) -> bool:
@@ -156,6 +223,15 @@ def resolve_instance_node(node: GraphNode, node_map: dict[str, GraphNode]) -> Gr
     return node.model_copy(update={"data": merged_data})
 
 
+def resolve_instance_nodes(graph: PipelineGraph) -> PipelineGraph:
+    """Return *graph* with every instance node carrying its original's effective config."""
+    node_map = graph.node_map
+    resolved = [resolve_instance_node(node, node_map) for node in graph.nodes]
+    if all(new is old for new, old in zip(resolved, graph.nodes, strict=True)):
+        return graph
+    return graph.model_copy(update={"nodes": resolved})
+
+
 # ---------------------------------------------------------------------------
 # Node builder registry
 # ---------------------------------------------------------------------------
@@ -185,6 +261,11 @@ class NodeBuildContext:
     #: repeats when one multi-port node feeds several edges). OUTPUT keys its
     #: frames by this so a multi-port apiInput → OUTPUT resolves each port.
     source_ports: list[str] | None = None
+    #: The caller's schema-only declaration (``execute_lazy_graph(schema_only=)``):
+    #: it reads ``collect_schema()`` and never collects. Builders that would
+    #: otherwise materialise at build time honour it — OUTPUT returns an empty
+    #: frame under its derived document schema instead of assembling.
+    schema_only: bool = False
 
     @property
     def func_name(self) -> str:
@@ -204,9 +285,11 @@ NodeBuilder = Callable[[NodeBuildContext], tuple[str, Callable, bool]]
 def _register(
     node_type: NodeType,
     *,
+    recompute_cost: RecomputeCost,
     columns: _ColumnContractFn | None = None,
     opaque: bool = False,
     is_behavioural: bool = False,
+    slice_transparent: bool = True,
 ) -> Callable[[NodeBuilder], NodeBuilder]:
     """Decorator to register a node builder for a given NodeType.
 
@@ -243,6 +326,8 @@ def _register(
         node_type,
         column_contract=contract_fn,
         is_behavioural=is_behavioural,
+        recompute_cost=recompute_cost,
+        slice_transparent=slice_transparent,
     )
 
     def decorator(fn: NodeBuilder) -> NodeBuilder:
@@ -282,14 +367,74 @@ def _modelling_passthrough_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) ->
     )
 
 
+# Node types whose builder always returns one of the node's inputs unchanged:
+# their output *is* that input's data. A stubbed Model Score or Optimiser Apply
+# that happens to pass its input through is not listed: that is a configuration
+# state, not what the node type is.
+PASS_THROUGH_NODE_TYPES: frozenset[NodeType] = frozenset(
+    {
+        NodeType.DATA_OUTPUT,
+        MODELLING_NODE_SEMANTICS.node_type,
+        NodeType.OPTIMISER,
+        NodeType.SUBMODEL,
+        NodeType.SUBMODEL_PORT,
+    }
+)
+
+
+def pass_through_selected_edge(
+    node: GraphNode,
+    incoming_edges: list[GraphEdge] | tuple[GraphEdge, ...],
+    node_map: Mapping[str, GraphNode],
+    *,
+    submodels: Mapping[str, Any] | None = None,
+) -> GraphEdge | None:
+    """Return the incoming edge whose frame a pass-through node returns.
+
+    ``incoming_edges`` are the node's connected edges in the order its builder
+    receives them. The answer is an edge, not a parent id: two ports of one
+    API input share a source node but carry different tables. ``None`` means
+    the node is not a pass-through or has nothing connected. An Optimiser that
+    must name its data input and does not raises the builder's own error.
+    """
+    node_type = node.data.nodeType
+    if node_type not in PASS_THROUGH_NODE_TYPES or not incoming_edges:
+        return None
+    if node_type == MODELLING_NODE_SEMANTICS.node_type and (
+        MODELLING_NODE_SEMANTICS.input_policy is not NodeInputPolicy.FIRST_CONNECTED
+    ):
+        raise RuntimeError(
+            f"Unsupported modelling input policy: {MODELLING_NODE_SEMANTICS.input_policy!r}"
+        )
+    if node_type == NodeType.OPTIMISER:
+        names = [
+            edge_input_name(edge, node_map[edge.source], submodels=submodels)
+            for edge in incoming_edges
+        ]
+        data_input = resolve_optimiser_data_input(
+            node.data.config,
+            names,
+            node_label=_sanitize_func_name(node.data.label),
+        )
+        if data_input is not None:
+            return incoming_edges[names.index(data_input)]
+    return incoming_edges[0]
+
+
 def _explore_fn(df: _Frame) -> _Frame:
     """Explore is a terminal analysis node, but preview still reflects its input."""
     return df
 
 
 def _explore_columns(config: dict[str, Any]) -> _ColumnContract:
-    """Explore code can derive/filter arbitrary analysis columns."""
-    return _OPAQUE_CONTRACT if (config.get("code") or "").strip() else _passthrough_columns(config)
+    """Explore code, or a step list (the same program), derives arbitrary analysis columns.
+
+    An empty step list is an empty program: the node passes its input through.
+    """
+    steps = config.get("steps")
+    if (config.get("code") or "").strip() or (isinstance(steps, list) and steps):
+        return _OPAQUE_CONTRACT
+    return _passthrough_columns(config)
 
 
 def _configured_pipeline_dir() -> Path | None:
@@ -311,6 +456,17 @@ def _configured_pipeline_dir() -> Path | None:
 
     configured = _toml_configured_pipeline(current_runtime_project_root())
     return configured.parent if configured is not None else None
+
+
+def load_external_file_object(config: Mapping[str, Any]) -> object:
+    """Load a Load File node's object exactly as the node does when it runs.
+
+    A relative ``path`` is anchored to the pipeline directory at call time,
+    because ``load_external_object`` resolves against cwd. The assistant's
+    dry-run calls this to prove a Load File it writes, since a node with empty
+    steps passes its input through and never loads the file.
+    """
+    return load_external_object_from_config(config, base_dir=_configured_pipeline_dir())
 
 
 def _resolve_runtime_data_path(data_path: str) -> str:
@@ -372,7 +528,7 @@ def _config_with_resolved_data_path(config: Mapping[str, Any]) -> Mapping[str, A
     return {**config, "path": resolved}
 
 
-@_register(NodeType.API_INPUT, opaque=True)
+@_register(NodeType.API_INPUT, recompute_cost="source", opaque=True)
 def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
 
@@ -384,25 +540,39 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         ),
         _config: dict[str, Any] = config,
         _node_id: str = ctx.node.id,
+        _schema_only: bool = ctx.schema_only,
     ) -> _Frame | dict[str, _Frame]:
-        projected = _source_scan_projection(_profile, _columns, _config, node_id=_node_id)
+        projected = _source_scan_projection(
+            _profile,
+            _columns,
+            _config,
+            code="",
+            source_columns=None,
+            node_id=_node_id,
+        )
         return resolve_api_input_from_config(
             _config,
             base_dir=_configured_pipeline_dir(),
             profile=_profile,
             columns=projected.columns,
-            validate_columns=projected.validate_columns,
             port_columns=_port_columns,
+            read_snapshots=True,
+            schema_tier_node=_node_id if _schema_only else None,
         )
 
     return ctx.func_name, api_source_fn, True
 
 
-@_register(NodeType.DATA_INPUT, opaque=True)
+@_register(NodeType.DATA_INPUT, recompute_cost="source", opaque=True)
 def _build_data_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
+    problem = stepped_code_problem(
+        config, NodeType.DATA_INPUT, step_input_names(NodeType.DATA_INPUT, [])
+    )
+    if problem is not None:
+        # Incomplete post-load steps must not read the source unchanged.
+        return ctx.func_name, _incomplete_transform(f"{INCOMPLETE_STEPS_MESSAGE} {problem}"), True
     code = str(config.get("code") or "").strip()
-    code_preserves_projection = projection.source_user_code_preserves_column_projection(code)
     preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
 
     def data_input_fn(
@@ -410,6 +580,7 @@ def _build_data_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         _profile: str | None = ctx.execution_profile,
         _columns: frozenset[str] | set[str] | None = ctx.required_output_columns,
         _node_id: str = ctx.node.id,
+        _schema_only: bool = ctx.schema_only,
     ) -> _Frame:
         from haute._input_providers import resolve_data_input
 
@@ -417,37 +588,25 @@ def _build_data_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             # An unsaved, freshly-dropped editor node may preview empty. Strict
             # persisted validation still rejects this shape on save.
             return pl.LazyFrame()
-        demanded_columns = _columns if code_preserves_projection else None
-        projected = _source_scan_projection(
-            _profile,
-            demanded_columns,
-            _config,
+        return apply_source_scan(
+            resolve_data_input(
+                _config,
+                base_dir=_configured_pipeline_dir(),
+                profile=_profile,
+                schema_tier_node=_node_id if _schema_only else None,
+            ),
+            profile=_profile,
+            required_output_columns=_columns,
+            config=_config,
+            code=code,
+            preamble_ns=preamble,
             node_id=_node_id,
         )
-        frame = resolve_data_input(
-            _config,
-            base_dir=_configured_pipeline_dir(),
-            profile=_profile,
-        )
-        frame = _select_columns(
-            frame,
-            None if projected.columns is None else tuple(projected.columns),
-            validate_columns=tuple(projected.validate_columns),
-        )
-        if code:
-            return _exec_user_code(
-                code,
-                ["df"],
-                (frame,),
-                extra_ns=preamble,
-                alias_first_input_as_df=True,
-            )
-        return frame
 
     return ctx.func_name, data_input_fn, True
 
 
-@_register(NodeType.DATA_OUTPUT, columns=_passthrough_columns)
+@_register(NodeType.DATA_OUTPUT, recompute_cost="cheap", columns=_passthrough_columns)
 def _build_data_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     # During normal run/preview, dataOutput is a pass-through.
     # The actual write happens via write_data_output() on explicit user action.
@@ -460,30 +619,22 @@ def _constant_columns(config: dict[str, Any]) -> _ColumnContract:
     return produced or {"constant"}, set()
 
 
-@_register(NodeType.CONSTANT, columns=_constant_columns)
+@_register(NodeType.CONSTANT, recompute_cost="source", columns=_constant_columns)
 def _build_constant(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
-    config = ctx.config
-    raw_values = config.get("values", []) or []
+    raw_values = ctx.config.get("values", []) or []
 
     def constant_fn() -> _Frame:
-        data: dict[str, list] = {}
-        for v in raw_values:
-            name = v.get("name", "")
-            if not name:
-                continue
-            val = v.get("value", "")
-            try:
-                data[name] = [float(val)]
-            except (ValueError, TypeError):
-                data[name] = [val]
-        if not data:
-            data = {"constant": [0]}
-        return pl.LazyFrame(data)
+        return constant_frame(raw_values)
 
     return ctx.func_name, constant_fn, True
 
 
-@_register(NodeType.LIVE_SWITCH, columns=_passthrough_columns, is_behavioural=True)
+@_register(
+    NodeType.LIVE_SWITCH,
+    recompute_cost="cheap",
+    columns=_passthrough_columns,
+    is_behavioural=True,
+)
 def _build_live_switch(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     input_scenario_map: dict[str, str] = config.get("input_scenario_map", {})
@@ -511,35 +662,35 @@ def _build_live_switch(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, switch_fn, False
 
 
-@_register(NodeType.EXPLORE, columns=_explore_columns)
+@_register(NodeType.EXPLORE, recompute_cost="cheap", columns=_explore_columns)
 def _build_explore(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
+    problem = stepped_code_problem(
+        ctx.config, NodeType.EXPLORE, step_input_names(NodeType.EXPLORE, [])
+    )
+    if problem is not None:
+        # Incomplete steps must not explore the frame unchanged.
+        return ctx.func_name, _incomplete_transform(f"{INCOMPLETE_STEPS_MESSAGE} {problem}"), False
     code = str(ctx.config.get("code") or "").strip()
     if not code:
         return ctx.func_name, _explore_fn, False
 
-    _src_names = list(ctx.source_names)
-    _orig_src = list(ctx.orig_source_names) if ctx.orig_source_names else None
-    _in_map = dict(ctx.config.get("inputMapping", {})) or None
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
 
     def explore_with_code(df: _Frame) -> _Frame:
-        # Explore's code box operates on the single implicit frame ``df``;
-        # keep that binding explicitly now that _exec_user_code no longer
-        # seeds it for named-input node kinds.
+        # Explore's code runs on its input as ``df`` and sees nothing else by
+        # name, exactly as the saved file's hook does.
         return _exec_user_code(
             code,
-            _src_names,
+            ["df"],
             (df,),
             extra_ns=_preamble,
-            orig_source_names=_orig_src,
-            input_mapping=_in_map,
             alias_first_input_as_df=True,
         )
 
     return ctx.func_name, explore_with_code, False
 
 
-@_register(NodeType.EXTERNAL_FILE, opaque=True)
+@_register(NodeType.EXTERNAL_FILE, recompute_cost="code", opaque=True)
 def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     code = str(config.get("code") or "").strip()
@@ -548,6 +699,23 @@ def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     _orig_src = list(ctx.orig_source_names) if ctx.orig_source_names else None
     _in_map = dict(config.get("inputMapping", {})) or None
     _preamble_ext = dict(ctx.preamble_ns) if ctx.preamble_ns else {}
+    if isinstance(config.get("steps"), list):
+        # Steps address the other inputs by their edge names (the first is
+        # already df); an original never carries inputMapping beside them.
+        if _in_map is not None and not config.get("instanceOf"):
+            raise ConfigError(STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE, node_id=ctx.node.id)
+        names = set(_src_names)
+        if _orig_src:
+            names.update(build_instance_mapping(_orig_src, _src_names, _in_map))
+        problem = stepped_code_problem(
+            config, NodeType.EXTERNAL_FILE, step_input_names(NodeType.EXTERNAL_FILE, sorted(names))
+        )
+        if problem is not None:
+            return (
+                ctx.func_name,
+                _incomplete_transform(f"{INCOMPLETE_STEPS_MESSAGE} {problem}"),
+                False,
+            )
     if code:
 
         def external_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
@@ -558,10 +726,7 @@ def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             # served from the project root would otherwise hash/open the wrong
             # (or a missing) file. Resolved at call time, mirroring codegen.
             ens = dict(_preamble_ext)
-            ens["obj"] = load_external_object_from_config(
-                config,
-                base_dir=_configured_pipeline_dir(),
-            )
+            ens["obj"] = load_external_file_object(config)
             if dfs_by_name:
                 dfs = tuple(dfs_by_name[name] for name in _src_names if name in dfs_by_name)
             else:
@@ -595,7 +760,12 @@ def _output_columns(config: dict[str, Any]) -> _ColumnContract:
     return (set(), referenced)
 
 
-@_register(NodeType.OUTPUT, columns=_output_columns, is_behavioural=True)
+@_register(
+    NodeType.OUTPUT,
+    recompute_cost="cheap",
+    columns=_output_columns,
+    is_behavioural=True,
+)
 def _build_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     if config.get("outputMapping") is None:
@@ -604,7 +774,7 @@ def _build_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         )
 
     # The executor binds incoming edges positionally — ``fn(*input_lfs)`` in
-    # _execute_lazy, ordered by incoming edge — not as kwargs-by-port. So the
+    # the graph walker, ordered by incoming edge — not as kwargs-by-port. So the
     # shared helper recovers the ``{source_port: frame}`` map the assembler
     # wants from the positional order. ``ctx.source_ports[i]`` is edge *i*'s
     # port name (``sourceHandle or source-node-name``), which both aligns
@@ -613,6 +783,7 @@ def _build_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     # sourceHandles).
     source_ports = list(ctx.source_ports or [])
     label = ctx.node.data.label
+    schema_only = ctx.schema_only
 
     def output_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
         # Delegate to the shared config-driven twin so the canvas executor
@@ -625,19 +796,26 @@ def _build_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             source_names=source_ports,
             named_frames=dfs_by_name,
             label=label,
+            schema_only=schema_only,
         )
 
     return ctx.func_name, output_fn, False
 
 
 def _banding_columns(config: dict[str, Any]) -> _ColumnContract:
-    factors = config.get("factors") or []
-    produced = {f["outputColumn"] for f in factors if f.get("outputColumn")}
-    referenced = {f["column"] for f in factors if f.get("column")}
+    # Execution skips a draft factor, so the contract must not promise its output.
+    factors = [f for f in config.get("factors") or [] if banding_factor_is_active(f)]
+    produced = {f["outputColumn"] for f in factors}
+    referenced = {f["column"] for f in factors}
     return produced, referenced
 
 
-@_register(NodeType.BANDING, columns=_banding_columns, is_behavioural=True)
+@_register(
+    NodeType.BANDING,
+    recompute_cost="cheap",
+    columns=_banding_columns,
+    is_behavioural=True,
+)
 def _build_banding(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     factors = _normalise_banding_factors(config)
@@ -653,7 +831,7 @@ def _build_banding(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             lf = dfs_positional[0] if dfs_positional else pl.LazyFrame()
         # Shared with apply_banding_from_config (generated standalone code)
         # so the canvas and the saved file cannot drift.
-        return _apply_banding_factors(lf, _factors_captured)
+        return apply_banding_factors(lf, _factors_captured)
 
     return ctx.func_name, banding_fn, False
 
@@ -669,16 +847,27 @@ def _rating_step_columns(config: dict[str, Any]) -> _ColumnContract:
         if out:
             produced.add(out)
         referenced.update(t.get("factors") or [])
-    for combined in _normalise_combined_outputs(config):
+    for combined in normalise_combined_outputs(config):
         produced.add(combined["outputColumn"])
     return produced, referenced
 
 
-@_register(NodeType.RATING_STEP, columns=_rating_step_columns, is_behavioural=True)
+@_register(
+    NodeType.RATING_STEP,
+    recompute_cost="costly",
+    columns=_rating_step_columns,
+    is_behavioural=True,
+)
 def _build_rating_step(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
+    problem = stepped_code_problem(
+        config, NodeType.RATING_STEP, step_input_names(NodeType.RATING_STEP, [])
+    )
+    if problem is not None:
+        # Incomplete post-rating steps must not rate the frame and pass it on.
+        return ctx.func_name, _incomplete_transform(f"{INCOMPLETE_STEPS_MESSAGE} {problem}"), False
     tables = normalise_rating_tables(config)
-    combined_outputs = _normalise_combined_outputs(config)
+    combined_outputs = normalise_combined_outputs(config)
     code = str(config.get("code") or "").strip()
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
 
@@ -713,24 +902,34 @@ def _scenario_expander_columns(config: dict[str, Any]) -> _ColumnContract:
     cn = (config.get("column_name") or "").strip()
     if cn:
         produced.add(cn)
-    sc = config.get("step_column", "scenario_index")
-    if sc:
-        produced.add(sc)
+    # Execution names a blank step column ``scenario_index``.
+    produced.add(config.get("step_column") or "scenario_index")
     return produced, set()
 
 
-@_register(NodeType.SCENARIO_EXPANDER, columns=_scenario_expander_columns, is_behavioural=True)
+@_register(
+    NodeType.SCENARIO_EXPANDER,
+    recompute_cost="cheap",
+    slice_transparent=False,
+    columns=_scenario_expander_columns,
+    is_behavioural=True,
+)
 def _build_scenario_expander(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
-    # Fail loud at build time on a misconfigured step count (the shared
-    # helper re-validates at call time for the standalone path).
-    raw_steps = config.get("steps")
-    _steps = int(raw_steps) if raw_steps is not None else _DEFAULT_SCENARIO_STEPS
-    if _steps < 1:
-        raise ValueError(f"Scenario expander requires steps >= 1, got {_steps}")
+    # Fail loud at build time on a missing or misconfigured grid size (the
+    # shared helper re-validates at call time for the standalone path).
+    scenario_step_count(config)
+    problem = stepped_code_problem(
+        config, NodeType.SCENARIO_EXPANDER, step_input_names(NodeType.SCENARIO_EXPANDER, [])
+    )
+    if problem is not None:
+        # Incomplete post-expansion steps must not expand the grid and pass it on.
+        return ctx.func_name, _incomplete_transform(f"{INCOMPLETE_STEPS_MESSAGE} {problem}"), False
     code = str(config.get("code") or "").strip()
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
     _config_captured = dict(config)
+    _interactive = bool(ctx.row_limit)
+    _node_id = ctx.node.id
 
     def scenario_expand_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
         if dfs_by_name:
@@ -738,7 +937,12 @@ def _build_scenario_expander(ctx: NodeBuildContext) -> tuple[str, Callable, bool
         else:
             lf = dfs_positional[0] if dfs_positional else pl.LazyFrame()
         # Shared with expand_scenarios_from_config (generated standalone code)
-        # so the canvas and the saved file cannot drift.
+        # so the canvas and the saved file cannot drift.  An interactive
+        # execution expands through the scan form of the same expansion, so a
+        # preview limit below the expander reads only the rows it shows
+        # instead of expanding the whole upstream frame first.
+        if _interactive:
+            return expand_scenarios_bounded(lf, _config_captured, node_id=_node_id)
         return expand_scenarios_from_config(lf, _config_captured)
 
     if not code:
@@ -760,7 +964,7 @@ def _build_scenario_expander(ctx: NodeBuildContext) -> tuple[str, Callable, bool
     return ctx.func_name, scenario_expand_with_code, False
 
 
-@_register(NodeType.OPTIMISER, columns=_passthrough_columns)
+@_register(NodeType.OPTIMISER, recompute_cost="cheap", columns=_passthrough_columns)
 def _build_optimiser(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     # Pass-through in preview mode. Solving happens via /api/optimiser/solve.
     # When data_input is configured, select that specific input so the
@@ -828,7 +1032,12 @@ def _optimiser_apply_columns(config: dict[str, Any]) -> _ColumnContract:
     return produced, None
 
 
-@_register(NodeType.OPTIMISER_APPLY, columns=_optimiser_apply_columns, is_behavioural=True)
+@_register(
+    NodeType.OPTIMISER_APPLY,
+    recompute_cost="costly",
+    columns=_optimiser_apply_columns,
+    is_behavioural=True,
+)
 def _build_optimiser_apply(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     _artifact_path = config.get("artifact_path", "")
@@ -872,61 +1081,46 @@ def _build_optimiser_apply(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, optimiser_apply_fn, False
 
 
-@_register(MODELLING_NODE_SEMANTICS.node_type, columns=_passthrough_columns)
+@_register(
+    MODELLING_NODE_SEMANTICS.node_type,
+    recompute_cost="cheap",
+    columns=_passthrough_columns,
+)
 def _build_modelling(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     # Pass-through in preview mode. Training happens via /api/modelling/train.
     return ctx.func_name, _modelling_passthrough_fn, False
 
 
-def _validated_model_score_source(
-    config: Mapping[str, Any],
-) -> tuple[Literal["", "run", "registered"], str, str]:
-    """Return model-source fields, rejecting half-configured source choices."""
-    from haute.errors import ConfigError
-
-    source_type = config.get("sourceType", "")
-    if not isinstance(source_type, str):
-        raise ConfigError(
-            "modelScore node has a non-string sourceType",
-            sourceType=source_type,
-        )
-    if source_type not in ("", "run", "registered"):
-        raise ConfigError(
-            "modelScore node has an unsupported sourceType",
-            sourceType=source_type,
-            supported_source_types=["run", "registered"],
-        )
-    validated_source_type = cast(Literal["", "run", "registered"], source_type)
-    raw_run_id = config.get("run_id", "")
-    raw_registered_model = config.get("registered_model", "")
-    run_id = raw_run_id if isinstance(raw_run_id, str) else ""
-    registered_model = raw_registered_model if isinstance(raw_registered_model, str) else ""
-    if source_type == "run" and not run_id:
-        raise ConfigError(
-            "modelScore node is misconfigured: sourceType='run' but run_id is empty",
-            sourceType=source_type,
-            missing_field="run_id",
-        )
-    if source_type == "registered" and not registered_model:
-        raise ConfigError(
-            "modelScore node is misconfigured: sourceType='registered' but "
-            "registered_model is empty",
-            sourceType=source_type,
-            missing_field="registered_model",
-        )
-    return validated_source_type, run_id, registered_model
-
-
 def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
-    out = config.get("output_column", "prediction")
-    produced = {out} if out else {"prediction"}
+    out = config.get("output_column", "prediction") or "prediction"
+    produced = {out}
 
-    # Post-processing code can reference arbitrary columns — opaque.
+    # Post-processing code can reference arbitrary columns — opaque. A nonempty
+    # step list is a postprocessing program or incomplete build-time error,
+    # while empty lists retain the model feature contract.
     code = str(config.get("code") or "").strip()
-    if code:
+    steps = config.get("steps")
+    if code or (isinstance(steps, list) and bool(steps)):
         return produced, None
 
+    from haute._model_source import (
+        FileModelSource,
+        load_scoring_model,
+        model_contract_path,
+        parse_model_source,
+    )
+
+    model_source = parse_model_source(config)
     feature_contract_path = config.get("feature_contract_path")
+    if (
+        not (isinstance(feature_contract_path, str) and feature_contract_path)
+        and isinstance(model_source, FileModelSource)
+        and _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY not in config
+    ):
+        # A model file scores under the contract saved beside it, so planning
+        # reads the same contract the scorer binds.
+        discovered = model_contract_path(model_source, None, _configured_pipeline_dir())
+        feature_contract_path = str(discovered) if discovered is not None else None
     if isinstance(feature_contract_path, str) and feature_contract_path:
         # Stat-gated cache: this planner runs during graph construction on
         # every deployed /quote and every preview — re-reading/re-hashing an
@@ -939,6 +1133,14 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
             # The offset is a required scoring input (not a feature) —
             # upstream pruning must not drop it.
             referenced.add(contract.offset_column)
+        if (
+            config.get("task") == "classification"
+            and contract.model is not None
+            and contract.model.class_labels is not None
+        ):
+            # A Haute-trained binary classifier always scores its positive-class
+            # probability; a prediction-only classifier records no class labels.
+            produced = {*produced, f"{out}_proba"}
         return produced, referenced
 
     if _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY in config:
@@ -961,8 +1163,7 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
         return produced, set(deploy_inputs) if deploy_inputs else None
 
     # Feature columns are only known after loading the model.
-    source_type, run_id, registered_model = _validated_model_score_source(config)
-    if not source_type:
+    if model_source is None:
         # Distinguish two sub-cases cleanly:
         #
         # 1. ``output_column`` missing entirely and no source configured
@@ -981,18 +1182,13 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
             return produced, set()
         return produced, None
 
-    # With required config present, attempt the MLflow load.  Failures here
-    # (run not found, artifact missing, MLflow down) propagate — the old
-    # debug-log swallow hid real config/infra problems from downstream nodes.
-    from haute._mlflow_io import load_mlflow_model
-
-    scoring_model = load_mlflow_model(
-        source_type=source_type,
-        run_id=run_id,
-        artifact_path=config.get("artifact_path", ""),
-        registered_model=registered_model,
-        version=config.get("version", "latest"),
-        task=config.get("task", "regression"),
+    # With required config present, attempt the load.  Failures here (run not
+    # found, artifact missing, MLflow down) propagate — the old debug-log
+    # swallow hid real config/infra problems from downstream nodes. Planning
+    # loads exactly the model the scorer built for this node loads, from the
+    # node's own destination.
+    scoring_model = load_scoring_model(
+        model_source, config.get("task", "regression"), base_dir=_configured_pipeline_dir()
     )
     if scoring_model.feature_names:
         referenced = set(scoring_model.feature_names)
@@ -1023,24 +1219,34 @@ def _declared_categorical_levels_for_model_score(
     return merge_categorical_level_declarations(declarations)
 
 
-@_register(NodeType.MODEL_SCORE, columns=_model_score_columns, is_behavioural=True)
+@_register(
+    NodeType.MODEL_SCORE,
+    recompute_cost="costly",
+    columns=_model_score_columns,
+    is_behavioural=True,
+)
 def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
+    problem = stepped_code_problem(
+        config, NodeType.MODEL_SCORE, step_input_names(NodeType.MODEL_SCORE, [])
+    )
+    if problem is not None:
+        # Incomplete post-scoring steps must not score the frame and pass it on.
+        return ctx.func_name, _incomplete_transform(f"{INCOMPLETE_STEPS_MESSAGE} {problem}"), False
     code = str(config.get("code") or "").strip()
-    # Default to "" (not "run") — empty sourceType means the node is
-    # unconfigured and should passthrough.  Codegen and score_from_config
-    # default to "run" because they only execute for configured nodes.
-    source_type, _run_id, _registered_model = _validated_model_score_source(config)
-    _artifact_path = config.get("artifact_path", "")
-    _task = config.get("task", "regression")
+    from haute._model_source import parse_model_source
 
-    # A genuinely untouched node remains a preview passthrough. Once a source
-    # type is selected, the validator above requires its identifying field.
-    if not source_type:
+    # A genuinely untouched node (no source chosen) remains a preview
+    # passthrough. Once a source type is selected, the parser requires its
+    # identifying field.
+    model_source = parse_model_source(config)
+    if model_source is None:
         return ctx.func_name, _passthrough_fn, False
 
     from haute._model_scorer import ModelScorer
+    from haute._model_source import scoring_contract_path
 
+    base_dir = _configured_pipeline_dir()
     required_output_columns = projection.model_score_required_output_columns(
         config,
         ctx.required_output_columns,
@@ -1054,27 +1260,52 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     )
 
     scorer = ModelScorer(
-        source_type=source_type,
-        run_id=_run_id,
-        artifact_path=_artifact_path,
-        registered_model=_registered_model,
-        version=config.get("version", "latest"),
-        task=_task,
+        model_source=model_source,
+        task=config.get("task", "regression"),
         output_col=config.get("output_column", "prediction"),
         code=code,
         source_names=list(ctx.source_names),
         source=ctx.source or "live",
         row_limit=ctx.row_limit,
+        schema_only=ctx.schema_only,
         required_output_columns=required_output_columns,
-        feature_contract_path=config.get("feature_contract_path") or None,
+        feature_contract_path=scoring_contract_path(model_source, config, base_dir),
         categorical_levels=declared_categorical_levels,
         reuse_loaded_model=ctx.reuse_loaded_model,
+        input_fanout=_upstream_scenario_fanout(ctx.upstream_ids, ctx.node_map),
+        base_dir=base_dir,
+        preamble_ns=dict(ctx.preamble_ns) if ctx.preamble_ns else None,
     )
 
     return ctx.func_name, scorer.score, False
 
 
-@_register(NodeType.POLARS, opaque=True)
+def _upstream_scenario_fanout(
+    upstream_ids: list[str] | None,
+    node_map: dict[str, GraphNode] | None,
+) -> int:
+    """The product of the scenario expanders' step counts above a node.
+
+    An upper bound on how many rows the node's input holds per source row:
+    expanders on separate branches multiply too. A config the expander itself
+    would refuse counts as 1.
+    """
+    from haute._node_apply import scenario_step_count
+    from haute.errors import ConfigError
+
+    fanout = 1
+    for node_id in upstream_ids or ():
+        node = (node_map or {}).get(node_id)
+        if node is None or node.data.nodeType != NodeType.SCENARIO_EXPANDER:
+            continue
+        try:
+            fanout *= scenario_step_count(node.data.config)
+        except (ConfigError, TypeError, ValueError, OverflowError):
+            continue
+    return fanout
+
+
+@_register(NodeType.POLARS, recompute_cost="code", opaque=True)
 def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     _src_names = list(ctx.source_names)
@@ -1088,21 +1319,52 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     _in_map = dict(config.get("inputMapping", {})) or None
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
 
+    steps = config.get("steps")
+    if isinstance(steps, list):
+        # ``code`` is already the rendering of ``steps`` (materialised by
+        # ``NodeData``); validate the input references against the names the
+        # code will execute with so an unknown input names its step.
+        if _in_map is not None and not config.get("instanceOf"):
+            raise ConfigError(STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE, node_id=ctx.node.id)
+        names = set(_src_names)
+        if _orig_src:
+            names.update(build_instance_mapping(_orig_src, _src_names, _in_map))
+        problem = stepped_code_problem(
+            config, NodeType.POLARS, step_input_names(NodeType.POLARS, sorted(names))
+        )
+        if problem is not None:
+            return (
+                ctx.func_name,
+                _incomplete_transform(f"{INCOMPLETE_TRANSFORM_MESSAGE} {problem}"),
+                incoming_count == 0,
+            )
+
     if code:
 
-        def transform_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
-            if dfs_by_name:
-                dfs = tuple(dfs_by_name[name] for name in _src_names if name in dfs_by_name)
-            else:
-                dfs = dfs_positional
+        def run(program: str, dfs: tuple[_Frame, ...]) -> _Frame:
             return _exec_user_code(
-                code,
+                program,
                 _src_names,
                 dfs,
                 extra_ns=_preamble,
                 orig_source_names=_orig_src,
                 input_mapping=_in_map,
             )
+
+        def transform_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
+            if dfs_by_name:
+                dfs = tuple(dfs_by_name[name] for name in _src_names if name in dfs_by_name)
+            else:
+                dfs = dfs_positional
+            return run(code, dfs)
+
+        if isinstance(steps, list) and not any(s["kind"] == "free_code" for s in steps):
+            # Free code can replace the frame, and replaying it would run
+            # authored code twice, so only closed-vocabulary steps are located.
+            def failed_step_line(*dfs: _Frame) -> int | None:
+                return _failed_step_line(steps, lambda program: run(program, dfs))
+
+            transform_fn.failed_step_line = failed_step_line  # type: ignore[attr-defined]
 
         # A polars node with self-contained code and no upstream wiring
         # is effectively a source: there is no dataframe to receive, so
@@ -1115,18 +1377,79 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         is_source = incoming_count == 0
         return ctx.func_name, transform_fn, is_source
 
+    # With no upstream, mark the node as a source so the executor invokes the
+    # placeholder instead of failing first with its generic no-input guard.
+    return ctx.func_name, _incomplete_transform(INCOMPLETE_TRANSFORM_MESSAGE), incoming_count == 0
+
+
+def _failed_step_line(steps: list[dict[str, Any]], run: Callable[[str], _Frame]) -> int | None:
+    """The first line of the step whose lazy plan first fails to resolve, or None.
+
+    A stepped transform's plan errors (a missing column, a type mismatch)
+    surface when its schema is resolved, after its code ran, so no line comes
+    with them. *run* executes a program exactly as the transform ran its code,
+    on the input frames the run built. The node's full plan is resolved first:
+    when it resolves, the failure was not the steps' plan (a strict cast
+    meeting a bad value fails only on data) and no step is named. Otherwise
+    each prefix of the steps is rendered and its schema resolved, which reads
+    no rows; the first prefix that fails names its last step.
+    """
+    rendered = render_polars_steps(steps, start="input")
+    if _plan_resolves(run(rendered.code)):
+        return None
+    for count in range(1, len(steps)):
+        if not _plan_resolves(run(render_polars_steps(steps[:count], start="input").code)):
+            return rendered.step_lines[count - 1][0]
+    # Every shorter prefix resolves, and the whole program does not.
+    return rendered.step_lines[-1][0]
+
+
+def _plan_resolves(frame: _Frame) -> bool:
+    try:
+        frame.collect_schema()
+    except pl.exceptions.PolarsError:
+        return False
+    return True
+
+
+def stepped_code_problem(
+    config: Mapping[str, Any], node_type: NodeType, names: Iterable[str]
+) -> str | None:
+    """Why a stepped node cannot run, or None when it can.
+
+    ``code`` is already the rendering of ``steps`` (materialised by
+    ``NodeData``); this re-validates the input references against *names*,
+    the names the code will execute with, so an unknown input names its step.
+    The same check guards the executor builders and the deploy interceptors,
+    which read ``config["code"]`` without a builder.
+    """
+    if node_type not in STEPPED_NODE_TYPES or not isinstance(config.get("steps"), list):
+        return None
+    problem = config.get("_steps_error")
+    if problem is not None:
+        return str(problem)
+    try:
+        render_polars_steps(
+            config["steps"], sorted(names), start=STEPPED_NODE_TYPES[node_type].start
+        )
+    except PolarsStepError as exc:
+        return str(exc)
+    return None
+
+
+def _incomplete_transform(message: str) -> Callable[..., _Frame]:
+    """Build the function a transform without a runnable program executes."""
+
     def incomplete_transform_fn(
         *_dfs_positional: _Frame,
         **_dfs_by_name: _Frame,
     ) -> _Frame:
-        raise NotImplementedError(INCOMPLETE_TRANSFORM_MESSAGE)
+        raise NotImplementedError(message)
 
-    # With no upstream, mark the node as a source so the executor invokes the
-    # placeholder instead of failing first with its generic no-input guard.
-    return ctx.func_name, incomplete_transform_fn, incoming_count == 0
+    return incomplete_transform_fn
 
 
-@_register(NodeType.EDGE_JOIN, opaque=True)
+@_register(NodeType.EDGE_JOIN, recompute_cost="costly", opaque=True)
 def _build_edge_join(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     build_edge_join_kwargs(ctx.config)
     base_index, join_index = resolve_edge_join_role_indices(
@@ -1146,6 +1469,10 @@ def _build_edge_join(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             )
         return cast(_Frame, execute_edge_join(dfs[base_index], dfs[join_index], ctx.config))
 
+    # What a caller writing this join in chunks needs to rebuild it exactly:
+    # the roles and the instance-resolved config this builder joins with.
+    edge_join_fn.edge_join_roles = (base_index, join_index)  # type: ignore[attr-defined]
+    edge_join_fn.edge_join_config = dict(ctx.config)  # type: ignore[attr-defined]
     return ctx.func_name, edge_join_fn, False
 
 
@@ -1157,12 +1484,12 @@ def _build_edge_join(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 # KeyError.  Codegen takes the strict stance (see
 # ``_codegen_builders._gen_submodel``): by the time codegen dispatches, the
 # submodel must have been split into its own file via ``graph_to_code_multi``.
-@_register(NodeType.SUBMODEL, columns=_passthrough_columns)
+@_register(NodeType.SUBMODEL, recompute_cost="cheap", columns=_passthrough_columns)
 def _build_submodel(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, _passthrough_fn, False
 
 
-@_register(NodeType.SUBMODEL_PORT, columns=_passthrough_columns)
+@_register(NodeType.SUBMODEL_PORT, recompute_cost="cheap", columns=_passthrough_columns)
 def _build_submodel_port(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, _passthrough_fn, False
 
@@ -1188,18 +1515,23 @@ def _build_node_fn(
     required_output_columns_by_port: Mapping[str, frozenset[str] | None] | None = None,
     reuse_loaded_model: bool = False,
     execution_profile: str | None = None,
+    schema_only: bool = False,
 ) -> tuple[str, Callable, bool]:
     """Build an executable function from a graph node dict.
 
     Returns (func_name, fn, is_source).
     source_names: sanitized names of upstream nodes (used as variable names).
-    row_limit: if set, Databricks sources push this into SQL LIMIT so the
-        full table is never fetched during preview/trace.
+    row_limit: the interactive row limit. Only Model Score consumes it, to
+        score row-locally; no source applies it, so every other node's frame is
+        the full data a consumer pulls.
     node_map: full graph node_map — used to resolve ``instanceOf`` references.
     source: the active execution source (``"live"`` for eager scoring,
         anything else for batched parquet scoring).
     reuse_loaded_model: opts modelScore nodes into scorer-instance model
         reuse for chunked callers that rebuild data but not node functions.
+    schema_only: the caller's schema-only declaration, forwarded to the
+        builder context so a builder that would otherwise materialise at
+        build time (OUTPUT) returns a declared-schema empty frame instead.
     """
     # Resolve instance → use original's config/nodeType
     if node_map:
@@ -1228,6 +1560,7 @@ def _build_node_fn(
         required_output_columns_by_port=required_output_columns_by_port,
         reuse_loaded_model=reuse_loaded_model,
         execution_profile=execution_profile,
+        schema_only=schema_only,
     )
 
     # Dispatch through the unified registry — the single source of truth.
@@ -1296,37 +1629,110 @@ def _apply_online(
     version_col: str,
     optimised_value_col: str = "",
 ) -> _Frame:
-    """Apply online optimisation: Lagrangian argmax with stored lambdas."""
-    from price_contour import ApplyOptimiser
+    """Apply online optimisation: Lagrangian argmax with stored lambdas.
 
+    Sum constraints choose each quote's scenario independently, so the result is
+    a per-quote Python scan: a limited preview applies to the first quotes in
+    the result's order only. Ratio constraints linearise against the whole
+    apply-time frame, so their apply always reads every input row.
+    """
     qid_col = artifact.get("quote_id", "quote_id")
     step_col = artifact.get("scenario_index", "scenario_index")
     mult_col = artifact.get("scenario_value", "scenario_value")
     objective = artifact.get("objective", "expected_income")
     constraints = artifact.get("constraints") or {}
 
-    df_eager = _prepare_online_apply_frame(lf, artifact)
+    def apply(frame: _Frame) -> pl.DataFrame:
+        applier = price_contour().ApplyOptimiser(
+            lambdas=artifact["lambdas"],
+            objective=objective,
+            constraints=constraints,
+            quote_id=qid_col,
+            scenario_index=step_col,
+            scenario_value=mult_col,
+        )
+        result_df: pl.DataFrame = applier.apply(
+            _prepare_online_apply_frame(frame, artifact)
+        ).dataframe
+        result_df = _rename_column_if_configured(
+            result_df,
+            "optimal_scenario_value",
+            optimised_value_col,
+        )
+        if version:
+            result_df = result_df.with_columns(pl.lit(version).alias(version_col))
+        return result_df
 
-    applier = ApplyOptimiser(
-        lambdas=artifact["lambdas"],
-        objective=objective,
-        constraints=constraints,
-        quote_id=qid_col,
-        scenario_index=step_col,
-        scenario_value=mult_col,
-    )
-    result = applier.apply(df_eager)
-    result_df: pl.DataFrame = result.dataframe
-    result_df = _rename_column_if_configured(
-        result_df,
-        "optimal_scenario_value",
-        optimised_value_col,
+    if isinstance(lf, pl.DataFrame):
+        return apply(lf.lazy()).lazy()
+    if has_ratio_constraint(constraints):
+        return apply(lf).lazy()
+
+    from haute._polars_utils import key_prefix_python_scan
+
+    return key_prefix_python_scan(
+        lf,
+        apply,
+        schema=online_apply_output_schema(
+            artifact,
+            version=version,
+            version_col=version_col,
+            optimised_value_col=optimised_value_col,
+        ),
+        key_column=qid_col,
     )
 
+
+def has_ratio_constraint(constraints: dict[str, Any]) -> bool:
+    """Whether an online artifact has a ratio constraint, which reads the whole frame."""
+    return any(
+        isinstance(spec, dict) and {"numerator", "denominator"}.issubset(spec)
+        for spec in constraints.values()
+    )
+
+
+def online_apply_chosen_row_columns(
+    artifact: dict[str, Any],
+    *,
+    optimised_value_col: str = "",
+) -> dict[str, tuple[str, pl.DataType]]:
+    """Map each online apply output column naming the chosen scenario row to its input.
+
+    The apply emits the chosen row's quote id, scenario index, and scenario
+    value cast to the dtypes it decides in (``_prepare_online_apply_frame``):
+    ``{output column: (input column, dtype)}``.
+    """
+    return {
+        "quote_id": (artifact.get("quote_id", "quote_id"), pl.String()),
+        "optimal_step": (artifact.get("scenario_index", "scenario_index"), pl.Int32()),
+        optimised_value_col or "optimal_scenario_value": (
+            artifact.get("scenario_value", "scenario_value"),
+            pl.Float32(),
+        ),
+    }
+
+
+def online_apply_output_schema(
+    artifact: dict[str, Any],
+    *,
+    version: str,
+    version_col: str,
+    optimised_value_col: str = "",
+) -> pl.Schema:
+    """Return the exact schema a sum-constraint online apply emits."""
+    constraints = artifact.get("constraints") or {}
+    columns: dict[str, pl.DataType] = {
+        name: dtype
+        for name, (_input, dtype) in online_apply_chosen_row_columns(
+            artifact, optimised_value_col=optimised_value_col
+        ).items()
+    }
+    columns["optimal_objective"] = pl.Float32()
+    for name in sorted(constraints):
+        columns[f"optimal_{name}"] = pl.Float32()
     if version:
-        result_df = result_df.with_columns(pl.lit(version).alias(version_col))
-
-    return result_df.lazy()
+        columns[version_col] = pl.String()
+    return pl.Schema(columns)
 
 
 def _prepare_online_apply_frame(lf: _Frame, artifact: dict[str, Any]) -> pl.DataFrame:
@@ -1337,7 +1743,6 @@ def _prepare_online_apply_frame(lf: _Frame, artifact: dict[str, Any]) -> pl.Data
     step_col = artifact.get("scenario_index", "scenario_index")
     mult_col = artifact.get("scenario_value", "scenario_value")
     objective = artifact.get("objective", "expected_income")
-    constraints = artifact.get("constraints") or {}
 
     # Filter out null quote IDs before casting (null -> "null" would become
     # a real quote identifier and diverge from the optimiser apply path).
@@ -1349,19 +1754,53 @@ def _prepare_online_apply_frame(lf: _Frame, artifact: dict[str, Any]) -> pl.Data
         pl.col(mult_col).cast(pl.Float32),
         pl.col(objective).cast(pl.Float32),
     ]
-    cast_names = {qid_col, step_col, mult_col, objective}
-    for name, spec in constraints.items():
-        if isinstance(spec, dict) and {"numerator", "denominator"}.issubset(spec):
-            for col in (spec["numerator"], spec["denominator"]):
-                col_name = str(col)
-                if col_name not in cast_names:
-                    cast_exprs.append(pl.col(col_name).cast(pl.Float32))
-                    cast_names.add(col_name)
-        elif name not in cast_names:
-            cast_exprs.append(pl.col(name).cast(pl.Float32))
-            cast_names.add(name)
+    cast_exprs.extend(
+        pl.col(name).cast(pl.Float32) for name in _online_apply_constraint_columns(artifact)
+    )
 
     return streaming_collect(lf.with_columns(cast_exprs))
+
+
+def _online_apply_constraint_columns(artifact: Mapping[str, Any]) -> tuple[str, ...]:
+    """The constraint columns an online apply casts, beyond its four fixed columns.
+
+    A ratio constraint reads its numerator and denominator; any other
+    constraint reads the column it is named after.
+    """
+    seen = {
+        artifact.get("quote_id", "quote_id"),
+        artifact.get("scenario_index", "scenario_index"),
+        artifact.get("scenario_value", "scenario_value"),
+        artifact.get("objective", "expected_income"),
+    }
+    columns: list[str] = []
+    for name, spec in (artifact.get("constraints") or {}).items():
+        if isinstance(spec, dict) and {"numerator", "denominator"}.issubset(spec):
+            candidates = [str(spec["numerator"]), str(spec["denominator"])]
+        else:
+            candidates = [name]
+        for column in candidates:
+            if column not in seen:
+                columns.append(column)
+                seen.add(column)
+    return tuple(columns)
+
+
+def online_apply_input_columns(artifact: Mapping[str, Any]) -> frozenset[str]:
+    """Every input column an online apply reads; its output carries no other.
+
+    The apply builds a new frame from the quote id, scenario index and value,
+    objective, and constraint columns its artifact names.
+    """
+    return frozenset(
+        {
+            artifact.get("quote_id", "quote_id"),
+            artifact.get("scenario_index", "scenario_index"),
+            artifact.get("scenario_value", "scenario_value"),
+            artifact.get("objective", "expected_income"),
+            *_online_apply_constraint_columns(artifact),
+        }
+    )
 
 
 # Composite ratebook factor groups (3b.2): price-contour names a composite
@@ -1449,7 +1888,13 @@ def _apply_ratebook(
     keys — see :func:`_ratebook_lookup_table`.  Unseen factor levels rate
     1.0 with a counted ``rating_table_lookup_misses`` WARNING per table
     (3b.5) — neutral, never silent.
+
+    The combined ``optimised_factor`` is then clipped to the artifact's
+    ``combined_factor_bounds`` — the scenario range the solve scored (Q17) —
+    so no quote deploys at a factor the solver never evaluated. The order is
+    neutral fill, product, clamp; per-factor columns are never clamped.
     """
+    collar_min, collar_max = parse_combined_factor_bounds(artifact.get(COMBINED_FACTOR_BOUNDS_KEY))
     factor_tables = artifact.get("factor_tables", {})
     factor_dtypes = artifact.get("factor_dtypes")
     schema_by_name: dict[str, Any]
@@ -1571,11 +2016,16 @@ def _apply_ratebook(
                 "multiply",
                 "optimised_factor",
             )
-            available.add("optimised_factor")
-            schema_by_name["optimised_factor"] = pl.Float64
         elif len(factor_cols) == 1:
             result_lf = result_lf.with_columns(
                 pl.col(factor_cols[0]).alias("optimised_factor"),
+            )
+        if factor_cols:
+            # The collar: the solve scored only scenario values in
+            # [collar_min, collar_max], pricing a product past either end at
+            # that end. Clip the combined factor, never the per-factor columns.
+            result_lf = result_lf.with_columns(
+                pl.col("optimised_factor").clip(collar_min, collar_max),
             )
             available.add("optimised_factor")
             schema_by_name["optimised_factor"] = pl.Float64

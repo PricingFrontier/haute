@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-import os
 import pickle
+import sys
 import threading
 import time
 from dataclasses import replace
@@ -10,10 +10,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import numpy as np
 import polars as pl
 import pytest
 
 from haute._execution_context import ExecutionContext, ExecutionProfile
+from haute._native_memory_limit import NativeMemoryLease, model_thread_address_space_allowance
+from haute._worker_isolation import IsolatedWorkerConfig, IsolatedWorkerError
 from haute._worker_protocol import (
     WorkerFailurePayload,
     WorkerProtocolError,
@@ -22,6 +25,7 @@ from haute._worker_protocol import (
     WorkerResultManifest,
     WorkerRuntime,
     build_artifact_manifest,
+    run_worker_protocol,
     validate_result_manifest,
 )
 from haute.errors import PreambleError
@@ -36,6 +40,7 @@ from haute.modelling._evaluation import (
     save_evaluation_report,
     save_evaluation_results,
 )
+from haute.modelling._shap import shap_diagnostics
 from haute.modelling._training_job import (
     TrainResult,
     evaluation_artifact_filenames,
@@ -52,20 +57,34 @@ from haute.modelling._tuning import (
     save_tuning_report,
     save_tuning_trials,
 )
+from haute.routes import _training_artifacts
 from haute.routes._job_store import JobStore
 from haute.routes._train_service import (
-    TrainingArtifactPublicationError,
     TrainService,
-    _publish_training_artifacts,
     _run_dispersion_process_job,
     _run_training_process_job,
     _validate_evaluation_artifact_contents,
+    _validate_training_artifacts,
     _validate_tuning_artifact_contents,
     _worker_timing,
 )
+from haute.routes._training_artifacts import _TRAINING_ARTIFACT_KINDS, _max_training_artifact_bytes
 from haute.schemas import EvaluationReportPayload, TuningReportPayload
 
 _TEST_WORKER_MEMORY_LIMIT_BYTES = 512 * 1024**2
+_IDENTITY = "a" * 64
+
+
+@pytest.fixture(autouse=True)
+def training_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Keep job-owned training artifact directories inside this test's scratch space."""
+    root = (tmp_path / "training-artifacts").resolve()
+    monkeypatch.setattr(_training_artifacts, "training_artifact_root", lambda: root)
+    return root
+
+
+def _job_artifact_dir(job) -> Path:
+    return Path(job["artifact_handles"]["training_artifacts"]["directory"])
 
 
 class _ForwardingQueue:
@@ -270,13 +289,15 @@ def _published_tuning(payload: dict[str, object]) -> TuningReportPayload:
 
 
 class _SuccessfulTrainingJob:
+    training_identity_sha256 = _IDENTITY
+
     def __init__(self, **kwargs) -> None:
         self.output_dir = Path(kwargs["output_dir"])
         self.name = str(kwargs.get("name", "model"))
 
     def run(self, progress, on_iteration, **_kwargs):
         progress("Fitting", 0.4)
-        on_iteration(1, 2, {"rmse": 0.5})
+        on_iteration(1, 2, {"rmse": 0.5}, {"iteration": 1.0, "train_rmse": 0.5})
         self.output_dir.mkdir(parents=True, exist_ok=True)
         model_path = self.output_dir / f"{self.name}.cbm"
         model_path.write_bytes(b"model")
@@ -297,6 +318,26 @@ class _SuccessfulTrainingJob:
             diagnostics_set="final_test",
             loss_history=[{"iteration": 1.0, "loss": 0.5}],
             evaluation=_evaluation_payload(self.output_dir, self.name),
+        )
+
+
+class _SuccessfulShapTrainingJob(_SuccessfulTrainingJob):
+    """A run whose SHAP views carry nulls: a missing numeric value and a categorical level."""
+
+    def run(self, progress, on_iteration, **kwargs):
+        result = super().run(progress, on_iteration, **kwargs)
+        sample = pl.DataFrame({"x": [1.0, None, 3.0], "region": ["north", None, "north"]})
+        views = shap_diagnostics(
+            np.array([[0.1, 0.2], [0.3, -0.1], [-0.2, 0.2]]), sample, ["x", "region"], ["region"]
+        )
+        return replace(
+            result,
+            features=["x", "region"],
+            cat_features=["region"],
+            shap_summary=views.summary,
+            shap_beeswarm=views.beeswarm,
+            shap_curves=views.curves,
+            shap_link="log",
         )
 
 
@@ -430,7 +471,14 @@ def _staged_tuned_training_manifest(tmp_path: Path):
     )
 
 
-def _launch(service: TrainService, store: JobStore, tmp_path: Path, output_dir: Path):
+def _launch(
+    service: TrainService,
+    store: JobStore,
+    tmp_path: Path,
+    output_dir: Path,
+    *,
+    execution_context: ExecutionContext | None = None,
+):
     prepared = tmp_path / "prepared.parquet"
     prepared.write_bytes(b"prepared")
     job_id = store.create_job(
@@ -444,6 +492,7 @@ def _launch(service: TrainService, store: JobStore, tmp_path: Path, output_dir: 
             "target": "y",
             "algorithm": "catboost",
             "loss_function": "RMSE",
+            "feature_columns": ["x"],
             "output_dir": str(output_dir),
             "evaluation": _request(tmp_path).payload["job_kwargs"]["evaluation"],
         },
@@ -451,7 +500,8 @@ def _launch(service: TrainService, store: JobStore, tmp_path: Path, output_dir: 
         str(prepared),
         None,
         10,
-        execution_context=ExecutionContext(
+        execution_context=execution_context
+        or ExecutionContext(
             operation="training_pipeline",
             profile=ExecutionProfile.TRAINING_PREP,
             memory_limit_bytes=_TEST_WORKER_MEMORY_LIMIT_BYTES,
@@ -460,6 +510,57 @@ def _launch(service: TrainService, store: JobStore, tmp_path: Path, output_dir: 
     assert thread is not None
     thread.join_and_raise(timeout=10)
     return job_id, prepared
+
+
+def _context_with_preparation_evidence() -> ExecutionContext:
+    """A job context that has already recorded a capture and a warning in preparation."""
+    from haute._node_snapshots import NodeSnapshotColumns
+    from haute._seed_plans import CaptureKind, SharedSnapshotCaptureRecord
+
+    context = ExecutionContext(
+        operation="training_pipeline",
+        profile=ExecutionProfile.TRAINING_PREP,
+        memory_limit_bytes=_TEST_WORKER_MEMORY_LIMIT_BYTES,
+    )
+    context.record_shared_snapshot_capture(
+        SharedSnapshotCaptureRecord(
+            node_id="join",
+            identity_digest="c" * 64,
+            kind=CaptureKind.CONSUMED,
+            outcome="published",
+            generation_id="gen-join",
+            columns=NodeSnapshotColumns.all(),
+        )
+    )
+    context.record_execution_warning("snapshot_capture_superseded", node_id="side")
+    return context
+
+
+def test_failed_fit_keeps_the_jobs_preparation_evidence(tmp_path: Path) -> None:
+    class ContractFailingJob:
+        def __init__(self, **_kwargs):
+            raise PreambleError("invalid training preamble", source_line=7)
+
+    store = JobStore()
+    service = TrainService(store, protocol_runner=_inline_protocol_runner)
+    with patch("haute.modelling.TrainingJob", ContractFailingJob):
+        job_id, _prepared = _launch(
+            service,
+            store,
+            tmp_path,
+            tmp_path / "outputs",
+            execution_context=_context_with_preparation_evidence(),
+        )
+
+    job = store.require_job(job_id)
+    assert job["status"] == "contract_error"
+    metrics = job["execution_metrics"]
+    # The failed worker's own metrics, carrying what preparation recorded.
+    assert metrics["operation"] == "training_job"
+    assert [capture["node_id"] for capture in metrics["shared_snapshot_captures"]] == ["join"]
+    assert [(warning["code"], warning["node_id"]) for warning in metrics["warnings"]] == [
+        ("snapshot_capture_superseded", "side")
+    ]
 
 
 def test_training_entrypoint_stages_complete_evaluation_and_public_response(tmp_path: Path) -> None:
@@ -484,6 +585,13 @@ def test_training_entrypoint_stages_complete_evaluation_and_public_response(tmp_
     assert response["evaluation"]["plan_path"] == "output/quoted.evaluation-plan.json"
     assert "tuning" not in response
     assert [event.kind for event in queue.events] == ["progress", "iteration"]
+    # The iteration event carries the engine's readout and its loss-history row.
+    assert queue.events[1].fields == {
+        "iteration": 1,
+        "total": 2,
+        "metrics": {"rmse": 0.5},
+        "history": {"iteration": 1.0, "train_rmse": 0.5},
+    }
 
 
 @pytest.mark.parametrize(
@@ -571,15 +679,17 @@ def test_train_service_publishes_complete_evaluation_run(tmp_path: Path) -> None
         job_id, prepared = _launch(service, store, tmp_path, output_dir)
     job = store.require_job(job_id)
     assert job["status"] == "completed"
-    assert job["result"].evaluation.plan_path == str(
-        (output_dir / "quoted.evaluation-plan.json").resolve()
-    )
+    published = _job_artifact_dir(job) / "output"
+    assert _job_artifact_dir(job).parent == _training_artifacts.training_artifact_root()
+    assert job["result"].model_path == str(published / "quoted.cbm")
+    assert job["result"].evaluation.plan_path == str(published / "quoted.evaluation-plan.json")
     assert job["result"].evaluation.results_path == str(
-        (output_dir / "quoted.evaluation-results.json").resolve()
+        published / "quoted.evaluation-results.json"
     )
-    assert job["result"].evaluation.report_path == str(
-        (output_dir / "quoted.evaluation-report.json").resolve()
-    )
+    assert job["result"].evaluation.report_path == str(published / "quoted.evaluation-report.json")
+    assert job["artifact_handles"]["training_artifacts"]["files"]["model"] == "quoted.cbm"
+    assert job["provenance"]["training_identity_sha256"] == _IDENTITY
+    assert not output_dir.exists(), "canvas training never writes the node's output_dir"
     assert launches == [
         frozenset(
             {
@@ -594,7 +704,34 @@ def test_train_service_publishes_complete_evaluation_run(tmp_path: Path) -> None
             }
         )
     ]
-    assert not prepared.exists() and not list(output_dir.glob(".haute-training-*"))
+    assert not prepared.exists() and (published / "quoted.cbm").read_bytes() == b"model"
+
+
+def test_train_service_publishes_shap_views_with_their_nulls(tmp_path: Path) -> None:
+    """The worker sends its response without null fields; the published curves keep them."""
+    store = JobStore()
+    service = TrainService(store, protocol_runner=_inline_protocol_runner)
+    with patch("haute.modelling.TrainingJob", _SuccessfulShapTrainingJob):
+        job_id, _prepared = _launch(service, store, tmp_path, tmp_path / "outputs")
+    job = store.require_job(job_id)
+
+    assert job["status"] == "completed", job.get("error")
+    result = job["result"]
+    assert result.shap_link == "log"
+    curves = {curve.feature: curve for curve in result.shap_curves}
+    assert [(point.value, point.low, point.high) for point in curves["x"].points] == [
+        (1.0, 1.0, 1.0),
+        (3.0, 3.0, 3.0),
+        (None, None, None),
+    ]
+    assert [(point.value, point.low, point.high) for point in curves["region"].points] == [
+        ("north", None, None),
+        (None, None, None),
+    ]
+    assert [entry.values for entry in result.shap_beeswarm] == [
+        [1.0, None, 3.0],
+        ["north", None, "north"],
+    ]
 
 
 def test_train_service_publishes_complete_tuned_run_and_terminal_progress(tmp_path: Path) -> None:
@@ -621,7 +758,8 @@ def test_train_service_publishes_complete_tuned_run_and_terminal_progress(tmp_pa
         job["result"].tuning.report_path,
     ):
         assert Path(path).is_file()
-    assert not prepared.exists() and not list(output_dir.glob(".haute-training-*"))
+        assert Path(path).parent == _job_artifact_dir(job) / "output"
+    assert not prepared.exists()
 
 
 @pytest.mark.parametrize(
@@ -725,11 +863,9 @@ def test_train_service_rejects_tuning_response_manifest_path_mismatch(tmp_path: 
 
 def test_publication_validates_evaluation_digests_and_canonical_paths(tmp_path: Path) -> None:
     root, output, manifest, expected = _staged_training_manifest(tmp_path)
-    published = _publish_training_artifacts(
+    published = _validate_training_artifacts(
         manifest,
         artifact_root=root,
-        output_root=tmp_path / "outputs",
-        job_id="job-1",
         expected_model_name="quoted",
         expected_evaluation=expected,
     )
@@ -750,11 +886,9 @@ def test_publication_validates_tuning_digests_and_canonical_paths(tmp_path: Path
         tmp_path
     )
 
-    published = _publish_training_artifacts(
+    published = _validate_training_artifacts(
         manifest,
         artifact_root=root,
-        output_root=tmp_path / "outputs",
-        job_id="job-1",
         expected_model_name="quoted",
         expected_evaluation=expected_evaluation,
         expected_tuning=expected_tuning,
@@ -778,11 +912,9 @@ def test_publication_validates_tuning_digests_and_canonical_paths(tmp_path: Path
 def test_publication_rejects_response_without_required_artifact_contracts(tmp_path: Path) -> None:
     root, _output, manifest, expected_evaluation = _staged_training_manifest(tmp_path)
     with pytest.raises(WorkerProtocolError, match="must declare evaluation"):
-        _publish_training_artifacts(
+        _validate_training_artifacts(
             manifest,
             artifact_root=root,
-            output_root=tmp_path / "outputs",
-            job_id="job-1",
             expected_model_name="quoted",
             expected_evaluation=None,  # type: ignore[arg-type] - runtime boundary guard
         )
@@ -792,11 +924,9 @@ def test_publication_rejects_response_without_required_artifact_contracts(tmp_pa
     )
     assert tuned_root.is_dir()
     with pytest.raises(WorkerProtocolError, match="tuning artifact set disagree"):
-        _publish_training_artifacts(
+        _validate_training_artifacts(
             manifest,
             artifact_root=root,
-            output_root=tmp_path / "outputs",
-            job_id="job-1",
             expected_model_name="quoted",
             expected_evaluation=expected_evaluation,
             expected_tuning=expected_tuning,
@@ -841,11 +971,9 @@ def test_publication_rejects_noncanonical_companion_filenames(
     )
 
     with pytest.raises(WorkerProtocolError, match=message):
-        _publish_training_artifacts(
+        _validate_training_artifacts(
             malformed,
             artifact_root=root,
-            output_root=tmp_path / "outputs",
-            job_id="job-1",
             expected_model_name="quoted",
             expected_evaluation=expected_evaluation,
         )
@@ -856,22 +984,18 @@ def test_publication_rejects_response_paths_and_digests_that_disagree(
 ) -> None:
     root, _output, manifest, expected_evaluation = _staged_training_manifest(tmp_path)
     with pytest.raises(WorkerProtocolError, match="response path"):
-        _publish_training_artifacts(
+        _validate_training_artifacts(
             manifest,
             artifact_root=root,
-            output_root=tmp_path / "outputs",
-            job_id="job-1",
             expected_model_name="quoted",
             expected_evaluation=expected_evaluation.model_copy(
                 update={"plan_path": "output/not-the-plan.json"}
             ),
         )
     with pytest.raises(WorkerProtocolError, match="staged artifact contents"):
-        _publish_training_artifacts(
+        _validate_training_artifacts(
             manifest,
             artifact_root=root,
-            output_root=tmp_path / "outputs",
-            job_id="job-1",
             expected_model_name="quoted",
             expected_evaluation=expected_evaluation.model_copy(update={"results_sha256": "e" * 64}),
         )
@@ -894,7 +1018,7 @@ def test_publication_rejects_tuning_filename_path_and_digest_disagreement(
         lifetime=tuning_plan.lifetime,
     )
     with pytest.raises(WorkerProtocolError, match="tuning_plan filename"):
-        _publish_training_artifacts(
+        _validate_training_artifacts(
             WorkerResultManifest(
                 metadata={},
                 artifacts=tuple(
@@ -903,18 +1027,14 @@ def test_publication_rejects_tuning_filename_path_and_digest_disagreement(
                 ),
             ),
             artifact_root=root,
-            output_root=tmp_path / "outputs",
-            job_id="job-1",
             expected_model_name="quoted",
             expected_evaluation=expected_evaluation,
             expected_tuning=expected_tuning,
         )
     with pytest.raises(WorkerProtocolError, match="tuning response path"):
-        _publish_training_artifacts(
+        _validate_training_artifacts(
             manifest,
             artifact_root=root,
-            output_root=tmp_path / "outputs",
-            job_id="job-1",
             expected_model_name="quoted",
             expected_evaluation=expected_evaluation,
             expected_tuning=expected_tuning.model_copy(
@@ -922,11 +1042,9 @@ def test_publication_rejects_tuning_filename_path_and_digest_disagreement(
             ),
         )
     with pytest.raises(WorkerProtocolError, match="staged artifact contents"):
-        _publish_training_artifacts(
+        _validate_training_artifacts(
             manifest,
             artifact_root=root,
-            output_root=tmp_path / "outputs",
-            job_id="job-1",
             expected_model_name="quoted",
             expected_evaluation=expected_evaluation,
             expected_tuning=expected_tuning.model_copy(update={"plan_sha256": "e" * 64}),
@@ -937,17 +1055,13 @@ def test_tuning_artifact_validation_rejects_wrong_evaluation_link(tmp_path: Path
     root, _output, manifest, _expected_evaluation, _expected_tuning = (
         _staged_tuned_training_manifest(tmp_path)
     )
-    staged_and_final = {
-        artifact.kind: (
-            root / artifact.relative_path,
-            tmp_path / "unused" / Path(artifact.relative_path).name,
-        )
-        for artifact in manifest.artifacts
+    artifact_paths = {
+        artifact.kind: root / artifact.relative_path for artifact in manifest.artifacts
     }
 
     with pytest.raises(WorkerProtocolError, match="does not link"):
         _validate_tuning_artifact_contents(
-            staged_and_final,
+            artifact_paths,
             evaluation_plan_sha256="f" * 64,
         )
 
@@ -956,12 +1070,8 @@ def test_persisted_reports_must_match_their_source_artifacts(tmp_path: Path) -> 
     root, output, manifest, expected_evaluation, _expected_tuning = _staged_tuned_training_manifest(
         tmp_path
     )
-    staged_and_final = {
-        artifact.kind: (
-            root / artifact.relative_path,
-            tmp_path / "unused" / Path(artifact.relative_path).name,
-        )
-        for artifact in manifest.artifacts
+    artifact_paths = {
+        artifact.kind: root / artifact.relative_path for artifact in manifest.artifacts
     }
 
     evaluation_report = output / evaluation_artifact_filenames("quoted")["report"]
@@ -970,7 +1080,7 @@ def test_persisted_reports_must_match_their_source_artifacts(tmp_path: Path) -> 
     _write_scratch_text(evaluation_report, json.dumps(evaluation_data))
     with pytest.raises(WorkerProtocolError, match="does not match"):
         _validate_evaluation_artifact_contents(
-            staged_and_final,
+            artifact_paths,
             response_fit_count=expected_evaluation.fit_count,
         )
 
@@ -980,7 +1090,7 @@ def test_persisted_reports_must_match_their_source_artifacts(tmp_path: Path) -> 
     _write_scratch_text(tuning_report, json.dumps(tuning_data))
     with pytest.raises(WorkerProtocolError, match="does not match"):
         _validate_tuning_artifact_contents(
-            staged_and_final,
+            artifact_paths,
             evaluation_plan_sha256=expected_evaluation.plan_sha256,
         )
 
@@ -1002,11 +1112,9 @@ def test_publication_rejects_malformed_or_incomplete_evaluation_set(
     else:
         artifacts = tuple(artifact for artifact in manifest.artifacts if artifact.kind != kind)
     with pytest.raises(WorkerProtocolError):
-        _publish_training_artifacts(
+        _validate_training_artifacts(
             WorkerResultManifest(metadata={}, artifacts=artifacts),
             artifact_root=root,
-            output_root=tmp_path / "outputs",
-            job_id="job-1",
             expected_model_name="quoted",
             expected_evaluation=expected,
         )
@@ -1024,64 +1132,12 @@ def test_publication_rejects_results_not_linked_to_exact_evaluation_plan(tmp_pat
         artifacts=tuple(changed if a.kind == "evaluation_plan" else a for a in manifest.artifacts),
     )
     with pytest.raises(WorkerProtocolError, match="evaluation artifact"):
-        _publish_training_artifacts(
+        _validate_training_artifacts(
             malformed,
             artifact_root=root,
-            output_root=tmp_path / "outputs",
-            job_id="job-1",
             expected_model_name="quoted",
             expected_evaluation=expected,
         )
-
-
-def test_publication_retires_stale_tuning_companions(tmp_path: Path) -> None:
-    root, _output, manifest, expected = _staged_training_manifest(tmp_path)
-    destination = tmp_path / "outputs"
-    destination.mkdir()
-    stale = [destination / name for name in tuning_artifact_filenames("quoted").values()]
-    for path in stale:
-        _write_scratch_bytes(path, b"stale")
-    _publish_training_artifacts(
-        manifest,
-        artifact_root=root,
-        output_root=destination,
-        job_id="job-1",
-        expected_model_name="quoted",
-        expected_evaluation=expected,
-    )
-    assert not any(path.exists() for path in stale)
-
-
-def test_publication_rolls_back_all_evaluation_artifacts(tmp_path: Path) -> None:
-    root, output, manifest, expected = _staged_training_manifest(tmp_path)
-    destination = tmp_path / "outputs"
-    destination.mkdir()
-    old = {}
-    for artifact in manifest.artifacts:
-        final = destination / Path(artifact.relative_path).name
-        old[final] = f"old-{artifact.kind}".encode()
-        final.write_bytes(old[final])
-    failing = output / evaluation_artifact_filenames("quoted")["report"]
-    original = os.replace
-
-    def fail(source, destination_path):
-        if Path(source) == failing:
-            raise OSError("report cannot be published")
-        original(source, destination_path)
-
-    with (
-        patch("haute.routes._training_artifacts.os.replace", side_effect=fail),
-        pytest.raises(OSError, match="report"),
-    ):
-        _publish_training_artifacts(
-            manifest,
-            artifact_root=root,
-            output_root=destination,
-            job_id="job-1",
-            expected_model_name="quoted",
-            expected_evaluation=expected,
-        )
-    assert {path: path.read_bytes() for path in old} == old
 
 
 def test_publication_requires_tuning_artifacts_all_or_nothing(tmp_path: Path) -> None:
@@ -1092,56 +1148,17 @@ def test_publication_requires_tuning_artifacts_all_or_nothing(tmp_path: Path) ->
         artifact_root=root, path=tuning, kind="tuning_plan", lifetime="staged"
     )
     with pytest.raises(WorkerProtocolError, match="complete"):
-        _publish_training_artifacts(
+        _validate_training_artifacts(
             WorkerResultManifest(metadata={}, artifacts=(*manifest.artifacts, artifact)),
             artifact_root=root,
-            output_root=tmp_path / "outputs",
-            job_id="job-1",
             expected_model_name="quoted",
             expected_evaluation=expected,
         )
 
 
-def test_windows_publication_retries_transient_contention_and_publishes_complete_generation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_cancel_before_publication_removes_the_job_artifact_directory(
+    tmp_path: Path, training_root: Path
 ) -> None:
-    root, output, manifest, expected = _staged_training_manifest(tmp_path)
-    destination = tmp_path / "outputs"
-    staged_model = output / "quoted.cbm"
-    original, attempts = os.replace, 0
-
-    def transient(source, target):
-        nonlocal attempts
-        if Path(source) == staged_model and attempts < 2:
-            attempts += 1
-            raise PermissionError("sharing violation")
-        original(source, target)
-
-    monkeypatch.setattr("haute.routes._training_artifacts.sys.platform", "win32")
-    with (
-        patch("haute.routes._training_artifacts.os.replace", side_effect=transient),
-        patch("haute.routes._training_artifacts.time.sleep") as sleep,
-    ):
-        published = _publish_training_artifacts(
-            manifest,
-            artifact_root=root,
-            output_root=destination,
-            job_id="job-1",
-            expected_model_name="quoted",
-            expected_evaluation=expected,
-        )
-    assert attempts == sleep.call_count == 2
-    assert {path.read_bytes() for path in published.values()} >= {b"new-model", b"new-contract"}
-
-
-def test_cancel_before_publication_preserves_durable_artifacts(
-    tmp_path: Path,
-) -> None:
-    output = tmp_path / "outputs"
-    output.mkdir()
-    model, contract = output / "quoted.cbm", output / model_contract_filename("quoted")
-    _write_scratch_bytes(model, b"old-model")
-    _write_scratch_bytes(contract, b"old-contract")
     store = JobStore()
     service: TrainService
 
@@ -1152,9 +1169,11 @@ def test_cancel_before_publication_preserves_durable_artifacts(
 
     service = TrainService(store, protocol_runner=cancelling)
     with patch("haute.modelling.TrainingJob", _SuccessfulTrainingJob):
-        job_id, prepared = _launch(service, store, tmp_path, output)
-    assert store.require_job(job_id)["status"] == "cancelled"
-    assert model.read_bytes() == b"old-model" and contract.read_bytes() == b"old-contract"
+        job_id, prepared = _launch(service, store, tmp_path, tmp_path / "outputs")
+    job = store.require_job(job_id)
+    assert job["status"] == "cancelled"
+    assert "artifact_handles" not in job
+    assert not list(training_root.glob("train_*"))
     assert not prepared.exists()
 
 
@@ -1174,11 +1193,9 @@ def test_publication_rejects_model_name_not_declared_by_request(tmp_path: Path) 
     )
 
     with pytest.raises(WorkerProtocolError, match="requested name"):
-        _publish_training_artifacts(
+        _validate_training_artifacts(
             malformed,
             artifact_root=root,
-            output_root=tmp_path / "outputs",
-            job_id="job-1",
             expected_model_name="quoted",
             expected_evaluation=expected,
         )
@@ -1215,139 +1232,12 @@ def test_publication_rejects_invalid_artifact_manifests(tmp_path: Path, variant:
         )
 
     with pytest.raises(WorkerProtocolError):
-        _publish_training_artifacts(
+        _validate_training_artifacts(
             WorkerResultManifest(metadata={}, artifacts=artifacts),
             artifact_root=root,
-            output_root=tmp_path / "outputs",
-            job_id="job-1",
             expected_model_name="quoted",
             expected_evaluation=expected,
         )
-
-
-def test_publication_rejects_backup_collision_without_modifying_durable_artifacts(
-    tmp_path: Path,
-) -> None:
-    root, output, manifest, expected = _staged_training_manifest(tmp_path)
-    destination = tmp_path / "outputs"
-    destination.mkdir()
-    final = destination / "quoted.cbm"
-    backup = destination / ".quoted.cbm.job-1.haute-backup"
-    final.write_bytes(b"old-model")
-    backup.write_bytes(b"existing backup")
-
-    with pytest.raises(FileExistsError, match="backup already exists"):
-        _publish_training_artifacts(
-            manifest,
-            artifact_root=root,
-            output_root=destination,
-            job_id="job-1",
-            expected_model_name="quoted",
-            expected_evaluation=expected,
-        )
-
-    assert final.read_bytes() == b"old-model"
-    assert backup.read_bytes() == b"existing backup"
-    assert (output / "quoted.cbm").exists()
-
-
-def test_windows_publication_exhaustion_restores_complete_old_generation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root, output, manifest, expected = _staged_training_manifest(tmp_path)
-    destination = tmp_path / "outputs"
-    destination.mkdir()
-    old = {}
-    for artifact in manifest.artifacts:
-        final = destination / Path(artifact.relative_path).name
-        old[final] = f"old-{artifact.kind}".encode()
-        final.write_bytes(old[final])
-    staged_model = output / "quoted.cbm"
-    attempts = 0
-    original = os.replace
-
-    def blocked(source, target):
-        nonlocal attempts
-        if Path(source) == staged_model:
-            attempts += 1
-            raise PermissionError("sharing violation")
-        original(source, target)
-
-    monkeypatch.setattr("haute.routes._training_artifacts.sys.platform", "win32")
-    with (
-        patch("haute.routes._training_artifacts.os.replace", side_effect=blocked),
-        patch("haute.routes._training_artifacts.time.sleep") as sleep,
-        pytest.raises(TrainingArtifactPublicationError),
-    ):
-        _publish_training_artifacts(
-            manifest,
-            artifact_root=root,
-            output_root=destination,
-            job_id="job-1",
-            expected_model_name="quoted",
-            expected_evaluation=expected,
-        )
-    assert attempts == 4 and sleep.call_count == 3
-    assert {path: path.read_bytes() for path in old} == old
-
-
-def test_windows_publication_does_not_retry_non_contention_errors(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root, output, manifest, expected = _staged_training_manifest(tmp_path)
-    staged_model, attempts = output / "quoted.cbm", 0
-    original = os.replace
-
-    def failing(source, target):
-        nonlocal attempts
-        if Path(source) == staged_model:
-            attempts += 1
-            raise OSError("disk failure")
-        original(source, target)
-
-    monkeypatch.setattr("haute.routes._training_artifacts.sys.platform", "win32")
-    with (
-        patch("haute.routes._training_artifacts.os.replace", side_effect=failing),
-        patch("haute.routes._training_artifacts.time.sleep") as sleep,
-        pytest.raises(OSError, match="disk failure"),
-    ):
-        _publish_training_artifacts(
-            manifest,
-            artifact_root=root,
-            output_root=tmp_path / "outputs",
-            job_id="job-1",
-            expected_model_name="quoted",
-            expected_evaluation=expected,
-        )
-    assert attempts == 1
-    sleep.assert_not_called()
-
-
-def test_publication_keeps_new_generation_when_backup_deletion_is_denied(tmp_path: Path) -> None:
-    root, _output, manifest, expected = _staged_training_manifest(tmp_path)
-    destination = tmp_path / "outputs"
-    destination.mkdir()
-    for artifact in manifest.artifacts:
-        (destination / Path(artifact.relative_path).name).write_bytes(b"old")
-    original_unlink = Path.unlink
-
-    def deny_backup_unlink(path: Path, *args, **kwargs) -> None:
-        if path.name.endswith(".haute-backup"):
-            raise PermissionError("backup is temporarily locked")
-        original_unlink(path, *args, **kwargs)
-
-    with patch.object(Path, "unlink", autospec=True, side_effect=deny_backup_unlink):
-        published = _publish_training_artifacts(
-            manifest,
-            artifact_root=root,
-            output_root=destination,
-            job_id="job-1",
-            expected_model_name="quoted",
-            expected_evaluation=expected,
-        )
-    assert published["model"].read_bytes() == b"new-model"
-    assert published["feature_contract"].read_bytes() == b"new-contract"
-    assert list(destination.glob("*.haute-backup"))
 
 
 def test_worker_timing_rejects_all_invalid_values() -> None:
@@ -1356,21 +1246,34 @@ def test_worker_timing_rejects_all_invalid_values() -> None:
             _worker_timing(job, job_id="job-1")
 
 
-def test_dispersion_worker_remains_isolated_and_emits_fit_events(tmp_path: Path) -> None:
-    data = tmp_path / "prepared.parquet"
-    frame = pl.DataFrame(
-        {"x": [1.0, 2.0], "y": [3.0, 4.0], "weight": [1.0, 1.0], "offset": [0.0, 0.0]}
-    )
-    frame.write_parquet(data)
-    queue, captured = _ForwardingQueue(), {}
-
+def _prepared_job(data: Path, dtypes: dict[str, str], captured: dict | None = None) -> type:
     class Job:
         def __init__(self, **kwargs):
-            captured.update(kwargs)
+            if captured is not None:
+                captured["job_kwargs"] = kwargs
 
         def _prepare_data(self, progress, **_kwargs):
             progress("Preparing", 0.1)
-            return SimpleNamespace(features=["x"], cat_features=[], data_path=data)
+            return SimpleNamespace(
+                features=list(dtypes),
+                cat_features=[name for name, dtype in dtypes.items() if dtype == "String"],
+                feature_dtypes=dtypes,
+                data_path=data,
+            )
+
+        def _role_columns(self):
+            return {"y": "target", "weight": "weight", "offset": "offset"}
+
+    return Job
+
+
+def test_dispersion_worker_remains_isolated_and_emits_fit_events(tmp_path: Path) -> None:
+    data = tmp_path / "prepared.parquet"
+    frame = pl.DataFrame(
+        {"x": [1.0, 2.0], "y": [3.0, 4.0], "weight": [1.0, 1.0], "offset": [1.0, 1.0]}
+    )
+    frame.write_parquet(data)
+    queue = _ForwardingQueue()
 
     def estimate(**kwargs):
         kwargs["on_fit"](0)
@@ -1384,7 +1287,12 @@ def test_dispersion_worker_remains_isolated_and_emits_fit_events(tmp_path: Path)
                 "target": "y",
                 "weight": "weight",
                 "offset": "offset",
-                "params": {"family": "negbinomial", "terms": {"x": {}}, "interactions": []},
+                "params": {
+                    "family": "negbinomial",
+                    "theta": 1.0,
+                    "terms": {"x": {"type": "linear"}},
+                    "interactions": [],
+                },
             },
             "param": "theta",
             "profile": ExecutionProfile.TRAINING_PREP.value,
@@ -1392,9 +1300,7 @@ def test_dispersion_worker_remains_isolated_and_emits_fit_events(tmp_path: Path)
         },
     )
     with (
-        patch("haute.modelling.TrainingJob", Job),
-        patch("haute.modelling._rustystats._resolve_glm_terms", return_value=["x"]),
-        patch("haute.modelling._rustystats._build_interactions", return_value=[]),
+        patch("haute.modelling.TrainingJob", _prepared_job(data, {"x": "Float64"})),
         patch("haute.modelling._rustystats.estimate_glm_dispersion", side_effect=estimate),
         patch("haute._polars_utils.streaming_collect", return_value=frame),
     ):
@@ -1404,6 +1310,58 @@ def test_dispersion_worker_remains_isolated_and_emits_fit_events(tmp_path: Path)
     assert isinstance(result, WorkerResultManifest)
     assert result.metadata["value"] == 1.25
     assert [event.kind for event in queue.events] == ["progress", "progress", "dispersion_fit"]
+
+
+def test_dispersion_frame_includes_an_interaction_only_materialised_column(tmp_path: Path) -> None:
+    """The profile runs on the training design: an interaction factor whose
+    main effect Include main effects materialises is loaded, while unused
+    columns and internal encoding aliases are not."""
+    data = tmp_path / "prepared.parquet"
+    pl.DataFrame(
+        {
+            "c": ["a", "b"],
+            "x": [1.0, 2.0],
+            "unused": [0.0, 0.0],
+            "y": [3.0, 4.0],
+            "weight": [1.0, 1.0],
+            "offset": [1.0, 1.0],
+        }
+    ).write_parquet(data)
+    captured: dict = {}
+    params = {
+        "family": "negbinomial",
+        "theta": 1.0,
+        "terms": {"c": {"type": "categorical"}},
+        "interactions": [{"factors": ["c", "x"], "include_main": True}],
+    }
+
+    def estimate(**kwargs):
+        captured["estimate"] = kwargs
+        return SimpleNamespace(param="theta", value=1.25, llf=-4.5, n_fits=1)
+
+    request = WorkerRequest(
+        "job-1",
+        "dispersion",
+        {
+            "job_kwargs": {"target": "y", "weight": "weight", "offset": "offset", "params": params},
+            "param": "theta",
+            "profile": ExecutionProfile.TRAINING_PREP.value,
+            "memory_limit_bytes": None,
+        },
+    )
+    dtypes = {"c": "String", "x": "Float64", "unused": "Float64"}
+    with (
+        patch("haute.modelling.TrainingJob", _prepared_job(data, dtypes)),
+        patch("haute.modelling._rustystats.estimate_glm_dispersion", side_effect=estimate),
+    ):
+        result = _run_dispersion_process_job(
+            WorkerRuntime(_ForwardingQueue(), str(tmp_path / "artifacts")), request
+        )
+
+    assert isinstance(result, WorkerResultManifest)
+    assert captured["estimate"]["data"].columns == ["c", "x", "y", "weight", "offset"]
+    assert captured["estimate"]["params"] == params
+    assert captured["estimate"]["target"] == "y"
 
 
 @pytest.mark.parametrize(
@@ -1433,7 +1391,11 @@ def test_dispersion_worker_maps_malformed_requests_to_contract_failures(
 
 @pytest.mark.parametrize(
     ("exception", "reason"),
-    [(MemoryError("full"), "memory_limited"), (RuntimeError("boom"), "error")],
+    [
+        (MemoryError("full"), "memory_limited"),
+        (RuntimeError("boom"), "error"),
+        (ValueError("continuous format is not supported"), "error"),
+    ],
 )
 def test_dispersion_worker_maps_estimator_failures(
     tmp_path: Path, exception: Exception, reason: str
@@ -1453,37 +1415,58 @@ def test_dispersion_worker_maps_estimator_failures(
     assert isinstance(result, WorkerFailurePayload)
     assert result.terminal_reason == reason
     assert result.error_type == type(exception).__name__
+    if reason == "error":
+        assert str(exception) not in result.message
+        assert type(exception).__name__ in result.message
+        assert result.message.startswith("Dispersion estimation")
+        assert result.fields["error"] == str(exception)
 
 
-def test_train_service_keeps_completed_status_when_post_commit_cleanup_is_denied(
-    tmp_path: Path,
+@pytest.mark.parametrize("entrypoint", ["training", "dispersion"])
+@pytest.mark.parametrize("capped", [True, False])
+def test_a_thread_that_cannot_start_under_the_cap_is_a_memory_limit_failure(
+    tmp_path: Path, entrypoint: str, capped: bool
+) -> None:
+    """Under an active cap a thread-start failure is the memory outcome; without a
+    cap it is an ordinary error."""
+    from haute._native_memory_limit import native_memory_backend_scope
+
+    class ThreadStarvedJob:
+        def __init__(self, **_kwargs) -> None:
+            raise RuntimeError("can't start new thread")
+
+    run, request = (
+        (_run_training_process_job, _request(tmp_path))
+        if entrypoint == "training"
+        else (_run_dispersion_process_job, _dispersion_request(tmp_path))
+    )
+    with (
+        patch("haute.modelling.TrainingJob", ThreadStarvedJob),
+        native_memory_backend_scope("rlimit" if capped else None),
+    ):
+        result = run(WorkerRuntime(_ForwardingQueue(), str(tmp_path / "artifacts")), request)
+
+    assert isinstance(result, WorkerFailurePayload)
+    if capped:
+        assert result.terminal_reason == "memory_limited"
+        assert result.error_type == "MemoryError"
+    else:
+        assert result.terminal_reason == "error"
+        assert result.error_type == "RuntimeError"
+
+
+def test_completed_job_owns_its_artifact_directory_after_parent_cleanup(
+    tmp_path: Path, training_root: Path
 ) -> None:
     store = JobStore()
-    service = TrainService(store, protocol_runner=_inline_protocol_runner)
-    output = tmp_path / "outputs"
     released: list[bool] = []
-    context = ExecutionContext(
-        operation="training_pipeline",
-        profile=ExecutionProfile.TRAINING_PREP,
-        memory_limit_bytes=_TEST_WORKER_MEMORY_LIMIT_BYTES,
-        admission_release=lambda: released.append(True),
-    )
-    original_rmtree = __import__("shutil").rmtree
-
-    def deny_cleanup(path, *args, **kwargs) -> None:
-        if Path(path).name.startswith(".haute-training-"):
-            raise PermissionError("artifact directory is temporarily locked")
-        original_rmtree(path, *args, **kwargs)
-
+    service = TrainService(store, protocol_runner=_inline_protocol_runner)
     prepared = tmp_path / "prepared.parquet"
     prepared.write_bytes(b"prepared")
     job_id = store.create_job(
         {"status": "running", "job_type": "training", "start_time": time.monotonic(), "timeout": 60}
     )
-    with (
-        patch("haute.modelling.TrainingJob", _SuccessfulTrainingJob),
-        patch("haute.routes._training_lifecycle.shutil.rmtree", side_effect=deny_cleanup),
-    ):
+    with patch("haute.modelling.TrainingJob", _SuccessfulTrainingJob):
         thread = service._launch_background(
             job_id,
             "quoted",
@@ -1492,20 +1475,130 @@ def test_train_service_keeps_completed_status_when_post_commit_cleanup_is_denied
                 "target": "y",
                 "algorithm": "catboost",
                 "loss_function": "RMSE",
-                "output_dir": str(output),
+                "feature_columns": ["x"],
                 "evaluation": _request(tmp_path).payload["job_kwargs"]["evaluation"],
             },
             {"iterations": 2},
             str(prepared),
             None,
             10,
-            execution_context=context,
+            execution_context=ExecutionContext(
+                operation="training_pipeline",
+                profile=ExecutionProfile.TRAINING_PREP,
+                memory_limit_bytes=_TEST_WORKER_MEMORY_LIMIT_BYTES,
+                admission_release=lambda: released.append(True),
+            ),
+        )
+        assert thread is not None
+        thread.join_and_raise(timeout=10)
+    job = store.require_job(job_id)
+    assert job["status"] == "completed"
+    assert not prepared.exists() and released == [True]
+    assert (_job_artifact_dir(job) / "output" / "quoted.cbm").is_file()
+
+    store.delete_job(job_id)
+    assert not list(training_root.glob("train_*"))
+
+
+def _complete_training_job(
+    store: JobStore,
+    service: TrainService,
+    tmp_path: Path,
+    *,
+    node_id: str,
+    pipeline_source: str = "rating/main.py",
+) -> str:
+    prepared = tmp_path / f"prepared-{time.monotonic_ns()}.parquet"
+    prepared.write_bytes(b"prepared")
+    job_id = store.create_job(
+        {
+            "status": "running",
+            "job_type": "training",
+            "start_time": time.monotonic(),
+            "timeout": 60,
+            "node_id": node_id,
+            "node_label": node_id,
+            "pipeline_source": pipeline_source,
+        }
+    )
+    with patch("haute.modelling.TrainingJob", _SuccessfulTrainingJob):
+        thread = service._launch_background(
+            job_id,
+            "quoted",
+            {
+                "name": "quoted",
+                "target": "y",
+                "algorithm": "catboost",
+                "loss_function": "RMSE",
+                "feature_columns": ["x"],
+                "evaluation": _request(tmp_path).payload["job_kwargs"]["evaluation"],
+            },
+            {"iterations": 2},
+            str(prepared),
+            None,
+            10,
+            execution_context=ExecutionContext(
+                operation="training_pipeline",
+                profile=ExecutionProfile.TRAINING_PREP,
+                memory_limit_bytes=_TEST_WORKER_MEMORY_LIMIT_BYTES,
+            ),
         )
         assert thread is not None
         thread.join_and_raise(timeout=10)
     assert store.require_job(job_id)["status"] == "completed"
-    assert not prepared.exists() and released == [True]
-    assert list(output.glob(".haute-training-*"))
+    return job_id
+
+
+def test_newer_run_for_the_same_node_releases_superseded_artifacts(tmp_path: Path) -> None:
+    store = JobStore()
+    service = TrainService(store, protocol_runner=_inline_protocol_runner)
+    first = _complete_training_job(store, service, tmp_path, node_id="freq")
+    first_dir = _job_artifact_dir(store.require_job(first))
+    other_node = _complete_training_job(store, service, tmp_path, node_id="sev")
+    other_pipeline = _complete_training_job(
+        store, service, tmp_path, node_id="freq", pipeline_source="rating/other.py"
+    )
+
+    second = _complete_training_job(store, service, tmp_path, node_id="freq")
+
+    superseded = store.require_job(first)
+    assert superseded["status"] == "completed" and superseded["result"] is not None
+    assert "training_artifacts" not in superseded["artifact_handles"]
+    assert not first_dir.exists()
+    for kept in (other_node, other_pipeline, second):
+        assert _job_artifact_dir(store.require_job(kept)).is_dir()
+
+
+def test_an_export_hold_keeps_superseded_artifacts_until_eviction(tmp_path: Path) -> None:
+    store = JobStore()
+    service = TrainService(store, protocol_runner=_inline_protocol_runner)
+    first = _complete_training_job(store, service, tmp_path, node_id="freq")
+    first_dir = _job_artifact_dir(store.require_job(first))
+
+    with _training_artifacts.hold_training_artifacts(first):
+        _complete_training_job(store, service, tmp_path, node_id="freq")
+        assert first_dir.is_dir()
+
+    assert "training_artifacts" in store.require_job(first)["artifact_handles"]
+    store.delete_job(first)
+    assert not first_dir.exists()
+
+
+def test_training_artifact_cleaner_refuses_directories_outside_its_root(
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path / "train_outside"
+    outside.mkdir()
+    with pytest.raises(ValueError, match="outside the training artifact root"):
+        _training_artifacts.cleanup_training_artifacts(
+            {
+                "kind": "modelling_training_artifacts",
+                "version": 1,
+                "directory": str(outside),
+                "files": {},
+            }
+        )
+    assert outside.is_dir()
 
 
 def test_parent_worker_cleanup_reports_all_failures_once(tmp_path: Path) -> None:
@@ -1579,6 +1672,7 @@ def test_terminal_job_after_preparation_does_not_launch_worker(tmp_path: Path) -
             "target": "y",
             "algorithm": "catboost",
             "loss_function": "RMSE",
+            "feature_columns": ["x"],
             "output_dir": str(tmp_path / "outputs"),
             "evaluation": _request(tmp_path).payload["job_kwargs"]["evaluation"],
         },
@@ -1610,7 +1704,7 @@ def test_train_service_publication_wins_late_cancel_and_records_elapsed(tmp_path
     )
     started, cancellation = threading.Event(), {}
     cancel_thread: threading.Thread | None = None
-    real_publish = _publish_training_artifacts
+    real_validate = _validate_training_artifacts
 
     def publish_while_cancel_waits(*args, **kwargs):
         nonlocal cancel_thread
@@ -1619,12 +1713,12 @@ def test_train_service_publication_wins_late_cancel_and_records_elapsed(tmp_path
         )
         cancel_thread.start()
         assert started.wait(timeout=10)
-        return real_publish(*args, **kwargs)
+        return real_validate(*args, **kwargs)
 
     with (
         patch("haute.modelling.TrainingJob", SilentSuccessfulTrainingJob),
         patch(
-            "haute.routes._training_lifecycle._publish_training_artifacts",
+            "haute.routes._training_lifecycle._validate_training_artifacts",
             side_effect=publish_while_cancel_waits,
         ),
     ):
@@ -1636,6 +1730,7 @@ def test_train_service_publication_wins_late_cancel_and_records_elapsed(tmp_path
                 "target": "y",
                 "algorithm": "catboost",
                 "loss_function": "RMSE",
+                "feature_columns": ["x"],
                 "output_dir": str(output),
                 "evaluation": _request(tmp_path).payload["job_kwargs"]["evaluation"],
             },
@@ -1656,4 +1751,153 @@ def test_train_service_publication_wins_late_cancel_and_records_elapsed(tmp_path
     cancel_thread.join(timeout=10)
     assert not cancel_thread.is_alive()
     assert job["status"] == cancellation["status"] == "completed"
-    assert job["elapsed_seconds"] >= 2 and (output / "quoted.cbm").read_bytes() == b"model"
+    assert job["elapsed_seconds"] >= 2
+    assert (_job_artifact_dir(job) / "output" / "quoted.cbm").read_bytes() == b"model"
+
+
+def test_live_training_never_auto_logs(tmp_path: Path) -> None:
+    store = JobStore()
+    service = TrainService(store)
+    prepared = tmp_path / "prepared.parquet"
+    prepared.write_bytes(b"prepared")
+    output = tmp_path / "outputs"
+    job_id = store.create_job(
+        {"status": "running", "job_type": "training", "start_time": time.monotonic(), "timeout": 60}
+    )
+    with patch.object(service._supervisor, "launch_protocol") as mock_launch:
+        service._launch_background(
+            job_id,
+            "train_node",
+            {
+                "name": "train_node",
+                "target": "y",
+                "algorithm": "catboost",
+                "loss_function": "RMSE",
+                "feature_columns": ["x"],
+                "output_dir": str(output),
+                "evaluation": _request(tmp_path).payload["job_kwargs"]["evaluation"],
+                "mlflow_experiment": "/Shared/x",
+            },
+            {"iterations": 1},
+            str(prepared),
+            None,
+            10,
+            execution_context=ExecutionContext(
+                operation="training_pipeline",
+                profile=ExecutionProfile.TRAINING_PREP,
+                memory_limit_bytes=_TEST_WORKER_MEMORY_LIMIT_BYTES,
+            ),
+        )
+
+    assert mock_launch.call_count == 1
+    request: WorkerRequest = mock_launch.call_args[0][2]
+    assert request.payload["job_kwargs"]["mlflow_experiment"] is None
+
+
+def test_publication_rejects_an_evaluation_report_without_its_selection_metrics(
+    tmp_path: Path,
+) -> None:
+    root, output, manifest, expected_evaluation, _expected_tuning = _staged_tuned_training_manifest(
+        tmp_path
+    )
+    artifact_paths = {
+        artifact.kind: root / artifact.relative_path for artifact in manifest.artifacts
+    }
+    evaluation_report = output / evaluation_artifact_filenames("quoted")["report"]
+    evaluation_data = json.loads(evaluation_report.read_text(encoding="utf-8"))
+    evaluation_data.update(metrics={}, total_validation_rows=0)
+    _write_scratch_text(evaluation_report, json.dumps(evaluation_data))
+
+    with pytest.raises(WorkerProtocolError, match="metric names do not match configured metrics"):
+        _validate_evaluation_artifact_contents(
+            artifact_paths,
+            response_fit_count=expected_evaluation.fit_count,
+        )
+
+
+def _train_under_rlimit(runtime: WorkerRuntime, request: WorkerRequest) -> object:
+    """Haute's training entrypoint under the RLIMIT_AS fallback, installed here so a
+    host's delegated cgroup cannot stand in for it."""
+    from haute.modelling._descriptors import training_threads
+
+    preloaded = "catboost" in sys.modules
+    NativeMemoryLease()._apply_rlimit(650 * 1024**2, request.payload["allowance"])
+    result = _run_training_process_job(runtime, request)
+    if isinstance(result, WorkerResultManifest):
+        return replace(
+            result,
+            metadata={
+                **result.metadata,
+                "catboost_preloaded": preloaded,
+                "training_threads": training_threads(),
+            },
+        )
+    return result
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="RLIMIT_AS counts reserved address space only on Linux",
+)
+@pytest.mark.parametrize("allowance", ["model library", "none"])
+def test_real_spawn_catboost_training_runs_under_the_rlimit_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, allowance: str
+) -> None:
+    """The training worker loads CatBoost before its cap and allows for what the fit
+    reserves. On a 4-CPU host the old 192 MiB per CPU failed this fit when CatBoost
+    could not start its threads; with no allowance it fails on any host, which shows
+    the cap binds here."""
+    # The spawned worker inherits this: the suite's default of one thread per job
+    # would not start the threads whose reservations the allowance covers.
+    monkeypatch.setenv("HAUTE_TRAINING_THREADS", "4")
+    rng = np.random.default_rng(0)
+    rows = 10_000
+    categorical = ["make", "fuel", "cover", "channel", "region"]
+    pl.DataFrame(
+        {name: rng.choice([f"{name}_{i}" for i in range(40)], rows) for name in categorical}
+        | {f"num_{i}": rng.normal(size=rows) for i in range(5)}
+        | {"claims": rng.gamma(2.0, 300.0, rows)}
+    ).write_parquet(tmp_path / "input.parquet")
+    request = WorkerRequest(
+        "job-1",
+        "training",
+        {
+            "job_kwargs": {
+                "name": "quoted",
+                "data": str(tmp_path / "input.parquet"),
+                "target": "claims",
+                "algorithm": "catboost",
+                "params": {"iterations": 50},
+                "evaluation": {
+                    "schema_version": 1,
+                    "strategy": "random",
+                    "seed": 7,
+                    "validation": {"method": "single", "size": 0.2},
+                },
+            },
+            "profile": ExecutionProfile.TRAINING_PREP.value,
+            "memory_limit_bytes": None,
+            "allowance": (
+                model_thread_address_space_allowance() if allowance == "model library" else 0
+            ),
+        },
+    )
+
+    def run() -> WorkerResultManifest:
+        return run_worker_protocol(
+            _train_under_rlimit,
+            request,
+            artifact_root=tmp_path / "artifacts",
+            artifact_kinds=_TRAINING_ARTIFACT_KINDS,
+            max_artifact_size_bytes=_max_training_artifact_bytes(),
+            config=IsolatedWorkerConfig(timeout_seconds=120, preload_modules=("catboost",)),
+        )
+
+    if allowance == "none":
+        with pytest.raises(IsolatedWorkerError):
+            run()
+        return
+    result = run()
+    assert result.metadata["catboost_preloaded"] is True
+    assert result.metadata["training_threads"] == 4
+    assert result.metadata["response"]["status"] == "completed"

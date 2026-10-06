@@ -5,11 +5,12 @@ import type { PipelineEditorDocument } from "../pipelineDocument"
 function document(): PipelineEditorDocument {
   return {
     document_kind: "haute.pipeline_editor_document", schema_version: 1, load_status: "degraded",
-    pipeline_name: "Main", pipeline_description: null, preamble: null, preserved_blocks: [], source_file: "main.py",
+    pipeline_name: "Main", pipeline_description: null, preamble: null, preserved_blocks: [], global_constants: [], global_constants_error: null, source_file: "main.py",
     source_revision: "abc", source_text: "", sources: ["live"], active_source: "live", source_selection_trusted: true,
-    has_authored_content: true, nodes: [{ recovery_id: "node:a", authored_id: "a", label: "A", function_name: "A", default_input_name: "A", source_handle_input_names: {}, decorator_name: "source", node_type: "dataInput", description: "", availability: "ready", display_position: { x: 1, y: 2 }, config: { nested: [1] }, config_reference: null, source_file: null, source_span: null, diagnostic_ids: ["d1"], blocking_path: [] }],
+    has_authored_content: true, nodes: [{ recovery_id: "node:a", authored_id: "a", label: "A", function_name: "A", default_input_name: "A", source_handle_input_names: {}, decorator_name: "source", node_type: "dataInput", description: "", availability: "ready", display_position: { x: 1, y: 2 }, config: { nested: [1] }, config_reference: null, source_file: null, source_span: null, diagnostic_ids: ["d1"], blocking_path: [], scoped_editable: true }],
     edges: [], unresolved_connections: [], submodels: null,
     diagnostics: [{ diagnostic_id: "d1", code: "parse_error", severity: "warning", scope: "node", message: "warning", element_id: "node:a", source_file: null, source_span: null, remediation: null, incident_id: null }], diagnostics_omitted: 0,
+    completeness: [{ element_id: "node:a", path: "path", code: "required", message: "Format 'parquet' requires a non-empty 'path'." }], completeness_omitted: 0, name_violations: [],
     capabilities: { can_mutate: false, can_save: false, can_execute: false, can_preview: false, can_manage_submodels: false, can_repair: true, reserved_api_input_frame_labels: ["class", "return"] },
   }
 }
@@ -31,6 +32,7 @@ describe("pipeline editor document contract", () => {
     fixture.nodes[0].default_input_name = null
     fixture.nodes[0].source_handle_input_names = { drivers: "drivers" }
     fixture.nodes[0].config_reference = "config/quote_input/API_Input.json"
+    fixture.nodes[0].source_file = "main.py"
     fixture.edges = [{
       recovery_id: "edge:drivers",
       source_recovery_id: "node:a",
@@ -65,6 +67,8 @@ describe("pipeline editor document contract", () => {
       _defaultInputName: null,
       _sourceHandleInputNames: { drivers: "drivers" },
       _configReference: "config/quote_input/API_Input.json",
+      _recoveryId: "node:a",
+      _sourceFile: "main.py",
     })
     expect(adapted.edges[0].data).toMatchObject({ _inputName: "drivers" })
   })
@@ -85,7 +89,6 @@ describe("pipeline editor document contract", () => {
         },
         input_ports: [],
         output_ports: [],
-        input_port_input_names: {},
       },
     }
 
@@ -148,7 +151,37 @@ describe("pipeline editor document contract", () => {
     expect(() => parsePipelineEditorDocument(badEdge)).toThrow(/missing recovery node/)
     const badUnresolved = document(); badUnresolved.unresolved_connections = [{ recovery_id: "edge:unresolved", source_recovery_id: "missing", target_recovery_id: null, source_authored_id: "x", target_authored_id: "a", source_handle: null, target_handle: null, source_port: null, target_port: null, source_span: null, diagnostic_ids: ["d1"] }]
     expect(() => parsePipelineEditorDocument(badUnresolved)).toThrow(/missing recovery node/)
-    const badSubmodel = document(); badSubmodel.submodels = { registered: { definition_id: "different", file: "modules/child.py", availability: "ready", diagnostic_ids: [], graph: { nodes: [], edges: [], unresolved_connections: [], submodels: null }, input_ports: [], output_ports: [], input_port_input_names: {} } }
+    const badSubmodel = document(); badSubmodel.submodels = { registered: { definition_id: "different", file: "modules/child.py", availability: "ready", diagnostic_ids: [], graph: { nodes: [], edges: [], unresolved_connections: [], submodels: null }, input_ports: [], output_ports: [] } }
     expect(() => parsePipelineEditorDocument(badSubmodel)).toThrow(/registry key/)
+  })
+
+  it("rejects a submodel node whose label differs from its alias", () => {
+    const fixture = document()
+    fixture.nodes.push({
+      ...fixture.nodes[0],
+      recovery_id: "node:sub",
+      authored_id: "sub",
+      label: "Different Label",
+      node_type: "submodel",
+      config: { definitionId: "def_sub", alias: "sub_alias" },
+    })
+    expect(() => adaptPipelineEditorDocument(parsePipelineEditorDocument(fixture))).toThrow(
+      "parsePipelineEditorDocument: submodel node node:sub label must equal its alias",
+    )
+  })
+
+  it("rejects a submodel node whose id differs from its alias", () => {
+    const fixture = document()
+    fixture.nodes.push({
+      ...fixture.nodes[0],
+      recovery_id: "node:sub",
+      authored_id: "sub",
+      label: "sub_alias",
+      node_type: "submodel",
+      config: { definitionId: "def_sub", alias: "sub_alias" },
+    })
+    expect(() => adaptPipelineEditorDocument(parsePipelineEditorDocument(fixture))).toThrow(
+      "parsePipelineEditorDocument: submodel node node:sub id must equal its alias",
+    )
   })
 })

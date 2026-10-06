@@ -1,23 +1,28 @@
 import { useState, useEffect, useCallback, useRef } from "react"
-import { ApiError, fetchSchema } from "../api/client"
+import { fetchSchema } from "../api/client"
+import type { SchemaReader } from "../api/client"
+import { apiErrorMessage } from "../api/errors"
 import type { SchemaInfo } from "../panels/editors/_shared"
 
 /**
  * Shared hook for fetching file schema (columns, preview, row count).
  *
  * Used by data-input and API-input editors to avoid duplicating
- * the same fetch-schema-on-mount + fetch-on-select pattern.
+ * the same fetch-schema-on-mount + fetch-on-select pattern. With *reader*, the
+ * file is read with those Data Input reader settings, and a change to them
+ * fetches again.
  */
-export function useSchemaFetch(initialPath?: string) {
+export function useSchemaFetch(initialPath?: string, reader?: SchemaReader) {
   const [schema, setSchema] = useState<SchemaInfo>(null)
   const [loading, setLoading] = useState(!!initialPath)
   const [error, setError] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
+  const readerKey = reader ? JSON.stringify(reader) : ""
 
   const fetchForPath = useCallback((path: string, signal?: AbortSignal) => {
     setLoading(true)
     setError(null)
-    fetchSchema(path, { signal })
+    fetchSchema(path, { signal }, readerKey ? (JSON.parse(readerKey) as SchemaReader) : undefined)
       .then((data) => {
         if (signal?.aborted) return
         setSchema(data)
@@ -26,16 +31,10 @@ export function useSchemaFetch(initialPath?: string) {
       .catch((err: unknown) => {
         if (signal?.aborted || (err instanceof DOMException && err.name === "AbortError")) return
         setSchema(null)
-        setError(
-          err instanceof ApiError && err.detail
-            ? err.detail
-            : err instanceof Error
-              ? err.message
-              : String(err),
-        )
+        setError(apiErrorMessage(err))
         setLoading(false)
       })
-  }, [])
+  }, [readerKey])
 
   // Auto-fetch on mount when path exists; abort on cleanup
   useEffect(() => {

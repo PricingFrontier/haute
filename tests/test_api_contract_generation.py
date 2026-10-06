@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from haute._estimate_calibration import CALIBRATION_MAX_BASIS_POINTS
 from haute._execution_schemas import MAX_JSON_SAFE_INTEGER
+from haute.schemas import TrainEstimateResponse, UtilityWriteResponse
 from scripts.generate_api_contracts import (
     GENERATED_SCHEMA_PATH,
+    RESPONSE_CONTRACT_GROUPS,
+    RESPONSE_GROUPS_KEYWORD,
+    _ResponseJsonSchema,
+    _serialized_definitions,
     build_contract_bundle,
     main,
     render_contract_bundle,
@@ -29,6 +35,25 @@ def _non_null_branch(schema: dict[str, object]) -> dict[str, object]:
     return branches[0]
 
 
+def _reachable_definitions(bundle: dict[str, Any]) -> set[str]:
+    definitions = bundle["$defs"]
+    reached: set[str] = set()
+    pending: list[object] = list(bundle["properties"].values())
+    while pending:
+        node = pending.pop()
+        if isinstance(node, dict):
+            reference = node.get("$ref")
+            if isinstance(reference, str) and reference.startswith("#/$defs/"):
+                name = reference.removeprefix("#/$defs/")
+                if name not in reached:
+                    reached.add(name)
+                    pending.append(definitions[name])
+            pending.extend(value for key, value in node.items() if key != "$ref")
+        elif isinstance(node, list):
+            pending.extend(node)
+    return reached
+
+
 def test_committed_contract_bundle_is_current_and_byte_stable() -> None:
     first = render_contract_bundle()
     second = render_contract_bundle()
@@ -39,23 +64,35 @@ def test_committed_contract_bundle_is_current_and_byte_stable() -> None:
     assert json.loads(first) == build_contract_bundle()
 
 
-def test_contract_bundle_contains_both_closed_pilot_roots() -> None:
+def test_contract_bundle_contains_closed_contract_roots() -> None:
     bundle = build_contract_bundle()
 
     assert bundle["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     assert bundle["type"] == "object"
     assert bundle["additionalProperties"] is False
+    response_roots = [
+        model.__name__ for models in RESPONSE_CONTRACT_GROUPS.values() for model in models
+    ]
     assert bundle["required"] == [
         "execution_strategy_diagnostic",
         "explore_charts",
+        *response_roots,
     ]
     assert bundle["properties"] == {
         "execution_strategy_diagnostic": {"$ref": "#/$defs/ExecutionStrategyDiagnosticPayload"},
         "explore_charts": {"$ref": "#/$defs/ExploreChartsConfig"},
+        **{name: {"$ref": f"#/$defs/{name}"} for name in response_roots},
+    }
+    assert bundle[RESPONSE_GROUPS_KEYWORD] == {
+        group: [model.__name__ for model in models]
+        for group, models in RESPONSE_CONTRACT_GROUPS.items()
     }
 
     definitions = bundle["$defs"]
-    assert set(definitions) == {
+    assert set(definitions) >= set(response_roots)
+    # Every definition belongs to some contract root: nothing is orphaned.
+    assert _reachable_definitions(bundle) == set(definitions)
+    assert set(definitions) >= {
         "ChartAxes",
         "ChartAxisConfig",
         "ChartCategory",
@@ -72,8 +109,8 @@ def test_contract_bundle_contains_both_closed_pilot_roots() -> None:
         "ExecutionStrategyReasonPayload",
         "ExploreChartConfig",
         "ExploreChartsConfig",
-        "JsonValue",
     }
+
     diagnostic = definitions["ExecutionStrategyDiagnosticPayload"]
     assert diagnostic["properties"]["schema_version"]["const"] == 1
     assert diagnostic["properties"]["boundaries"]["$ref"] == (
@@ -97,7 +134,7 @@ def test_contract_bundle_contains_both_closed_pilot_roots() -> None:
     }
 
 
-def test_contract_bundle_preserves_browser_safe_bounds_and_recursive_json() -> None:
+def test_contract_bundle_preserves_browser_safe_bounds_and_closes_chart_models() -> None:
     definitions = build_contract_bundle()["$defs"]
 
     boundary_rank = definitions["ExecutionStrategyBoundaryPayload"]["properties"][
@@ -135,18 +172,105 @@ def test_contract_bundle_preserves_browser_safe_bounds_and_recursive_json() -> N
     )
     assert calibration["maximum"] == CALIBRATION_MAX_BASIS_POINTS
 
-    reference = {"$ref": "#/$defs/JsonValue"}
-    assert definitions["JsonValue"] == {
-        "anyOf": [
-            {"type": "null"},
-            {"type": "boolean"},
-            {"type": "integer"},
-            {"type": "number"},
-            {"type": "string"},
-            {"items": reference, "type": "array"},
-            {"additionalProperties": reference, "type": "object"},
-        ]
+    # Chart configs take no field their models do not declare, so no
+    # open JSON grammar remains in the bundle.
+    assert "JsonValue" not in definitions
+    for name in (
+        "ExploreChartConfig",
+        "ChartCategory",
+        "ChartValueEncoding",
+        "ChartSeriesOverride",
+        "ChartAxes",
+        "ChartAxisConfig",
+        "ChartSecondaryAxisConfig",
+        "ChartLegend",
+    ):
+        assert definitions[name]["additionalProperties"] is False, name
+
+
+def test_response_contracts_require_every_field_the_server_sends() -> None:
+    utility_write = build_contract_bundle()["$defs"]["UtilityWriteResponse"]
+
+    # Defaulted fields are always serialized, so the browser requires them.
+    assert set(utility_write["required"]) == {
+        "status",
+        "name",
+        "module",
+        "import_line",
+        "error",
+        "error_line",
     }
+    assert set(utility_write["required"]) == set(UtilityWriteResponse.model_fields)
+
+    # A field the model drops from its output stays optional.
+    estimate = TrainEstimateResponse.model_json_schema(
+        mode="serialization",
+        schema_generator=_ResponseJsonSchema,
+    )
+    assert "evaluation_preview" in estimate["properties"]
+    assert "evaluation_preview" not in estimate["required"]
+    assert "was_downsampled" in estimate["required"]
+
+
+def test_a_field_omitted_when_none_admits_no_null() -> None:
+    definitions = build_contract_bundle()["$defs"]
+    preview = definitions["EvaluationPreviewPayload"]
+
+    # exclude_if drops these whenever they are None, so null is never sent.
+    assert preview["properties"]["min_selection_train_rows"] == {
+        "minimum": 1,
+        "title": "Min Selection Train Rows",
+        "type": "integer",
+    }
+    assert preview["properties"]["development_date_range"] == {
+        "$ref": "#/$defs/EvaluationDateRangePayload"
+    }
+    assert "min_selection_train_rows" not in preview["required"]
+    assert definitions["TrainEstimateResponse"]["properties"]["evaluation_preview"] == {
+        "$ref": "#/$defs/EvaluationPreviewPayload"
+    }
+    # A nullable field the server always sends keeps its null branch.
+    assert {"type": "null"} in definitions["TrainEstimateResponse"]["properties"]["unavailable"][
+        "anyOf"
+    ]
+
+
+def test_serialized_copies_of_a_validation_definition_are_renamed_once() -> None:
+    leaf = {"type": "object", "properties": {"a": {"type": "integer"}}}
+    bundle: dict[str, Any] = {"Leaf": leaf}
+    response = {
+        "Leaf": {**leaf, "required": ["a"], "title": "Leaf"},
+        "Mid": {"type": "object", "properties": {"leaf": {"$ref": "#/$defs/Leaf"}}},
+    }
+
+    first = _serialized_definitions({**response, "One": {"$ref": "#/$defs/Mid"}}, bundle)
+    assert set(first) == {"LeafOutput", "Mid", "One"}
+    assert first["LeafOutput"]["title"] == "LeafOutput"
+    assert first["Mid"]["properties"]["leaf"] == {"$ref": "#/$defs/LeafOutput"}
+    bundle.update(first)
+
+    # A second response reaching the same definitions reuses them rather than
+    # renaming the one an earlier response stored with renamed references.
+    second = _serialized_definitions({**response, "Two": {"$ref": "#/$defs/Mid"}}, bundle)
+    assert set(second) == {"LeafOutput", "Mid", "Two"}
+    assert second["Mid"] == bundle["Mid"]
+
+
+def test_responses_share_one_serialized_execution_metrics_definition() -> None:
+    definitions = build_contract_bundle()["$defs"]
+
+    # The pilot keeps its validation-mode diagnostic; responses use the
+    # serialized one, through a single execution-metrics definition.
+    assert "ExecutionStrategyDiagnosticPayloadOutput" in definitions
+    assert not [name for name in definitions if name.endswith("OutputOutput")]
+    assert "ExecutionMetricsPayloadOutput" not in definitions
+    assert "ExplorePivotResultOutput" not in definitions
+    metrics = {"$ref": "#/$defs/ExecutionMetricsPayload"}
+    assert metrics in definitions["TrainStatusResponse"]["properties"]["execution_metrics"]["anyOf"]
+    assert (
+        metrics
+        in definitions["ExplorePivotStatusResponse"]["properties"]["execution_metrics"]["anyOf"]
+    )
 
 
 def test_frontend_contract_generators_are_direct_exact_pins() -> None:

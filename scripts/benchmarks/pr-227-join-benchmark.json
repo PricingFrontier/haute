@@ -1,0 +1,637 @@
+{
+  "chunk_rows": 25000,
+  "command": "uv run python specs/roadmap/pr-227-join-benchmark.py",
+  "output_directory": "TemporaryDirectory (removed after run)",
+  "results": [
+    {
+      "memory_smoke": {
+        "child_peak_rss_bytes": 147419136,
+        "child_rss_sample_count": 225,
+        "command": [
+          "C:\\Users\\prici\\AppData\\Roaming\\uv\\python\\cpython-3.11.13-windows-x86_64-none\\python.exe",
+          "-c",
+          "import runpy,sys;sys.path[:0]=['C:\\\\Users\\\\prici\\\\haute', 'C:\\\\Users\\\\prici\\\\haute\\\\specs\\\\roadmap', 'C:\\\\Users\\\\prici\\\\AppData\\\\Roaming\\\\uv\\\\python\\\\cpython-3.11.13-windows-x86_64-none\\\\python311.zip', 'C:\\\\Users\\\\prici\\\\AppData\\\\Roaming\\\\uv\\\\python\\\\cpython-3.11.13-windows-x86_64-none\\\\DLLs', 'C:\\\\Users\\\\prici\\\\AppData\\\\Roaming\\\\uv\\\\python\\\\cpython-3.11.13-windows-x86_64-none\\\\Lib', 'C:\\\\Users\\\\prici\\\\AppData\\\\Roaming\\\\uv\\\\python\\\\cpython-3.11.13-windows-x86_64-none', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv\\\\Lib\\\\site-packages', 'C:\\\\Users\\\\prici\\\\haute\\\\src', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv\\\\Lib\\\\site-packages\\\\win32', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv\\\\Lib\\\\site-packages\\\\win32\\\\lib', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv\\\\Lib\\\\site-packages\\\\Pythonwin'];runpy.run_path('C:\\\\Users\\\\prici\\\\haute\\\\specs\\\\roadmap\\\\pr-227-join-benchmark.py',run_name='__main__')",
+          "--worker",
+          "--size",
+          "100000",
+          "--strategy",
+          "native",
+          "--workspace",
+          "C:\\Users\\prici\\AppData\\Local\\Temp\\pr227-join-0hmeyq9y"
+        ],
+        "elapsed_seconds": 3.023764699988533,
+        "exit_code": 0,
+        "platform": "Windows-10-10.0.26200-SP0",
+        "poll_interval_seconds": 0.005,
+        "process_peak_rss_bytes": 304615424,
+        "process_rss_after_bytes": 304615424,
+        "process_rss_before_bytes": 302702592,
+        "python": "3.11.13",
+        "python_current_tracemalloc_bytes": null,
+        "python_peak_tracemalloc_bytes": null,
+        "schema_version": 1
+      },
+      "repetition": 1,
+      "size": 100000,
+      "strategy": "native",
+      "verification_included_in_external_peak": true,
+      "worker": {
+        "size": 100000,
+        "strategy": "native",
+        "verification": {
+          "actual": {
+            "key": 4999950000.0,
+            "left_payload_0": 50104.18827938572,
+            "left_payload_1": 50124.958593741285,
+            "left_payload_2": 49948.254270235615,
+            "left_payload_3": 50026.5745536179,
+            "right_payload_0": 49930.30839256661,
+            "right_payload_1": 50033.71702334336,
+            "right_payload_2": 49959.31124471736,
+            "right_payload_3": 49963.10099116223,
+            "rows": 100000
+          },
+          "checks": {
+            "key": true,
+            "left_payload_0": true,
+            "left_payload_1": true,
+            "left_payload_2": true,
+            "left_payload_3": true,
+            "right_payload_0": true,
+            "right_payload_1": true,
+            "right_payload_2": true,
+            "right_payload_3": true,
+            "rows": true
+          },
+          "expected": {
+            "key": 4999950000.0,
+            "left_payload_0": 50104.18827938573,
+            "left_payload_1": 50124.95859374128,
+            "left_payload_2": 49948.2542702356,
+            "left_payload_3": 50026.57455361792,
+            "right_payload_0": 49930.30839256659,
+            "right_payload_1": 50033.71702334336,
+            "right_payload_2": 49959.31124471733,
+            "right_payload_3": 49963.100991162246,
+            "rows": 100000
+          },
+          "ok": true
+        },
+        "worker_rss_before_write_bytes": 74555392,
+        "write_elapsed_seconds": 0.03871470002923161
+      }
+    },
+    {
+      "memory_smoke": {
+        "child_peak_rss_bytes": 147509248,
+        "child_rss_sample_count": 108,
+        "command": [
+          "C:\\Users\\prici\\AppData\\Roaming\\uv\\python\\cpython-3.11.13-windows-x86_64-none\\python.exe",
+          "-c",
+          "import runpy,sys;sys.path[:0]=['C:\\\\Users\\\\prici\\\\haute', 'C:\\\\Users\\\\prici\\\\haute\\\\specs\\\\roadmap', 'C:\\\\Users\\\\prici\\\\AppData\\\\Roaming\\\\uv\\\\python\\\\cpython-3.11.13-windows-x86_64-none\\\\python311.zip', 'C:\\\\Users\\\\prici\\\\AppData\\\\Roaming\\\\uv\\\\python\\\\cpython-3.11.13-windows-x86_64-none\\\\DLLs', 'C:\\\\Users\\\\prici\\\\AppData\\\\Roaming\\\\uv\\\\python\\\\cpython-3.11.13-windows-x86_64-none\\\\Lib', 'C:\\\\Users\\\\prici\\\\AppData\\\\Roaming\\\\uv\\\\python\\\\cpython-3.11.13-windows-x86_64-none', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv\\\\Lib\\\\site-packages', 'C:\\\\Users\\\\prici\\\\haute\\\\src', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv\\\\Lib\\\\site-packages\\\\win32', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv\\\\Lib\\\\site-packages\\\\win32\\\\lib', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv\\\\Lib\\\\site-packages\\\\Pythonwin'];runpy.run_path('C:\\\\Users\\\\prici\\\\haute\\\\specs\\\\roadmap\\\\pr-227-join-benchmark.py',run_name='__main__')",
+          "--worker",
+          "--size",
+          "100000",
+          "--strategy",
+          "native",
+          "--workspace",
+          "C:\\Users\\prici\\AppData\\Local\\Temp\\pr227-join-0hmeyq9y"
+        ],
+        "elapsed_seconds": 1.6724294999730773,
+        "exit_code": 0,
+        "platform": "Windows-10-10.0.26200-SP0",
+        "poll_interval_seconds": 0.005,
+        "process_peak_rss_bytes": 305696768,
+        "process_rss_after_bytes": 305692672,
+        "process_rss_before_bytes": 304644096,
+        "python": "3.11.13",
+        "python_current_tracemalloc_bytes": null,
+        "python_peak_tracemalloc_bytes": null,
+        "schema_version": 1
+      },
+      "repetition": 2,
+      "size": 100000,
+      "strategy": "native",
+      "verification_included_in_external_peak": true,
+      "worker": {
+        "size": 100000,
+        "strategy": "native",
+        "verification": {
+          "actual": {
+            "key": 4999950000.0,
+            "left_payload_0": 50104.18827938573,
+            "left_payload_1": 50124.958593741285,
+            "left_payload_2": 49948.254270235615,
+            "left_payload_3": 50026.57455361792,
+            "right_payload_0": 49930.30839256659,
+            "right_payload_1": 50033.71702334336,
+            "right_payload_2": 49959.31124471733,
+            "right_payload_3": 49963.10099116225,
+            "rows": 100000
+          },
+          "checks": {
+            "key": true,
+            "left_payload_0": true,
+            "left_payload_1": true,
+            "left_payload_2": true,
+            "left_payload_3": true,
+            "right_payload_0": true,
+            "right_payload_1": true,
+            "right_payload_2": true,
+            "right_payload_3": true,
+            "rows": true
+          },
+          "expected": {
+            "key": 4999950000.0,
+            "left_payload_0": 50104.18827938573,
+            "left_payload_1": 50124.95859374128,
+            "left_payload_2": 49948.2542702356,
+            "left_payload_3": 50026.57455361792,
+            "right_payload_0": 49930.30839256659,
+            "right_payload_1": 50033.71702334336,
+            "right_payload_2": 49959.31124471733,
+            "right_payload_3": 49963.100991162246,
+            "rows": 100000
+          },
+          "ok": true
+        },
+        "worker_rss_before_write_bytes": 74821632,
+        "write_elapsed_seconds": 0.027943799970671535
+      }
+    },
+    {
+      "memory_smoke": {
+        "child_peak_rss_bytes": 148320256,
+        "child_rss_sample_count": 100,
+        "command": [
+          "C:\\Users\\prici\\AppData\\Roaming\\uv\\python\\cpython-3.11.13-windows-x86_64-none\\python.exe",
+          "-c",
+          "import runpy,sys;sys.path[:0]=['C:\\\\Users\\\\prici\\\\haute', 'C:\\\\Users\\\\prici\\\\haute\\\\specs\\\\roadmap', 'C:\\\\Users\\\\prici\\\\AppData\\\\Roaming\\\\uv\\\\python\\\\cpython-3.11.13-windows-x86_64-none\\\\python311.zip', 'C:\\\\Users\\\\prici\\\\AppData\\\\Roaming\\\\uv\\\\python\\\\cpython-3.11.13-windows-x86_64-none\\\\DLLs', 'C:\\\\Users\\\\prici\\\\AppData\\\\Roaming\\\\uv\\\\python\\\\cpython-3.11.13-windows-x86_64-none\\\\Lib', 'C:\\\\Users\\\\prici\\\\AppData\\\\Roaming\\\\uv\\\\python\\\\cpython-3.11.13-windows-x86_64-none', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv\\\\Lib\\\\site-packages', 'C:\\\\Users\\\\prici\\\\haute\\\\src', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv\\\\Lib\\\\site-packages\\\\win32', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv\\\\Lib\\\\site-packages\\\\win32\\\\lib', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv\\\\Lib\\\\site-packages\\\\Pythonwin'];runpy.run_path('C:\\\\Users\\\\prici\\\\haute\\\\specs\\\\roadmap\\\\pr-227-join-benchmark.py',run_name='__main__')",
+          "--worker",
+          "--size",
+          "100000",
+          "--strategy",
+          "recipe",
+          "--workspace",
+          "C:\\Users\\prici\\AppData\\Local\\Temp\\pr227-join-0hmeyq9y"
+        ],
+        "elapsed_seconds": 1.5769443000317551,
+        "exit_code": 0,
+        "platform": "Windows-10-10.0.26200-SP0",
+        "poll_interval_seconds": 0.005,
+        "process_peak_rss_bytes": 306339840,
+        "process_rss_after_bytes": 306331648,
+        "process_rss_before_bytes": 305709056,
+        "python": "3.11.13",
+        "python_current_tracemalloc_bytes": null,
+        "python_peak_tracemalloc_bytes": null,
+        "schema_version": 1
+      },
+      "repetition": 1,
+      "size": 100000,
+      "strategy": "recipe",
+      "verification_included_in_external_peak": true,
+      "worker": {
+        "size": 100000,
+        "strategy": "recipe",
+        "verification": {
+          "actual": {
+            "key": 4999950000.0,
+            "left_payload_0": 50104.18827938571,
+            "left_payload_1": 50124.95859374127,
+            "left_payload_2": 49948.2542702356,
+            "left_payload_3": 50026.57455361792,
+            "right_payload_0": 49930.308392566585,
+            "right_payload_1": 50033.71702334336,
+            "right_payload_2": 49959.31124471735,
+            "right_payload_3": 49963.10099116224,
+            "rows": 100000
+          },
+          "checks": {
+            "key": true,
+            "left_payload_0": true,
+            "left_payload_1": true,
+            "left_payload_2": true,
+            "left_payload_3": true,
+            "right_payload_0": true,
+            "right_payload_1": true,
+            "right_payload_2": true,
+            "right_payload_3": true,
+            "rows": true
+          },
+          "expected": {
+            "key": 4999950000.0,
+            "left_payload_0": 50104.18827938573,
+            "left_payload_1": 50124.95859374128,
+            "left_payload_2": 49948.2542702356,
+            "left_payload_3": 50026.57455361792,
+            "right_payload_0": 49930.30839256659,
+            "right_payload_1": 50033.71702334336,
+            "right_payload_2": 49959.31124471733,
+            "right_payload_3": 49963.100991162246,
+            "rows": 100000
+          },
+          "ok": true
+        },
+        "worker_rss_before_write_bytes": 74690560,
+        "write_elapsed_seconds": 0.10499230003915727
+      }
+    },
+    {
+      "memory_smoke": {
+        "child_peak_rss_bytes": 145707008,
+        "child_rss_sample_count": 88,
+        "command": [
+          "C:\\Users\\prici\\AppData\\Roaming\\uv\\python\\cpython-3.11.13-windows-x86_64-none\\python.exe",
+          "-c",
+          "import runpy,sys;sys.path[:0]=['C:\\\\Users\\\\prici\\\\haute', 'C:\\\\Users\\\\prici\\\\haute\\\\specs\\\\roadmap', 'C:\\\\Users\\\\prici\\\\AppData\\\\Roaming\\\\uv\\\\python\\\\cpython-3.11.13-windows-x86_64-none\\\\python311.zip', 'C:\\\\Users\\\\prici\\\\AppData\\\\Roaming\\\\uv\\\\python\\\\cpython-3.11.13-windows-x86_64-none\\\\DLLs', 'C:\\\\Users\\\\prici\\\\AppData\\\\Roaming\\\\uv\\\\python\\\\cpython-3.11.13-windows-x86_64-none\\\\Lib', 'C:\\\\Users\\\\prici\\\\AppData\\\\Roaming\\\\uv\\\\python\\\\cpython-3.11.13-windows-x86_64-none', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv\\\\Lib\\\\site-packages', 'C:\\\\Users\\\\prici\\\\haute\\\\src', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv\\\\Lib\\\\site-packages\\\\win32', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv\\\\Lib\\\\site-packages\\\\win32\\\\lib', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv\\\\Lib\\\\site-packages\\\\Pythonwin'];runpy.run_path('C:\\\\Users\\\\prici\\\\haute\\\\specs\\\\roadmap\\\\pr-227-join-benchmark.py',run_name='__main__')",
+          "--worker",
+          "--size",
+          "100000",
+          "--strategy",
+          "recipe",
+          "--workspace",
+          "C:\\Users\\prici\\AppData\\Local\\Temp\\pr227-join-0hmeyq9y"
+        ],
+        "elapsed_seconds": 1.4291587000479922,
+        "exit_code": 0,
+        "platform": "Windows-10-10.0.26200-SP0",
+        "poll_interval_seconds": 0.005,
+        "process_peak_rss_bytes": 306995200,
+        "process_rss_after_bytes": 306995200,
+        "process_rss_before_bytes": 306348032,
+        "python": "3.11.13",
+        "python_current_tracemalloc_bytes": null,
+        "python_peak_tracemalloc_bytes": null,
+        "schema_version": 1
+      },
+      "repetition": 2,
+      "size": 100000,
+      "strategy": "recipe",
+      "verification_included_in_external_peak": true,
+      "worker": {
+        "size": 100000,
+        "strategy": "recipe",
+        "verification": {
+          "actual": {
+            "key": 4999950000.0,
+            "left_payload_0": 50104.18827938572,
+            "left_payload_1": 50124.95859374127,
+            "left_payload_2": 49948.25427023562,
+            "left_payload_3": 50026.57455361792,
+            "right_payload_0": 49930.30839256661,
+            "right_payload_1": 50033.71702334336,
+            "right_payload_2": 49959.31124471735,
+            "right_payload_3": 49963.100991162246,
+            "rows": 100000
+          },
+          "checks": {
+            "key": true,
+            "left_payload_0": true,
+            "left_payload_1": true,
+            "left_payload_2": true,
+            "left_payload_3": true,
+            "right_payload_0": true,
+            "right_payload_1": true,
+            "right_payload_2": true,
+            "right_payload_3": true,
+            "rows": true
+          },
+          "expected": {
+            "key": 4999950000.0,
+            "left_payload_0": 50104.18827938573,
+            "left_payload_1": 50124.95859374128,
+            "left_payload_2": 49948.2542702356,
+            "left_payload_3": 50026.57455361792,
+            "right_payload_0": 49930.30839256659,
+            "right_payload_1": 50033.71702334336,
+            "right_payload_2": 49959.31124471733,
+            "right_payload_3": 49963.100991162246,
+            "rows": 100000
+          },
+          "ok": true
+        },
+        "worker_rss_before_write_bytes": 74153984,
+        "write_elapsed_seconds": 0.0820520999841392
+      }
+    },
+    {
+      "memory_smoke": {
+        "child_peak_rss_bytes": 239104000,
+        "child_rss_sample_count": 80,
+        "command": [
+          "C:\\Users\\prici\\AppData\\Roaming\\uv\\python\\cpython-3.11.13-windows-x86_64-none\\python.exe",
+          "-c",
+          "import runpy,sys;sys.path[:0]=['C:\\\\Users\\\\prici\\\\haute', 'C:\\\\Users\\\\prici\\\\haute\\\\specs\\\\roadmap', 'C:\\\\Users\\\\prici\\\\AppData\\\\Roaming\\\\uv\\\\python\\\\cpython-3.11.13-windows-x86_64-none\\\\python311.zip', 'C:\\\\Users\\\\prici\\\\AppData\\\\Roaming\\\\uv\\\\python\\\\cpython-3.11.13-windows-x86_64-none\\\\DLLs', 'C:\\\\Users\\\\prici\\\\AppData\\\\Roaming\\\\uv\\\\python\\\\cpython-3.11.13-windows-x86_64-none\\\\Lib', 'C:\\\\Users\\\\prici\\\\AppData\\\\Roaming\\\\uv\\\\python\\\\cpython-3.11.13-windows-x86_64-none', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv\\\\Lib\\\\site-packages', 'C:\\\\Users\\\\prici\\\\haute\\\\src', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv\\\\Lib\\\\site-packages\\\\win32', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv\\\\Lib\\\\site-packages\\\\win32\\\\lib', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv\\\\Lib\\\\site-packages\\\\Pythonwin'];runpy.run_path('C:\\\\Users\\\\prici\\\\haute\\\\specs\\\\roadmap\\\\pr-227-join-benchmark.py',run_name='__main__')",
+          "--worker",
+          "--size",
+          "400000",
+          "--strategy",
+          "native",
+          "--workspace",
+          "C:\\Users\\prici\\AppData\\Local\\Temp\\pr227-join-0hmeyq9y"
+        ],
+        "elapsed_seconds": 1.3462654000031762,
+        "exit_code": 0,
+        "platform": "Windows-10-10.0.26200-SP0",
+        "poll_interval_seconds": 0.005,
+        "process_peak_rss_bytes": 307908608,
+        "process_rss_after_bytes": 307892224,
+        "process_rss_before_bytes": 306995200,
+        "python": "3.11.13",
+        "python_current_tracemalloc_bytes": null,
+        "python_peak_tracemalloc_bytes": null,
+        "schema_version": 1
+      },
+      "repetition": 1,
+      "size": 400000,
+      "strategy": "native",
+      "verification_included_in_external_peak": true,
+      "worker": {
+        "size": 400000,
+        "strategy": "native",
+        "verification": {
+          "actual": {
+            "key": 79999800000.0,
+            "left_payload_0": 200370.66478908894,
+            "left_payload_1": 199682.40984854102,
+            "left_payload_2": 200182.88714196786,
+            "left_payload_3": 200074.97008165016,
+            "right_payload_0": 200041.24499814046,
+            "right_payload_1": 199910.99484220924,
+            "right_payload_2": 199674.56436308997,
+            "right_payload_3": 199988.16951269098,
+            "rows": 400000
+          },
+          "checks": {
+            "key": true,
+            "left_payload_0": true,
+            "left_payload_1": true,
+            "left_payload_2": true,
+            "left_payload_3": true,
+            "right_payload_0": true,
+            "right_payload_1": true,
+            "right_payload_2": true,
+            "right_payload_3": true,
+            "rows": true
+          },
+          "expected": {
+            "key": 79999800000.0,
+            "left_payload_0": 200370.66478908894,
+            "left_payload_1": 199682.40984854102,
+            "left_payload_2": 200182.88714196792,
+            "left_payload_3": 200074.97008165016,
+            "right_payload_0": 200041.24499814055,
+            "right_payload_1": 199910.99484220915,
+            "right_payload_2": 199674.56436308997,
+            "right_payload_3": 199988.169512691,
+            "rows": 400000
+          },
+          "ok": true
+        },
+        "worker_rss_before_write_bytes": 74919936,
+        "write_elapsed_seconds": 0.06148969999048859
+      }
+    },
+    {
+      "memory_smoke": {
+        "child_peak_rss_bytes": 239001600,
+        "child_rss_sample_count": 83,
+        "command": [
+          "C:\\Users\\prici\\AppData\\Roaming\\uv\\python\\cpython-3.11.13-windows-x86_64-none\\python.exe",
+          "-c",
+          "import runpy,sys;sys.path[:0]=['C:\\\\Users\\\\prici\\\\haute', 'C:\\\\Users\\\\prici\\\\haute\\\\specs\\\\roadmap', 'C:\\\\Users\\\\prici\\\\AppData\\\\Roaming\\\\uv\\\\python\\\\cpython-3.11.13-windows-x86_64-none\\\\python311.zip', 'C:\\\\Users\\\\prici\\\\AppData\\\\Roaming\\\\uv\\\\python\\\\cpython-3.11.13-windows-x86_64-none\\\\DLLs', 'C:\\\\Users\\\\prici\\\\AppData\\\\Roaming\\\\uv\\\\python\\\\cpython-3.11.13-windows-x86_64-none\\\\Lib', 'C:\\\\Users\\\\prici\\\\AppData\\\\Roaming\\\\uv\\\\python\\\\cpython-3.11.13-windows-x86_64-none', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv\\\\Lib\\\\site-packages', 'C:\\\\Users\\\\prici\\\\haute\\\\src', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv\\\\Lib\\\\site-packages\\\\win32', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv\\\\Lib\\\\site-packages\\\\win32\\\\lib', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv\\\\Lib\\\\site-packages\\\\Pythonwin'];runpy.run_path('C:\\\\Users\\\\prici\\\\haute\\\\specs\\\\roadmap\\\\pr-227-join-benchmark.py',run_name='__main__')",
+          "--worker",
+          "--size",
+          "400000",
+          "--strategy",
+          "native",
+          "--workspace",
+          "C:\\Users\\prici\\AppData\\Local\\Temp\\pr227-join-0hmeyq9y"
+        ],
+        "elapsed_seconds": 1.3722750999731943,
+        "exit_code": 0,
+        "platform": "Windows-10-10.0.26200-SP0",
+        "poll_interval_seconds": 0.005,
+        "process_peak_rss_bytes": 308097024,
+        "process_rss_after_bytes": 286273536,
+        "process_rss_before_bytes": 307912704,
+        "python": "3.11.13",
+        "python_current_tracemalloc_bytes": null,
+        "python_peak_tracemalloc_bytes": null,
+        "schema_version": 1
+      },
+      "repetition": 2,
+      "size": 400000,
+      "strategy": "native",
+      "verification_included_in_external_peak": true,
+      "worker": {
+        "size": 400000,
+        "strategy": "native",
+        "verification": {
+          "actual": {
+            "key": 79999800000.0,
+            "left_payload_0": 200370.66478908894,
+            "left_payload_1": 199682.40984854102,
+            "left_payload_2": 200182.8871419679,
+            "left_payload_3": 200074.97008165007,
+            "right_payload_0": 200041.24499814055,
+            "right_payload_1": 199910.9948422092,
+            "right_payload_2": 199674.56436308997,
+            "right_payload_3": 199988.16951269103,
+            "rows": 400000
+          },
+          "checks": {
+            "key": true,
+            "left_payload_0": true,
+            "left_payload_1": true,
+            "left_payload_2": true,
+            "left_payload_3": true,
+            "right_payload_0": true,
+            "right_payload_1": true,
+            "right_payload_2": true,
+            "right_payload_3": true,
+            "rows": true
+          },
+          "expected": {
+            "key": 79999800000.0,
+            "left_payload_0": 200370.66478908894,
+            "left_payload_1": 199682.40984854102,
+            "left_payload_2": 200182.88714196792,
+            "left_payload_3": 200074.97008165016,
+            "right_payload_0": 200041.24499814055,
+            "right_payload_1": 199910.99484220915,
+            "right_payload_2": 199674.56436308997,
+            "right_payload_3": 199988.169512691,
+            "rows": 400000
+          },
+          "ok": true
+        },
+        "worker_rss_before_write_bytes": 74199040,
+        "write_elapsed_seconds": 0.07554719998734072
+      }
+    },
+    {
+      "memory_smoke": {
+        "child_peak_rss_bytes": 231866368,
+        "child_rss_sample_count": 126,
+        "command": [
+          "C:\\Users\\prici\\AppData\\Roaming\\uv\\python\\cpython-3.11.13-windows-x86_64-none\\python.exe",
+          "-c",
+          "import runpy,sys;sys.path[:0]=['C:\\\\Users\\\\prici\\\\haute', 'C:\\\\Users\\\\prici\\\\haute\\\\specs\\\\roadmap', 'C:\\\\Users\\\\prici\\\\AppData\\\\Roaming\\\\uv\\\\python\\\\cpython-3.11.13-windows-x86_64-none\\\\python311.zip', 'C:\\\\Users\\\\prici\\\\AppData\\\\Roaming\\\\uv\\\\python\\\\cpython-3.11.13-windows-x86_64-none\\\\DLLs', 'C:\\\\Users\\\\prici\\\\AppData\\\\Roaming\\\\uv\\\\python\\\\cpython-3.11.13-windows-x86_64-none\\\\Lib', 'C:\\\\Users\\\\prici\\\\AppData\\\\Roaming\\\\uv\\\\python\\\\cpython-3.11.13-windows-x86_64-none', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv\\\\Lib\\\\site-packages', 'C:\\\\Users\\\\prici\\\\haute\\\\src', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv\\\\Lib\\\\site-packages\\\\win32', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv\\\\Lib\\\\site-packages\\\\win32\\\\lib', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv\\\\Lib\\\\site-packages\\\\Pythonwin'];runpy.run_path('C:\\\\Users\\\\prici\\\\haute\\\\specs\\\\roadmap\\\\pr-227-join-benchmark.py',run_name='__main__')",
+          "--worker",
+          "--size",
+          "400000",
+          "--strategy",
+          "recipe",
+          "--workspace",
+          "C:\\Users\\prici\\AppData\\Local\\Temp\\pr227-join-0hmeyq9y"
+        ],
+        "elapsed_seconds": 2.03325020003831,
+        "exit_code": 0,
+        "platform": "Windows-10-10.0.26200-SP0",
+        "poll_interval_seconds": 0.005,
+        "process_peak_rss_bytes": 308097024,
+        "process_rss_after_bytes": 287346688,
+        "process_rss_before_bytes": 286273536,
+        "python": "3.11.13",
+        "python_current_tracemalloc_bytes": null,
+        "python_peak_tracemalloc_bytes": null,
+        "schema_version": 1
+      },
+      "repetition": 1,
+      "size": 400000,
+      "strategy": "recipe",
+      "verification_included_in_external_peak": true,
+      "worker": {
+        "size": 400000,
+        "strategy": "recipe",
+        "verification": {
+          "actual": {
+            "key": 79999800000.0,
+            "left_payload_0": 200370.6647890889,
+            "left_payload_1": 199682.409848541,
+            "left_payload_2": 200182.8871419679,
+            "left_payload_3": 200074.9700816502,
+            "right_payload_0": 200041.2449981405,
+            "right_payload_1": 199910.99484220915,
+            "right_payload_2": 199674.56436309003,
+            "right_payload_3": 199988.16951269098,
+            "rows": 400000
+          },
+          "checks": {
+            "key": true,
+            "left_payload_0": true,
+            "left_payload_1": true,
+            "left_payload_2": true,
+            "left_payload_3": true,
+            "right_payload_0": true,
+            "right_payload_1": true,
+            "right_payload_2": true,
+            "right_payload_3": true,
+            "rows": true
+          },
+          "expected": {
+            "key": 79999800000.0,
+            "left_payload_0": 200370.66478908894,
+            "left_payload_1": 199682.40984854102,
+            "left_payload_2": 200182.88714196792,
+            "left_payload_3": 200074.97008165016,
+            "right_payload_0": 200041.24499814055,
+            "right_payload_1": 199910.99484220915,
+            "right_payload_2": 199674.56436308997,
+            "right_payload_3": 199988.169512691,
+            "rows": 400000
+          },
+          "ok": true
+        },
+        "worker_rss_before_write_bytes": 74371072,
+        "write_elapsed_seconds": 0.3643906000070274
+      }
+    },
+    {
+      "memory_smoke": {
+        "child_peak_rss_bytes": 217960448,
+        "child_rss_sample_count": 117,
+        "command": [
+          "C:\\Users\\prici\\AppData\\Roaming\\uv\\python\\cpython-3.11.13-windows-x86_64-none\\python.exe",
+          "-c",
+          "import runpy,sys;sys.path[:0]=['C:\\\\Users\\\\prici\\\\haute', 'C:\\\\Users\\\\prici\\\\haute\\\\specs\\\\roadmap', 'C:\\\\Users\\\\prici\\\\AppData\\\\Roaming\\\\uv\\\\python\\\\cpython-3.11.13-windows-x86_64-none\\\\python311.zip', 'C:\\\\Users\\\\prici\\\\AppData\\\\Roaming\\\\uv\\\\python\\\\cpython-3.11.13-windows-x86_64-none\\\\DLLs', 'C:\\\\Users\\\\prici\\\\AppData\\\\Roaming\\\\uv\\\\python\\\\cpython-3.11.13-windows-x86_64-none\\\\Lib', 'C:\\\\Users\\\\prici\\\\AppData\\\\Roaming\\\\uv\\\\python\\\\cpython-3.11.13-windows-x86_64-none', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv\\\\Lib\\\\site-packages', 'C:\\\\Users\\\\prici\\\\haute\\\\src', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv\\\\Lib\\\\site-packages\\\\win32', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv\\\\Lib\\\\site-packages\\\\win32\\\\lib', 'C:\\\\Users\\\\prici\\\\haute\\\\.venv\\\\Lib\\\\site-packages\\\\Pythonwin'];runpy.run_path('C:\\\\Users\\\\prici\\\\haute\\\\specs\\\\roadmap\\\\pr-227-join-benchmark.py',run_name='__main__')",
+          "--worker",
+          "--size",
+          "400000",
+          "--strategy",
+          "recipe",
+          "--workspace",
+          "C:\\Users\\prici\\AppData\\Local\\Temp\\pr227-join-0hmeyq9y"
+        ],
+        "elapsed_seconds": 1.925916300038807,
+        "exit_code": 0,
+        "platform": "Windows-10-10.0.26200-SP0",
+        "poll_interval_seconds": 0.005,
+        "process_peak_rss_bytes": 308097024,
+        "process_rss_after_bytes": 288415744,
+        "process_rss_before_bytes": 287350784,
+        "python": "3.11.13",
+        "python_current_tracemalloc_bytes": null,
+        "python_peak_tracemalloc_bytes": null,
+        "schema_version": 1
+      },
+      "repetition": 2,
+      "size": 400000,
+      "strategy": "recipe",
+      "verification_included_in_external_peak": true,
+      "worker": {
+        "size": 400000,
+        "strategy": "recipe",
+        "verification": {
+          "actual": {
+            "key": 79999800000.0,
+            "left_payload_0": 200370.6647890889,
+            "left_payload_1": 199682.40984854102,
+            "left_payload_2": 200182.88714196792,
+            "left_payload_3": 200074.97008165016,
+            "right_payload_0": 200041.24499814052,
+            "right_payload_1": 199910.99484220918,
+            "right_payload_2": 199674.56436308997,
+            "right_payload_3": 199988.16951269103,
+            "rows": 400000
+          },
+          "checks": {
+            "key": true,
+            "left_payload_0": true,
+            "left_payload_1": true,
+            "left_payload_2": true,
+            "left_payload_3": true,
+            "right_payload_0": true,
+            "right_payload_1": true,
+            "right_payload_2": true,
+            "right_payload_3": true,
+            "rows": true
+          },
+          "expected": {
+            "key": 79999800000.0,
+            "left_payload_0": 200370.66478908894,
+            "left_payload_1": 199682.40984854102,
+            "left_payload_2": 200182.88714196792,
+            "left_payload_3": 200074.97008165016,
+            "right_payload_0": 200041.24499814055,
+            "right_payload_1": 199910.99484220915,
+            "right_payload_2": 199674.56436308997,
+            "right_payload_3": 199988.169512691,
+            "rows": 400000
+          },
+          "ok": true
+        },
+        "worker_rss_before_write_bytes": 74248192,
+        "write_elapsed_seconds": 0.32994520000647753
+      }
+    }
+  ],
+  "runtime": {
+    "numpy": "2.3.5",
+    "polars": "1.44.2",
+    "python": "3.11.13"
+  },
+  "seed": 227
+}

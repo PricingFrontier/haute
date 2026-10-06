@@ -248,4 +248,58 @@ describe("ToggleButtonGroup", () => {
     fireEvent.click(screen.getByText("Gamma"))
     expect(props.onChange).toHaveBeenCalledWith("c")
   })
+
+  describe("disabled options", () => {
+    const WITH_DISABLED = [
+      { key: "a" as const, label: "Alpha" },
+      { key: "b" as const, label: "Beta", disabled: true, disabledReason: "Not for text" },
+      { key: "c" as const, label: "Gamma" },
+    ]
+
+    it("greys a disabled option, gives its reason and ignores a click", () => {
+      const { props } = renderToggle({ options: WITH_DISABLED })
+      const beta = screen.getByText("Beta").closest("button")!
+      expect(beta).toBeDisabled()
+      expect(beta).toHaveAttribute("title", "Not for text")
+      expect(beta.style.opacity).toBe("0.5")
+      fireEvent.click(beta)
+      expect(props.onChange).not.toHaveBeenCalled()
+    })
+
+    it("arrow keys skip a disabled option", () => {
+      const onChange = vi.fn()
+      renderToggle({ value: "a", options: WITH_DISABLED, onChange })
+      const radios = screen.getAllByRole("radio")
+      fireEvent.keyDown(radios[0], { key: "ArrowRight" })
+      expect(onChange).toHaveBeenLastCalledWith("c")
+      fireEvent.keyDown(radios[2], { key: "ArrowLeft" })
+      expect(onChange).toHaveBeenLastCalledWith("a")
+    })
+
+    it("Home and End land on the first and last enabled options", () => {
+      const onChange = vi.fn()
+      renderToggle({
+        value: "b",
+        onChange,
+        options: [
+          { key: "a", label: "Alpha", disabled: true },
+          { key: "b", label: "Beta" },
+          { key: "c", label: "Gamma", disabled: true },
+        ],
+      })
+      const radios = screen.getAllByRole("radio")
+      fireEvent.keyDown(radios[1], { key: "Home" })
+      expect(onChange).toHaveBeenLastCalledWith("b")
+      fireEvent.keyDown(radios[1], { key: "End" })
+      expect(onChange).toHaveBeenLastCalledWith("b")
+    })
+
+    it("keeps the group in the tab order when the selected option is disabled", () => {
+      renderToggle({ value: "b", options: WITH_DISABLED })
+      const radios = screen.getAllByRole("radio")
+      expect(radios[1]).toHaveAttribute("aria-checked", "true")
+      expect(radios[0]).toHaveAttribute("tabindex", "0")
+      expect(radios[2]).toHaveAttribute("tabindex", "-1")
+    })
+  })
 })

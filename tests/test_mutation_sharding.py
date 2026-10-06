@@ -27,6 +27,7 @@ from scripts.run_mutation_suite import (
     _partition_pending_job_ids,
     _pending_job_ids,
     _shard_count_for_pending,
+    _shard_matrices,
     _slice_session,
     _union_results_into,
     _validate_shard_matrix_capacity,
@@ -158,14 +159,15 @@ def test_shard_count_rejects_invalid_cap(cap: object) -> None:
 
 def test_current_target_plan_stays_within_matrix_capacity() -> None:
     pending_and_caps = (
-        (435, 80),
+        (622, 80),
         (93, 80),
-        (87, 80),
-        (616, 80),
+        (90, 80),
+        (601, 80),
         (68, 80),
-        (4_941, 48),
-        (413, 80),
-        (1_576, 80),
+        (4_635, 20),
+        (362, 80),
+        (1_303, 80),
+        (134, 80),
     )
 
     shard_count = sum(
@@ -173,15 +175,35 @@ def test_current_target_plan_stays_within_matrix_capacity() -> None:
         for pending, max_pending_per_shard in pending_and_caps
     )
 
-    assert shard_count == 148
+    assert shard_count == 277
     _validate_shard_matrix_capacity(shard_count)
 
 
-def test_shard_matrix_capacity_fails_before_github_expansion() -> None:
-    _validate_shard_matrix_capacity(256)
+@pytest.mark.parametrize("shard_count", [0, 1, 256, 257, 277, 512])
+def test_shard_matrices_are_disjoint_complete_and_within_each_matrix_capacity(
+    shard_count: int,
+) -> None:
+    shards = [{"shard_index": index} for index in range(shard_count)]
 
-    with pytest.raises(ValueError, match="257.*256"):
-        _validate_shard_matrix_capacity(257)
+    matrix, overflow_matrix = _shard_matrices(shards)
+
+    primary = matrix["include"]
+    overflow = overflow_matrix["include"]
+    assert primary + overflow == shards
+    assert set(map(id, primary)).isdisjoint(map(id, overflow))
+    assert len(primary) <= 256
+    assert len(overflow) <= 256
+    assert len(primary) == min(shard_count, 256)
+
+
+def test_shard_matrix_capacity_fails_before_github_expansion() -> None:
+    _validate_shard_matrix_capacity(512)
+
+    with pytest.raises(ValueError, match="513.*two matrices.*512"):
+        _validate_shard_matrix_capacity(513)
+
+    with pytest.raises(ValueError, match="513.*two matrices.*512"):
+        _shard_matrices([{"shard_index": index} for index in range(513)])
 
 
 # --- slice ----------------------------------------------------------------
@@ -215,9 +237,15 @@ def test_mutation_gate_runs_and_fails_when_plan_fails() -> None:
         (REPO_ROOT / ".github" / "workflows" / "mutation.yml").read_text(encoding="utf-8")
     )
     gate = workflow["jobs"]["mutation"]
-    assert workflow["jobs"]["shard"]["timeout-minutes"] == 40
+    shard = workflow["jobs"]["shard"]
+    overflow = workflow["jobs"]["shard-overflow"]
+    assert shard["timeout-minutes"] == overflow["timeout-minutes"] == 40
+    assert shard["strategy"]["fail-fast"] is False
+    assert overflow["strategy"]["fail-fast"] is False
+    assert shard["steps"] == overflow["steps"]
+    assert "needs.plan.outputs.any_overflow == 'true'" in overflow["if"]
 
-    assert set(gate["needs"]) == {"plan", "shard"}
+    assert set(gate["needs"]) == {"plan", "shard", "shard-overflow"}
     condition = re.sub(r"\s+", "", gate["if"])
     assert "!cancelled()" in condition
     assert "success()" not in condition
@@ -228,6 +256,12 @@ def test_mutation_gate_runs_and_fails_when_plan_fails() -> None:
     guard_condition = re.sub(r"\s+", "", plan_guard["if"])
     assert "needs.plan.result!='success'" in guard_condition
     assert any(line.strip() == "exit 1" for line in plan_guard["run"].splitlines())
+
+    shard_guard = steps_by_name["Require successful mutation shards"]
+    shard_guard_condition = re.sub(r"\s+", "", shard_guard["if"])
+    assert "needs.shard.result!='success'" in shard_guard_condition
+    assert "needs.plan.outputs.any_overflow=='true'" in shard_guard_condition
+    assert "needs['shard-overflow'].result!='success'" in shard_guard_condition
 
 
 # --- union / round-trip equivalence ---------------------------------------

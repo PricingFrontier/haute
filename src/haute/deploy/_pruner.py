@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 from haute._graph_utils import edge_input_name
 from haute._logging import get_logger
 from haute.graph_utils import (
@@ -18,6 +21,8 @@ logger = get_logger(component="deploy.pruner")
 def _live_only_edges(
     nodes: list[GraphNode],
     edges: list[GraphEdge],
+    *,
+    submodels: Mapping[str, Any] | None = None,
 ) -> list[GraphEdge]:
     """Filter edges so liveSwitch nodes only keep their live input.
 
@@ -43,7 +48,12 @@ def _live_only_edges(
             edge.id
             for edge in edges
             if edge.target == switch_id
-            and edge_input_name(edge, node_map[edge.source]) == input_name
+            and edge_input_name(
+                edge,
+                node_map[edge.source],
+                submodels=submodels,
+            )
+            == input_name
         }
 
     for sid in switch_ids:
@@ -98,7 +108,7 @@ def prune_for_deploy(
             f"Output node '{output_node_id}' not found in graph. Available nodes: {sorted(all_ids)}"
         )
 
-    deploy_edges = _live_only_edges(nodes, edges)
+    deploy_edges = _live_only_edges(nodes, edges, submodels=graph.submodels)
     needed = ancestors(output_node_id, deploy_edges, all_ids)
 
     kept_nodes = [n for n in nodes if n.id in needed]

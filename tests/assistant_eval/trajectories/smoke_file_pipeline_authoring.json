@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "id": "smoke_file_pipeline_authoring",
+  "case": "smoke_file_pipeline_authoring",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "inspect",
+              "tool": "get_pipeline",
+              "arguments": {},
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "dry",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Read the new-business batch, add its features and write them out.",
+                "ops": [
+                  {
+                    "op": "add_node",
+                    "node_type": "dataInput",
+                    "name": "nb_batch",
+                    "ref": "source",
+                    "config": {
+                      "inputType": "file",
+                      "format": "parquet",
+                      "mode": "scan",
+                      "path": "data/nb_batch.parquet",
+                      "arguments": {}
+                    }
+                  },
+                  {
+                    "op": "add_node",
+                    "node_type": "polars",
+                    "name": "valid_quotes",
+                    "ref": "valid",
+                    "config": {
+                      "steps": [
+                        {
+                          "id": "start",
+                          "kind": "source",
+                          "input": "nb_batch"
+                        },
+                        {
+                          "id": "logic",
+                          "kind": "free_code",
+                          "code": "df = df.filter(pl.col('exposure') > 0)\n"
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "op": "add_node",
+                    "node_type": "dataOutput",
+                    "name": "curated_quotes",
+                    "ref": "sink",
+                    "config": {
+                      "outputType": "file",
+                      "format": "parquet",
+                      "mode": "sink",
+                      "path": "data/curated_quotes.parquet",
+                      "arguments": {}
+                    }
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "$source",
+                    "target": "$valid"
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "$valid",
+                    "target": "$sink"
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "dry.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "Saved the change.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

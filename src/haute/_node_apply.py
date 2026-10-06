@@ -5,14 +5,14 @@ here as one ``apply_*_from_config`` / ``expand_*`` / ``select_*`` function so
 that BOTH sides of the system run identical logic:
 
 - the canvas graph executor (:mod:`haute._builders`) delegates to it, and
-- the standalone ``.py`` file emitted by :mod:`haute.codegen` imports and
-  calls it (via the :mod:`haute.graph_utils` facade).
+- a standalone ``pipeline.run()`` / ``pipeline.score()`` of a saved file runs
+  it from the node's decorator (:mod:`haute._standalone_nodes`).
 
-This makes the README "it is just Python" promise real: a saved pipeline's
-``pipeline.run()`` / ``pipeline.score()`` executes the SAME function the
-GUI executor calls, instead of a silent passthrough.  These are the
-optimiser / optimiserApply / scenarioExpander / liveSwitch twins that sit
-beside the banding / rating twins in :mod:`haute._rating`.
+This makes the README "it is just Python" promise real: a saved pipeline
+executes the SAME function the GUI executor calls, instead of a silent
+passthrough.  These are the constant / optimiser / optimiserApply /
+scenarioExpander / liveSwitch twins that sit beside the banding / rating
+twins in :mod:`haute._rating`.
 
 Module-level imports are deliberately minimal (polars + the frame alias);
 executor-side and I/O collaborators are imported lazily inside each
@@ -24,18 +24,81 @@ from __future__ import annotations
 from collections.abc import Mapping
 from os import PathLike
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import polars as pl
 
 from haute._types import _Frame
+
+#: A frame in either evaluation mode, returned in the mode it was given.
+_EagerOrLazy = TypeVar("_EagerOrLazy", pl.LazyFrame, pl.DataFrame)
 
 # ── Scenario-expander defaults ────────────────────────────────────────────
 # Canonical home; re-exported from ``_builders`` for the chunking /
 # optimiser-service call sites that import them from there.
 _DEFAULT_SCENARIO_MIN = 0.8  # scenario expander lower bound
 _DEFAULT_SCENARIO_MAX = 1.2  # scenario expander upper bound
-_DEFAULT_SCENARIO_STEPS = 21  # number of steps in scenario grid
+
+
+def constant_frame(values: list[Mapping[str, Any]]) -> pl.LazyFrame:
+    """The one-row frame a Constant node's ``values`` describe.
+
+    Each named value becomes a column, as a number when it reads as one and as
+    the raw value otherwise; an entry without a name is skipped, and a node
+    with no named values yields the single column ``constant``. Two entries
+    with one name are refused rather than the later value replacing the
+    earlier.
+    """
+    from haute.errors import NodeConfigError
+
+    data: dict[str, list[Any]] = {}
+    for entry in values:
+        name = entry.get("name", "")
+        if not name:
+            continue
+        if name in data:
+            raise NodeConfigError(
+                f"Constant name {name!r} is used by more than one value; "
+                "give each value its own name.",
+                setting="values",
+            )
+        value = entry.get("value", "")
+        try:
+            data[name] = [float(value)]
+        except (ValueError, TypeError):
+            data[name] = [value]
+    if not data:
+        data = {"constant": [0]}
+    return pl.LazyFrame(data)
+
+
+def scenario_step_count(config: Mapping[str, Any]) -> int:
+    """The scenario grid size, ``stepCount``: a required whole number of at least 1.
+
+    There is no absent-key default: a new node is created with an explicit
+    count (``node_defaults.json``), and a config without one is a defect the
+    user fixes on the node, reported as :class:`NodeConfigError`.
+    """
+    from haute.errors import NodeConfigError
+
+    raw = config.get("stepCount")
+    if raw is None:
+        raise NodeConfigError(
+            "Scenario expander requires stepCount (the number of grid values).",
+            setting="stepCount",
+        )
+    if isinstance(raw, bool) or not isinstance(raw, int | float) or int(raw) != raw:
+        raise NodeConfigError(
+            f"Scenario expander stepCount must be a whole number, got {raw!r}",
+            setting="stepCount",
+        )
+    steps = int(raw)
+    if steps < 1:
+        raise NodeConfigError(
+            f"Scenario expander requires stepCount >= 1, got {steps}",
+            setting="stepCount",
+        )
+    return steps
 
 
 def _resolve_node_config(
@@ -84,10 +147,18 @@ def resolve_api_input_from_config(
     base_dir: str | Path | None = None,
     profile: str | None = None,
     columns: frozenset[str] | set[str] | None = None,
-    validate_columns: frozenset[str] | set[str] | None = None,
     port_columns: Mapping[str, frozenset[str] | set[str] | None] | None = None,
+    read_snapshots: bool = False,
+    schema_tier_node: str | None = None,
 ) -> _Frame | dict[str, _Frame]:
-    """Load an API input from its current inline config or JSON sidecar."""
+    """Load an API input from its current inline config or JSON sidecar.
+
+    ``read_snapshots`` makes a structured source read its tables' published
+    input snapshots (canvas execution) instead of shredding the file in-process
+    (generated standalone code). ``schema_tier_node`` makes such a read
+    schema-only, so a table with no snapshot can reach the IO layer's declared
+    schema tier, recorded under that node id.
+    """
     config = _resolve_node_config(config_or_path, base_dir)
     path = _anchored_required_path(config, base_dir)
 
@@ -106,7 +177,13 @@ def resolve_api_input_from_config(
         from haute._json_shred._cache import load_v2_api_source
 
         validate_v2_schema(config)
-        return load_v2_api_source(path, config, port_columns=port_columns)
+        return load_v2_api_source(
+            path,
+            config,
+            port_columns=port_columns,
+            read_snapshots=read_snapshots,
+            schema_tier_node=schema_tier_node,
+        )
 
     from haute._io import read_data_source
 
@@ -115,7 +192,6 @@ def resolve_api_input_from_config(
         {"sourceType": "flat_file", **config_with_anchored_path},
         profile=profile,
         columns=columns,
-        validate_columns=validate_columns,
     )
 
 
@@ -133,7 +209,7 @@ def load_external_object_from_config(
 
     from haute._io import load_external_object
 
-    return load_external_object(path, file_type, config.get("modelClass", "classifier"))
+    return load_external_object(path, file_type)
 
 
 # ---------------------------------------------------------------------------
@@ -200,17 +276,31 @@ def expand_scenarios_from_config(
     base_dir=...)`` so a standalone ``pipeline.run()`` expands exactly like
     the GUI executor instead of passing the frame straight through.
     """
-    cfg = _resolve_node_config(config, base_dir)
+    return _expand_scenarios(lf, _resolve_node_config(config, base_dir))
 
+
+def _scenario_grid_columns(cfg: Mapping[str, Any]) -> dict[str, pl.DataType]:
+    """The columns the expansion adds or replaces, with the dtypes it casts to."""
+    step_col = cfg.get("step_column") or "scenario_index"
+    grid: dict[str, pl.DataType] = {step_col: pl.Int32()}
+    col_name = (cfg.get("column_name") or "").strip()
+    if col_name:
+        # Float32 to match Rust QuoteGrid schema (price-contour ingests f32).
+        grid[col_name] = pl.Float32()
+    return grid
+
+
+def _expand_scenarios(lf: _EagerOrLazy, cfg: Mapping[str, Any]) -> _EagerOrLazy:
+    """Expand each row into its scenario grid, as an expression over *lf*.
+
+    Eager as well as lazy: the scan form below expands a collected batch.
+    """
     col_name = (cfg.get("column_name") or "").strip()
     raw_min = cfg.get("min_value")
     min_val = float(raw_min) if raw_min is not None else _DEFAULT_SCENARIO_MIN
     raw_max = cfg.get("max_value")
     max_val = float(raw_max) if raw_max is not None else _DEFAULT_SCENARIO_MAX
-    raw_steps = cfg.get("steps")
-    steps = int(raw_steps) if raw_steps is not None else _DEFAULT_SCENARIO_STEPS
-    if steps < 1:
-        raise ValueError(f"Scenario expander requires steps >= 1, got {steps}")
+    steps = scenario_step_count(cfg)
     step_col = cfg.get("step_column") or "scenario_index"
 
     scenario_exprs = [pl.lit(list(range(steps))).alias(step_col)]
@@ -219,13 +309,50 @@ def expand_scenarios_from_config(
         import numpy as np
 
         vals = np.linspace(min_val, max_val, steps, dtype=np.float32)
-        # Float32 to match Rust QuoteGrid schema (price-contour ingests f32).
         scenario_exprs.append(pl.lit(pl.Series(col_name, vals).implode()).first().alias(col_name))
         explode_cols.append(col_name)
-    cast_exprs = [pl.col(step_col).cast(pl.Int32)]
-    if col_name:
-        cast_exprs.append(pl.col(col_name).cast(pl.Float32))
-    return lf.with_columns(scenario_exprs).explode(explode_cols).with_columns(cast_exprs)
+    cast_exprs = [pl.col(name).cast(dtype) for name, dtype in _scenario_grid_columns(cfg).items()]
+    return (
+        lf.with_columns(scenario_exprs)
+        .explode(explode_cols, empty_as_null=True)
+        .with_columns(cast_exprs)
+    )
+
+
+def expand_scenarios_bounded(
+    lf: _Frame,
+    config: Mapping[str, Any],
+    *,
+    node_id: str | None = None,
+) -> _Frame:
+    """Scenario expansion an interactive row limit can reach through.
+
+    :func:`expand_scenarios_from_config` expands through ``explode``, and
+    Polars pushes no slice below one: a preview of a node under the expander
+    builds every expanded row before a ``head(n)`` keeps its first few — 110M
+    rows to show 100 of a 10M-row frame on an 11-step grid. This form exposes
+    the SAME expansion as a scan, so a pushed limit of ``n`` rows expands only
+    the first ``ceil(n / stepCount)`` input rows, and Polars pushes it only
+    where the query result is unchanged. The executor uses it for the
+    interactive preview; a full run expands through the expression.
+    """
+    from haute._polars_utils import fanout_python_scan
+
+    cfg = dict(config)
+    steps = scenario_step_count(cfg)
+    input_lf = lf.lazy() if isinstance(lf, pl.DataFrame) else lf
+    input_schema = input_lf.collect_schema()
+    grid = _scenario_grid_columns(cfg)
+    return fanout_python_scan(
+        input_lf,
+        lambda batch: _expand_scenarios(batch, cfg),
+        schema=pl.Schema({**input_schema, **grid}),
+        fanout=steps,
+        generated_columns=tuple(grid),
+        required_input_columns=(),
+        input_schema=input_schema,
+        node_id=node_id,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +373,49 @@ def _resolve_artifact_path(path: str, base_dir: str | Path | None) -> str:
     return path
 
 
+def load_configured_optimiser_artifact(
+    config: Mapping[str, Any],
+    base_dir: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """Load the artifact an optimiserApply node applies, or ``None`` without a source.
+
+    A node with no artifact file and no MLflow run or registered model is a
+    passthrough. MLflow sources load from the node's ``mlflow_destination``
+    (absent = auto).
+    """
+    source_type = config.get("sourceType", "")
+    artifact_path = config.get("artifact_path", "")
+    if artifact_path and not source_type:
+        from haute.errors import ConfigError
+
+        raise ConfigError(
+            "optimiserApply node with artifact_path requires sourceType='file'",
+            missing_field="sourceType",
+        )
+    run_id = config.get("run_id", "")
+    registered_model = config.get("registered_model", "")
+    has_file = bool(artifact_path) and source_type == "file"
+    has_mlflow = source_type in ("run", "registered") and (
+        (source_type == "run" and run_id) or (source_type == "registered" and registered_model)
+    )
+    if not has_file and not has_mlflow:
+        return None
+    if source_type in ("run", "registered"):
+        from haute._optimiser_io import load_mlflow_optimiser_artifact
+
+        return load_mlflow_optimiser_artifact(
+            source_type=source_type,
+            run_id=run_id,
+            registered_model=registered_model,
+            version=config.get("version", "latest"),
+            alias=str(config.get("alias", "") or ""),
+            destination=str(config.get("mlflow_destination", "") or ""),
+        )
+    from haute._optimiser_io import load_optimiser_artifact
+
+    return load_optimiser_artifact(_resolve_artifact_path(artifact_path, base_dir))
+
+
 def apply_optimiser_apply_from_config(
     *dfs: _Frame,
     config: dict[str, Any] | str | PathLike[str],
@@ -255,7 +425,8 @@ def apply_optimiser_apply_from_config(
     """Apply a saved optimiser artifact to the selected input frame.
 
     The generated-code twin of the executor's ``_build_optimiser_apply``.
-    Loads the artifact (file or MLflow) named by *config*, selects the
+    Loads the artifact (file or MLflow — the latter from the node's
+    ``mlflow_destination``, absent = auto) named by *config*, selects the
     ratebook input (via ``ratebook_input`` matched against *source_names*),
     and dispatches to the online / ratebook apply.  When no source is
     configured the node is a passthrough (first frame), mirroring the
@@ -265,43 +436,14 @@ def apply_optimiser_apply_from_config(
     their executable incoming-edge names.
     """
     cfg = _resolve_node_config(config, base_dir)
-
-    source_type = cfg.get("sourceType", "")
-    artifact_path = cfg.get("artifact_path", "")
-    if artifact_path and not source_type:
-        from haute.errors import ConfigError
-
-        raise ConfigError(
-            "optimiserApply node with artifact_path requires sourceType='file'",
-            missing_field="sourceType",
-        )
-    run_id = cfg.get("run_id", "")
-    registered_model = cfg.get("registered_model", "")
-    has_file = bool(artifact_path) and source_type == "file"
-    has_mlflow = source_type in ("run", "registered") and (
-        (source_type == "run" and run_id) or (source_type == "registered" and registered_model)
-    )
-    if not has_file and not has_mlflow:
+    artifact = load_configured_optimiser_artifact(cfg, base_dir)
+    if artifact is None:
         return dfs[0] if dfs else pl.LazyFrame()
 
     version_col = cfg.get("version_column", "__optimiser_version__")
     optimised_value_col = cfg.get("optimised_value_column", "")
     ratebook_input = cfg.get("ratebook_input", "")
     names = list(source_names) if source_names is not None else []
-
-    if source_type in ("run", "registered"):
-        from haute._optimiser_io import load_mlflow_optimiser_artifact
-
-        artifact = load_mlflow_optimiser_artifact(
-            source_type=source_type,
-            run_id=run_id,
-            registered_model=registered_model,
-            version=cfg.get("version", "latest"),
-        )
-    else:
-        from haute._optimiser_io import load_optimiser_artifact
-
-        artifact = load_optimiser_artifact(_resolve_artifact_path(artifact_path, base_dir))
 
     # Selection + dispatch live in _builders (widely re-exported); imported
     # lazily to keep this module free of an executor import cycle.
@@ -323,6 +465,7 @@ def assemble_output_from_config(
     source_names: list[str] | None = None,
     named_frames: dict[str, _Frame] | None = None,
     label: str | None = None,
+    schema_only: bool = False,
 ) -> _Frame:
     """Assemble an OUTPUT node's response document from its incoming frames.
 
@@ -344,6 +487,13 @@ def assemble_output_from_config(
     multi-frame OUTPUT requires the names to line up and fails loud.
     *named_frames* is the future kwarg-by-port executor binding (empty
     today); it wins over the positional reconstruction.
+
+    The returned frame always declares the document schema derived by
+    :func:`~haute._output_assembler.output_document_schema` — the single schema
+    authority — so the schema never depends on Python inference over the
+    assembled rows. Under *schema_only* (the caller declared it reads
+    ``collect_schema()`` and never collects) the document is not assembled at
+    all: an empty frame under that schema is returned.
     """
     cfg = _resolve_node_config(config, base_dir)
     mapping = cfg.get("outputMapping")
@@ -352,6 +502,7 @@ def assemble_output_from_config(
         OutputMappingSchemaError,
         assemble_output_from_mapping,
         is_active_mapping_entry,
+        output_document_schema,
     )
 
     if mapping is None:
@@ -375,5 +526,19 @@ def assemble_output_from_config(
             f"{sorted(missing)!r} that no incoming edge provides; available "
             f"frames: {sorted(frames.keys())!r}.",
         )
-    document = assemble_output_from_mapping(frames, mapping)
-    return pl.LazyFrame(document, infer_schema_length=None)
+    schema = output_document_schema(
+        {port: frame.lazy().collect_schema() for port, frame in frames.items()},
+        mapping,
+    )
+    if schema_only:
+        return pl.LazyFrame(schema=schema)
+
+    from haute._polars_utils import limited_python_scan
+
+    lazy_frames = {port: frame.lazy() for port, frame in frames.items()}
+
+    def produce(row_limit: int | None) -> pl.DataFrame:
+        document = assemble_output_from_mapping(lazy_frames, mapping, row_limit=row_limit)
+        return pl.DataFrame(document, schema=schema)
+
+    return limited_python_scan(produce, schema=schema)

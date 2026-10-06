@@ -68,7 +68,7 @@ def _simple_parquet(tmp_path: Path, data: dict | None = None) -> Path:
 
 def _trace_post(client, graph_dict: dict, **kwargs) -> Any:
     """POST to the trace endpoint and return the response."""
-    payload: dict[str, Any] = {"graph": graph_dict, **kwargs}
+    payload: dict[str, Any] = {"graph": graph_dict, "seed_plan": [], **kwargs}
     return client.post("/api/pipeline/trace", json=payload)
 
 
@@ -340,6 +340,8 @@ class TestResponseShape:
             "output_values",
             "topological_rank",
             "column_relevant",
+            "contributed_columns",
+            "derivations",
         ]
         for step in trace["steps"]:
             for field in step_fields:
@@ -583,11 +585,11 @@ class TestErrorHandling:
         body = resp.json()
         assert "detail" in body
 
-    def test_timeout_returns_504(self, client, tmp_path, monkeypatch):
+    def test_timeout_returns_504(self, client, tmp_path, monkeypatch, pipeline_settings):
         """If trace execution exceeds the timeout, return 504."""
         from unittest.mock import patch
 
-        monkeypatch.setenv("HAUTE_TRACE_TIMEOUT", "0.01")
+        pipeline_settings(pipeline_time_limit_minutes=0.01 / 60)
 
         p = _simple_parquet(tmp_path)
         code = "df = src.with_columns(z=pl.col('x') + 1)"

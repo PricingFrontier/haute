@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { render, screen, cleanup, fireEvent } from "@testing-library/react"
+import { render, screen, cleanup, fireEvent, within } from "@testing-library/react"
 import { ReactFlowProvider } from "@xyflow/react"
 import NodeSearch, {
   NODE_SEARCH_OVERSCAN_ROWS,
@@ -13,7 +13,6 @@ import { makeNode } from "../../test-utils/factories"
 // Mocks
 // ---------------------------------------------------------------------------
 
-const mockSetCenter = vi.fn()
 let mockNodes = [
   makeNode("n1", NODE_TYPES.DATA_INPUT, { data: { label: "Load Claims", nodeType: NODE_TYPES.DATA_INPUT, config: {} } }),
   makeNode("n2", NODE_TYPES.POLARS, { data: { label: "Clean Data", nodeType: NODE_TYPES.POLARS, config: {} }, position: { x: 200, y: 100 } }),
@@ -28,9 +27,6 @@ vi.mock("@xyflow/react", async () => {
   const actual = await vi.importActual("@xyflow/react")
   return {
     ...actual,
-    useReactFlow: () => ({
-      setCenter: mockSetCenter,
-    }),
     useNodes: () => mockNodes,
   }
 })
@@ -60,14 +56,26 @@ function renderSearch(overrides: Partial<{ onClose: () => void; onSelectNode: (i
 describe("NodeSearch", () => {
   afterEach(() => {
     cleanup()
-    mockSetCenter.mockClear()
     mockNodes = defaultMockNodes
   })
 
   it("renders the search dialog with input", () => {
     renderSearch()
-    expect(screen.getByRole("dialog")).toBeInTheDocument()
+    expect(screen.getByRole("dialog", { name: "Search pipeline nodes" })).toBeInTheDocument()
     expect(screen.getByPlaceholderText("Search nodes by name or type...")).toBeInTheDocument()
+  })
+
+  it("is a top-aligned modal that traps Tab inside the palette", () => {
+    renderSearch()
+    const dialog = screen.getByRole("dialog", { name: "Search pipeline nodes" })
+    expect(dialog).toHaveAttribute("aria-modal", "true")
+    expect(dialog).toHaveClass("items-start")
+
+    const input = screen.getByPlaceholderText("Search nodes by name or type...")
+    const results = within(dialog).getAllByRole("option")
+    results.at(-1)?.focus()
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Tab" })
+    expect(document.activeElement).toBe(input)
   })
 
   it("shows all nodes when query is empty", () => {
@@ -127,7 +135,6 @@ describe("NodeSearch", () => {
     fireEvent.keyDown(input, { key: "Enter" })
     expect(onSelectNode).toHaveBeenCalledWith("n1")
     expect(onClose).toHaveBeenCalledOnce()
-    expect(mockSetCenter).toHaveBeenCalledOnce()
   })
 
   it("navigates with arrow keys", () => {
@@ -230,7 +237,6 @@ describe("NodeSearch", () => {
 
     expect(onSelectNode).toHaveBeenCalledWith("node-75")
     expect(onClose).toHaveBeenCalledOnce()
-    expect(mockSetCenter).toHaveBeenCalledWith(850, 400, { zoom: 0.8, duration: 300 })
   })
 
   it("uses the measured list height when keyboard scrolling in a short viewport", () => {

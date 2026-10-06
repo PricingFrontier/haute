@@ -6,7 +6,6 @@ import ast
 import asyncio
 import importlib.util
 import json
-import subprocess
 import sys
 import threading
 from importlib.metadata import PackageNotFoundError, version
@@ -18,8 +17,10 @@ import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
+from haute._types import NodeType
 from haute.deploy._config import ContainerConfig, DeployConfig, ResolvedDeploy
 from haute.deploy._container import (
+    _SCORING_RUNTIME_DEPENDENCIES,
     DEFAULT_QUOTE_REQUEST_BODY_LIMIT_BYTES,
     DEFAULT_QUOTE_RESPONSE_ROW_LIMIT,
     ContainerBuildResult,
@@ -30,7 +31,6 @@ from haute.deploy._container import (
     _generate_dockerfile,
     _git_sha_short,
     _next_version,
-    _update_service,
     _validate_base_image,
     _validate_model_name,
     build_and_push_image,
@@ -50,6 +50,9 @@ from haute.deploy._utils import build_manifest as _build_manifest
 from haute.errors import DeployError
 from haute.graph_utils import GraphNode, NodeData, PipelineGraph
 from tests._deploy_helpers import make_resolved_deploy
+
+# Container builds pin price-contour from the package index; see the fixture.
+pytestmark = pytest.mark.usefixtures("released_price_contour")
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -137,11 +140,22 @@ class _FakeRequest:
             yield chunk
 
 
-def _dockerfile_pip_install_deps(dockerfile: str) -> list[str]:
+# haute's own dependency marker: the CPU-only XGBoost build except on macOS.
+_EXPECTED_XGBOOST = "xgboost" if sys.platform == "darwin" else "xgboost-cpu"
+
+
+def _dockerfile_install_lines(dockerfile: str) -> tuple[list[str], str]:
+    """The scoring-runtime requirements and the ``--no-deps`` haute requirement."""
     prefix = "RUN pip install --no-cache-dir "
     install_lines = [line for line in dockerfile.splitlines() if line.startswith(prefix)]
-    assert len(install_lines) == 1, "Dockerfile must contain one pip install command"
-    return install_lines[0].removeprefix(prefix).split()
+    assert len(install_lines) == 2, "Dockerfile installs the runtime, then haute"
+    runtime, haute = (line.removeprefix(prefix) for line in install_lines)
+    assert haute.startswith("--no-deps "), haute
+    return runtime.split(), haute.removeprefix("--no-deps ")
+
+
+def _dockerfile_pip_install_deps(dockerfile: str) -> list[str]:
+    return _dockerfile_install_lines(dockerfile)[0]
 
 
 # ---------------------------------------------------------------------------
@@ -329,7 +343,7 @@ class TestGenerateAppSource:
         )
         captured: dict[str, object] = {}
 
-        def reject_admission(*, operation: str, row_count: int):
+        def reject_admission(*, operation: str, row_count: int, profile=None):
             captured["operation"] = operation
             captured["row_count"] = row_count
             raise admission_error
@@ -338,6 +352,10 @@ class TestGenerateAppSource:
             raise AssertionError("Polars DataFrame should not be built before admission")
 
         monkeypatch.setattr(module, "admit_deploy_execution", reject_admission)
+        monkeypatch.setattr(
+            "haute.deploy._scorer.admit_deploy_execution",
+            reject_admission,
+        )
         monkeypatch.setattr(module.pl, "DataFrame", fail_dataframe)
 
         response = TestClient(module.app).post("/quote", json=[{"age": 30}, {"age": 31}])
@@ -346,6 +364,79 @@ class TestGenerateAppSource:
         assert response.json()["error_code"] == "memory_limit"
         assert response.json()["profile"] == "deploy_batch"
         assert captured == {"operation": "deploy_quote", "row_count": 2}
+
+    @pytest.mark.parametrize(
+        ("body", "expected_status", "expected_content"),
+        [
+            (
+                b"{not json",
+                422,
+                {
+                    "error_code": "invalid_json",
+                    "operation": "deploy_quote",
+                    "reason": "invalid_json",
+                },
+            ),
+            (
+                b'"not an object"',
+                400,
+                {"error": "Expected a JSON object or array of objects."},
+            ),
+            (
+                b"123",
+                400,
+                {"error": "Expected a JSON object or array of objects."},
+            ),
+            (
+                b"null",
+                400,
+                {"error": "Expected a JSON object or array of objects."},
+            ),
+            (
+                b"[]",
+                200,
+                None,
+            ),
+        ],
+    )
+    def test_quote_rejects_malformed_json_and_non_record_payloads(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        body: bytes,
+        expected_status: int,
+        expected_content: dict[str, object] | None,
+    ) -> None:
+        mock_score = MagicMock(return_value=pl.DataFrame({"premium": []}))
+        module = _load_generated_app(
+            tmp_path,
+            monkeypatch,
+            pl.DataFrame({"premium": [100.0]}),
+        )
+        monkeypatch.setattr(module, "score_graph", mock_score)
+
+        response = TestClient(module.app).post(
+            "/quote",
+            content=body,
+            headers={"content-type": "application/json"},
+        )
+
+        assert response.status_code == expected_status
+        if expected_status == 422:
+            data = response.json()
+            assert data["error_code"] == "invalid_json"
+            assert data["reason"] == "invalid_json"
+            assert "traceback" not in response.text.lower()
+            mock_score.assert_not_called()
+        elif expected_status == 400:
+            data = response.json()
+            assert data == expected_content
+            mock_score.assert_not_called()
+        elif expected_status == 200:
+            data = response.json()
+            assert data["rows"] == []
+            assert data["row_count"] == 0
+            mock_score.assert_called_once()
 
     def test_quote_maps_runtime_memory_failure_to_typed_507(
         self,
@@ -754,7 +845,7 @@ class TestGenerateAppSource:
 
         response = TestClient(module.app).post(
             "/quote",
-            json=[{"age": 30}, {"age": 31}],
+            json=[{"age": 30}],
             headers={"accept": "application/x-ndjson"},
         )
 
@@ -798,7 +889,7 @@ class TestGenerateAppSource:
 
         response = TestClient(module.app).post(
             "/quote",
-            json=[{"age": 30}, {"age": 31}],
+            json=[{"age": 30}],
             headers={"accept": "application/x-ndjson"},
         )
 
@@ -892,14 +983,58 @@ class TestGenerateDockerfile:
         resolved = _make_resolved()
         df = _generate_dockerfile("python:3.11-slim", 8080, resolved)
 
-        deps = _dockerfile_pip_install_deps(df)
+        deps, haute = _dockerfile_install_lines(df)
 
-        assert f"haute=={version('haute')}" in deps
+        assert haute == f"haute=={version('haute')}"
         assert f"polars=={version('polars')}" in deps
         assert f"fastapi=={version('fastapi')}" in deps
-        assert "haute" not in deps
         assert "polars" not in deps
         assert "fastapi" not in deps
+
+    def test_installs_haute_without_its_dependencies_and_the_scoring_runtime_only(
+        self,
+    ) -> None:
+        # DEP-R02: haute's own dependencies bring the assistant, tuning, editor
+        # and MLflow stacks; the image installs haute --no-deps plus a pinned
+        # scoring runtime instead.
+        df = _generate_dockerfile("python:3.11-slim", 8080, _make_resolved())
+
+        deps, haute = _dockerfile_install_lines(df)
+        names = {dep.split("==")[0].split("[")[0] for dep in deps}
+
+        assert haute == f"haute=={version('haute')}"
+        assert names == {name for name, _ in _SCORING_RUNTIME_DEPENDENCIES}
+        assert not names & {"anthropic", "openai", "optuna", "libcst", "mlflow", "tomlkit"}
+        assert df.index("--no-deps") > df.index(deps[0])
+
+    @pytest.mark.parametrize(("source_type", "needs_mlflow"), [("run", True), ("file", False)])
+    def test_an_mlflow_sourced_optimiser_apply_adds_mlflow(
+        self, source_type: str, needs_mlflow: bool
+    ) -> None:
+        # MLflow-sourced optimiser artefacts are loaded when the container runs.
+        resolved = make_resolved_deploy(
+            pipeline_file=Path("main.py"),
+            target="container",
+            container=ContainerConfig(base_image="python:3.11.9-slim"),
+            pruned_graph=PipelineGraph(
+                nodes=[
+                    GraphNode(
+                        id="apply",
+                        data=NodeData(
+                            label="apply",
+                            nodeType=NodeType.OPTIMISER_APPLY,
+                            config={"sourceType": source_type},
+                        ),
+                    )
+                ]
+            ),
+        )
+
+        deps = _dockerfile_pip_install_deps(
+            _generate_dockerfile("python:3.11-slim", 8080, resolved)
+        )
+
+        assert (f"mlflow=={version('mlflow')}" in deps) is needs_mlflow
 
     def test_fails_loudly_when_core_dependency_metadata_is_unavailable(
         self,
@@ -941,15 +1076,16 @@ class TestGenerateDockerfile:
 
     def test_extra_deps_follow_core_deps_in_sorted_order(self) -> None:
         resolved = _make_resolved(
-            artifacts={"sev.pkl": Path("sev.pkl"), "freq.cbm": Path("freq.cbm")}
+            artifacts={"sev.lgbm": Path("sev.lgbm"), "freq.cbm": Path("freq.cbm")}
         )
         df = _generate_dockerfile("python:3.11-slim", 8080, resolved)
 
         deps = _dockerfile_pip_install_deps(df)
 
-        assert deps[-2:] == [
+        assert deps[-3:] == [
             f"catboost=={version('catboost')}",
-            f"scikit-learn=={version('scikit-learn')}",
+            f"lightgbm=={version('lightgbm')}",
+            f"pandas=={version('pandas')}",
         ]
 
     def test_lgb_artifact_without_lightgbm_installed_fails_loudly(
@@ -991,21 +1127,65 @@ class TestDetectExtraDeps:
         resolved = _make_resolved(artifacts={"m.cbm": Path("m.cbm")})
         assert _detect_extra_deps(resolved) == ["catboost"]
 
-    def test_pkl_maps_to_sklearn(self) -> None:
-        resolved = _make_resolved(artifacts={"m.pkl": Path("m.pkl")})
-        assert _detect_extra_deps(resolved) == ["scikit-learn"]
+    @pytest.mark.parametrize("artifact", ["m.pkl", "m.pickle", "m.joblib"])
+    def test_a_pickle_brings_every_package_the_restricted_unpickler_allows(
+        self, artifact: str
+    ) -> None:
+        # The container unpickles with the same allowlist; every third-party
+        # package it names beyond the scoring runtime must be installed.
+        from haute._sandbox import _ALLOWED_PICKLE_CLASSES, _ALLOWED_PICKLE_GLOBALS
 
-    def test_pickle_maps_to_sklearn(self) -> None:
-        resolved = _make_resolved(artifacts={"m.pickle": Path("m.pickle")})
-        assert _detect_extra_deps(resolved) == ["scikit-learn"]
+        allowed = {module.partition(".")[0] for module, _ in _ALLOWED_PICKLE_CLASSES}
+        allowed |= {module.partition(".")[0] for module, _ in _ALLOWED_PICKLE_GLOBALS}
+        importable_from = {
+            "catboost": "catboost",
+            "interpret": "interpret-core",
+            "pandas": "pandas",
+            "sklearn": "scikit-learn",
+        }
+        in_runtime_or_stdlib = {"numpy", "polars", "joblib", *sys.stdlib_module_names}
+
+        assert allowed - in_runtime_or_stdlib == set(importable_from)
+        resolved = _make_resolved(artifacts={artifact: Path(artifact)})
+        assert _detect_extra_deps(resolved) == sorted(importable_from.values())
 
     def test_lgb_maps_to_lightgbm(self) -> None:
         resolved = _make_resolved(artifacts={"m.lgb": Path("m.lgb")})
         assert _detect_extra_deps(resolved) == ["lightgbm"]
 
-    def test_xgb_maps_to_xgboost(self) -> None:
+    def test_xgb_maps_to_the_installed_xgboost_distribution(self) -> None:
         resolved = _make_resolved(artifacts={"m.xgb": Path("m.xgb")})
-        assert _detect_extra_deps(resolved) == ["xgboost"]
+        assert _detect_extra_deps(resolved) == [_EXPECTED_XGBOOST]
+
+    def test_an_xgboost_model_pins_the_distribution_installed_here(self) -> None:
+        # haute depends on xgboost-cpu except on macOS; pinning reads installed
+        # metadata, so naming the wrong distribution fails Dockerfile generation.
+        resolved = _make_resolved(artifacts={"m.ubj": Path("m.ubj")})
+
+        deps = _dockerfile_pip_install_deps(
+            _generate_dockerfile("python:3.11-slim", 8080, resolved)
+        )
+
+        assert f"{_EXPECTED_XGBOOST}=={version(_EXPECTED_XGBOOST)}" in deps
+        assert f"pandas=={version('pandas')}" in deps
+
+    @pytest.mark.parametrize(
+        ("artifact", "expected"),
+        [
+            ("m.ubj", sorted([_EXPECTED_XGBOOST, "pandas"])),
+            ("m.lgbm", ["lightgbm", "pandas"]),
+            ("m.ebm", ["interpret-core", "pandas"]),
+            ("m.tboost", ["t-boost"]),
+            ("m.rsglm", ["rustystats"]),
+        ],
+    )
+    def test_each_haute_model_family_brings_its_engine(
+        self, artifact: str, expected: list[str]
+    ) -> None:
+        # haute is installed --no-deps, so every exported model format must name
+        # the engine that loads it (and pandas where haute's encoding needs it).
+        resolved = _make_resolved(artifacts={artifact: Path(artifact)})
+        assert _detect_extra_deps(resolved) == expected
 
     def test_onnx_maps_to_onnxruntime(self) -> None:
         resolved = _make_resolved(artifacts={"m.onnx": Path("m.onnx")})
@@ -1024,10 +1204,10 @@ class TestDetectExtraDeps:
             artifacts={
                 "freq.cbm": Path("freq.cbm"),
                 "sev.cbm": Path("sev.cbm"),
-                "scaler.pkl": Path("scaler.pkl"),
+                "glm.rsglm": Path("glm.rsglm"),
             }
         )
-        assert _detect_extra_deps(resolved) == ["catboost", "scikit-learn"]
+        assert _detect_extra_deps(resolved) == ["catboost", "rustystats"]
 
     def test_case_insensitive(self) -> None:
         resolved = _make_resolved(artifacts={"Model.CBM": Path("Model.CBM")})
@@ -1170,38 +1350,14 @@ class TestCheckDockerAvailableExtra:
 
 
 # ---------------------------------------------------------------------------
-# _git_sha_short (additional: CalledProcessError path)
+# _git_sha_short (additional: failed git command path)
 # ---------------------------------------------------------------------------
 
 
 class TestGitShaShortExtra:
-    def test_returns_local_on_called_process_error(self) -> None:
-        with patch("haute.deploy._container.subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.CalledProcessError(1, "git")
+    def test_returns_local_when_the_git_command_fails(self) -> None:
+        with patch("haute.deploy._container._run_git_ok", return_value=(False, "")):
             assert _git_sha_short() == "local"
-
-
-# ---------------------------------------------------------------------------
-# _update_service
-# ---------------------------------------------------------------------------
-
-
-class TestUpdateService:
-    @pytest.mark.parametrize(
-        "target",
-        ["azure-container-apps", "aws-ecs", "gcp-run", "container"],
-    )
-    def test_raises_not_implemented_for_all_targets(self, target: str) -> None:
-        resolved = _make_resolved(target=target)
-        with pytest.raises(NotImplementedError, match="not yet implemented"):
-            _update_service(target, "img:tag", resolved)
-
-    def test_error_message_contains_target_and_image(self) -> None:
-        with pytest.raises(NotImplementedError) as exc_info:
-            _update_service("gcp-run", "myregistry/model:v1", MagicMock())
-        msg = str(exc_info.value)
-        assert "gcp-run" in msg
-        assert "myregistry/model:v1" in msg
 
 
 # ---------------------------------------------------------------------------
@@ -1385,9 +1541,10 @@ class TestBuildAndPushImage:
         manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
         assert manifest["container_dependencies"] == [
             f"haute=={version('haute')}",
-            f"polars=={version('polars')}",
-            f"fastapi=={version('fastapi')}",
-            f"uvicorn[standard]=={version('uvicorn')}",
+            *(
+                f"{install_name}=={version(distribution)}"
+                for distribution, install_name in _SCORING_RUNTIME_DEPENDENCIES
+            ),
             f"catboost=={version('catboost')}",
         ]
 
@@ -1522,86 +1679,57 @@ class TestDeployToContainer:
 
 
 class TestDeployToPlatformContainer:
-    """Tests for deploy_to_platform_container()."""
+    """Build-and-push-only platform targets finish after the push."""
 
-    @patch("haute.deploy._container._update_service")
-    @patch("haute.deploy._container.build_and_push_image")
-    def test_calls_update_service(
-        self, mock_build: MagicMock, mock_update: MagicMock, tmp_path: Path
-    ) -> None:
-        mock_build.return_value = ContainerBuildResult(
-            image_tag="registry/model:abc",
+    @staticmethod
+    def _built(tmp_path: Path) -> ContainerBuildResult:
+        return ContainerBuildResult(
+            image_tag="registry.example/test-model:abc",
             manifest_path=tmp_path / "manifest.json",
             build_dir=tmp_path,
             model_name="test-model",
             model_version=1,
         )
-        mock_update.return_value = "https://my-service.example.com"
 
-        resolved = _make_resolved(target="azure-container-apps")
-        result = deploy_to_platform_container(resolved)
-
-        assert isinstance(result, DeployResult)
-        assert result.endpoint_url == "https://my-service.example.com"
-        assert result.model_uri == "registry/model:abc"
-        mock_update.assert_called_once_with("azure-container-apps", "registry/model:abc", resolved)
-
-    @patch("haute.deploy._container._update_service")
+    @pytest.mark.parametrize("target", ["azure-container-apps", "aws-ecs", "gcp-run"])
     @patch("haute.deploy._container.build_and_push_image")
-    def test_handles_not_implemented_error(
-        self, mock_build: MagicMock, mock_update: MagicMock, tmp_path: Path
+    def test_returns_the_pushed_image_and_reports_the_manual_update(
+        self, mock_build: MagicMock, target: str, tmp_path: Path
     ) -> None:
-        mock_build.return_value = ContainerBuildResult(
-            image_tag="registry/model:abc",
-            manifest_path=tmp_path / "manifest.json",
-            build_dir=tmp_path,
-            model_name="test-model",
-            model_version=1,
+        mock_build.return_value = self._built(tmp_path)
+        resolved = _make_resolved(
+            target=target,
+            container=ContainerConfig(base_image="python:3.11.9-slim", registry="registry.example"),
         )
-        mock_update.side_effect = NotImplementedError("not yet implemented")
-
-        resolved = _make_resolved(target="aws-ecs")
-        with pytest.raises(NotImplementedError, match="not yet implemented"):
-            deploy_to_platform_container(resolved)
-
-    @patch("haute.deploy._container._update_service")
-    @patch("haute.deploy._container.build_and_push_image")
-    def test_progress_callback_reports_service_update(
-        self, mock_build: MagicMock, mock_update: MagicMock, tmp_path: Path
-    ) -> None:
-        mock_build.return_value = ContainerBuildResult(
-            image_tag="registry/model:abc",
-            manifest_path=tmp_path / "manifest.json",
-            build_dir=tmp_path,
-            model_name="test-model",
-            model_version=1,
-        )
-        mock_update.return_value = None
-
         messages: list[str] = []
-        resolved = _make_resolved(target="gcp-run")
+
         result = deploy_to_platform_container(resolved, progress=messages.append)
 
-        assert any("gcp-run" in m.lower() for m in messages)
+        assert isinstance(result, DeployResult)
+        assert result.model_uri == "registry.example/test-model:abc"
         assert result.endpoint_url is None
-
-    @patch("haute.deploy._container._update_service")
-    @patch("haute.deploy._container.build_and_push_image")
-    def test_no_url_returned_message(
-        self, mock_build: MagicMock, mock_update: MagicMock, tmp_path: Path
-    ) -> None:
-        """When _update_service returns None, progress shows '(no URL returned)'."""
-        mock_build.return_value = ContainerBuildResult(
-            image_tag="registry/model:abc",
-            manifest_path=tmp_path / "manifest.json",
-            build_dir=tmp_path,
-            model_name="test-model",
-            model_version=1,
+        mock_build.assert_called_once_with(resolved, messages.append)
+        assert messages[-1] == (
+            f"Service not updated: updating {target} is not implemented yet. "
+            "Point the service at registry.example/test-model:abc."
         )
-        mock_update.return_value = None
 
-        messages: list[str] = []
-        resolved = _make_resolved(target="gcp-run")
-        deploy_to_platform_container(resolved, progress=messages.append)
+    @patch("haute.deploy._container.build_and_push_image")
+    def test_requires_a_registry_before_building(self, mock_build: MagicMock) -> None:
+        resolved = _make_resolved(target="aws-ecs")
 
-        assert any("no URL returned" in m for m in messages)
+        with pytest.raises(DeployError, match=r"needs a registry.*\[deploy\.container\] registry"):
+            deploy_to_platform_container(resolved)
+
+        mock_build.assert_not_called()
+
+    @patch("haute.deploy._container.build_and_push_image")
+    def test_a_failed_push_fails_the_deploy(self, mock_build: MagicMock) -> None:
+        mock_build.side_effect = DeployError("docker push failed")
+        resolved = _make_resolved(
+            target="gcp-run",
+            container=ContainerConfig(base_image="python:3.11.9-slim", registry="registry.example"),
+        )
+
+        with pytest.raises(DeployError, match="docker push failed"):
+            deploy_to_platform_container(resolved)

@@ -8,9 +8,11 @@ from pathlib import Path
 import pytest
 
 from haute._api_input_schema import ApiInputSchemaError, is_json_api_input_path
-from haute._json_shred._cache import build_per_port_cache, load_per_port_cache
+from haute._json_shred._cache import load_v2_api_source
 from haute._json_shred._inference import infer_v2_schema_from_data
 from haute._json_shred._records import _iter_xml_records, _xml_element_value, _xml_local_name
+from haute._sandbox import _get_project_root, set_project_root
+from tests.conftest import build_test_api_input_snapshots
 
 
 def test_xml_routes_through_structured_api_input_codec(tmp_path) -> None:
@@ -34,8 +36,16 @@ def test_xml_routes_through_structured_api_input_codec(tmp_path) -> None:
         "$[:].premium",
     }
 
-    build_per_port_cache(data_path, inferred, tmp_path / "cache")
-    frame = load_per_port_cache(tmp_path / "cache", inferred)[root["label"]].collect()
+    config = {"path": str(data_path), "contract": "opaque", **inferred}
+    original_root = _get_project_root()
+    set_project_root(tmp_path)
+    try:
+        build_test_api_input_snapshots(data_path, config)
+        frame = load_v2_api_source(str(data_path), config, read_snapshots=True)[
+            root["label"]
+        ].collect()
+    finally:
+        set_project_root(original_root)
     assert frame.to_dicts() == [
         {"id": "1", "premium": "12.50"},
         {"id": "2", "premium": "18.75"},

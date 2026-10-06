@@ -8,6 +8,7 @@ import pytest
 
 from haute._types import NodeType
 from haute.parser import parse_pipeline_file
+from tests._source_files import source_files
 
 
 def _find_pipeline_files() -> list[Path]:
@@ -17,7 +18,7 @@ def _find_pipeline_files() -> list[Path]:
         return []
     return [
         f
-        for f in fixtures_dir.rglob("*.py")
+        for f in source_files(fixtures_dir)
         if f.name != "__init__.py" and "haute.Pipeline" in f.read_text()
     ]
 

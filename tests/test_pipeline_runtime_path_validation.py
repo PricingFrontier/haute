@@ -29,6 +29,7 @@ from haute.schemas import (
     TrainEstimateRequest,
     TrainRequest,
 )
+from tests.conftest import current_source_revision
 
 
 @pytest.fixture(autouse=True)
@@ -624,12 +625,20 @@ def test_case_only_rename_single_surviving_inode_holds_new_bytes(
         assert old.read_text(encoding="utf-8") == '{"path": "old.csv"}'
 
 
-def _submodel_save_request(graph: PipelineGraph) -> SavePipelineRequest:
+def _submodel_save_request(
+    graph: PipelineGraph,
+    *,
+    project_root: Path | None = None,
+    base_revision: str | None = None,
+) -> SavePipelineRequest:
+    if base_revision is None and project_root is not None:
+        base_revision = current_source_revision(project_root / "main.py", project_root)
     return SavePipelineRequest(
         name="main",
         description="",
         graph=graph,
         source_file="main.py",
+        base_revision=base_revision,
     )
 
 
@@ -691,7 +700,7 @@ def _run_submodel_save(
         ),
         patch("haute.discovery.discover_pipelines", return_value=[parent]),
     ):
-        svc.save(_submodel_save_request(submitted_graph))
+        svc.save(_submodel_save_request(submitted_graph, project_root=tmp_path))
 
 
 def test_case_only_module_rename_preserves_newly_written_module(tmp_path: Path) -> None:
@@ -722,6 +731,32 @@ def test_case_only_module_rename_preserves_newly_written_module(tmp_path: Path) 
         # Case-sensitive filesystem: the skip leaves the old casing behind
         # as residue with its old bytes — same trade-off as the stale diff.
         assert old.read_text(encoding="utf-8") == "# old module\n"
+
+
+def test_precondition_digest_is_found_by_file_identity_not_path_spelling(tmp_path: Path) -> None:
+    """The drift guard resolves a recorded digest by device and inode.
+
+    A case-insensitive filesystem hands the guard a spelling the precondition
+    never recorded, and macOS ``Path.resolve`` keeps that spelling rather than
+    the on-disk name. Recorded paths that have since vanished are stepped over,
+    and a file nothing recorded reads as absent when the precondition ran.
+    """
+    from haute.routes._save_pipeline import _recorded_digest_for_same_file
+
+    recorded = tmp_path / "module.py"
+    recorded.write_text("# recorded\n", encoding="utf-8")
+    vanished = tmp_path / "gone.py"
+    identities: dict[str, str | None] = {
+        str(vanished): "digest-of-a-file-since-removed",
+        str(recorded): "recorded-digest",
+    }
+
+    assert _recorded_digest_for_same_file(recorded, identities) == "recorded-digest"
+
+    unrecorded = tmp_path / "other.py"
+    unrecorded.write_text("# other\n", encoding="utf-8")
+    assert _recorded_digest_for_same_file(unrecorded, identities) is None
+    assert _recorded_digest_for_same_file(vanished, identities) is None
 
 
 def test_derived_module_removal_deletes_owned_file(tmp_path: Path) -> None:

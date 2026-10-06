@@ -53,6 +53,7 @@ vi.mock("../../stores/useUIStore.ts", () => {
     setShortcutsOpen: vi.fn(),
     submodelDialog: null,
     setSubmodelDialog: vi.fn(),
+    setChangeFocus: vi.fn(),
     renameDialog: null,
     setRenameDialog: vi.fn(),
   }
@@ -158,7 +159,7 @@ const readyNode: Node = {
   data: { label: "Disk", nodeType: "polars", config: {} },
 }
 
-describe("useWebSocketSync — partial failure rolls back consistently (#37)", () => {
+describe("useWebSocketSync - partial failure rolls back consistently (#37)", () => {
   let originalWebSocket: typeof globalThis.WebSocket
 
   beforeEach(() => {

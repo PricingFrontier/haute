@@ -26,18 +26,13 @@ export function optimiserResultSavePath(nodeLabel: string, nodeId: string): stri
 }
 
 /**
- * Decide whether an absolute constraint is met given its threshold type and
- * observed value.  Used by both `SummaryTab` (to tint
- * the constraint row green/red) and `DetailCard` (to summarise the
- * selected frontier point).
+ * Why a point reply cannot be shown: the server answered for another frontier
+ * generation than the result on screen (it recomputed since, and the node has
+ * not installed that recompute). A recompute reuses point indices for other
+ * points, so the reply describes a different point and is never kept.
  */
-export function isConstraintMet(
-  thresholdType: string,
-  _ratio: number,
-  absValue: number,
-  thresholdVal: number,
-): boolean {
-  if (thresholdType === "min") return absValue >= thresholdVal
-  if (thresholdType === "max") return absValue <= thresholdVal
-  return false
+export function frontierGenerationMismatch(answered: number, shown: number): string | null {
+  return answered === shown
+    ? null
+    : `The server answered for frontier generation ${answered}, but this result shows generation ${shown}.`
 }

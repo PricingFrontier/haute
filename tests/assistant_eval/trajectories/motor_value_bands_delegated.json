@@ -1,0 +1,158 @@
+{
+  "schema_version": 1,
+  "id": "motor_value_bands_delegated",
+  "case": "motor_value_bands_delegated",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "config",
+              "tool": "inspect_node",
+              "arguments": {
+                "node": "rating_bands",
+                "parts": [
+                  "config"
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "dry",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Band vehicle_value_k into three value bands in rating_bands.",
+                "ops": [
+                  {
+                    "op": "update_node",
+                    "node": "rating_bands",
+                    "config": {
+                      "factors": [
+                        {
+                          "banding": "breakpoints",
+                          "column": "driver_age",
+                          "outputColumn": "age_band",
+                          "rules": [
+                            {
+                              "boundary": "24",
+                              "label": "17-24"
+                            },
+                            {
+                              "boundary": "59",
+                              "label": "25-59"
+                            },
+                            {
+                              "boundary": "",
+                              "label": "60+"
+                            }
+                          ],
+                          "default": "unknown"
+                        },
+                        {
+                          "banding": "breakpoints",
+                          "column": "inception_date",
+                          "outputColumn": "inception_year",
+                          "rules": [
+                            {
+                              "boundary": "2024-12-31",
+                              "label": "2024"
+                            },
+                            {
+                              "boundary": "",
+                              "label": "2025+"
+                            }
+                          ],
+                          "default": "unknown"
+                        },
+                        {
+                          "banding": "categorical",
+                          "column": "region_code",
+                          "outputColumn": "region",
+                          "rules": [
+                            {
+                              "value": "NE",
+                              "assignment": "North"
+                            },
+                            {
+                              "value": "NW",
+                              "assignment": "North"
+                            },
+                            {
+                              "value": "SE",
+                              "assignment": "South"
+                            },
+                            {
+                              "value": "LON",
+                              "assignment": "London"
+                            }
+                          ],
+                          "default": "Other"
+                        },
+                        {
+                          "banding": "breakpoints",
+                          "column": "vehicle_value_k",
+                          "outputColumn": "value_band",
+                          "rules": [
+                            {
+                              "boundary": "5",
+                              "label": "up to 5k"
+                            },
+                            {
+                              "boundary": "15",
+                              "label": "5k-15k"
+                            },
+                            {
+                              "boundary": "",
+                              "label": "over 15k"
+                            }
+                          ],
+                          "default": "unknown"
+                        }
+                      ]
+                    }
+                  }
+                ],
+                "assumptions": [
+                  "Breakpoints at 5 and 15 thousand split the batch's vehicle values into low, mid and high bands."
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "dry.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "Saved the change.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

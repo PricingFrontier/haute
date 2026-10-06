@@ -1,38 +1,43 @@
-"""Process-wide value cache gated on a backing file's ``(mtime_ns, size)``.
+"""Process-wide value cache gated on a backing file's freshness token.
 
-Shares the invalidation discipline of
-:func:`haute.execution._stat_gated_runtime_path_fingerprint`: a cached
-value is reused while the backing file's ``(st_mtime_ns, st_size)`` is
-unchanged; any metadata change reloads. One slot per key is replaced when
-the stat gate changes, and least-recently-used slots are evicted at the
-configured entry bound.
+A cached value is reused while the backing file's freshness token, observed
+through :func:`haute._json_shred._source_proof.observe_freshness`, is
+unchanged; any write moves the token and reloads. The token is the file's
+native revision where the platform has one, and otherwise its stat, trusted
+only once the file has settled; a younger file without a native revision is
+loaded on every call and never cached. One slot per key is replaced when the
+token changes, and least-recently-used slots are evicted at the configured
+entry bound (a :class:`haute._lru_cache.LRUCache`).
 
 Concurrency: the first load for a key runs under a per-key lock — other
 callers arriving during that load wait and then reuse the cached value,
-so a thundering herd performs exactly one disk load (single flight).
+so a thundering herd performs exactly one disk load (single flight). A lock
+with no waiter left is dropped. A forked child starts with fresh locks and
+an empty cache.
 
 Failure semantics (fail loud, never cache garbage):
 
-* stat errors propagate — a missing/unreadable file fails the caller;
+* observation errors propagate — a missing/unreadable file fails the caller;
 * loader exceptions propagate and nothing is cached, so the next call
   retries against the (possibly repaired) file;
-* a stat gate that moves during the load is a torn read — retried once
-  against the fresh gate, then raised as :class:`RuntimeError`.
+* a token that moves during the load is a torn read — retried once against
+  the fresh token, then raised as
+  :class:`~haute._json_shred._source_proof.SourceChangedError`.
 
-A rewrite that changes bytes while preserving both ``mtime_ns`` and
-``size`` is below the gate's resolution (the documented
-``GraphFingerprintMemo`` trade).  Cached values are shared across
-threads and must be treated as immutable by callers.
+Cached values are shared across threads and must be treated as immutable by
+callers.
 """
 
 from __future__ import annotations
 
 import os
 import threading
-from collections import OrderedDict
 from collections.abc import Callable, Hashable
 from pathlib import Path
 from typing import Generic, TypeVar
+
+from haute._json_shred._source_proof import SourceChangedError, observe_freshness
+from haute._lru_cache import LRUCache
 
 K = TypeVar("K", bound=Hashable)
 V = TypeVar("V")
@@ -62,7 +67,6 @@ def resolve_artifact_path(path: str | Path) -> str:
 def artifact_cache_key(path: str | Path) -> str:
     """Canonical cache-KEY string for a filesystem artifact path.
 
-    Mirrors :func:`haute._json_flatten._path_hash`'s canonicalisation:
     :func:`resolve_artifact_path` plus ``os.path.normcase``, which folds
     case where the OS convention is case-insensitive (Windows).  The folded
     string is a KEY ONLY — it must never be used for stat or I/O, where the
@@ -70,15 +74,14 @@ def artifact_cache_key(path: str | Path) -> str:
     spelling need not exist on a case-sensitive filesystem).  Residual:
     ``normcase`` is a no-op on POSIX, so on macOS (case-insensitive
     filesystem, case-preserving API) two case spellings of one file can
-    still occupy two slots — the same accepted posture as the JSON cache;
-    the cost is memory residue only, and Windows (where ``normcase`` folds)
+    still occupy two slots; the cost is memory residue only, and Windows (where ``normcase`` folds)
     is fully covered.
     """
     return os.path.normcase(resolve_artifact_path(path))
 
 
 class StatGatedCache(Generic[K, V]):
-    """Bounded, single-flight, stat-gated cache of loaded file artifacts."""
+    """Bounded, single-flight, freshness-gated cache of loaded file artifacts."""
 
     def __init__(
         self,
@@ -90,71 +93,58 @@ class StatGatedCache(Generic[K, V]):
             raise ValueError("max_entries must be a positive integer")
         self._artifact_kind = artifact_kind
         self._max_entries = max_entries
+        self._reset_process_state()
+
+    def _reset_process_state(self) -> None:
+        # Replace, never acquire: after a fork another thread may have held them.
+        self._process_id = os.getpid()
         self._lock = threading.Lock()
-        self._entries: OrderedDict[K, tuple[int, int, V]] = OrderedDict()
+        self._entries: LRUCache[K, tuple[Hashable, V]] = LRUCache(max_size=self._max_entries)
         self._load_locks: dict[K, _LoadGate] = {}
 
     def get_or_load(self, key: K, path: str, loader: Callable[[], V]) -> V:
-        """Return the cached value for *key*, loading at most once per gate.
+        """Return the cached value for *key*, loading at most once per token.
 
-        The gate is ``(st_mtime_ns, st_size)`` of *path* stat'd before the
-        load; after a load the file is stat'd again and the value is only
-        cached (and returned) if the gate held.
+        The token of *path* is observed before the load and again after it;
+        the value is cached (and returned) only if the token held, and only
+        while the token is reusable.
         """
+        if os.getpid() != self._process_id:
+            self._reset_process_state()
         for _ in range(2):
-            stat_result = Path(path).stat()
-            gate = (stat_result.st_mtime_ns, stat_result.st_size)
+            before = observe_freshness(Path(path))
+            entry = self._entries.get(key) if before.reusable else None
+            if entry is not None and entry[0] == before.token:
+                return entry[1]
             with self._lock:
-                entry = self._entries.get(key)
-                if entry is not None and (entry[0], entry[1]) == gate:
-                    self._entries.move_to_end(key)
-                    return entry[2]
                 load_gate = self._load_locks.setdefault(key, _LoadGate())
                 load_gate.participants += 1
             try:
                 with load_gate.lock:
-                    # Re-check: the load that held this lock while we waited
-                    # has already populated the cache for this gate.
-                    with self._lock:
-                        entry = self._entries.get(key)
-                        if entry is not None and (entry[0], entry[1]) == gate:
-                            self._entries.move_to_end(key)
-                            return entry[2]
-                    value = loader()
-                    after = Path(path).stat()
-                    if (after.st_mtime_ns, after.st_size) != gate:
+                    # Observe again: the file may have moved while this caller
+                    # waited, and the load that held the gate may already have
+                    # cached the value for the token the file has now.
+                    before = observe_freshness(Path(path))
+                    entry = self._entries.get(key) if before.reusable else None
+                    if entry is not None and entry[0] == before.token:
+                        return entry[1]
+                    loaded = loader()
+                    if observe_freshness(Path(path)).token != before.token:
                         continue
-                    with self._lock:
-                        self._entries[key] = (gate[0], gate[1], value)
-                        self._entries.move_to_end(key)
-                        while len(self._entries) > self._max_entries:
-                            evicted_key, _ = self._entries.popitem(last=False)
-                            evicted_gate = self._load_locks.get(evicted_key)
-                            if evicted_gate is not None and evicted_gate.participants == 0:
-                                del self._load_locks[evicted_key]
-                    return value
+                    if before.reusable:
+                        self._entries.put(key, (before.token, loaded))
+                    return loaded
             finally:
                 with self._lock:
                     load_gate.participants -= 1
-                    if (
-                        load_gate.participants == 0
-                        and self._load_locks.get(key) is load_gate
-                        and key not in self._entries
-                    ):
+                    if load_gate.participants == 0 and self._load_locks.get(key) is load_gate:
                         del self._load_locks[key]
-        raise RuntimeError(f"{self._artifact_kind} changed on disk while loading: {path}")
+        raise SourceChangedError(f"{self._artifact_kind} changed on disk while loading: {path}")
 
     def __len__(self) -> int:
         """Return the number of retained cache entries."""
-        with self._lock:
-            return len(self._entries)
+        return len(self._entries)
 
     def clear(self) -> None:
-        """Drop cached entries and idle gates without splitting an active flight."""
-        with self._lock:
-            self._entries.clear()
-            self._load_locks = {
-                key: load_gate
-                for key, load_gate in self._load_locks.items()
-                if load_gate.participants
-            }
+        """Drop cached entries; an active load keeps its gate."""
+        self._entries.clear()

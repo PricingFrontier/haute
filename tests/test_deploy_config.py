@@ -24,6 +24,7 @@ from haute.deploy._config import (
     _apply_env_overrides,
     _validate_toml_keys,
 )
+from haute.deploy._project_modules import ProjectModules
 from haute.deploy._validators import validate_deploy
 
 
@@ -350,6 +351,27 @@ class TestValidateTomlKeys:
         with pytest.raises(ValueError, match=r"unknown top-level section \[bogus\]"):
             _validate_toml_keys(data, tmp_path / "haute.toml")
 
+    def test_mlflow_section_is_recognised(self, tmp_path: Path) -> None:
+        # [mlflow] is owned by the MLflow settings endpoint, not deploy, but
+        # deploy's whole-file validation must accept the file it writes.
+        data = {
+            "project": {"name": "foo"},
+            "mlflow": {"tracking_uri": "http://localhost:5000", "folder": "team-runs"},
+        }
+        _validate_toml_keys(data, tmp_path / "haute.toml")
+
+    def test_unknown_key_in_mlflow_section_is_rejected(self, tmp_path: Path) -> None:
+        data = {"mlflow": {"folder": "mlruns", "experiment": "nope"}}
+        with pytest.raises(ValueError, match=r"\[mlflow\] unknown key 'experiment'"):
+            _validate_toml_keys(data, tmp_path / "haute.toml")
+
+    def test_retired_mlflow_mode_key_is_rejected(self, tmp_path: Path) -> None:
+        # The [mlflow] table is a destination inventory; the old single-mode key
+        # must fail loudly rather than be accepted and ignored.
+        data = {"mlflow": {"mode": "local", "folder": "mlruns"}}
+        with pytest.raises(ValueError, match=r"\[mlflow\] unknown key 'mode'"):
+            _validate_toml_keys(data, tmp_path / "haute.toml")
+
     def test_unknown_key_in_project(self, tmp_path: Path) -> None:
         data = {"project": {"name": "foo", "unknown_key": "bar"}}
         with pytest.raises(ValueError, match=r"\[project\] unknown key 'unknown_key'"):
@@ -415,6 +437,7 @@ def _make_resolved(
         artifacts=artifacts or {},
         input_schema=input_schema or {"col": "float"},
         output_schema=output_schema or {"result": "float"},
+        project_modules=ProjectModules(utility=None, unbundled_imports=()),
     )
 
 

@@ -24,7 +24,7 @@ import {
 
 // ─── parse_path acceptance / §3 rejection (mirror of backend probe) ──
 
-describe("parsePath — acceptance grammar (§2.2)", () => {
+describe("parsePath - acceptance grammar (§2.2)", () => {
   // Anchored to the verified backend `parse_path` output.
   const ACCEPT = [
     "$[:].a",
@@ -46,7 +46,7 @@ describe("parsePath — acceptance grammar (§2.2)", () => {
 
 })
 
-describe("parsePath — §3 forbidden set rejected (mirror of backend probe)", () => {
+describe("parsePath - §3 forbidden set rejected (mirror of backend probe)", () => {
   const REJECT = [
     "$[*]", // wildcard
     "$[:].a[*]", // wildcard after name
@@ -81,7 +81,7 @@ describe("parsePath — §3 forbidden set rejected (mirror of backend probe)", (
 
 // ─── parseDataPath — INPUT mode (mirror of backend probe) ────────────
 
-describe("parseDataPath — INPUT mode", () => {
+describe("parseDataPath - INPUT mode", () => {
   it("bare root with allowRoot → zero segments (table root level)", () => {
     const r = parseDataPath("$[:]", { allowRoot: true })
     expect(r.segments).toEqual([])
@@ -115,7 +115,7 @@ describe("parseDataPath — INPUT mode", () => {
 
 // ─── INPUT table / column validators ─────────────────────────────────
 
-describe("validateInputTablePath — ends at an array or the root", () => {
+describe("validateInputTablePath - ends at an array or the root", () => {
   it.each(["$[:]", "$[:].drivers[:]", "$[:].proposer.claims[:]"])(
     "accepts %s",
     (p) => expect(validateInputTablePath(p)).toBeNull(),
@@ -130,7 +130,7 @@ describe("validateInputTablePath — ends at an array or the root", () => {
   )
 })
 
-describe("validateInputColumnPath — names a leaf", () => {
+describe("validateInputColumnPath - names a leaf", () => {
   it.each([
     "$[:].quote_id",
     "$[:].quote_metadata.quote_id",

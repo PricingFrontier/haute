@@ -4,11 +4,11 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/parser.py` | Strict public entry points `parse_pipeline_file` / `parse_submodel_file` / `parse_pipeline_source`. Orchestrates AST metadata/node/edge extraction, submodel resolution + merge, conservation, and graph-shape validation for valid pipeline source; whole-file syntax errors raise contextual `ParseError`. |
+| `src/haute/parser.py` | Strict public entry points `parse_pipeline_file` / `parse_submodel_file` / `parse_pipeline_source`. Orchestrates AST metadata/node/edge extraction, submodel resolution + merge, conservation, and graph-shape validation for valid pipeline source; whole-file syntax errors raise contextual `ParseError`. `load_declared_global_constants` loads the global constants file a constructor declares, through an injected byte reader when editor recovery supplies its capture, and returns the reason instead of failing when the file is missing, unreadable, invalid or outside the pipeline folder; the parser records it as `global_constants_error` and in the graph warning. |
 | `src/haute/_parser_conservation.py` | Strict fail-loud acceptance gate. Verifies that parsed root node IDs, ordered edge/handle identities, submodel references, and cross-boundary endpoints conserve the authored structure; also builds the deterministic missing-submodel diagnostic. |
-| `src/haute/_parser_regex.py` | Neutral syntax-recovery discovery. `recover_pipeline_fragments` locates pipeline metadata, `@pipeline.<type>` function fragments, `pipeline.connect()` declarations, and `pipeline.submodel()` registrations textually, re-parsing individual fragments with `ast` where possible. It never constructs canonical graph models. |
-| `src/haute/_parser_submodels.py` | `extract_submodel_registrations` / `parse_submodel_source` / `merge_submodels`: resolves explicit `pipeline.submodel("path", ...)` registrations, parses each referenced submodel file into its own `PipelineGraph`, and merges canonical occurrences into the parent (hierarchical or flattened). |
-| `src/haute/_expression_parser.py` | `parse_expression` / `evaluate_expression` / `parse_expression_chain` and their supporting classes: AST-based conversion of a Polars with-columns expression to human-readable text (`_ExprConverter`) and to a concrete, Polars-mirroring value (`_ExprEvaluator` / `_BranchTrackingEvaluator`). |
+| `src/haute/_parser_bindings.py` | Strict parameter binding gate (`assert_polars_parameters_bound`): every parsed Polars node's positional parameters must equal its connected executable input names after `inputMapping`, in parent files and definition files (public input ports bind the sanitised port ID); any other shape is a `ParseError` with `unbound_parameters`, `unconsumed_inputs`, `connected_inputs` and `remediation` (F13). |
+| `src/haute/_parser_submodels.py` | `extract_submodel_registrations` / `parse_submodel_source` / `merge_submodels`: resolves explicit `pipeline.submodel("path", ...)` registrations, parses each referenced submodel file into its own `PipelineGraph` (`_validate_pipeline_dir` checks the constructor's way back to the pipeline against where the file sits), and merges canonical occurrences into the parent (hierarchical or flattened). |
+| `src/haute/_expression_parser.py` | `parse_expression` / `evaluate_expression` / `parse_expression_chain` and their supporting classes: AST-based conversion of a Polars with-columns expression to human-readable text (`_ExprConverter`), and Polars evaluation of the located expression on the traced row (`_locate_defining_expression`, `_row_value`, `_branch_selection`). `evaluate_expression` shows each scalar global constant the formula reads (a date as `pl.date(...)`) as its value, never touching quoted text, and inlines it before evaluation (`_global_constant_values`, `_inline_global_constants`); `parse_expression` never counts `global_constants.<name>` as a referenced column. |
 
 ## Key types and data structures
 
@@ -18,25 +18,35 @@
   `referenced_columns: list[str]`, `constants: list[Any]`, `sub_expressions: list[ParsedExpression]`
   (nested conditionals inside a `then`/`otherwise` arm), `source_line: int | None`.
 - **`EvaluatedExpression`** (dataclass, extends `ParsedExpression`) — adds `substituted_text`,
-  `result_value`, `input_values: dict[str, Any]`, and conditional-branch metadata
+  `result_value`, `not_computable_reason: str | None`, `input_values: dict[str, Any]`, and
+  conditional-branch metadata
   (`taken_branch`, `taken_branch_index`, `dimmed_branches: list[int]`,
   `nested_branches: list[str]`).
 - **`PipelineGraph`** (`src/haute/_types.py`, owned by
   [server-api](../server-api/low-level.md) and produced here) — `nodes`,
   `edges`, `pipeline_name`, `pipeline_description`, `preamble`,
   `preserved_blocks`, `source_file`, `source_revision` (server-populated
-  live-document metadata), `warning`, `submodels`. Canonical structure shared
-  with the executor, codegen, deploy, and the
-  server API layer.
+  live-document metadata), `warning`, `submodels`, `sources`, `active_source`.
+  Canonical structure shared with the executor, codegen, deploy, and the server
+  API layer.
 - **`_ExprConverter`** (`_expression_parser.py`) — one AST-node-type-dispatch method per handled
   node kind; accumulates `columns`, `constants`, `expr_type`, `sub_expressions`, and an
   `_is_opaque` flag as it walks. Takes an optional `symbol_table` for top-level variable
   resolution and a `_resolving` set that guards against infinite recursion on self-referential
   names.
-- **`_ExprEvaluator`** (`_expression_parser.py`) — mirrors `_ExprConverter`'s dispatch shape but
-  computes a concrete value instead of text, given `row_values` and the same `symbol_table`.
-  `_BranchTrackingEvaluator` subclasses it, overriding `_eval_clauses`/`_take_branch` to additionally
-  record which `when`/`then`/`otherwise` branch fired at each nesting level.
+- **`AssignmentPhases`** (frozen dataclass, `_expression_parser.py`) — `before` and `at_or_after`,
+  the columns a node's `with_columns` calls assign on either side of the call that last assigns a
+  target column (`assignment_phases(code, target_column)`). Every expression in one call reads the
+  frame from before it, so trace enrichment reads the second set at its earlier values. An
+  unaliased expression is named after its leftmost input column through methods, arithmetic and
+  the name-keeping namespaces (`_implicit_output_name`); a call's writes count only explicit
+  names and that strict inference, never the display parser's first-column guess. A write at or
+  after the target's call whose name cannot be determined (several columns, a selector list or
+  regex, a rename, a dynamic alias, a comprehension, another function) sets `unresolved`; one in
+  an earlier call sets `unresolved_before`.
+- **`_RowValue`** (frozen dataclass, `_expression_parser.py`) — one expression's `value` on the
+  traced row, or the `reason` one row cannot give it. `_row_value(node, row, namespace)` produces
+  it, and `_branch_selection` uses it for each `when` condition.
 - **Precedence tables**: `_OP_SYMBOLS`, `_CMP_SYMBOLS`, `_PREC` (binary operators) plus synthetic
   constants `_PREC_COMPARE`, `_PREC_BOOL_OR`, `_PREC_BOOL_AND`, `_PREC_IFEXP`, `_PREC_USUB` for
   node kinds that are not `ast.BinOp` but still need correct parenthesisation when nested as an
@@ -49,32 +59,26 @@
 
 **`parse_pipeline_source`** (`parser.py`): `ast.parse(source)` → on `SyntaxError`, raise a
 contextual `ParseError` naming the source and syntax location → otherwise extract pipeline meta /
-decorated nodes / connect edges / preamble / preserved blocks by
-importing their implementation modules directly →
-collect labels from any nodes already carrying `_load_error` into a graph-level `warning` → if any
+decorated nodes / connect edges / preamble / preserved blocks using the AST
+primitives from `src/haute/_ast_helpers.py` → collect labels from any node whose
+config carries `_load_error` into a graph-level `warning` (nothing in `src/haute`
+produces that key; the config path raises `ConfigError` instead, so the step is reached
+only by tests that plant the marker) → if any
 `pipeline.submodel()` calls were found, require `_base_dir` or `_submodel_base_dir` (otherwise
 raise with every unresolved authored path), resolve registrations, group repeated paths by canonical definition id, parse
 each definition file once, and call `_parser_submodels.merge_submodels` → run
 the structure-conservation gate → `validate_pipeline_graph_shape_contracts` (owned outside this
 component) → log `pipeline_parsed`.
 
-**`recover_pipeline_fragments`** (`_parser_regex.py`): recover alias-aware pipeline metadata by
-parsing otherwise-valid import lines independently, then locate the matching constructor with a
-balanced-parenthesis scan → find every `@pipeline.<type>` block textually, retaining the decorator,
-function identity/signature/body, parameters, and source lines → re-parse individual decorator,
-connection, and submodel call fragments with `ast` wherever possible → recover preamble and
-`# haute:preserve` blocks with line-oriented scans → return one frozen neutral fragment document.
-No step resolves node configuration, builds canonical nodes/edges, merges submodels, or returns a
-`PipelineGraph`; `src/haute/_pipeline_recovery.py` is the sole orchestrator that may resolve the
-fragments into editor-only recovery DTOs.
-
 **`merge_submodels`** (`_parser_submodels.py`): validate that every parsed
-child's declared `definition_id` matches its registration and that literal
-structured input/output ports are present. Build one `SubmodelDefinition` per
-definition id and one `SUBMODEL` occurrence per registration; each occurrence
-uses its explicit immutable `instance_id`, alias, optional label, and config
-`{definitionId, alias}`. Parent connect endpoints use aliases and declared
-public port ids, which become `in__<portId>`/`out__<portId>` graph handles;
+child file has literal structured input/output ports present and extract its
+declared `definition_id`. Build one `SubmodelDefinition` per definition id and
+one `SUBMODEL` occurrence per registration; each occurrence uses its name as
+node id (`node.id == label == alias == name`), config `{definitionId, alias}`, and
+derives its node label directly from the name (registrations accept `(path, name, *, instance_of=None)`
+and reject `definition_id=`, `instance_id=`, `alias=`, and `label=`).
+Parent connect endpoints use names and declared
+public port names, which become `in__<name>`/`out__<name>` graph handles;
 internal child ids are never accepted as parent endpoints. Only when
 `flatten=True` is the canonical hierarchical graph passed to
 `flatten_graph`. A submodel file containing its own registration raises
@@ -108,10 +112,18 @@ function via the substring `".over("` → `parse_expression` for the text/column
 `_build_window_description` regex-extracts the aggregation function/column/partition names into a
 canned `"{agg} of {col} over {partition}"` string → `_substitute_values` builds the substituted
 formula text (see Edge cases) → resolve any still-unresolved preamble constant names by literal
-text replacement → `_compute_result` reparses and evaluates the winning AST node with a fresh
-`_ExprEvaluator` → for `expression_type == "conditional"`, additionally run
-`_evaluate_conditional_branches` with a `_BranchTrackingEvaluator` to populate the branch-tracking
-fields.
+text replacement (literal constants only) → `_locate_defining_expression` reparses the code,
+finds the last expression assigning `target_column` (falling back to an unaliased expression named
+after the column), and resolves same-node names through the symbol table → `_row_value` inlines
+literal preamble constants, reports an unresolved free name, classifies the expression with
+`chunking.classify_row_local_expression` (not row-local → `not_row_local: <operator>`), validates it
+with `_sandbox.validate_user_code`, evaluates its source under `safe_globals(pl=pl, <preamble names>)`
+(a non-`Expr` result becomes `pl.lit`), reports a root column missing from the row
+(`column_unavailable: <column>`), and selects it on the one-row frame as a native value
+(`to_list()[0]`, so a List cell is a list, not a Series) → for
+`expression_type == "conditional"`, `_branch_selection` evaluates each condition the same way in
+source order and records the taken arm, recursing into a taken arm that is itself a `when` chain for
+`nested_branches`.
 
 **`parse_expression_chain`** (`_expression_parser.py`): strip/wrap the code and parse it; a
 `SyntaxError` is converted to `[parse_expression(...)]` when that opaque result exists (otherwise
@@ -124,6 +136,14 @@ appended before the column that depends on it) → return the parsed expressions
 
 ## Edge cases and invariants
 
+Parser internals consume only the current metadata contract. Every extracted
+node supplies `param_names` and `edge_param_names`; consumers must not infer
+missing positional-parameter metadata from the broader parameter list or an
+empty default. Missing required metadata is an internal contract failure.
+The conservation gate accepts `submodel_occurrence_paths` as its sole loaded
+occurrence manifest. Removed keywords and unknown keywords are rejected, with
+no alias or migration shim; direct test callers use the same current contract.
+
 - **Execution-order vs. walk-order**: `ast.walk` is breadth-first (parent before child), which for
   a chained `df.with_columns(A).with_columns(B)` visits the *outer* call (B) before the nested
   inner call (A). `_find_with_columns_calls` re-sorts by source span specifically so "last match
@@ -135,31 +155,34 @@ appended before the column that depends on it) → return the parsed expressions
   `if`/`for`/`while`/`try`/`with`/`match` has an ambiguous value at any point of use; `parse_expression`
   treats the whole target expression as opaque if it references such a name, even when the same
   name also happens to have an (irrelevant) top-level binding elsewhere.
-- **Signed 64-bit integer overflow**: `_ExprEvaluator._binop` reports an integer result outside
-  `[-2**63, 2**63-1]` as `None` rather than a Python-bigint value, because the evaluator is
-  dtype-unaware and cannot know whether the real Polars column is `Int8`/`Int32`/`Int64`/`UInt64`,
-  so it refuses to guess a wraparound width.
-- **Division/modulo by zero**: mirrors Polars, not Python — float `x/0` → `copysign(inf, x)`
-  (`0/0` → `nan`); integer `//`/`%` by zero → `None` (Polars null); float `%0` → `nan`. Never
-  raises `ZeroDivisionError`.
-- **Kleene three-valued `&`/`|`**: only engages when at least one operand is a concrete `bool` or
-  both are `None` (`_is_bool_kleene_operand`); this must run *before* the generic "any operand is
-  null → null" short-circuit, because `False & null` is `False` and `True | null` is `True` in
-  Polars, not null. Plain integer bitwise `&`/`|` falls through unaffected.
-- **`round()` divergence from Python**: matches Polars' `round(v * 10**n) / 10**n` on the f64 value
-  with half-to-even tie-breaking, which is *not* the same as Python's decimal-accurate
-  `round(v, n)` (e.g. `round(2.675, 2)` is `2.68` under this evaluator/Polars 1.39 but `2.67` under
-  bare Python `round`). Pinned by `tests/test_expression_parser_polars_parity.py`.
-- **`pow()` with a negative base and non-integer float exponent** → `NaN`, matching Polars' float
-  domain (Python would return a `complex`).
+- **Values are Polars' own**: integer overflow wraps as the column's dtype does, division and
+  modulo by zero, Kleene `&`/`|`, rounding and NaN handling are whatever Polars computes on the
+  row, because Polars computes them. A typed null propagates through every operation; a native
+  `None` passed without `row` becomes a `Null`-dtype column, which Polars rejects for numeric,
+  temporal and string methods.
+- **Row-local means registered row-local**: `classify_row_local_expression` admits an operation
+  the Polars operation registry classes as row-local, whether or not the chunk classifier has a
+  proof for it (`pl.min_horizontal`, `pl.format` and a `when` chained on a conditional are
+  admitted), and keeps the chunk classifier's argument guards (`fill_null(strategy=...)`,
+  format-inferring `str.to_date()`). An operation missing from the registry is not proven
+  and reports `not_row_local`. `pow`, `replace_strict` and `dt.total_days` are registered
+  row-local without a chunk proof; `replace_strict` is admitted only with `replace`'s
+  literal mapping forms (plus a literal `default=` and a dtype `return_dtype=`), and an
+  unmapped value without a default raises Polars' error, as it does for the column.
+- **A bare string in `then`/`otherwise` is a column**: Polars reads `.then("high")` as
+  `pl.col("high")`, so an arm written that way reports `column_unavailable: high` unless the row
+  has such a column.
 - **Single-pass value substitution**: `_substitute_values` builds one combined word-boundary regex
   over all identifier-like column names, longest-first, and substitutes in one left-to-right pass —
   so a value inserted for one column can never be re-scanned and corrupted by a shorter column
   name's pattern matching inside the inserted text. Non-identifier column names (spaces/special
-  characters) fall back to literal (non-regex) replacement.
-- **BOM handling**: `parse_expression`, `parse_expression_chain`, `_compute_result_impl`, and
-  `_evaluate_conditional_branches` all strip a leading `﻿` before parsing (`evaluate_expression`
-  inherits this only transitively, by calling into `parse_expression`/`_compute_result_impl`).
+  characters) fall back to literal (non-regex) replacement. Given the traced row's typed frame,
+  a Float32 column's value is shown with its float32 digits (`528.09`, not the widened
+  `528.0900268554688`) by `_display_values`; only the text changes, and the values computed on
+  stay exact.
+- **BOM handling**: `parse_expression`, `parse_expression_chain`, and
+  `_locate_defining_expression` all strip a leading `﻿` before parsing (`evaluate_expression`
+  inherits this only transitively, by calling into `parse_expression`/`_locate_defining_expression`).
 - **Neutral-recovery string/comment-aware scanning**: `_skip_string_literal` deliberately avoids
   `tokenize` (the file is syntactically broken by definition) and, when a triple-quoted string
   never closes, skips to EOF — conservative, because everything after an unclosed triple-quote is
@@ -186,14 +209,13 @@ appended before the column that depends on it) → return the parsed expressions
   `unresolved_paths` instead of returning a root-only graph. Editor recovery resolves submodel
   fragments against the explicitly supplied project and parent-pipeline roots.
 - **Repeated definition files are intentional for reusable occurrences**:
-  registrations resolving to one file are grouped and parsed once. They must
-  agree on one explicit definition id.
+  registrations resolving to one file are grouped and parsed once.
 - **Definition/file identity is one-to-one**: one definition id resolving to
-  multiple files, conflicting definition ids for one file, or a child whose
-  declared id differs from the parent registration raises `ParseError`.
+  multiple files, conflicting definition ids for one file, or an unreadable
+  child raises `ParseError`.
 - **Occurrence identity is explicit**: missing/non-literal/blank
-  `definition_id`, `instance_id`, or `alias` fields, and duplicate instance ids
-  or aliases, fail before merge. No file/name/node-id inference is attempted.
+  `file` or `name` fields, rejected legacy keywords (`definition_id=`, `instance_id=`, `alias=`, `label=`),
+  and duplicate occurrence names fail before merge. No file/name/node-id inference is attempted.
 - **Public boundary connections are explicit**: a parent `connect` endpoint
   that names an occurrence alias must also name a declared public port id.
   Function-parameter inference remains inside its owning root or definition
@@ -201,16 +223,29 @@ appended before the column that depends on it) → return the parsed expressions
   internal child id.
 - **Conservation is an acceptance gate**: the parser compares authored root
   nodes and ordered edges, registration paths and explicit identity fields,
-  occurrence aliases and public port ids, and the constructed
+  occurrence aliases and public port ids (a parent `connect` that names a
+  definition-owned child id or any other unknown endpoint is rejected as
+  dangling with its authored identity), and the constructed
   definition/occurrence registry. Each child source is conserved within its
   own definition graph. Exact duplicate `connect()` identities raise the
   dedicated diagnostic; every other difference raises `ParseError` before
   graph-shape validation or return.
+- **Polars parameter binding is strictly conserved**: every Polars node's
+  positional parameter set (after applying `inputMapping`) must equal the set
+  of executable input names contributed by incoming edges (or public input port
+  sanitised IDs for submodel definition nodes). Mismatches fail immediately
+  with `ParseError("Pipeline function parameters do not match the node's connected inputs.")`
+  naming the node, the unbound positional parameters, unconsumed inputs,
+  connected inputs, and remediation guidance.
+
 ## Error handling
 
 - **`ConfigError`** propagates from `src/haute/_config_builder.py` when a healthy parse cannot
   load/validate a referenced sidecar or a folder-backed node omits `config=`. These failures are
-  not converted to `_load_error` nodes or graph warnings.
+  not converted to `_load_error` nodes or graph warnings. Missing required Data Input/Output
+  locator values are a completeness concern, not a `ConfigError`: the builder validates those
+  configs with `require_complete=False`, so an empty or absent path/locator parses cleanly and
+  is reported as field-level completeness by the editor document loader instead.
 - **`ParseError`** (raised, not caught, by this component) for: an unclosed
   `pipeline.connect()`/`pipeline.submodel()`/`Pipeline(...)`/decorator-argument-list scan
   (`_scan_call_end` exhausts the source without balancing); a decorator/submodel/metadata call
@@ -221,8 +256,11 @@ appended before the column that depends on it) → return the parsed expressions
   function; a syntactically invalid referenced submodel file; a missing submodel file; a
   submodel reference without a resolution root; a conflicting definition/file registration; a missing or duplicate
   canonical occurrence identity; an invalid structured public-port contract; nested submodel references; an exact duplicate
-  edge identity; a structure-conservation mismatch; or a submodel path that escapes the project
-  root. A folder-backed node with no matching `config=` kwarg raises `ConfigError` through
+  edge identity; a structure-conservation mismatch; a submodel path that escapes the project
+  root; or, in the strict form only, once the graph is built, any
+  `_executable_names.executable_name_violations` entry, the message from
+  `format_name_violations`. `parse_pipeline_source_with_name_violations` returns those
+  entries beside the graph instead, for the editor document loader. A folder-backed node with no matching `config=` kwarg raises `ConfigError` through
   `_sidecar_required_error`, consistently with other sidecar configuration failures.
 - **`SyntaxError` from `ast.parse`** at the top of `parse_pipeline_source` is converted into a
   contextual `ParseError`; strict callers never receive syntax-recovered graph output. The editor
@@ -232,17 +270,11 @@ appended before the column that depends on it) → return the parsed expressions
   the expression parser, converting any internal failure into an `"opaque"` `ParsedExpression`
   carrying the original source text. Documented in the function's docstring as an intentional,
   honest "could not statically understand this" signal, distinct from the value-computation paths.
-- **`evaluate_expression`/`parse_expression_chain`**: evaluator/non-syntax internal exceptions
-  propagate to the trace/enrichment caller by design (see the high-level Failure model).
-  `parse_expression_chain` catches only `SyntaxError` and converts it to an opaque singleton/empty
-  chain. The
-  removed prior behaviour — silently falling back to
-  `row_values.get(target_column)` — is documented in the module as deliberately deleted because it
-  laundered evaluator bugs into a self-consistent-looking trace.
-- **`ValueError`** raised (not caught) from `_ExprEvaluator._eval_concat_str` for a non-`str`
-  `separator` or non-`bool` `ignore_nulls` keyword, and from `_eval_replace` for an incomplete
-  `replace_strict` mapping with no `default=` — mirroring Polars' own `InvalidOperationError`
-  behaviour rather than silently coercing or leaving the value unmapped.
+- **`evaluate_expression`/`parse_expression_chain`**: Polars and sandbox exceptions on a computable
+  expression (a malformed call such as `pl.col()`, Python `and`/`or`/`not` on an expression, an
+  `UnsafeCodeError`) propagate to the trace/enrichment caller by design (see the high-level
+  Failure model). `parse_expression_chain` catches only `SyntaxError` and converts it to an opaque
+  singleton/empty chain. A failure is never replaced by `row_values.get(target_column)`.
 
 ## Testing
 
@@ -256,19 +288,35 @@ Tests live under `tests/`, split by concern:
   path, syntax fail-loud behavior, submodel file parsing, the `flatten` parameter, decorator/config
   edge cases, malformed decorator kwargs, docstring stripping, preamble/preserved-block edge
   cases, roundtrip parsing, circular/non-existent/colliding/empty submodels, UTF-8 BOM handling.
-- **`test_parser_regex.py`** — unit tests for neutral regex-recovery fragments and scanners,
-  including function, decorator-argument, connection, submodel, string, and comment boundaries.
-- **`test_parser_regex_contracts.py`** / **`test_parser_regex_ast_kwargs.py`** — pin the exact
-  decorator-kwarg value-parsing policy (literals + `Contract(...)` only, everything else fails
-  loud) across scalar/compound/multiple/degenerate/invalid-syntax cases; a dedicated TDD gate
-  regression-tests one specific historical codebase-review finding.
 - **`test_parser_submodels.py`** — `extract_submodel_registrations`, `parse_submodel_source`,
   `merge_submodels`, and cross-boundary-edge reconstruction.
+- **`test_submodel_endpoint_properties.py`** — the generated graph/source family (ENG-T11):
+  generated child definitions (an identity chain behind one public input and one public
+  output port), one or two occurrences, and 1..4 authored parent connections drawn from the
+  legal public-port forms and the private child-endpoint forms. Parsing conserves exactly
+  the legal edges (occurrence instance ids with `in__`/`out__` handles) and rejects any
+  private endpoint as dangling with the authored identities in authored order; flattening a
+  fully wired legal graph yields one qualified runtime node per internal node per
+  occurrence, no dangling edge, and every sink computes the generated source rows. The
+  `hypothesis.find` negative control rewrites one legal connection into the private form and
+  shows the acceptance flip naming exactly that connection. Consumers of an occurrence
+  output name their parameter after the sanitised public output port name, as
+  codegen emits; a parameter named after the occurrence alias is rejected unless
+  explicitly bound through `inputMapping`.
 - **`test_parser_conservation.py`** — regression tests asserting that parsing (and the implicit
   regeneration path) conserves source structure: boilerplate, docstrings, parameter buckets, node
   function shape, alias awareness, implicit-edge dedup, exact node/edge/handle/submodel identity,
   aggregated missing/unrecoverable submodel diagnostics, duplicate submodel-name rejection, and
   parity between neutral fragment discovery/editor recovery and strict authored-structure rules.
+- **`TestPolarsParameterBinding`** (`tests/test_parser_conservation.py`) -- tests
+  the strict parameter binding acceptance gate for Polars nodes: rejects unbound
+  positional parameters and unconsumed incoming edges with exact diagnostic
+  context; verifies that `inputMapping` correctly maps parameters, executes, and
+  roundtrips through codegen; confirms consumers of submodel occurrence outputs
+  bind the public port name; validates that parameter-mismatched pipelines
+  load in degraded mode for editor recovery while rejecting saves with HTTP 409;
+  and ensures definition nodes receiving public input ports bind to the sanitised
+  port ID.
 - **`test_parser_project_layout.py`**, **`test_parser_internals.py`**, and
   **`test_parser_sanitize_contracts.py`** — project-root/base-directory handling, internal
   parser invariants, and sanitisation contracts.
@@ -298,35 +346,35 @@ Tests live under `tests/`, split by concern:
   evaluation.
 - **`test_expression_parser_w3_fixes.py`** — regression tests pinning specific historical bug
   fixes from a past remediation pass.
-- **`test_expression_parser_polars_parity.py`** — value-asserting tests that cross-check
-  `_ExprEvaluator`'s output against real Polars computations; the source of truth for the
-  documented `round()`-half-to-even and similar intentional divergences from naive Python
-  semantics.
+- **`test_expression_parity_properties.py`** — the generated outcome property (ENG-T11): a bounded
+  grammar (depth at most three) of documented, well-formed single-row forms — arithmetic,
+  `abs`/`round`/`clip`/`fill_null`/`sqrt`/`log`, comparisons, `is_null`/`is_not_null`,
+  `is_between` with every `closed` value, `is_in`, regex and literal `str.contains`,
+  `to_lowercase`/`to_uppercase`, and `when/then/otherwise` — over int, float, tie-float and
+  null cells, each example evaluated through `evaluate_expression` on a typed one-row frame and
+  compared with Polars computing the same expression on that frame. It runs under the shared PR
+  budget with retained curated edge examples and a `hypothesis.find` negative control proving a
+  naive-Python evaluator (decimal `round`, substring `contains`, inclusive `is_between`, `False`
+  for a null comparison) is caught on the same grammar. Classification pins assert that window,
+  `shift`, `diff` and aggregation forms report `not_row_local` with no value, and the two-row
+  window regression asserts that a `sum().over()` is never shown as its one-row value.
 
-Strategy is unit + scenario-regression throughout; no property-based/fuzz testing was found.
+Strategy is unit + scenario-regression plus the generated single-row differential above.
 Known coverage gaps:
 
 - The neutral syntax-recovery scanner is exercised only against curated malformed-input scenarios, not
   randomly-generated broken Python source.
-- `test_expression_parser_polars_parity.py` cross-checks a curated subset (notably rounding,
-  regex `str.contains`, `is_between`, `is_in`, conditionals, and a few numeric methods) against
-  real Polars. It is not an exhaustive semantic differential. Unsupported AST/method forms
-  return `None`, and defensive malformed-call branches sometimes intentionally differ from
-  Polars by ignoring an argument or avoiding an exception.
-- Window result calculation is described textually using regex extraction and a row-local AST
-  evaluator; the suite does not prove full partition/window semantics against a multi-row Polars
-  frame.
+- The property covers documented single-row forms only; malformed calls and not-row-local forms
+  are pinned by example, not generated.
+- A multi-row sub-expression inside a formula (a condition comparing with a mean, say) is
+  reported not computable; the trace does not re-evaluate it against its execution's frame.
 
-## Neutral syntax-recovery fragments
+## Syntax-invalid source
 
-`src/haute/_parser_regex.py` owns textual discovery primitives and
-`recover_pipeline_fragments(source)`. Its public recovery result is a frozen neutral fragment
-model and contains no `GraphNode`, `GraphEdge`, or `PipelineGraph`. No canonical syntax-recovery
-integration exists. `src/haute/parser.py` never imports this module and wraps
-whole-file Python syntax failures as contextual `ParseError` values.
-
-`src/haute/_pipeline_recovery.py` may parse decorator fragments and resolve each known node inside
-an explicitly named isolation boundary. Expected configuration/contract failures become stable
-editor diagnostics; unexpected per-node failures are logged with an incident id. Tests keep the
-textual scanners focused on conservation and fail-loud ambiguity, while editor recovery tests own
-the end-to-end malformed-source graph behaviour.
+`src/haute/parser.py` wraps whole-file Python syntax failures as contextual `ParseError` values.
+There is no textual syntax recovery: the editor's recovery loader (`src/haute/_pipeline_recovery.py`)
+turns a syntax-invalid file into a `source_only` document carrying the Python syntax error's span,
+and recovers nodes only from valid Python, resolving each known node inside an explicitly named
+isolation boundary. Expected configuration/contract failures become stable editor diagnostics;
+unexpected per-node failures are logged with an incident id. Editor recovery tests own the
+end-to-end malformed-source behaviour.

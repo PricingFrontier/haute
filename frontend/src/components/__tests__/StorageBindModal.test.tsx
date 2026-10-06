@@ -23,9 +23,10 @@ import type { GitStorageBind, GitWorkingBranchResponse } from "../../api/types"
 import useGitStore from "../../stores/useGitStore"
 import useToastStore from "../../stores/useToastStore"
 import StorageBindModal from "../StorageBindModal"
+import { makeGitWorkingBranch } from "../../test-utils/factories"
 
 function status(overrides: Partial<GitWorkingBranchResponse>): GitWorkingBranchResponse {
-  return {
+  return makeGitWorkingBranch({
     working_branch: null,
     state: "unset",
     errors: [],
@@ -40,7 +41,7 @@ function status(overrides: Partial<GitWorkingBranchResponse>): GitWorkingBranchR
     sync: null,
     storage_bind: null,
     ...overrides,
-  }
+  })
 }
 
 function bindState(overrides: Partial<GitStorageBind>): GitStorageBind {
@@ -63,7 +64,7 @@ const CLAIM = {
     + "Bind a different location, or fork this one to work on a copy.",
 }
 
-describe("StorageBindModal — asynchronous binding", () => {
+describe("StorageBindModal - asynchronous binding", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     useGitStore.setState({ status: status({}), modal: "storage" })

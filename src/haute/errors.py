@@ -28,7 +28,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, ClassVar, TypeGuard
 
+from haute._validation_error import ConfigSettingError as ConfigSettingError
 from haute._validation_error import HauteValidationError as HauteValidationError
+from haute._validation_error import restore_exception
 
 
 class HauteError(Exception):
@@ -56,6 +58,9 @@ class HauteError(Exception):
     def __repr__(self) -> str:
         return f"{type(self).__name__}({self._render()!r})"
 
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (restore_exception, (type(self), self.args, dict(self.__dict__)))
+
     def to_payload(self) -> dict[str, Any]:
         """Return the stable public payload for a typed contract error.
 
@@ -74,6 +79,28 @@ class HauteError(Exception):
         return payload
 
 
+_FAILING_NODE_ATTRIBUTE = "haute_failing_node"
+
+
+def mark_failing_node(exc: BaseException, node_id: str) -> None:
+    """Record that *exc* was raised while the graph walk built or ran *node_id*.
+
+    The innermost record wins: a failure already marked keeps its node. A
+    failure a lazy frame raises only when a later caller reads its schema is
+    never marked, because no node was running when it was raised.
+    """
+
+    if failing_node(exc) is None:
+        setattr(exc, _FAILING_NODE_ATTRIBUTE, node_id)
+
+
+def failing_node(exc: BaseException) -> str | None:
+    """The node the graph walk was building or running when *exc* was raised."""
+
+    node_id = getattr(exc, _FAILING_NODE_ATTRIBUTE, None)
+    return node_id if isinstance(node_id, str) else None
+
+
 def is_public_contract_error(exc: BaseException) -> TypeGuard[HauteError]:
     """Return whether *exc* opts into the versioned public error contract.
 
@@ -85,8 +112,50 @@ def is_public_contract_error(exc: BaseException) -> TypeGuard[HauteError]:
     return isinstance(exc, HauteError) and exc.error_code is not None
 
 
+class PathOutsideProjectError(HauteError):
+    """A path leaves the directory it must stay inside.
+
+    Raised by :func:`haute._sandbox.contained_path`; the API answers 403.
+    """
+
+
+class InvalidPathError(HauteError):
+    """A path string that cannot name a file (it holds a NUL byte); the API answers 400."""
+
+
 class ConfigError(HauteError):
     """Configuration loading or validation failure."""
+
+
+class NodeConfigError(ConfigError, HauteValidationError):
+    """A node setting the builder cannot run with: missing, malformed or out of range.
+
+    The user can fix it on the node, so it opts into the public contract: the
+    message names the setting and what is wrong with it, and reaches the client
+    as HTTP 422 (background ``contract_error``) instead of an internal error.
+    It is also a :class:`HauteValidationError`, and so a ``ValueError``: the
+    chunk planner and the RAM estimator, which only ask whether they can plan
+    the node, keep treating it as "cannot plan" without knowing this type.
+    """
+
+    error_code = "node_config_invalid"
+    public_fields = ("setting",)
+
+    def __init__(self, message: str, *, setting: str) -> None:
+        self.setting = setting
+        super().__init__(message, setting=setting)
+
+
+class MlflowConfigError(ConfigError):
+    """Invalid or incomplete MLflow tracking-destination configuration.
+
+    Raised for an explicitly selected mode with a missing prerequisite, an
+    unsupported tracking-URI form, or a malformed ``[mlflow]`` table. It is
+    never downgraded to a silent fallback mode; only the MLflow
+    status/settings endpoints catch it, to report the reason.
+    """
+
+    error_code = "mlflow_config_invalid"
 
 
 class ParseError(HauteError):
@@ -97,6 +166,15 @@ class ExecutionError(HauteError):
     """Runtime execution failure."""
 
 
+class ModelNotInDiskCacheError(ExecutionError):
+    """A model load restricted to the local disk model cache found no cached model.
+
+    Raised where an unrestricted load would resolve the model through a
+    tracking server or registry and download it (the assistant's data check
+    never does either).
+    """
+
+
 class PreambleError(ExecutionError):
     """Raised when the pipeline preamble fails to compile or execute."""
 
@@ -105,6 +183,28 @@ class PreambleError(ExecutionError):
 
     def __init__(self, message: str, source_line: int | None = None) -> None:
         self.source_line = source_line
+        super().__init__(message)
+
+
+class GlobalConstantError(ExecutionError):
+    """A read of ``global_constants`` that cannot resolve to a value.
+
+    It has no public ``error_code`` on purpose: it is an ordinary node-local
+    failure, so a preview shows it on the node that read the constant and keeps
+    previewing the rest, and every other run stops with it.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        constant: str | None = None,
+        source: str | None = None,
+        node: str | None = None,
+    ) -> None:
+        self.constant = constant
+        self.source = source
+        self.node = node
         super().__init__(message)
 
 
@@ -137,57 +237,8 @@ class BoundedMemoryUnsupportedError(ExecutionError):
     """Raised when a bounded-memory execution path cannot stay bounded."""
 
 
-class ChunkPlanUnsupportedError(BoundedMemoryUnsupportedError):
-    """Raised when a graph cannot prove a safe chunked execution plan."""
-
-
-class ChunkMemoryRiskError(BoundedMemoryUnsupportedError):
-    """Raised when the minimum executable chunk exceeds its byte budget."""
-
-    error_code = "chunk_memory_risk"
-    public_fields = (
-        "target_node_id",
-        "reason_code",
-        "estimated_target_row_bytes",
-        "estimated_minimum_chunk_bytes",
-        "row_expansion_factor",
-        "target_chunk_bytes",
-    )
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        target_node_id: str,
-        estimated_target_row_bytes: int,
-        target_chunk_bytes: int,
-        reason_code: str = "single_row_exceeds_budget",
-        estimated_minimum_chunk_bytes: int | None = None,
-        row_expansion_factor: int = 1,
-    ) -> None:
-        self.target_node_id = target_node_id
-        self.reason_code = reason_code
-        self.estimated_target_row_bytes = estimated_target_row_bytes
-        self.estimated_minimum_chunk_bytes = (
-            estimated_target_row_bytes
-            if estimated_minimum_chunk_bytes is None
-            else estimated_minimum_chunk_bytes
-        )
-        self.row_expansion_factor = row_expansion_factor
-        self.target_chunk_bytes = target_chunk_bytes
-        super().__init__(
-            message,
-            target_node_id=target_node_id,
-            reason_code=self.reason_code,
-            estimated_target_row_bytes=estimated_target_row_bytes,
-            estimated_minimum_chunk_bytes=self.estimated_minimum_chunk_bytes,
-            row_expansion_factor=row_expansion_factor,
-            target_chunk_bytes=target_chunk_bytes,
-        )
-
-
 class GroupByExecutionUnsupportedError(BoundedMemoryUnsupportedError):
-    """Raised before a group-by that cannot honour the active profile."""
+    """Raised before a group-by that cannot honour its admission contract."""
 
     error_code = "group_by_execution_unsupported"
     public_fields = (
@@ -350,6 +401,121 @@ class TraceCorrelationUnsupportedError(ExecutionError):
         )
 
 
+INPUT_PREPARATION_REASON_CODES: tuple[str, ...] = (
+    "cap_unavailable",
+    "build_failed",
+    "memory_limited",
+    "cancelled",
+    "timed_out",
+)
+
+
+class InputPreparationError(ExecutionError):
+    """Raised when automatic snapshot preparation cannot publish a generation.
+
+    Carries digests and codes only: never a configured locator or a secret.
+    """
+
+    error_code = "input_preparation_failed"
+    public_fields = (
+        "node_id",
+        "identity_digest",
+        "build_class",
+        "reason_code",
+        "remediation",
+    )
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        node_id: str,
+        identity_digest: str,
+        build_class: str,
+        reason_code: str,
+        remediation: str,
+    ) -> None:
+        if reason_code not in INPUT_PREPARATION_REASON_CODES:
+            raise ValueError(f"unknown input preparation reason code: {reason_code!r}")
+        self.node_id = node_id
+        self.identity_digest = identity_digest
+        self.build_class = build_class
+        self.reason_code = reason_code
+        self.remediation = remediation
+        super().__init__(
+            message,
+            node_id=node_id,
+            identity_digest=identity_digest,
+            build_class=build_class,
+            reason_code=reason_code,
+        )
+
+
+class SnapshotPlanInputsChangedError(ExecutionError):
+    """Raised when a run's inputs changed after its seed plan was resolved.
+
+    A seed plan names snapshot identities whose signatures sign the inputs as
+    they were when the plan was resolved. Reading seeds computed from those
+    inputs beside branches recomputed from newer ones would join two versions
+    of the data, so the run stops and asks to be run again.
+    """
+
+    error_code = "snapshot_plan_inputs_changed"
+    public_fields = ("target_node_id",)
+
+    def __init__(self, *, target_node_id: str) -> None:
+        self.target_node_id = target_node_id
+        super().__init__(
+            "This run's input data changed while it was starting; run it again.",
+            target_node_id=target_node_id,
+        )
+
+
+class SnapshotCorruptError(ExecutionError):
+    """Raised when a node's cached data is unreadable and names the node.
+
+    A corrupt generation is reported, never silently repaired: an automatic
+    capture surfaces it so the user decides. Without the node, every preview
+    and run through that lineage failed with the store's own text and nothing
+    said which node's cache to clear or rebuild, so the message named a problem
+    the user could not act on.
+    """
+
+    error_code = "snapshot_corrupt"
+    public_fields = ("node_id", "node_label")
+
+    def __init__(self, *, node_id: str, node_label: str | None = None) -> None:
+        self.node_id = node_id
+        self.node_label = node_label
+        super().__init__(
+            f"The cached data for '{node_label or node_id}' is unreadable. "
+            "Refresh that node to rebuild it, or clear it to run without a cache.",
+            node_id=node_id,
+            node_label=node_label,
+        )
+
+
+class SeedPlanExpiredError(ExecutionError):
+    """Raised when a trace's seed plan names data that is no longer there.
+
+    A trace reads exactly the snapshot generations its preview read. When one
+    has been retired, or its point no longer has the identity the trace's graph
+    produces there, the preview it explains is out of date and must be run
+    again before its rows can be traced.
+    """
+
+    error_code = "preview_seed_plan_expired"
+    public_fields = ("node_id",)
+
+    def __init__(self, *, node_id: str) -> None:
+        self.node_id = node_id
+        super().__init__(
+            "The cached data this preview was computed from has changed; "
+            "refresh the preview and trace the row again.",
+            node_id=node_id,
+        )
+
+
 class ContractMismatchError(HauteError):
     """Raised when a declared column contract does not match observed columns.
 
@@ -363,13 +529,20 @@ class ContractMismatchError(HauteError):
       check, Polars raises a cryptic ``ColumnNotFound`` deep in a lazy
       plan; with it, Haute names the exact missing column up-front.
     * **Executor (output side)** — a node's observed output is missing
-      columns its contract promised to produce, or contains columns
-      outside what its contract declared.
+      columns its contract promised to produce.
 
-    The error always names the offending node id and the symmetric
-    column diff so a user can fix a typo'd contract in one edit.
+    The error always names the offending node id and the columns at
+    fault, so a user can fix a typo'd contract in one edit.
     """
 
 
-class ProjectionImpossibleError(ContractMismatchError, BoundedMemoryUnsupportedError):
-    """Raised when bounded projection cannot determine a safe column subset."""
+class ContractColumnsMissingError(ContractMismatchError):
+    """A node's frame lacks columns its contract names, at a node boundary.
+
+    ``context["missing"]`` keeps every missing column for callers. The rendered
+    text, which a preview shows as it is, is the message (naming at most five of
+    them) and the node id, so a long list never swamps it.
+    """
+
+    def _render(self) -> str:
+        return f"{self.message} (node_id={self.context['node_id']})"

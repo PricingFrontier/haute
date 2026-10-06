@@ -38,7 +38,7 @@ def handle_run(config: RunConfig) -> None:
     click.echo(f"Running pipeline: {filepath}")
 
     try:
-        graph = parse_pipeline_file(filepath)
+        graph = parse_pipeline_file(filepath, flatten=True)
     except Exception as e:
         click.echo(f"Error parsing pipeline: {e}", err=True)
         raise SystemExit(1)

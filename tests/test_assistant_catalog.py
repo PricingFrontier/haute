@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from pathlib import Path
 
 import pytest
 
@@ -20,113 +21,67 @@ from haute._config_validation import VALID_KEYS
 from haute._types import NODE_TYPE_TO_DECORATOR, NodeType
 from haute.assistant import _catalog
 from haute.assistant._catalog import (
-    NODE_CATALOG,
+    NodeCapabilityDescriptor,
     capability_manifest,
     compact_manifest,
-    render_catalog,
-    validate_catalog_complete,
+    validate_manifest_complete,
 )
 from haute.routes._save_pipeline import _SINGLETON_NODE_TYPES
 
 
-class TestCompleteness:
-    def test_every_node_type_has_an_entry(self):
-        assert set(NODE_CATALOG.keys()) == set(NodeType)
+class TestNodeDescriptors:
+    """The manifest is the one node catalogue; its facts come from the registries."""
 
-    def test_every_entry_has_a_hand_authored_usage_note(self):
-        for node_type, entry in NODE_CATALOG.items():
-            assert entry.usage_note.strip(), f"{node_type.value} has no usage note"
+    @staticmethod
+    def _nodes() -> dict[str, NodeCapabilityDescriptor]:
+        return {descriptor.id: descriptor for descriptor in capability_manifest().nodes}
 
-    def test_validate_catalog_complete_passes_on_the_real_catalog(self):
-        validate_catalog_complete()
+    def test_every_node_type_has_a_descriptor_with_a_usage_note(self):
+        nodes = self._nodes()
+        assert set(nodes) == {node_type.value for node_type in NodeType}
+        for node_id, descriptor in nodes.items():
+            assert descriptor.usage.strip(), f"{node_id} has no usage note"
 
-    def test_validate_catalog_complete_raises_on_a_missing_entry(
+    def test_a_missing_usage_note_fails_manifest_validation(self, monkeypatch: pytest.MonkeyPatch):
+        notes = dict(_catalog._USAGE_NOTES)
+        del notes[NodeType.POLARS]
+        monkeypatch.setattr(_catalog, "_USAGE_NOTES", notes)
+        with pytest.raises(RuntimeError, match="polars"):
+            validate_manifest_complete()
+
+    def test_an_unexpected_usage_note_fails_manifest_validation(
         self, monkeypatch: pytest.MonkeyPatch
     ):
-        depleted = dict(NODE_CATALOG)
-        removed = depleted.pop(NodeType.POLARS)
-        assert removed is not None
-        monkeypatch.setattr(_catalog, "NODE_CATALOG", depleted)
-        with pytest.raises(RuntimeError, match="polars"):
-            validate_catalog_complete()
+        notes = {**_catalog._USAGE_NOTES, "not-a-node-type": "stray"}
+        monkeypatch.setattr(_catalog, "_USAGE_NOTES", notes)
+        with pytest.raises(RuntimeError, match="Unexpected"):
+            validate_manifest_complete()
 
-
-class TestFactAgreement:
     def test_decorators_agree_with_the_type_registry(self):
-        for node_type, entry in NODE_CATALOG.items():
-            assert entry.decorator == NODE_TYPE_TO_DECORATOR.get(node_type), node_type
+        for node_type in NodeType:
+            descriptor = self._nodes()[node_type.value]
+            assert descriptor.decorator == NODE_TYPE_TO_DECORATOR.get(node_type), node_type
 
     def test_sidecar_folders_agree_with_config_io(self):
-        for node_type, entry in NODE_CATALOG.items():
-            assert entry.config_folder == NODE_TYPE_TO_FOLDER.get(node_type), node_type
+        for node_type in NodeType:
+            descriptor = self._nodes()[node_type.value]
+            assert descriptor.config_folder == NODE_TYPE_TO_FOLDER.get(node_type), node_type
 
-    def test_config_keys_agree_with_the_validation_allowlist(self):
-        for node_type, entry in NODE_CATALOG.items():
-            allowed = VALID_KEYS.get(node_type)
-            expected = tuple(sorted(allowed)) if allowed is not None else ()
-            assert tuple(sorted(entry.config_keys)) == expected, node_type
+    def test_config_fields_agree_with_the_validation_allowlist(self):
+        for node_type in NodeType:
+            descriptor = self._nodes()[node_type.value]
+            fields = {*descriptor.required_fields, *descriptor.optional_fields}
+            assert fields == set(VALID_KEYS.get(node_type, ())), node_type
 
     def test_singleton_flags_agree_with_the_save_service(self):
         singleton_types = {node_type for node_type, _label in _SINGLETON_NODE_TYPES}
-        for node_type, entry in NODE_CATALOG.items():
-            assert entry.singleton == (node_type in singleton_types), node_type
-
-
-class TestRendering:
-    def test_render_names_every_node_type(self):
-        rendered = render_catalog()
         for node_type in NodeType:
-            assert node_type.value in rendered
+            descriptor = self._nodes()[node_type.value]
+            assert descriptor.singleton == (node_type in singleton_types), node_type
 
-    def test_render_carries_the_usage_notes(self):
-        rendered = render_catalog()
-        for entry in NODE_CATALOG.values():
-            first_words = " ".join(entry.usage_note.split()[:4])
-            assert first_words in " ".join(rendered.split())
-
-
-class TestEntryShapes:
-    def test_as_dict_is_json_shaped(self):
-        entry = next(iter(NODE_CATALOG.values()))
-        dumped = entry.as_dict()
-        assert set(dumped.keys()) == {
-            "node_type",
-            "decorator",
-            "config_keys",
-            "config_shapes",
-            "config_folder",
-            "singleton",
-            "usage_note",
-        }
-
-    def test_types_without_a_config_typeddict_have_empty_shapes(self):
-        from haute._config_validation import _TYPED_DICT_BY_NODE_TYPE
-
-        shapeless = [
-            node_type for node_type in NodeType if node_type not in _TYPED_DICT_BY_NODE_TYPE
-        ]
-        for node_type in shapeless:
-            assert NODE_CATALOG[node_type].config_shapes == ()
-
-    def test_validate_catalog_complete_raises_on_unexpected_entry(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        inflated = dict(NODE_CATALOG)
-        inflated["not-a-node-type"] = next(iter(NODE_CATALOG.values()))
-        monkeypatch.setattr(_catalog, "NODE_CATALOG", inflated)
-        with pytest.raises(RuntimeError, match="Unexpected"):
-            validate_catalog_complete()
-
-
-def test_validate_catalog_complete_raises_on_fact_mismatch(monkeypatch: pytest.MonkeyPatch):
-    from dataclasses import replace
-
-    tampered = dict(NODE_CATALOG)
-    entry = tampered[NodeType.POLARS]
-    tampered[NodeType.POLARS] = replace(entry, decorator="not_the_real_decorator")
-    monkeypatch.setattr(_catalog, "NODE_CATALOG", tampered)
-    with pytest.raises(RuntimeError):
-        validate_catalog_complete()
+    def test_the_legacy_catalogue_is_gone(self):
+        for name in ("NODE_CATALOG", "NodeCatalogEntry", "render_catalog"):
+            assert not hasattr(_catalog, name), name
 
 
 class TestCapabilityManifest:
@@ -141,11 +96,17 @@ class TestCapabilityManifest:
             node_type.value for node_type in NodeType
         }
         assert dumped["installed_capabilities"]["io"]["schema_version"] == 1
-        operation_ids = {operation["id"] for operation in dumped["operations"]}
-        assert "dry_run_graph_edits" in operation_ids
-        assert "dry_run_recipe_plan" in operation_ids
-        assert "apply_graph_plan" in operation_ids
-        assert "apply_graph_edits" not in operation_ids
+        operation_ids = [operation["id"] for operation in dumped["operations"]]
+        assert operation_ids == [
+            "get_pipeline",
+            "inspect_node",
+            "find_data",
+            "read_reference",
+            "get_project_knowledge",
+            "dry_run_graph_edits",
+            "apply_graph_plan",
+            "update_build_plan",
+        ]
 
     def test_hash_is_sha256_of_canonical_material(self):
         manifest = capability_manifest()
@@ -200,12 +161,10 @@ class TestCapabilityManifest:
             "operation_index",
             "recipe_index",
         }
-        assert set(compact["node_index"][0]) == {"id", "decorator", "summary"}
+        assert set(compact["node_index"][0]) == {"id", "display_name", "decorator", "summary"}
         assert "config_schema" not in compact["node_index"][0]
         assert {item["id"] for item in compact["recipe_index"]} == {
             "categorical_banding",
-            "continuous_banding",
-            "parquet_showcase",
             "reference_join",
             "response_output",
             "rating_step",
@@ -250,6 +209,7 @@ class TestResolvedDescriptors:
     def test_node_descriptors_include_the_complete_closed_contract(self):
         required = {
             "id",
+            "display_name",
             "decorator",
             "config_schema",
             "required_fields",
@@ -273,6 +233,8 @@ class TestResolvedDescriptors:
             "examples",
             "recipes",
             "errors",
+            "step_authoring",
+            "card",
         }
 
         for node in capability_manifest().nodes:
@@ -290,15 +252,12 @@ class TestResolvedDescriptors:
         assert "scenario" in by_id["liveSwitch"].ports["inputs"]
         assert by_id["modelling"].execution.startswith("explicit long-running")
         assert by_id["dataOutput"].side_effects.startswith("writes")
-        assert by_id["banding"].examples == ("continuous_banding",)
-        assert by_id["banding"].recipes == (
-            "categorical_banding",
-            "continuous_banding",
-        )
-        assert by_id["dataInput"].recipes == ("parquet_showcase",)
-        assert by_id["edgeJoin"].recipes == ("parquet_showcase", "reference_join")
-        assert by_id["polars"].recipes == ("parquet_showcase",)
-        assert by_id["output"].recipes == ("parquet_showcase", "response_output")
+        assert by_id["banding"].examples == ("discrete_banding",)
+        assert by_id["banding"].recipes == ("categorical_banding",)
+        assert by_id["dataInput"].recipes == ()
+        assert by_id["edgeJoin"].recipes == ("reference_join",)
+        assert by_id["polars"].recipes == ()
+        assert by_id["output"].recipes == ("response_output",)
 
         assert all(
             any("connected" in anti_pattern for anti_pattern in node.anti_patterns)
@@ -308,6 +267,44 @@ class TestResolvedDescriptors:
             "df" in anti_pattern and "discard" in anti_pattern
             for anti_pattern in by_id["polars"].anti_patterns
         )
+        assert any(
+            "pivots entry on the Explore node, never a step" in anti_pattern
+            for anti_pattern in by_id["explore"].anti_patterns
+        )
+
+    def test_node_descriptors_serve_their_card_without_its_test_fixture(self):
+        from haute.assistant._node_cards import CARD_CONFIG_NAMES
+
+        by_id = {node.id: node.as_dict() for node in capability_manifest().nodes}
+
+        for node_id, descriptor in by_id.items():
+            card = descriptor["card"]
+            assert card["node_type"] == node_id
+            assert "fixture" not in card
+            if card["authorable"]:
+                assert [config["name"] for config in card["configs"]] == list(CARD_CONFIG_NAMES)
+                assert card["fields"]
+            else:
+                assert "not authorable" in card["note"].lower()
+        banding = by_id["banding"]["card"]["configs"][1]["config"]["factors"]
+        assert {"boundary": "2024-06-30", "label": "2024 H1"} in banding[1]["rules"]
+        assert banding[0]["rules"][-1]["boundary"] == ""
+        assert {"value": "01", "assignment": "London"} in banding[2]["rules"]
+
+    def test_every_operation_has_a_plain_words_activity_title(self):
+        from haute.assistant._catalog import capability_manifest, tool_title
+
+        for descriptor in capability_manifest().operations:
+            title = tool_title(descriptor.id, {})
+            assert title != descriptor.id and title[0].isupper(), descriptor.id
+        ops = {"ops": [{}, {}, {}]}
+        assert tool_title("dry_run_graph_edits", ops) == "Checking 3 changes"
+        assert tool_title("dry_run_graph_edits", ops, {"operations": 1}) == "Checking 1 change"
+        assert tool_title("dry_run_graph_edits", ops, {"error": {}}) == "Checking the plan"
+        assert tool_title("apply_graph_plan", {"plan_hash": "a"}) == "Applying the plan"
+        assert tool_title("apply_graph_plan", {}, {"applied_operations": 3}) == "Applying 3 changes"
+        assert tool_title("update_build_plan", {"complete": "rating"}) == "Updating the checklist"
+        assert tool_title("no_such_tool", {}) == "no_such_tool"
 
     def test_operation_descriptors_are_closed_and_policy_complete(self):
         required = {
@@ -354,64 +351,78 @@ class TestResolvedDescriptors:
 
         by_id = {operation.id: operation for operation in capability_manifest().operations}
         dry_run_errors = {error["code"] for error in by_id["dry_run_graph_edits"].errors}
-        recipe_dry_run_errors = {error["code"] for error in by_id["dry_run_recipe_plan"].errors}
-        recipe_dry_run = by_id["dry_run_recipe_plan"]
-        plan_recipe = by_id["plan_recipe"]
-        plan_recipe_errors = {error["code"] for error in by_id["plan_recipe"].errors}
         apply_errors = {error["code"] for error in by_id["apply_graph_plan"].errors}
 
         assert {
             "invalid_ops",
             "invalid_plan",
-            "recipe_plan_requires_handle",
+            "unknown_recipe",
+            "recipe_argument_invalid",
         } <= dry_run_errors
-        assert "recipe_plan_not_found" in recipe_dry_run_errors
+        assert "egress_policy_denied" in {error["code"] for error in by_id["inspect_node"].errors}
+        assert "unknown_reference" in {error["code"] for error in by_id["read_reference"].errors}
         lexical_error_codes = {
             "material_input_required",
             "recipe_name_mismatch",
             "recipe_route_mismatch",
             "recipe_route_required",
         }
-        for error_codes in (
-            dry_run_errors,
-            recipe_dry_run_errors,
-            plan_recipe_errors,
-            apply_errors,
-        ):
+        for error_codes in (dry_run_errors, apply_errors):
             assert lexical_error_codes.isdisjoint(error_codes)
-        assert "structured" in plan_recipe.description.lower()
-        assert "dry_run_recipe_plan" in plan_recipe.description
-        assert set(recipe_dry_run.input_schema["properties"]) == {"recipe_plan_hash"}
-        assert set(plan_recipe.output_schema["properties"]) == {
-            "recipe_id",
-            "version",
-            "recipe_plan_hash",
-            "capability_hash",
-            "operation_version",
-            "error",
-        }
-        recipe_schema = by_id["plan_recipe"].input_schema
-        recipe_branches = recipe_schema["oneOf"]
-        assert {branch["properties"]["recipe_id"]["const"] for branch in recipe_branches} == {
+        # Each recipe is one closed operation branch, selected by `op` then `recipe`,
+        # whose arguments are the recipe's own closed argument schema.
+        branches = by_id["dry_run_graph_edits"].input_schema["properties"]["ops"]["items"]["oneOf"]
+        recipe_branches = [
+            branch for branch in branches if branch["properties"]["op"].get("const") == "recipe"
+        ]
+        assert {branch["properties"]["recipe"]["const"] for branch in recipe_branches} == {
             "categorical_banding",
-            "continuous_banding",
-            "parquet_showcase",
             "reference_join",
             "response_output",
             "rating_step",
         }
-        continuous = next(
+        categorical = next(
             branch
             for branch in recipe_branches
-            if branch["properties"]["recipe_id"]["const"] == "continuous_banding"
+            if branch["properties"]["recipe"]["const"] == "categorical_banding"
         )
-        assert "rules" in continuous["required"]
-        assert "output_name" in continuous["properties"]
-        assert "arguments" not in continuous["properties"]
+        assert categorical["required"] == ("op", "recipe", "arguments")
+        assert categorical["additionalProperties"] is False
+        arguments = categorical["properties"]["arguments"]
+        assert "rules" in arguments["required"]
+        assert "output_name" in arguments["properties"]
+        assert arguments["additionalProperties"] is False
+        assert arguments["description"].startswith(
+            "categorical_banding arguments: source, name, column, output_column, "
+            "rules [{value, assignment}], default; optional output_name, output_columns"
+        )
+        # The recipe's ref is add_node's, so the provider projection keeps one description.
+        add_node = next(
+            branch for branch in branches if branch["properties"]["op"].get("const") == "add_node"
+        )
+        assert categorical["properties"]["ref"] == add_node["properties"]["ref"]
         assert {
             "plan_aborted",
             "plan_already_applied",
+            "unknown_plan_item",
         } <= apply_errors
+        # The build plan's update changes session state only: never the project.
+        plan = by_id["update_build_plan"].as_dict()
+        assert {error["code"] for error in plan["errors"]} >= {
+            "empty_plan_update",
+            "duplicate_plan_item",
+            "unknown_plan_item",
+            "plan_item_unsaved",
+        }
+        assert (
+            plan["state_access"],
+            plan["side_effects"],
+            plan["egress"],
+            plan["parallel_safe"],
+            plan["ordering"],
+        ) == ("session", "session build plan", "none", False, "ordered")
+        assert by_id["apply_graph_plan"].input_schema["required"] == ("plan_hash",)
+        assert "item" in by_id["apply_graph_plan"].input_schema["properties"]
 
     def test_graph_edit_provider_schema_is_derived_from_wire_models(self):
         from haute.assistant._wire_ops import (
@@ -419,6 +430,7 @@ class TestResolvedDescriptors:
             AddNodeOp,
             DeleteEdgeOp,
             DeleteNodeOp,
+            EditStepsOp,
             RenameNodeOp,
             UpdateNodeOp,
             UpdatePreambleOp,
@@ -428,6 +440,7 @@ class TestResolvedDescriptors:
         models = (
             AddNodeOp,
             UpdateNodeOp,
+            EditStepsOp,
             RenameNodeOp,
             DeleteNodeOp,
             AddEdgeOp,
@@ -458,6 +471,104 @@ class TestResolvedDescriptors:
             node_type.value for node_type in NodeType
         ]
 
+    def test_wire_descriptions_are_model_prose_and_state_update_merge_rules(self) -> None:
+        from haute.assistant._wire_ops import graph_edit_operations_schema
+
+        schema = graph_edit_operations_schema()
+
+        def descriptions(value: object) -> list[str]:
+            if isinstance(value, dict):
+                found = [value["description"]] if isinstance(value.get("description"), str) else []
+                return found + [text for child in value.values() for text in descriptions(child)]
+            if isinstance(value, list):
+                return [text for child in value for text in descriptions(child)]
+            return []
+
+        # A Python class docstring (RST markup, hard-wrapped lines) must never
+        # reach the provider-visible schema.
+        for text in descriptions(schema):
+            assert "``" not in text and "\n" not in text, text
+
+        branches = {item["properties"]["op"]["const"]: item for item in schema["items"]["oneOf"]}
+        assert "node index" in branches["add_node"]["properties"]["node_type"]["description"]
+        update_config = branches["update_node"]["properties"]["config"]["description"]
+        assert "replaces" in update_config and "null" in update_config
+
+
+def test_polars_usage_names_inputs_by_edge_without_input_mapping() -> None:
+    # A stepped Transform rejects inputMapping, so the descriptor must not teach it.
+    usage = _descriptors()["polars"].usage
+    assert "inputMapping" not in usage
+    assert "upstream node" in usage
+
+
+def test_every_text_that_names_inputs_states_the_one_naming_rule() -> None:
+    """An edge from a Quote Input frame or a submodel output is not named by
+    its node; a model told otherwise invented frame names (live transcript)."""
+
+    from importlib import resources
+
+    from haute.assistant._catalog import INPUT_NAMING_RULE
+    from haute.assistant._loop import build_system_prompt
+    from haute.assistant._node_cards import node_card
+
+    def flat(text: str) -> str:
+        return " ".join(text.split())
+
+    guide = (
+        resources.files("haute.assistant")
+        .joinpath("assets", "authoring_guide.md")
+        .read_text(encoding="utf-8")
+    )
+    assert INPUT_NAMING_RULE in _descriptors()["polars"].usage
+    assert INPUT_NAMING_RULE in build_system_prompt(source_file="main.py")
+    assert INPUT_NAMING_RULE in flat(guide)
+    for node_type in (NodeType.POLARS, NodeType.OUTPUT, NodeType.LIVE_SWITCH):
+        fields = node_card(node_type)["fields"]
+        assert INPUT_NAMING_RULE in fields["input names"], node_type
+        assert not any("(the upstream node's name)" in text for text in fields.values())
+
+
+class TestStepAuthoring:
+    """Stepped descriptors say how steps start, what they see and how new
+    logic is written, read from the step builder's surface table."""
+
+    def test_it_follows_the_stepped_surface_table(self) -> None:
+        from haute._polars_steps import STEP_KINDS, STEPPED_NODE_TYPES
+
+        for node_type in NodeType:
+            authoring = _descriptors()[node_type.value].as_dict()["step_authoring"]
+            surface = STEPPED_NODE_TYPES.get(node_type)
+            if surface is None:
+                assert authoring is None, node_type
+                continue
+            assert (authoring["start"], authoring["inputs"]) == (surface.start, surface.inputs)
+            steps = authoring["new_logic"]
+            assert [step["kind"] for step in steps] == (
+                ["source", "free_code"] if surface.start == "input" else ["free_code"]
+            )
+            assert all(isinstance(step["id"], str) and step["id"] for step in steps)
+            assert {step["kind"] for step in steps} <= set(STEP_KINDS)
+            assert steps[-1]["code"].startswith("# ")
+            assert ("steps: []" in authoring["rule"]) == (surface.start == "frame")
+            assert ("edge names" in authoring["rule"]) == (surface.inputs == "edges")
+
+    def test_the_guide_carries_the_renderer_s_step_grammar(self) -> None:
+        from haute._polars_steps import STEP_KINDS, PolarsStepError, validate_polars_steps
+        from haute.assistant._tools import read_reference
+
+        (guide,) = read_reference(["guide"])["references"]
+        grammar = guide["content"]["step_grammar"]
+
+        assert list(grammar["kinds"]) == list(STEP_KINDS)
+        for kind, fields in grammar["kinds"].items():
+            if not fields["required"]:
+                continue
+            with pytest.raises(PolarsStepError) as excinfo:
+                validate_polars_steps([{"id": "a", "kind": kind}])
+            assert str(fields["required"]) in str(excinfo.value)
+        json.dumps(grammar)
+
 
 def test_edge_join_descriptor_teaches_strict_role_handles() -> None:
     from haute.assistant._catalog import capability_manifest
@@ -475,7 +586,178 @@ def test_banding_descriptor_exposes_canonical_type_enum() -> None:
     factor_schema = descriptor.as_dict()["config_schema"]["properties"]["factors"]["items"]
 
     assert factor_schema["properties"]["banding"]["enum"] == [
-        "continuous",
-        "categorical",
         "breakpoints",
+        "categorical",
     ]
+
+
+# The editor's own declarations, read from source: the catalogue mirrors them.
+_NODE_TYPES_TS = (
+    Path(__file__).resolve().parents[1] / "frontend" / "src" / "utils" / "nodeTypes.ts"
+).read_text(encoding="utf-8")
+
+
+def _editor_set(name: str) -> set[str]:
+    match = re.search(rf"export const {name} = new Set<\w+>\(\[(.*?)\]\)", _NODE_TYPES_TS, re.S)
+    assert match, f"nodeTypes.ts declares no {name}"
+    return {NodeType[member].value for member in re.findall(r"NODE_TYPES\.(\w+)", match.group(1))}
+
+
+def _editor_meta(field: str) -> dict[str, str]:
+    """One field of each ``NODE_TYPE_META`` row, keyed by node type value."""
+    return {
+        NodeType[member].value: value.strip()
+        for member, value in re.findall(
+            rf'^\s+\[NODE_TYPES\.(\w+)\]:[^\n]*?\b{field}: "?([^",}}]+)"?', _NODE_TYPES_TS, re.M
+        )
+    }
+
+
+def _descriptors() -> dict[str, NodeCapabilityDescriptor]:
+    return {descriptor.id: descriptor for descriptor in capability_manifest().nodes}
+
+
+class TestRegistryFacts:
+    """Source, sink, pass-through and cardinality come from the product's registries."""
+
+    def test_sources_are_the_standalone_source_types_and_the_editor_agrees(self) -> None:
+        from haute._standalone_nodes import SOURCE_NODE_TYPES
+
+        zero_input = {
+            node_id
+            for node_id, descriptor in _descriptors().items()
+            if descriptor.input_cardinality == "zero"
+        }
+        assert zero_input == {node_type.value for node_type in SOURCE_NODE_TYPES}
+        assert _editor_set("SOURCE_ONLY_TYPES") == zero_input
+
+    def test_sinks_are_the_sink_only_types_and_the_editor_agrees(self) -> None:
+        from haute._types import SINK_ONLY_NODE_TYPES
+
+        no_output = {
+            node_id
+            for node_id, descriptor in _descriptors().items()
+            if descriptor.ports["outputs"] == ()
+        }
+        assert no_output == {node_type.value for node_type in SINK_ONLY_NODE_TYPES}
+        assert _editor_set("SINK_ONLY_TYPES") == no_output
+        assert no_output == {"output", "dataOutput", "explore", "modelling", "optimiser"}
+
+    def test_single_input_types_are_the_palette_max_one_types(self) -> None:
+        single = {
+            node_id
+            for node_id, descriptor in _descriptors().items()
+            if descriptor.input_cardinality == "exactly one"
+        }
+        max_inputs = _editor_meta("maxInputs")
+        assert single == {node_id for node_id, value in max_inputs.items() if value == "1"}
+        assert max_inputs["edgeJoin"] == "2"
+        assert _descriptors()["edgeJoin"].input_cardinality == "exactly two"
+        assert "ratingStep" in single
+
+    def test_a_load_file_with_an_incoming_edge_validates_against_its_descriptor(self) -> None:
+        from haute._standalone_nodes import STANDALONE_PASSTHROUGH_TYPES
+
+        load_file = _descriptors()["externalFile"].as_dict()
+
+        assert NodeType.EXTERNAL_FILE in STANDALONE_PASSTHROUGH_TYPES
+        assert load_file["input_cardinality"] == "zero or more"
+        assert "`df`" in load_file["ports"]["inputs"]
+        assert load_file["ports"]["outputs"] == ["frame"]
+        assert "`obj`" in load_file["usage"]
+        assert "first input" in load_file["schema_effect"]
+        assert "no upstream" not in load_file["wiring_rules"].lower()
+
+    def test_apply_optimisation_takes_several_inputs_chosen_by_ratebook_input(self) -> None:
+        apply = _descriptors()["optimiserApply"]
+
+        assert apply.input_cardinality == "one or more, subject to the descriptor configuration"
+        assert "ratebook_input" in apply.wiring_rules
+
+    def test_every_node_type_has_an_explicit_input_cardinality(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(_catalog, "_SINGLE_INPUT_TYPES", frozenset())
+        with pytest.raises(RuntimeError, match="input cardinality"):
+            _catalog._input_cardinality(NodeType.BANDING)
+
+
+class TestPaletteFacts:
+    def test_display_names_are_the_palette_names(self) -> None:
+        names = _editor_meta("name")
+
+        assert {node_id: d.display_name for node_id, d in _descriptors().items()} == names
+        assert names["externalFile"] == "Load File"
+        assert names["liveSwitch"] == "Source Switch"
+
+    def test_defaults_are_the_palette_defaults(self) -> None:
+        from haute._config_io import palette_default_config
+
+        for node_type in NodeType:
+            descriptor = _descriptors()[node_type.value].as_dict()
+            assert descriptor["defaults"] == palette_default_config(node_type)
+        assert _descriptors()["scenarioExpander"].as_dict()["defaults"]["stepCount"] == 21
+
+    def test_the_node_index_names_each_type_with_its_palette_name_and_purpose(self) -> None:
+        from haute.assistant._loop import build_system_prompt
+
+        index = compact_manifest(capability_manifest())["node_index"]
+        load_file = next(entry for entry in index if entry["id"] == "externalFile")
+        assert load_file["display_name"] == "Load File"
+        assert load_file["summary"] != _descriptors()["externalFile"].usage
+
+        prompt = build_system_prompt(source_file="p.py")
+        assert f"- `externalFile` (Load File): {load_file['summary']}" in prompt
+        assert "- `liveSwitch` (Source Switch): " in prompt
+
+
+class TestIoBranches:
+    def test_data_input_and_output_enums_merge_every_branch(self) -> None:
+        data_input = _descriptors()["dataInput"]
+        data_output = _descriptors()["dataOutput"]
+
+        assert data_input.as_dict()["enum_values"]["inputType"] == [
+            "file",
+            "database",
+            "lakehouse",
+            "databricks",
+            "inline",
+        ]
+        assert data_input.config_schema["properties"]["inputType"]["enum"] == (
+            "file",
+            "database",
+            "lakehouse",
+            "databricks",
+            "inline",
+        )
+        # The file branch accepts any installed format, so format is not closed.
+        assert "format" not in data_input.enum_values
+        assert data_output.as_dict()["enum_values"]["outputType"] == [
+            "file",
+            "database",
+            "lakehouse",
+        ]
+        assert data_input.required_fields == ("inputType",)
+        assert data_output.required_fields == ("format", "outputType")
+
+
+class TestUsageNotes:
+    def test_notes_name_real_fields_and_shapes(self) -> None:
+        nodes = _descriptors()
+
+        expander = nodes["scenarioExpander"].usage
+        assert "stepCount" in expander
+        assert "source column" not in expander
+        for field in ("column_name", "min_value", "max_value", "step_column"):
+            assert field in expander
+
+        banding = nodes["banding"].usage
+        assert "date" in banding
+        assert "{boundary, label}" in banding
+        assert "{value, assignment}" in banding
+
+        optimiser = nodes["optimiser"].usage
+        assert "scored" not in optimiser
+        assert "data_input" in optimiser
+
+        assert "first input" in nodes["ratingStep"].usage

@@ -2,6 +2,17 @@
 
 ## Module map
 
+Studio's preview preflight prepares structured Quote Inputs through the
+shared input-cache routes (`POST /api/input-cache/status` and `/build` with
+`node_type: "apiInput"` and the current node config), exactly as it prepares a
+snapshot-backed Data Input: a node whose tables are all ready and none stale is
+left alone; otherwise the build job writes every missing or stale table and the
+preflight waits for it before sending the preview request, showing the
+building phase until completion. Status and build errors propagate through the
+normal preview error surface. All requests respect the owning preview's
+AbortSignal. The preview itself prepares any table still missing or stale on
+the server (see [IO layer](../io-layer/low-level.md#automatic-preparation)).
+
 | File | Responsibility |
 |---|---|
 | `src/haute/_api_input_schema.py` | V2 apiInput schema codec: `TypedDict` shapes, extension recognition, canonical table and column path semantics, filesystem label sanitisation, and fail-loud validation. |
@@ -9,16 +20,17 @@
 | `src/haute/_json_shred/` | v2 per-frame structured-input engine, decomposed by concern into the submodules below; consumers import each concern module directly (there are no aggregating re-exports). |
 | `src/haute/_json_shred/_records.py` | Streaming JSON/JSONL/XML record iteration, the shared bounded record limit, byte-range tiling with its parallelism policy, and the parallel-worker failure transport. |
 | `src/haute/_json_shred/_shred.py` | Table specs, leaf resolution, the single-pass record walk, and root-conservation accounting. |
-| `src/haute/_json_shred/_writer.py` | Aggregate-bounded Parquet row-group emission for cache artifacts and leased runtime spill bundles, plus parallel chunk execution. |
-| `src/haute/_json_shred/_publication.py` | Cross-process cache publication: the per-generation OS file lock, staging-path minting/validation, atomic swap, and crash recovery. |
-| `src/haute/_json_shred/_source_proof.py` | Strong native file revisions (Windows USN/file-id, POSIX stat) and SHA-256 content signatures with persisted-proof reuse and rebinding. |
-| `src/haute/_json_shred/_runtime_storage.py` | Process-owned runtime storage: the disk budget, spill-directory leases, and verified parquet snapshots with their bounded cache. |
+| `src/haute/_json_shred/_writer.py` | Aggregate-bounded Parquet row-group emission for table-snapshot builds and leased runtime spill bundles, plus parallel chunk execution. |
+| `src/haute/_json_shred/_source_proof.py` | The one source-freshness proof for every local file, not only structured sources: native file revisions (Windows USN/file-id, POSIX stat), the settled-stat fallback, and the shared in-process content signature behind them. |
+| `src/haute/_json_shred/_runtime_storage.py` | Process-owned runtime storage for generated standalone code: the disk budget and spill-directory leases, with start-up recovery of dead processes' spills. |
 | `src/haute/_json_shred/_inference.py` | v2 schema inference from data: bounded sampling, type widening, and deterministic column naming. |
-| `src/haute/_json_shred/_cache.py` | Per-port cache lifecycle (prepare/commit/discard/build, manifest and bundle validation, load) and the runtime apiInput source loader. |
-| `src/haute/_json_flatten.py` | Dual-layer (`working/`/`committed/`) cache-directory infrastructure for structured apiInput sources: process-CWD-rooted path resolution, delete, save-time promotion, and preview-cache fingerprint contribution. |
+| `src/haute/_json_shred/_inference_filter.py` | Bounded learning of strict native structural filters; matching records skip repeated evidence collection while mismatches retain the complete inference walk. |
+| `src/haute/_json_shred/_inference_cache.py` | Process-local, bounded complete-schema reuse behind strong source revisions, with concurrent request sharing and independent response values. |
+| `src/haute/_json_shred/_snapshots.py` | Each emitting table as a shared input snapshot: its store identity, the source freshness proof, the one-shred build that publishes the tables, and the supervised worker build with its settlement. |
+| `src/haute/_json_shred/_cache.py` | The runtime apiInput loader: store-leased tables for canvas execution, an in-process bounded shred for generated standalone code. |
 | `src/haute/_json_safe.py` | Recursively converts Python/pipeline values into JSON-safe representations for API responses and preview rows. |
 | `src/haute/_jsonpath.py` | The shared canonical array-outer JSON path parser and writer used by both INPUT and OUTPUT path addressing. |
-| `src/haute/_output_assembler.py` | V2 OUTPUT mapping validation and document assembly: GYO residue/cut planning, bag-natural joins, array-prefix nesting, pruning, and collected-frame rendering. |
+| `src/haute/_output_assembler.py` | V2 OUTPUT mapping validation (including one source frame per array level) and document assembly: array-prefix nesting by relation keys, pruning, and collected-frame rendering. |
 | `src/haute/_edge_join.py` | `edgeJoin` node config validation, Polars join-kwargs construction/execution, and the shared join column-demand-narrowing function used by both static projection and runtime narrowing. |
 
 Submodel graph expansion and boundary rewiring are owned by
@@ -36,15 +48,13 @@ Submodel graph expansion and boundary rewiring are owned by
   `PathSeg` is `(key, is_array)` and only array segments increase relational
   depth.
 - `ApiInputSchemaError(HauteError)` is the single typed schema/path failure
-  consumed by the cache route's structured 422 response.
+  consumed by the inference route's structured 422 response.
 
 **`_output_assembler.py`**
 
 - `OutputMappingSchemaError(HauteError)` is the OUTPUT grammar/structural mapping
   error. `OutputNestingKeyError(OutputMappingSchemaError)` is the fail-loud
   relation-key-null error with stable `frame`, `output_path`, and `key` fields.
-  `_Core` and `_CutPlan` record the deterministic feedback-edge cut and the
-  residual per-frame fields used for same-level assembly.
 - An active mapping row is enabled and has non-blank `source_column` and
   `output_path` fields; incomplete editor rows are ignored consistently by
   validation, contracts, projection demand, and assembly. Every consumer uses
@@ -53,8 +63,9 @@ Submodel graph expansion and boundary rewiring are owned by
 **`_json_shred/` package**
 
 - `ShredSkipStats` — dataclass with `skipped_records: int` and
-  `skipped_rows_by_table: dict[str, int]`. `.total` sums both; `.as_meta()` returns
-  the `{records, rows_by_table}` shape written into `meta.json` and route responses.
+  `skipped_rows_by_table: dict[str, int]`. `.total` sums both; a build logs them.
+- `_ShredTables` — one scratch shred's result: its `ShredSkipStats` and, per emitting
+  table label, that table's Parquet files in row order.
 - `_LeafSpec = tuple[str, str, str]` — `(column_name, leaf_path_dotted, type_token)`,
   used at build time.
 - `_WalkSpec = tuple[str, str, str, int]` — as `_LeafSpec` plus the array-iteration
@@ -97,6 +108,13 @@ Submodel graph expansion and boundary rewiring are owned by
   "non_finite_float"`, `NON_FINITE_FLOAT_VALUES = {"nan", "inf", "-inf"}` — the
   sentinel object shape `{"__haute_type__": "non_finite_float", "value": "nan"}`
   used to round-trip NaN/±Infinity through JSON.
+- `non_finite_float_sentinel` is the one encoding of a non-finite float. Every
+  payload that can carry one builds it here: preview rows and trace payloads
+  through `to_json_safe`, the optimiser-apply trace explanation through the same
+  `to_json_safe`, and the assistant's value profiles through
+  `_column_summary.json_safe_scalar`. No path renders NaN or infinity as a
+  string or as `null`, so a consumer never has to know which endpoint produced a
+  value, and `null` always means a missing value.
 
 **`_edge_join.py`**
 
@@ -129,8 +147,8 @@ forbids — and the ASCII rule is mirrorable exactly in the frontend, where
 Unicode `str.isidentifier()` is not. Soft keywords (`match`, `case`, `type`,
 `_`) are legal parameter names and stay allowed. Under B4 the B2
 sanitised-collision check compares **casefolded** filesystem stems
-(`sanitise_label_for_filesystem(label).casefold()`): parquet caches live on
-case-insensitive filesystems (Windows/macOS), where `Items.parquet` and
+(`sanitise_label_for_filesystem(label).casefold()`): a build shreds each table into a
+Parquet named by that stem, on case-insensitive filesystems (Windows/macOS), where `Items.parquet` and
 `items.parquet` are one file, so two labels differing only by case would
 silently clobber a frame at build time. ASCII identifier labels are fixed
 points of the sanitiser, so post-B4 a case-only collision is the *only* way
@@ -153,27 +171,61 @@ columns to output paths, and passes the field frames to `_assemble_document`. Th
 validator parses every distinct active path once, sorts the parsed destinations, and
 uses adjacent comparisons for duplicate/prefix and array-prefix-chain conflicts
 (`O(n log n)`, not an `O(n²)` pair scan). It also rejects divergent emit prefixes
-within one source frame before any frame collection. `_assemble_document` resolves
-the lazy schemas before data materialisation, groups frames by their emit prefix, and
-collects the final plan for each emitting prefix exactly once. In particular, frames
-emitting at the same array prefix are not first collected individually and then read
-again for their join. They are planned by `_plan_cut` and `_execute_plan` before the
-single collection; residual shared fields are full bag-
-joined (fan-out is retained), cut/disconnected groups are diagonal-concatenated as
-partials, and joins preserve the deterministic sorted-member left-to-right row order
-(`maintain_order="left_right"`) under both automatic and streaming Polars execution.
-Every fold member must overlap the accumulated connected component; a violated plan
-invariant fails loudly instead of falling back to an unbounded Cartesian join.
+within one source frame and, across frames, a second frame whose emit prefix (its
+deepest array prefix) is already taken, naming both frames and one path from each.
+Last, `_nesting_key_error` walks every parent/child level pair: the relation keys
+are the parent level's own paths that frames emitting at or below the child carry,
+and the parent's emitting frame plus every frame emitting at or below the child must
+carry all of them. The first frame (parent first, then the subtree's ports in sorted
+order, levels shallowest first) missing one raises `OutputMappingSchemaError` with
+`source_port`, `output_path` (the frame's level, rendered as `$[:]…[:]`) and `key`
+(the missing path) — all before any frame collection. `_assemble_document` resolves
+the lazy schemas before data materialisation, maps each emit prefix to its one frame
+(raising the same `OutputMappingSchemaError` if called directly with two frames at
+one level, or with a frame missing a relation key), and collects each emitting
+frame exactly once. It never joins frames.
 The prefix-tree builder nests child arrays by ancestor values without
-joining siblings. Relation-key guards examine a row only when that row actually
-contains the key; an absent column in another mapping frame is not a null. A present
-null component raises `OutputNestingKeyError`. `_prune` removes null-valued object fields and empty collection
+joining siblings. An object's identity at a level is the tuple of its own leaf
+values, canonicalised by `_identity`: scalars (including `None`) pass through
+unchanged, while container-valued leaves (`List`, `Struct`, `Array`) are
+canonicalised into hashable tuples — recursively, with struct fields kept in
+their stable polars field order rather than sorted. Container leaves are
+therefore ordinary valid OUTPUT leaves, grouped and ancestor-indexed by value
+like any scalar. Every participating frame carries each relation key (the
+validator guarantees it), so the null guards mark the key in each frame that carries
+it. A present null component raises `OutputNestingKeyError`. `_prune` removes null-valued object fields and empty collection
 values from objects, and removes empty-object elements from arrays; null or
 empty-list elements already present inside arrays are retained.
 `render_output_document` applies that same pruning to the collected Polars shape.
 
+`output_document_schema(source_schemas, mapping)` derives the document's schema
+from the mapping paths and the source frames' schemas alone, mirroring
+`_assemble_document`'s nesting exactly: a leaf's dtype is its source column's
+dtype, object segments nest as `Struct`, array segments nest as `List(Struct)`,
+each leaf sits at its own subpath within its array element (so an ancestor key
+carried by a deeper frame for matching is emitted at the level it belongs to and
+never re-emitted inside the child element), and child arrays are attached after
+the level's own fields in sorted order — the field order `_set_nested` produces.
+A missing source port or column, and one output path mapped from source columns
+of different dtypes, are `OutputMappingSchemaError` rejections.
+
 `assemble_output_from_config` uses the same assembler and constructs the final
-document frame with `infer_schema_length=None`. OUTPUT is an inherent terminal
+document frame under that derived schema rather than by Python inference, which
+makes the derivation the single schema authority for both OUTPUT paths. Under a
+schema-only execution (`schema_only=True`) it returns an empty frame under the
+derived schema and never assembles; otherwise it returns a `limited_python_scan`
+(execution engine) under the same schema. A limit `n` that Polars pushes to the
+scan reaches `assemble_output_from_mapping(..., row_limit=n)` and
+`_assemble_document`: an emitting root level reads only its first `n` rows, and
+every deeper emitting level reads only the rows whose keys match its nearest
+collected ancestor level (`is_in` for one key, a semi join for several), so each
+returned top-level object equals the unlimited assembly's object for the same
+root rows. Root rows sharing their own-field values collapse, so fewer than `n`
+objects may return. A root synthesised from descendants has no rows of its own
+to limit and is assembled in full. Without a limit assembly reads every row. Declaring the schema is rendering-neutral —
+`render_output_document` prunes the null padding a uniform schema introduces —
+and an empty document keeps the typed schema instead of losing its columns.
+OUTPUT is an inherent terminal
 materialisation boundary because its public result is a complete nested Python/JSON
 document. Every lazy collection therefore routes through the shared streaming helper;
 when an `ExecutionContext` is active it uses native-query cancellation polling, records
@@ -186,33 +238,45 @@ context still receives streaming Polars execution but does not acquire an implic
 memory guarantee. Complete-schema inference preserves late non-null nested fields
 without another upstream read.
 
-**Build a structured-input cache** — `build_per_port_cache(data_path, v2_config, cache_dir)`:
-1. `validate_v2_schema(v2_config)` up front.
-2. Acquire the per-cache-directory lock (`_build_lock_for`) and retain that lock
-   strongly for the complete critical section.
-3. No-op trapdoor: if `is_per_port_cache_valid` already holds for the current
-   in-memory schema and on-disk data file, return the existing `meta.json` payload
-   without rebuilding.
-4. Still under the lock, record the data-file signature (`_data_file_signature`)
-   *before* reading records. When a strong native revision is available, the
-   signature includes its strict versioned representation and a SHA-256 binding of
-   the signature to that revision so the completed proof can survive a process
-   restart without trusting an accidentally altered manifest field.
-5. Still under the lock, build the shared `_EmittingTableSpec`s once
-   (`table_is_emitting` plus parsed table/column paths); the walk and parquet frame
-   construction consume the same specs. The signature is shared by this logical
-   operation and, while its strong revision remains unchanged, by later planner and
-   loader operations. A later process can seed the same bounded memo from a live
-   working/committed manifest only when its current native revision matches the
-   persisted revision exactly and all matching manifests agree on the signature.
-6. Create the unique sibling staging temp dir. It precedes the shred because
-   parallel workers write their parts into it; a failure anywhere below removes
-   the whole directory.
-7. Shred, by one of two paths that produce identical artifacts:
+**Table identity** — `api_input_snapshot_source(config, data_path)` validates the
+v2 config and returns the source file (resolved) with its emitting tables in
+schema order. Each table's store identity (`haute._source_cache.SourceCacheIdentity`,
+provider `api_input`) has the descriptor
+`{path: <resolved source file>, table: {path: <table path>, columns: [[name,
+column path, type], ...selected columns in config order]}, shred_version: 1}`.
+Sibling tables and the port label are not part of it: editing one table moves only
+that table's identity, and two tables with identical specifications share one.
+`group_digest` hashes the source path with the node's distinct table digests and
+keys node-level work (single-flight, route jobs). `shred_version`
+(`SHRED_SEMANTICS_VERSION`) is raised whenever the walk or the frame it writes
+changes, so older generations stop matching.
+
+**Freshness** — `api_input_source_signature(path)` is the table generations'
+`source_signature`: `xxh64:<digest>:<size>` from the shared
+`_source_proof.file_signature` (see the source-proof invariants below), or `missing` when
+the path is not a file. The
+store's `status` marks a table whose recorded signature differs as `stale`.
+
+**Build an API Input's tables** — `build_api_input_tables(source, labels, *, store,
+profile, cancellation, deadline, execution_context, plans, scratch_token,
+defer_retirement)`:
+1. Take the named tables, one per distinct identity, in schema order; an
+   unknown or non-emitting label raises `KeyError`. With `plans`, they must name
+   exactly those identities.
+2. Compute the source signature before reading; an absent source raises
+   `FileNotFoundError` before anything is written.
+3. Shred the source once into a private scratch directory,
+   `<inputs root>/.shred/.staging-<token>`, inside the `api_input_shred` execution
+   stage when an execution context is given. The shred returns each table's scratch
+   Parquet files in row order (`_ShredTables`). Two paths produce identical tables:
    - **Serial** (default) — `shred_to_buffers(_counted_records(), v2_config,
-     stats=skip_stats, _row_sink=writer.emit)` consumes `_iter_records` directly.
+     stats=skip_stats, _row_sink=writer.emit)` consumes `_iter_records` directly and
+     writes one Parquet per table (named by the sanitised label).
      `_BoundedParquetRowGroupWriter` owns one aggregate row/estimated-byte budget
      across every table and flushes all non-empty buffers when either limit is met.
+     A row's estimated size is the length of its JSON-object encoding (column names
+     and values), computed from the row's values plus a per-table constant for the
+     names.
    - **Parallel** (`_should_shred_in_parallel`: a `.jsonl`/`.ndjson` source of at
      least `_PARALLEL_MIN_BYTES` that splits into more than one range) —
      `_write_tables_in_parallel`, described below. When a managed execution context
@@ -220,18 +284,38 @@ without another upstream read.
      or Windows Job Object). A per-process `RLIMIT_AS` lease, unavailable best-effort
      enforcement, or an ordinary context uses the same bounded serial writer so
      process fan-out cannot multiply the admitted memory budget.
-8. Conservation assertion at the root level: for every emit-true root table,
+4. Conservation assertion at the root level: for every emit-true root table,
    `emitted + skipped_rows_by_table[label] == record_count`, else `RuntimeError`.
    The parallel path asserts this per chunk; ranges tile the file exactly, so
-   holding it on every chunk holds it on the whole file.
-9. The shared writer converts each bounded buffer through `_buffer_to_frame`, writes
+   holding it on every chunk holds it on the whole file. Skipped records and rows
+   are logged (`json_shred_records_skipped`), not stored with the generation.
+5. The shared writer converts each bounded buffer through `_rows_to_frame`, writes
    it as a zstd Parquet row group with `_per_frame_metadata`, and immediately releases
-   the Python rows. Closing the writers also produces valid schema-carrying empty
-   parquets. After close, each final artifact is recorded with its derived filename,
-   row/column counts, dtypes, and `{size, sha256}` `content_signature`; then
-   `meta.json` is written.
-10. `_swap_dir_into_place(tmp_dir, cache_dir)` — recoverable two-rename publish
-    (below).
+   the Python rows. Conversion checkpoints once per column, so the work between
+   two checks is at most one column of one bounded buffer. Closing the writers
+   also produces valid schema-carrying empty parquets.
+6. Compute the source signature again; a change raises
+   `SourceChangedDuringCacheBuildError` and nothing is published.
+7. Publish each table through the store's ordinary build
+   (`SourceCacheStore.build(identity, builder, refresh=True, source_signature=...)`,
+   build class `bounded`): the builder scans the table's scratch Parquet files in
+   row order (one file from a serial shred, one part per byte range from a parallel
+   one), the store rewrites them as sliced part files, validates the staged
+   generation, and moves the pointer. A plan names the generation id and staging token. Each table publishes
+   on its own, so a table published before a later failure stays current.
+8. Remove the scratch directory whatever happened. A build that dies leaves it for
+   the store's stale-staging sweep.
+
+**Supervised build** — `run_supervised_api_input_build(source, labels, *, store,
+profile, budget, worker_config, spawn)` runs the same build in a hard-capped spawned
+worker (`build_api_input_tables_worker`, which opens an isolated execution context
+from the admitted budget and defers retirement). The parent chooses every
+generation id and staging token and the scratch token. After a worker failure or
+death it reconciles each table (`reconcile_unpublished`) and removes the scratch
+directory; the build still counts as done when every table was published, and
+otherwise the worker's failure is raised. A base exception (an interrupt, a system
+exit) is never turned into success. On success the parent retires superseded
+generations, where its own lease counts are visible.
 
 **Parallel shred** — `_write_tables_in_parallel(...)`. Legitimate because the
 shred is a per-record walk: ancestor values are distributed at walk time, and
@@ -252,17 +336,19 @@ the skip/conservation accounting.
   argument-driven so it survives `spawn` pickling, and it returns a
   `_ChunkResult` rather than raising, so a failure can be re-raised in the
   parent. Rows are written through `_BoundedParquetRowGroupWriter` as compressed
-  Parquet parts in the staging dir, never returned through the pool's result channel.
-- The parent reads one part row group at a time and feeds it into the shared writer
-  **in chunk order** (so row order matches the serial shred exactly), unlinking each
-  part as it is consumed. Parent and child peak memory are therefore bounded by one
-  configured row group plus one logical record, rather than one source range. Disk
-  is the trade: workers may finish writing every part before assembly starts, so the
-  staging directory transiently holds the part parquets alongside the growing final
-  parquets. The swap into place still publishes only the final artifacts, and any
-  failure removes the staging directory with the parts in it. A chunk that produced
-  no part for an emitting table (worker/parent spec divergence — never legitimate)
-  fails the build rather than publishing a parquet with silently missing rows.
+  Parquet parts in the scratch dir, never returned through the pool's result channel.
+- The parent never re-reads or rewrites the parts. It checks every successful
+  chunk's evidence, then hands each table's parts to publication **in chunk order**,
+  so the published table's row order matches the serial shred exactly; the store's
+  publication already rewrites a table as its own part files, so a parent merge would
+  only write every row one extra time. The parent holds no rows, and each worker is
+  bounded by one configured row group plus one logical record rather than one source
+  range. Disk is the trade: the scratch directory holds every part until publication
+  has rewritten it, and any failure removes the scratch directory with the parts in
+  it. A chunk that produced no part for an emitting table (worker/parent spec
+  divergence — never legitimate), or a part whose Parquet footer row count differs
+  from the worker-reported count, fails the build before anything is published
+  rather than publishing a table with silently missing or extra rows.
 - `_raise_chunk_error` rebuilds the worker's failure in the parent rather than
   pickling arbitrary exception objects. The envelope carries an
   `ApiInputSchemaError`'s raw `message` plus complete `context`, an
@@ -286,9 +372,8 @@ the skip/conservation accounting.
   must guard it with `if __name__ == "__main__":`; the packaged entry point
   (`haute = haute.cli:cli`) already does.
 - Parallel eligibility is therefore a performance choice only after memory ownership
-  is proven. Direct library builds without an execution context retain the historical
-  parallel path; isolated route builds never treat a per-process limit as an aggregate
-  descendant budget.
+  is proven. Builds without an execution context use the parallel path; isolated
+  worker builds never treat a per-process limit as an aggregate descendant budget.
 
 **Shred core** — `shred_to_buffers(records, v2_config, stats=None)`:
 1. Validate schema; collect emit-true tables' `(label, segments, col_specs)`, where
@@ -301,7 +386,9 @@ the skip/conservation accounting.
    table does not change the descendant's shape classification.
 3. Group tables by their full `(key, is_array)` segment position
    (`tables_by_pos`), and compute the object-hop + array-key "descents" needed to
-   reach each child array from its parent position (`descents_by_pos`).
+   reach each child array from its parent position (`descents_by_pos`). Each table
+   gets one row reader, built once per shred by `_compile_row_reader` from its
+   column specs (see *Row readers* below).
 4. Walk: `_emit_at(pos, record, ancestors)` emits a row into every table registered
    at `pos` (skipping — and counting — a shape-mismatched record for that table),
    then descends into each child array via `_walk_array`, which iterates the array
@@ -310,106 +397,73 @@ the skip/conservation accounting.
    shape mismatch, never fabricated as a null scalar row). Declared string columns
    use the shared deterministic JSON-scalar renderer; dict/list values remain
    shape values and are rejected or counted rather than stringified.
-5. Returns `{table_label: [row_dict, ...]}`.
+5. A `_row_sink`, when given, receives each row as a tuple of values in declared
+   column order. Without one, returns `{table_label: [row_dict, ...]}`.
 
-**Runtime load** — `load_v2_api_source(data_path, config, *, port_columns=None)`:
+**Row readers** — `_compile_row_reader(columns, own_depth)` returns the function
+that reads one table row. It groups the columns by source depth (the element itself
+or an ancestor element) and, within each source, by shared object prefix, so every
+object on a column's path is fetched once per row however many columns sit below it.
+Its values equal applying `_resolve_leaf` to each column in turn: a non-object source
+or intermediate value gives `None`, an empty list mid-path gives `None`, `$value`
+gives a non-container element itself, and the declared-string and `$value`
+coercions of `_coerce_scalar` follow. A non-empty list mid-path does not choose an
+error itself: the row is resolved again column by column with `_resolve_leaf`, so
+the error names the first crossing column in declared order, exactly as a
+per-column walk reports it. The reader is built from closures over the parsed
+specs; no source text is generated or executed.
+
+**Runtime load** — `load_v2_api_source(data_path, config, *, port_columns=None,
+read_snapshots=False, store=None, schema_tier_node=None)`:
 1. Validate the v2 schema at this public boundary, then require at least one
    emit-true table and at least one selected column (the latter two raise
    `RuntimeError` with an actionable configuration message otherwise).
 2. Construct complete `_EmittingTableSpec`s once: parsed table position plus every selected
-   column's name, leaf, declared type, and source array depth. Cache build, direct
-   shred, strict frame construction, and ancestor broadcast all consume these specs.
-   `port_columns=None` selects every emitting port at full width. Otherwise it is a
-   non-empty mapping from emitting label to either `None` (that port at full width)
-   or a subset of its declared selected column names. An empty subset is the
-   row-cardinality-only demand and physically retains the first declared column as a
-   carrier because Polars cannot represent a non-zero-row, zero-column frame. Invalid
-   labels or columns fail before cache access. Projected specs retain schema order.
-3. Try `working/`, then `committed/`. Read each candidate manifest once. Runtime
-   loading, admission metadata, and public cache-validity probes compute a complete
-   source-content signature lazily only after a candidate has the right schema
-   identity; when no layer has plausible metadata, they do not perform an
-   otherwise-unused full-file hash pass. A candidate must
-   pass fingerprint/source validity; contain exactly one entry per emitting label;
-   derive the expected filename from that label; and carry a strict size/SHA-256
-   signature. Missing, duplicate, malformed, or unsigned entries invalidate
-   the candidate. A full-bundle call opens every payload; a demand-scoped call
-   opens only requested payloads, because an unused payload is not observable in
-   that execution. `_snapshot_cache_artifact` first pins each requested path into
-   a private process-owned snapshot directory using a same-filesystem hard link.
-   Creating the link is atomic with respect to Haute's rename-based publisher: it
-   either captures the manifest's generation or a different generation whose
-   signature is then rejected. Filesystems without hard-link support use a
-   bounded streaming-copy fallback. The first observation of a visible artifact
-   generation verifies size and SHA-256 from the pinned artifact in fixed-size chunks;
-   the complete compressed payload is never held in a Python `bytes`/`BytesIO` object.
-   The verified snapshot may remain in a process-local LRU bounded by
-   `HAUTE_JSON_RUNTIME_SNAPSHOT_CACHE_MAX_ENTRIES` and
-   `HAUTE_JSON_RUNTIME_SNAPSHOT_CACHE_MAX_BYTES`. A later probe acquires that snapshot
-   without hashing only when the current visible path has the exact strong native
-   identity/change revision captured after verification and the private file still
-   exists. The warm-hit path performs the fork-safe process-state reset and native
-   revision checks before allocating or scanning runtime storage; it creates and
-   disk-budget-checks a snapshot directory only after the verified-snapshot lookup
-   misses. Revision movement, atomic replacement, cache eviction, fork reset, or an
-   unavailable strong revision takes the full capture/hash path. Cache eviction removes
-   only the cache's pin; an active execution lease or unmanaged process pin keeps its
-   snapshot alive until its existing lifetime boundary. Repeated access to the same
-   artifact generation reuses one process snapshot; independently mutable artifacts
-   remain separate even when their current bytes are identical. Private snapshot
-   filenames use a fixed 128-bit SHA-256 prefix so deeply nested Windows project paths
-   do not cross the legacy path limit. The cache key and content
-   verification still use the complete SHA-256; any truncated-name collision is
-   detected by file identity and published under a short UUID fallback instead of
-   substituting one artifact for another.
-   `scan_parquet(snapshot_path)` remains a native file-backed scan. Before any
-   requested-column selection, `LazyFrame.collect_schema()` must expose the port's
-   complete exact declared name-to-Polars-dtype mapping. Physical parquet column
-   order is irrelevant: an accepted lazy frame is projected into requested-column
-   order as inherited from the current declaration. On collection Polars can read
-   the footer and selected column chunks without reading unrelated column payloads
-   into memory. Integrity validation still streams across the complete compressed
-   artifact once; this is storage I/O, not full-payload memory retention.
-   An unusable candidate is logged and the next candidate is tried.
-
-   The private snapshot path pins the returned frame and every derived lazy plan to
-   this generation across a later rebuild, mirror, or explicit clear. Repeated access
-   to the same artifact generation may share one stable private path, reference-counted
-   across concurrent managed executions; the current `ExecutionContext` releases its
-   lease only after collection and all execution cleanup finish. The bounded LRU may
-   retain its independent verification pin until eviction or explicit cleanup. A
-   direct caller without a managed context conservatively pins its paths until orderly
-   process exit because a public LazyFrame may outlive its original reference and
-   Haute cannot safely infer when all derived plans are gone. A hard-linked current
-   generation consumes no duplicate blocks; a replaced generation remains only while
-   an execution, process, or bounded-cache pin owns it. The streaming-copy fallback
-   uses equivalent temporary disk space. Validation-only probes release their
-   transient references immediately after footer validation; an admitted verification
-   cache entry may retain the proven generation within the same bounds. An ungraceful
-   process termination may leave a
-   private snapshot directory for later operational cleanup, but never makes that
-   directory part of cache discovery or serving.
-4. If no cache can serve, `_iter_records` plus the shared shred walker uses only the
-   requested projected specs. The same `_BoundedParquetRowGroupWriter` used by cache
-   generation owns one aggregate byte/row-bounded buffer across all requested tables.
-   Crossing either bound flushes every non-empty table buffer through the same strict
-   `_buffer_to_frame` conversion into a PyArrow `ParquetWriter` row group, then releases those Python rows. The
-   resulting `{label: scan_parquet(...)}` bundle preserves schema order, row order,
-   carrier-column cardinality, skip accounting, strict bool/date errors, and root
-   conservation. JSON root arrays are tokenised one complete top-level value at a
-   time; JSON root objects, individual JSONL lines, repeated XML children, and
-   one-root XML documents are all subject to the hard structured-input record-byte
-   limit. The XML parser releases repeated record elements at each direct-child end.
-   Checkpoints run during parsing,
-   emission, conversion, and flush. Runtime spill files live outside `working/` and
-   `committed/`; this path never writes, refreshes, deletes, or promotes cache state.
-   Each spill allocation claims its UUID-named child with an exclusive directory
-   create. A name collision fails closed and leaves the pre-existing entry untouched;
-   rollback removes a spill child only after this allocation successfully created it.
-   Orderly-exit cleanup reports residue through structured warnings; cleanup failures
-   during a primary build error are attached as exception notes rather than hidden.
-   A managed `ExecutionContext` owns the spill lease until collection/cleanup; an
-   unmanaged LazyFrame is conservatively process-pinned until orderly exit.
+   column's name, leaf, declared type, and source array depth. Builds, the
+   standalone shred, strict frame construction, and ancestor broadcast all consume
+   these specs. `port_columns=None` selects every emitting port at full width.
+   Otherwise it is a non-empty mapping from emitting label to either `None` (that
+   port at full width) or a subset of its declared selected column names. An empty
+   subset is the row-cardinality-only demand and physically retains the first
+   declared column as a carrier because Polars cannot represent a non-zero-row,
+   zero-column frame. Invalid labels or columns fail before any read. Projected specs
+   retain schema order.
+3. With `read_snapshots` (canvas execution: the executor's API Input builder passes
+   it through `resolve_api_input_from_config`), lease each demanded table's current
+   generation from the shared store (`lease_input_generation`, released by the
+   execution context's cleanup after collection, or owned by the returned plan
+   outside one) and select the demanded columns in declared order. The source file
+   is never read. A table with no generation raises `PolarsIoConfigError`
+   (`input_snapshot_missing: ...`): automatic preparation publishes the tables
+   before an admitted execution, so this reaches only a run that was not prepared.
+   The one exception is the IO layer's declared schema tier
+   ([IO layer](../io-layer/low-level.md)): with a `schema_tier_node` (a schema-only
+   read, named by the node it records under) while the schema tier recorder is active, a table with no generation resolves as
+   an empty frame under its declared frame schema and is recorded by node id and
+   label, without reading the source.
+4. Otherwise (generated standalone code, which runs without a project store),
+   `_iter_records` plus the shared shred walker uses only the requested projected
+   specs. The same `_BoundedParquetRowGroupWriter` used by builds owns one aggregate
+   byte/row-bounded buffer across all requested tables. Crossing either bound
+   flushes every non-empty table buffer through the same strict `_rows_to_frame`
+   conversion into a PyArrow `ParquetWriter` row group, then releases those Python
+   rows. The resulting `{label: scan_parquet(...)}` bundle preserves schema order,
+   row order, carrier-column cardinality, skip accounting, strict bool/date errors,
+   and root conservation. JSON root arrays are tokenised one complete top-level
+   value at a time; JSON root objects, individual JSONL lines, repeated XML
+   children, and one-root XML documents are all subject to the hard
+   structured-input record-byte limit. The XML parser releases repeated record
+   elements at each direct-child end. Checkpoints run during parsing, emission,
+   conversion, and flush. Spill files live below the process working directory's
+   `.haute_cache/.runtime-spills`, outside the shared store; this path never writes
+   store state. Each spill allocation claims its UUID-named child with an exclusive
+   directory create. A name collision fails closed and leaves the pre-existing entry
+   untouched; rollback removes a spill child only after this allocation successfully
+   created it. Orderly-exit cleanup reports residue through structured warnings;
+   cleanup failures during a primary build error are attached as exception notes
+   rather than hidden. A managed `ExecutionContext` owns the spill lease until
+   collection/cleanup; an unmanaged LazyFrame is conservatively process-pinned until
+   orderly exit.
 5. Return a `{label: LazyFrame}` dict in schema order for every requested frame
    (or every eligible frame when `port_columns` is absent) — there is no bare-frame single-table special case, so a
    sole frame routes through the same per-edge `source_port` resolution as
@@ -417,57 +471,21 @@ the skip/conservation accounting.
    `_pick_source_frame`), and adding or removing a sibling frame never changes
    the shape a consumer receives.
 
-**Save-time cache promotion** — `mirror_cache_to_committed(data_path)`
-(`_json_flatten.py`):
-1. No-op if this process has not built `working/` for this data file this session
-   (`_session_consulted_hashes`, populated only by a successful build-route call) —
-   guards against promoting a stale on-disk `working/` left from a previous process.
-2. Acquire the `working/` and `committed/` cache-identity locks in canonical resolved
-   path order and hold both for the complete promotion transaction. If `working/` is absent, ensure
-   `committed/` is also absent (propagate deletion). If working metadata has a
-   non-v2 mode, malformed fingerprint/source identity, or source signature that no
-   longer matches `data_path`, or if its artifacts are unsigned, malformed, missing,
-   or hash-mismatched, preserve committed state and return without promotion.
-   Otherwise no-op only when both manifests agree on
-   schema fingerprint, schema mode, source signature, and signed table summaries,
-   and both layers' actual parquet bytes match those signatures. A damaged committed
-   layer is therefore replaced from healthy working state via
-   `copytree` into a `.tmp` sibling. Before publish, the staged `meta.json` must equal
-   the captured working manifest and every staged parquet must still match that
-   manifest's signature; a concurrently changed/mixed copy is removed and committed
-   remains untouched. The rejection warning identifies whether the manifest changed,
-   an artifact probe failed, the source identity moved, or the probe itself raised;
-   these states are never collapsed into an unexplained generic failure. A valid
-   stage is published with `_swap_dir_into_place` (shared with build).
+**File locks.** The runtime storage budget serialises on
+`_file_lock.file_lock_for(<cache root>/.runtime-storage-budget.lock)`, the one
+cross-process lock helper the [IO layer](../io-layer/low-level.md) specifies: re-entrant
+within a thread, a per-process `RLock` combined with an OS advisory lock (`flock` on
+POSIX, one-byte `msvcrt.locking` on Windows), and a lock path that must be a plain
+regular file (symlinks, reparse points, and file-identity swaps are rejected before
+the lock is trusted).
 
-**Staged publish** — `_swap_dir_into_place(tmp_dir, live_dir)`:
-renames the current `live_dir` aside to a unique `.build-old-<uuid>` name, renames
-`tmp_dir` into `live_dir`, then best-effort removes the old backup; if the second
-rename raises, it attempts to rename the backup back before re-raising.
-`_rename_dir_with_retry` retries a `PermissionError` with increasing backoff
-(`0.01s..0.1s`) before giving up — a Windows-specific transient-handle-lock
-accommodation.
-
-**Cross-process publication and recovery.** `_build_lock_for` is re-entrant within a
-thread and combines the existing per-process `RLock` with an OS advisory lock on a
-stable sibling lock file (`flock` on POSIX, one-byte `msvcrt.locking` on Windows).
-An existing lock path must be a plain regular file; symlinks, reparse points, and
-file-identity swaps are rejected before the lock is trusted.
-Builders, promotion, metadata readers, and snapshot capture hold it across the full
-generation selection/publication window. Independent cache identities remain
-parallel. On outermost acquisition the owner recovers crash-left siblings: a missing
-live directory with a single newest plain `.build-old-*` generation is restored;
-superseded plain backups and `.build-tmp-*` stages are removed. Symlinks, junctions,
-and other reparse points are never traversed or deleted. Recovery is idempotent and
-logged; ambiguous or non-directory state fails loudly.
-
-**Runtime storage budget.** `.runtime-snapshots` and `.runtime-spills` live below the
-project cache root and use owner directories named by PID plus a random token. Owner
+**Runtime storage budget.** `.runtime-spills` lives below the project cache root and
+uses owner directories named by PID plus a random token. Owner
 metadata records a format version and creation time. A global OS-locked budget
 (`HAUTE_JSON_RUNTIME_DISK_BUDGET_BYTES`, positive integer) counts unique allocated
 file identities so hard links are not double charged. Allocation/flush checks run
 under that lock; crossing the budget raises `JsonRuntimeDiskBudgetExceededError` and
-cleans the caller's partial spill or snapshot. Startup and first-use recovery remove
+cleans the caller's partial spill. Startup and first-use recovery remove
 only plain owner directories older than the configured grace whose PID is no longer
 live; active, young, malformed, symlink, and reparse-point entries are preserved and
 logged. Budget accounting is fail-closed: a preserved non-plain or unreadable entry
@@ -476,19 +494,17 @@ entry can be inspected or removed. A concurrently released plain entry may disap
 during the scan and is treated as a benign reduction in usage, never as zero-sized
 evidence for an entry that still exists.
 
-**Admission metadata uses a verified generation.** Per-port JSON metadata used by
-materialisation admission never trusts a mutable parquet footer merely because a
-matching manifest exists. Under the same cache lock it captures the manifest-named
-artifact through the bounded verified-snapshot path, checks the complete declared
-schema, reads row/width metadata from that exact snapshot, and releases the transient
-lease. A missing, unsigned, corrupt, or schema-mismatched generation makes the
-estimate unavailable (or moves to the next layer); runtime never falls back to a
-different source generation behind an optimistic estimate.
+**Admission metadata uses the published generation.** Per-port metadata used by
+materialisation admission reads the table's current generation in the store
+(`open_generation`, which verifies part digests, footers and schema before
+returning) and sizes the boundary from its part files. A table with no generation
+leaves the estimate unavailable; automatic preparation runs before strategy
+planning, so an admitted execution sizes the generation it will read.
 
 **Schema inference** — `infer_v2_schema_from_data(data_path, sample_size=None)`:
 1. Input dispatch preserves a complete scan by default. JSONL/NDJSON at or above
    `_PARALLEL_MIN_BYTES` is split at newline boundaries with the same exact byte
-   tiling used by parallel cache construction. Spawned workers infer compact
+   tiling used by parallel table builds. Spawned workers infer compact
    `_InferenceState` accumulators, and the parent merges results in file order;
    it never transfers records between processes. Smaller newline-delimited
    files, XML, root JSON arrays, and every explicit bounded sample remain serial.
@@ -506,12 +522,58 @@ different source generation behind an optimistic estimate.
    a `$value`-colliding or dot-containing source key before it can be silently
    mis-addressed later. Each distinct key is validated once per accumulator;
    repeated records do not rerun the same identifier checks.
+   After a bounded prefix of 10,000 records, a native structural filter may skip
+   repeated Python evidence collection for records already covered by the
+   accumulated observations. It must reject unknown keys at every object depth
+   and avoid scalar coercion; new fields/types and ambiguous array forms still
+   pass through the ordinary walker. The filter is an optimization, never a
+   completeness limit: every record is parsed and checked, and the complete
+   schema, ordering, naming and structured errors match the ordinary walk.
+   The filter uses strict `msgspec.convert` on already-parsed records, with
+   wire aliases for generated attributes and `forbid_unknown_fields=True` at
+   every object depth. Parallel JSONL ranges also use a strict typed
+   `msgspec.json.Decoder` to combine parsing and known-structure checking without
+   first building a separate dictionary tree. Successful checks discard the
+   decoded value; only records decoded by the existing `orjson` parser supply
+   new inference evidence. Decoder shape/syntax failures and invalid UTF-8
+   return the original bytes to the ordinary parser/walker, preserving its
+   accepted input, duplicate-key behavior, scalar types and structured errors.
+   Native integer fields in this JSON fast path are limited to signed 64-bit
+   values: larger JSON integers must use `orjson`, which can parse them as
+   unsigned integers or floating-point values. A parser mismatch never becomes
+   a user-facing error or silently discards an input record. It recompiles
+   after each 100 records requiring the ordinary walker, at most eight times
+   per stream; after that, mismatches still receive complete inference without
+   further filter learning. Mixed object/scalar/nested-list array forms and
+   nullable scalar arrays without prior null-only evidence deliberately remain
+   on the ordinary walk to preserve array-mode semantics and errors.
+   Shapes deeper than 64 levels use the ordinary walk without native filtering
+   so native type construction cannot impose a new input nesting limit.
+   Depth starts at zero for the root object and increases at each object field
+   and object-array item. A supported shape exactly at depth 64 remains eligible
+   for native filtering. Learned scalar/object arrays accept their known forms;
+   empty and null-only arrays become eligible only after those forms were observed.
+   Parallel JSONL inference learns the first 10,000 object records once before
+   dispatch. It merges that prefix's exact evidence first and sends a picklable
+   snapshot of the learned structure to each range. Each range makes its own
+   copy and compiles its own native type; later learning cannot mutate another
+   range's starting structure. The initial compilation counts toward the eight
+   compilation limit. Existing byte ranges are retained, so the short prefix
+   is parsed again during the parallel scan without repeating its full inference
+   walk when it matches. This avoids learning 10,000 records independently in
+   every range, while preserving first-observation ordering and complete input
+   validation. Serial and explicitly sampled inference learn from up to 10,000
+   records within their existing scan limit. Filters remain local to each stream;
+   only exact inference evidence is merged between ranges. Bounded raw range
+   reads are shared with the ordinary JSONL record reader, retaining record byte
+   limits, newline boundaries and file-order error reporting. Other input formats
+   and explicit sample limits retain their existing parser path.
 3. `_InferenceState.merge` unions container/null evidence and applies the same
    associative `_widen_type` operation to scalar and object leaves. States are
    merged in range order and dictionaries keep first-observation order, making
    parallel output byte-for-byte identical to serial output, including column
    and table ordering. Worker failures use the same structured reconstruction
-   envelope as parallel cache construction.
+   envelope as parallel table builds.
 4. Table assembly, per observed level, in `(array_depth, len, tuple)` sort order:
    a level only ever seen as a scalar array becomes a one-column `$value` table
    (`_SCALAR_VALUE_COLUMN`); otherwise its object-folded columns are named via
@@ -521,7 +583,7 @@ different source generation behind an optimistic estimate.
 5. Label assignment — inferred `label`s are B4-valid identifiers, never raw
    table paths (`path`/`displayPath` still carry the path). The root level is
    labelled `quote_info`; every other level is labelled by its innermost array key
-   through `derive_identifier_label(raw)` (`_api_input_schema.py`): the
+   through `derive_identifier_label(raw)` (`src/haute/_api_input_schema.py`): the
    `_sanitize_func_name` character pipeline (strip; spaces/hyphens → `_`;
    ASCII alnum/underscore kept; other ASCII dropped; non-ASCII reversibly
    encoded `_x<hex>_`) with frame-flavoured repairs — empty → `table`,
@@ -541,12 +603,47 @@ different source generation behind an optimistic estimate.
 The frontend's ordinary **Infer Tables** action requests the complete inference
 contract: `inferJsonCacheSchema` omits `sample_size` unless a caller explicitly
 supplies one, and gives this endpoint the same 30-minute request budget as a
-cache build instead of the shared 30-second default. A hidden head-sample is not
+table build instead of the shared 30-second default. A hidden head-sample is not
 permitted here. A field that first appears after the sample is not a type
 widening of a declared column; the subsequent build legitimately ignores that
 unknown field, so it cannot act as a completeness backstop. Bounded inference
 therefore remains an explicit programmatic opt-in whose caller owns the
 incomplete-schema trade-off.
+
+Complete inference results reuse only behind the shared freshness token
+(`_source_proof.observe_freshness`). The cache key
+includes the absolute source path (preserving its parser-selecting extension)
+and the configured record-byte limit; only unbounded inference participates.
+Positive explicit samples bypass the cache. An unchanged reusable token may
+reuse a successful full result; a missing/unreadable file still fails normally,
+and a token that is not reusable (a young file without a native revision) uses the
+ordinary scan without retaining its result. A miss checks the token before and
+after inference; a changed proof
+raises the existing structured changed-during-inference error and retains no
+result. Waiters revalidate after an in-progress result becomes available.
+
+The process-local cache reuses the common `LRUCache` with bounds of 32 entries
+and 16 MiB of serialized schema payloads. An oversized schema is returned but
+not retained. Serialized payloads are immutable and each caller receives a
+fresh decoded mapping, so editor changes cannot alter cached inference.
+Concurrent requests for the same path/settings/revision share one active scan,
+including its failure; failed scans are not retained and a later request can
+retry. Active request coordination is released on success or failure. Clearing
+retained results does not split an active request, and forked processes replace
+inherited cache/coordination locks rather than acquiring them. This cache is
+not persisted across server restarts and does not store or modify source data
+or node configuration.
+
+JSONL range readers and newline-boundary discovery obey the same configured
+record byte limit as serial reads. Their line reads are bounded to the limit
+plus one byte; an oversized record/remaining line fragment raises the same
+structured record-limit error instead of allocating an unbounded line. Range
+readers stop at their end boundary before requesting the next record.
+Sequential JSONL reads, including parallel range readers, use a fixed 64 KiB
+binary read buffer to amortize filesystem calls. This is read-ahead only:
+logical records still obey the configured byte limit, and a record spanning
+multiple buffer fills is yielded intact. Boundary discovery keeps its small
+default buffer because its reads are sparse seeks rather than a sequential scan.
 
 **Edge-join execution** — `execute_edge_join(base, join, config,
 collect_eager=False)`: normalises both frames to `LazyFrame`, calls
@@ -581,73 +678,49 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
 - **A `None` array element** is a legitimate row for a scalar child table (its
   `$value` resolves to `None`) but a counted shape-mismatch skip for an object
   table.
-- **Conservation is asserted, not assumed**: `build_per_port_cache` cross-checks
-  `emitted + skipped == records_read` for every emit-true root table and raises
-  `RuntimeError` on any discrepancy — a shred bug that silently lost or duplicated
-  rows cannot ship a cache.
+- **Conservation is asserted, not assumed**: every shred (a table build or the
+  standalone path) cross-checks `emitted + skipped == records_read` for every
+  emit-true root table and raises `RuntimeError` on any discrepancy — a shred bug
+  that silently lost or duplicated rows cannot publish a table.
 - **Bool-into-numeric and int/bool-into-Date are rejected even though Polars'
   "strict" build would accept them** (`bool` is an `int` subclass, so Polars won't
   raise on its own for the first case; a raw JSON int/bool successfully
   reinterprets as a days-since-epoch offset for the second) — both checked
-  explicitly in `_buffer_to_frame` before the Polars build.
-- **Cache validity remains content-authoritative.** The data file's complete
-  SHA-256 is memoised only behind a strong native revision comprising file
-  identity, length, last-write value, and an unforgeable-by-normal-write change
-  token (`ctime_ns` on POSIX; the file USN read with
-  `FSCTL_READ_FILE_USN_DATA` plus `FILE_ID_INFO` on Windows). A Windows volume
-  that cannot supply a supported USN record takes the full-hash path; Haute does
-  not substitute the weaker `FILE_BASIC_INFO.ChangeTime`. Size/mtime alone never
-  authorise reuse, so an
-  in-place same-size rewrite followed by an mtime restore and an atomic
-  same-stat replacement both force a new hash. If the strong token cannot be
-  read, that observation re-hashes instead of falling back to a weaker gate.
-  Every manifest-declared parquet generation is completely hashed before its first
-  footer schema probe. Reuse of that proof requires the same strong native revision
-  and the still-private verified snapshot; otherwise it is re-hashed. A
-  footer-readable data-page corruption is therefore rejected rather than masked by
-  size/mtime or by a stale retained snapshot.
-- **The build lock is process-local**, keyed by the normcased resolved cache-dir
-  path; concurrent builds of *different* caches never block each other.
-  `_BUILD_LOCKS` weakly retains inactive identities, while the caller strongly owns
-  its lock throughout table-spec construction, source signing, validation, staging,
-  and publish. Cache directories are resolved from the selected project process CWD,
-  not relative to the source data file.
-- **Source signatures use bounded process-wide proof reuse**: canonical paths
-  key at most 256 immutable signature entries; per-path single-flight prevents a
-  concurrent hashing herd. The strong revision is read before and after hashing
-  and the result is published only if it held. A cache manifest stores that revision
-  as `data_file.native_revision` (`posix_ctime_v1` with device/inode/ctime, or
-  `windows_usn_v1` with volume/file ID/USN). After a process restart or fork, an
-  exact current-revision match may seed the memo without rereading the source only
-  when its `native_revision_proof_sha256` validates and every matching live manifest
-  supplies the same strict size/mtime/SHA-256 record. The persisted native-revision
-  record is a closed shape: `schema_version` is exactly the integer `1` (not a bool
-  or numerically equal float), integer identity/size/time fields use their declared
-  bounds, and Windows file IDs are exact non-zero 128-bit hexadecimal values.
-  Missing, old, malformed, or
-  conflicting records fall through to a complete hash. Once that hash succeeds,
-  each live legacy v2 manifest whose recorded size/SHA-256 agrees is upgraded by an
-  atomic `meta.json` replacement with the current revision-bound proof. A mismatch
-  is not changed; a write failure is logged and does not fail or weaken the proven
-  read. Revision movement fails the signature operation, loader failure publishes
-  nothing, and least-recently-used entries are evicted at the bound.
-  Callers receive independent signature mappings so mutation of one result cannot
-  poison later validity checks. When strong revision support is unavailable, each
-  call hashes and retains no cross-operation proof.
-  That conservative path emits a bounded once-per-path structured warning naming
-  `full_source_hash_per_operation`, so a platform capability problem remains
-  operationally visible instead of presenting only as unexplained preview latency.
+  explicitly in `_rows_to_frame` before the Polars build, once per column from the
+  set of value types it holds.
+- **Table freshness remains content-authoritative.** The source file's complete
+  content hash is reused only behind its freshness token: a native revision
+  comprising file identity, length, last-write value, and an
+  unforgeable-by-normal-write change token (`ctime_ns` on POSIX; the file USN read
+  with `FSCTL_READ_FILE_USN_DATA` plus `FILE_ID_INFO` on Windows), so an in-place
+  same-size rewrite followed by an mtime restore and an atomic same-stat replacement
+  both force a new hash. Haute does not substitute the weaker
+  `FILE_BASIC_INFO.ChangeTime`. Where no native revision can be read, the token is
+  the file's stat and is trusted only once the file is two seconds old, the rule
+  every source kind shares (see [caching](../caching/low-level.md)). The published
+  table generations themselves are verified by the store (part digests, footers and
+  schema) before they are read.
+- **Source signatures use bounded in-process proof reuse, backed by durable
+  records**: the shared `file_signature` cache keys at most 256 immutable
+  `FileSignature` entries by canonical path; per-path single-flight prevents a
+  concurrent hashing herd. The token is read before and after hashing and the result
+  is published only if it held; one moving token retries, a second raises
+  `SourceChangedError`. A proof made under a native revision is also recorded in
+  `.haute_cache/source_proofs/` and reused by a new process while that exact revision
+  holds (the record contract and outcomes are in
+  [caching](../caching/low-level.md#durable-source-proofs)); without a native
+  revision nothing is persisted and a new process hashes each source once. Loader failure publishes
+  nothing, and least-recently-used entries are evicted at the bound. A path with no
+  native revision logs `source_revision_unavailable` once, so a platform capability
+  problem stays operationally visible.
 - **Inference accepts only expressible keys** through
   `_jsonpath.is_identifier_name`; non-ASCII/non-identifier keys, dots, and the
   reserved `$value` sentinel fail before a schema is returned. Config sidecars use
   duplicate-key-rejecting loading; raw JSON/NDJSON retains the streaming decoder's
   native duplicate-key semantics and is not rescanned.
-- **Cache metadata exposes real columns** as label-qualified names with their dtype
-  strings. Placeholder names and the constant `"v2"` pseudo-dtype are never returned.
-- **`mirror_cache_to_committed`'s consulted-hash gate is intentionally never
-  cleared** except by a test-only hook (`_clear_session`) that simulates a process
-  restart — the user stays authoritative for a data file for the lifetime of the
-  process.
+- **Table generations expose real columns** with their dtype strings in the
+  store's generation metadata; placeholder names and the constant `"v2"`
+  pseudo-dtype are never recorded.
 - **`narrow_join_parent_demand` only narrows `inner`/`left`/`semi`/`anti` joins**
   with at least one key and a non-empty suffix; `cross`/`full`/`right`, keyless
   joins, and an ambiguous suffixed-name-that-is-itself-a-real-column all return
@@ -657,7 +730,7 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
 
 - `haute._api_input_schema.ApiInputSchemaError` — raised by the `_json_shred/` package for
   every schema/data-shape problem: malformed v2 config passed to
-  `_v2_fingerprint`/`shred_to_buffers`/`build_per_port_cache` (via
+  `shred_to_buffers`/`api_input_snapshot_source` (via
   `validate_v2_schema`, including wrong-typed `emit`/`selected` and invalid
   `status` values with exact field paths), a dotted leaf crossing a non-empty array, a `$value`/real-
   column collision, a column value that doesn't match its declared type (including
@@ -668,11 +741,13 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
   carry a direct safe message.
 - `RuntimeError` — raised by the shared file-shred path on a root conservation-
   assertion failure, and by `load_v2_api_source` for "no emitting tables" or "no
-  selected columns on any emitting table". Missing/stale/corrupt/mismatched cache
-  artifacts are rejected as optional fast paths and do not mask the direct raw-file
-  result or its native missing/decode/type error.
-- `PermissionError` — allowed to propagate from `_rename_dir_with_retry` once all
-  retry delays are exhausted (a persistent, not transient, Windows lock).
+  selected columns on any emitting table".
+- `PolarsIoConfigError` (`input_snapshot_missing: ...`) — raised by
+  `load_v2_api_source(read_snapshots=True)` for a demanded table with no published
+  generation, unless the declared schema tier resolves it.
+- `haute._json_shred._snapshots.SourceChangedDuringCacheBuildError` (a `RuntimeError`
+  subclass) — raised when the source signature no longer matches after the shred
+  and before publication.
 - `haute.errors.ConfigError` — raised by `_edge_join.py` for any malformed
   `edgeJoin` config: wrong connected-input count/distinctness, unresolved or
   ambiguous base/join role, unsupported `how`, missing/conflicting join keys,
@@ -684,22 +759,24 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
   `OutputMappingSchemaError` from the OUTPUT side — carrying the offending
   `output_path`.
 - `OutputMappingSchemaError` covers a non-array root, two different columns from
-  one port targeting the same path, leaf/container prefix collisions, and one frame
-  targeting divergent emit prefixes. `assemble_output_from_mapping` itself runs the
+  one port targeting the same path, leaf/container prefix collisions, one frame
+  targeting divergent emit prefixes, two frames emitting at the same array
+  level (`source_ports` names both), and a frame taking part in a nesting without
+  one of its relation keys (`source_port`, `output_path` naming the frame's level,
+  `key`). `assemble_output_from_mapping` itself runs the
   validator before collecting any frame, so direct/runtime and route callers receive
   the same typed failure. Missing `frames[port]` or `pl.col(source_column)` failures
   remain loud and are never converted into an empty output.
 - `OutputNestingKeyError(OutputMappingSchemaError)` is raised when an active
   participating row contains null in a simple/composite nesting key. It identifies
-  `frame`, `output_path`, and `key` and maps to HTTP 422. Rows from frames that do not
-  carry the key are non-participants, not null-key orphans.
+  `frame`, `output_path`, and `key` and maps to HTTP 422.
 
 ## Testing
 
 - `tests/test_apiinput_flat_output_dry_run.py` verifies flat API-input-to-output graph execution and dry-run route responses.
 - `tests/test_output_nested_roundtrip.py` verifies nested output round-trips and deploy-scorer rendering.
 
-Shred / inference / cache lifecycle (the `_json_shred/` package, `_json_flatten.py`):
+Shred / inference / table snapshots (the `_json_shred/` package):
 
 - `tests/test_json_shred_properties.py` — Hypothesis property tests: exactly one
   root row per record, one scalar-array child row per element, order-independent
@@ -707,35 +784,37 @@ Shred / inference / cache lifecycle (the `_json_shred/` package, `_json_flatten.
   nested/null/scalar-array evidence, and full conservation accounting.
 - `tests/test_v2_codec_and_shred.py` — canonical schema validation and layered
   per-port shred behaviour, including that an ancestor `$value` distributed into
-  a descendant object table does not suppress that object's rows.
+  a descendant object table does not suppress that object's rows, and that each
+  compiled row reader equals per-column `_resolve_leaf` resolution (shared prefixes,
+  a leaf that is also another column's prefix, ancestor and `$value` sources,
+  string coercion, and the first crossing column in declared order).
 - `tests/test_v2_object_nesting_inference.py` — the 2026-06-17 object-nesting
   transparency ruling, end to end through inference/shred/grammar agreement.
 - `tests/test_scalar_array_and_inference.py` — scalar-array-as-its-own-child-table
   regression coverage, plus non-mocked exercise of `infer_v2_schema_from_data`.
-- `tests/test_xml_api_input.py` — XML record normalisation, inference, cache
-  build/load values, and fail-loud rejection of DTD/entity declarations.
+- `tests/test_xml_api_input.py` — XML record normalisation, inference, table
+  build/read values, and fail-loud rejection of DTD/entity declarations.
 - `tests/test_json_shred_parallel.py` — byte-range splitting (exact tiling, no
   record split, order preserved) and serial-equivalence of parallel inference
   and build: identical inferred schema ordering, late-field discovery and type
-  widening, identical frames and row order, identical skip accounting and
-  manifest (including per-table row skips crossing chunk boundaries and a
-  source without a trailing newline), identical typed failures, staging cleaned
-  up on failure, and the build driven from a worker thread as the route drives
-  it. Dispatch is witnessed in both directions for inference and build alike:
+  widening, identical frames and row order, identical skip accounting
+  (including per-table row skips crossing chunk boundaries and a source without
+  a trailing newline), identical typed failures, and the scratch directory
+  cleaned up on failure. Parallel parts are handed to publication in chunk order
+  without a parent rewrite; a missing part or a part whose footer row count differs
+  from the worker's report fails before publication. Dispatch is witnessed in both directions for inference and build alike:
   an eligible source must actually take the parallel path, and a single-range
   or explicitly sampled source must stay serial.
 - `tests/test_json_shred_w1_conservation.py` — fail-loud/accounting regressions:
   reserved-key rejection, `$value`/sibling-column rejection, empty-array type
   non-poisoning.
 - `tests/test_json_shred_mut_*.py` (`parser`, `shred`, `validity`, `records`,
-  `infer`, `lifecycle`, `rename_retry`, `stragglers`) and
+  `infer`, `stragglers`) and
   `tests/test_json_shred_mutation_witnesses.py`,
-  `tests/test_json_shred_lock_mutation.py`,
   `tests/test_json_shred_native_revision_mutation.py`,
   `tests/test_json_shred_publication_mutation.py`,
   `tests/test_json_shred_runtime_control_mutation.py`,
-  `tests/test_json_shred_signature_mutation.py`,
-  `tests/test_json_shred_snapshot_state_mutation.py`, and
+  `tests/test_json_shred_signature_mutation.py`, and
   `tests/test_json_shred_stream_mutation.py` — targeted mutation-testing witness
   suites; each pins specific observable branches, boundary values, failure
   evidence, and state transitions so a mutation-testing run cannot silently
@@ -744,36 +823,40 @@ Shred / inference / cache lifecycle (the `_json_shred/` package, `_json_flatten.
   inferred table-label derivation, symmetric collision qualification,
   deterministic suffixing, case-only collisions, and validation closure.
 - `tests/test_load_v2_api_source.py` — direct coverage of the shared runtime entry
-  point: emit checks, working→committed→direct resolution, cache corruption and
-  exact-schema rejection, stale post-schema changes, scalar/empty arrays, typed
-  raw-data failures, no-write direct fallback, and the uniform
-  `{label: LazyFrame}` return shape from one eligible frame up (the former
-  bare-frame single-table case is pinned as removed). Label invariant B4
+  point: emit checks, `port_columns` projection rules, store-leased table reads
+  (a missing table is `input_snapshot_missing`; a built table reads without its
+  source; under the schema tier recorder a missing table resolves its declared
+  schema without a request file, is recorded with its declared column count, and
+  writes no generation), the standalone in-process shred, scalar/empty arrays, typed raw-data
+  failures, and the uniform `{label: LazyFrame}` return shape from one eligible
+  frame up. Label invariant B4
   (ASCII-identifier-only labels; hard keywords rejected; valid *Unicode*
   identifiers such as `café` rejected with the ASCII rule named in the error)
   is pinned alongside the existing blank/duplicate cases in the
-  schema-validation suites; the B2 check now compares casefolded stems — a
+  schema-validation suites; the B2 check compares casefolded stems — a
   case-only pair such as `Items`/`items` is rejected naming both labels and
-  the shared stem — and the former Unicode B2 witness labels are pinned as
-  B4 rejections instead. Inference label derivation is pinned in the `infer` suites:
+  the shared stem — and Unicode identifier labels are pinned as
+  B4 rejections. Inference label derivation is pinned in the `infer` suites:
   `derive_identifier_label` character/repair cases (spaces, punctuation,
   digit-leading, hard keyword, empty, non-ASCII `_x<hex>_` encoding), root →
   `quote_info`, innermost-key labelling, symmetric collision qualification
   (`a_items`/`b_items`), the numeric-suffix backstop, and the closure
   property that inferred output passes `validate_v2_schema` unchanged.
-- `tests/test_json_shred_runtime_snapshots.py` — process-local Parquet snapshot
-  ownership and failure-path coverage: inherited-PID isolation, reference and
-  process-pin transitions, cleanup-registration rollback, partial-copy cleanup,
-  missing-file release, and hard-link signature failure.
-- `tests/test_json_cache_cross_process.py` — spawn-process cache-build lock serialisation and crash-stage/backup recovery, including fail-closed non-plain paths.
-- `tests/test_json_direct_spill.py` — uncached JSON/JSONL direct-spill streaming, validation, disk-budget, and cleanup regressions.
+- `tests/test_api_input_table_snapshots.py` — table identities (one per emitting
+  table, label- and sibling-independent), the source signature and table
+  freshness, the one-shred build (full width, shared identities built once, exact
+  plans, missing and changing sources, cancellation, skip reporting, serial/parallel
+  dispatch, scratch cleanup), store-leased reads without the source, the supervised
+  worker build and its settlement, and automatic preparation (built, reused,
+  one edited table rebuilt, source touched refreshes every table, missing source,
+  corrupt table, worker and cap-unavailable paths).
+- `tests/test_json_direct_spill.py` — standalone JSON/JSONL direct-spill streaming, validation, disk-budget, and cleanup regressions.
 - `tests/test_json_runtime_storage.py` — owned runtime-storage orphan recovery, symlink/reparse preservation, hard-link accounting, and budget-integrity safeguards.
-- `tests/test_json_cache_routes.py` — API integration tests for the build/status/
-  delete HTTP routes (404/422/504 shapes, progress reporting).
-- `tests/test_json_cache_integrity.py` — the Wave-2 build/validity/load rework end
-  to end: session-consulted gate populating `committed/`, data-file-signature
-  invalidation, skip accounting surfaced through build/status responses.
-- `tests/test_json_cache_coverage_uplift.py`, `tests/test_multi_frame_end_to_end.py`,
+- `tests/test_json_cache_coverage_uplift.py`,
+  `tests/test_json_cache_corrupt_and_errors.py`, and
+  `tests/test_json_cache_mut_witnesses.py` — the inference route's path
+  confinement, error arms, and inferred schemas building cleanly;
+  `tests/test_multi_frame_end_to_end.py`,
   `tests/test_apiinput_multi_port_runtime.py`,
   `tests/test_apiinput_nested_relative_path.py` — broader integration coverage
   (multi-frame ports, relative data paths, nested apiInput contexts).
@@ -788,20 +871,28 @@ Path grammar (`_jsonpath.py`):
 V2 schema codec and OUTPUT shape:
 
 - `tests/test_v2_codec_and_shred.py`,
-  `tests/test_v2_object_nesting_inference.py`, and the JSON-cache integrity/
-  error suites own v2 recognition, canonical parse/write behaviour, label/
+  `tests/test_v2_object_nesting_inference.py`, and the inference error suites
+  own v2 recognition, canonical parse/write behaviour, label/
   column/type/row-ID invariants, structured schema errors, and ancestor-column
   rules.
 - `tests/test_output_assembler.py` and
   `tests/test_output_assembler_mutation_witnesses.py` own mapping validation,
-  focused mutation boundaries, deterministic cyclic
-  cuts, bag fan-out, unmatched partials, sibling-array non-explosion, pruning,
+  focused mutation boundaries, the rejection of two frames at one array level
+  (the root or a nested level, before any frame is collected), sibling-array
+  non-explosion, pruning,
   rendering, exact assembled shapes, one-parse-per-distinct-path validation,
-  incomplete editor rows, and multi-frame relation keys absent from a
-  non-participating frame; `tests/test_output_nest_example_contract.py`
+  incomplete editor rows, multi-frame relation keys absent from a
+  non-participating frame, and limited assembly (the first documents read only
+  their own children's rows, a synthesised root is complete, duplicate root rows collapse, and a limited level
+  filters on its nearest collected ancestor's own key with `is_in`, semi-joins on
+  several, and reads every row when it carries none);
+  `tests/test_output_nest_example_contract.py`
   pins the fixture-level nested-document contract, while
   `tests/test_executor_builders.py` and `tests/test_codegen_builders.py` own the
-  executor/generated-code integration boundary.
+  executor/generated-code integration boundary, and
+  `tests/test_output_schema_only.py` owns `output_document_schema` — its fidelity
+  against the assembler's own nesting and field order, its dtype fidelity and
+  rendering-neutrality, and the schema-only build that never assembles.
 - `frontend/src/__tests__/editors/OutputEditor.test.tsx`,
   `frontend/src/__tests__/editors/OutputEditorPathTools.test.tsx`, and
   `frontend/src/__tests__/editors/jsonpath.test.ts` own the UI-adjacent mapping,
@@ -823,11 +914,13 @@ by [execution-engine](../execution-engine/low-level.md).
 
 ## Canonical cache-artifact contract
 
-JSON flattening and shredding create, validate, replace, and clean only the
-current cache layouts and staging names. They contain no discovery or deletion
-code for cache files, temporary directories, backups, or manifests emitted by
-an earlier Haute implementation. Current transactional cleanup remains
-covered; there are no migration-only cleanup tests.
+JSON shredding creates, validates, and cleans only the current layouts: table
+generations in the shared input-snapshot store, the build's scratch directory,
+and standalone spills. It contains no discovery or deletion code for cache
+files, temporary directories, backups, or manifests emitted by an earlier Haute
+implementation: the former `.haute_cache/working` and `.haute_cache/committed`
+JSON cache directories are neither read nor removed. Current transactional
+cleanup remains covered; there are no migration-only cleanup tests.
 
 ## Path grammar (array-outer JSON)
 

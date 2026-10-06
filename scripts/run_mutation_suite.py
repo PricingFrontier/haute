@@ -28,6 +28,7 @@ TEST_TARGETS_FILE_OPTION = "--test-targets-file"
 # and recombined by the merge job. Each cap retains timeout and artifact-upload
 # headroom for that target; GitHub caps one matrix at 256 jobs.
 MAX_MATRIX_SHARDS = 256
+MAX_TOTAL_MATRIX_SHARDS = MAX_MATRIX_SHARDS * 2
 
 
 @dataclass(frozen=True)
@@ -645,12 +646,23 @@ def _shard_count_for_pending(pending: int, max_pending_per_shard: int) -> int:
 
 
 def _validate_shard_matrix_capacity(shard_count: int) -> None:
-    """Reject plans GitHub cannot expand without weakening shard sizing."""
-    if shard_count > MAX_MATRIX_SHARDS:
+    """Reject plans GitHub cannot expand across its two shard matrices."""
+    if shard_count > MAX_TOTAL_MATRIX_SHARDS:
         raise ValueError(
             f"mutation plan requires {shard_count} shard jobs, exceeding the "
-            f"GitHub Actions matrix limit of {MAX_MATRIX_SHARDS}"
+            f"combined GitHub Actions capacity of two matrices ({MAX_TOTAL_MATRIX_SHARDS})"
         )
+
+
+def _shard_matrices(
+    shards: list[dict[str, object]],
+) -> tuple[dict[str, list[dict[str, object]]], dict[str, list[dict[str, object]]]]:
+    """Split all planned shards into GitHub's primary and overflow matrices."""
+    _validate_shard_matrix_capacity(len(shards))
+    return (
+        {"include": shards[:MAX_MATRIX_SHARDS]},
+        {"include": shards[MAX_MATRIX_SHARDS:]},
+    )
 
 
 def _slice_session(
@@ -992,9 +1004,13 @@ def _phase_plan(
             )
 
     try:
-        _validate_shard_matrix_capacity(len(shards_plan))
+        matrix, overflow_matrix = _shard_matrices(shards_plan)
     except ValueError as exc:
         plan_failures.append(str(exc))
+        # Keep the complete oversized plan in the diagnostic artifact. The
+        # failed plan phase prevents these matrices from being accepted by CI.
+        matrix = {"include": shards_plan[:MAX_MATRIX_SHARDS]}
+        overflow_matrix = {"include": shards_plan[MAX_MATRIX_SHARDS:]}
 
     plan = {
         "schema_version": 1,
@@ -1003,6 +1019,9 @@ def _phase_plan(
         "changed_files": [Path(path).as_posix() for path in changed_files],
         "targets": targets_plan,
         "shards": shards_plan,
+        "matrix": matrix,
+        "overflow_matrix": overflow_matrix,
+        "any_overflow": bool(overflow_matrix["include"]),
     }
     _write_json(output_dir / "plan.json", plan)
 

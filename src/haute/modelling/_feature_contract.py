@@ -12,6 +12,16 @@ downstream library error.
 The contract round-trips through pretty-printed, sort-keyed JSON so the
 artifact is human-readable in code review and byte-deterministic for
 downstream content hashing.
+
+Version 2 added an optional :class:`ModelIdentity` section recording which
+model the schema belongs to (algorithm, loss and link, binary class mapping,
+engine and Haute versions). Training always writes it; a contract supplied
+for a generic MLflow model may omit it. Only the schema fields are compared
+against live data; the identity is checked against the loaded model.
+
+Version 3 adds ``offset_link``: how the offset column enters the model's raw
+score (``log`` or ``identity``), so a contract can declare the baseline of a
+model whose file does not record it.
 """
 
 from __future__ import annotations
@@ -37,10 +47,124 @@ _FIELDS: tuple[str, ...] = (
     "target_type",
     "task",
     "offset_column",
+    "offset_link",
 )
-_ALL_KEYS: frozenset[str] = frozenset((*_FIELDS, "contract_hash"))
+_ALL_KEYS: frozenset[str] = frozenset((*_FIELDS, "contract_hash", "contract_version", "model"))
+#: The fields live data can disagree with; the offset link, like the model
+#: identity, declares how the model applies its offset and is checked against
+#: the loaded model instead.
+_LIVE_FIELDS: tuple[str, ...] = tuple(field for field in _FIELDS if field != "offset_link")
+
+#: The only contract format this release reads or writes.
+CONTRACT_VERSION = 3
+_LINKS = frozenset({"identity", "log", "logit"})
+#: How an offset column can enter a model's raw score.
+OFFSET_LINKS = frozenset({"identity", "log"})
+ClassLabel = bool | int | str
 
 CONTRACT_FILENAME = "feature_contract.json"
+
+
+@dataclasses.dataclass(frozen=True)
+class ModelIdentity:
+    """Which trained model a contract's schema belongs to."""
+
+    algorithm: str
+    link: str
+    engine_name: str
+    engine_version: str
+    haute_version: str
+    loss: str | None = None
+    glm_family: str | None = None
+    variance_power: float | None = None
+    #: ``(negative, positive)`` for a binary classifier, else ``None``.
+    class_labels: tuple[ClassLabel, ClassLabel] | None = None
+    #: Original-to-native feature names where an engine restricts names.
+    native_feature_names: dict[str, str] | None = None
+
+    def to_plain_data(self) -> dict[str, Any]:
+        return {
+            "algorithm": self.algorithm,
+            "link": self.link,
+            "engine": {"name": self.engine_name, "version": self.engine_version},
+            "haute_version": self.haute_version,
+            "loss": self.loss,
+            "glm_family": self.glm_family,
+            "variance_power": self.variance_power,
+            "class_labels": list(self.class_labels) if self.class_labels is not None else None,
+            "native_feature_names": (
+                dict(self.native_feature_names) if self.native_feature_names is not None else None
+            ),
+        }
+
+    @classmethod
+    def from_plain_data(cls, raw: Any, *, path: Path | str = "<memory>") -> ModelIdentity:
+        def fail(message: str, **context: Any) -> FeatureMismatchError:
+            return FeatureMismatchError(
+                f"contract model identity {message}", path=str(path), **context
+            )
+
+        expected = {
+            "algorithm",
+            "link",
+            "engine",
+            "haute_version",
+            "loss",
+            "glm_family",
+            "variance_power",
+            "class_labels",
+            "native_feature_names",
+        }
+        if not isinstance(raw, Mapping) or set(raw) != expected:
+            raise fail("must hold exactly its documented fields", expected=sorted(expected))
+        for key in ("algorithm", "link", "haute_version"):
+            if not isinstance(raw[key], str) or not raw[key]:
+                raise fail(f"field {key!r} must be a non-empty string")
+        if raw["link"] not in _LINKS:
+            raise fail("link must be identity, log, or logit", link=raw["link"])
+        engine = raw["engine"]
+        if (
+            not isinstance(engine, Mapping)
+            or set(engine) != {"name", "version"}
+            or not all(isinstance(engine[k], str) and engine[k] for k in ("name", "version"))
+        ):
+            raise fail("engine must name its distribution and exact version")
+        for key in ("loss", "glm_family"):
+            if raw[key] is not None and (not isinstance(raw[key], str) or not raw[key]):
+                raise fail(f"field {key!r} must be a non-empty string or null")
+        power = raw["variance_power"]
+        if power is not None and (isinstance(power, bool) or not isinstance(power, (int, float))):
+            raise fail("variance_power must be a number or null")
+        labels = raw["class_labels"]
+        class_labels: tuple[ClassLabel, ClassLabel] | None = None
+        if labels is not None:
+            if (
+                not isinstance(labels, list)
+                or len(labels) != 2
+                or not all(isinstance(label, (bool, int, str)) for label in labels)
+                or type(labels[0]) is not type(labels[1])
+                or labels[0] == labels[1]
+            ):
+                raise fail("class_labels must be two distinct labels of one type")
+            class_labels = (labels[0], labels[1])
+        names = raw["native_feature_names"]
+        if names is not None and (
+            not isinstance(names, Mapping)
+            or not all(isinstance(k, str) and isinstance(v, str) for k, v in names.items())
+        ):
+            raise fail("native_feature_names must map strings to strings")
+        return cls(
+            algorithm=raw["algorithm"],
+            link=raw["link"],
+            engine_name=engine["name"],
+            engine_version=engine["version"],
+            haute_version=raw["haute_version"],
+            loss=raw["loss"],
+            glm_family=raw["glm_family"],
+            variance_power=float(power) if power is not None else None,
+            class_labels=class_labels,
+            native_feature_names=dict(names) if names is not None else None,
+        )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -59,6 +183,13 @@ class FeatureContract:
     # feature: it never enters the design matrix / pool, but every scoring
     # frame MUST carry it — served predictions include the offset effect.
     offset_column: str | None = None
+    #: How the offset enters the raw score (``log`` or ``identity``). ``None``
+    #: without an offset, or beside one for a model that applies its own.
+    offset_link: str | None = None
+    #: The trained model this schema belongs to; ``None`` for a contract
+    #: supplied with a generic MLflow model or rebuilt from live data.
+    model: ModelIdentity | None = None
+    contract_version: int = CONTRACT_VERSION
 
 
 def _canonical_payload(
@@ -70,8 +201,12 @@ def _canonical_payload(
     target_type: str,
     task: str,
     offset_column: str | None = None,
+    offset_link: str | None = None,
+    model: ModelIdentity | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
+        "contract_version": CONTRACT_VERSION,
+        "model": model.to_plain_data() if model is not None else None,
         "features": list(features),
         "feature_types": dict(feature_types),
         "categorical_features": list(categorical_features),
@@ -82,6 +217,7 @@ def _canonical_payload(
         "target_type": target_type,
         "task": task,
         "offset_column": offset_column,
+        "offset_link": offset_link,
     }
     return payload
 
@@ -100,6 +236,8 @@ def build_contract(
     task: Task,
     categorical_levels: Mapping[str, Iterable[str | None]] | None = None,
     offset_column: str | None = None,
+    model: ModelIdentity | None = None,
+    offset_link: str | None = None,
 ) -> FeatureContract:
     """Construct a contract and compute its content hash.
 
@@ -107,6 +245,7 @@ def build_contract(
     contract's read-only forms.  ``contract_hash`` is the sha256 of the
     canonical-JSON representation of every field except itself.
     """
+    _check_offset_link(offset_column or None, offset_link, "<memory>")
     if offset_column and offset_column in features:
         raise FeatureMismatchError(
             "offset_column shadows a feature name; the offset is a separate "
@@ -128,6 +267,8 @@ def build_contract(
         target_type,
         task,
         offset_column or None,
+        offset_link,
+        model,
     )
     return FeatureContract(
         features=list(features),
@@ -139,7 +280,30 @@ def build_contract(
         task=task,
         contract_hash=_hash_payload(payload),
         offset_column=offset_column or None,
+        offset_link=offset_link,
+        model=model,
     )
+
+
+def _check_offset_link(offset_column: str | None, offset_link: Any, path: Path | str) -> None:
+    """Refuse an offset link that is not ``log``/``identity`` or names no column."""
+    if offset_link is None:
+        return
+    if not isinstance(offset_link, str) or offset_link not in OFFSET_LINKS:
+        raise FeatureMismatchError(
+            "contract offset_link must be 'log', 'identity' or null",
+            path=str(path),
+            field="offset_link",
+            offset_link=offset_link,
+        )
+    if offset_column is None:
+        raise FeatureMismatchError(
+            "contract offset_link is set but offset_column is null; an offset link "
+            "describes an offset column",
+            path=str(path),
+            field="offset_link",
+            offset_link=offset_link,
+        )
 
 
 def save_contract(contract: FeatureContract, path: Path | str) -> None:
@@ -157,6 +321,9 @@ def save_contract(contract: FeatureContract, path: Path | str) -> None:
         "task": contract.task,
         "contract_hash": contract.contract_hash,
         "offset_column": contract.offset_column,
+        "offset_link": contract.offset_link,
+        "contract_version": contract.contract_version,
+        "model": contract.model.to_plain_data() if contract.model is not None else None,
     }
     path.write_text(
         json.dumps(payload, indent=2, sort_keys=True),
@@ -182,6 +349,13 @@ def load_contract(path: Path | str, *, verify_hash: bool = True) -> FeatureContr
             actual_type=type(raw).__name__,
         )
 
+    if raw.get("contract_version") != CONTRACT_VERSION:
+        raise FeatureMismatchError(
+            f"contract file is not a version-{CONTRACT_VERSION} feature contract; retrain the "
+            "model to write a current contract",
+            path=str(path),
+            contract_version=raw.get("contract_version"),
+        )
     keys = set(raw)
     missing = _ALL_KEYS - keys
     if missing:
@@ -208,12 +382,16 @@ def load_contract(path: Path | str, *, verify_hash: bool = True) -> FeatureContr
     _check_type(raw, "contract_hash", str, path)
     if raw["offset_column"] is not None:
         _check_type(raw, "offset_column", str, path)
+    _check_offset_link(raw["offset_column"], raw["offset_link"], path)
 
     categorical_levels = normalise_categorical_levels(
         raw["categorical_levels"],
         features=raw["features"],
         categorical_features=raw["categorical_features"],
         path=path,
+    )
+    model = (
+        ModelIdentity.from_plain_data(raw["model"], path=path) if raw["model"] is not None else None
     )
 
     if verify_hash:
@@ -227,6 +405,8 @@ def load_contract(path: Path | str, *, verify_hash: bool = True) -> FeatureContr
                 raw["target_type"],
                 raw["task"],
                 raw["offset_column"],
+                raw["offset_link"],
+                model,
             )
         )
         stored = raw["contract_hash"]
@@ -248,6 +428,8 @@ def load_contract(path: Path | str, *, verify_hash: bool = True) -> FeatureContr
         task=raw["task"],
         contract_hash=raw["contract_hash"],
         offset_column=raw["offset_column"],
+        offset_link=raw["offset_link"],
+        model=model,
     )
 
 
@@ -502,7 +684,7 @@ def assert_contracts_match(expected: FeatureContract, actual: FeatureContract) -
     ``field`` / ``expected`` / ``actual`` context is also attached so log
     consumers and tests can introspect without parsing the message.
     """
-    for field in _FIELDS:
+    for field in _LIVE_FIELDS:
         exp_val = getattr(expected, field)
         act_val = getattr(actual, field)
         if _normalise(exp_val) != _normalise(act_val):

@@ -1,0 +1,29 @@
+{
+  "outputMapping": [
+    {
+      "source_port": "features",
+      "source_column": "quote_id",
+      "output_path": "$[:].quote_id",
+      "enabled": true
+    },
+    {
+      "source_port": "features",
+      "source_column": "vehicle_age",
+      "output_path": "$[:].vehicle_age",
+      "enabled": true
+    },
+    {
+      "source_port": "features",
+      "source_column": "driver_band",
+      "output_path": "$[:].driver_band",
+      "enabled": true
+    },
+    {
+      "source_port": "features",
+      "source_column": "sum_insured",
+      "output_path": "$[:].sum_insured",
+      "enabled": true
+    }
+  ],
+  "outputFormat": "json"
+}

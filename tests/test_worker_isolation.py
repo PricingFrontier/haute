@@ -31,9 +31,11 @@ from haute._worker_isolation import (
     address_space_caps_supported,
     create_worker_queue,
     ensure_spawnable_interpreter,
+    isolated_worker_failure_is_memory,
     process_memory_caps_supported,
     resolve_worker_memory_enforcement,
     run_isolated_worker,
+    start_process_with_environment,
     worker_config_for_memory_policy,
 )
 from haute._worker_protocol import (
@@ -54,6 +56,7 @@ from haute.routes._isolated_worker_async import (
 )
 from haute.routes._job_lifecycle import JobLifecycle
 from haute.routes._job_store import JobStore
+from tests._source_files import source_files
 
 
 def _return_payload(left: int, right: int) -> dict[str, int]:
@@ -62,6 +65,16 @@ def _return_payload(left: int, right: int) -> dict[str, int]:
 
 def _return_large_payload(size: int) -> bytes:
     return b"x" * size
+
+
+def _allocate_native_column(size_bytes: int) -> int:
+    import polars as pl
+
+    return pl.select(pl.int_range(0, size_bytes // 8, dtype=pl.Int64).alias("x")).height
+
+
+def _read_environment(name: str) -> str | None:
+    return os.environ.get(name)
 
 
 def _raise_value_error(message: str) -> None:
@@ -354,6 +367,64 @@ async def test_run_isolated_worker_async_uses_no_stop_reason_when_unconfigured(
     )
 
 
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    [
+        (IsolatedWorkerMemoryLimitExceededError(rss_bytes=200, rss_limit_bytes=100), True),
+        (IsolatedWorkerMemoryLimitUnsupportedError(memory_limit_bytes=100), True),
+        (IsolatedWorkerCrashedError(exitcode=-9, memory_limit_bytes=100), True),
+        (IsolatedWorkerCrashedError(exitcode=1, memory_limit_bytes=100), False),
+        (
+            IsolatedWorkerRemoteError(
+                remote_type="MemoryError",
+                remote_message="out of memory",
+                remote_traceback="traceback",
+            ),
+            True,
+        ),
+        (
+            IsolatedWorkerRemoteError(
+                remote_type="NativeMemoryLimitUnsupportedError",
+                remote_message="unsupported",
+                remote_traceback="traceback",
+            ),
+            True,
+        ),
+        (
+            IsolatedWorkerRemoteError(
+                remote_type="ValueError",
+                remote_message="bad value",
+                remote_traceback="traceback",
+            ),
+            False,
+        ),
+        (IsolatedWorkerTimeoutError(timeout_seconds=1.0), False),
+        (RuntimeError("generic"), False),
+    ],
+)
+def test_isolated_worker_failure_is_memory_classifies_every_worker_outcome(
+    failure: BaseException,
+    expected: bool,
+) -> None:
+    """Every supervisor maps worker failures to 507 through one shared predicate."""
+    assert isolated_worker_failure_is_memory(failure) is expected
+
+
+def test_isolated_worker_environment_reaches_the_child_only() -> None:
+    """A spawn-time variable is visible in the child and never left in the parent."""
+    name = "HAUTE_TEST_WORKER_ENVIRONMENT"
+    assert name not in os.environ
+
+    result = run_isolated_worker(
+        _read_environment,
+        name,
+        config=IsolatedWorkerConfig(process_name="test-worker", environment={name: "7"}),
+    )
+
+    assert result == "7"
+    assert name not in os.environ
+
+
 def test_isolated_worker_returns_picklable_value() -> None:
     result = run_isolated_worker(_return_payload, 2, 3)
 
@@ -361,11 +432,19 @@ def test_isolated_worker_returns_picklable_value() -> None:
     assert result["pid"] != os.getpid()
 
 
+# Spawning a Python process and moving 8 MB back through the queue is slow on
+# Windows and slower again under a full parallel run, where this budget was the
+# only thing failing the suite. The deadline is widened, never the assertion:
+# what the test proves is that the whole payload arrives before the child is
+# joined, not that it arrives quickly.
+_LARGE_RESULT_DRAIN_TIMEOUT_SECONDS = 30
+
+
 def test_isolated_worker_drains_large_result_before_joining_child() -> None:
     result = run_isolated_worker(
         _return_large_payload,
         8 * 1024 * 1024,
-        config=IsolatedWorkerConfig(timeout_seconds=5),
+        config=IsolatedWorkerConfig(timeout_seconds=_LARGE_RESULT_DRAIN_TIMEOUT_SECONDS),
     )
 
     assert len(result) == 8 * 1024 * 1024
@@ -996,30 +1075,38 @@ def test_isolated_entrypoint_leaves_native_lease_active_until_process_teardown(
     assert (results.closed, results.joined) == (1, 1)
 
 
-@pytest.mark.parametrize(
-    ("current_limits", "expected"),
-    [((-1, -1), (100, 100)), ((50, 80), (50, 80))],
-)
-def test_apply_address_space_limit_respects_existing_finite_caps(
+def test_isolated_worker_starts_its_result_feeder_before_the_cap(
     monkeypatch: pytest.MonkeyPatch,
-    current_limits: tuple[int, int],
-    expected: tuple[int, int],
 ) -> None:
+    """A feeder started after the cap could fail to start when the result is put."""
     import haute._worker_isolation as isolation_mod
+    from haute._native_memory_limit import NativeMemoryLease
 
-    applied: list[tuple[int, tuple[int, int]]] = []
-    fake_resource = SimpleNamespace(
-        RLIMIT_AS=1,
-        RLIM_INFINITY=-1,
-        getrlimit=lambda _limit: current_limits,
-        setrlimit=lambda limit, values: applied.append((limit, values)),
+    events: list[str] = []
+
+    class RecordingQueue:
+        _thread: object | None = None
+
+        def _start_thread(self) -> None:
+            events.append("feeder")
+            self._thread = object()
+
+        def put(self, _payload: bytes) -> None:
+            events.append("put")
+
+        def close(self) -> None:
+            pass
+
+        def join_thread(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        NativeMemoryLease, "apply", lambda self, *_a, **_k: events.append("cap") or False
     )
-    monkeypatch.setattr(isolation_mod.sys, "platform", "linux")
-    monkeypatch.setitem(sys.modules, "resource", fake_resource)
 
-    isolation_mod._apply_address_space_limit(100)
+    isolation_mod._isolated_worker_entrypoint(RecordingQueue(), int, ("7",), {}, 128, False)
 
-    assert applied == [(1, expected)]
+    assert events == ["feeder", "cap", "put"]
 
 
 def test_memory_limited_exitcode_classification_is_platform_independent() -> None:
@@ -1030,6 +1117,35 @@ def test_memory_limited_exitcode_classification_is_platform_independent() -> Non
     assert isolation_mod._exitcode_looks_memory_limited(-9, 10) is True
     assert isolation_mod._exitcode_looks_memory_limited(-int(signal.SIGABRT), 10) is True
     assert isolation_mod._exitcode_looks_memory_limited(-7, 10) is False
+    # Windows fail-fast (STATUS_STACK_BUFFER_OVERRUN): a refused native allocation.
+    assert isolation_mod._exitcode_looks_memory_limited(0xC0000409, 10) is True
+    assert isolation_mod._exitcode_looks_memory_limited(0xC0000409, None) is False
+    # Windows STATUS_STACK_OVERFLOW: the Job Object cap refused to commit a
+    # thread's next stack page (seen on a 10M-row preview join).
+    assert isolation_mod._exitcode_looks_memory_limited(0xC00000FD, 10) is True
+    assert isolation_mod._exitcode_looks_memory_limited(0xC00000FD, None) is False
+    assert isolation_mod._exitcode_looks_memory_limited(3, 10) is False
+
+
+@pytest.mark.skipif(
+    not process_memory_caps_supported(),
+    reason="the refused-allocation crash needs a native per-worker memory cap",
+)
+def test_native_allocation_refused_by_the_worker_cap_is_a_memory_outcome() -> None:
+    """A native allocator the cap refuses aborts the child without a payload
+    (Linux ``SIGABRT``/``SIGKILL``, Windows fail-fast); the parent reports it
+    as a hedged memory outcome rather than a generic crash."""
+    with pytest.raises(IsolatedWorkerCrashedError) as exc_info:
+        run_isolated_worker(
+            _allocate_native_column,
+            1_600_000_000,
+            config=IsolatedWorkerConfig(
+                memory_limit_bytes=256 * 1024 * 1024,
+                require_memory_limit=True,
+            ),
+        )
+
+    assert exc_info.value.terminal_reason == "memory_limited"
 
 
 def test_worker_memory_enforcement_defaults_to_required(
@@ -1065,6 +1181,11 @@ def test_required_worker_memory_enforcement_requires_a_limit(
 def test_direct_required_worker_config_requires_a_limit() -> None:
     with pytest.raises(ValueError, match="needs a configured memory limit"):
         IsolatedWorkerConfig(require_memory_limit=True)
+
+
+def test_worker_config_rejects_a_negative_address_space_allowance() -> None:
+    with pytest.raises(ValueError, match="address_space_allowance_bytes must not be negative"):
+        IsolatedWorkerConfig(address_space_allowance_bytes=-1)
 
 
 def test_unknown_worker_memory_enforcement_fails_loudly(
@@ -1600,6 +1721,37 @@ class TestSpawnableInterpreter:
             spawn.set_executable(original)
 
 
+def test_isolated_entrypoint_exposes_no_backend_when_best_effort_apply_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stale lease evidence must not become the request's active backend."""
+    import haute._worker_isolation as isolation_mod
+    from haute._native_memory_limit import current_native_memory_backend
+
+    results = _EntrypointQueue()
+    monkeypatch.setattr(
+        isolation_mod,
+        "NativeMemoryLease",
+        lambda: SimpleNamespace(
+            backend="rlimit",
+            apply=lambda *_args, **_kwargs: False,
+            restore=lambda: None,
+            close=lambda: None,
+        ),
+    )
+
+    isolation_mod._isolated_worker_entrypoint(
+        results,
+        current_native_memory_backend,
+        (),
+        {},
+        64,
+        False,
+    )
+
+    assert pickle.loads(results.get_nowait()) == ("ok", None)
+
+
 def test_running_interpreter_resource_tracker_has_the_private_shape_recovery_needs() -> None:
     """``_reset_resource_tracker`` reads ``_lock``, ``_fd`` and ``_pid``.
 
@@ -1619,3 +1771,69 @@ def test_running_interpreter_resource_tracker_has_the_private_shape_recovery_nee
         "haute._worker_isolation._reset_resource_tracker is now a no-op on this "
         "interpreter. Find the new layout before relying on the recovery path."
     )
+
+
+class _EnvironmentProbeProcess:
+    """Minimal process stand-in that records the environment it was started in."""
+
+    def __init__(self, *, failure: BaseException | None = None) -> None:
+        self.observed: str | None = None
+        self.failure = failure
+        self.starts = 0
+
+    def start(self) -> None:
+        self.starts += 1
+        self.observed = os.environ.get("POLARS_MAX_THREADS")
+        if self.failure is not None:
+            raise self.failure
+
+
+def test_start_process_with_environment_restores_a_pre_existing_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("POLARS_MAX_THREADS", "16")
+    process = _EnvironmentProbeProcess()
+
+    start_process_with_environment(process, {"POLARS_MAX_THREADS": "2"})
+
+    assert process.starts == 1
+    assert process.observed == "2"
+    assert os.environ["POLARS_MAX_THREADS"] == "16"
+
+
+def test_start_process_with_environment_deletes_an_absent_value_when_start_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("POLARS_MAX_THREADS", raising=False)
+    process = _EnvironmentProbeProcess(failure=RuntimeError("spawn refused"))
+
+    with pytest.raises(RuntimeError, match="spawn refused"):
+        start_process_with_environment(process, {"POLARS_MAX_THREADS": "2"})
+
+    assert process.observed == "2"
+    assert "POLARS_MAX_THREADS" not in os.environ
+
+
+def test_every_multiprocessing_spawn_goes_through_the_environment_helper() -> None:
+    """A bare ``process.start()`` could inherit another spawn's environment overrides.
+
+    The overrides are applied to the parent process while ``start()`` runs, so
+    every worker kind must start under the same lock or a training or
+    dispersion worker spawned during an interactive spawn would silently carry
+    the interactive thread cap for its whole life.
+    """
+    import re
+    from pathlib import Path
+
+    import haute
+
+    package_root = Path(haute.__file__).resolve().parent
+    offenders = [
+        f"{path.relative_to(package_root).as_posix()}:{line_number}"
+        for path in source_files(package_root)
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1)
+        if re.search(r"\bprocess\.start\(\)", line)
+    ]
+
+    assert len(offenders) == 1, offenders
+    assert offenders[0].startswith("_worker_isolation.py:"), offenders

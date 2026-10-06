@@ -9,10 +9,12 @@ uses insertion order to break ties.
 from __future__ import annotations
 
 import graphlib
+import heapq
 from collections import deque
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
-from haute._graph_utils import build_parents_of
+from haute._graph_utils import build_parents_of, upstream_node_ids
 from haute._types import GraphEdge
 from haute.errors import HauteError
 
@@ -155,14 +157,35 @@ def _find_cycle_nodes(node_ids: list[str], edges: list[GraphEdge]) -> list[str]:
 
 def ancestors(target_id: str, edges: list[GraphEdge], all_ids: set[str]) -> set[str]:
     """Get all ancestor node IDs of target (inclusive)."""
-    parents = build_parents_of(edges, all_ids)
+    return {target_id, *upstream_node_ids(target_id, build_parents_of(edges, all_ids))}
 
-    visited: set[str] = set()
-    queue = deque([target_id])
-    while queue:
-        nid = queue.popleft()
-        if nid in visited:
-            continue
-        visited.add(nid)
-        queue.extend(parents.get(nid, []))
-    return visited
+
+def canonical_topological_order(
+    node_ids: Iterable[str],
+    children_of: Mapping[str, Iterable[str]],
+) -> list[str]:
+    """Topological order taking the lexically smallest ready node next.
+
+    Independent of the order *node_ids* arrive in. Children outside *node_ids*
+    are ignored; a cycle raises :class:`CycleError`.
+    """
+    ids = set(node_ids)
+    sorter: graphlib.TopologicalSorter[str] = graphlib.TopologicalSorter()
+    for parent_id in sorted(ids):
+        sorter.add(parent_id)
+        for child_id in sorted(set(children_of.get(parent_id, ())) & ids):
+            sorter.add(child_id, parent_id)
+    try:
+        sorter.prepare()
+    except graphlib.CycleError as exc:
+        raise CycleError(sorted(set(exc.args[1]))) from exc
+    ready = list(sorter.get_ready())
+    heapq.heapify(ready)
+    order: list[str] = []
+    while ready:
+        node_id = heapq.heappop(ready)
+        order.append(node_id)
+        sorter.done(node_id)
+        for newly_ready in sorter.get_ready():
+            heapq.heappush(ready, newly_ready)
+    return order

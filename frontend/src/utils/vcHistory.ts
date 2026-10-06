@@ -21,7 +21,7 @@ import {
 import useGitStore from "../stores/useGitStore"
 import useGraphStore from "../stores/useGraphStore"
 import useToastStore from "../stores/useToastStore"
-import { gitErrorMessage } from "./gitError"
+import { apiErrorMessage } from "../api/errors"
 
 /** Re-sync git state everywhere after an inverse ran: status (toolbar,
  *  branch manager) + the history nonce (Git panel refetch). */
@@ -36,7 +36,7 @@ async function leg(action: () => Promise<unknown>, doneMessage: string): Promise
   try {
     await action()
   } catch (err) {
-    const detail = gitErrorMessage(err, "unknown error")
+    const detail = apiErrorMessage(err, "unknown error")
     useToastStore.getState().addToast("error", `Undo/redo failed: ${detail}`)
     throw err
   }

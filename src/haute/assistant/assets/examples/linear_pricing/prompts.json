@@ -1,0 +1,1 @@
+{"user":"Show a compact linear pricing flow.","assistant":"Chain a data source, one Polars enrichment that names its upstream frame, and an explicit output mapping."}

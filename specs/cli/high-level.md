@@ -17,8 +17,9 @@ Python code without going through Click.
 
 ## Scope
 
-In scope: the equivalent `haute ...` and `python -m haute ...` invocation forms; the nine
-subcommands (`init`, `run`, `lint`, `train`, `serve`, `deploy`, `smoke`, `status`, `impact`); their
+In scope: the equivalent `haute ...` and `python -m haute ...` invocation forms; the ten
+subcommands (`init`, `run`, `lint`, `train`, `serve`, `deploy`, `smoke`, `status`, `impact`,
+`gpu-setup`); their
 argument parsing, user-facing output/error formatting; and the small amount of orchestration logic
 that glues each command to the rest of the codebase.
 
@@ -29,7 +30,8 @@ Out of scope, owned elsewhere:
   [deploy](../deploy/high-level.md).
 - The FastAPI backend that `haute serve` launches — [server-api](../server-api/high-level.md).
 - Model training internals (`TrainingJob`, algorithms, metrics) — [modelling](../modelling/high-level.md).
-- Sandboxed execution of user training scripts — [sandbox-security](../sandbox-security/high-level.md).
+- The trust boundary for user training scripts, which run as trusted project code in the CLI
+  process without the server's accident guard — [sandbox-security](../sandbox-security/high-level.md).
 
 ## Behaviour
 
@@ -47,8 +49,9 @@ Out of scope, owned elsewhere:
   content — and removing it keeps the entry point unambiguous. No `prompts/` directory or
   starter nodes/sidecars are generated.
 - `haute run [pipeline_file]` executes a pipeline end-to-end through the same
-  `parse_pipeline_file` → `execute_graph` path the GUI uses, printing a per-node row/column summary
-  and a preview of the final node's output.
+  parse → flatten → `execute_graph` path the GUI uses (each submodel occurrence runs as its
+  definition's nodes), printing a per-node row/column summary and a preview of the final node's
+  output.
 - `haute lint [pipeline_file]` strictly parses a pipeline and exits non-zero on syntax,
   configuration, topology, or other parse failures. For a valid canonical graph it reports
   structural problems (edges pointing at missing nodes and orphan nodes) without executing
@@ -136,9 +139,8 @@ Invariants that hold across every command:
 - Depends on [server-api](../server-api/high-level.md) for `serve` (`haute.server:app`,
   `STATIC_DIR`, `static_build_ready`).
 - Depends on [modelling](../modelling/high-level.md) for `train` (`TrainingJob.run`).
-- Depends on [sandbox-security](../sandbox-security/high-level.md) for `train`'s pre-execution
-  safety check (`validate_user_code`) and for `serve`'s local session token
-  (`ensure_local_session_token_env`, `TRUSTED_HOSTS_ENV`).
+- Depends on [sandbox-security](../sandbox-security/high-level.md) for `serve`'s local session
+  token (`ensure_local_session_token_env`, `TRUSTED_HOSTS_ENV`).
 - `haute init` depends on `haute._scaffold` (template generation for `haute.toml`, CI workflows,
   starter pipeline) and `haute._gitignore_guard` — both outside this component's scope but owned by
   the same project-bootstrap concern as [pipeline-config](../pipeline-config/high-level.md).

@@ -32,7 +32,7 @@ Out of scope:
 - Package composition, static-asset build policy, and documentation publication,
   owned by [build-and-distribution](../build-and-distribution/high-level.md).
 - Product behaviour described by individual component specs.
-- `specs/roadmap/`, `repro/`, and generated directories such as `site/`,
+- `specs/roadmap/`, `scripts/benchmarks/`, and generated directories such as `site/`,
   `dist/`, coverage reports, mutation run output, test reports, caches, and
   local runtime/model outputs. Roadmaps record intended delivery rather than a
   quality gate or product contract; none of these paths promise current
@@ -43,11 +43,74 @@ Out of scope:
 
 - Pull requests and pushes to `main` run early lint/format and core-test canary
   checks, backend static/type/package checks, sharded coverage with a global
-  90% floor plus configured critical-file floors, and 100% statement/branch
-  coverage of changed executable code in the configured execution-critical
-  surface. They also run supported Python compatibility tests, package/install
-  smoke tests, optional-dependency checks, frontend checks, browser E2E, and the
-  named auxiliary lanes in the CI workflow.
+  90% floor, per-file floors for the safety-critical modules, and the
+  changed-code coverage check. They also run supported Python compatibility
+  tests, package/install smoke tests, optional-dependency checks, frontend
+  checks, browser E2E, and the named auxiliary lanes in the CI workflow.
+- Coverage is gated by risk. The changed-code gate (100% statement and branch
+  coverage of changed lines), the per-file critical floors and the mutation
+  targets apply only to the safety-critical modules, whose silent failure
+  changes a computed price or corrupts persisted work. Under `src/haute/` they
+  are:
+  - rating: `_rating.py`, `_rating_step_config.py`, `_banding_config.py`;
+  - deploy scoring: `deploy/_scorer.py`, `deploy/_batch_scoring.py`,
+    `deploy/_model_code.py`, `deploy/_pruner.py`, `deploy/_schema.py`,
+    `_model_scorer.py`, `_output_assembler.py`, `_jsonpath.py`,
+    `modelling/_native_pyfunc.py`;
+  - feature contracts: `modelling/_feature_contract.py`,
+    `modelling/_native_encoding.py`, `modelling/_signature.py`;
+  - cache identity: `src/haute/_cache.py`, `_stat_gated_cache.py`,
+    `_hashing.py`, `_json_shred/_source_proof.py`,
+    `_json_shred/_inference_cache.py`;
+  - snapshot publication: `_source_cache.py`, `_node_snapshots.py`,
+    `_file_lock.py`, and the rest of the API-input snapshot package
+    (`_json_shred/_snapshots.py`, `_writer.py`, `_shred.py`, `_records.py`,
+    `_runtime_storage.py`, `_inference.py`, `_inference_filter.py`,
+    `_json_shred/_cache.py`).
+
+  `[tool.haute.changed_coverage].paths` and `[tool.haute.critical_coverage]` in
+  `pyproject.toml` list exactly this set, and the mutation targets are
+  `output-assembler`, `jsonpath` and `json-shred`. The general execution engine
+  (`executor.py`, `execution.py`, `projection.py`, the node builders) is not on
+  the list: the deploy-scoring and snapshot tests run through it, and its own
+  coverage is judged in review. Changed code in any other file under
+  `src/haute/` is listed in the coverage job's summary with its changed-line
+  coverage but does not fail the build; coverage there is judged in review
+  against risk. The global 90% floor applies to all of `src/haute/`.
+- The user-facing documentation is checked by `mkdocs build --strict` in the
+  documentation workflow, by the generated node-reference tables
+  (`tests/test_node_reference_docs.py`), and by the `docs/` checks in
+  `tests/test_docs_accuracy.py`: the execution-strategy, managed Windows setup
+  and edge-join guides, the exclusion of internal engineering documents from the
+  published site, and the deployment guides' secret names, scaffold paths and
+  trees, starter-node count, commands and importable Python surfaces.
+- An internal governance check stays only if it guards something a user or a
+  later change relies on. A check that only pins the wording of a
+  specification sentence is not kept. The retained checks and their reasons:
+  - roadmap structure (`tests/test_docs_accuracy.py`: flat, complete,
+    self-contained component roadmaps, package bijection, the history guard):
+    the roadmap is the work queue a later change starts from;
+  - module maps, required documents and headings, and relative links in
+    `specs/`: a later change finds the specification it must update first
+    through them;
+  - specification facts derived from code (the node-type count and table, the
+    pipeline-config sidecar count and folder table, exact test-count claims):
+    they keep statements a later change relies on true;
+  - temporary change contracts, live-defect note linkage and the missing
+    repository-reference ratchet: a specification that describes behaviour not
+    yet true must name the active package that makes it true, and a file a
+    change is told to edit must exist;
+  - the workflow coverage ledger (below): every supported user workflow keeps a
+    live, collectable test witness, so deleting or skipping the test that
+    protects a workflow fails;
+  - test debt (`tests/test_test_debt.py`): a skipped, expected-failure or
+    focused test silently stops protecting users, so each one is budgeted;
+  - the specification inventory (`scripts/spec_corpus_inventory.py`,
+    `specs/corpus.toml`): broad specification reviews rely on its fingerprint
+    and coverage record, and the documentation and ledger checks rely on its
+    declared supplemental documents;
+  - the property manifest check (`scripts/property_test_files.txt`): the
+    scheduled exploration lane runs only the modules it lists.
 - Python 3.14 is a non-blocking forward probe. A failure in that lane reports
   compatibility information but does not become a required green result.
 - Pre-commit runs Ruff fix/format and repository-local mypy/frontend
@@ -56,20 +119,58 @@ Out of scope:
   xfails/config/markers strictly, and turns most runtime warnings into errors.
   Performance tests run through dedicated scripts/workflows with explicit time
   budgets instead.
+- Tests leave the source tree alone. `SourceTreeGuard` in
+  `tests/_source_files.py` records the files under `src/` (bytecode caches
+  excluded) when the controlling pytest session starts and fails a passing run,
+  naming each file, when any new one appears by the end, including files that
+  tests on xdist workers write; on a worker it does nothing. The suite also
+  stops the server's startup bytecode clear for its duration (a session
+  fixture), so no test removes the package's `__pycache__` directories, and
+  every test that walks a repository tree that can hold Python (`src/`,
+  `tests/`, `examples/`) goes through `source_files`, which prunes bytecode and
+  tool caches before entering them and raises when any other directory cannot
+  be listed. A hygiene test rejects any recursive walk (`rglob`, `os.walk`,
+  `Path.walk`, a `**` glob) that can take a root derived from a module's
+  `__file__` outside `docs/`, `specs/` and `frontend/`; it follows
+  assignments, loop and comprehension variables, function parameters and names
+  imported from the test package, and judges each possible root separately.
+- A versioned workflow coverage ledger, `tests/workflow_coverage.toml`, records
+  every supported workflow family, node type, and component with the scenarios
+  that carry its executable witnesses. Each scenario is `covered`, `gap`,
+  `decision`, or `not-applicable`, and every scenario anchors the specification
+  heading that states its invariant; every workflow names the specification
+  documents it exercises, including the supplemental documents declared in
+  `specs/corpus.toml`. The validator in `tests/test_workflow_coverage.py` fails
+  on an unknown component, an unmapped component, node type, or supplemental
+  document, a contract whose file or heading does not exist, a `gap` or
+  `decision` without an active roadmap package, a `not-applicable` without a
+  reason, a test reference that is not a collectable test under the repository's
+  pytest, Vitest, or Playwright discovery rules, a referenced test the test-debt
+  scanners classify as skipped, expected-failure, or focused, and a `covered`
+  record without commit-stamped execution evidence. Static discovery rules and
+  evidence establish existence and scheduling; assertion quality stays in
+  review, and a green result from another snapshot is never carried forward
+  silently.
 - Frontend commands use TypeScript build-mode type checking, ESLint, Vitest,
   critical coverage validation, and Playwright. Browser E2E serialises workers,
   retries only in CI, and starts the repository's E2E server with readiness
   checking. Vitest's blocking global coverage floors are 80% statements, 75%
   branches, 80% functions, and 80% lines, followed by the configured
   source-specific critical-coverage ratchet. ESLint treats useless assignments,
-  discarded caught-error context, unsafe hook refs, and state updates in effects
-  as errors; fourteen pre-existing file/rule pairs remain visible as narrow config
+  discarded caught-error context, unsafe hook refs, state updates in effects, and
+  job-polling loops or intervals outside the shared poller, and local copies of
+  the shared error-text, formatting and object-guard helpers as errors; thirteen
+  pre-existing file/rule pairs remain visible as narrow config
   exceptions until their owning changes land.
-- Execution-strategy diagnostics and Explore chart configuration use a two-stage,
-  reviewed contract pipeline. Canonical domain Pydantic models emit one committed
-  JSON Schema bundle; pinned frontend tooling derives committed TypeScript
-  declarations, schema constants, and self-contained runtime validators. Python
-  and frontend checks compare generated bytes without rewriting the checkout.
+- Execution-strategy diagnostics, Explore chart configuration and the API
+  responses of each converted module group use a two-stage, reviewed contract
+  pipeline. Canonical domain Pydantic models emit one committed JSON Schema
+  bundle; pinned frontend tooling derives committed TypeScript declarations,
+  schema constants, and self-contained runtime validators. Response models are
+  emitted as the server serializes them: every field it always sends is
+  required, and only a field the model drops from its output (`exclude_if`) is
+  optional. Python and frontend checks compare generated bytes without rewriting
+  the checkout.
   Generated schemas own structural fields, literals, unions, versions, and scalar
   bounds; handwritten boundary code continues to own cross-field relationships,
   ordering, canonical identities, stable error presentation, and compatibility
@@ -79,8 +180,8 @@ Out of scope:
   and reviewed screenshots at 1440×900 and 1024×768. Firefox remains a smoke
   compatibility project rather than a visual oracle. User-reported canvas
   defects receive the smallest regression at the owning tier before a fix.
-- Scheduled dependency and frontend-order lanes are deliberately non-PR
-  monitoring checks: on eligible failures they create or update a labelled
+- Scheduled dependency, frontend-order, property-exploration and container-smoke lanes are
+  deliberately non-PR monitoring checks: on eligible failures they create or update a labelled
   GitHub issue carrying diagnostic/reproduction context. Mutation and
   performance workflows likewise operate through maintained scripts/artifacts.
 - Python performance reports use schema 4, recording deterministic workload and
@@ -111,6 +212,14 @@ Out of scope:
   specified, and regression-tested before implementation. The index points to
   a non-deferred package only; it shows no starting package when every
   remaining package is explicitly deferred.
+- Dated supporting findings may sit beside the component roadmaps when explicitly
+  enumerated by the documentation checks and linked from the index. These reports
+  preserve snapshot evidence, use repository-relative links, and do not own work
+  packages or substitute for current verification. They remain part of the corpus
+  inventory; the component roadmap retains delivery status. When the last package
+  a report supports is retired, the report is removed in the same change and the
+  documentation-check enumeration is updated; durable evidence lives in the
+  owning component Testing sections.
 - Each roadmap package has exactly one priority row and one package heading.
   Delivered package/history sections and review-outcome narratives are folded
   into current component specs or removed. A temporary approved-change section
@@ -129,31 +238,39 @@ Out of scope:
   evidence. Canary/static checks find common failures early; sharded coverage,
   fresh-install smoke, browser E2E, mutation, and performance check different
   failure classes without pretending that one test style is sufficient.
-- Critical coverage floors are per-file ratchets alongside the global floor,
-  prioritising safety-sensitive or high-impact code instead of rewarding only
-  aggregate coverage.
+- A gate that demands 100% of every changed line everywhere rewards
+  line-shaped tests and files named after coverage campaigns rather than
+  behaviour. The strict gates are kept where a missed branch silently changes a
+  price or corrupts persisted work; elsewhere the report keeps coverage visible
+  to review without turning it into the goal.
+- Critical coverage floors are per-file ratchets alongside the global floor for
+  the safety-critical modules, instead of rewarding only aggregate coverage.
 - Changed-code coverage complements those percentage ratchets: it intersects the
   version-control diff with Coverage.py's executable statements and branch arcs,
-  so a large legacy module does not hide one newly untested branch behind a high
+  so a large module does not hide one newly untested branch behind a high
   aggregate percentage. Comments, deleted lines, and non-executable formatting do
-  not manufacture a target; a changed executable line, missing coverage artifact,
-  malformed diff, or unavailable base revision fails closed.
+  not manufacture a target; for a safety-critical module, a changed executable
+  line without coverage, a missing coverage artifact, a malformed diff, or an
+  unavailable base revision fails closed.
 - Locked dependencies prove the committed environment; the scheduled unlocked
   resolve lane separately exposes breakage from a later dependency release
   within published version caps. These answer different questions.
 - npm meta-findings use the affected package plus a stable transitive-advisory
   identity. A lockfile topology change must not invalidate a reviewed acceptance;
   a different package or concrete GHSA identity still does.
-- Mutation targets are deliberately curated and sharded across isolated CI
-  runners, avoiding an unbounded or environment-racy mutation gate while
-  retaining threshold enforcement for selected high-value code.
+- Mutation targets are limited to safety-critical modules and sharded across
+  isolated CI runners, avoiding an unbounded or environment-racy mutation gate
+  while retaining threshold enforcement where a surviving mutant would mean a
+  wrong price or a corrupt snapshot.
 - Test debt is visible through one generated, committed health summary rather
   than scattered comments alone. Backend skip/xfail/flaky sites and frontend
   skipped/focused/expected-failure sites remain exact fingerprint ratchets.
   The same summary includes the pinned Playwright retry budget and every
   mutation target's survivor threshold. A stale generated summary fails
-  ordinary tests; review is event-driven through the ratchet, with no
-  calendar-expiry gate (ruled 2026-07-27).
+  ordinary tests. Because regenerating it scans the full backend and frontend
+  test corpus, that assertion has an explicit bounded timeout with headroom for
+  coverage tracing and parallel-runner contention; review is event-driven
+  through the ratchet, with no calendar-expiry gate (ruled 2026-07-27).
 - Point-in-time reproduction material is non-normative evidence. Treating it as
   a current product contract would create misleading claims.
 - Component roadmaps preserve only the actionable conclusion and current
@@ -180,14 +297,13 @@ Out of scope:
   resolve. The guard advertises its root in the environment so an external
   permission gate can scope "run the tests" without parsing test internals.
 
-## Assistant provider qualification
+## Assistant evaluation
 
-Supported assistant provider/model configurations are gated by a separate
-credentialed evaluation lane. Version-controlled held-out semantic and
-adversarial scenarios run repeatedly in isolated temporary projects and are
-scored against a closed support matrix. Deterministic CI validates the harness,
-fixture separation, aggregation, attribution, and zero-tolerance safety rules;
-it does not substitute a scripted provider result for live qualification.
+The assistant's evaluation is owned by the
+[assistant evaluation](../assistant/evaluation.md). Deterministic CI replays
+every case's reference trajectory through the real tools; live runs against a
+configured provider are on demand and never substitute for, or are substituted
+by, a scripted result.
 
 ## Interactions
 
@@ -219,9 +335,10 @@ it does not substitute a scripted provider result for live qualification.
   summary, or malformed mutation-target metadata. Zero current backend flaky
   markers is an enforced budget, not an undocumented observation.
 - Coverage merge/gate fails when shard data cannot satisfy the 90% global floor,
-  `scripts/check_critical_coverage.py` finds a configured file below its
+  `scripts/check_critical_coverage.py` finds a safety-critical file below its
   statement/branch thresholds, or the changed-code gate finds an uncovered changed
-  statement/branch arc in its configured execution-critical surface.
+  statement/branch arc in a safety-critical module. Uncovered changed code
+  elsewhere is reported in the job summary and does not fail the job.
 - E2E failures retain Playwright trace/screenshots/video according to its
   configuration. Benchmark/performance failures retain their workflow artifacts
   when the job reaches the upload step.

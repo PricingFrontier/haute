@@ -18,7 +18,7 @@ import useGitStore from "../stores/useGitStore"
 import useGraphStore from "../stores/useGraphStore"
 import useToastStore from "../stores/useToastStore"
 import { recordArchive, recordDelete, recordRestore, recordSwitch } from "../utils/vcHistory"
-import { gitErrorMessage } from "../utils/gitError"
+import { apiErrorMessage } from "../api/errors"
 import Tooltip from "./Tooltip"
 import GitNavigationConfirm from "./GitNavigationConfirm"
 
@@ -74,7 +74,7 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
     try {
       await loadBranches()
     } catch (err) {
-      setActionError(`Failed to load branches: ${gitErrorMessage(err, "error")}`)
+      setActionError(`Failed to load branches: ${apiErrorMessage(err, "error")}`)
     }
   }, [loadBranches])
 
@@ -96,7 +96,7 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
   useEffect(() => {
     if (historyNonce > 0 || commitNonce > 0) {
       void loadBranches({ refresh: true }).catch((err) => {
-        setActionError(`Failed to load branches: ${gitErrorMessage(err, "error")}`)
+        setActionError(`Failed to load branches: ${apiErrorMessage(err, "error")}`)
       })
     }
   }, [historyNonce, commitNonce, loadBranches])
@@ -134,7 +134,7 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
       // shared branch-list refresh.
       useGitStore.getState().notifyHistoryChanged()
     } catch (err) {
-      const detail = gitErrorMessage(err, "unknown error")
+      const detail = apiErrorMessage(err, "unknown error")
       setActionError(`Could not ${verb}: ${detail}`) // persistent
       addToast("error", `Could not ${verb}: ${detail}`) // splash
     } finally {

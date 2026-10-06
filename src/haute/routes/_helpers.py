@@ -3,19 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json as _json
 import shutil
 import tempfile
 import threading
 import time
-import tomllib
 import weakref
 from collections import deque
 from collections.abc import Iterator
 from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, NamedTuple, NoReturn
 
 from fastapi import HTTPException, WebSocket
 
@@ -23,6 +23,7 @@ from haute._file_ops import atomic_write_text
 from haute._io import read_user_text
 from haute._logging import get_logger
 from haute._pipeline_recovery import load_pipeline_editor_document
+from haute._project_mutation_lock import ProjectMutationLock
 from haute._sidecar import (
     SidecarModel,
     SidecarReadResult,
@@ -54,33 +55,6 @@ logger = get_logger(component="server")
 # ---------------------------------------------------------------------------
 
 
-def validate_safe_path(base: Path, user_provided: str | Path) -> Path:
-    """Resolve *user_provided* relative to *base* and verify it stays within *base*.
-
-    Returns the resolved ``Path``.  Raises ``HTTPException(400)`` for invalid
-    path bytes and ``HTTPException(403)`` if the resolved path escapes the
-    project root.
-    """
-    if "\x00" in str(user_provided):
-        raise HTTPException(status_code=400, detail="Invalid path")
-
-    base = base.resolve()
-    raw_target = Path(user_provided)
-    if raw_target.is_absolute() and not raw_target.is_relative_to(base):
-        raise HTTPException(
-            status_code=403,
-            detail="Cannot access paths outside the project root",
-        )
-
-    target = (base / raw_target).resolve()
-    if not target.is_relative_to(base):
-        raise HTTPException(
-            status_code=403,
-            detail="Cannot access paths outside the project root",
-        )
-    return target
-
-
 # ---------------------------------------------------------------------------
 # Pipeline directory resolution
 # ---------------------------------------------------------------------------
@@ -98,50 +72,35 @@ def pipeline_dir() -> Path:
     The result is cached for the lifetime of the process (the pipeline location
     won't change during a session).
 
-    A missing ``[project].pipeline`` key is a soft configuration omission:
-    we warn and fall back to cwd so a fresh project still works.  A
-    malformed ``haute.toml`` (decode error) or an I/O error, however, is
-    propagated as a ``ConfigError`` — silently returning cwd would
-    route every subsequent save / load at the wrong directory and
-    surface as confusing "file not found" errors far from the real
-    cause.  Programming bugs inside the ``dict.get(...)`` chain
-    (``AttributeError``, ``KeyError``) are deliberately NOT caught so
-    they surface as normal tracebacks during development.
+    ``[project].pipeline`` is parsed by
+    :func:`haute._project._toml_configured_pipeline`, the reader pipeline
+    binding and the builders use (the builders apply it to the
+    execution-scoped project root, this helper to cwd). A missing ``[project].pipeline`` key is a
+    soft configuration omission: we warn and fall back to cwd so a fresh
+    project still works. A malformed or unreadable ``haute.toml``, or a
+    ``[project]`` that is not a table, raises ``ConfigError`` — silently
+    returning cwd would route every subsequent save / load at the wrong
+    directory and surface as confusing "file not found" errors far from the
+    real cause.
     """
-    toml_path = Path.cwd() / "haute.toml"
+    from haute._project import _toml_configured_pipeline
+
+    project_root = Path.cwd().resolve()
+    toml_path = project_root / "haute.toml"
     if not toml_path.exists():
         logger.error(
             "haute_toml_missing", cwd=str(Path.cwd()), hint="Run 'haute init' to create a project"
         )
-        return Path.cwd().resolve()
+        return project_root
 
-    try:
-        with open(toml_path, "rb") as f:
-            data = tomllib.load(f)
-    except tomllib.TOMLDecodeError as exc:
-        logger.error("haute_toml_decode_failed", path=str(toml_path), error=str(exc))
-        raise ConfigError(
-            "haute.toml is malformed and could not be parsed",
-            path=str(toml_path),
-            error=str(exc),
-        ) from exc
-    except OSError as exc:
-        logger.error("haute_toml_read_failed", path=str(toml_path), error=str(exc))
-        raise ConfigError(
-            "haute.toml could not be read",
-            path=str(toml_path),
-            error=str(exc),
-        ) from exc
-
-    configured: str | None = data.get("project", {}).get("pipeline")
-    if configured:
-        project_root = Path.cwd().resolve()
-        pipeline_path = (project_root / configured).resolve()
+    configured = _toml_configured_pipeline(project_root)
+    if configured is not None:
+        pipeline_path = configured.resolve()
         if not pipeline_path.is_relative_to(project_root):
             raise ConfigError(
                 "haute.toml [project].pipeline resolves outside the project root",
                 path=str(toml_path),
-                pipeline=configured,
+                pipeline=str(configured),
             )
         return pipeline_path.parent
     logger.warning(
@@ -227,7 +186,16 @@ def find_typed_node(
 _last_self_write: float = 0.0
 _SELF_WRITE_COOLDOWN = 2.0  # seconds (must exceed save duration + watcher debounce)
 _SELF_WRITE_RETENTION = 60.0
-_self_write_paths: dict[str, float] = {}
+
+
+class _SelfWriteMark(NamedTuple):
+    """Identity of one server-originated write: committed bytes or a deletion."""
+
+    marked_at: float
+    digest: str | None  # sha256 of the committed bytes; None marks a deletion
+
+
+_self_write_paths: dict[str, _SelfWriteMark] = {}
 _self_write_lock = threading.Lock()
 
 
@@ -240,16 +208,9 @@ _self_write_lock = threading.Lock()
 #   - routes/submodel.py::dissolve_submodel (/api/submodel/dissolve)
 # all of which touch the project's .py / .haute.json / config sidecars.
 #
-# Scope: global (per-process). Per-pipeline keying would be sharper but
-# the single-user threat model has effectively no contention; the global
-# lock is the cheaper, well-trodden pattern (matches `_pipeline_index_lock`,
-# `_self_write_lock`, `ws_clients_lock` above).
-#
-# Save bodies run in a threadpool while this async lock is held, keeping the
-# event loop responsive without allowing two write-shaped operations to
-# interleave. It does NOT protect against multiple uvicorn worker processes
-# — out of scope under the single-user trust model.
-save_lock: asyncio.Lock = asyncio.Lock()
+# Save bodies run in a threadpool while the lock is held. The file lock also
+# serialises other server processes using the same project directory.
+save_lock = ProjectMutationLock()
 
 
 def _self_write_key(path: str | Path) -> str:
@@ -259,26 +220,65 @@ def _self_write_key(path: str | Path) -> str:
 def _prune_self_write_paths(now: float) -> None:
     stale = [
         key
-        for key, marked_at in _self_write_paths.items()
-        if now - marked_at > _SELF_WRITE_RETENTION
+        for key, mark in _self_write_paths.items()
+        if now - mark.marked_at > _SELF_WRITE_RETENTION
     ]
     for key in stale:
         _self_write_paths.pop(key, None)
 
 
-def mark_self_write(path: str | Path | None = None) -> None:
-    """Record that the server is about to write a pipeline-related file."""
+def _current_content_digest(path: Path) -> str | None:
+    """Identity of what is on disk now: a digest, or ``None`` when absent."""
+    try:
+        if not path.is_file():
+            return None
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        # A file that cannot be read right now is not provably the server's
+        # write; fail open to broadcasting so no external edit is hidden.
+        return "unreadable"
+
+
+def mark_self_write(
+    path: str | Path | None = None,
+    *,
+    content: bytes | None = None,
+    deleted: bool = False,
+) -> None:
+    """Record that the server is about to write or delete a pipeline-related file.
+
+    A path marker carries the identity of what the server commits: the
+    SHA-256 of ``content`` or a deletion marker, so the watcher can tell
+    the server's own write apart from a later external write to the same
+    path. A path needs exactly one of ``content`` and ``deleted``. The bare
+    form only refreshes the process-wide cooldown used by callers with no
+    specific path.
+    """
     global _last_self_write
+    digest: str | None = None
+    if path is not None:
+        if deleted == (content is not None):
+            raise ValueError("a self-write path marker needs exactly one of content or deleted")
+        if content is not None:
+            digest = hashlib.sha256(content).hexdigest()
+    elif content is not None or deleted:
+        raise ValueError("content and deleted require a path")
     now = time.monotonic()
     with _self_write_lock:
         _last_self_write = now
         if path is not None:
             _prune_self_write_paths(now)
-            _self_write_paths[_self_write_key(path)] = now
+            _self_write_paths[_self_write_key(path)] = _SelfWriteMark(now, digest)
 
 
 def is_self_write(path: str | Path | None = None, *, consume: bool = False) -> bool:
-    """Return True when a watcher event belongs to a server-originated write."""
+    """Return True when a watcher event belongs to a server-originated write.
+
+    A path matches only while the file's current bytes (or its absence, for
+    a deletion marker) still equal what the server committed. A marker that
+    no longer matches is discarded so the external write that superseded
+    it is broadcast rather than suppressed.
+    """
     now = time.monotonic()
     with _self_write_lock:
         if path is None:
@@ -286,8 +286,11 @@ def is_self_write(path: str | Path | None = None, *, consume: bool = False) -> b
 
         _prune_self_write_paths(now)
         key = _self_write_key(path)
-        matched = key in _self_write_paths
-        if matched and consume:
+        mark = _self_write_paths.get(key)
+        if mark is None:
+            return False
+        matched = mark.digest == _current_content_digest(Path(path))
+        if not matched or consume:
             _self_write_paths.pop(key, None)
         return matched
 
@@ -733,10 +736,13 @@ def _sidecar_position_key(node: GraphNode) -> str:
     """Return the node identity that the parser will restore on reload.
 
     Ordinary executable nodes are reconstructed from their sanitised label.
-    Submodel occurrences persist an explicit immutable ``instance_id``, so
-    their sidecar key is the occurrence node id itself.
+    Submodel occurrences return their alias (the id restored after a rename),
+    falling back to node.id only when the config has no alias.
     """
     if node.data.nodeType == NodeType.SUBMODEL:
+        alias = node.data.config.get("alias")
+        if isinstance(alias, str) and alias:
+            return alias
         return node.id
     return _sanitize_func_name(node.data.label)
 
@@ -750,7 +756,7 @@ def save_sidecar(
     """Write node positions + source state to the sidecar .haute.json file.
 
     Keys are the identities the parser restores on re-parse: the sanitised
-    function name for ordinary nodes and the explicit instance id for a
+    function name for ordinary nodes and the occurrence alias for a
     submodel occurrence.
 
     When two distinct labels collapse to the same key only one
@@ -785,6 +791,9 @@ def save_sidecar(
         )
 
     positions = {_sidecar_position_key(node): node.position for node in graph.nodes}
+    # Written in key order, so the file depends on where nodes sit, never on
+    # the order the graph lists them (a reloaded graph follows the source file).
+    positions = dict(sorted(positions.items()))
 
     # Build the on-disk payload via ``SidecarModel`` so the schema is
     # typed and validated.  We still omit default source state so a
@@ -923,36 +932,27 @@ def parse_pipeline_to_graph(
     return graph
 
 
-def commit_pipeline_graph(sha: str) -> PipelineGraph:
-    """Parse the active pipeline as it was at commit *sha* into a read-only graph
-    (S11). Only pipeline artifacts are materialised (no checkout, no HEAD
-    change). Parse failures are explicit rather than a successful empty graph."""
+def commit_pipeline_graph(sha: str, source_file: str) -> PipelineGraph:
+    """Parse the pipeline *source_file* as it was at commit *sha* into a
+    read-only graph (S11). Only pipeline artifacts are materialised (no
+    checkout, no HEAD change). A file absent at that commit or one that fails
+    to parse is an explicit failure rather than a successful empty graph."""
     from haute._git import GitHistoryReadError, archive_commit
-    from haute.discovery import discover_pipelines as _discover_in
+    from haute._sandbox import contained_path
 
     root = Path(tempfile.mkdtemp(prefix="haute-show-"))
     try:
         archive_commit(sha, root)
-        best: PipelineGraph | None = None
-        candidates = sorted(_discover_in(root=root))
-        parse_failures = 0
-        for f in candidates:
-            try:
-                graph = parse_pipeline_to_graph(f, project_root=root)
-                if graph.nodes:
-                    return graph
-                best = best if best is not None else graph
-            except Exception as e:
-                parse_failures += 1
-                logger.warning("commit_parse_failed", file=f.name, error=str(e))
-                continue
-        if best is not None:
-            return best
-        if parse_failures:
-            raise GitHistoryReadError("The selected version's pipeline could not be parsed.")
-        raise GitHistoryReadError(
-            "The selected version does not contain a readable Haute pipeline."
-        )
+        pipeline_path = contained_path(root, source_file)
+        if not pipeline_path.is_file():
+            raise GitHistoryReadError(f"The selected version does not contain '{source_file}'.")
+        try:
+            return parse_pipeline_to_graph(pipeline_path, project_root=root)
+        except Exception as e:
+            logger.warning("commit_parse_failed", file=source_file, error=str(e))
+            raise GitHistoryReadError(
+                f"The selected version of '{source_file}' could not be parsed."
+            ) from e
     finally:
         for attempt in range(3):
             try:

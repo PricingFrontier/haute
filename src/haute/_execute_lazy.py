@@ -1,25 +1,30 @@
-"""Lazy and eager graph execution — shared by executor, trace, and scorer."""
+"""Node-boundary machinery the graph walker uses.
+
+Every execution walks through ``haute._graph_walker.walk_graph``; this module
+holds the per-node pieces it composes.
+"""
 
 from __future__ import annotations
 
 import contextlib
-import gc
-import hashlib
+import difflib
 import re
-import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from enum import StrEnum
-from pathlib import Path
-from typing import Any, Literal, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import polars as pl
 
 import haute.execution as execution_facade
 import haute.projection as projection_planner
 from haute._builders import _passthrough_fn
+from haute._chunked_writes import (
+    ChunkedWrite,
+    JoinRecipe,
+    WriteRecipe,
+    write_parts,
+)
 from haute._column_lineage import analyze_polars_lineage
-from haute._config_io import is_windows_reserved_filename
 from haute._contracts import Contract, get_column_contract
 from haute._edge_join import (
     build_edge_join_kwargs,
@@ -28,9 +33,7 @@ from haute._edge_join import (
     resolve_edge_join_role_indices,
 )
 from haute._execution_context import (
-    ExecutionCancelledError,
     ExecutionContext,
-    ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
 from haute._graph_shape import validate_pipeline_graph_shape_contracts
@@ -42,13 +45,13 @@ from haute._graph_utils import (
     upstream_node_ids,
 )
 from haute._logging import get_logger
-from haute._path_resolution import runtime_project_root_scoped
+from haute._polars_selectors import preamble_selector_aliases
 from haute._polars_utils import (
-    _malloc_trim,
-    bounded_sink,
+    current_streaming_chunk_size,
     projected_or_carrier_columns,
-    streaming_collect,
 )
+from haute._source_cache import SourceCacheCorruptError
+from haute._topo import ancestors
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -56,53 +59,130 @@ from haute._types import (
     PipelineGraph,
     _Frame,
 )
+from haute._user_exec import user_code_line
+from haute.chunking import classify_chunk_local_polars_code
 from haute.errors import (
     ConfigError,
+    ContractColumnsMissingError,
     ContractMismatchError,
     ContractResolutionError,
     SchemaMismatchError,
-    is_public_contract_error,
 )
 
 logger = get_logger(component="execute")
 
-_CHECKPOINT_SAFE_NODE_ID = re.compile(r"\A[a-z0-9_][a-z0-9_.-]{0,199}\Z")
 
+def _edge_join_recipe(
+    fn: Callable[..., Any],
+    node: GraphNode,
+    input_frames: Sequence[Any],
+) -> JoinRecipe | None:
+    """An edge join's chunkable recipe, from the exact frames its builder receives.
 
-def _checkpoint_filename(node_id: str) -> str:
-    """Return a single safe filename component for a graph node checkpoint.
-
-    Existing ordinary node ids retain readable checkpoint names. Any id with
-    path syntax, a platform-reserved name, or excessive length is represented
-    by a deterministic digest instead of being interpolated into a path.
+    The roles and the (instance-resolved) join config are the builder's own
+    (``edge_join_roles`` / ``edge_join_config``), so the recipe joins exactly
+    as the builder does; a function without them — not an edge join, or one a
+    hook wrapped — has no recipe and is written natively. The recipe ends with
+    the node's own column step (selected columns, then renames), which every
+    engine applies after the builder.
     """
-    if _CHECKPOINT_SAFE_NODE_ID.fullmatch(node_id) and not is_windows_reserved_filename(node_id):
-        return f"{node_id}.parquet"
-    digest = hashlib.sha256(node_id.encode("utf-8")).hexdigest()
-    # ``=`` is deliberately outside _CHECKPOINT_SAFE_NODE_ID, so an authored
-    # safe id cannot collide with the digest namespace.
-    return f"node={digest}.parquet"
+    roles = getattr(fn, "edge_join_roles", None)
+    join_config = getattr(fn, "edge_join_config", None)
+    if roles is None or join_config is None or len(input_frames) != 2:
+        return None
+    frames = [frame.lazy() if isinstance(frame, pl.DataFrame) else frame for frame in input_frames]
+    if not all(isinstance(frame, pl.LazyFrame) for frame in frames):
+        return None
+    base_index, join_index = roles
+    shaping = dict(node.data.config)
+
+    def finish(lf: pl.LazyFrame) -> pl.LazyFrame:
+        selected = _apply_selected_columns(lf, shaping)
+        renamed = _apply_column_renames(selected, shaping)
+        return renamed if isinstance(renamed, pl.LazyFrame) else renamed.lazy()
+
+    return JoinRecipe(frames[base_index], frames[join_index], join_config, finish=finish)
 
 
-def _lazy_frame_for_cache(lf: Any, node_id: str) -> pl.LazyFrame:
-    """Coerce a node output to a LazyFrame for cache materialization.
+def _write_recipe(
+    fn: Callable[..., Any],
+    node: GraphNode,
+    input_frames: Sequence[Any],
+    *,
+    frame_names: Sequence[str] = (),
+    orig_frame_names: Sequence[str] | None = None,
+    selector_aliases: frozenset[str] = frozenset(),
+) -> WriteRecipe | None:
+    """A chunk-local single-input node's recipe, from the exact frame its builder receives.
 
-    A multi-frame source emits a ``dict[label, LazyFrame]``; caching the whole
-    bundle is undefined (the in-RAM cache is keyed per node, not per frame), so
-    fail loud with a clear message rather than ``AttributeError`` on
-    ``dict.lazy()``. Multi-frame sources are normally skipped by the parquet
-    checkpoint path (sources aren't checkpointed), but the in-RAM cache path is
-    gated only on the cache request, so this guard makes the unsupported
-    combination explicit instead of crashing opaquely.
+    Only a Polars node with exactly one input frame qualifies; anything else
+    has no recipe and is written natively without recording a decision. When
+    eligible, the recipe carries the transform function and the single input
+    frame; when ineligible, it carries the classifier's reason and blocking
+    operator without a function. The recipe ends with the node's own column
+    step (selected columns, then renames), matching how edge joins finish.
     """
-    if isinstance(lf, dict):
-        raise RuntimeError(
-            "cannot cache-materialize a multi-frame source output "
-            f"(node_id={node_id!r}); a multi-frame apiInput emits one frame per "
-            "output — connect the specific frame downstream rather than caching "
-            "the whole bundle",
+    if node.data.nodeType != NodeType.POLARS or len(input_frames) != 1:
+        return None
+    frame = input_frames[0]
+    input_lf = frame.lazy() if isinstance(frame, pl.DataFrame) else frame
+    if not isinstance(input_lf, pl.LazyFrame):
+        return None
+    shaping = dict(node.data.config)
+    decision = classify_chunk_local_polars_code(
+        shaping.get("code"),
+        frame_names=[*frame_names, *(orig_frame_names or ())],
+        selector_aliases=selector_aliases,
+    )
+
+    def finish(lf: pl.LazyFrame) -> pl.LazyFrame:
+        selected = _apply_selected_columns(lf, shaping)
+        renamed = _apply_column_renames(selected, shaping)
+        return renamed if isinstance(renamed, pl.LazyFrame) else renamed.lazy()
+
+    if not decision.eligible:
+        # Every refusal, not only the ones a write happens to report. A node
+        # refused here takes the unbounded path however cheap its work is, and
+        # which operations that costs us is a question about real graphs: the
+        # allowlist should be widened on evidence, not on guesswork.
+        logger.debug(
+            "write_recipe_refused",
+            node_id=node.id,
+            reason=decision.reason,
+            blocking_operator=decision.blocking_operator,
+            line=decision.line,
+            column=decision.column,
         )
-    return lf if isinstance(lf, pl.LazyFrame) else lf.lazy()
+        return WriteRecipe(
+            input=input_lf,
+            fn=None,
+            finish=finish,
+            reason=decision.reason,
+            blocking_operator=decision.blocking_operator,
+        )
+
+    def node_fn(lf: pl.LazyFrame) -> pl.LazyFrame:
+        result = fn(lf)
+        return result if isinstance(result, pl.LazyFrame) else result.lazy()
+
+    return WriteRecipe(
+        input=input_lf,
+        fn=node_fn,
+        finish=finish,
+    )
+
+
+def _shapes_output(node: GraphNode) -> bool:
+    """Whether a node's own config selects or renames its output columns."""
+    config = node.data.config
+    return isinstance(config, dict) and (
+        bool(config.get("selected_columns")) or bool(config.get("column_renames"))
+    )
+
+
+def _schema_pairs(frame: pl.LazyFrame) -> list[tuple[str, str]]:
+    schema = frame.collect_schema()
+    return [(name, str(dtype)) for name, dtype in schema.items()]
 
 
 def _pick_source_frame(
@@ -194,7 +274,7 @@ def _resolve_effective_contract(
 ) -> ContractResolution:
     """Resolve the effective node contract under the active profile policy.
 
-    User-declared concrete sides overlay the builder-derived contract. Known
+    User-declared sides fill the builder-derived contract's opaque sides. Known
     external/configuration failures fail strict execution with a typed,
     redacted error; interactive preview retains a diagnosed opaque degradation.
     Programmer errors always propagate unchanged.
@@ -244,18 +324,19 @@ def _assert_inputs_satisfy_contract(
     """
     if contract.inputs is None:
         return
-    missing = contract.inputs - upstream_columns
+    missing = sorted(contract.inputs - upstream_columns)
     if not missing:
         return
-    raise ContractMismatchError(
-        "Input columns required by the node's contract are missing from the upstream frame.",
-        node_id=node.id,
-        node_type=node.data.nodeType.value,
-        missing=sorted(missing),
-        extra=sorted(upstream_columns - contract.inputs),
-        declared_inputs=sorted(contract.inputs),
-        upstream_columns=sorted(upstream_columns),
-    )
+    subject = f"{_node_display_name(node)} needs {_name_columns(missing)}"
+    if not upstream_columns:
+        message = f"{subject}, but its input has no columns."
+    else:
+        message = f"{subject}, which {'is' if len(missing) == 1 else 'are'} not in its input."
+        similar = _similar_columns(missing, upstream_columns)
+        if similar:
+            noun = "a similar column" if len(similar) == 1 else "similar columns"
+            message += f" Its input has {noun}: {', '.join(map(repr, similar))}."
+    raise ContractColumnsMissingError(message, node_id=node.id, missing=missing)
 
 
 def _assert_outputs_satisfy_contract(
@@ -275,18 +356,45 @@ def _assert_outputs_satisfy_contract(
     """
     if contract.outputs is None:
         return
-    missing = contract.outputs - output_columns
+    missing = sorted(contract.outputs - output_columns)
     if not missing:
         return
-    raise ContractMismatchError(
-        "Output columns promised by the node's contract are missing from the node's result.",
+    raise ContractColumnsMissingError(
+        f"{_node_display_name(node)} did not create {_name_columns(missing)}, "
+        "which its contract says it outputs.",
         node_id=node.id,
-        node_type=node.data.nodeType.value,
-        missing=sorted(missing),
-        extra=sorted(output_columns - contract.outputs),
-        declared_outputs=sorted(contract.outputs),
-        observed_columns=sorted(output_columns),
+        missing=missing,
     )
+
+
+# The preview shows a contract error's text as it is, so it names only the
+# missing columns (never the frame's other columns) and at most this many.
+_MESSAGE_COLUMN_LIMIT = 5
+
+
+def _node_display_name(node: GraphNode) -> str:
+    return repr(node.data.label or node.id)
+
+
+def _name_columns(columns: Sequence[str]) -> str:
+    """``the column 'a'`` / ``the columns 'a' and 'b'`` / ``… and N more``."""
+    shown = [repr(name) for name in columns[:_MESSAGE_COLUMN_LIMIT]]
+    if len(columns) == 1:
+        return f"the column {shown[0]}"
+    if len(columns) > len(shown):
+        return f"the columns {', '.join(shown)} and {len(columns) - len(shown)} more"
+    return f"the columns {', '.join(shown[:-1])} and {shown[-1]}"
+
+
+def _similar_columns(missing: Sequence[str], available: Iterable[str]) -> list[str]:
+    """The closest spelling in *available* to each missing column, if any is close."""
+    candidates = sorted(available)
+    similar: list[str] = []
+    for name in missing:
+        for match in difflib.get_close_matches(name, candidates, n=1, cutoff=0.8):
+            if match not in similar:
+                similar.append(match)
+    return similar
 
 
 def _should_check_contract(contract: Contract) -> bool:
@@ -443,9 +551,6 @@ class NodeBoundaryRunner:
             is_passthrough_runtime=fn is _passthrough_fn,
         )
 
-    def input_frames(self, boundary: NodeBoundary, outputs: Mapping[str, Any]) -> list[_Frame]:
-        return [_pick_source_frame(outputs[edge.source], edge) for edge in boundary.incoming_edges]
-
     def invoke(self, boundary: NodeBoundary, input_frames: Sequence[_Frame] = ()) -> Any:
         if boundary.is_source:
             return boundary.fn()
@@ -489,69 +594,26 @@ class NodeBoundaryRunner:
         _assert_outputs_satisfy_contract(boundary.node, boundary.contract, output_columns)
 
 
-def _strict_projection_for_context(
-    execution_context: ExecutionContext | None,
-    required_columns_by_node: Mapping[str, Iterable[str] | projection_planner.AllExceptColumns],
-) -> bool:
-    """Return whether projection-impossible cases should fail loudly."""
-    return execution_context is not None and projection_planner.strict_projection_required(
-        execution_context.profile,
-        required_columns_by_node,
-    )
+if TYPE_CHECKING:
+    from haute._node_snapshots import NodeSnapshotArtifact, NodeSnapshotColumns
+    from haute._seed_plans import CaptureDecision, SeedPlan, SeedPlanDecision
+
+
+def _snapshot_fault_point(name: str, node_id: str) -> None:
+    """Deterministic pause point for interleaving tests of planned captures."""
+    del name, node_id
 
 
 # ---------------------------------------------------------------------------
-# Adaptive checkpoint strategy
+# Materialisation housekeeping
 # ---------------------------------------------------------------------------
 
-# Number of checkpoints between gc.collect() + _malloc_trim() calls.
+# Number of materialisations between gc.collect() + _malloc_trim() calls.
 # Polars objects use Rust Arc refcounting and are freed immediately on
 # ``del``; Python gc.collect() only helps with cyclic garbage (rare here).
-# Batching avoids the overhead of scanning all Python objects per checkpoint.
+# Batching avoids the overhead of scanning all Python objects per
+# materialisation.
 _GC_BATCH_INTERVAL = 3
-
-
-class _CheckpointAction(StrEnum):
-    """What to do at a potential checkpoint boundary."""
-
-    SKIP = "skip"
-    """Keep the LazyFrame as-is — no materialization needed."""
-
-    PARQUET = "parquet"
-    """Sink to a temp parquet file and replace with ``scan_parquet``.
-    The safest option — frees RAM and isolates the query plan."""
-
-
-def _checkpoint_decision(
-    nid: str,
-    is_source: bool,
-    n_parents: int,
-    n_children: int,
-    feeds_join: bool,
-    node_map: dict[str, GraphNode],
-    scenario: str,
-) -> _CheckpointAction:
-    """Decide whether and how to checkpoint a node's output.
-
-    Uses the same three structural triggers as before (joins, fan-outs,
-    join-feeders) but skips MODEL_SCORE nodes in batch mode because
-    the batched scorer already sinks to temp parquet and returns
-    ``scan_parquet(scored_path)`` — an implicit checkpoint.  Adding
-    another parquet round-trip on top is pure waste.
-    """
-    if is_source:
-        return _CheckpointAction.SKIP
-
-    needs_checkpoint = n_parents > 1 or n_children > 1 or feeds_join
-    if not needs_checkpoint:
-        return _CheckpointAction.SKIP
-
-    # MODEL_SCORE in batch mode already returns scan_parquet — skip.
-    node = node_map.get(nid)
-    if node is not None and node.data.nodeType == NodeType.MODEL_SCORE and scenario != "live":
-        return _CheckpointAction.SKIP
-
-    return _CheckpointAction.PARQUET
 
 
 # ---------------------------------------------------------------------------
@@ -693,7 +755,218 @@ def _assert_simple_join_key_dtypes_compatible(
                 )
 
 
-def _runtime_join_demands(
+def _conservative_strategy_passthrough(
+    previous_diagnostic: projection_planner.ExecutionStrategyDiagnostic,
+) -> dict[str, Any]:
+    """Carry a conservative strategy through a runtime projection rebuild.
+
+    ``full-width-conservative`` is decided once, at admission time, from the
+    absence of an estimate plus the presence of a hard worker cap.  A refined
+    plan cannot re-derive it, so the decision is passed through unchanged.
+    """
+
+    conservative = projection_planner.ExecutionStrategy.FULL_WIDTH_CONSERVATIVE
+    if previous_diagnostic.strategy is not conservative:
+        return {}
+    return {
+        "strategy": previous_diagnostic.strategy,
+        "reason_code": previous_diagnostic.reason_code,
+        "remediation": previous_diagnostic.remediation,
+    }
+
+
+def _replanned_target_preview_strategy(
+    executed: projection_planner.ExecutionStrategyResult,
+    *,
+    order: list[str],
+    node_map: Mapping[str, GraphNode],
+    required_columns_by_node: Mapping[str, Iterable[str] | projection_planner.AllExceptColumns],
+    relevant_edges: list[GraphEdge],
+    graph: PipelineGraph,
+    known_output_columns: Mapping[tuple[str, str | None], frozenset[str]],
+    runtime_edge_demands: Mapping[projection_planner.ProjectionEdgeKey, frozenset[str]],
+    runtime_resolved_parent_ids: Iterable[str],
+    profile: ExecutionProfile,
+    seeded_node_ids: frozenset[str],
+) -> projection_planner.ExecutionStrategyResult:
+    """Re-plan a target-only preview's diagnostic from the frames it built.
+
+    Before execution an Edge Join cannot route demand to a parent whose schema
+    is only known once built, so every node above it reads as unprojected even
+    though the join's runtime demand is pushed through the lazy plan.
+
+    *order* is the execution's own order, so under a seed plan it already stops
+    at the seeds: a node above one is not planned here because this execution
+    never reads it, and a seed's own incoming edges are dropped, because the
+    frame came from its generation and those edges were never read.
+
+    *executed* must have been planned for this same execution: admission and
+    materialisation estimation see only the plan's executed nodes, so its
+    materialisation boundaries are already the ones this run reaches, and a
+    seed's own operator is never among them.
+    """
+    scope = frozenset(order)
+    scoped_edges = [
+        edge
+        for edge in relevant_edges
+        if edge.source in scope and edge.target in scope and edge.target not in seeded_node_ids
+    ]
+    # ``compute_prepared_plan`` takes adjacency from ``relevant_edges``; these
+    # rank the plan. One rule, applied once, keeps the two from disagreeing.
+    scoped_children: dict[str, list[str]] = {node_id: [] for node_id in order}
+    for edge in scoped_edges:
+        scoped_children[edge.source].append(edge.target)
+    scoped_required_columns = {
+        node_id: columns
+        for node_id, columns in required_columns_by_node.items()
+        if node_id in scope
+    }
+    replanned = projection_planner.compute_prepared_plan(
+        order,
+        scoped_children,
+        node_map,
+        scoped_required_columns,
+        relevant_edges=scoped_edges,
+        submodels=graph.submodels,
+        selector_aliases=preamble_selector_aliases(graph.preamble or ""),
+        known_output_columns=known_output_columns,
+    )
+    unreached = executed.projection_plan.materialisation_boundaries - (scope - seeded_node_ids)
+    if unreached:
+        raise RuntimeError(
+            "execution strategy re-plan received materialisation boundaries this "
+            f"execution never reached: {sorted(unreached)}"
+        )
+    replanned = projection_planner.with_materialisation_boundaries(
+        replanned,
+        executed.projection_plan.materialisation_boundaries,
+    )
+    if runtime_edge_demands:
+        replanned = projection_planner.with_runtime_inferred_streaming_edges(
+            replanned,
+            demands_by_edge=runtime_edge_demands,
+            resolved_parent_ids=runtime_resolved_parent_ids,
+            relevant_edges=scoped_edges,
+        )
+    diagnostic = executed.diagnostic
+    return projection_planner.build_execution_strategy_result(
+        replanned,
+        profile=profile,
+        order=order,
+        children_of=scoped_children,
+        node_map=node_map,
+        has_projection_seed=bool(scoped_required_columns),
+        required_columns_by_node=scoped_required_columns,
+        estimated_peak_bytes=diagnostic.estimated_peak_bytes,
+        raw_estimated_peak_bytes=diagnostic.raw_estimated_peak_bytes,
+        estimate_calibration_factor_basis_points=(
+            diagnostic.estimate_calibration_factor_basis_points
+        ),
+        estimate_admission_basis=diagnostic.estimate_admission_basis,
+        headroom_bytes=diagnostic.headroom_bytes,
+        assumptions=diagnostic.assumptions,
+        boundary_operators=projection_planner.materialising_operators_by_node(
+            order,
+            node_map,
+            relevant_edges=scoped_edges,
+            submodels=graph.submodels,
+        ),
+        **_admitted_strategy_passthrough(diagnostic),
+    )
+
+
+def _admitted_strategy_passthrough(
+    diagnostic: projection_planner.ExecutionStrategyDiagnostic,
+) -> dict[str, Any]:
+    """Carry the strategy admission decided through a post-execution re-plan.
+
+    A materialisation boundary's reason and remediation name the admitted
+    operator, and a conservative run is decided from the missing estimate; the
+    re-plan keeps both boundaries and must not replace their wording.
+    """
+    admitted = {
+        projection_planner.ExecutionStrategy.MATERIALISATION_BOUNDARY,
+        projection_planner.ExecutionStrategy.FULL_WIDTH_CONSERVATIVE,
+    }
+    if diagnostic.strategy not in admitted:
+        return {}
+    return {
+        "strategy": diagnostic.strategy,
+        "reason_code": diagnostic.reason_code,
+        "remediation": diagnostic.remediation,
+    }
+
+
+_SELECTOR_SCHEMA_REASONS = frozenset({"selector_schema_unknown", "selector_dtypes_unknown"})
+
+
+def _runtime_selector_demands(
+    node: GraphNode,
+    edge: GraphEdge,
+    input_lf: _Frame,
+    projection: set[str] | frozenset[str] | None,
+    existing_edge_demands: Mapping[
+        projection_planner.ProjectionEdgeKey,
+        set[str] | frozenset[str] | None,
+    ],
+    node_map: Mapping[str, GraphNode],
+    submodels: Mapping[str, Any] | None,
+    selector_aliases: frozenset[str],
+) -> dict[projection_planner.ProjectionEdgeKey, set[str]]:
+    """Resolve a single-input Polars node whose lineage needs a selector's schema.
+
+    Static planning knows no input schema for such a node, or no dtypes; its
+    input frame's runtime schema supplies both. Nodes whose static lineage fails
+    for any other reason are left to the static plan.
+    """
+    if node.data.nodeType is not NodeType.POLARS:
+        return {}
+    edge_key = projection_planner.ProjectionEdgeKey.from_edge(edge)
+    if existing_edge_demands.get(edge_key) is not None:
+        return {}
+    if projection_planner.has_configured_column_renames(node):
+        return {}
+    code = node.data.config.get("code")
+    if not isinstance(code, str) or not code.strip():
+        return {}
+    try:
+        input_name = edge_input_name(edge, node_map[edge.source], submodels=submodels)
+    except (KeyError, ValueError):
+        return {}
+    names = {input_name}
+    raw_mapping = node.data.config.get("inputMapping")
+    if raw_mapping:
+        if not isinstance(raw_mapping, Mapping):
+            return {}
+        for alias, current_name in raw_mapping.items():
+            if not isinstance(alias, str) or not alias or current_name != input_name:
+                return {}
+            names.add(alias)
+
+    probe = analyze_polars_lineage(
+        code, {name: None for name in names}, projection, selector_aliases=selector_aliases
+    )
+    if probe.supported or probe.reason not in _SELECTOR_SCHEMA_REASONS:
+        return {}
+    lazy_frame = input_lf if isinstance(input_lf, pl.LazyFrame) else input_lf.lazy()
+    schema = lazy_frame.collect_schema()
+    columns = frozenset(schema.names())
+    analysis = analyze_polars_lineage(
+        code,
+        {name: columns for name in names},
+        projection,
+        input_dtypes={name: dict(schema) for name in names},
+        selector_aliases=selector_aliases,
+    )
+    if not analysis.supported:
+        return {}
+    demand: set[str] = set()
+    for name in names:
+        demand.update(analysis.demands_by_input.get(name, ()))
+    return {edge_key: demand}
+
+
+def _runtime_lineage_demands(
     node: GraphNode,
     incoming_edges: Sequence[GraphEdge],
     input_lfs: Sequence[_Frame],
@@ -703,9 +976,29 @@ def _runtime_join_demands(
         set[str] | frozenset[str] | None,
     ],
     node_map: Mapping[str, GraphNode],
+    submodels: Mapping[str, Any] | None = None,
+    selector_aliases: frozenset[str] = frozenset(),
 ) -> dict[projection_planner.ProjectionEdgeKey, set[str]]:
-    """Resolve a safe join projection from lazy parent schemas."""
+    """Resolve a safe input projection from lazy parent schemas.
+
+    A join resolves its parents' demands from their column names. A single-input
+    Polars node whose static lineage lacks only the schema a selector expands
+    against resolves from its input frame's runtime names and dtypes.
+    """
+    if len(incoming_edges) == 1:
+        return _runtime_selector_demands(
+            node,
+            incoming_edges[0],
+            input_lfs[0],
+            projection,
+            existing_edge_demands,
+            node_map,
+            submodels,
+            selector_aliases,
+        )
     if projection is None or len(incoming_edges) < 2:
+        return {}
+    if projection_planner.has_configured_column_renames(node):
         return {}
     if any(
         existing_edge_demands.get(projection_planner.ProjectionEdgeKey.from_edge(edge)) is not None
@@ -747,7 +1040,11 @@ def _runtime_join_demands(
         schemas: dict[str, frozenset[str]] = {}
         for edge in incoming_edges:
             try:
-                name = edge_input_name(edge, node_map[edge.source])
+                name = edge_input_name(
+                    edge,
+                    node_map[edge.source],
+                    submodels=submodels,
+                )
             except (KeyError, ValueError):
                 return {}
             if name in by_name:
@@ -774,7 +1071,9 @@ def _runtime_join_demands(
         code = node.data.config.get("code")
         if not isinstance(code, str):
             return {}
-        analysis = analyze_polars_lineage(code, schemas, projection)
+        analysis = analyze_polars_lineage(
+            code, schemas, projection, selector_aliases=selector_aliases
+        )
         if not analysis.supported:
             return {}
         demands: dict[projection_planner.ProjectionEdgeKey, set[str]] = {}
@@ -803,28 +1102,64 @@ def _runtime_join_demands(
 
 
 def _runtime_projectable_source_ids(
-    parent_ids: Iterable[str],
+    demands_by_edge: Mapping[projection_planner.ProjectionEdgeKey, Iterable[str]],
     node_map: Mapping[str, GraphNode],
 ) -> frozenset[str]:
-    """Return source parents whose lazy scans can absorb an edge projection."""
+    """Return source parents whose lazy scans can absorb their runtime edge demand."""
     source_types = {NodeType.API_INPUT, NodeType.DATA_INPUT, NodeType.EXTERNAL_FILE}
+    demand_by_parent: dict[str, set[str]] = {}
+    for edge_key, columns in demands_by_edge.items():
+        demand_by_parent.setdefault(edge_key.source, set()).update(columns)
     projectable: set[str] = set()
-    for parent_id in parent_ids:
+    for parent_id, demand in demand_by_parent.items():
         parent = node_map[parent_id]
         if parent.data.nodeType not in source_types:
             continue
         code = parent.data.config.get("code")
         if not isinstance(code, str) or not code.strip():
             projectable.add(parent_id)
-        elif projection_planner.source_user_code_preserves_column_projection(code):
+        elif (
+            projection_planner.source_user_code_scan_columns(
+                parent.data.config,
+                code,
+                demand,
+                source_columns=None,
+            )
+            is not None
+        ):
             projectable.add(parent_id)
     return frozenset(projectable)
+
+
+def lineage_preparation_order(
+    graph: PipelineGraph,
+    target_node_id: str | None,
+    source: str,
+) -> list[str]:
+    """Node ids of a preview's or trace's executed lineage, for input preparation.
+
+    The lineage is walked over the same live-switch-pruned edges the execution
+    itself uses, so an inactive branch's inputs are never prepared. Without a known
+    target every node is in the lineage.
+    """
+    if target_node_id is None or target_node_id not in graph.node_map:
+        return [node.id for node in graph.nodes]
+    all_ids = {node.id for node in graph.nodes}
+    edges = _prune_live_switch_edges(
+        graph.edges,
+        graph.node_map,
+        source,
+        submodels=graph.submodels,
+    )
+    return sorted(ancestors(target_node_id, edges, all_ids))
 
 
 def _prune_live_switch_edges(
     edges: list[GraphEdge],
     node_map: dict[str, GraphNode],
     source: str,
+    *,
+    submodels: Mapping[str, Any] | None = None,
 ) -> list[GraphEdge]:
     """Remove edges to live_switch nodes from inputs inactive for *source*.
 
@@ -833,865 +1168,335 @@ def _prune_live_switch_edges(
     matching the active source are kept; the unused branch is pruned so
     it is neither executed nor shown in profilers.
     """
-    return projection_planner.prune_live_switch_edges(edges, node_map, source)
-
-
-@runtime_project_root_scoped
-def _execute_lazy(
-    graph: PipelineGraph,
-    build_node_fn: Callable,
-    target_node_id: str | None = None,
-    preamble_ns: dict | None = None,
-    source: str = "live",
-    checkpoint_dir: Path | None = None,
-    enforce_contracts: bool = False,
-    preserve_node_ids: set[str] | frozenset[str] | None = None,
-    required_columns_by_node: Mapping[str, Iterable[str] | projection_planner.AllExceptColumns]
-    | None = None,
-    execution_context: ExecutionContext | None = None,
-    source_by_node: Mapping[str, str] | None = None,
-    dataframe_cache_request: execution_facade.DataFrameExecutionCacheRequest | None = None,
-    schema_only: bool = False,
-) -> tuple[dict[str, _Frame], list[str], dict[str, list[str]], dict[str, str]]:
-    """Execute a graph lazily and return per-node LazyFrames.
-
-    Used by write_data_output (batch writes) and score_graph (deploy scoring)
-    where Polars can optimise the full lazy plan end-to-end.
-    Interactive paths (preview, trace) use eager execution with caching
-    instead — see executor._eager_execute and trace.execute_trace.
-
-    Args:
-        graph: React Flow graph with "nodes" and "edges".
-        build_node_fn: Function (node_dict, source_names) -> (name, fn, is_source).
-        target_node_id: If set, only execute ancestors of this node.
-        source: Active execution source (``"live"`` = eager scoring).
-        checkpoint_dir: If set, multi-input nodes (joins) and fan-out
-            nodes (>1 downstream consumer) are checkpointed to parquet
-            files in this directory and replaced with ``scan_parquet``
-            references.  This breaks both chained-join memory
-            accumulation and plan duplication across branches
-            (GitHub pola-rs/polars#24206).
-        preserve_node_ids: Non-source intermediate outputs that must remain
-            available to the caller after their final downstream consumer has
-            executed. Optimiser ratebook solves use this for the selected
-            banding source side input.
-        required_columns_by_node: Optional exact output-column demand for
-            caller-consumed nodes.  These seeds supplement concrete
-            descendant-derived projection for the named nodes, and replace
-            opaque descendant demand so callers that consume a non-OUTPUT
-            node directly can avoid terminal "all columns" propagation.
-        source_by_node: Optional per-node source override passed only to node
-            builders.  Graph pruning still uses ``source`` so live-switch
-            routing remains stable while selected nodes, such as deploy
-            modelScore, can opt into batch execution.
-        dataframe_cache_request: Optional request describing node outputs that
-            may be materialized to and reused from the shared backend dataframe
-            cache.  Cached hits seed the lazy output map, letting execution skip
-            covered upstream lineage while still building any uncached downstream
-            target nodes.
-        enforce_contracts: When ``True``, assert declared column contracts at each
-            node boundary via ``.collect_schema()``.  Polars computes
-            schemas without executing the query, so this stays cheap.
-            Production code paths (batch sink, deploy scoring, training,
-            optimiser) run through here — enforcement on the lazy path
-            is what makes contract coverage real end-to-end.
-        schema_only: Declares that the caller reads ``collect_schema()`` and
-            never collects a frame or invokes a sink.  Strategy planning then
-            skips the group-by materialisation-admission gate, which bounds
-            peak memory during materialisation only.
-
-    Returns:
-        (lazy_outputs, order, parents_of, id_to_name)
-    """
-    prepared_execution = _prepare_execution(
-        PreparedExecutionRequest(
-            graph=graph,
-            target_node_id=target_node_id,
-            source=source,
-            required_columns_by_node=required_columns_by_node,
-            profile=execution_context.profile if execution_context is not None else None,
-        )
-    )
-    graph = prepared_execution.graph
-    preserved_outputs = frozenset(preserve_node_ids or ())
-    node_source_overrides = dict(source_by_node or {})
-    if execution_context is not None:
-        execution_context.checkpoint(label="lazy_start")
-    graph_plan = prepared_execution.graph_plan
-    node_map = graph_plan.node_map
-    order = graph_plan.order
-    parents_of = graph_plan.parents_of
-    id_to_name = graph_plan.id_to_name
-    relevant_edges = graph_plan.relevant_edges
-    normalised_required_columns = prepared_execution.normalised_required_columns
-    planning_required_columns: dict[
-        str,
-        set[str] | projection_planner.AllExceptColumns,
-    ] = dict(normalised_required_columns)
-    cache_request = dataframe_cache_request
-
-    # Count downstream consumers per node so we can checkpoint fan-out
-    # points (nodes whose output feeds >1 consumer).  Without this,
-    # Polars duplicates the entire upstream plan for each branch —
-    # e.g. a 38 GB JSONL scan runs twice when two siblings share a parent.
-    children_count = dict(prepared_execution.children_count)
-    children_of = prepared_execution.children_of
-
-    cached_seed_outputs: dict[str, _Frame] = {}
-    skip_cache_covered_nodes: set[str] = set()
-    cache_backed_node_ids: set[str] = set()
-    cache_hit_rejected_node_ids: set[str] = set()
-    if cache_request is not None:
-        unknown_cache_nodes = sorted(
-            node_id for node_id in cache_request.keys_by_node if node_id not in node_map
-        )
-        if unknown_cache_nodes:
-            raise ValueError(
-                "Dataframe cache request references node IDs that are not in the "
-                f"prepared execution graph: {unknown_cache_nodes}"
-            )
-
-        effective_profile = (
-            execution_context.profile
-            if execution_context is not None
-            else ExecutionProfile.LAZY_SINK
-        )
-        effective_cache_profile = execution_facade.dataframe_execution_cache_profile(
-            effective_profile
-        )
-
-        def _merge_cache_required_columns(
-            runtime_demand: set[str] | projection_planner.AllExceptColumns | None,
-            cache_key: execution_facade.DataFrameExecutionCacheKey,
-        ) -> set[str] | projection_planner.AllExceptColumns | None:
-            if isinstance(runtime_demand, projection_planner.AllExceptColumns):
-                return runtime_demand
-            merged = set(runtime_demand or ())
-            merged.update(cache_key.required_columns)
-            return merged if merged else runtime_demand
-
-        def _required_columns_for_cached_seed(
-            demand: set[str] | projection_planner.AllExceptColumns | None,
-        ) -> set[str]:
-            if demand is None:
-                return set()
-            if isinstance(demand, projection_planner.AllExceptColumns):
-                return set(demand.required_columns)
-            return set(demand)
-
-        cache_required_columns: dict[str, set[str] | projection_planner.AllExceptColumns] = dict(
-            normalised_required_columns
-        )
-        for node_id, cache_key in cache_request.keys_by_node.items():
-            merged_demand = _merge_cache_required_columns(
-                cache_required_columns.get(node_id),
-                cache_key,
-            )
-            if merged_demand is not None:
-                cache_required_columns[node_id] = merged_demand
-        # Cache materialisation is part of this physical execution, not merely
-        # an identity check.  Plan from the union so a narrower immediate
-        # request cannot prune passthrough dependencies needed by the artifact.
-        planning_required_columns = cache_required_columns
-        cache_policy = execution_facade.dataframe_lazy_execution_policy(
-            target_node_id=target_node_id,
-            source_by_node=node_source_overrides,
-            required_columns_by_node=cache_required_columns,
-            preserve_node_ids=preserved_outputs,
-            enforce_contracts=enforce_contracts,
-            preamble_ns_supplied=preamble_ns is not None,
-        )
-        cache_policy_fingerprint = execution_facade.dataframe_execution_policy_fingerprint(
-            cache_policy
-        )
-        cache_key_memo = execution_facade.GraphFingerprintMemo()
-        for node_id, cache_key in cache_request.keys_by_node.items():
-            effective_source = source or "live"
-            if cache_key.source != effective_source:
-                raise ValueError(
-                    "Dataframe cache key source does not match lazy execution source "
-                    f"(node_id={node_id!r}, key.source={cache_key.source!r}, "
-                    f"execution.source={effective_source!r})"
-                )
-            if cache_key.profile != effective_cache_profile:
-                raise ValueError(
-                    "Dataframe cache key profile does not match lazy execution profile "
-                    f"(node_id={node_id!r}, key.profile={cache_key.profile!r}, "
-                    f"execution.profile={effective_cache_profile!r})"
-                )
-            if cache_key.execution_policy_fingerprint != cache_policy_fingerprint:
-                raise ValueError(
-                    "Dataframe cache key execution policy does not match lazy execution "
-                    f"policy (node_id={node_id!r})"
-                )
-            demand = cache_required_columns.get(node_id)
-            required_columns = (
-                None if isinstance(demand, projection_planner.AllExceptColumns) else demand
-            )
-            expected_key = execution_facade.dataframe_execution_cache_key(
-                graph,
-                node_id=node_id,
-                namespace=cache_key.namespace,
-                source=effective_source,
-                profile=effective_cache_profile,
-                input_fingerprint=cache_key.input_fingerprint,
-                required_columns=required_columns,
-                extra_keys=cache_key.extra_keys,
-                execution_policy=cache_policy,
-                memo=cache_key_memo,
-            )
-            if cache_key != expected_key:
-                raise ValueError(
-                    "Dataframe cache key does not match the current lazy execution "
-                    f"graph and policy (node_id={node_id!r})"
-                )
-            # Broken/missing cache entries are auto-evicted by ``cache.get``
-            # which then returns None; no explicit error handling needed.
-            cached_entry = cache_request.cache.get(cache_key)
-            if cached_entry is not None:
-                required_for_seed = _required_columns_for_cached_seed(
-                    cache_required_columns.get(node_id)
-                )
-                missing_for_seed = sorted(required_for_seed - set(cached_entry.columns))
-                if missing_for_seed:
-                    logger.warning(
-                        "dataframe_execution_cache_hit_missing_required_columns",
-                        node_id=node_id,
-                        missing=missing_for_seed,
-                    )
-                    cache_hit_rejected_node_ids.add(node_id)
-                else:
-                    cached_lf = cache_request.cache.scan(cache_key)
-                    if cached_lf is not None:
-                        cached_seed_outputs[node_id] = cached_lf
-                        cache_backed_node_ids.add(node_id)
-
-        cache_covers_downstream: dict[str, bool] = {}
-        for nid in reversed(order):
-            if nid in cached_seed_outputs:
-                cache_covers_downstream[nid] = True
-            elif nid in preserved_outputs:
-                cache_covers_downstream[nid] = False
-            else:
-                children: Sequence[str] = children_of.get(nid, ())
-                cache_covers_downstream[nid] = bool(children) and all(
-                    cache_covers_downstream.get(child_id, False) for child_id in children
-                )
-        skip_cache_covered_nodes = {
-            node_id
-            for node_id, covered in cache_covers_downstream.items()
-            if covered and node_id not in cached_seed_outputs
-        }
-
-    # Backward column analysis: compute the minimal set of columns
-    # needed at each node's output so checkpoints can project away
-    # unneeded columns before writing to parquet.  Batch MODEL_SCORE
-    # nodes also consume this demand locally so their internal temp
-    # parquet write can avoid unused passthrough columns even when the
-    # outer checkpoint layer skips model-score nodes.
-    strategy_profile = (
-        execution_context.profile if execution_context is not None else ExecutionProfile.LAZY_SINK
-    )
-    group_by_operators = projection_planner.group_by_operators_by_node(order, node_map)
-    if group_by_operators and not schema_only:
-        # A materialising group-by needs the request planner's source-aware RAM
-        # estimate. The prepared-only planner deliberately cannot derive one
-        # because it no longer owns the complete graph/input metadata.
-        public_strategy_result = execution_facade.plan_execution_strategy(
-            execution_facade.ProjectionRequest(
-                graph=graph,
-                target_node_id=target_node_id,
-                profile=strategy_profile,
-                required_columns_by_node=planning_required_columns,
-                source=source,
-            ),
-            execution_context=execution_context,
-        )
-    else:
-        public_strategy_result = execution_facade.plan_prepared_execution_strategy(
-            order,
-            {node_id: list(children) for node_id, children in children_of.items()},
-            node_map,
-            profile=strategy_profile,
-            required_columns_by_node=planning_required_columns,
-            execution_context=execution_context,
-            schema_only=schema_only,
-            relevant_edges=relevant_edges,
-        )
-    public_projection_plan = public_strategy_result.projection_plan
-    projection_plan = public_projection_plan
-    needed_cols = projection_plan.needed_by_node
-    edge_demands = projection_plan.edge_demands
-    cache_broadens_projection = planning_required_columns != normalised_required_columns
-    runtime_projection_plan = (
-        projection_planner.compute_prepared_plan(
-            order,
-            children_of,
-            node_map,
-            normalised_required_columns,
-            strict_projection=_strict_projection_for_context(
-                execution_context,
-                normalised_required_columns,
-            ),
-            relevant_edges=relevant_edges,
-        )
-        if cache_broadens_projection
-        else projection_plan
-    )
-    api_port_columns_by_node = projection_planner.api_input_port_columns_by_node(
+    return projection_planner.prune_live_switch_edges(
+        edges,
         node_map,
-        relevant_edges,
-        projection_plan,
+        source,
+        submodels=submodels,
     )
 
-    # Full parent lookup from ALL edges for instance resolution
-    all_parents = prepared_execution.all_parents
 
-    # Per-target incoming-edge lookup, in edge-declaration order, so each
-    # node's function-parameter binding key can be derived from
-    # ``edge.sourceHandle or edge.source`` (MULTI_FRAME_PLAN §4b) without
-    # re-scanning per node. Use ``relevant_edges`` (post-pruning,
-    # ancestor-filtered) so live-switch-inactive edges don't surface here
-    # — that would mismatch ``parents_of`` and break the binding-count
-    # invariant on switch nodes.
-    incoming_edges_by_target = prepared_execution.incoming_edges_by_target
-    all_incoming_edges_by_target = prepared_execution.all_incoming_edges_by_target
+def _check_snapshot_plan(
+    decision: SeedPlanDecision,
+    graph: PipelineGraph,
+    *,
+    target_node_id: str | None,
+    source: str,
+    profile: ExecutionProfile,
+) -> None:
+    """A plan runs only the execution it was resolved for."""
+    from haute._seed_plans import seed_plan_lineage_fingerprint
 
-    # Build executable functions — delegates to _build_funcs with
-    # row_limit=None (lazy path never caps source output).
-    with (
-        execution_context.stage("lazy_build_functions")
-        if execution_context is not None
-        else contextlib.nullcontext()
+    if (
+        target_node_id != decision.target_node_id
+        or (source or "live") != decision.source
+        or ExecutionProfile(profile) != decision.profile
+        or seed_plan_lineage_fingerprint(graph, decision.target_node_id)
+        != decision.lineage_fingerprint
     ):
-        builder_needed_cols = projection_planner.builder_required_output_columns_by_node(
-            node_map,
-            needed_cols,
-            preserve_eager_model_score_inputs=False,
-        )
-        if cache_broadens_projection:
-            # Source builders cannot validate a best-effort cache-only demand
-            # before their lazy schema exists.  Keep their scans lazy and broad;
-            # the first edge projection below intersects cache-only columns with
-            # the actual schema, so Parquet/NDJSON pushdown still occurs.
-            for node_id in order:
-                if not parents_of.get(node_id):
-                    builder_needed_cols[node_id] = None
-        build_order = [
-            node_id
-            for node_id in order
-            if node_id not in skip_cache_covered_nodes and node_id not in cached_seed_outputs
-        ]
-        funcs = _build_funcs(
-            build_order,
-            node_map,
-            id_to_name,
-            all_parents,
-            build_node_fn,
-            incoming_edges_by_target=incoming_edges_by_target,
-            all_incoming_edges_by_target=all_incoming_edges_by_target,
-            all_node_map=graph.node_map,
-            row_limit=None,
-            preamble_ns=preamble_ns,
-            source=source,
-            source_by_node=node_source_overrides,
-            required_output_columns_by_node=builder_needed_cols,
-            required_output_columns_by_port_by_node=api_port_columns_by_node,
-            execution_profile=(
-                execution_context.profile if execution_context is not None else None
-            ),
-        )
+        raise ValueError("The seed plan was resolved for a different execution")
 
-    boundary_runner = NodeBoundaryRunner(
-        prepared=prepared_execution,
-        funcs=funcs,
-        enforce_contracts=enforce_contracts,
-        execution_context=execution_context,
-        needed_columns=needed_cols,
-    )
 
-    # Execute - all intermediate results stay lazy
-    lazy_outputs: dict[str, _Frame] = {}
+class _PlannedCaptures:
+    """Dependency closures and captures of one planned lazy execution."""
 
-    # Separate mutable counter for tracking remaining downstream consumers.
-    # Decremented at checkpoint time so we know when a parent's LazyFrame
-    # can be safely deleted (freeing Polars/Rust Arrow buffers).
-    remaining: dict[str, int] = dict(children_count)
-
-    # Batch gc.collect() calls — Polars objects use Rust Arc refcounting
-    # and are freed immediately on ``del``.  gc.collect() only helps with
-    # cyclic Python garbage (rare here) and adds 50-200 ms per call.
-    checkpoints_since_gc = 0
-
-    def _release_consumed_parents(nid: str) -> None:
-        # Drop parent LazyFrame refs that have no remaining consumers
-        # downstream — lets Polars/Rust release the backing buffers.
-        # Source nodes are kept: they hold cheap scan_* references and
-        # callers may need them (e.g. optimiser extracting banding factors).
-        # Cache-backed nodes are likewise kept: they hold scan_parquet
-        # references against artifacts the downstream plan composes from,
-        # and dropping the LazyFrame would let the cache release the
-        # underlying file before the downstream collect.
-        for pid in parents_of.get(nid, []):
-            remaining[pid] -= 1
-            _, pid_is_source = funcs.get(pid, (None, False))
-            if (
-                remaining[pid] <= 0
-                and pid in lazy_outputs
-                and not pid_is_source
-                and pid not in preserved_outputs
-                and pid not in cache_backed_node_ids
-            ):
-                del lazy_outputs[pid]
-
-    # Per-node column sets used by the boundary contract checks.  Polars
-    # computes schema without executing the query, so collect_schema()
-    # is cheap; caching keeps repeated lookups free when the same
-    # upstream feeds multiple consumers.
-    #
-    # column_cache is keyed by ``(producer_node_id, port_name_or_None)``.
-    # Multi-frame apiInputs (commit 4) emit different columns per frame, so
-    # consumers picking different frames of the same upstream must not
-    # collide on a parent-id-only key. ``None`` is used for single-frame
-    # outputs (the common case).
-    column_cache: dict[tuple[str, str | None], frozenset[str]] = {}
-
-    def _schema_names_of(frame: pl.LazyFrame | pl.DataFrame) -> list[str]:
-        lazy_frame = frame if isinstance(frame, pl.LazyFrame) else frame.lazy()
-        return lazy_frame.collect_schema().names()
-
-    def _columns_of(frame: pl.LazyFrame | pl.DataFrame) -> frozenset[str]:
-        return frozenset(_schema_names_of(frame))
-
-    def _apply_edge_projection(
-        edge: GraphEdge,
-        frame: _Frame,
+    def __init__(
+        self,
+        plan: SeedPlan | None,
+        graph: PipelineGraph,
         *,
-        runtime_demand: set[str] | None = None,
-    ) -> tuple[_Frame, frozenset[str] | None]:
-        child_id = edge.target
-        parent_id = edge.source
-        edge_key = projection_planner.ProjectionEdgeKey.from_edge(edge)
-        demand: set[str] | frozenset[str] | None = runtime_demand
-        if demand is None and edge_key not in edge_demands:
-            return frame, None
-        if demand is None:
-            demand = edge_demands[edge_key]
-        if demand is None:
-            return frame, None
+        execution_context: ExecutionContext | None,
+        incoming_edges_by_target: Mapping[str, Sequence[GraphEdge]],
+    ) -> None:
+        self.plan = plan
+        self.graph = graph
+        self.execution_context = execution_context
+        self.incoming_edges_by_target = incoming_edges_by_target
+        self.closures: dict[str, dict[str, str]] = {}
+        self.published: dict[str, tuple[str, str]] = {}
 
-        lazy_frame = frame if isinstance(frame, pl.LazyFrame) else frame.lazy()
-        schema_cols = _schema_names_of(lazy_frame)
-        schema_set = set(schema_cols)
-        missing = demand - schema_set
-        runtime_required = (
-            set(demand)
-            if runtime_demand is not None
-            else set(runtime_projection_plan.demand_for_edge(edge) or ())
-        )
-        runtime_missing = missing & runtime_required
-        if runtime_missing:
-            raise ContractMismatchError(
-                "Columns required by a projection contract are missing from the parent frame.",
-                node_id=child_id,
-                parent_id=parent_id,
-                missing=sorted(runtime_missing),
-                required_columns=sorted(demand),
-                parent_columns=sorted(schema_set),
+    @property
+    def _decision(self) -> SeedPlanDecision:
+        assert self.plan is not None
+        return self.plan.decision
+
+    def _effective_edges(self, node_id: str) -> Sequence[GraphEdge]:
+        edge = self._decision.pass_through_edges.get(node_id)
+        if edge is not None:
+            return (edge,)
+        return self.incoming_edges_by_target.get(node_id, ())
+
+    def record_closure(self, node_id: str) -> dict[str, str]:
+        """The generations *node_id*'s frame is computed from, recorded on the plan.
+
+        Each seed and published capture read upstream contributes itself and
+        the generations it was built from; a capture that kept its own
+        artifact contributes only what it was built from.
+        """
+        decision = self._decision
+        closure: dict[str, str] = {}
+        for edge in self._effective_edges(node_id):
+            parent = edge.source
+            seed = decision.seeds.get(parent)
+            if seed is not None:
+                closure[seed.identity.digest] = seed.generation_id
+                closure.update(seed.dependencies)
+                continue
+            published = self.published.get(parent)
+            if published is not None:
+                digest, generation_id = published
+                closure[digest] = generation_id
+            closure.update(self.closures.get(parent, {}))
+        self.closures[node_id] = closure
+        assert self.plan is not None
+        self.plan.record_closure(node_id, closure)
+        return closure
+
+    def _inputs_changed(self) -> bool:
+        from haute._seed_plans import seed_plan_input_fingerprint
+
+        decision = self._decision
+        return (
+            seed_plan_input_fingerprint(
+                self.graph, decision.executed_node_ids, source=decision.source
             )
-        if missing:
-            # A cache key may deliberately be broader than this call's runtime
-            # demand.  Cache population is an optimisation: an unavailable
-            # cache-only column makes that artifact ineligible, but must not
-            # fail an otherwise valid execution.  The materialisation gate will
-            # observe the same missing column and skip the cache write.
-            logger.warning(
-                "dataframe_execution_cache_projection_column_missing",
-                node_id=child_id,
-                parent_id=parent_id,
-                missing=sorted(missing),
-            )
-            demand = set(demand) - missing
-
-        ordered = projected_or_carrier_columns(schema_cols, demand)
-        return lazy_frame.select(ordered), frozenset(ordered)
-
-    def _runtime_join_edge_demands(
-        child_id: str,
-        incoming_edges: Sequence[GraphEdge],
-        input_lfs: Sequence[_Frame],
-    ) -> dict[projection_planner.ProjectionEdgeKey, set[str]]:
-        return _runtime_join_demands(
-            node_map[child_id],
-            incoming_edges,
-            input_lfs,
-            needed_cols.get(child_id),
-            edge_demands,
-            node_map,
+            != decision.runtime_input_fingerprint
         )
 
-    def _build_lazy_node(boundary: NodeBoundary) -> tuple[_Frame, bool, GraphNode]:
-        # May actually return ``(dict[str, _Frame], bool, GraphNode)`` for
-        # multi-frame apiInput sources. Signature stays narrowed because every
-        # consumer in this function passes the result through
-        # ``isinstance(lf, dict)`` narrowing before LazyFrame-only operations.
-        # ``# type: ignore[return-value]`` on the dict-return site captures it.
-        nonlocal public_projection_plan, public_strategy_result
+    def verify_inputs(self) -> None:
+        """Fail before anything is collected if the run's inputs moved since planning."""
+        from haute.errors import SnapshotPlanInputsChangedError
 
-        nid = boundary.node_id
-        is_source = boundary.is_source
-        node = boundary.node
-        contract = boundary.contract
-        check_here = boundary.check_contract
-        # Builder-wired ``_passthrough_fn`` means the node is in a stub
-        # state (MODEL_SCORE without a model, OPTIMISER_APPLY without
-        # an artifact).  Its declared contract describes the configured
-        # shape the runtime does not produce yet; skip the output check
-        # to preserve the "configure later" UX while still enforcing
-        # contracts the moment a real function is wired.
-        is_passthrough_runtime = boundary.is_passthrough_runtime
+        if self._inputs_changed():
+            raise SnapshotPlanInputsChangedError(target_node_id=self._decision.target_node_id)
 
-        if is_source:
-            lf = boundary_runner.invoke(boundary)
-        else:
-            input_ids = parents_of.get(nid, [])
-            missing = [pid for pid in input_ids if pid not in lazy_outputs]
-            if missing:
-                raise ValueError(
-                    f"Node '{nid}' is missing input(s) from: {missing}. "
-                    "Upstream node(s) may have failed or not been registered."
-                )
-            # Resolve each incoming edge's frame via ``_pick_source_frame``
-            # so a multi-frame source (an apiInput emitting a per-frame dict,
-            # commit 4) routes the right frame to each edge based on
-            # ``edge.sourceHandle``. Single-frame sources pass through.
-            incoming_edges = boundary.incoming_edges
-            input_lfs = boundary_runner.input_frames(boundary, lazy_outputs)
-            if not input_lfs:
-                raise ValueError(f"No input data available for node '{nid}'")
+    def stage_scored_output(
+        self, node_id: str, node: GraphNode, *, scenario: str
+    ) -> NodeSnapshotArtifact | None:
+        """Stage a batch Model Score capture whose scored file is its whole output.
 
-            projected_input_lfs: list[_Frame] = []
-            projected_input_columns: list[frozenset[str] | None] = []
-            runtime_edge_demands = _runtime_join_edge_demands(
-                nid,
-                incoming_edges,
-                input_lfs,
-            )
-            if (
-                runtime_edge_demands
-                and execution_context is not None
-                and public_projection_plan is not None
-            ):
-                public_projection_plan = projection_planner.with_runtime_inferred_streaming_edges(
-                    public_projection_plan,
-                    demands_by_edge=runtime_edge_demands,
-                    resolved_parent_ids=_runtime_projectable_source_ids(
-                        (key.source for key in runtime_edge_demands),
-                        node_map,
-                    ),
-                    relevant_edges=relevant_edges,
-                )
-                previous_diagnostic = public_strategy_result.diagnostic
-                public_strategy_result = projection_planner.build_execution_strategy_result(
-                    public_projection_plan,
-                    profile=execution_context.profile,
-                    order=order,
-                    children_of=children_of,
-                    node_map=node_map,
-                    has_projection_seed=bool(planning_required_columns),
-                    required_columns_by_node=planning_required_columns,
-                    estimated_peak_bytes=previous_diagnostic.estimated_peak_bytes,
-                    raw_estimated_peak_bytes=(previous_diagnostic.raw_estimated_peak_bytes),
-                    estimate_calibration_factor_basis_points=(
-                        previous_diagnostic.estimate_calibration_factor_basis_points
-                    ),
-                    estimate_admission_basis=previous_diagnostic.estimate_admission_basis,
-                    headroom_bytes=previous_diagnostic.headroom_bytes,
-                    assumptions=previous_diagnostic.assumptions,
-                )
-                execution_context.projection_plan = public_strategy_result
-            for incoming_edge, input_lf in zip(incoming_edges, input_lfs, strict=True):
-                edge_key = projection_planner.ProjectionEdgeKey.from_edge(incoming_edge)
-                projected_lf, projected_cols = _apply_edge_projection(
-                    incoming_edge,
-                    input_lf,
-                    runtime_demand=runtime_edge_demands.get(edge_key),
-                )
-                projected_input_lfs.append(projected_lf)
-                projected_input_columns.append(projected_cols)
-            input_lfs = projected_input_lfs
-            if execution_context is not None and all(
-                columns is not None for columns in projected_input_columns
-            ):
-                execution_context.record_column_widths(
-                    node_id=nid,
-                    input_width=sum(
-                        len(columns) for columns in projected_input_columns if columns is not None
-                    ),
-                )
-
-            if check_here and contract is not None and contract.inputs is not None:
-                upstream_col_sets: list[frozenset[str]] = []
-                for upstream_edge, upstream_lf, projected_cols in zip(
-                    incoming_edges,
-                    input_lfs,
-                    projected_input_columns,
-                    strict=True,
-                ):
-                    # Key the cache by (parent_id, port_name) so two
-                    # consumers picking different frames of the same
-                    # multi-frame source see distinct cache entries.
-                    cache_key = (upstream_edge.source, upstream_edge.sourceHandle)
-                    upstream_cols: frozenset[str]
-                    if projected_cols is not None:
-                        upstream_cols = projected_cols
-                    else:
-                        cached_cols = column_cache.get(cache_key)
-                        if cached_cols is None:
-                            cached_cols = _columns_of(upstream_lf)
-                            column_cache[cache_key] = cached_cols
-                        upstream_cols = cached_cols
-                    upstream_col_sets.append(upstream_cols)
-                upstream_cols = frozenset().union(*upstream_col_sets)
-                boundary_runner.assert_inputs(boundary, upstream_cols)
-
-            lf = boundary_runner.invoke(boundary, input_lfs)
-
-        if isinstance(lf, pl.DataFrame):
-            if execution_context is not None:
-                execution_context.record_column_widths(
-                    node_id=nid,
-                    output_width=lf.width,
-                )
-            lf = lf.lazy()
-
-        # Multi-frame emit: a source (currently only apiInput when v2 has
-        # 2+ emit-true tables) may return a ``dict[port_name, LazyFrame]``.
-        # The dict is stored in lazy_outputs[nid] and consumers pick a
-        # frame from it per-edge via ``_pick_source_frame``. Single-frame
-        # post-processing (selected_columns / column_renames / output
-        # contract check) is bypassed because those transformations are
-        # per-frame, not per-bundle. They'd apply naturally to whichever
-        # frame the consumer picks if the consumer chooses to layer them
-        # on top.
-        #
-        # Populate column_cache per-frame so downstream consumers' contract
-        # checks find the right columns under ``(parent_id, port_name)``.
-        if isinstance(lf, dict):
-            for port_name, port_frame in lf.items():
-                column_cache[(nid, port_name)] = _columns_of(port_frame)
-            # Multi-frame apiInput: returning a dict-of-frames in the
-            # ``_Frame`` slot is the runtime contract; see function docstring.
-            return lf, is_source, node  # type: ignore[return-value]
-
-        # Apply selected_columns filter first (uses pre-rename names),
-        # then column renames on the surviving columns.
-        lf = _apply_selected_columns(lf, node_map[nid].data.config)
-        if isinstance(lf, pl.DataFrame):
-            lf = lf.lazy()
-        lf = _apply_column_renames(lf, node_map[nid].data.config)
-        if isinstance(lf, pl.DataFrame):
-            lf = lf.lazy()
-
+        Only for a captured Model Score scoring in batch (any scenario but
+        ``live``) whose output is exactly what the scorer writes: no
+        post-processing code, no selected columns, no renames. Anything else
+        is sunk after the node is built, like every other capture.
+        """
+        assert self.plan is not None
+        capture = self.plan.decision.captures.get(node_id)
+        config = node.data.config
         if (
-            check_here
-            and contract is not None
-            and contract.outputs is not None
-            and not is_passthrough_runtime
+            capture is None
+            or node.data.nodeType != NodeType.MODEL_SCORE
+            or scenario == "live"
+            or str(config.get("code") or "").strip()
+            or config.get("selected_columns")
+            or config.get("column_renames")
         ):
-            out_cols = _columns_of(lf)
-            column_cache[(nid, None)] = out_cols
-            if execution_context is not None:
-                execution_context.record_column_widths(
-                    node_id=nid,
-                    output_width=len(out_cols),
+            return None
+        return self.plan.store.stage_node_output(
+            capture.identity, staging_token=self.plan.staging_token
+        )
+
+    def capture(
+        self,
+        node_id: str,
+        frame: _Frame,
+        closure: Mapping[str, str],
+        *,
+        artifact: NodeSnapshotArtifact | None = None,
+        prewritten: bool = False,
+        prewritten_digests: Mapping[str, str] | None = None,
+        join: JoinRecipe | None = None,
+        recipe: WriteRecipe | None = None,
+        unshaped_columns: Sequence[tuple[str, str]] | None = None,
+    ) -> pl.LazyFrame:
+        """Write one capture point through the chunked writer and continue from it.
+
+        With ``prewritten``, *artifact* already holds the node's output — a
+        batch Model Score's scored parts — and is published without a second
+        write. With ``join``, the recipe *frame* was built from, an edge join
+        is written a driving chunk at a time. With ``recipe``, the write recipe
+        *frame* was built from, a chunk-local single-input node is written a
+        slice of its input at a time.
+        """
+        from haute._node_snapshots import (
+            NodeSnapshotColumns,
+            NodeSnapshotMultiFrameUnsupportedError,
+        )
+
+        plan = self.plan
+        assert plan is not None
+        capture = plan.decision.captures[node_id]
+        if isinstance(frame, dict):
+            raise NodeSnapshotMultiFrameUnsupportedError(
+                "A node that emits several frames cannot be captured as one snapshot."
+            )
+        store = plan.store
+        if artifact is None:
+            artifact = store.stage_node_output(capture.identity, staging_token=plan.staging_token)
+        sink_lf = artifact.lazy_frame() if prewritten else frame
+        if isinstance(sink_lf, pl.DataFrame):
+            sink_lf = sink_lf.lazy()
+        try:
+            schema_cols = sink_lf.collect_schema().names()
+        except BaseException:
+            artifact.close()
+            raise
+        if capture.columns.names is None:
+            columns = NodeSnapshotColumns.all()
+        else:
+            wanted = set(capture.columns.names)
+            missing = wanted - set(schema_cols)
+            strict = capture.strict_columns.names
+            strict_missing = missing & set(strict) if strict is not None else missing
+            if strict_missing:
+                artifact.close()
+                raise ContractMismatchError(
+                    "A captured node's output lacks columns this run reads from it.",
+                    node_id=node_id,
+                    missing=sorted(strict_missing),
+                    output_columns=sorted(schema_cols),
                 )
-            boundary_runner.assert_outputs(boundary, out_cols)
-
-        return lf, is_source, node
-
-    for nid in order:
-        if nid in skip_cache_covered_nodes:
-            continue
-        cached_seed = cached_seed_outputs.get(nid)
-        if cached_seed is not None:
-            lazy_outputs[nid] = cached_seed
-            column_cache[(nid, None)] = _columns_of(cached_seed)
-            logger.info("dataframe_execution_cache_seed_hit", node_id=nid)
-            if execution_context is not None:
-                execution_context.checkpoint(label="lazy_dataframe_cache_seed_hit", node_id=nid)
-            continue
-        boundary = boundary_runner.open(nid)
-        with (
-            execution_context.stage("lazy_build", node_id=nid)
-            if execution_context is not None
-            else contextlib.nullcontext()
-        ):
-            lf, is_source, node = _build_lazy_node(boundary)
-
-        cache_materialized = False
-        if cache_request is not None and nid not in cache_hit_rejected_node_ids:
-            materialize_cache_key = cache_request.keys_by_node.get(nid)
-            if materialize_cache_key is not None:
+            if missing:
+                logger.warning(
+                    "snapshot_capture_column_unavailable",
+                    node_id=node_id,
+                    missing=sorted(missing),
+                )
+            ordered = projected_or_carrier_columns(schema_cols, wanted - missing)
+            sink_lf = sink_lf.select(ordered)
+            if join is not None:
+                join = join.then(lambda lf: lf.select(ordered))
+            if recipe is not None:
+                recipe = recipe.then(lambda lf: lf.select(ordered))
+            # A scored file holds what the scorer was asked to write; it is
+            # published as that whole file.
+            columns = NodeSnapshotColumns.of(schema_cols if prewritten else ordered)
+        context = self.execution_context
+        written: ChunkedWrite | None = None
+        try:
+            if not prewritten:
                 with (
-                    execution_context.stage("lazy_dataframe_cache_materialize", node_id=nid)
-                    if execution_context is not None
+                    context.stage("lazy_snapshot_capture", node_id=node_id)
+                    if context is not None
                     else contextlib.nullcontext()
                 ):
-                    try:
-                        lazy_frame_for_cache = _lazy_frame_for_cache(lf, nid)
-                        required_for_cache = sorted(materialize_cache_key.required_columns)
-                        if required_for_cache:
-                            cache_columns = set(_schema_names_of(lazy_frame_for_cache))
-                            missing_for_cache = sorted(set(required_for_cache) - cache_columns)
-                        else:
-                            missing_for_cache = []
-                        if missing_for_cache:
-                            logger.warning(
-                                "dataframe_execution_cache_required_columns_missing_skip",
-                                node_id=nid,
-                                missing=missing_for_cache,
-                            )
-                            cached_lf = None
-                        else:
-                            if required_for_cache:
-                                lazy_frame_for_cache = lazy_frame_for_cache.select(
-                                    required_for_cache
-                                )
-                            cached_lf = execution_facade.materialize_lazy_frame_with_cache(
-                                lazy_frame_for_cache,
-                                cache=cache_request.cache,
-                                key=materialize_cache_key,
-                                profile=(
-                                    execution_context.profile
-                                    if execution_context is not None
-                                    else ExecutionProfile.LAZY_SINK
-                                ),
-                                streaming_chunk_size=cache_request.streaming_chunk_size,
-                                fast_checkpoint=cache_request.fast_checkpoint,
-                            )
-                    except execution_facade.CacheArtifactTooLargeError as exc:
-                        logger.warning(
-                            "dataframe_execution_cache_artifact_too_large_skip",
-                            node_id=nid,
-                            error=str(exc),
-                        )
-                    else:
-                        if cached_lf is not None:
-                            lf = cached_lf
-                            cache_materialized = True
-                            cache_backed_node_ids.add(nid)
-                            column_cache[(nid, None)] = _columns_of(lf)
-                            _release_consumed_parents(nid)
-                            checkpoints_since_gc += 1
-                            if checkpoints_since_gc >= _GC_BATCH_INTERVAL:
-                                gc.collect()
-                                _malloc_trim()
-                                checkpoints_since_gc = 0
-                            logger.info("dataframe_execution_cache_materialized", node_id=nid)
-                            if execution_context is not None:
-                                execution_context.checkpoint(
-                                    label="after_dataframe_cache_materialize",
-                                    node_id=nid,
-                                )
+                    written = write_parts(
+                        artifact.directory,
+                        sink_lf,
+                        join=join,
+                        recipe=recipe,
+                        chunk_rows=current_streaming_chunk_size(),
+                        fast_checkpoint=True,
+                        execution_context=context,
+                        node_id=node_id,
+                    )
+                artifact.record_digests(written.digests)
+            elif prewritten_digests:
+                artifact.record_digests(prewritten_digests)
+            _snapshot_fault_point("snapshot_capture_before_publish", node_id)
+            if self._inputs_changed():
+                # The pre-run check exists to stop exactly this mix: seeds
+                # computed from the old inputs read beside branches recomputed
+                # from the new ones. Keeping this artifact and carrying on
+                # produced that mix in the one case the check cannot cover,
+                # because the change happened after it ran. Discard the
+                # unfinished staging and stop; whatever published before the
+                # change stays published under the identities it was computed
+                # for, and nothing further is published.
+                from haute.errors import SnapshotPlanInputsChangedError
 
-        # Adaptive checkpoint to break Polars plan duplication.
-        #
-        # Three structural triggers (joins, fan-outs, join-feeders) are
-        # evaluated by _checkpoint_decision:
-        #   PARQUET      — disk round-trip, safest, frees RAM
-        #   SKIP         — keep the LazyFrame as-is (source nodes,
-        #                  batch MODEL_SCORE which already checkpoints
-        #                  internally, or nodes that don't need it)
-        n_parents = len(parents_of.get(nid, []))
-        n_children = children_count.get(nid, 0)
-        feeds_join = any(len(parents_of.get(cid, [])) > 1 for cid in children_of.get(nid, []))
+                artifact.close()
+                raise SnapshotPlanInputsChangedError(target_node_id=self._decision.target_node_id)
+            publication = store.publish_node_output(
+                capture.identity,
+                artifact,
+                columns=columns,
+                dependencies=closure,
+                explicit=False,
+                profile=plan.decision.profile,
+                unshaped_columns=unshaped_columns,
+            )
+        except SourceCacheCorruptError as exc:
+            # The publication rule reports corruption rather than repairing it,
+            # deliberately — only an explicit build replaces a corrupt
+            # generation. It reports it against an identity, though, which tells
+            # the user nothing they can act on, so name the node here where it
+            # is known.
+            from haute.errors import SnapshotCorruptError
 
-        action = _checkpoint_decision(
-            nid,
-            is_source,
-            n_parents,
-            n_children,
-            feeds_join,
-            node_map,
-            node_source_overrides.get(nid, source or "live"),
+            artifact.close()
+            node = self.graph.node_map.get(node_id)
+            raise SnapshotCorruptError(
+                node_id=node_id,
+                node_label=(node.data.label if node is not None else None),
+            ) from exc
+        except BaseException:
+            artifact.close()
+            raise
+        plan.register_publication(publication)
+        if publication.outcome == "published":
+            assert publication.generation is not None
+            self.published[node_id] = (
+                capture.identity.digest,
+                publication.generation.generation_id,
+            )
+            plan.record_published(node_id, publication.generation)
+            self._record(
+                capture,
+                "published",
+                publication.generation.generation_id,
+                columns,
+                written,
+            )
+        else:
+            self._record(capture, "superseded", None, columns, written)
+        return publication.lazy_frame
+
+    def _record(
+        self,
+        capture: CaptureDecision,
+        outcome: Literal["published", "superseded"],
+        generation_id: str | None,
+        columns: NodeSnapshotColumns,
+        written: ChunkedWrite | None,
+    ) -> None:
+        """``written`` is the chunked write, or None for a prewritten scored file."""
+        from haute._seed_plans import SharedSnapshotCaptureRecord
+
+        logger.info(
+            "shared_snapshot_capture",
+            node_id=capture.node_id,
+            outcome=outcome,
+            generation_id=generation_id,
+            write_strategy=written.strategy if written is not None else "prewritten",
+            write_parts=written.chunks if written is not None else None,
+            write_chunk_rows=written.chunk_rows if written is not None else None,
+            write_input_slices=written.input_slices if written is not None else None,
+            write_native_reason=written.native_reason if written is not None else None,
+            write_blocking_operator=written.blocking_operator if written is not None else None,
         )
-
-        if (
-            not cache_materialized
-            and checkpoint_dir is not None
-            and action == _CheckpointAction.PARQUET
-        ):
-            tmp = checkpoint_dir / _checkpoint_filename(nid)
-
-            # Project to only the columns needed downstream before
-            # writing the checkpoint.  This avoids writing (and later
-            # re-reading) columns that no downstream node will use —
-            # e.g. 100 source columns when the model only needs 8.
-            sink_lf = lf if isinstance(lf, pl.LazyFrame) else lf.lazy()
-            projection = needed_cols.get(nid)
-            if projection is not None:
-                schema_cols = sink_lf.collect_schema().names()
-                schema_set = set(schema_cols)
-                missing = projection - schema_set
-                runtime_projection = runtime_projection_plan.needed_by_node.get(nid)
-                runtime_required = set(runtime_projection or ())
-                runtime_missing = missing & runtime_required
-                if runtime_missing:
-                    raise ContractMismatchError(
-                        "Checkpoint projection references columns missing "
-                        "from the node output schema.",
-                        node_id=nid,
-                        node_type=node.data.nodeType.value,
-                        missing=sorted(runtime_missing),
-                        required_columns=sorted(runtime_required),
-                        output_columns=sorted(schema_set),
-                    )
-                cache_only_missing = missing - runtime_missing
-                if cache_only_missing:
-                    logger.warning(
-                        "dataframe_execution_cache_checkpoint_column_missing",
-                        node_id=nid,
-                        missing=sorted(cache_only_missing),
-                    )
-                effective_projection = set(projection) - cache_only_missing
-                valid = projected_or_carrier_columns(schema_cols, effective_projection)
-                if valid and len(valid) < len(schema_cols):
-                    logger.info(
-                        "checkpoint_projection",
-                        node_id=nid,
-                        total_cols=len(schema_cols),
-                        projected_cols=len(valid),
-                    )
-                    sink_lf = sink_lf.select(valid)
-                    column_cache[(nid, None)] = frozenset(valid)
-
-            with (
-                execution_context.stage("lazy_checkpoint_parquet", node_id=nid)
-                if execution_context is not None
-                else contextlib.nullcontext()
-            ):
-                bounded_sink(sink_lf, tmp, fast_checkpoint=True)
-
-            # Drop the old LazyFrame (and any cached Arrow buffers it
-            # holds) before replacing with a fresh scan reference.
-            del lf
-            _release_consumed_parents(nid)
-
-            checkpoints_since_gc += 1
-            if checkpoints_since_gc >= _GC_BATCH_INTERVAL:
-                gc.collect()
-                _malloc_trim()
-                checkpoints_since_gc = 0
-
-            lf = pl.scan_parquet(tmp)
-            logger.info("checkpoint_parquet", node_id=nid, path=str(tmp))
-            if execution_context is not None:
-                execution_context.checkpoint(label="after_checkpoint", node_id=nid)
-
-        lazy_outputs[nid] = lf
-
-    return lazy_outputs, order, parents_of, id_to_name
+        context = self.execution_context
+        if context is None:
+            return
+        context.record_shared_snapshot_capture(
+            SharedSnapshotCaptureRecord(
+                node_id=capture.node_id,
+                identity_digest=capture.identity.digest,
+                kind=capture.kind,
+                outcome=outcome,
+                generation_id=generation_id,
+                columns=columns,
+                write_strategy=written.strategy if written is not None else "prewritten",
+                write_parts=written.chunks if written is not None else None,
+                write_chunk_rows=written.chunk_rows if written is not None else None,
+                write_staged_inputs=written.staged_inputs if written is not None else None,
+                write_input_slices=written.input_slices if written is not None else None,
+                write_native_reason=written.native_reason if written is not None else None,
+                write_blocking_operator=written.blocking_operator if written is not None else None,
+            )
+        )
+        if outcome == "superseded":
+            context.record_execution_warning("snapshot_capture_superseded", node_id=capture.node_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1721,6 +1526,8 @@ def _build_funcs(
     | None = None,
     reuse_loaded_model_by_node: Mapping[str, bool] | None = None,
     execution_profile: ExecutionProfile | None = None,
+    schema_only: bool = False,
+    submodels: Mapping[str, Any] | None = None,
 ) -> dict[str, tuple[Callable, bool]]:
     """Build per-node executable functions from the graph.
 
@@ -1733,6 +1540,9 @@ def _build_funcs(
     without changing graph pruning/source-switch routing.
     ``reuse_loaded_model_by_node`` opts selected modelScore nodes into
     scorer-instance model reuse for chunked callers.
+    ``schema_only`` forwards the caller's schema-only declaration to every
+    builder, so a builder that would otherwise materialise at build time
+    (OUTPUT) honours it.
     """
     funcs: dict[str, tuple[Callable, bool]] = {}
     node_source_overrides = source_by_node or {}
@@ -1749,7 +1559,7 @@ def _build_funcs(
         for edge in connected_edges:
             source_node = node_map[edge.source]
             try:
-                src_names.append(edge_input_name(edge, source_node))
+                src_names.append(edge_input_name(edge, source_node, submodels=submodels))
             except ValueError:
                 # Preview reports null-handle routing errors on the consumer.
                 if not (
@@ -1798,6 +1608,7 @@ def _build_funcs(
                 else False
             ),
             execution_profile=execution_profile.value if execution_profile is not None else None,
+            schema_only=schema_only,
         )
         funcs[nid] = (fn, is_source)
     return funcs
@@ -1816,38 +1627,30 @@ def _extract_error_line(exc: Exception) -> int | None:
     """
     if isinstance(exc, SyntaxError) and exc.lineno is not None:
         return exc.lineno
-    user_line: int | None = getattr(exc, "_user_code_line", None)
+    user_line = user_code_line(exc)
     if user_line is not None:
-        return int(user_line)
+        return user_line
     match = re.search(r"\bline (\d+)\b", str(exc))
     if match:
         return int(match.group(1))
     return None
 
 
-class EagerResult(NamedTuple):
-    """Result of eager graph execution."""
+def _located_step_line(
+    fn: Callable[..., Any], inputs: Sequence[_Frame], exc: Exception
+) -> int | None:
+    """The line of the step a recorded plan failure came from, when the node can name it.
 
-    # ``outputs`` may carry a ``dict[port_label, DataFrame]`` for
-    # multi-frame apiInput sources; non-apiInput nodes always emit a
-    # single ``DataFrame`` or ``None`` on failure.
-    outputs: dict[str, pl.DataFrame | dict[str, pl.DataFrame] | None]
-    order: list[str]
-    parents_of: dict[str, list[str]]
-    node_map: dict[str, GraphNode]
-    id_to_name: dict[str, str]
-    errors: dict[str, str]
-    timings: dict[str, float]
-    memory_bytes: dict[str, int]
-    error_lines: dict[str, int]
-    available_columns: dict[str, list[tuple[str, str]]]
-    output_columns: dict[str, list[tuple[str, str]]]
-    # Per-(node_id, port_label) name+dtype schema for multi-frame emitters.
-    # Populated from the collected frames for a materialised target and
-    # from ``collect_schema()`` (no materialisation) for a lazy ancestor,
-    # so per-frame columns are available WITHOUT collecting the ancestor.
-    # Empty for single-frame nodes (their schema is in ``output_columns``).
-    frame_columns: dict[tuple[str, str], list[tuple[str, str]]]
+    Only a Polars transform authored as closed-vocabulary steps carries
+    ``failed_step_line`` (``_builders._build_transform``), and only a Polars
+    error can be its plan failing to resolve. The builder replays the steps on
+    *inputs*, the frames the run gave the node; the exception is not touched.
+    """
+    locate = getattr(fn, "failed_step_line", None)
+    if locate is None or not isinstance(exc, pl.exceptions.PolarsError):
+        return None
+    line: int | None = locate(*inputs)
+    return line
 
 
 def _declared_api_input_frame_schema_items(
@@ -1866,701 +1669,3 @@ def _declared_api_input_frame_schema_items(
         schema = _declared_frame_schema(table_spec)
         declared[table_spec.label] = [(name, str(schema[name])) for name in schema.names()]
     return declared
-
-
-@runtime_project_root_scoped
-def _execute_eager_core(
-    graph: PipelineGraph,
-    build_node_fn: Callable,
-    target_node_id: str | None = None,
-    row_limit: int | None = None,
-    swallow_errors: bool = False,
-    preamble_ns: dict | None = None,
-    source: str = "live",
-    enforce_contracts: bool = True,
-    required_columns_by_node: Mapping[str, Iterable[str] | projection_planner.AllExceptColumns]
-    | None = None,
-    materialize_node_ids: set[str] | frozenset[str] | None = None,
-    materialize_column_limits_by_node: Mapping[str, int] | None = None,
-    execution_context: ExecutionContext | None = None,
-) -> EagerResult:
-    """Execute the graph eagerly in topo order and collect DataFrames.
-
-    Shared core for the preview executor and the trace engine.
-
-    Args:
-        graph: React Flow graph.
-        build_node_fn: ``(node, source_names=..., ...) -> (name, fn, is_source)``.
-        target_node_id: If set, only execute ancestors of this node.
-        row_limit: Cap source-node output to this many rows.
-        swallow_errors: If ``True``, record per-node errors and continue
-            (preview behaviour).  If ``False``, raise immediately (trace).
-        source: Active execution source (``"live"`` = eager scoring).
-        enforce_contracts: If ``True`` (default), assert each node's
-            column contract at its input and output boundaries. Contract and
-            schema mismatches always raise regardless of *swallow_errors* —
-            they are API-level claims and a silent error would defeat the
-            adoption effort.
-        required_columns_by_node: Optional exact output-column demand for
-            caller-consumed nodes.  Eager preview uses this to collect only
-            the visible target columns while still reporting the full schema.
-        materialize_node_ids: Optional set of nodes whose outputs should be
-            collected into concrete DataFrames.  ``None`` preserves the
-            traditional eager behaviour and materialises every executed node.
-            Target-only preview passes ``{target_node_id}`` so ancestors stay
-            lazy while still participating in schema, contract, and projection
-            planning.
-        materialize_column_limits_by_node: Optional per-node cap on the
-            columns collected into materialised DataFrames.  The full output
-            schema is still reported from ``collect_schema()`` before this
-            cap is applied.  Used by first-click preview when the frontend
-            has not yet sent explicit requested preview columns.
-
-    Returns:
-        An ``EagerResult`` with named fields for outputs, order,
-        parents_of, node_map, id_to_name, errors, timings, and
-        memory_bytes.
-    """
-    prepared_execution = _prepare_execution(
-        PreparedExecutionRequest(
-            graph=graph,
-            target_node_id=target_node_id,
-            source=source,
-            required_columns_by_node=required_columns_by_node,
-            profile=execution_context.profile if execution_context is not None else None,
-        )
-    )
-    graph = prepared_execution.graph
-    graph_plan = prepared_execution.graph_plan
-    node_map = graph_plan.node_map
-    order = graph_plan.order
-    parents_of = graph_plan.parents_of
-    id_to_name = graph_plan.id_to_name
-    relevant_edges = graph_plan.relevant_edges
-    normalised_required_columns = prepared_execution.normalised_required_columns
-    materialized_ids = None if materialize_node_ids is None else frozenset(materialize_node_ids)
-    materialize_column_limits = dict(materialize_column_limits_by_node or {})
-    for limit_node_id, limit in materialize_column_limits.items():
-        if not isinstance(limit_node_id, str) or not limit_node_id:
-            raise ValueError("materialize_column_limits_by_node keys must be node ids")
-        if type(limit) is not int or limit < 1:
-            raise ValueError("materialize column limits must be positive integers")
-
-    # Full parent lookup from ALL edges for instance resolution
-    all_parents = prepared_execution.all_parents
-
-    # Per-target incoming-edge lookup (eager path). Use ``relevant_edges``
-    # so live-switch pruning is honoured.
-    incoming_edges_by_target = prepared_execution.incoming_edges_by_target
-    all_incoming_edges_by_target = prepared_execution.all_incoming_edges_by_target
-
-    # Fan-out count per node — how many direct children consume this
-    # node's output.  Used to add a Polars ``.cache()`` hint when the
-    # parent feeds >1 consumer so the optimiser reuses one materialized
-    # plan across branches (diamond graphs) instead of duplicating the
-    # upstream work.  A parent may be either a concrete DataFrame
-    # (traditional eager preview/trace) or a LazyFrame (target-only
-    # preview), and both can carry the hint into downstream collection.
-    children_of = prepared_execution.children_of
-
-    # Count fan-out by the selected source frame, rather than only by node.
-    # A multi-frame producer can expose multiple independent source ports.
-    frame_fanout_count: dict[tuple[str, str | None], int] = {}
-    for edge in relevant_edges:
-        if edge.source in node_map and edge.target in node_map:
-            frame_key = (edge.source, edge.sourceHandle)
-            frame_fanout_count[frame_key] = frame_fanout_count.get(frame_key, 0) + 1
-
-    context_strategy = execution_context.projection_plan if execution_context is not None else None
-    if normalised_required_columns:
-        projection_plan = projection_planner.compute_prepared_plan(
-            order,
-            children_of,
-            node_map,
-            required_columns_by_node=normalised_required_columns,
-            strict_projection=_strict_projection_for_context(
-                execution_context,
-                normalised_required_columns,
-            ),
-            relevant_edges=relevant_edges,
-        )
-    else:
-        projection_plan = None
-    needed_cols: Mapping[str, frozenset[str] | None] = (
-        projection_plan.needed_by_node if projection_plan is not None else {}
-    )
-    builder_needed_cols = projection_planner.builder_required_output_columns_by_node(
-        node_map,
-        needed_cols,
-        preserve_eager_model_score_inputs=True,
-    )
-    # Public strategy planning also runs for an unseeded first-click preview.
-    # Reuse that proof only at the API port-loading seam: applying its complete
-    # node demands as eager output projections would change established output
-    # and schema-reporting semantics for unrelated nodes.
-    port_projection_plan = (
-        context_strategy.projection_plan
-        if isinstance(context_strategy, projection_planner.ExecutionStrategyResult)
-        else projection_plan
-    )
-    api_port_columns_by_node = (
-        projection_planner.api_input_port_columns_by_node(
-            node_map,
-            relevant_edges,
-            port_projection_plan,
-        )
-        if port_projection_plan is not None
-        else {}
-    )
-
-    funcs = _build_funcs(
-        order,
-        node_map,
-        id_to_name,
-        all_parents,
-        build_node_fn,
-        incoming_edges_by_target=incoming_edges_by_target,
-        all_incoming_edges_by_target=all_incoming_edges_by_target,
-        all_node_map=graph.node_map,
-        row_limit=row_limit,
-        preamble_ns=preamble_ns,
-        source=source,
-        required_output_columns_by_node=builder_needed_cols,
-        required_output_columns_by_port_by_node=api_port_columns_by_node,
-        execution_profile=execution_context.profile if execution_context is not None else None,
-    )
-    boundary_runner = NodeBoundaryRunner(
-        prepared=prepared_execution,
-        funcs=funcs,
-        enforce_contracts=enforce_contracts,
-        execution_context=execution_context,
-        needed_columns=needed_cols,
-    )
-
-    # Value can be a single frame, None on failure, OR a per-frame dict
-    # (multi-frame apiInput emits ``dict[port_label, DataFrame]`` — see
-    # the ``materialised`` assignment in the dict-emit branch below).
-    eager_outputs: dict[str, pl.DataFrame | dict[str, pl.DataFrame] | None] = {}
-    runtime_outputs: dict[
-        str,
-        pl.LazyFrame | pl.DataFrame | dict[str, pl.DataFrame] | dict[str, pl.LazyFrame] | None,
-    ] = {}
-    # Reuse one cache node per lazy producer frame. DataFrames are already
-    # materialised and deliberately never enter this mapping.
-    cached_lazy_frames: dict[tuple[str, str | None], pl.LazyFrame] = {}
-    errors: dict[str, str] = {}
-    error_lines: dict[str, int] = {}
-    timings: dict[str, float] = {}
-    memory_bytes: dict[str, int] = {}
-    available_columns: dict[str, list[tuple[str, str]]] = {}
-    output_columns: dict[str, list[tuple[str, str]]] = {}
-
-    # Per-node column sets used by the boundary contract checks.  We
-    # compute each frame's column set exactly once and reuse it — both
-    # as an output check for the producing node and as an input check
-    # for its consumer(s).  Polars' ``.columns`` is O(n) in the number
-    # of columns, but frozenset construction dominates anyway; caching
-    # keeps the contract-enforced path within the <5% budget.
-    #
-    # Same shape change as the lazy path: keyed by
-    # ``(producer_node_id, port_name_or_None)`` so multi-frame consumers
-    # don't collide.
-    column_cache: dict[tuple[str, str | None], frozenset[str]] = {}
-
-    # Parallel to ``column_cache`` but dtype-carrying and per-frame: maps
-    # ``(producer_node_id, port_label) -> list[(name, dtype)]`` for
-    # multi-frame emitters (a multi-table apiInput today). column_cache
-    # stays ``frozenset[str]`` for the contract checks; this lookup is the
-    # additive name+dtype carrier that lets a NON-materialised multi-frame
-    # ancestor expose its per-frame schema (via ``collect_schema()``, no
-    # collect) exactly as a materialised target does (from the collected
-    # frames). Single-frame nodes never populate this.
-    frame_schema_cache: dict[tuple[str, str], list[tuple[str, str]]] = {}
-
-    def _schema_items_of(frame: pl.LazyFrame | pl.DataFrame) -> list[tuple[str, str]]:
-        lazy_frame = frame if isinstance(frame, pl.LazyFrame) else frame.lazy()
-        schema = lazy_frame.collect_schema()
-        return [(name, str(schema[name])) for name in schema.names()]
-
-    def _full_model_score_schema(
-        node_id: str,
-        node: GraphNode,
-        actual_columns: list[tuple[str, str]],
-    ) -> list[tuple[str, str]]:
-        config = node.data.config
-        if not _is_plain_model_score(node):
-            return actual_columns
-
-        parent_ids = parents_of.get(node_id, [])
-        if not parent_ids:
-            return actual_columns
-        parent_columns = output_columns.get(parent_ids[0])
-        if parent_columns is None:
-            return actual_columns
-
-        actual_by_name = dict(actual_columns)
-        generated_names = [str(config.get("output_column") or "prediction")]
-        proba_col = f"{generated_names[0]}_proba"
-        if proba_col in actual_by_name:
-            generated_names.append(proba_col)
-
-        seen: set[str] = set()
-        full_columns: list[tuple[str, str]] = []
-        for name, dtype in parent_columns:
-            full_columns.append((name, actual_by_name.get(name, dtype)))
-            seen.add(name)
-        for name in generated_names:
-            if name in seen or name not in actual_by_name:
-                continue
-            full_columns.append((name, actual_by_name[name]))
-            seen.add(name)
-        return full_columns
-
-    for nid in order:
-        boundary = boundary_runner.open(nid)
-        is_source = boundary.is_source
-        node = boundary.node
-        contract = boundary.contract
-        check_here = boundary.check_contract
-        # A node that the builder chose to wire to ``_passthrough_fn`` is
-        # running in a stub/unconfigured state (MODEL_SCORE without a
-        # loaded model, OPTIMISER_APPLY without an artifact, etc.).  Its
-        # contract describes the *configured* shape, which the runtime
-        # intentionally does not produce yet.  Skip the output-side
-        # check to preserve the "drag node onto canvas, configure later"
-        # UX while still enforcing contracts the moment a real function
-        # is wired in.
-        is_passthrough_runtime = boundary.is_passthrough_runtime
-        t0 = time.perf_counter()
-        try:
-            if is_source:
-                result = boundary_runner.invoke(boundary)
-                if row_limit and isinstance(result, (pl.LazyFrame, pl.DataFrame)):
-                    result = result.head(row_limit)
-            else:
-                input_ids = parents_of.get(nid, [])
-                missing_parents = [pid for pid in input_ids if pid not in runtime_outputs]
-                if missing_parents:
-                    raise ValueError(
-                        f"Node '{nid}' is missing input(s) from: {missing_parents}. "
-                        "Upstream node(s) may not have been registered."
-                    )
-                failed_parents = [pid for pid in input_ids if runtime_outputs[pid] is None]
-                if failed_parents:
-                    eager_outputs[nid] = None
-                    runtime_outputs[nid] = None
-                    parent_errors = [
-                        f"{pid}: {errors[pid]}" if pid in errors else f"{pid}: failed"
-                        for pid in failed_parents
-                    ]
-                    errors[nid] = "Upstream node(s) failed: " + "; ".join(parent_errors)
-                    for pid in failed_parents:
-                        if pid in error_lines:
-                            error_lines[nid] = error_lines[pid]
-                            break
-                    continue
-                # Add ``.cache()`` on parents that feed >1 consumer so a
-                # downstream ``.collect()`` re-uses the materialised plan
-                # across branches instead of duplicating upstream work.
-                # This is the diamond optimisation: src -> (left, right)
-                # -> sink should compute src's plan once, not twice.
-                # Parents with exactly one consumer skip the hint — it's
-                # cheap but non-zero overhead and adds no value there.
-                # Eager path: resolve each incoming edge's frame via
-                # ``_pick_source_frame`` so multi-frame sources (apiInput
-                # emitting a per-frame dict) route per-edge by
-                # ``edge.sourceHandle``. Single-frame sources pass through.
-                input_lfs = []
-                incoming_edges_for_node = boundary.incoming_edges
-                for edge in incoming_edges_for_node:
-                    pid = edge.source
-                    if pid not in runtime_outputs:
-                        continue
-                    parent_frame = runtime_outputs[pid]
-                    if parent_frame is None:
-                        continue
-                    picked = _pick_source_frame(parent_frame, edge)
-                    frame_key = (pid, edge.sourceHandle)
-                    if (
-                        isinstance(picked, pl.LazyFrame)
-                        and frame_fanout_count.get(frame_key, 0) > 1
-                    ):
-                        parent_lf = cached_lazy_frames.get(frame_key)
-                        if parent_lf is None:
-                            parent_lf = picked.cache()
-                            cached_lazy_frames[frame_key] = parent_lf
-                    else:
-                        parent_lf = picked if isinstance(picked, pl.LazyFrame) else picked.lazy()
-                    input_lfs.append(parent_lf)
-                if not input_lfs:
-                    raise ValueError(
-                        f"No input data available for node '{nid}'",
-                    )
-
-                runtime_edge_demands = _runtime_join_demands(
-                    node,
-                    incoming_edges_for_node,
-                    input_lfs,
-                    needed_cols.get(nid),
-                    projection_plan.edge_demands if projection_plan is not None else {},
-                    node_map,
-                )
-                if runtime_edge_demands:
-                    projected_inputs: list[pl.LazyFrame] = []
-                    for incoming_edge, input_lf in zip(
-                        incoming_edges_for_node,
-                        input_lfs,
-                        strict=True,
-                    ):
-                        demand = runtime_edge_demands.get(
-                            projection_planner.ProjectionEdgeKey.from_edge(incoming_edge)
-                        )
-                        if demand is None:
-                            projected_inputs.append(input_lf)
-                            continue
-                        schema_names = input_lf.collect_schema().names()
-                        selected = projected_or_carrier_columns(schema_names, demand)
-                        projected_inputs.append(input_lf.select(selected))
-                    input_lfs = projected_inputs
-
-                    current_strategy = (
-                        execution_context.projection_plan if execution_context is not None else None
-                    )
-                    if isinstance(
-                        current_strategy,
-                        projection_planner.ExecutionStrategyResult,
-                    ):
-                        assert execution_context is not None
-                        refined_plan = projection_planner.with_runtime_inferred_streaming_edges(
-                            current_strategy.projection_plan,
-                            demands_by_edge=runtime_edge_demands,
-                            resolved_parent_ids=_runtime_projectable_source_ids(
-                                (key.source for key in runtime_edge_demands),
-                                node_map,
-                            ),
-                            relevant_edges=relevant_edges,
-                        )
-                        previous_diagnostic = current_strategy.diagnostic
-                        execution_context.projection_plan = (
-                            projection_planner.build_execution_strategy_result(
-                                refined_plan,
-                                profile=execution_context.profile,
-                                order=order,
-                                children_of=children_of,
-                                node_map=node_map,
-                                has_projection_seed=bool(normalised_required_columns),
-                                required_columns_by_node=normalised_required_columns,
-                                estimated_peak_bytes=(previous_diagnostic.estimated_peak_bytes),
-                                raw_estimated_peak_bytes=(
-                                    previous_diagnostic.raw_estimated_peak_bytes
-                                ),
-                                estimate_calibration_factor_basis_points=(
-                                    previous_diagnostic.estimate_calibration_factor_basis_points
-                                ),
-                                estimate_admission_basis=(
-                                    previous_diagnostic.estimate_admission_basis
-                                ),
-                                headroom_bytes=previous_diagnostic.headroom_bytes,
-                                assumptions=previous_diagnostic.assumptions,
-                            )
-                        )
-
-                # Input-side contract check: every column the node's
-                # contract says it reads must be present upstream.
-                # Using the union across all parents matches how the
-                # node's function receives inputs — multi-input joins
-                # combine them before the contract columns are read.
-                if check_here and contract.inputs is not None:  # type: ignore[union-attr]
-                    # Key per-edge by (source, sourceHandle) so the union
-                    # picks up the right frame's columns for multi-frame
-                    # consumers (commit 4).
-                    #
-                    # A single-frame source stores its columns under
-                    # ``(source, None)`` (see the ``column_cache[(nid, None)]``
-                    # write below). When the consuming edge carries a non-null
-                    # ``sourceHandle`` — an OUTPUT-editor edge names its
-                    # ``source_port``, and a flat apiInput → OUTPUT edge is
-                    # wired with the handle set — the ``(source, handle)`` key
-                    # misses. Fall back to the actual input frame's schema
-                    # (``collect_schema()``, no data collect) rather than
-                    # treating the upstream as column-less, mirroring the lazy
-                    # path's cache-miss fallback in ``_build_lazy_node``.
-                    # ``input_lfs`` is edge-aligned here: every parent is
-                    # present and non-None past the missing/failed guards above.
-                    upstream_col_sets: list[frozenset[str]] = []
-                    for edge, input_lf in zip(incoming_edges_for_node, input_lfs, strict=True):
-                        cache_key = (edge.source, edge.sourceHandle)
-                        cols = column_cache.get(cache_key)
-                        if cols is None:
-                            cols = frozenset(input_lf.collect_schema().names())
-                            column_cache[cache_key] = cols
-                        upstream_col_sets.append(cols)
-                    # ``.union(*[])`` is ``frozenset()``, so the empty case
-                    # (no incoming edges) needs no special handling — though
-                    # it cannot occur here: an empty ``input_lfs`` raises above.
-                    upstream_cols: frozenset[str] = frozenset().union(*upstream_col_sets)
-                    if execution_context is not None:
-                        execution_context.record_column_widths(
-                            node_id=nid,
-                            input_width=sum(len(columns) for columns in upstream_col_sets),
-                        )
-                    boundary_runner.assert_inputs(boundary, upstream_cols)
-
-                result = boundary_runner.invoke(boundary, input_lfs)
-
-            # Multi-frame emit: a source may return ``dict[port_name, frame]``.
-            # Materialise each frame's LazyFrame to DataFrame so the preview
-            # cache's size accounting (which assumes DataFrame-valued
-            # outputs) works on each frame. Downstream edges pick per-edge
-            # via ``_pick_source_frame`` from the runtime_outputs dict.
-            #
-            # Use ``streaming_collect`` (not bare ``.collect()``) so the
-            # bounded-memory contract holds in profiled execution paths.
-            # `test_bounded_collect_contracts` enforces that bounded
-            # modules never call ``.collect()`` directly.
-            if isinstance(result, dict):
-                declared_frame_schemas = _declared_api_input_frame_schema_items(node)
-                is_multi_frame_producer = (
-                    len(declared_frame_schemas) > 1 if declared_frame_schemas else len(result) > 1
-                )
-                if is_multi_frame_producer and declared_frame_schemas:
-                    # Loading is demand-scoped, but editor/schema metadata is
-                    # a config contract. Surface every declared port without
-                    # opening or collecting the unused parquet payloads.
-                    for port_label, schema_items in declared_frame_schemas.items():
-                        frame_schema_cache[(nid, port_label)] = schema_items
-                # Gate the per-frame collect on the SAME materialize test
-                # every other node uses (see ``should_materialize`` below
-                # for single-frame nodes). A multi-frame ANCESTOR of a
-                # target-only preview must stay lazy — schema only, no
-                # collect — exactly like a single-frame ancestor, so per-frame
-                # ``scan_parquet`` pushdown survives into its consumers.
-                mp_should_materialize = materialized_ids is None or nid in materialized_ids
-                # Head-cap each frame's lazy plan up front (before any
-                # collect/schema) like the single-frame source path (the
-                # ``row_limit`` head at the top of this loop): a preview
-                # row_limit must reach the per-frame plans of a multi-frame
-                # source too, or they collect in full while single-frame
-                # sources cap. The cap is a no-op
-                # for the schema-only ancestor path but keeps the lazy plan
-                # consistent with what a downstream collect would see.
-                capped_ports: dict[str, pl.LazyFrame | pl.DataFrame] = {}
-                for port_label, port_frame in result.items():
-                    if isinstance(port_frame, (pl.LazyFrame, pl.DataFrame)):
-                        capped_ports[port_label] = (
-                            port_frame.head(row_limit) if row_limit else port_frame
-                        )
-                    else:
-                        raise TypeError(
-                            f"Node '{nid}' multi-frame output for frame "
-                            f"{port_label!r} is not a Polars frame "
-                            f"(got {type(port_frame).__name__}).",
-                        )
-
-                if mp_should_materialize:
-                    materialised: dict[str, pl.DataFrame] = {}
-                    for port_label, capped in capped_ports.items():
-                        if isinstance(capped, pl.LazyFrame):
-                            port_df = streaming_collect(
-                                capped,
-                                execution_context=execution_context,
-                            )
-                        else:
-                            port_df = capped
-                        materialised[port_label] = port_df
-                    # Store DataFrames for cache accounting; downstream
-                    # _pick_source_frame + _to_lazy_if_needed will lazify when
-                    # consumers need a LazyFrame.
-                    runtime_outputs[nid] = materialised
-                    # Populate the per-port contract cache for every bundle,
-                    # but expose frame_schema_cache only for genuinely
-                    # multi-frame producers.  A one-frame API source now has
-                    # the uniform dict runtime shape, while its ordinary
-                    # preview schema remains in ``columns``.
-                    for port_label, port_df in materialised.items():
-                        column_cache[(nid, port_label)] = frozenset(port_df.columns)
-                        if is_multi_frame_producer and not declared_frame_schemas:
-                            port_schema = port_df.schema
-                            frame_schema_cache[(nid, port_label)] = [
-                                (name, str(port_schema[name])) for name in port_df.columns
-                            ]
-                    if execution_context is not None:
-                        execution_context.record_column_widths(
-                            node_id=nid,
-                            output_width=sum(frame.width for frame in materialised.values()),
-                        )
-                    eager_outputs[nid] = materialised
-                    if not is_multi_frame_producer and len(materialised) == 1:
-                        only_port, only_frame = next(iter(materialised.items()))
-                        only_schema = declared_frame_schemas.get(only_port) or [
-                            (name, str(only_frame.schema[name])) for name in only_frame.columns
-                        ]
-                        available_columns[nid] = only_schema
-                        output_columns[nid] = only_schema
-                else:
-                    # ANCESTOR: keep the per-frame LazyFrames in
-                    # runtime_outputs for routing only; do NOT collect and do
-                    # NOT write eager_outputs (mirrors the single-frame lazy
-                    # ancestor — schema via collect_schema(), absent from
-                    # eager_outputs). Schema is read without materialising.
-                    lazy_ports: dict[str, pl.LazyFrame] = {}
-                    for port_label, capped in capped_ports.items():
-                        port_lf = capped if isinstance(capped, pl.LazyFrame) else capped.lazy()
-                        lazy_ports[port_label] = port_lf
-                        port_schema = port_lf.collect_schema()
-                        column_cache[(nid, port_label)] = frozenset(port_schema.names())
-                        if is_multi_frame_producer and not declared_frame_schemas:
-                            frame_schema_cache[(nid, port_label)] = [
-                                (name, str(port_schema[name])) for name in port_schema.names()
-                            ]
-                    runtime_outputs[nid] = lazy_ports
-                    if not is_multi_frame_producer and len(lazy_ports) == 1:
-                        only_port, only_lazy_frame = next(iter(lazy_ports.items()))
-                        only_frame_schema = only_lazy_frame.collect_schema()
-                        only_schema = declared_frame_schemas.get(only_port) or [
-                            (name, str(only_frame_schema[name]))
-                            for name in only_frame_schema.names()
-                        ]
-                        available_columns[nid] = only_schema
-                        output_columns[nid] = only_schema
-                t1 = time.perf_counter()
-                timings[nid] = round((t1 - t0) * 1000, 1)
-                available_columns.setdefault(nid, [])
-                output_columns.setdefault(nid, [])
-                if execution_context is not None:
-                    execution_context.checkpoint(label="after_node", node_id=nid)
-                continue
-
-            if not isinstance(result, (pl.LazyFrame, pl.DataFrame)):
-                raise TypeError(
-                    f"Node '{nid}' returned {type(result).__name__}; expected a Polars frame."
-                )
-
-            result_lf = result if isinstance(result, pl.LazyFrame) else result.lazy()
-
-            # Capture full column set before selected_columns filtering
-            available_columns[nid] = _schema_items_of(result_lf)
-
-            # Apply selected_columns filter first (uses pre-rename names),
-            # then column renames on the surviving columns.
-            filtered = _apply_selected_columns(result_lf, node_map[nid].data.config)
-            renamed = _apply_column_renames(filtered, node_map[nid].data.config)
-            output_lf = renamed if isinstance(renamed, pl.LazyFrame) else renamed.lazy()
-            full_output_columns = _schema_items_of(output_lf)
-            full_output_columns = _full_model_score_schema(nid, node, full_output_columns)
-            if _is_plain_model_score(node):
-                available_columns[nid] = full_output_columns
-            output_columns[nid] = full_output_columns
-            output_column_names = [name for name, _dtype in full_output_columns]
-            if execution_context is not None:
-                execution_context.record_column_widths(
-                    node_id=nid,
-                    output_width=len(output_column_names),
-                )
-            output_column_set = set(output_column_names)
-
-            # Output-side contract check: every column the node promises
-            # to produce must be present on the result.  We check the
-            # post-rename/post-select frame because that's what
-            # downstream consumers actually see.  Passthrough-runtime
-            # nodes are exempt — see the ``is_passthrough_runtime``
-            # note above.
-            final_cols = frozenset(output_column_names)
-            if (
-                check_here
-                and contract.outputs is not None  # type: ignore[union-attr]
-                and not is_passthrough_runtime
-            ):
-                boundary_runner.assert_outputs(boundary, final_cols)
-
-            projection = needed_cols.get(nid)
-            projected_columns: list[str] | None = None
-            if projection is not None:
-                missing = projection - output_column_set
-                if missing and nid not in normalised_required_columns:
-                    raise ContractMismatchError(
-                        "Eager projection references columns missing from the node output schema.",
-                        node_id=nid,
-                        node_type=node.data.nodeType.value,
-                        missing=sorted(missing),
-                        required_columns=sorted(projection),
-                        output_columns=sorted(output_column_set),
-                    )
-                candidate_columns = [c for c in output_column_names if c in projection]
-                if len(candidate_columns) < len(output_column_names):
-                    projected_columns = candidate_columns
-            column_cache[(nid, None)] = final_cols
-
-            should_materialize = materialized_ids is None or nid in materialized_ids
-            if should_materialize:
-                collect_lf = output_lf
-                if projected_columns is not None:
-                    logger.info(
-                        "eager_projection",
-                        node_id=nid,
-                        total_cols=len(output_column_names),
-                        projected_cols=len(projected_columns),
-                    )
-                    collect_lf = collect_lf.select(projected_columns)
-                column_limit = materialize_column_limits.get(nid)
-                if (
-                    column_limit is not None
-                    and projection is None
-                    and len(output_column_names) > column_limit
-                ):
-                    collect_lf = output_lf.select(output_column_names[:column_limit])
-                if execution_context is not None:
-                    execution_context.checkpoint(label="before_collect", node_id=nid)
-                    with execution_context.stage("eager_collect", node_id=nid):
-                        df = streaming_collect(
-                            collect_lf,
-                            execution_context=execution_context,
-                        )
-                    execution_context.checkpoint(label="after_collect", node_id=nid)
-                else:
-                    df = streaming_collect(collect_lf)
-                eager_outputs[nid] = df
-                runtime_outputs[nid] = df
-                memory_bytes[nid] = int(df.estimated_size("b"))
-            else:
-                runtime_outputs[nid] = output_lf
-        except (ContractMismatchError, SchemaMismatchError):
-            # Contract and schema mismatches are API-level — raise even in swallow mode
-            # so GUI users see the crisp error instead of a silent
-            # per-node "failed" status card.
-            raise
-        except (ExecutionCancelledError, ExecutionMemoryLimitExceededError):
-            # Execution-control signals are run-level failures, not
-            # user-code node errors. They must reach the route/job layer
-            # so cancellation and memory-limit semantics stay consistent.
-            raise
-        except Exception as exc:
-            if is_public_contract_error(exc):
-                # Versioned public errors are run-level contract failures.
-                # Preview's per-node swallow mode must never hide them.
-                raise
-            if not swallow_errors:
-                raise
-            logger.error("node_failed", node_id=nid, error=str(exc))
-            eager_outputs[nid] = None
-            runtime_outputs[nid] = None
-            errors[nid] = str(exc)
-            error_line = _extract_error_line(exc)
-            if error_line is not None:
-                error_lines[nid] = error_line
-        timings[nid] = round((time.perf_counter() - t0) * 1000, 1)
-
-    return EagerResult(
-        eager_outputs,
-        order,
-        parents_of,
-        node_map,
-        id_to_name,
-        errors,
-        timings,
-        memory_bytes,
-        error_lines,
-        available_columns,
-        output_columns,
-        frame_schema_cache,
-    )

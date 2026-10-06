@@ -1,15 +1,16 @@
-"""Tests for _config_validation – lightweight config key warnings."""
+"""Tests for _config_validation – declared config keys and their enforcement."""
 
 from __future__ import annotations
 
-from typing import Literal, get_type_hints
+from typing import Any, Literal, get_type_hints
 
 import pytest
 
 from haute._config_validation import (
     _UNIVERSAL_KEYS,
     VALID_KEYS,
-    warn_unrecognized_config_keys,
+    reject_unrecognized_config_keys,
+    unrecognized_config_keys,
 )
 from haute._types import (
     MODEL_SCORE_CONFIG_KEYS,
@@ -17,6 +18,7 @@ from haute._types import (
     OPTIMISER_APPLY_CONFIG_KEYS,
     OPTIMISER_CONFIG_KEYS,
     SCENARIO_EXPANDER_CONFIG_KEYS,
+    EdgeJoinConfig,
     ExploreChartAxes,
     ExploreChartCategory,
     ExploreChartConfig,
@@ -124,104 +126,69 @@ class TestValidKeysRegistry:
 
 
 # ---------------------------------------------------------------------------
-# warn_unrecognized_config_keys
+# unrecognized_config_keys / reject_unrecognized_config_keys
 # ---------------------------------------------------------------------------
 
 
-class TestWarnUnrecognizedConfigKeys:
-    def test_no_warning_for_valid_keys(self):
-        """Config with only valid apiInput keys produces no warnings."""
-        bad = warn_unrecognized_config_keys(
-            NodeType.API_INPUT,
-            {
-                "path": "/data.json",
-                "contract": "opaque",
-                "tables": [],
-            },
+class TestUnrecognizedConfigKeys:
+    def test_declared_keys_are_recognised(self):
+        assert (
+            unrecognized_config_keys(
+                NodeType.API_INPUT,
+                {"path": "/data.json", "contract": "opaque", "tables": []},
+            )
+            == []
         )
-        assert bad == []
 
-    def test_warns_on_unrecognized_key(self):
-        """An unknown key should be returned and logged."""
-        bad = warn_unrecognized_config_keys(
-            NodeType.API_INPUT,
-            {"path": "/data.json", "bogus_key": 42},
-        )
-        assert bad == ["bogus_key"]
-
-    def test_multiple_unrecognized_keys_sorted(self):
-        """Multiple bad keys are returned in sorted order."""
-        bad = warn_unrecognized_config_keys(
+    def test_undeclared_keys_are_reported_sorted(self):
+        assert unrecognized_config_keys(
             NodeType.OUTPUT,
             {**make_output_config(["a"]), "zebra": 1, "alpha": 2},
+        ) == ["alpha", "zebra"]
+
+    def test_universal_keys_are_declared_for_every_node_type(self):
+        assert (
+            unrecognized_config_keys(
+                NodeType.POLARS,
+                {"code": "x", "inputMapping": {"a": "b"}, "instanceOf": "other"},
+            )
+            == []
         )
-        assert bad == ["alpha", "zebra"]
 
-    def test_instance_of_always_valid(self):
-        """instanceOf is a universal key, valid for any node type."""
-        bad = warn_unrecognized_config_keys(
-            NodeType.DATA_INPUT,
-            {
-                "inputType": "file",
-                "format": "parquet",
-                "mode": "scan",
-                "path": "x.parquet",
-                "arguments": {},
-                "instanceOf": "other",
-            },
+    def test_editor_state_and_body_code_are_not_config_keys(self):
+        """`_`-prefixed editor state and the `.py` body code are not persisted keys."""
+        assert (
+            unrecognized_config_keys(
+                NodeType.BANDING,
+                {"factors": [], "_columns": ["a"], "_nodeId": "n1", "code": "df = df"},
+            )
+            == []
         )
-        assert bad == []
 
-    def test_input_mapping_always_valid(self):
-        """inputMapping is a universal key, valid for any node type."""
-        bad = warn_unrecognized_config_keys(
-            NodeType.POLARS,
-            {"code": "x", "inputMapping": {"a": "b"}},
+    def test_the_removed_record_history_flag_is_undeclared(self):
+        """Q5: every online solve records its history, so the flag is gone."""
+        assert unrecognized_config_keys(
+            NodeType.OPTIMISER, {"mode": "online", "record_history": True}
+        ) == ["record_history"]
+
+    def test_a_node_type_without_a_typed_dict_has_no_key_check(self):
+        assert unrecognized_config_keys(NodeType.SUBMODEL_PORT, {"anything": 1}) == []
+
+    def test_reject_names_the_node_its_type_and_every_undeclared_key(self):
+        with pytest.raises(
+            ConfigError, match=r"'quote_response'.*output.*'alpha', 'zebra'"
+        ) as refused:
+            reject_unrecognized_config_keys(
+                NodeType.OUTPUT,
+                {**make_output_config(["a"]), "zebra": 1, "alpha": 2},
+                node_label="quote_response",
+            )
+        assert refused.value.context["unrecognized_config_keys"] == ["alpha", "zebra"]
+
+    def test_reject_accepts_a_declared_config(self):
+        reject_unrecognized_config_keys(
+            NodeType.OUTPUT, make_output_config(["a"]), node_label="quote_response"
         )
-        assert bad == []
-
-    def test_empty_config_no_warning(self):
-        """Empty config dict should produce no warnings."""
-        bad = warn_unrecognized_config_keys(NodeType.POLARS, {})
-        assert bad == []
-
-    def test_string_node_type_accepted(self):
-        """Should accept raw string values matching NodeType enum."""
-        bad = warn_unrecognized_config_keys(
-            "apiInput",
-            {"path": "/data.json", "nope": True},
-        )
-        assert bad == ["nope"]
-
-    def test_unknown_node_type_string_returns_empty(self):
-        """An unrecognised node-type string should not crash, just return []."""
-        bad = warn_unrecognized_config_keys("totallyFake", {"x": 1})
-        assert bad == []
-
-    def test_logs_warning_via_structlog(self, capsys):
-        """Ensure the warning actually appears in the log output."""
-        warn_unrecognized_config_keys(
-            NodeType.OUTPUT,
-            {**make_output_config(["a"]), "bad_key": 99},
-            node_label="my_output_node",
-        )
-        captured = capsys.readouterr()
-        assert "unrecognized_config_keys" in captured.out
-        assert "bad_key" in captured.out
-        assert "my_output_node" in captured.out
-
-    def test_never_raises(self):
-        """Even with weird input, the function must not raise."""
-        # None node type
-        assert warn_unrecognized_config_keys(None, {"x": 1}) == []  # type: ignore[arg-type]
-        # Non-dict config -- guard against TypeError on iteration
-        # (the function signature says dict, but let's be defensive)
-        try:
-            result = warn_unrecognized_config_keys(NodeType.POLARS, 42)  # type: ignore[arg-type]
-        except TypeError:
-            pass  # acceptable — non-iterable input may raise
-        else:
-            assert isinstance(result, list)
 
 
 # ---------------------------------------------------------------------------
@@ -265,14 +232,14 @@ class TestBuildNodeConfigProducesValidKeys:
             ),
             pytest.param(
                 NodeType.BANDING,
-                {"factors": [{"banding": "continuous", "column": "x", "rules": []}]},
+                {"factors": [{"banding": "breakpoints", "column": "x", "rules": []}]},
                 "",
                 ["df"],
                 id="banding_multi",
             ),
             pytest.param(
                 NodeType.BANDING,
-                {"banding": "continuous", "column": "x", "rules": []},
+                {"banding": "breakpoints", "column": "x", "rules": []},
                 "",
                 ["df"],
                 id="banding_single",
@@ -334,7 +301,7 @@ class TestBuildNodeConfigProducesValidKeys:
             ),
             pytest.param(
                 NodeType.SCENARIO_EXPANDER,
-                {"scenario_expander": True, "quote_id": "qid", "steps": 10},
+                {"scenario_expander": True, "quote_id": "qid", "stepCount": 10},
                 "",
                 ["df"],
                 id="scenario_expander",
@@ -372,7 +339,7 @@ class TestBuildNodeConfigProducesValidKeys:
         from haute._config_builder import _build_node_config
 
         config = _build_node_config(node_type, kwargs, body, params)
-        bad = warn_unrecognized_config_keys(node_type, config)
+        bad = unrecognized_config_keys(node_type, config)
         assert bad == [], f"Unrecognized keys in {node_type}: {bad}"
 
     def test_model_score_source_type_maps_to_sourceType(self):  # noqa: N802 - references camelCase config key `sourceType`
@@ -390,7 +357,7 @@ class TestBuildNodeConfigProducesValidKeys:
             "",
             ["df"],
         )
-        bad = warn_unrecognized_config_keys(NodeType.MODEL_SCORE, config)
+        bad = unrecognized_config_keys(NodeType.MODEL_SCORE, config)
         assert bad == [], f"Unrecognized keys in modelScore: {bad}"
         assert config["sourceType"] == "registered"
         assert "source_type" not in config, "snake_case source_type should not appear in config"
@@ -417,7 +384,7 @@ class TestBuildNodeConfigProducesValidKeys:
         )
 
         assert config["tables"] == v2_tables
-        assert warn_unrecognized_config_keys(NodeType.API_INPUT, config) == []
+        assert unrecognized_config_keys(NodeType.API_INPUT, config) == []
 
     def test_model_score_all_keys_valid(self):
         """All keys from MODEL_SCORE_CONFIG_KEYS should be recognised."""
@@ -441,7 +408,7 @@ class TestBuildNodeConfigProducesValidKeys:
             "",
             ["df"],
         )
-        bad = warn_unrecognized_config_keys(NodeType.MODEL_SCORE, config)
+        bad = unrecognized_config_keys(NodeType.MODEL_SCORE, config)
         assert bad == [], f"Unrecognized keys in modelScore: {bad}"
 
     @pytest.mark.parametrize("overview", [True, "schema", ["schema"]])
@@ -480,85 +447,53 @@ class TestBuildNodeConfigProducesValidKeys:
                 ["df"],
             )
 
-    def test_explore_overview_preserves_unknown_round_trippable_values(self):
-        """Unknown overview keys are kept when their values are simple literals."""
-        from haute._config_builder import _build_node_config
-
-        config = _build_node_config(
-            NodeType.EXPLORE,
-            {
-                "overview": {
-                    "dataset_snapshot": True,
-                    "custom_card": {
-                        "label": "Loss ratio",
-                        "columns": ["premium", "claims"],
-                        "enabled": False,
-                        "threshold": 0.7,
-                        "empty": None,
-                    },
-                }
-            },
-            "",
-            ["df"],
-        )
-
-        assert config["overview"] == {
-            "dataset_snapshot": True,
-            "custom_card": {
-                "label": "Loss ratio",
-                "columns": ["premium", "claims"],
-                "enabled": False,
-                "threshold": 0.7,
-                "empty": None,
-            },
-        }
-
-    def test_explore_overview_rejects_unknown_unserialisable_values(self):
-        """Unknown keys should not smuggle arbitrary Python objects into config."""
-        from haute._config_builder import _build_node_config
-
-        with pytest.raises(ConfigError, match="round-trip"):
-            _build_node_config(
-                NodeType.EXPLORE,
-                {"overview": {"custom_card": object()}},
-                "",
-                ["df"],
-            )
-
 
 # ---------------------------------------------------------------------------
 # B7: selected_columns is universally valid (executor applies it to all nodes)
 # ---------------------------------------------------------------------------
 
 
-class TestSelectedColumnsUniversal:
-    """Verify selected_columns doesn't trigger false positives on any node type."""
+class TestSharedColumnSettingsUniversal:
+    """Shared authored column settings are accepted consistently across nodes."""
 
-    def test_selected_columns_in_universal_keys(self):
-        """selected_columns should be in the universal keys set."""
-        assert "selected_columns" in _UNIVERSAL_KEYS
+    def test_shared_column_settings_in_universal_keys(self):
+        assert {"selected_columns", "column_renames", "categorical_levels"} <= _UNIVERSAL_KEYS
 
     @pytest.mark.parametrize("node_type", list(VALID_KEYS.keys()))
-    def test_selected_columns_valid_for_all_node_types(self, node_type):
-        """selected_columns should be accepted for every node type with validation."""
-        bad = warn_unrecognized_config_keys(
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            ("selected_columns", ["_id", "premium"]),
+            ("column_renames", {"_id": "identifier"}),
+            ("categorical_levels", {"_category": ["low", "high", None]}),
+        ],
+    )
+    def test_shared_column_settings_valid_for_all_node_types(self, node_type, key, value):
+        bad = unrecognized_config_keys(
             node_type,
-            {"selected_columns": ["a", "b"]},
+            {key: value},
         )
-        assert bad == [], f"selected_columns flagged as unrecognized for {node_type}"
+        assert bad == [], f"{key} flagged as unrecognized for {node_type}"
 
-    def test_selected_columns_in_transform_typed_dict(self):
-        """TransformConfig TypedDict should declare selected_columns."""
-        assert "selected_columns" in TransformConfig.__annotations__
+    @pytest.mark.parametrize("config_type", [TransformConfig, EdgeJoinConfig, ExploreConfig])
+    def test_shared_column_settings_in_inline_typed_dicts(self, config_type):
+        hints = get_type_hints(config_type)
+        assert hints["selected_columns"] == list[str]
+        assert hints["column_renames"] == dict[str, str]
+        assert hints["categorical_levels"] == dict[str, list[str | None]]
 
     def test_explore_config_allows_polars_code(self):
         """Explore can store the Polars snippet used to prepare analysis data."""
         assert get_type_hints(ExploreConfig) == {
             "code": str,
+            "steps": list[dict[str, Any]],
             "overview": ExploreOverviewConfig,
             "pivot_formulas": list[ExplorePivotFormula],
             "pivots": list[ExplorePivotPersistedConfig],
             "charts": list[ExploreChartConfig],
+            "selected_columns": list[str],
+            "column_renames": dict[str, str],
+            "categorical_levels": dict[str, list[str | None]],
         }
         assert get_type_hints(ExploreChartConfig) == {
             "version": Literal[1],
@@ -635,26 +570,22 @@ class TestSelectedColumnsUniversal:
             "categorical_summary": bool,
             "schema": bool,
         }
-        assert warn_unrecognized_config_keys(NodeType.EXPLORE, {}) == []
-        assert warn_unrecognized_config_keys(NodeType.EXPLORE, {"code": "df = df.head(10)"}) == []
+        assert unrecognized_config_keys(NodeType.EXPLORE, {}) == []
+        assert unrecognized_config_keys(NodeType.EXPLORE, {"code": "df = df.head(10)"}) == []
         # Overview block is a recognised key on explore nodes.
         assert (
-            warn_unrecognized_config_keys(
-                NodeType.EXPLORE, {"overview": {"dataset_snapshot": True}}
-            )
+            unrecognized_config_keys(NodeType.EXPLORE, {"overview": {"dataset_snapshot": True}})
             == []
         )
+        assert unrecognized_config_keys(NodeType.EXPLORE, {"pivots": [{"id": "pivot_1"}]}) == []
         assert (
-            warn_unrecognized_config_keys(NodeType.EXPLORE, {"pivots": [{"id": "pivot_1"}]}) == []
-        )
-        assert (
-            warn_unrecognized_config_keys(
+            unrecognized_config_keys(
                 NodeType.EXPLORE, {"charts": [{"id": "chart_1", "enabled": True}]}
             )
             == []
         )
         assert (
-            warn_unrecognized_config_keys(
+            unrecognized_config_keys(
                 NodeType.EXPLORE,
                 {
                     "overview": {
@@ -797,6 +728,23 @@ class TestParserSourceTypeMapping:
         assert "sourceType" not in config
         assert "source_type" not in config
 
+    def test_optimiser_keeps_its_publish_only_keys(self):
+        """The Export pane's save path and MLflow choices survive the parser."""
+        from haute._config_builder import _build_node_config
+
+        publish_keys = {
+            "result_export_path": "rating/optimiser_result.json",
+            "mlflow_experiment": "Optimisation",
+            "mlflow_destination": "server",
+        }
+        config = _build_node_config(
+            NodeType.OPTIMISER,
+            {"optimiser": True, "objective": "income", **publish_keys},
+            "",
+            ["df"],
+        )
+        assert {key: config[key] for key in publish_keys} == publish_keys
+
     def test_optimiser_apply_copies_all_keys(self):
         """All keys from OPTIMISER_APPLY_CONFIG_KEYS should be copied when present."""
         from haute._config_builder import _build_node_config
@@ -819,7 +767,7 @@ class TestParserSourceTypeMapping:
             "",
             ["df"],
         )
-        bad = warn_unrecognized_config_keys(NodeType.OPTIMISER_APPLY, config)
+        bad = unrecognized_config_keys(NodeType.OPTIMISER_APPLY, config)
         assert bad == [], f"Unrecognized keys: {bad}"
         assert config["experiment_name"] == "exp"
         assert config["run_name"] == "rn"
@@ -840,7 +788,73 @@ class TestParserSourceTypeMapping:
             "",
             ["df"],
         )
-        bad = warn_unrecognized_config_keys(NodeType.OPTIMISER, config)
+        bad = unrecognized_config_keys(NodeType.OPTIMISER, config)
         assert bad == [], f"Unrecognized keys: {bad}"
         assert config["data_input"] == "node_1"
         assert config["banding_source"] == "node_2"
+
+    def test_optimiser_keeps_its_analysis_keys(self):
+        """analysis_input and analysis_columns survive the parser (OPT-V09A)."""
+        from haute._config_builder import _build_node_config
+
+        config = _build_node_config(
+            NodeType.OPTIMISER,
+            {
+                "optimiser": True,
+                "data_input": "scored",
+                "analysis_input": "regions",
+                "analysis_columns": ["region", "channel"],
+            },
+            "",
+            ["df"],
+        )
+        assert unrecognized_config_keys(NodeType.OPTIMISER, config) == []
+        assert config["analysis_input"] == "regions"
+        assert config["analysis_columns"] == ["region", "channel"]
+
+
+class TestOptimiserAnalysisConfig:
+    """The analysis-column shape rules, shared by save and solve start."""
+
+    @staticmethod
+    def _validate(config: dict[str, Any]) -> None:
+        from haute._config_validation import validate_node_config
+
+        validate_node_config(NodeType.OPTIMISER, {"objective": "income", **config})
+
+    def test_up_to_twelve_distinct_columns_are_accepted(self):
+        self._validate(
+            {"analysis_input": "regions", "analysis_columns": [f"c{i}" for i in range(12)]}
+        )
+        self._validate({"analysis_columns": []})
+        self._validate({})
+
+    @pytest.mark.parametrize(
+        ("config", "message"),
+        [
+            ({"analysis_columns": [f"c{i}" for i in range(13)]}, "at most 12"),
+            ({"analysis_columns": ["region", "region"]}, "duplicate"),
+            ({"analysis_columns": ["region", ""]}, "non-empty"),
+            ({"analysis_columns": "region"}, "list of column names"),
+            ({"analysis_columns": [3]}, "non-empty"),
+            ({"analysis_columns": ["quote_id"]}, "quote-id column"),
+            ({"quote_id": "policy", "analysis_columns": ["policy"]}, "quote-id column"),
+            ({"analysis_columns": ["__haute_x"]}, "reserved"),
+            ({"analysis_input": 3}, "analysis_input"),
+        ],
+    )
+    def test_invalid_shapes_are_refused(self, config: dict[str, Any], message: str):
+        with pytest.raises(ConfigError, match=message):
+            self._validate(config)
+
+    def test_analysis_input_must_name_a_connected_input(self):
+        from haute._config_validation import validate_optimiser_input_selectors
+
+        config = {"data_input": "scored", "analysis_input": "regions"}
+        validate_optimiser_input_selectors(
+            NodeType.OPTIMISER, config, ["scored", "regions"], node_label="opt"
+        )
+        with pytest.raises(ConfigError, match="analysis_input"):
+            validate_optimiser_input_selectors(
+                NodeType.OPTIMISER, config, ["scored", "other"], node_label="opt"
+            )

@@ -1,32 +1,79 @@
-"""Prepare bounded training inputs and evaluate launch feasibility."""
+"""Prepare bounded training inputs and evaluate launch feasibility.
+
+Preparation runs in a hard-capped spawn worker: :func:`prepare_training_data`
+is the in-process core, :func:`prepare_training_data_worker` is the spawn
+entrypoint, and the parent supervisor lives in
+``haute.routes._training_lifecycle``. Everything crossing the boundary is a
+plain picklable dataclass — the child never touches a ``JobStore``.
+"""
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
-from typing import Any
+import gc
+import os
+import tempfile
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Literal
 
 import polars as pl
 from fastapi import HTTPException
 
 from haute._execution_admission import (
     ExecutionAdmissionError,
+    IsolatedExecutionBudget,
+    create_isolated_execution_context,
 )
 from haute._execution_context import (
+    ExecutionCancelledError,
+    ExecutionContext,
     ExecutionMemoryLimitExceededError,
+    ExecutionProfile,
 )
 from haute._graph_utils import upstream_node_ids
 from haute._logging import get_logger
+from haute._ram_estimate import RamEstimate
+from haute._seed_plans import (
+    SeedPlan,
+    SeedPlanHandoff,
+    SeedPlanRequest,
+    open_resolved_seed_plan,
+    open_seed_plan,
+)
 from haute._types import GraphNode, PipelineGraph
-from haute.errors import HauteValidationError
+from haute.errors import (
+    BoundedMemoryUnsupportedError,
+    HauteValidationError,
+    SchemaMismatchError,
+)
 from haute.execution import (
     AllExceptColumns,
+    execute_lazy_graph,
 )
 from haute.graph_utils import NodeType
+from haute.modelling._glm_terms import (
+    bounded_names,
+    glm_model_columns,
+    validate_glm_model_columns,
+)
 from haute.modelling._train_config import (
+    NO_FEATURES_MESSAGE,
     build_train_params,
+    is_glm_config,
+    role_column_reasons,
+    selected_feature_columns,
+    string_list_config,
+)
+from haute.routes._contract_errors import (
+    PUBLIC_CONTRACT_ERROR_TYPES,
+    contract_error_http_exception,
+    contract_error_job_fields,
+    contract_error_terminal_reason,
+    memory_limit_http_exception,
 )
 from haute.routes._helpers import find_typed_node
-from haute.routes._memory_messages import memory_limit_user_message
+from haute.routes._synchronous_analysis import CLIENT_CLOSED_REQUEST_STATUS
 from haute.schemas import (
     TrainingFeatureSelectionDiagnosticPayload,
 )
@@ -58,13 +105,7 @@ def _seeded_training_sample(lf: pl.LazyFrame, row_limit: int) -> pl.LazyFrame:
 def _memory_limit_http_exception(
     exc: ExecutionAdmissionError | ExecutionMemoryLimitExceededError,
 ) -> HTTPException:
-    detail = exc.to_payload()
-    # str(exc) names the internal operation and raw byte counts; author the
-    # public message from the structured attributes instead. Assigned
-    # unconditionally: a payload-carried "message" must not win over the
-    # curated wording.
-    detail["message"] = memory_limit_user_message(exc, operation_noun="Training")
-    return HTTPException(status_code=507, detail=detail)
+    return memory_limit_http_exception(exc, operation_noun="Training")
 
 
 def _http_failure_job_parts(
@@ -107,28 +148,6 @@ def _gpu_vram_http_exception(
     return HTTPException(status_code=507, detail=payload)
 
 
-# Valid GLM family → link combinations.  The canonical link (used when
-# the user leaves "link" empty) is listed first.
-_VALID_GLM_LINKS: dict[str, tuple[str, ...]] = {
-    "gaussian": ("identity", "log", "inverse"),
-    "binomial": ("logit", "probit", "cloglog"),
-    "poisson": ("log", "identity", "sqrt"),
-    # Quasi-Poisson estimates its dispersion from Pearson residuals (a fitted
-    # scale, no user parameter), so it is safe to offer. RustyStats accepts
-    # only log/identity for it — no sqrt.
-    "quasipoisson": ("log", "identity"),
-    # Negative Binomial's dispersion `theta` is not estimated by RustyStats —
-    # an unset theta silently fits at theta=1.0 — so the training objective
-    # gate (training_objective_issue) requires an explicit theta; the config
-    # panel offers profile-likelihood estimation on demand. RustyStats accepts
-    # only log/identity for it.
-    "negbinomial": ("log", "identity"),
-    "gamma": ("inverse", "log", "identity"),
-    "tweedie": ("log", "identity"),
-    "inverse_gaussian": ("inverse_squared", "inverse", "log", "identity"),
-}
-
-
 class _VramCheck:
     """Result of a GPU VRAM feasibility check.
 
@@ -166,32 +185,16 @@ def _clamp_row_limit(
     return current_limit
 
 
-def _glm_training_term_columns(config: dict[str, Any]) -> frozenset[str] | None:
-    if str(config.get("algorithm", "catboost")).lower() != "glm":
+def _glm_training_term_columns(config: Mapping[str, Any]) -> frozenset[str] | None:
+    """Columns a GLM reads: native keys, expression identifiers, interaction factors."""
+    if not is_glm_config(config):
         return None
-    raw_terms = build_train_params(config).get("terms")
+    params = build_train_params(config)
+    raw_terms = params.get("terms")
     if not isinstance(raw_terms, dict) or not raw_terms:
         return None
-    terms = frozenset(name for name in raw_terms if isinstance(name, str) and name)
-    return terms or None
-
-
-def _string_list_config(config: Mapping[str, Any], key: str) -> list[str]:
-    raw = config.get(key)
-    if raw is None:
-        return []
-    if not isinstance(raw, list):
-        raise HauteValidationError(f"{key} must be a list of column names")
-    columns: list[str] = []
-    seen: set[str] = set()
-    for value in raw:
-        if not isinstance(value, str) or not value:
-            raise HauteValidationError(f"{key} must contain non-empty string column names")
-        if value in seen:
-            continue
-        columns.append(value)
-        seen.add(value)
-    return columns
+    columns = glm_model_columns(raw_terms, params.get("interactions") or [])
+    return frozenset(columns) or None
 
 
 def _training_required_metadata_columns(config: Mapping[str, Any]) -> set[str]:
@@ -213,40 +216,18 @@ def _training_required_metadata_columns(config: Mapping[str, Any]) -> set[str]:
         if isinstance(evaluation_col, str) and evaluation_col:
             columns.add(evaluation_col)
 
-    columns.update(_string_list_config(config, "id_columns"))
+    columns.update(string_list_config(config, "id_columns"))
     return columns
 
 
 def _training_projection_keep_columns(config: Mapping[str, Any]) -> list[str]:
-    """Return every configured column that exclusion projection must retain."""
-    return sorted(
-        _training_required_metadata_columns(config)
-        | set(_string_list_config(config, "feature_columns"))
-    )
+    """Return every configured column the training sink must retain.
 
-
-def _training_metadata_reasons(config: Mapping[str, Any]) -> dict[str, str]:
-    """Return configured non-feature columns in deterministic role precedence."""
-    reasons: dict[str, str] = {}
-
-    def add(raw_column: object, reason: str) -> None:
-        if isinstance(raw_column, str) and raw_column:
-            reasons.setdefault(raw_column, reason)
-
-    add(config.get("target"), "target")
-    add(config.get("weight"), "weight")
-    add(config.get("offset"), "offset")
-    add(config.get("fold_column"), "fold")
-    for column in _string_list_config(config, "id_columns"):
-        add(column, "identifier")
-    evaluation = config.get("evaluation")
-    if isinstance(evaluation, dict):
-        strategy = evaluation.get("strategy")
-        if strategy == "temporal":
-            add(evaluation.get("date_column"), "evaluation")
-        elif strategy == "group":
-            add(evaluation.get("group_column"), "evaluation")
-    return reasons
+    ``feature_columns`` is a CatBoost lever; a GLM reads its terms and
+    interaction factors instead.
+    """
+    selected = set() if is_glm_config(config) else set(selected_feature_columns(config))
+    return sorted(_training_required_metadata_columns(config) | selected)
 
 
 def _bounded_training_detail(items: list[Any], *, cap: int = 128) -> dict[str, Any]:
@@ -258,23 +239,23 @@ def _bounded_training_detail(items: list[Any], *, cap: int = 128) -> dict[str, A
     }
 
 
-def _build_training_feature_selection(
+def build_training_feature_selection(
     config: Mapping[str, Any],
-    schema_columns: Iterable[str],
+    schema_dtypes: Mapping[str, str],
 ) -> TrainingFeatureSelectionDiagnosticPayload:
     """Validate and explain the final ordered training feature selection.
 
-    This operates on schema metadata only. It is intentionally called before
-    the training sink, so missing features or an empty feature set cannot
-    trigger a data collection first.
+    This operates on schema metadata only (column names to dtype names). It is
+    intentionally called before the training sink, so missing features or an
+    empty feature set cannot trigger a data collection first.
     """
-    schema = list(schema_columns)
+    schema = list(schema_dtypes)
     if any(not isinstance(column, str) or not column for column in schema):
         raise HauteValidationError("training schema must contain non-empty column names")
     if len(schema) != len(set(schema)):
         raise HauteValidationError("training schema contains duplicate column names")
     schema_set = set(schema)
-    metadata_reasons = _training_metadata_reasons(config)
+    metadata_reasons = role_column_reasons(config)
     missing_metadata = [column for column in metadata_reasons if column not in schema_set]
     if missing_metadata:
         raise HauteValidationError(
@@ -282,35 +263,34 @@ def _build_training_feature_selection(
             f"{missing_metadata}. Available columns: {schema}"
         )
 
-    explicit_features = _string_list_config(config, "feature_columns")
-    term_columns = _glm_training_term_columns(dict(config))
-    configured_exclusions = set(_string_list_config(config, "exclude"))
-    if explicit_features:
+    glm = is_glm_config(config)
+    if glm:
+        mode = "glm_terms"
+        params = build_train_params(config)
+        term_columns = set(
+            validate_glm_model_columns(
+                params.get("terms") or {},
+                params.get("interactions") or [],
+                schema_dtypes,
+                role_columns=metadata_reasons,
+            )
+        )
+        features = [column for column in schema if column in term_columns]
+    else:
         mode = "explicit"
-        missing_features = [column for column in explicit_features if column not in schema_set]
+        features = selected_feature_columns(config)
+        if not features:
+            raise HauteValidationError(NO_FEATURES_MESSAGE)
+        missing_features = [column for column in features if column not in schema_set]
         if missing_features:
             raise HauteValidationError(
                 "Configured feature column(s) not found in training data: "
-                f"{missing_features}. Available columns: {schema}"
+                f"{missing_features}. Available columns: {bounded_names(schema)}"
             )
-        features = explicit_features
-    elif term_columns is not None:
-        mode = "glm_terms"
-        missing_terms = sorted(term_columns - schema_set)
-        if missing_terms:
-            raise HauteValidationError(
-                "GLM terms reference columns not found in training data: "
-                f"{missing_terms}. Available columns: {schema}"
-            )
-        features = [column for column in schema if column in term_columns]
-    else:
-        mode = "all_except"
-        non_features = set(metadata_reasons) | configured_exclusions
-        features = [column for column in schema if column not in non_features]
 
     if not features:
         raise HauteValidationError(
-            "No feature columns remaining after applying target, metadata, and exclusion settings."
+            "No feature columns remaining after applying target, metadata, and term settings."
         )
 
     retained_metadata = [
@@ -325,8 +305,6 @@ def _build_training_feature_selection(
             continue
         if column in metadata_reasons:
             reason = metadata_reasons[column]
-        elif column in configured_exclusions:
-            reason = "configured_exclusion"
         elif mode == "glm_terms":
             reason = "not_in_formula"
         else:
@@ -362,13 +340,11 @@ def _build_training_feature_selection(
 def _training_required_columns_by_node(
     node_id: str,
     config: dict[str, Any],
-) -> dict[str, frozenset[str] | AllExceptColumns] | None:
+) -> dict[str, frozenset[str]] | None:
     """Return modelling-node output demand needed by training.
 
-    GLM with explicit terms has an exact feature contract before the target
-    schema is materialised. CatBoost derives features from the target schema as
-    all columns except configured non-feature columns, so it advertises an
-    all-except demand rather than pretending the feature set is unknown.
+    Both families have an exact feature contract before the target schema is
+    materialised: GLM's terms, and CatBoost's selected features.
     """
     term_columns = _glm_training_term_columns(config)
     target = config.get("target")
@@ -377,29 +353,51 @@ def _training_required_columns_by_node(
 
     if term_columns is None:
         algorithm = str(config.get("algorithm", "catboost")).lower()
-        if algorithm != "catboost":
+        if algorithm == "glm":
             return None
-        keep_columns = _training_required_metadata_columns(config)
-        feature_columns = _string_list_config(config, "feature_columns")
-        if feature_columns:
-            return {node_id: frozenset([*feature_columns, *sorted(keep_columns)])}
-        raw_exclude = _string_list_config(config, "exclude")
-        exclude = {
-            column
-            for column in raw_exclude
-            if isinstance(column, str) and column and column not in keep_columns
-        }
-        return {
-            node_id: AllExceptColumns(
-                required_columns=frozenset(keep_columns),
-                excluded_columns=frozenset(keep_columns | exclude),
-            )
-        }
+        return {node_id: frozenset(_training_projection_keep_columns(config))}
 
     columns = set(term_columns)
     columns.update(_training_required_metadata_columns(config))
 
     return {node_id: frozenset(columns)}
+
+
+def resolve_training_input_schema(
+    graph: PipelineGraph,
+    node_id: str,
+    preamble_ns: dict[str, Any] | None,
+    source: str,
+    *,
+    execution_context: ExecutionContext,
+) -> dict[str, str]:
+    """Exact, unprojected column names and dtype names arriving at the modelling node.
+
+    Builds the lazy plan through the shared engine in ``schema_only`` mode (the
+    same mode the chunk planner and the assistant use) and reads
+    ``collect_schema()``; no frame is collected and no projection demand is
+    applied, so Polars transforms that add, rename, or drop columns are
+    reflected exactly and unused upstream columns are retained. The build runs
+    the pipeline's own code, so it runs inside an admitted execution context.
+    """
+    from haute.executor import _build_node_fn
+
+    frames, _order, _parents, _id_to_name = execute_lazy_graph(
+        graph,
+        _build_node_fn,
+        target_node_id=node_id,
+        preamble_ns=preamble_ns,
+        source=source,
+        schema_only=True,
+        execution_context=execution_context,
+    )
+    frame = frames.get(node_id)
+    if frame is None:
+        raise HauteValidationError(
+            f"No training data arrives at modelling node {node_id!r}. "
+            "Make sure an upstream data source is connected and producing data."
+        )
+    return {name: str(dtype) for name, dtype in frame.collect_schema().items()}
 
 
 def _declared_categorical_levels_for_training(
@@ -427,20 +425,25 @@ def _check_gpu_vram(
     effective_rows: int,
     probe_columns: int,
     params: dict[str, Any],
+    *,
+    algorithm: str = "catboost",
 ) -> _VramCheck:
     """Estimate GPU VRAM requirements and return a check result."""
     if effective_rows <= 0 or probe_columns <= 0:
         return _VramCheck()
 
     from haute._host_memory import available_vram_bytes
-    from haute._ram_estimate import estimate_gpu_vram_bytes
+    from haute._ram_estimate import estimate_gpu_vram_bytes, estimate_xgboost_gpu_vram_bytes
 
-    vram_needed = estimate_gpu_vram_bytes(
-        effective_rows,
-        probe_columns,
-        border_count=params.get("border_count", _DEFAULT_BORDER_COUNT),
-        depth=params.get("depth", _DEFAULT_DEPTH),
-    )
+    if algorithm == "xgboost":
+        vram_needed = estimate_xgboost_gpu_vram_bytes(effective_rows, probe_columns)
+    else:
+        vram_needed = estimate_gpu_vram_bytes(
+            effective_rows,
+            probe_columns,
+            border_count=params.get("border_count", _DEFAULT_BORDER_COUNT),
+            depth=params.get("depth", _DEFAULT_DEPTH),
+        )
     estimated_mb = round(vram_needed / 1024**2, 1)
 
     vram = available_vram_bytes()
@@ -457,7 +460,7 @@ def _check_gpu_vram(
     elif vram_needed > vram:
         warning = (
             f"GPU training needs ~{vram_needed / 1024**3:.1f} GB VRAM "
-            f"but GPU has {vram / 1024**3:.1f} GB."
+            f"but GPU has {vram / 1024**3:.1f} GB free."
         )
         insufficient = True
 
@@ -467,3 +470,605 @@ def _check_gpu_vram(
         warning=warning,
         insufficient=insufficient,
     )
+
+
+# ---------------------------------------------------------------------------
+# Hard-capped preparation worker (EXEC-P06)
+# ---------------------------------------------------------------------------
+
+TrainingPreparationTerminalReason = Literal[
+    "contract_error", "memory_limited", "error", "cancelled"
+]
+
+
+@dataclass(frozen=True)
+class TrainingPreparationRequest:
+    """Everything the preparation child needs, as picklable plain data."""
+
+    graph: PipelineGraph
+    node_id: str
+    job_id: str
+    source: str
+    parquet_path: str
+    config: dict[str, Any]
+    project_root: str
+    row_limit: int | None = None
+    project_to_keep_columns: bool = False
+    keep_columns: list[str] | None = None
+    required_columns_by_node: dict[str, frozenset[str] | AllExceptColumns] | None = None
+    preamble_supplied: bool = False
+    # The seed plan the supervising parent resolved and leases until this
+    # child exits. Without one, the child prepares inputs and opens its own.
+    seed_plan: SeedPlanHandoff | None = None
+
+
+def training_seed_plan_request(
+    graph: PipelineGraph,
+    node_id: str,
+    source: str,
+    required_columns_by_node: Mapping[str, Any] | None,
+) -> SeedPlanRequest:
+    """The seed plan a training preparation of *node_id* runs under."""
+    return SeedPlanRequest(
+        graph=graph,
+        target_node_id=node_id,
+        source=source,
+        profile=ExecutionProfile.TRAINING_PREP,
+        required_columns_by_node=required_columns_by_node,
+    )
+
+
+def estimate_training_memory(
+    graph: PipelineGraph,
+    node_id: str,
+    *,
+    source: str = "live",
+) -> RamEstimate:
+    """Estimate from the snapshots training can reuse, without preparing inputs."""
+    from haute._node_snapshots import NodeSnapshotStore
+    from haute._ram_estimate import estimate_safe_training_rows
+    from haute._sandbox import _get_project_root
+
+    node = _find_modelling_node(graph, node_id)
+    required = _training_required_columns_by_node(node_id, node.data.config)
+    # Resolving (rather than opening with input preparation) only reads existing
+    # cache evidence. Keep the generations leased through all metadata reads.
+    with open_resolved_seed_plan(
+        training_seed_plan_request(graph, node_id, source, required),
+        store=NodeSnapshotStore(_get_project_root()),
+    ) as plan:
+        return estimate_safe_training_rows(plan.estimation_graph(graph), node_id, source=source)
+
+
+@dataclass(frozen=True)
+class TrainingPreparationFailure:
+    """An expected preparation failure, already shaped for job and HTTP."""
+
+    terminal_reason: TrainingPreparationTerminalReason
+    message: str
+    http_status_code: int
+    http_detail: Any
+    fields: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class TrainingPreparationOutcome:
+    """The child's only return value — success evidence or a typed failure."""
+
+    parquet_path: str | None = None
+    feature_selection: dict[str, Any] | None = None
+    execution_metrics: dict[str, Any] | None = None
+    failure: TrainingPreparationFailure | None = None
+
+
+def _remove_prepared_parquet(parquet_path: str) -> None:
+    """Remove the prepared parquet, raising when a partial artifact survives.
+
+    Deliberately fail-loud: a swallowed ``OSError`` would leave real training
+    data on disk while the job records a failure that claims no artifact
+    exists. Callers convert the removal failure into a terminal state that
+    says so, keeping the original failure alongside it.
+    """
+    Path(parquet_path).unlink(missing_ok=True)
+
+
+def _finalise_preparation_failure(
+    failure: TrainingPreparationFailure,
+    *,
+    parquet_path: str,
+    execution_metrics: dict[str, Any] | None,
+) -> TrainingPreparationOutcome:
+    """Remove the parquet for a failing preparation and report both outcomes.
+
+    A successful removal returns *failure* unchanged. A failed removal is
+    itself terminal: the outcome degrades to a 500 ``error`` naming the
+    surviving file, while ``fields`` keeps the original ``error_detail`` and
+    adds ``cleanup_error`` so the first cause is never hidden.
+    """
+    try:
+        _remove_prepared_parquet(parquet_path)
+    except OSError as cleanup_exc:
+        logger.error(
+            "training_preparation_temp_cleanup_failed",
+            path=parquet_path,
+            error=str(cleanup_exc),
+        )
+        message = (
+            f"{failure.message}; the partial training data at {parquet_path} "
+            f"could not be removed: {cleanup_exc}"
+        )
+        fields = dict(failure.fields)
+        fields.setdefault("error_detail", failure.http_detail)
+        fields["error"] = message
+        fields["cleanup_error"] = str(cleanup_exc)
+        fields["http_status_code"] = 500
+        failure = TrainingPreparationFailure(
+            terminal_reason="error",
+            message=message,
+            http_status_code=500,
+            http_detail=message,
+            fields=fields,
+        )
+    return TrainingPreparationOutcome(
+        execution_metrics=execution_metrics,
+        failure=failure,
+    )
+
+
+def _preparation_failure_from_http(
+    exc: HTTPException,
+    *,
+    job_id: str,
+    terminal_reason: TrainingPreparationTerminalReason | None = None,
+) -> TrainingPreparationFailure:
+    message, fields = _http_failure_job_parts(exc, job_id=job_id)
+    if terminal_reason is None:
+        if exc.status_code == 507:
+            terminal_reason = "memory_limited"
+        elif 400 <= exc.status_code < 500:
+            terminal_reason = "contract_error"
+        else:
+            terminal_reason = "error"
+    return TrainingPreparationFailure(
+        terminal_reason=terminal_reason,
+        message=message,
+        http_status_code=exc.status_code,
+        http_detail=fields["error_detail"],
+        fields=fields,
+    )
+
+
+def _validate_target_task_pairing(
+    tmp_parquet: str,
+    config: dict[str, Any],
+    *,
+    execution_context: ExecutionContext,
+) -> None:
+    """Gate a target whose materialised values cannot serve the task/metrics.
+
+    Runs on the sunk training parquet, after materialisation but before
+    the fit worker is dispatched, so a config/data mismatch (a continuous
+    target under a classification task, or under objective-implied
+    AUC/log-loss defaults — e.g. a binomial family with
+    ``task="regression"``) fails with the target column, task, and metrics
+    named instead of surfacing a context-free library error from inside
+    the child. The gate keys on the effective metric set
+    (``effective_metrics`` — explicit config metrics or the
+    objective-implied defaults), the same derivation
+    ``build_training_job_kwargs`` uses. Removes the temp parquet before
+    raising — no later owner exists for it on this path.
+    """
+    from haute._polars_utils import streaming_collect
+    from haute.modelling._target_check import training_target_task_issue
+    from haute.modelling._train_config import TrainingConfigError, effective_metrics
+
+    # Derive the effective metrics before the data scan: it is a pure
+    # config computation, and a malformed metrics config (normally caught
+    # by the route's upfront validation) must map to the same
+    # 422/contract_error taxonomy as the gate itself, not fall through
+    # the scan-failure path below.
+    try:
+        metrics = effective_metrics(config)
+    except TrainingConfigError as exc:
+        _remove_prepared_parquet(tmp_parquet)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
+        issue = training_target_task_issue(
+            pl.scan_parquet(tmp_parquet),
+            target=str(config.get("target", "")),
+            task=str(config.get("task", "regression")),
+            metrics=metrics,
+            collect=lambda lf: streaming_collect(lf, execution_context=execution_context),
+        )
+    except BaseException:
+        # A failure inside the scan itself (corrupt parquet, cancellation,
+        # memory pressure) must not orphan the multi-GB temp input either.
+        _remove_prepared_parquet(tmp_parquet)
+        raise
+    if issue is not None:
+        _remove_prepared_parquet(tmp_parquet)
+        raise HTTPException(status_code=422, detail=issue)
+
+
+def _execute_and_sink_training_frame(
+    request: TrainingPreparationRequest,
+    *,
+    execution_context: ExecutionContext,
+) -> TrainingFeatureSelectionDiagnosticPayload:
+    """Materialise the projected training frame into ``request.parquet_path``."""
+    from haute._chunked_writes import (
+        RecipeEquivalenceError,
+        WriteRecipe,
+        write_file,
+    )
+    from haute._polars_utils import _malloc_trim
+    from haute.executor import _build_node_fn, _compile_preamble, _pipeline_dir, _preview_cache
+    from haute.modelling._algorithms import _mem_checkpoint, _mem_log_path
+    from haute.trace import _cache as _trace_cache
+
+    graph = request.graph
+    node_id = request.node_id
+    tmp_parquet = request.parquet_path
+
+    mem_log = _mem_log_path()
+    mem_log.parent.mkdir(parents=True, exist_ok=True)
+    mem_log.write_text("")
+    _mem_checkpoint("train_model endpoint START")
+
+    # Free the preview cache to reclaim memory
+    _preview_cache.clear()
+    _trace_cache.clear()
+    gc.collect()
+    _mem_checkpoint("cleared preview cache")
+
+    preamble_ns = (
+        _compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph)) or None
+        if request.preamble_supplied
+        else None
+    )
+
+    # Seeded and captured through the shared snapshot store; the plan's leases
+    # and captures stay held until the frame below has been sunk. An adopted
+    # plan opens the very store its parent leased from.
+    with (
+        SeedPlan.adopt(request.seed_plan)
+        if request.seed_plan is not None
+        else open_seed_plan(
+            training_seed_plan_request(
+                graph, node_id, request.source, request.required_columns_by_node
+            ),
+            execution_context=execution_context,
+        )
+    ) as plan:
+        _mem_checkpoint("before _execute_lazy")
+        write_recipes: dict[str, WriteRecipe] = {}
+        lazy_outputs, _order, _parents, _id_to_name = execute_lazy_graph(
+            graph,
+            _build_node_fn,
+            target_node_id=node_id,
+            preamble_ns=preamble_ns,
+            source=request.source,
+            enforce_contracts=True,
+            required_columns_by_node=request.required_columns_by_node,
+            execution_context=execution_context,
+            prepare_inputs=False,
+            snapshot_plan=plan,
+            write_recipes=write_recipes,
+        )
+
+        target_lf = lazy_outputs.get(node_id)
+        if target_lf is None:
+            raise HauteValidationError(
+                "No training data arrived at the modelling node. "
+                "Make sure an upstream data source is connected and producing data."
+            )
+
+        recipe: WriteRecipe | None = write_recipes.get(node_id)
+        discarded_reason: str | None = None
+        if request.row_limit:
+            target_lf = _seeded_training_sample(target_lf, request.row_limit)
+            recipe = None
+            discarded_reason = "row_limit_sample"
+
+        target_schema = target_lf.collect_schema()
+        schema_cols = target_schema.names()
+        schema_set = set(schema_cols)
+        try:
+            feature_selection = build_training_feature_selection(
+                graph.node_map[node_id].data.config,
+                {name: str(dtype) for name, dtype in target_schema.items()},
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+
+        required_training_columns = set(request.keep_columns or [])
+        node_demand = (
+            request.required_columns_by_node.get(node_id)
+            if request.required_columns_by_node is not None
+            else None
+        )
+        if isinstance(node_demand, AllExceptColumns):
+            required_training_columns.update(node_demand.required_columns)
+        elif node_demand is not None:
+            required_training_columns.update(str(column) for column in node_demand)
+        missing_training_columns = sorted(required_training_columns - schema_set)
+        if missing_training_columns:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Training input is missing required column(s): "
+                    f"{missing_training_columns}. Available columns: {schema_cols}"
+                ),
+            )
+
+        # Project down to only the columns needed for training.
+        # This reduces peak memory during sink and all subsequent
+        # phases (evaluation partitions, pool construction, diagnostics).
+        if request.project_to_keep_columns:
+            keep = set(request.keep_columns or [])
+            drop_cols = [column for column in schema_cols if column not in keep]
+            if drop_cols:
+                target_lf = target_lf.drop(drop_cols)
+                if recipe is not None:
+                    cols_to_drop = list(drop_cols)
+
+                    def _drop_unselected_columns(lf: pl.LazyFrame) -> pl.LazyFrame:
+                        return lf.drop(cols_to_drop)
+
+                    recipe = recipe.then(_drop_unselected_columns)
+                _mem_checkpoint(f"projected: dropped {len(drop_cols)} unselected columns")
+
+        _mem_checkpoint("before sink_parquet")
+        execution_context.checkpoint(label="before_training_sink_write", node_id=node_id)
+        with execution_context.stage("training_sink_write", node_id=node_id):
+            try:
+                written = write_file(
+                    tmp_parquet,
+                    target_lf,
+                    recipe=recipe,
+                    execution_context=execution_context,
+                    node_id=node_id,
+                )
+                # A row limit discards the recipe, but the sampled frame may still
+                # slice on its own; the recorder keeps the discarded reason only if
+                # the write did come back native.
+                execution_context.record_training_write(
+                    written,
+                    native_reason=discarded_reason,
+                )
+            except RecipeEquivalenceError as exc:
+                # The check runs before a byte is written, so nothing partial exists
+                # and writing again is safe. Going back through the same writer keeps
+                # one writer and one recorded outcome; it cannot recover a bounded
+                # write, because the equivalence check is only reached on the branch a
+                # non-sliceable frame takes, so this second write lands on native too.
+                execution_context.record_execution_warning(
+                    "recipe_mismatch",
+                    node_id=node_id,
+                    reason=str(exc),
+                )
+                written = write_file(
+                    tmp_parquet,
+                    target_lf,
+                    execution_context=execution_context,
+                    node_id=node_id,
+                )
+                execution_context.record_training_write(
+                    written,
+                    native_reason="recipe_mismatch",
+                )
+        execution_context.checkpoint(label="after_training_sink_write", node_id=node_id)
+
+        del lazy_outputs, target_lf
+        gc.collect()
+        _malloc_trim()
+        _mem_checkpoint("sunk to temp parquet")
+        return feature_selection
+
+
+def preparation_failure_outcome(
+    exc: Exception,
+    request: TrainingPreparationRequest,
+    *,
+    execution_metrics: dict[str, Any] | None,
+) -> TrainingPreparationOutcome:
+    """The job outcome of one preparation failure, wherever it happened.
+
+    Shared by the preparation child and its supervising parent, which prepares
+    inputs and resolves the seed plan before the child starts, so a failure is
+    reported the same way on either side of the process boundary. Every
+    outcome removes the parquet.
+    """
+    job_id = request.job_id
+    tmp_parquet = request.parquet_path
+    if isinstance(exc, ExecutionCancelledError):
+        # A cancelled run is not a failed one. Without this it falls to the
+        # generic branch and the user is told the pipeline failed and to go
+        # read the server logs, while the log beside it says cancelled.
+        failure = TrainingPreparationFailure(
+            terminal_reason="cancelled",
+            message="Cancelled",
+            http_status_code=CLIENT_CLOSED_REQUEST_STATUS,
+            http_detail="Training preparation was cancelled",
+        )
+    elif isinstance(exc, (ExecutionAdmissionError, ExecutionMemoryLimitExceededError)):
+        logger.warning(
+            "pipeline_exec_memory_limited",
+            error=str(exc),
+            node_id=request.node_id,
+        )
+        failure = _preparation_failure_from_http(
+            _memory_limit_http_exception(exc),
+            job_id=job_id,
+            terminal_reason="memory_limited",
+        )
+    elif isinstance(exc, PUBLIC_CONTRACT_ERROR_TYPES):
+        http_exc = contract_error_http_exception(exc)
+        failure = TrainingPreparationFailure(
+            terminal_reason=contract_error_terminal_reason(exc),
+            message=str(exc),
+            http_status_code=http_exc.status_code,
+            http_detail=http_exc.detail,
+            fields=contract_error_job_fields(exc),
+        )
+    elif isinstance(exc, SchemaMismatchError):
+        # Training demands an exact column set, so a target or selected feature
+        # the data lacks surfaces while its source is read, before the frame's
+        # own schema check. It is the user's to fix: name the columns.
+        missing = exc.context.get("missing")
+        available = exc.context.get("available")
+        detail = (
+            "Training input is missing required column(s): "
+            f"{missing}. Available columns: {bounded_names(list(available or []))}"
+            if missing
+            else f"Training input schema does not match: {exc.message}"
+        )
+        failure = _preparation_failure_from_http(
+            HTTPException(status_code=422, detail=detail),
+            job_id=job_id,
+            terminal_reason="contract_error",
+        )
+    elif isinstance(exc, BoundedMemoryUnsupportedError):
+        logger.warning(
+            "pipeline_bounded_streaming_unsupported",
+            error=str(exc),
+            node_id=request.node_id,
+        )
+        failure = _preparation_failure_from_http(
+            HTTPException(
+                status_code=422,
+                detail=f"Pipeline cannot run in bounded streaming mode: {exc}",
+            ),
+            job_id=job_id,
+            terminal_reason="contract_error",
+        )
+    elif isinstance(exc, HTTPException):
+        failure = _preparation_failure_from_http(exc, job_id=job_id)
+    else:
+        logger.error("pipeline_exec_failed", error=str(exc), node_id=request.node_id)
+        failure = _preparation_failure_from_http(
+            HTTPException(
+                status_code=500,
+                detail="Pipeline execution failed. Check the server logs for details.",
+            ),
+            job_id=job_id,
+            terminal_reason="error",
+        )
+    return _finalise_preparation_failure(
+        failure,
+        parquet_path=tmp_parquet,
+        execution_metrics=execution_metrics,
+    )
+
+
+def prepare_training_data(
+    request: TrainingPreparationRequest,
+    *,
+    execution_context: ExecutionContext,
+) -> TrainingPreparationOutcome:
+    """Materialise, gate, and sink one training frame — the in-process core.
+
+    Owns the whole preparation contract inside its own process: pipeline
+    execution, the feature-selection diagnostic, the required-column check,
+    the bounded sink, and the target/task gate. Expected failures become a
+    :class:`TrainingPreparationFailure` carrying exactly the job fields and
+    HTTP shape the former in-thread path produced. Every failure removes the
+    parquet, so no partial artifact ever survives.
+    """
+    tmp_parquet = request.parquet_path
+    try:
+        feature_selection = _execute_and_sink_training_frame(
+            request,
+            execution_context=execution_context,
+        )
+        _validate_target_task_pairing(
+            tmp_parquet,
+            request.config,
+            execution_context=execution_context,
+        )
+    except Exception as exc:
+        return preparation_failure_outcome(
+            exc, request, execution_metrics=execution_context.metrics_payload()
+        )
+    execution_context.checkpoint(label="training_preparation_complete")
+    return TrainingPreparationOutcome(
+        parquet_path=tmp_parquet,
+        feature_selection=feature_selection.model_dump(mode="json"),
+        execution_metrics=execution_context.metrics_payload(),
+    )
+
+
+def prepare_training_data_worker(
+    request: TrainingPreparationRequest,
+    budget: IsolatedExecutionBudget,
+) -> TrainingPreparationOutcome:
+    """Spawn entrypoint: run preparation under the child's own hard cap.
+
+    The parent's admitted headroom is re-expressed as a worker-local context
+    (no double reservation) and the spawn machinery installs the matching
+    native cap, so an unavailable materialisation estimate plans
+    conservatively here instead of being rejected outright.
+    """
+    from haute._sandbox import set_project_root
+
+    # The spawned child starts with the interpreter's default sandbox root.
+    # Carry the parent's resolved root across so path validation inside the
+    # child accepts exactly the sources the request was admitted against.
+    set_project_root(Path(request.project_root))
+    context: ExecutionContext | None = None
+    try:
+        context = create_isolated_execution_context(budget)
+        context.checkpoint(label="training_preparation")
+        return prepare_training_data(request, execution_context=context)
+    except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
+        return _finalise_preparation_failure(
+            _preparation_failure_from_http(
+                _memory_limit_http_exception(exc),
+                job_id=request.job_id,
+                terminal_reason="memory_limited",
+            ),
+            parquet_path=request.parquet_path,
+            execution_metrics=None,
+        )
+    except ExecutionCancelledError:
+        # Before the generic branch, which would report a cancelled run as a
+        # pipeline failure pointing the user at the server logs.
+        return _finalise_preparation_failure(
+            TrainingPreparationFailure(
+                terminal_reason="cancelled",
+                message="Cancelled",
+                http_status_code=CLIENT_CLOSED_REQUEST_STATUS,
+                http_detail="Training preparation was cancelled",
+            ),
+            parquet_path=request.parquet_path,
+            execution_metrics=None,
+        )
+    except Exception as exc:
+        logger.error(
+            "training_preparation_worker_error",
+            error=str(exc),
+            error_type=type(exc).__name__,
+            node_id=request.node_id,
+        )
+        return _finalise_preparation_failure(
+            _preparation_failure_from_http(
+                HTTPException(
+                    status_code=500,
+                    detail="Pipeline execution failed. Check the server logs for details.",
+                ),
+                job_id=request.job_id,
+                terminal_reason="error",
+            ),
+            parquet_path=request.parquet_path,
+            execution_metrics=None,
+        )
+    finally:
+        if context is not None:
+            context.release_admission(preserve_primary_error=True)
+
+
+def create_training_parquet_path() -> str:
+    """Create the parent-owned empty parquet path the child sinks into."""
+    tmp_fd, tmp_parquet = tempfile.mkstemp(suffix=".parquet", prefix="haute_train_")
+    os.close(tmp_fd)
+    return tmp_parquet

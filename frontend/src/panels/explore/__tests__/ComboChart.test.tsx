@@ -155,7 +155,7 @@ describe("ComboChart", () => {
     expect(table).toHaveTextContent("Paid")
     expect(table).toHaveTextContent("North")
     expect(table).toHaveTextContent("£42.00")
-    expect(table).toHaveTextContent("—")
+    expect(table).toHaveTextContent("-")
     fireEvent.click(screen.getByRole("button", { name: "Hide data table" }))
     expect(screen.queryByRole("table")).toBeNull()
   })

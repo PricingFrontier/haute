@@ -150,42 +150,6 @@ def test_explicit_false_overview_values_round_trip(tmp_path: Path) -> None:
     }
 
 
-def test_unknown_sane_overview_values_round_trip(tmp_path: Path) -> None:
-    """Unknown overview keys with simple literal values must be preserved."""
-    graph = _explore_graph(
-        {
-            "schema": True,
-            "custom_card": {
-                "label": "Loss ratio",
-                "columns": ["premium", "claims"],
-                "enabled": False,
-                "empty": None,
-            },
-        }
-    )
-
-    code = graph_to_code(graph, pipeline_name="round_trip_overview_unknown")
-    _write_configs(graph, tmp_path)
-
-    parsed = parse_pipeline_source(
-        code,
-        source_file=str(tmp_path / "pipeline.py"),
-        _base_dir=tmp_path,
-    )
-
-    node_map = {n.id: n for n in parsed.nodes}
-    explore_node = node_map["inspect_claims"]
-    assert explore_node.data.config.get("overview") == {
-        "schema": True,
-        "custom_card": {
-            "label": "Loss ratio",
-            "columns": ["premium", "claims"],
-            "enabled": False,
-            "empty": None,
-        },
-    }
-
-
 def test_empty_overview_does_not_round_trip_into_config(tmp_path: Path) -> None:
     """An empty ``overview`` dict must be dropped, not emitted into the .py file."""
     graph = _explore_graph({})
@@ -217,7 +181,6 @@ def test_pivot_chart_cards_and_overview_round_trip_together(tmp_path: Path) -> N
         "number_format": "percent",
         "decimal_places": 1,
         "use_grouping": False,
-        "future_formula_setting": {"style": "compact"},
     }
     pivots = [
         {
@@ -264,7 +227,6 @@ def test_pivot_chart_cards_and_overview_round_trip_together(tmp_path: Path) -> N
                     "number_format": "currency_eur",
                     "decimal_places": 2,
                     "use_grouping": False,
-                    "future_value_setting": {"precision": 2},
                 }
             ],
             "formulas": ["formula_1"],
@@ -273,9 +235,7 @@ def test_pivot_chart_cards_and_overview_round_trip_together(tmp_path: Path) -> N
                 "row_grand_totals": True,
                 "column_grand_totals": False,
                 "sort_by": "value_1",
-                "future_option": "compact",
             },
-            "future_setting": {"palette": "warm"},
         },
         {
             "version": 1,
@@ -308,7 +268,6 @@ def test_pivot_chart_cards_and_overview_round_trip_together(tmp_path: Path) -> N
                 "source": "rows",
                 "include_grand_total": False,
                 "label_rotation": 0,
-                "future": {"nested": ["literal"]},
             },
             "value_encodings": [
                 {
@@ -342,7 +301,6 @@ def test_pivot_chart_cards_and_overview_round_trip_together(tmp_path: Path) -> N
                 },
             },
             "legend": {"visible": True, "position": "bottom"},
-            "future_setting": {"palette": "warm", "columns": ["premium"]},
         }
     ]
     graph = _explore_graph_with_config(
@@ -463,7 +421,7 @@ def test_shared_pivot_formulas_round_trip_once_with_multiple_selections(tmp_path
     _write_configs(graph, tmp_path)
 
     assert code.index("pivot_formulas=") < code.index("pivots=")
-    assert code.count("'expression': 'pl.col(\"claims\").sum() / 100'") == 1
+    assert code.count('"expression": \'pl.col("claims").sum() / 100\'') == 1
     parsed = parse_pipeline_source(
         code, source_file=str(tmp_path / "pipeline.py"), _base_dir=tmp_path
     )

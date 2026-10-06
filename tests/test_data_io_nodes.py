@@ -24,11 +24,12 @@ from haute._config_io import (
     config_path_for_node,
     load_node_config,
 )
-from haute._execution_context import ExecutionProfile
+from haute._execution_context import ExecutionAdmission, ExecutionContext, ExecutionProfile
+from haute._native_memory_limit import native_memory_backend_scope
 from haute._polars_io_registry import PolarsIoConfigError
 from haute._registry import NODE_REGISTRY, ensure_registry_ready
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
-from haute.errors import SchemaMismatchError
+from haute.errors import GroupByExecutionUnsupportedError, SchemaMismatchError
 from haute.executor import (
     DataOutputDestinationExistsError,
     DataOutputDurabilityError,
@@ -36,13 +37,15 @@ from haute.executor import (
     PreparedDataOutput,
     commit_prepared_data_output,
     discard_prepared_data_output,
+    execute_graph,
     prepare_data_output,
     resolve_data_output_path,
     validate_prepared_data_output_identity,
     write_data_output,
 )
+from haute.projection import ExecutionStrategy, ExecutionStrategyStatus
 from haute.routes._isolated_worker_async import WorkerCancellationGate
-from haute.schemas import WriteOutputResponse
+from haute.schemas import ExecutionMetricsPayload, WriteOutputResponse
 from tests.conftest import build_test_input_snapshot
 
 ensure_registry_ready()
@@ -76,6 +79,30 @@ def struct_frame() -> pl.DataFrame:
             "nested": [{"k": 1}, {"k": 2}, {"k": 3}],
         }
     )
+
+
+class _StubPlan:
+    """The seed plan of a write transaction whose graph a unit test never executes."""
+
+    def __enter__(self) -> _StubPlan:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        return None
+
+    def handoff(self) -> str:
+        return "stub-handoff"
+
+
+def _stub_plans(monkeypatch: pytest.MonkeyPatch) -> None:
+    from haute.routes import pipeline as pipeline_route
+
+    monkeypatch.setattr(pipeline_route, "data_output_seed_plan_request", lambda *_a, **_k: None)
+    monkeypatch.setattr(pipeline_route, "open_seed_plan", lambda *_a, **_k: _StubPlan())
+
+
+def _transaction_context() -> ExecutionContext:
+    return ExecutionContext(operation="pipeline_write_output", profile=ExecutionProfile.LAZY_SINK)
 
 
 class TestExecuteSinkDataOutput:
@@ -158,9 +185,9 @@ class TestExecuteSinkDataOutput:
             PipelineGraph(),
             "sink",
             "batch",
-            123,
             str(tmp_path),
             False,
+            None,
             None,
             budget,
         )
@@ -189,9 +216,9 @@ class TestExecuteSinkDataOutput:
                 PipelineGraph(),
                 "sink",
                 "batch",
-                None,
                 str(tmp_path),
                 False,
+                None,
                 None,
                 SimpleNamespace(),  # type: ignore[arg-type]
             )
@@ -204,6 +231,8 @@ class TestExecuteSinkDataOutput:
         primary_failure: bool,
     ) -> None:
         from haute.routes import pipeline as pipeline_route
+
+        _stub_plans(monkeypatch)
 
         final = tmp_path / "result.parquet"
         staging = tmp_path / ".result.haute-stage-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.parquet"
@@ -253,7 +282,6 @@ class TestExecuteSinkDataOutput:
                 PipelineGraph(),
                 "sink",
                 "batch",
-                None,
                 tmp_path,
                 False,
                 final,
@@ -261,6 +289,7 @@ class TestExecuteSinkDataOutput:
                 SimpleNamespace(memory_limit_bytes=1024),  # type: ignore[arg-type]
                 WorkerCancellationGate(),
                 display_path="result.parquet",
+                execution_context=_transaction_context(),
             )
 
         if primary_failure:
@@ -277,6 +306,8 @@ class TestExecuteSinkDataOutput:
         from haute._worker_isolation import IsolatedWorkerStoppedError
         from haute.routes import pipeline as pipeline_route
 
+        _stub_plans(monkeypatch)
+
         gate = WorkerCancellationGate()
         gate.request()
         with pytest.raises(IsolatedWorkerStoppedError):
@@ -284,7 +315,6 @@ class TestExecuteSinkDataOutput:
                 PipelineGraph(),
                 "sink",
                 "batch",
-                None,
                 tmp_path,
                 False,
                 None,
@@ -292,6 +322,7 @@ class TestExecuteSinkDataOutput:
                 SimpleNamespace(memory_limit_bytes=1024),  # type: ignore[arg-type]
                 gate,
                 display_path="database",
+                execution_context=_transaction_context(),
             )
 
         monkeypatch.setattr(
@@ -304,7 +335,6 @@ class TestExecuteSinkDataOutput:
                 PipelineGraph(),
                 "sink",
                 "batch",
-                None,
                 tmp_path,
                 False,
                 None,
@@ -312,6 +342,7 @@ class TestExecuteSinkDataOutput:
                 SimpleNamespace(memory_limit_bytes=1024),  # type: ignore[arg-type]
                 WorkerCancellationGate(),
                 display_path="database",
+                execution_context=_transaction_context(),
             )
 
         monkeypatch.setattr(
@@ -327,7 +358,6 @@ class TestExecuteSinkDataOutput:
                 PipelineGraph(),
                 "sink",
                 "batch",
-                None,
                 tmp_path,
                 False,
                 None,
@@ -335,6 +365,7 @@ class TestExecuteSinkDataOutput:
                 SimpleNamespace(memory_limit_bytes=1024),  # type: ignore[arg-type]
                 WorkerCancellationGate(),
                 display_path="database",
+                execution_context=_transaction_context(),
             )
 
     @pytest.mark.parametrize(
@@ -452,6 +483,8 @@ class TestExecuteSinkDataOutput:
     ) -> None:
         from haute.routes import pipeline as pipeline_route
 
+        _stub_plans(monkeypatch)
+
         final = tmp_path / "result.parquet"
         staging = tmp_path / ".result.haute-stage-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.parquet"
         decoy = tmp_path / ".decoy.haute-stage-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.parquet"
@@ -478,7 +511,6 @@ class TestExecuteSinkDataOutput:
                 graph=None,  # type: ignore[arg-type]
                 output_node_id="sink",
                 source="batch",
-                streaming_chunk_size=None,
                 project_root=tmp_path,
                 overwrite=False,
                 final_path=final,
@@ -486,6 +518,7 @@ class TestExecuteSinkDataOutput:
                 budget=SimpleNamespace(memory_limit_bytes=1),  # type: ignore[arg-type]
                 cancellation_requested=WorkerCancellationGate(),
                 display_path="result.parquet",
+                execution_context=_transaction_context(),
             )
 
         assert not staging.exists()
@@ -500,6 +533,8 @@ class TestExecuteSinkDataOutput:
 
         from haute._worker_isolation import IsolatedWorkerStoppedError
         from haute.routes import pipeline as pipeline_route
+
+        _stub_plans(monkeypatch)
 
         final = tmp_path / "result.parquet"
         staging = tmp_path / ".result.haute-stage-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.parquet"
@@ -534,7 +569,6 @@ class TestExecuteSinkDataOutput:
                 graph=None,  # type: ignore[arg-type]
                 output_node_id="sink",
                 source="batch",
-                streaming_chunk_size=None,
                 project_root=tmp_path,
                 overwrite=False,
                 final_path=final,
@@ -542,6 +576,7 @@ class TestExecuteSinkDataOutput:
                 budget=SimpleNamespace(memory_limit_bytes=1),  # type: ignore[arg-type]
                 cancellation_requested=cancellation_requested,
                 display_path="result.parquet",
+                execution_context=_transaction_context(),
             )
 
         assert not final.exists()
@@ -618,6 +653,226 @@ class TestExecuteSinkDataOutput:
         assert result.row_count == 2
         assert destination.is_file()
         assert not staging.exists()
+
+    @pytest.mark.parametrize("caller_supplies_context", [False, True])
+    def test_lazy_sink_writes_group_by_pipeline_with_or_without_caller_context(
+        self,
+        haute_scratch: Path,
+        caller_supplies_context: bool,
+    ) -> None:
+        source = haute_scratch / "claims.parquet"
+        pl.DataFrame(
+            {
+                "quote_id": ["q1", "q1", "q2"],
+                "amount_paid": [10.0, 20.0, 30.0],
+            }
+        ).write_parquet(source)
+        destination = haute_scratch / "claims_agg.parquet"
+        graph = PipelineGraph(
+            nodes=[
+                _ready_data_input_node(
+                    "claims",
+                    {"inputType": "file", "format": "parquet", "path": str(source)},
+                ),
+                GraphNode(
+                    id="claims_agg",
+                    data=NodeData(
+                        label="claims_agg",
+                        nodeType=NodeType.POLARS,
+                        config={
+                            "contract": "opaque",
+                            "code": (
+                                "df = claims.group_by('quote_id').agg("
+                                "pl.col('amount_paid').sum().alias('total_incurred'))"
+                            ),
+                        },
+                    ),
+                ),
+                _data_output_node(
+                    "batch_output",
+                    {
+                        "outputType": "file",
+                        "format": "parquet",
+                        "path": str(destination),
+                    },
+                ),
+            ],
+            edges=[
+                _edge("claims", "claims_agg"),
+                _edge("claims_agg", "batch_output"),
+            ],
+        )
+        memory_limit = 1024**3
+        admission = ExecutionAdmission(
+            operation="pipeline_write_output",
+            profile=ExecutionProfile.LAZY_SINK,
+            memory_limit_bytes=memory_limit,
+            rss_at_admission_bytes=0,
+            rss_limit_bytes=memory_limit,
+            headroom_bytes=memory_limit,
+            config_key="test",
+        )
+        context = ExecutionContext(
+            operation="pipeline_write_output",
+            profile=ExecutionProfile.LAZY_SINK,
+            memory_limit_bytes=memory_limit,
+            memory_baseline_bytes=0,
+            rss_limit_bytes=memory_limit,
+            admission=admission,
+            memory_sampler=lambda: 0,
+        )
+
+        result = write_data_output(
+            graph,
+            "batch_output",
+            source="batch",
+            execution_context=context if caller_supplies_context else None,
+            project_root=haute_scratch,
+        )
+
+        assert result.row_count == 2
+        if caller_supplies_context:
+            assert context.projection_plan is not None
+            assert context.projection_plan.strategy.value == "materialisation-boundary"
+            assert context.projection_plan.projection_plan.materialisation_boundaries == frozenset(
+                {"claims_agg"}
+            )
+        assert_frame_equal(
+            pl.read_parquet(destination).sort("quote_id"),
+            pl.DataFrame(
+                {
+                    "quote_id": ["q1", "q2"],
+                    "total_incurred": [30.0, 30.0],
+                }
+            ),
+        )
+
+    def test_lazy_sink_runs_an_unprovable_group_by_conservatively_under_a_native_cap(
+        self,
+        haute_scratch: Path,
+    ) -> None:
+        source = haute_scratch / "claims.parquet"
+        pl.DataFrame(
+            {
+                "quote_id": ["q1", "q1", "q2"],
+                "amount_paid": [10.0, 20.0, 30.0],
+            }
+        ).write_parquet(source)
+        destination = haute_scratch / "claims_agg.parquet"
+        graph = PipelineGraph(
+            nodes=[
+                _ready_data_input_node(
+                    "claims",
+                    {"inputType": "file", "format": "parquet", "path": str(source)},
+                ),
+                GraphNode(
+                    id="claims_agg",
+                    data=NodeData(
+                        label="claims_agg",
+                        nodeType=NodeType.POLARS,
+                        config={
+                            "contract": "opaque",
+                            "code": (
+                                "df = claims.unpivot(index=['quote_id'])\n"
+                                "df = df.group_by('quote_id').agg("
+                                "pl.col('value').sum().alias('total'))"
+                            ),
+                        },
+                    ),
+                ),
+                _data_output_node(
+                    "batch_output",
+                    {
+                        "outputType": "file",
+                        "format": "parquet",
+                        "path": str(destination),
+                    },
+                ),
+            ],
+            edges=[
+                _edge("claims", "claims_agg"),
+                _edge("claims_agg", "batch_output"),
+            ],
+        )
+
+        def _context() -> ExecutionContext:
+            memory_limit = 1024**3
+            admission = ExecutionAdmission(
+                operation="pipeline_write_output",
+                profile=ExecutionProfile.LAZY_SINK,
+                memory_limit_bytes=memory_limit,
+                rss_at_admission_bytes=0,
+                rss_limit_bytes=memory_limit,
+                headroom_bytes=memory_limit,
+                config_key="test",
+            )
+            return ExecutionContext(
+                operation="pipeline_write_output",
+                profile=ExecutionProfile.LAZY_SINK,
+                memory_limit_bytes=memory_limit,
+                memory_baseline_bytes=0,
+                rss_limit_bytes=memory_limit,
+                admission=admission,
+                memory_sampler=lambda: 0,
+            )
+
+        # Without a native cap, the unprovable group-by is refused.
+        with pytest.raises(GroupByExecutionUnsupportedError):
+            write_data_output(
+                graph,
+                "batch_output",
+                source="batch",
+                execution_context=_context(),
+                project_root=haute_scratch,
+            )
+        assert not destination.exists()
+
+        context = _context()
+        with native_memory_backend_scope("windows_job"):
+            write_data_output(
+                graph,
+                "batch_output",
+                source="batch",
+                execution_context=context,
+                project_root=haute_scratch,
+            )
+
+        assert context.projection_plan is not None
+        assert context.projection_plan.strategy is ExecutionStrategy.FULL_WIDTH_CONSERVATIVE
+        assert context.projection_plan.status is ExecutionStrategyStatus.WARNED
+        expected = (
+            pl.read_parquet(source)
+            .unpivot(index=["quote_id"])
+            .group_by("quote_id")
+            .agg(pl.col("value").sum().alias("total"))
+        )
+        assert_frame_equal(
+            pl.read_parquet(destination).sort("quote_id"),
+            expected.sort("quote_id"),
+        )
+        payload = context.metrics_payload(status="completed")
+        assert payload["execution_strategy"]["status"] == "warned"
+        ExecutionMetricsPayload.model_validate(payload)
+
+        # The capped run captured the aggregate, so a later uncapped write
+        # reads that snapshot and runs no group-by at all.
+        destination.unlink()
+        uncapped = _context()
+        write_data_output(
+            graph,
+            "batch_output",
+            source="batch",
+            execution_context=uncapped,
+            project_root=haute_scratch,
+        )
+        assert [
+            seed["node_id"]
+            for seed in uncapped.metrics_payload(status="completed")["shared_snapshot_seeds"]
+        ] == ["claims_agg"]
+        assert_frame_equal(
+            pl.read_parquet(destination).sort("quote_id"),
+            expected.sort("quote_id"),
+        )
 
     def test_parent_rejects_tampered_output_stage_without_replacing_target(
         self, haute_scratch
@@ -1030,7 +1285,7 @@ class TestExecuteSinkDataOutput:
         def unexpected_execution(*_args, **_kwargs):
             raise AssertionError("graph execution started before collision preflight")
 
-        monkeypatch.setattr(executor_module, "_execute_lazy", unexpected_execution)
+        monkeypatch.setattr(executor_module, "walk_graph", unexpected_execution)
 
         with pytest.raises(DataOutputDestinationExistsError) as exc:
             write_data_output(graph, "dout")
@@ -1606,7 +1861,160 @@ class TestExecuteSinkDataOutput:
         assert calls[-1] == ("directory", out_path.parent)
 
 
+class TestPreviewNeverWrites:
+    """Output publication is explicit and contained.
+
+    dataOutput is preview pass-through; only write_data_output persists.
+    """
+
+    def test_preview_of_a_data_output_node_writes_nothing_and_passes_rows_through(
+        self,
+        haute_scratch: Path,
+        struct_frame: pl.DataFrame,
+    ) -> None:
+        src_path = haute_scratch / "in.parquet"
+        struct_frame.write_parquet(src_path)
+
+        # Variant 1: destination path does NOT exist yet
+        out_path_new = haute_scratch / "out_new.parquet"
+        assert not out_path_new.exists()
+
+        graph_new = PipelineGraph(
+            nodes=[
+                _ready_data_input_node(
+                    "din",
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "path": str(src_path),
+                    },
+                ),
+                _data_output_node(
+                    "dout",
+                    {
+                        "outputType": "file",
+                        "format": "parquet",
+                        "path": str(out_path_new),
+                    },
+                ),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+
+        # Run the PREVIEW path
+        preview_results = execute_graph(graph_new, target_node_id="dout")
+        node_result = preview_results["dout"]
+        assert node_result.status == "ok"
+        assert node_result.preview == preview_results["din"].preview
+        assert node_result.preview == struct_frame.to_dicts()
+        assert not out_path_new.exists()
+        assert list(haute_scratch.glob(".*.haute-stage-*")) == []
+        assert list(haute_scratch.glob("*tmp*")) == []
+
+        # Explicit write path persists the rows
+        write_result = write_data_output(graph_new, "dout")
+        assert write_result.status == "ok"
+        assert out_path_new.exists()
+        assert_frame_equal(pl.read_parquet(out_path_new), struct_frame)
+
+        # Variant 2: destination path already exists with known bytes
+        out_path_existing = haute_scratch / "out_existing.parquet"
+        original_bytes = b"persisted-destination-original-content"
+        out_path_existing.write_bytes(original_bytes)
+        assert out_path_existing.read_bytes() == original_bytes
+
+        graph_existing = PipelineGraph(
+            nodes=[
+                _ready_data_input_node(
+                    "din",
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "path": str(src_path),
+                    },
+                ),
+                _data_output_node(
+                    "dout",
+                    {
+                        "outputType": "file",
+                        "format": "parquet",
+                        "path": str(out_path_existing),
+                    },
+                ),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+
+        # Run the PREVIEW path
+        preview_existing = execute_graph(graph_existing, target_node_id="dout")
+        node_result_existing = preview_existing["dout"]
+        assert node_result_existing.status == "ok"
+        assert node_result_existing.preview == preview_existing["din"].preview
+        assert node_result_existing.preview == struct_frame.to_dicts()
+        assert out_path_existing.read_bytes() == original_bytes
+        assert list(haute_scratch.glob(".*.haute-stage-*")) == []
+        assert list(haute_scratch.glob("*tmp*")) == []
+
+        # Explicit write path with overwrite=True persists the rows
+        write_existing = write_data_output(graph_existing, "dout", overwrite=True)
+        assert write_existing.status == "ok"
+        assert out_path_existing.read_bytes() != original_bytes
+        assert_frame_equal(pl.read_parquet(out_path_existing), struct_frame)
+
+
 class TestResolveDataOutputPath:
+    def test_nested_pipeline_writes_bare_filename_to_project_outputs(
+        self, haute_scratch: Path, struct_frame: pl.DataFrame
+    ) -> None:
+        source = haute_scratch / "input.parquet"
+        struct_frame.write_parquet(source)
+        graph = PipelineGraph(
+            source_file=str(haute_scratch / "rating" / "main.py"),
+            nodes=[
+                _ready_data_input_node(
+                    "din", {"inputType": "file", "format": "parquet", "path": str(source)}
+                ),
+                _data_output_node(
+                    "dout", {"outputType": "file", "format": "parquet", "path": "output"}
+                ),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+
+        result = write_data_output(graph, "dout", project_root=haute_scratch)
+
+        assert result.path == "outputs/output.parquet"
+        assert_frame_equal(pl.read_parquet(haute_scratch / result.path), struct_frame)
+        assert not (haute_scratch / "rating" / "outputs").exists()
+        assert not (haute_scratch / "output.parquet").exists()
+
+    @pytest.mark.parametrize(
+        ("path", "expected"),
+        [
+            ("output", "outputs/output.parquet"),
+            ("output.parquet", "outputs/output.parquet"),
+            ("exports/output", "exports/output.parquet"),
+            ("exports\\output.parquet", "exports/output.parquet"),
+        ],
+    )
+    def test_file_destinations_use_project_root_for_nested_pipeline(
+        self, haute_scratch: Path, monkeypatch: pytest.MonkeyPatch, path: str, expected: str
+    ) -> None:
+        nested = haute_scratch / "rating"
+        nested.mkdir()
+        monkeypatch.chdir(nested)
+        graph = PipelineGraph(nodes=[], edges=[], source_file="rating/main.py")
+
+        resolved, display = resolve_data_output_path(
+            graph,
+            {"outputType": "file", "format": "parquet", "path": path},
+            project_root=haute_scratch,
+        )
+
+        assert resolved == haute_scratch / expected
+        assert display.replace("\\", "/") == expected
+        assert not (haute_scratch / "outputs").exists()
+
     def test_bare_filename_lands_under_outputs_with_format_extension(self) -> None:
         graph = PipelineGraph(nodes=[], edges=[])
         resolved, display = resolve_data_output_path(
@@ -1656,15 +2064,16 @@ class TestResolveDataOutputPath:
                 project_root=haute_scratch,
             )
 
-    def test_project_root_containment_is_enforced(self, haute_scratch) -> None:
-        graph = PipelineGraph(nodes=[], edges=[])
+    @pytest.mark.parametrize("path", ["/somewhere/else/out.parquet", "../out.parquet"])
+    def test_project_root_containment_is_enforced(self, haute_scratch, path: str) -> None:
+        graph = PipelineGraph(nodes=[], edges=[], source_file="rating/main.py")
         with pytest.raises(ValueError, match="outside the project root"):
             resolve_data_output_path(
                 graph,
                 {
                     "outputType": "file",
                     "format": "parquet",
-                    "path": "/somewhere/else/out.parquet",
+                    "path": path,
                 },
                 project_root=haute_scratch,
             )
@@ -1845,11 +2254,99 @@ class TestDataInputBuilder:
         assert exc_info.value.context["available"] == ["present"]
 
 
+class TestDataInputSelectedColumnsAcrossProfiles:
+    """A Data Input's post-load code may produce a selected column."""
+
+    @staticmethod
+    def _context(profile: ExecutionProfile) -> ExecutionContext:
+        memory_limit = 1024**3
+        admission = ExecutionAdmission(
+            operation="test_selected_columns",
+            profile=profile,
+            memory_limit_bytes=memory_limit,
+            rss_at_admission_bytes=0,
+            rss_limit_bytes=memory_limit,
+            headroom_bytes=memory_limit,
+            config_key="test",
+        )
+        return ExecutionContext(
+            operation="test_selected_columns",
+            profile=profile,
+            memory_limit_bytes=memory_limit,
+            memory_baseline_bytes=0,
+            rss_limit_bytes=memory_limit,
+            admission=admission,
+            memory_sampler=lambda: 0,
+        )
+
+    @staticmethod
+    def _graph(source: Path) -> PipelineGraph:
+        return PipelineGraph(
+            nodes=[
+                _ready_data_input_node(
+                    "din",
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "mode": "scan",
+                        "path": str(source),
+                        "arguments": {},
+                        "code": "df = df.with_columns(SaleFlag = pl.lit(1))",
+                        "selected_columns": ["quote_id", "SaleFlag"],
+                    },
+                ),
+                GraphNode(
+                    id="shaped",
+                    data=NodeData(
+                        label="shaped",
+                        nodeType=NodeType.POLARS,
+                        config={"code": "df = din.filter(pl.col('SaleFlag') == 1)"},
+                    ),
+                ),
+            ],
+            edges=[_edge("din", "shaped")],
+        )
+
+    def _columns_for_profile(self, source: Path, profile: ExecutionProfile) -> list[str]:
+        from haute.execution import execute_lazy_graph
+        from haute.executor import _build_node_fn
+
+        frames, *_ = execute_lazy_graph(
+            self._graph(source),
+            _build_node_fn,
+            target_node_id="shaped",
+            required_columns_by_node={"shaped": {"quote_id", "SaleFlag"}},
+            execution_context=self._context(profile),
+        )
+        return frames["shaped"].collect_schema().names()
+
+    def test_code_produced_selection_survives_a_bounded_profile(self, haute_scratch: Path) -> None:
+        source = haute_scratch / "quotes.parquet"
+        pl.DataFrame(
+            {"quote_id": ["q1", "q2"], "sale_date": ["2024-01-01", "2024-02-01"]}
+        ).write_parquet(source)
+
+        assert self._columns_for_profile(source, ExecutionProfile.TRAINING_PREP) == [
+            "quote_id",
+            "SaleFlag",
+        ]
+
+    def test_bounded_and_preview_profiles_agree_on_the_selection(self, haute_scratch: Path) -> None:
+        source = haute_scratch / "quotes.parquet"
+        pl.DataFrame(
+            {"quote_id": ["q1", "q2"], "sale_date": ["2024-01-01", "2024-02-01"]}
+        ).write_parquet(source)
+
+        assert self._columns_for_profile(
+            source, ExecutionProfile.TRAINING_PREP
+        ) == self._columns_for_profile(source, ExecutionProfile.PREVIEW_EAGER)
+
+
 class TestCodegenAndParseRoundTrip:
     """Generated code carries a config= sidecar reference and parses back."""
 
     def test_data_input_codegen_shape(self) -> None:
-        from haute._codegen_builders import _gen_data_input
+        from haute.codegen import _node_to_code
         from tests.conftest import compile_node_code
 
         node = _data_input_node(
@@ -1861,24 +2358,29 @@ class TestCodegenAndParseRoundTrip:
                 "code": "df = df.filter(pl.col('id') > 0)",
             },
         )
-        code = _gen_data_input(node, [])
-        assert '@pipeline.data_input(config="config/data_input/quotes_in.json")' in code
-        assert "resolve_data_input_from_config" in code
-        assert "df = df.filter(pl.col('id') > 0)" in code
+        code = _node_to_code(node, [])
+        # A hook: the decorator reads the source and hands the frame over as df.
+        assert code.startswith(
+            '@pipeline.data_input(config="config/data_input/quotes_in.json")\n'
+            "def quotes_in(df: pl.LazyFrame) -> pl.LazyFrame:\n"
+        )
+        assert "resolve_data_input_from_config" not in code
+        assert "    df = df.filter(pl.col('id') > 0)\n    return df" in code
         compile_node_code(code)
 
     def test_data_output_codegen_shape(self) -> None:
-        from haute._codegen_builders import _gen_data_output
+        from haute.codegen import _node_to_code
         from tests.conftest import compile_node_code
 
         node = _data_output_node(
             "prices_out",
             {"outputType": "file", "format": "ndjson", "path": "out.jsonl"},
         )
-        code = _gen_data_output(node, ["scored"])
-        assert '@pipeline.data_output(config="config/data_output/prices_out.json")' in code
-        assert "write_polars_output_from_config" not in code
-        assert "return scored" in code
+        code = _node_to_code(node, ["scored"])
+        assert code == (
+            '@pipeline.data_output(config="config/data_output/prices_out.json")\n'
+            "def prices_out(scored): ...\n"
+        )
         compile_node_code(code)
 
     def test_full_graph_to_code_to_graph_round_trip(self, haute_scratch) -> None:
@@ -1952,7 +2454,7 @@ class TestSidecarPersistence:
             "arguments": {"separator": ";"},
             "_editorOnly": {"open": True},
         }
-        prepared = _prepare_config_for_sidecar(NodeType.DATA_INPUT, config)
+        prepared = _prepare_config_for_sidecar(NodeType.DATA_INPUT, config, node_label="source")
         assert prepared == {
             "inputType": "file",
             "format": "csv",
@@ -2015,19 +2517,37 @@ def test_generated_data_input_resolves_project_relative_dataset_from_nested_pipe
     assert frame.collect().to_dicts() == [{"quote_id": 1}, {"quote_id": 2}]
 
 
-def test_data_input_codegen_passes_discovered_project_root() -> None:
-    from haute._codegen_builders import _gen_data_input
-
-    code = _gen_data_input(
-        _data_input_node(
-            "quotes", {"inputType": "file", "format": "parquet", "path": "data/quotes.parquet"}
-        ),
-        [],
+def test_standalone_data_input_declaration_reads_from_the_discovered_project_root(
+    tmp_path: Path,
+) -> None:
+    """A nested pipeline's declaration resolves its dataset against the project root."""
+    project_root = tmp_path / "project"
+    pipeline_root = project_root / "rating"
+    config_dir = pipeline_root / "config" / "data_input"
+    data_dir = project_root / "data"
+    config_dir.mkdir(parents=True)
+    data_dir.mkdir(parents=True)
+    (project_root / ".git").mkdir()
+    (project_root / "haute.toml").write_text('[project]\nname = "nested"\n', encoding="utf-8")
+    pl.DataFrame({"quote_id": [1, 2]}).write_parquet(data_dir / "quotes.parquet")
+    (config_dir / "quotes.json").write_text(
+        json.dumps({"inputType": "file", "format": "parquet", "path": "data/quotes.parquet"}),
+        encoding="utf-8",
     )
+    source = (
+        "import haute\n\n"
+        'pipeline = haute.Pipeline("nested")\n\n\n'
+        '@pipeline.data_input(config="config/data_input/quotes.json")\n'
+        "def quotes(): ...\n"
+    )
+    main = pipeline_root / "main.py"
+    main.write_text(source, encoding="utf-8")
+    namespace: dict[str, object] = {"__file__": str(main)}
+    exec(compile(source, str(main), "exec"), namespace)
 
-    assert "get_project_root(_HAUTE_CONFIG_BASE)" in code
-    assert "base_dir=_HAUTE_CONFIG_BASE" in code
-    assert "project_root=project_root" in code
+    frame = namespace["pipeline"].run(source="batch")  # type: ignore[attr-defined]
+
+    assert frame.lazy().collect().to_dicts() == [{"quote_id": 1}, {"quote_id": 2}]
 
 
 def test_staging_identity_and_manifest_guards_reject_untrusted_artifacts(tmp_path: Path) -> None:
@@ -2267,3 +2787,111 @@ def test_prepare_database_output_without_staging_path_is_transactional(
     assert prepared.staging_path is None
     assert prepared.transactional is True
     assert prepared.response.row_count == 1
+
+
+def _sink_route_graph() -> PipelineGraph:
+    return PipelineGraph(
+        nodes=[
+            GraphNode(id="s", data=NodeData(label="s", nodeType=NodeType.DATA_INPUT)),
+            GraphNode(
+                id="sink",
+                data=NodeData(
+                    label="sink",
+                    nodeType=NodeType.DATA_OUTPUT,
+                    config={
+                        "outputType": "file",
+                        "format": "parquet",
+                        "mode": "sink",
+                        "path": "sink_failure.parquet",
+                        "arguments": {},
+                    },
+                ),
+            ),
+        ],
+        edges=[GraphEdge(id="e_s_sink", source="s", target="sink")],
+    )
+
+
+@pytest.mark.usefixtures("_widen_sandbox_root")
+@pytest.mark.parametrize(
+    ("failure_kind", "expected_status"),
+    [
+        ("contract", 422),
+        ("bounded", 422),
+        ("destination", 409),
+        ("memory", 507),
+        ("unknown_envelope", 500),
+        ("native_rss", 507),
+        ("native_unsupported", 507),
+        ("crashed_memory", 507),
+        ("crashed", 500),
+        ("remote_memory", 507),
+        ("remote", 500),
+    ],
+)
+def test_isolated_sink_failures_map_to_stable_http_contracts(
+    client,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_kind: str,
+    expected_status: int,
+) -> None:
+    """Each output-worker failure maps to one status, and a 500 never leaks
+    the child's private message or traceback."""
+    from haute._worker_isolation import (
+        IsolatedWorkerCrashedError,
+        IsolatedWorkerMemoryLimitExceededError,
+        IsolatedWorkerMemoryLimitUnsupportedError,
+        IsolatedWorkerRemoteError,
+    )
+    from haute.routes import pipeline as pipeline_route
+    from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
+
+    failure: BaseException
+    if failure_kind in {"contract", "bounded", "destination", "memory"}:
+        payload = {"error_code": "test"} if failure_kind in {"contract", "memory"} else None
+        failure = pipeline_route._OutputWriteWorkerError(
+            {
+                "contract": "contract",
+                "bounded": "bounded",
+                "destination": "destination_exists",
+                "memory": "memory",
+            }[failure_kind],
+            f"{failure_kind} failure",
+            payload,
+        )
+    elif failure_kind == "unknown_envelope":
+        failure = pipeline_route._OutputWriteWorkerError("unknown", "unknown failure")
+    elif failure_kind == "native_rss":
+        failure = IsolatedWorkerMemoryLimitExceededError(rss_bytes=200, rss_limit_bytes=100)
+    elif failure_kind == "native_unsupported":
+        failure = IsolatedWorkerMemoryLimitUnsupportedError(memory_limit_bytes=100)
+    elif failure_kind == "crashed_memory":
+        failure = IsolatedWorkerCrashedError(exitcode=-9, memory_limit_bytes=100)
+    elif failure_kind == "crashed":
+        failure = IsolatedWorkerCrashedError(exitcode=1, memory_limit_bytes=100)
+    elif failure_kind == "remote_memory":
+        failure = IsolatedWorkerRemoteError(
+            remote_type="MemoryError",
+            remote_message="private memory detail",
+            remote_traceback="private traceback",
+        )
+    else:
+        failure = IsolatedWorkerRemoteError(
+            remote_type="RuntimeError",
+            remote_message="private child detail",
+            remote_traceback="private traceback",
+        )
+
+    def _fail(*_args: object, **_kwargs: object) -> None:
+        raise failure
+
+    monkeypatch.setattr(pipeline_route, "_output_write_transaction", _fail)
+    response = client.post(
+        "/api/pipeline/write-output",
+        json={"graph": _sink_route_graph().model_dump(), "node_id": "sink"},
+    )
+
+    assert response.status_code == expected_status
+    if expected_status == 500:
+        assert response.json()["detail"] == _INTERNAL_ERROR_DETAIL
+        assert "private" not in response.text

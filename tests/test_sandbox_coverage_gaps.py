@@ -24,14 +24,11 @@ from pathlib import Path
 import pytest
 
 from haute._sandbox import (
-    UnsafeCodeError,
     _resolve_allowed_global,
     _RestrictedUnpickler,
     safe_joblib_load,
     safe_unpickle,
     set_project_root,
-    validate_project_path,
-    validate_user_code,
 )
 
 
@@ -108,35 +105,6 @@ class TestSafeUnpickleRoundTrip:
 
 class TestSandboxBoundaryCoverage:
     """Exercise security-boundary branches pinned by the critical gate."""
-
-    def test_project_path_commonpath_value_error_is_rejected(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ):
-        set_project_root(tmp_path)
-        f = tmp_path / "data.pkl"
-        f.write_bytes(pickle.dumps({"ok": True}))
-
-        def _raise_value_error(_paths):
-            raise ValueError("mixed roots")
-
-        monkeypatch.setattr("haute._sandbox.os.path.commonpath", _raise_value_error)
-
-        with pytest.raises(ValueError, match="outside.*project root"):
-            validate_project_path(str(f))
-
-    def test_match_star_bound_polars_alias_format_is_not_trusted(self):
-        code = "match [1, 2, 3]:\n    case [*pl]:\n        leaked = pl.format(fn)\n"
-
-        with pytest.raises(UnsafeCodeError, match="[Ff]ormat"):
-            validate_user_code(code)
-
-    def test_match_mapping_rest_bound_polars_alias_format_is_not_trusted(self):
-        code = 'match {"x": 1}:\n    case {"x": x, **pl}:\n        leaked = pl.format(fn)\n'
-
-        with pytest.raises(UnsafeCodeError, match="[Ff]ormat"):
-            validate_user_code(code)
 
     def test_allowlisted_class_resolving_to_callable_is_blocked(self):
         def _resolver(_module: str, _name: str):
@@ -237,6 +205,18 @@ class TestJoblibMissingImportFallback:
         )
         f.write_bytes(payload)
 
+        # Import scikit-learn before joblib is made to look absent. The
+        # fallback runs under _estimator_version_mismatch_is_an_error, which
+        # asks sklearn for its version-mismatch warning class; a first-ever
+        # sklearn import pulls joblib in transitively, and the stub below
+        # refuses it. _sklearn_inconsistent_version_warning then re-raises,
+        # by design — a ModuleNotFoundError naming something other than
+        # sklearn is a broken install and is meant to surface, not be
+        # swallowed. That is a different contract from the allowlist blocking
+        # under test here, and which of the two a cold process reached
+        # depended only on whether something earlier had imported sklearn.
+        import sklearn.exceptions  # noqa: F401
+
         real_import = builtins.__import__
 
         def without_joblib(name, *args, **kwargs):
@@ -268,3 +248,25 @@ class TestJoblibMissingImportFallback:
 
         with pytest.raises(RuntimeError, match="[Ii]nstalled joblib is incompatible"):
             safe_joblib_load(artifact)
+
+
+def test_project_root_lazy_capture_uses_cwd_at_first_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The server relies on the first _get_project_root() call capturing cwd.
+
+    Tests normally pin the root eagerly (conftest baseline), so this is the
+    only place the lazy branch runs; it pins the production startup semantic.
+    """
+    import haute._sandbox as sandbox
+
+    original = sandbox._get_project_root()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sandbox, "_PROJECT_ROOT", None)
+    try:
+        assert sandbox._get_project_root() == tmp_path.resolve()
+        # The captured value is cached; a later cwd change does not move it.
+        monkeypatch.chdir(tmp_path.parent)
+        assert sandbox._get_project_root() == tmp_path.resolve()
+    finally:
+        sandbox.set_project_root(original)

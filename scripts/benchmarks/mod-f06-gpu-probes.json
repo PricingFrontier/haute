@@ -1,0 +1,95 @@
+{
+  "environment": {
+    "python": "3.11.14",
+    "platform": "Windows-10-10.0.26200-SP0",
+    "gpu": "NVIDIA GeForce RTX 4070 Laptop GPU, 8188 MiB, 616.56"
+  },
+  "xgboost": {
+    "version": "3.2.0",
+    "use_cuda": true,
+    "cuda_version": [
+      12,
+      9
+    ],
+    "callback_cancels_device_fit": true,
+    "missing_device_fails": false,
+    "cpu_serving": {
+      "build_use_cuda": false,
+      "xgb_binary_logistic": 0.0,
+      "xgb_count_poisson": 0.0,
+      "xgb_reg_absoluteerror": 0.0,
+      "xgb_reg_gamma": 0.0,
+      "xgb_reg_squarederror": 0.0,
+      "xgb_reg_tweedie": 0.0
+    }
+  },
+  "xgboost_objectives": {
+    "reg:squarederror": {
+      "cpu_seconds": 0.88,
+      "cpu_best_iteration": 18,
+      "cuda_seconds": 0.92,
+      "cuda_best_iteration": 20,
+      "device_peak_mib": 104,
+      "gpu_model_cpu_vs_gpu_predict_max_rel": 0.0,
+      "gpu_vs_cpu_trained_max_rel": 0.3524294302204703,
+      "artifact": "C:\\Users\\prici\\AppData\\Local\\Temp\\tmpro0bptow\\xgb_reg_squarederror.ubj"
+    },
+    "reg:absoluteerror": {
+      "cpu_seconds": 2.55,
+      "cpu_best_iteration": 19,
+      "cuda_seconds": 1.21,
+      "cuda_best_iteration": 25,
+      "device_peak_mib": 100,
+      "gpu_model_cpu_vs_gpu_predict_max_rel": 0.0,
+      "gpu_vs_cpu_trained_max_rel": 0.223421867323584,
+      "artifact": "C:\\Users\\prici\\AppData\\Local\\Temp\\tmpro0bptow\\xgb_reg_absoluteerror.ubj"
+    },
+    "count:poisson": {
+      "cpu_seconds": 2.6,
+      "cpu_best_iteration": 105,
+      "cuda_seconds": 3.3,
+      "cuda_best_iteration": 101,
+      "device_peak_mib": 88,
+      "gpu_model_cpu_vs_gpu_predict_max_rel": 2.9802322387695312e-08,
+      "gpu_vs_cpu_trained_max_rel": 0.16064447164535522,
+      "artifact": "C:\\Users\\prici\\AppData\\Local\\Temp\\tmpro0bptow\\xgb_count_poisson.ubj"
+    },
+    "reg:gamma": {
+      "cpu_seconds": 1.57,
+      "cpu_best_iteration": 23,
+      "cuda_seconds": 1.11,
+      "cuda_best_iteration": 16,
+      "device_peak_mib": 88,
+      "gpu_model_cpu_vs_gpu_predict_max_rel": 1.3002199387037315e-07,
+      "gpu_vs_cpu_trained_max_rel": 0.4404662523091453,
+      "artifact": "C:\\Users\\prici\\AppData\\Local\\Temp\\tmpro0bptow\\xgb_reg_gamma.ubj"
+    },
+    "reg:tweedie": {
+      "cpu_seconds": 2.16,
+      "cpu_best_iteration": 35,
+      "cuda_seconds": 1.48,
+      "cuda_best_iteration": 33,
+      "device_peak_mib": 88,
+      "gpu_model_cpu_vs_gpu_predict_max_rel": 2.9802322387695312e-08,
+      "gpu_vs_cpu_trained_max_rel": 0.12240119278430939,
+      "artifact": "C:\\Users\\prici\\AppData\\Local\\Temp\\tmpro0bptow\\xgb_reg_tweedie.ubj"
+    },
+    "binary:logistic": {
+      "cpu_seconds": 1.65,
+      "cpu_best_iteration": 37,
+      "cuda_seconds": 1.55,
+      "cuda_best_iteration": 31,
+      "device_peak_mib": 102,
+      "gpu_model_cpu_vs_gpu_predict_max_rel": 1.1920928955078125e-07,
+      "gpu_vs_cpu_trained_max_rel": 0.1354365050792694,
+      "artifact": "C:\\Users\\prici\\AppData\\Local\\Temp\\tmpro0bptow\\xgb_binary_logistic.ubj"
+    }
+  },
+  "lightgbm": {
+    "version": "4.7.0",
+    "backends": {
+      "gpu": "GPU Tree Learner was not enabled in this build.",
+      "cuda": "CUDA Tree Learner was not enabled in this build."
+    }
+  }
+}

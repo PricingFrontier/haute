@@ -1,10 +1,23 @@
+import {
+  algorithmCapability,
+  publishesValidationFit,
+} from "../panels/modelling/algorithmCapabilities"
+import {
+  interactionEntryIssue,
+  monotoneConstraintTerms,
+  penalisedSmoothTerms,
+  type InteractionSpec,
+  type Terms,
+} from "../panels/modelling/glmTerms"
+import { glmCrossValidates } from "../panels/modelling/glmFamilies"
+import { selectedFeatureColumns } from "../panels/modelling/featureSelection"
+
 /**
  * Frontend mirror of the backend's target/objective validation.
  *
  * The backend remains authoritative. This helper aggregates every currently
- * applicable issue so an invalid Train press can show one complete banner
- * without sending a request. Configuration panes and tabs never consume these
- * issues or reveal them proactively.
+ * applicable issue for inline feedback, pane readiness and the Train summary.
+ * Invalid configurations never submit a training request.
  */
 
 export type TrainingConfigurationIssueCode =
@@ -12,12 +25,23 @@ export type TrainingConfigurationIssueCode =
   | "glm-family"
   | "glm-tweedie-variance-power"
   | "glm-negbin-theta"
-  | "glm-factor-selection"
+  | "glm-terms"
   | "glm-elastic-net-l1-ratio"
+  | "glm-cross-validation"
+  | "glm-smooth-regularization"
+  | "glm-robust-standard-errors"
   | "catboost-params"
   | "catboost-loss-function"
   | "catboost-tweedie-variance-power"
+  | "feature-selection"
+  | "monotone-loss"
+  | "ebm-max-rounds"
+  | "ebm-interactions"
+  | "tboost-n-trees"
+  | "tboost-prune-main-effects"
   | "evaluation-config"
+  | "final-refit"
+  | "validation-fit"
   | "tuning-config"
 
 export type TrainingConfigurationIssue = {
@@ -25,24 +49,36 @@ export type TrainingConfigurationIssue = {
   message: string
 }
 
-export function trainingConfigurationIssues(
-  config: Record<string, unknown>,
-): TrainingConfigurationIssue[] {
-  const issues: TrainingConfigurationIssue[] = []
-  const target = config.target
-  if (typeof target !== "string" || target.trim() === "") {
-    issues.push({
-      code: "training-target",
-      message: "Select a target column.",
-    })
+/**
+ * The reported metrics training will use: explicit `metrics`, else the
+ * objective-implied defaults. Mirrors the backend's `effective_metrics`.
+ */
+export function effectiveMetrics(config: Record<string, unknown>): string[] {
+  if (Array.isArray(config.metrics) && config.metrics.length > 0) {
+    return config.metrics.filter((metric): metric is string => typeof metric === "string")
   }
+  const glm = String(config.algorithm ?? "catboost").toLowerCase() === "glm"
+  const objective = String((glm ? config.family : config.loss_function) ?? "").toLowerCase()
+  if (
+    config.task === "classification"
+    || ["binomial", "quasibinomial", "logloss", "crossentropy"].includes(objective)
+  ) {
+    return ["auc", "logloss"]
+  }
+  if (["poisson", "quasipoisson", "negbinomial"].includes(objective)) return ["gini", "poisson_deviance"]
+  if (objective === "tweedie") return ["gini", "tweedie_deviance"]
+  if (objective === "gamma") return ["gini", "gamma_deviance"]
+  return ["gini", "rmse"]
+}
 
+export function evaluationConfigurationIssues(rawEvaluation: unknown): TrainingConfigurationIssue[] {
+  const issues: TrainingConfigurationIssue[] = []
   const evaluation = (
-    config.evaluation !== null
-    && typeof config.evaluation === "object"
-    && !Array.isArray(config.evaluation)
+    rawEvaluation !== null
+    && typeof rawEvaluation === "object"
+    && !Array.isArray(rawEvaluation)
   )
-    ? config.evaluation as Record<string, unknown>
+    ? rawEvaluation as Record<string, unknown>
     : null
   const validation = (
     evaluation?.validation !== null
@@ -98,10 +134,14 @@ export function trainingConfigurationIssues(
       && temporalValidationTimestamp < temporalTestTimestamp
     )
   )
+  const invalidFractionSum = strategy !== "temporal" && method === "single"
+    && typeof validation?.size === "number" && typeof test?.size === "number"
+    && validation.size + test.size >= 1
   const validEvaluation = (
     evaluation?.schema_version === 1
     && ["random", "group", "temporal"].includes(String(strategy))
     && validTest
+    && !invalidFractionSum
     && validTemporalBoundaryOrder
     && (
       strategy === "temporal"
@@ -141,9 +181,55 @@ export function trainingConfigurationIssues(
   if (!validEvaluation) {
     issues.push({
       code: "evaluation-config",
-      message:
-        "Complete the evaluation workflow: data structure, validation, and " +
-        "any required group/date fields.",
+      message: invalidFractionSum
+        ? "Validation and test must total below 100% so training retains some rows."
+        : !validTemporalBoundaryOrder
+          ? "Validation must start before the test set."
+          : "Complete the split settings: split strategy, validation strategy, and required group/date fields.",
+    })
+  }
+
+  return issues
+}
+
+export function trainingConfigurationIssues(
+  config: Record<string, unknown>,
+): TrainingConfigurationIssue[] {
+  const issues: TrainingConfigurationIssue[] = []
+  const target = config.target
+  if (typeof target !== "string" || target.trim() === "") {
+    issues.push({
+      code: "training-target",
+      message: "Select a target column.",
+    })
+  }
+
+  issues.push(...evaluationConfigurationIssues(config.evaluation))
+  const evaluation = config.evaluation as Record<string, unknown> | undefined
+  const validation = evaluation?.validation as Record<string, unknown> | undefined
+  const method = validation?.method
+  const refit = config.refit_on_development
+  const validationFit = publishesValidationFit(String(config.algorithm ?? ""))
+  // Mirrors build_training_job_kwargs: the early-stopped validation fit is the
+  // model, so there is no refit setting and no cross-validation.
+  if (validationFit && method === "cross_validation") {
+    issues.push({
+      code: "validation-fit",
+      message: "t-boost publishes its early-stopped validation fit: choose holdout validation or no validation.",
+    })
+  }
+  if (validationFit && refit !== undefined) {
+    issues.push({
+      code: "validation-fit",
+      message: "t-boost is never refit: remove refit_on_development from the configuration.",
+    })
+  }
+  if (!validationFit && ((refit !== undefined && typeof refit !== "boolean") || (
+    refit === false && method !== "single"
+  ))) {
+    issues.push({
+      code: "final-refit",
+      message: "Skipping the final refit requires holdout validation.",
     })
   }
 
@@ -155,7 +241,13 @@ export function trainingConfigurationIssues(
     ? config.tuning as Record<string, unknown>
     : null
   if (tuning) {
-    const metrics = Array.isArray(config.metrics) ? config.metrics : []
+    if (!validationFit && refit === false && method === "single") {
+      issues.push({
+        code: "final-refit",
+        message: "Parameter tuning requires a final refit.",
+      })
+    }
+    const metrics = effectiveMetrics(config)
     const searchSpace = (
       tuning.search_space !== null
       && typeof tuning.search_space === "object"
@@ -170,7 +262,7 @@ export function trainingConfigurationIssues(
         ? 1
         : 0
     const validTuning = (
-      String(config.algorithm ?? "").toLowerCase() === "catboost"
+      algorithmCapability(String(config.algorithm ?? ""))?.supports_tuning === true
       && tuning.schema_version === 1
       && Number.isInteger(tuning.trial_count)
       && trialCount >= 5
@@ -202,7 +294,7 @@ export function trainingConfigurationIssues(
         code: "glm-family",
         message:
           "Choose a GLM distribution family (e.g. Poisson for claim counts, " +
-          "Gamma for severity) — an unset family would silently train a " +
+          "Gamma for severity) - an unset family would silently train a " +
           "gaussian model.",
       })
     } else {
@@ -215,7 +307,7 @@ export function trainingConfigurationIssues(
         issues.push({
           code: "glm-tweedie-variance-power",
           message:
-            "Set the Tweedie variance power (1=Poisson, 2=Gamma) — an unset " +
+            "Set the Tweedie variance power (1=Poisson, 2=Gamma) - an unset " +
             "value would silently fit at power 1.5.",
         })
       }
@@ -228,7 +320,7 @@ export function trainingConfigurationIssues(
           code: "glm-negbin-theta",
           message:
             "Set the Negative Binomial dispersion (theta), or estimate it from " +
-            "the data — an unset value would silently fit at theta=1.0.",
+            "the data - RustyStats refuses to fit without it.",
         })
       }
     }
@@ -240,12 +332,10 @@ export function trainingConfigurationIssues(
       && !Array.isArray(terms)
       && Object.keys(terms).length > 0
     )
-    if (!hasTerms && !config.all_factors) {
+    if (!hasTerms) {
       issues.push({
-        code: "glm-factor-selection",
-        message:
-          "Add factors or tick 'All features' — an empty factor set would " +
-          "silently auto-build a term for every column.",
+        code: "glm-terms",
+        message: "Add a term to at least one feature.",
       })
     }
 
@@ -255,10 +345,55 @@ export function trainingConfigurationIssues(
     ) {
       issues.push({
         code: "glm-elastic-net-l1-ratio",
-        message:
-          "Set the elastic-net L1 ratio (0 fits Ridge, 1 fits LASSO) — an " +
-          "unset value would silently fit pure Ridge.",
+        message: "Choose an L1 ratio.",
       })
+    }
+
+    if (glmCrossValidates(config)) {
+      const missing = ([["cv_folds", "folds"], ["cv_selection", "selection rule"]] as const)
+        .filter(([key]) => config[key] === undefined || config[key] === null || config[key] === "")
+        .map(([, label]) => label)
+      if (missing.length > 0) {
+        issues.push({
+          code: "glm-cross-validation",
+          message:
+            `Set the cross-validation ${missing.join(", ")} so the selected penalty is ` +
+            "reproducible.",
+        })
+      }
+    }
+
+    const glmTerms: Terms = hasTerms ? terms as Terms : {}
+    const glmInteractions = (Array.isArray(config.interactions) ? config.interactions : [])
+      .filter((entry): entry is InteractionSpec => interactionEntryIssue(entry) === null)
+    const smooth = penalisedSmoothTerms(glmTerms, glmInteractions)
+    const regularized = typeof config.regularization === "string" && config.regularization !== ""
+    if (regularized && smooth.length > 0) {
+      issues.push({
+        code: "glm-smooth-regularization",
+        message:
+          `Regularization cannot be combined with automatically smoothed splines (${smooth.join(", ")}): ` +
+          "set Fixed df on those splines or turn regularization off.",
+      })
+    }
+    const robust = config.robust_standard_errors
+    if (typeof robust === "string" && robust !== "") {
+      const monotone = monotoneConstraintTerms(glmTerms)
+      const conflict = regularized
+        ? "regularization"
+        : monotone.length > 0
+          ? `monotonicity constraints (${monotone.join(", ")})`
+          : smooth.length > 0
+            ? `automatically smoothed splines (${smooth.join(", ")})`
+            : null
+      if (conflict !== null) {
+        issues.push({
+          code: "glm-robust-standard-errors",
+          message:
+            `Robust standard errors cannot be combined with ${conflict}: RustyStats marks that ` +
+            "inference as not valid. Turn robust standard errors off or remove the conflict.",
+        })
+      }
     }
     return issues
   }
@@ -269,19 +404,194 @@ export function trainingConfigurationIssues(
       code: "catboost-loss-function",
       message:
         "Choose a training loss (e.g. Poisson for claim counts, RMSE for a " +
-        "squared-error regression) — an unset loss would silently train " +
+        "squared-error regression) - an unset loss would silently train " +
         "under the library default.",
     })
   } else if (
     String(lossFunction) === "Tweedie"
-    && (config.variance_power === undefined || config.variance_power === null)
+    && (typeof config.variance_power !== "number" || !Number.isFinite(config.variance_power)
+      || config.variance_power <= 1 || config.variance_power >= 2)
   ) {
     issues.push({
       code: "catboost-tweedie-variance-power",
       message:
-        "Set the Tweedie variance power (1=Poisson, 2=Gamma) — an unset " +
-        "value would silently train at power 1.5.",
+        "Set the Tweedie variance power greater than 1 and less than 2.",
+    })
+  }
+  // Mirrors the backend's feature_selection_issue: features are opt-in.
+  if (selectedFeatureColumns(config).length === 0) {
+    issues.push({
+      code: "feature-selection",
+      message: "Tick at least one feature on the Features pane.",
+    })
+  }
+  if (algorithm === "ebm") issues.push(...ebmParameterIssues(config))
+  if (algorithm === "tboost") issues.push(...tboostParameterIssues(config))
+  const capability = algorithmCapability(algorithm)
+  if (
+    lossFunction
+    && capability?.monotone_unsupported_losses.includes(String(lossFunction))
+    && hasMonotoneConstraints(config)
+  ) {
+    issues.push({
+      code: "monotone-loss",
+      message:
+        `${capability.label} cannot apply monotonicity constraints with the ${String(lossFunction)} ` +
+        "loss; remove them from the Features pane or choose another loss.",
     })
   }
   return issues
+}
+
+/** Mirrors the backend's ``tboost_value_issue``; t-boost checks every other value at fit time. */
+function tboostParameterIssues(config: Record<string, unknown>): TrainingConfigurationIssue[] {
+  const params = (
+    config.params !== null && typeof config.params === "object" && !Array.isArray(config.params)
+  )
+    ? config.params as Record<string, unknown>
+    : {}
+  const issues: TrainingConfigurationIssue[] = []
+  const nTrees = params.n_trees
+  if (typeof nTrees !== "number" || !Number.isInteger(nTrees) || nTrees <= 0) {
+    issues.push({
+      code: "tboost-n-trees",
+      message: "Set n_trees to a positive whole number: it is the round ceiling every t-boost fit stops early within.",
+    })
+    return issues
+  }
+  if (params.prune_main_effects === true) {
+    if (params.prune === false) {
+      issues.push({
+        code: "tboost-prune-main-effects",
+        message: "Set prune to true, or prune_main_effects to false: main effects are pruned only when pruning is on.",
+      })
+    } else if (hasNonZeroMonotoneConstraints(config)) {
+      issues.push({
+        code: "tboost-prune-main-effects",
+        message:
+          "Set prune_main_effects to false, or remove the monotonicity constraints in the Features pane: "
+          + "t-boost cannot prune main effects of a monotone fit.",
+      })
+    }
+  }
+  return issues
+}
+
+/** Mirrors the backend's ``ebm_value_issue``; feature membership is checked at fit time. */
+function ebmParameterIssues(config: Record<string, unknown>): TrainingConfigurationIssue[] {
+  const params = (
+    config.params !== null && typeof config.params === "object" && !Array.isArray(config.params)
+  )
+    ? config.params as Record<string, unknown>
+    : {}
+  const issues: TrainingConfigurationIssue[] = []
+  const maxRounds = params.max_rounds
+  if (typeof maxRounds !== "number" || !Number.isInteger(maxRounds) || maxRounds <= 0) {
+    issues.push({
+      code: "ebm-max-rounds",
+      message:
+        "Set max_rounds to a positive whole number: an EBM trains every round it is given, "
+        + "with no early stopping.",
+    })
+  }
+  const interactions = params.interactions ?? 0
+  if (typeof interactions === "number") {
+    if (!Number.isInteger(interactions) || interactions < 0) {
+      issues.push({ code: "ebm-interactions", message: "Set the interaction count to 0 or more." })
+    }
+    return issues
+  }
+  if (!Array.isArray(interactions)) {
+    issues.push({
+      code: "ebm-interactions",
+      message: "Interactions must be a count or a list of feature pairs.",
+    })
+    return issues
+  }
+  const monotone = (
+    config.monotone_constraints !== null
+    && typeof config.monotone_constraints === "object"
+    && !Array.isArray(config.monotone_constraints)
+  )
+    ? config.monotone_constraints as Record<string, unknown>
+    : {}
+  const seen = new Set<string>()
+  for (const [index, pair] of interactions.entries()) {
+    const names = Array.isArray(pair) ? pair : []
+    const [first, second] = names
+    if (
+      names.length !== 2
+      || typeof first !== "string" || first === ""
+      || typeof second !== "string" || second === ""
+      || first === second
+    ) {
+      issues.push({
+        code: "ebm-interactions",
+        message: `Interaction ${index + 1} needs two different features.`,
+      })
+      continue
+    }
+    const key = [first, second].sort().join("|")
+    if (seen.has(key)) {
+      issues.push({
+        code: "ebm-interactions",
+        message: `Interaction ${index + 1} (${first} & ${second}) is listed twice.`,
+      })
+    }
+    seen.add(key)
+    const constrained = [first, second].filter((name) => Boolean(monotone[name]))
+    if (constrained.length > 0) {
+      issues.push({
+        code: "ebm-interactions",
+        message:
+          `Interaction ${index + 1} involves monotone-constrained ${constrained.join(" and ")}; `
+          + "remove the constraint or the interaction.",
+      })
+    }
+  }
+  return issues
+}
+
+function hasMonotoneConstraints(config: Record<string, unknown>): boolean {
+  const constraints = config.monotone_constraints
+  if (constraints === null || typeof constraints !== "object" || Array.isArray(constraints)) {
+    return false
+  }
+  // Mirrors the backend's _effective_monotone_constraints: a constraint on an
+  // unselected feature is dormant.
+  const selected = new Set(selectedFeatureColumns(config))
+  return Object.keys(constraints).some((name) => selected.has(name))
+}
+
+/** Whether a selected feature carries a non-zero monotone direction, as t-boost counts one. */
+function hasNonZeroMonotoneConstraints(config: Record<string, unknown>): boolean {
+  const constraints = config.monotone_constraints
+  if (constraints === null || typeof constraints !== "object" || Array.isArray(constraints)) {
+    return false
+  }
+  const selected = new Set(selectedFeatureColumns(config))
+  return Object.entries(constraints).some(([name, direction]) => selected.has(name) && Boolean(direction))
+}
+
+/** Destination of a readiness issue, shared by tabs and the Train summary. */
+export function trainingIssuePane(issue: TrainingConfigurationIssue): "target" | "features" | "params" | "split" {
+  switch (issue.code) {
+    case "evaluation-config": return "split"
+    case "final-refit":
+    case "validation-fit": return "split"
+    case "catboost-params":
+    case "tuning-config":
+    case "glm-elastic-net-l1-ratio":
+    case "glm-cross-validation":
+    case "glm-smooth-regularization":
+    case "glm-robust-standard-errors": return "params"
+    case "glm-terms":
+    case "feature-selection":
+    case "ebm-interactions":
+    case "monotone-loss": return "features"
+    case "ebm-max-rounds":
+    case "tboost-n-trees":
+    case "tboost-prune-main-effects": return "params"
+    default: return "target"
+  }
 }

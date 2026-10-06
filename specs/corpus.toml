@@ -9,3 +9,28 @@ required_headings = ["Context", "Decision", "Ownership boundaries", "Rejected al
 path = "specs/optimiser/error-detail-policy.md"
 kind = "decision"
 required_headings = ["Context", "Decision", "Rejected policies", "Consequences"]
+
+[[supplemental_document]]
+path = "specs/server-api/node-recovery-actions.md"
+kind = "decision"
+required_headings = [
+  "Recovery loading and retention",
+  "Confirmed recovery actions",
+  "Consumer error attribution",
+  "Recovery apply API",
+  "Verification, rollback, and save-lock transactions",
+  "Acceptance evidence",
+]
+
+[[supplemental_document]]
+path = "specs/assistant/evaluation.md"
+kind = "decision"
+required_headings = [
+  "Purpose",
+  "Case format",
+  "Reference trajectories",
+  "Tiers",
+  "Scoring layers",
+  "Execution boundary",
+  "Evidence and reports",
+]

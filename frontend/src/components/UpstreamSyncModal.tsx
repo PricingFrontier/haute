@@ -3,7 +3,7 @@ import { useEffect, useState } from "react"
 import type { GitUpstreamStatus } from "../api/types"
 import useGitStore from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
-import { gitErrorMessage } from "../utils/gitError"
+import { apiErrorMessage } from "../api/errors"
 import ModalShell from "./ModalShell"
 
 interface UpstreamSyncModalProps {
@@ -47,7 +47,7 @@ export default function UpstreamSyncModal({ onClose }: UpstreamSyncModalProps) {
       })
       .catch((err: unknown) => {
         if (cancelled) return
-        setError(gitErrorMessage(err, "Could not compare this project with its parent"))
+        setError(apiErrorMessage(err, "Could not compare this project with its parent"))
         setChecking(false)
       })
     return () => {
@@ -64,7 +64,7 @@ export default function UpstreamSyncModal({ onClose }: UpstreamSyncModalProps) {
       addToast("success", "Caught up with the parent project.")
       onClose()
     } catch (err: unknown) {
-      setError(gitErrorMessage(err, "Could not catch up with the parent project"))
+      setError(apiErrorMessage(err, "Could not catch up with the parent project"))
     } finally {
       setBusy(false)
     }
@@ -82,7 +82,7 @@ export default function UpstreamSyncModal({ onClose }: UpstreamSyncModalProps) {
           The project this one was forked from
         </h2>
         <p className="text-[12px] mt-0.5" style={{ color: "var(--text-muted)" }}>
-          Changes travel one way — from the parent into this copy. Your own work is never
+          Changes travel one way - from the parent into this copy. Your own work is never
           published back to it.
         </p>
       </div>

@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from scripts import run_mutation_pytest
+from tests import conftest as test_conftest
 
 
 def test_absolute_test_target_preserves_selector_and_non_test_arguments(tmp_path: Path) -> None:
@@ -146,3 +147,28 @@ def test_script_has_a_spawn_safe_main_guard() -> None:
 
     assert 'if __name__ == "__main__":' in source
     assert run_mutation_pytest.REPO_ROOT == Path(__file__).resolve().parents[1]
+
+
+def test_source_cache_session_isolation_owns_and_closes_coordination_tokens(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    from haute._source_cache import SourceCacheStore
+
+    original = SourceCacheStore._coordination_by_root
+    fixture = test_conftest._isolate_repository_source_cache.__wrapped__(tmp_path_factory)
+    handle = None
+    try:
+        next(fixture)
+        assert SourceCacheStore._coordination_by_root is not original
+        store = SourceCacheStore(tmp_path_factory.mktemp("short-cache-root"))
+        store._own_token()
+        coordination = next(iter(SourceCacheStore._coordination_by_root.values()))
+        handle = coordination.token_handle
+        assert handle is not None and not handle.closed
+    finally:
+        try:
+            next(fixture)
+        except StopIteration:
+            pass
+    assert handle is not None and handle.closed
+    assert SourceCacheStore._coordination_by_root is original

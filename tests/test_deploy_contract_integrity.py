@@ -21,6 +21,7 @@ import pytest
 
 from haute._mlflow_io import _artifact_cache_path
 from haute.deploy._config import DeployConfig, ResolvedDeploy
+from haute.deploy._project_modules import ProjectModules
 from haute.errors import DeployError, FeatureMismatchError
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.modelling._feature_contract import (
@@ -39,9 +40,22 @@ PIPELINE_FILE = FIXTURE_DIR / "pipeline.py"
 
 
 def _write_cached_model(tmp_path: Path, run_id: str, artifact_path: str) -> Path:
-    cached = _artifact_cache_path(tmp_path / ".cache" / "models", run_id, artifact_path)
+    from haute._mlflow_utils import resolve_backend
+
+    # The bundler resolves the auto backend for a node without a destination,
+    # so the pre-populated file must sit in that backend's digest partition.
+    cached = _artifact_cache_path(
+        tmp_path / ".cache" / "models", resolve_backend("").digest, run_id, artifact_path
+    )
     cached.parent.mkdir(parents=True, exist_ok=True)
-    cached.write_bytes(b"fake model")
+    # The bundler reads a CatBoost model's offset declaration: a real model that
+    # declares no offset.
+    from catboost import CatBoostRegressor
+
+    model = CatBoostRegressor(iterations=2, depth=1, verbose=0, allow_writing_files=False)
+    model.fit([[1.0], [2.0], [3.0]], [1.0, 2.0, 3.0])
+    model.get_metadata()["haute_offset_column"] = ""
+    model.save_model(str(cached))
     return cached
 
 
@@ -88,6 +102,7 @@ def _make_resolved(
         artifacts=artifacts or {},
         input_schema=input_schema or {"col": "Int64"},
         output_schema=output_schema or {"result": "Float64"},
+        project_modules=ProjectModules(utility=None, unbundled_imports=()),
     )
 
 
@@ -512,10 +527,7 @@ class TestFeatureContractBundled:
         pytest.importorskip("catboost", reason="catboost optional dependency not installed")
         import numpy as np
 
-        monkeypatch.setattr(
-            "haute.modelling._algorithms.CatBoostAlgorithm.shap_summary",
-            lambda *a, **kw: [],
-        )
+        monkeypatch.delattr("haute.modelling._algorithms.CatBoostAlgorithm.shap_values")
         monkeypatch.setattr(
             "haute.modelling._algorithms.CatBoostAlgorithm.feature_importance_typed",
             lambda *a, **kw: [],

@@ -2,6 +2,15 @@ import React from "react"
 import { formatSmartValue, formatResultValueFull, tabularNums } from "./traceFormatting"
 import type { ChainBoxEntry } from "./traceHelpers"
 
+function EntryNote({ note }: { note: string | null | undefined }) {
+  if (!note) return null
+  return (
+    <div data-testid="trace-entry-note" style={{ fontSize: 11, color: "var(--text-secondary)", fontStyle: "italic" }}>
+      {note}
+    </div>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // ExpressionChain — the "intra-node" chain of derivations that lead up to the
 // target column inside a single step. The data comes from
@@ -16,13 +25,46 @@ import type { ChainBoxEntry } from "./traceHelpers"
  * InputSourceTree can reuse the same text layout for nested sub-sources
  * without re-drawing the top-level connector chrome.
  */
+function SourceLabel({ source, onSourceClick, linkLabel }: {
+  source: string
+  onSourceClick?: () => void
+  linkLabel?: string
+}) {
+  if (!onSourceClick) {
+    return <span style={{ fontSize: 11, color: "var(--text-secondary)" }}> ({source})</span>
+  }
+  return (
+    <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+      {" ("}
+      <button
+        type="button"
+        onClick={onSourceClick}
+        aria-label={linkLabel ?? `Go to ${source}`}
+        className="underline decoration-dotted underline-offset-2 hover:text-[var(--accent)]"
+        style={{ font: "inherit", color: "inherit" }}
+      >
+        {source}
+      </button>
+      {")"}
+    </span>
+  )
+}
+
 export function ExpressionChainRowContentView({
   column,
   formulaText,
   substitutedText,
   value,
   source,
-}: ChainBoxEntry) {
+  note,
+  onSourceClick,
+  sourceLinkLabel,
+}: ChainBoxEntry & {
+  /** Makes the source label a link, for a source the panel can show. */
+  onSourceClick?: () => void
+  /** The link's accessible name, when the label text does not name its target. */
+  sourceLinkLabel?: string
+}) {
   const fVal = formatSmartValue(value)
   if (formulaText) {
     return (
@@ -31,9 +73,7 @@ export function ExpressionChainRowContentView({
         <div style={{ color: "var(--text-primary)" }}>
           <span style={{ fontWeight: 600 }}>{column}</span>
           <span style={{ color: "var(--text-secondary)" }}> = {formulaText}</span>
-          {source && (
-            <span style={{ fontSize: 11, color: "var(--text-secondary)" }}> ({source})</span>
-          )}
+          {source && <SourceLabel source={source} onSourceClick={onSourceClick} linkLabel={sourceLinkLabel} />}
         </div>
         {/* Line 2: result = substituted values */}
         <div style={{ color: "var(--text-secondary)", ...tabularNums }}>
@@ -42,6 +82,7 @@ export function ExpressionChainRowContentView({
           </span>
           {substitutedText ? <span> = {substitutedText}</span> : null}
         </div>
+        <EntryNote note={note} />
       </>
     )
   }
@@ -56,9 +97,8 @@ export function ExpressionChainRowContentView({
       >
         {fVal}
       </span>
-      {source && (
-        <span style={{ fontSize: 11, color: "var(--text-secondary)" }}> ({source})</span>
-      )}
+      {source && <SourceLabel source={source} onSourceClick={onSourceClick} linkLabel={sourceLinkLabel} />}
+      <EntryNote note={note} />
     </div>
   )
 }

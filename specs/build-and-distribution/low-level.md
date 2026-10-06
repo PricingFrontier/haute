@@ -28,6 +28,9 @@
 | `frontend/tsconfig.app.json` | Sets strict browser-source TypeScript compilation and build-info placement. |
 | `frontend/tsconfig.node.json` | Sets strict TypeScript compilation for `frontend/vite.config.ts`. |
 | `mkdocs.yml` | Configures the Material/MkDocs public site, navigation, strict-build plugins, and exclusions for the internal engineering reference documents and dated audit records that remain under `docs/`. |
+| `.github/workflows/release.yml` | Manual-dispatch Release workflow (optional dry run): `check` refuses to run outside `main`, requires `main`'s push CI run for the commit to have succeeded, reads PyPI's release list and runs `scripts/check_release_version.py`, and refuses a version that is already tagged; `build` makes the frontend-inclusive wheel and sdist, checks their file names carry the version, and runs the package smoke check on clean installs of each; `publish` uploads them through PyPI trusted publishing in the `pypi` environment, skipping files PyPI already has so a re-run completes a partial upload; `verify` polls PyPI's JSON for the version until `scripts/verify_pypi_release.py` confirms exactly the built files are served; `github-release` then tags the commit and creates the GitHub release with generated notes and both files. The tag lookup accepts only `git ls-remote --exit-code` exit 2 as untagged. |
+| `scripts/verify_pypi_release.py` | Compares the SHA-256 of every built file with PyPI's JSON for the released version and reports each built file PyPI lacks, each file whose digest differs, and each file PyPI lists that the run did not build; exits non-zero on any difference or an empty build. |
+| `scripts/check_release_version.py` | Reads `[project] version` from `pyproject.toml` and refuses it unless it is `X.Y.Z`, absent from PyPI's releases, and newer than every `X.Y.Z` release there; on success writes `version=` to the given GitHub output file, and on failure prints a `::error::` annotation saying how to bump the version. |
 | `.github/workflows/docs.yml` | Builds public docs strictly and deploys the resulting `site/` artifact to GitHub Pages after `main` pushes affecting `docs/**` or `mkdocs.yml`, or on manual dispatch. |
 
 `src/haute/static/` is a generated build output, not a tracked source module.
@@ -129,12 +132,12 @@ package input validated by `hatch_build.py`, not hand-edited source.
   The validator requires every named key to exist and validates every manifest
   entry's own output file, so the complete reachable and declared graph is
   checked without accepting an orphaned reference.
-- React/ReactFlow, ELK, CodeMirror, and Lucide dependencies are assigned
-  explicit vendor chunks; other dependencies retain Vite/Rollup's default
+- ECharts/zrender, React/ReactFlow, ELK, CodeMirror, and Lucide dependencies are
+  assigned explicit vendor chunks; other dependencies retain Vite/Rollup's default
   chunking behaviour.
-- The static marker is intentionally absent from source control in this
-  checkout. A validated wheel build must create or receive it; source code is
-  never used as a runtime fallback for a missing browser bundle.
+- The generated `src/haute/static/` tree is untracked in this checkout
+  (`.gitignore`). A validated wheel build must create or receive it; source code
+  is never used as a runtime fallback for a missing browser bundle.
 - The MkDocs exclusion is publishing policy, not repository access control:
   excluded files continue to exist in the checkout and can be read by
   maintainers.
@@ -148,7 +151,9 @@ package input validated by `hatch_build.py`, not hand-edited source.
   malformed, unreadable, or mismatched input manifest. It names the explicit
   rebuild opt-in where rebuilding can repair the state.
 - `_npm()` raises `RuntimeError` if npm is not on PATH and the known Windows
-  location is unavailable. `_run()` uses replacement decoding, applies the
+  location is unavailable. `_run()` supplies an environment from
+  `FrontendBuildHook._node_env()` (prepending the known Windows Node.js directory
+  when `node` is not on PATH), uses replacement decoding, applies the
   package-build timeout, prints subprocess stdout/stderr, and raises
   `RuntimeError` on a non-zero return code or timeout; the missing-output sanity
   check does the same.
@@ -167,7 +172,7 @@ package input validated by `hatch_build.py`, not hand-edited source.
 
 ## Testing
 
-- `tests/test_dependency_contracts.py` — dependency version floors for Polars ordered joins, ratebook factor contexts, and required build/runtime assumptions.
+- `tests/test_dependency_contracts.py` — dependency version floors for Polars ordered joins and streamed sliced left joins (the preview row-limit contract in [execution-engine](../execution-engine/low-level.md)), ratebook factor contexts, and required build/runtime assumptions.
 - `tests/test_optional_dependency_extras.py` — core MLflow plus Databricks-extra
   import smoke checks (skipped when the Databricks extra is absent).
 - `tests/test_optional_dependency_matrix.py` — core-install import/route smoke
@@ -180,20 +185,40 @@ package input validated by `hatch_build.py`, not hand-edited source.
   absent/corrupt/mismatched input manifests, direct and transitive/dynamic
   missing output assets, manifest-key/path/schema failures, path escapes,
   validation mode, explicit-build skip/rebuild behavior, unconditional locked
-  installation, safe subprocess decoding and timeout translation, atomic proof
-  publication failures, navigation-link exclusion, and coherent post-build
-  readiness.
+  installation, safe subprocess decoding and timeout translation, the atomic
+  input-manifest publication failure branch
+  (`tests/test_hatch_build.py::test_atomic_proof_publication_failure`: a failed
+  temporary-file replace raises `RuntimeError` naming the destination, leaves no
+  temporary file and leaves an existing manifest unchanged), navigation-link
+  exclusion, and coherent post-build readiness.
+- `tests/test_check_release_version.py` covers the release version gate: a newer
+  version passes and is written to the GitHub output file, a first release with
+  no PyPI history passes, a released, older, equal, or malformed version fails
+  with an actionable `::error::` message, and PyPI releases outside `X.Y.Z` do
+  not decide what counts as newer.
+- `tests/test_verify_pypi_release.py` covers the post-upload check: a complete
+  release matches, a partial upload names the missing file, and a file with
+  other content, a file the run did not build, or an empty build is refused.
 - Package smoke jobs exercise the real sdist/wheel and clean-install paths;
   focused hook tests keep failure branches deterministic without invoking npm.
 - `tests/test_docs_accuracy.py` is a repository documentation consistency gate;
   it is not a substitute for MkDocs's strict render/build validation.
+- `tests/test_node_reference_docs.py` checks the published node reference: every
+  node type but the submodel port maps to one page, the MkDocs navigation lists
+  exactly those pages plus the index and Instances pages, each page's
+  "In the pipeline file" table (a closed admonition whose `Setting in the editor |
+  Stored as` table maps editor labels to config keys, nested keys written with
+  their parent path such as `tables[].emit`) names only top-level keys accepted by
+  `haute._config_validation.VALID_KEYS` for its type,
+  and no published page (outside `exclude_docs`) uses retired node vocabulary
+  such as Data Source, Data Sink or `flat_file`.
 - Package/install smoke coverage is defined and run by
   [engineering-quality](../engineering-quality/low-level.md#testing), notably
   `scripts/package_smoke_check.py`, `scripts/init_smoke.py`, and CI's
   package/init-smoke jobs. The frontend's build/typecheck commands are likewise
   quality gates, not independent package-format tests.
-- CLI regression coverage invokes the package through a real
-  `python -m haute` subprocess and verifies success, nested-command argument
+- `tests/test_cli.py` — CLI regression coverage invokes the package through a
+  real `python -m haute` subprocess and verifies success, nested-command argument
   routing, Click usage failures, and exit-code parity with the console group.
 - `scripts/package_smoke_check.py` also calls the installed
   `haute.assistant._assets.validate_example_bundles(execute_fast=True)` entry

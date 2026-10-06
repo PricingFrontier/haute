@@ -4,7 +4,8 @@ These tests are the **specification** for extending the column-contract
 system so that:
 
 - Every ``NodeType`` declares a contract (concrete or ``OPAQUE``).
-- Codegen emits the contract into the generated pipeline source.
+- Codegen emits a contract into the generated pipeline source where it adds
+  information the parser cannot derive from the node's settings.
 - The parser validates user-supplied contracts against builder-declared
   ones at parse time.
 - The executor asserts input/output column contracts at each node
@@ -171,8 +172,8 @@ def _minimal_config_for(nt: NodeType) -> dict[str, Any]:
                 {
                     "column": "age",
                     "outputColumn": "age_band",
-                    "banding": "continuous",
-                    "rules": [{"max": 25, "value": "0"}],
+                    "banding": "breakpoints",
+                    "rules": [{"boundary": "25", "label": "0"}],
                 }
             ]
         }
@@ -198,7 +199,7 @@ def _minimal_config_for(nt: NodeType) -> dict[str, Any]:
             "column_name": "multiplier",
             "min_value": 0.8,
             "max_value": 1.2,
-            "steps": 21,
+            "stepCount": 21,
         }
     if nt == NodeType.OPTIMISER_APPLY:
         # Produces at minimum the version column; referenced is opaque
@@ -241,17 +242,19 @@ class TestModelScoreContractIsPartiallyAllowed:
 
 
 class TestCodegenEmitsContractMetadata:
-    """``graph_to_code`` must include the contract in decorator kwargs.
+    """``graph_to_code`` emits a contract only where it adds information.
 
-    Today codegen ignores the contract entirely — the generated
-    pipeline source has no way to communicate the expected column
-    shape to a reviewer or to the parser.  After adoption, every
-    generated decorator carries a ``contract=...`` kwarg.
+    A contract the parser derives from the node's own settings, or an
+    opaque one, is left out of the decorator; the parsed node still carries
+    the same effective contract (``test_codegen_contract_keyword.py`` pins
+    the kept cases).
     """
 
-    def test_banding_codegen_includes_contract_kwarg(self):
-        """A banding node with a concrete contract emits ``contract=...``."""
+    def test_banding_contract_implied_by_its_settings_is_not_emitted(self, tmp_path: Path):
+        """A banding node's age -> age_band contract comes from its factors, not the file."""
+        from haute._config_io import collect_node_configs
         from haute.codegen import graph_to_code
+        from haute.parser import parse_pipeline_source
 
         graph = PipelineGraph(
             nodes=[
@@ -263,8 +266,8 @@ class TestCodegenEmitsContractMetadata:
                         {
                             "column": "age",
                             "outputColumn": "age_band",
-                            "banding": "continuous",
-                            "rules": [{"max": 25, "value": "0"}],
+                            "banding": "breakpoints",
+                            "rules": [{"boundary": "25", "label": "0"}],
                         }
                     ],
                 ),
@@ -272,17 +275,21 @@ class TestCodegenEmitsContractMetadata:
             edges=[_e("src", "band")],
         )
         code = graph_to_code(graph, pipeline_name="t")
-        assert "contract=" in code, (
-            "Generated code does not mention 'contract=' on any decorator. "
-            "After adoption, every @pipeline.<type>(...) call must declare "
-            "its expected input/output columns so a human reviewer (and "
-            "the parser) can cross-check without running the pipeline."
-        )
-        # The specific banding contract must round-trip: age -> age_band
-        assert "age" in code and "age_band" in code
+        assert "contract=" not in code
+        assert "age_band" not in code, "the factor lives in the sidecar, not the source"
 
-    def test_opaque_node_emits_opaque_sentinel(self):
-        """A polars node codegens ``contract=\"opaque\"`` (or equivalent)."""
+        for rel, content in collect_node_configs(graph).items():
+            sidecar = tmp_path / rel
+            sidecar.parent.mkdir(parents=True, exist_ok=True)
+            sidecar.write_text(content, encoding="utf-8")
+        parsed = parse_pipeline_source(code, source_file=str(tmp_path / "p.py"), _base_dir=tmp_path)
+        band = next(n for n in parsed.nodes if n.data.label == "band")
+        produced, referenced = get_column_contract(band.data.nodeType, band.data.config)
+        assert produced == {"age_band"}
+        assert referenced == {"age"}
+
+    def test_opaque_contract_is_not_emitted(self):
+        """An opaque contract says nothing, so the decorator stays bare."""
         from haute.codegen import graph_to_code
 
         graph = PipelineGraph(
@@ -293,12 +300,8 @@ class TestCodegenEmitsContractMetadata:
             edges=[_e("src", "t")],
         )
         code = graph_to_code(graph, pipeline_name="t")
-        assert OPAQUE_SENTINEL in code, (
-            f'Opaque contract must be emitted as ``contract="{OPAQUE_SENTINEL}"`` '
-            "(or a Contract.OPAQUE equivalent) so round-trip parsing "
-            "preserves the distinction between 'declared opaque' and "
-            "'forgot to declare'."
-        )
+        assert "@pipeline.polars\ndef t(src: pl.LazyFrame) -> pl.LazyFrame:" in code
+        assert OPAQUE_SENTINEL not in code
 
     def test_codegen_parse_roundtrip_preserves_contract(self, tmp_path: Path):
         """parse → codegen → parse produces the same contract annotation.
@@ -327,8 +330,8 @@ class TestCodegenEmitsContractMetadata:
                     {
                         "column": "age",
                         "outputColumn": "age_band",
-                        "banding": "continuous",
-                        "rules": [{"op1": "<=", "val1": "25", "assignment": "0"}],
+                        "banding": "breakpoints",
+                        "rules": [{"boundary": "25", "label": "0"}],
                     }
                 ]
             },
@@ -341,15 +344,13 @@ pipeline = haute.Pipeline("roundtrip")
 
 
 @pipeline.data_input(config="{source_config}")
-def src() -> pl.LazyFrame:
+def src():
     """Source."""
-    return pl.scan_parquet("x.parquet")
 
 
 @pipeline.banding(config="{band_config}")
-def band(src: pl.LazyFrame) -> pl.LazyFrame:
+def band(src):
     """Band age."""
-    return src
 
 
 pipeline.connect("src", "band")
@@ -442,8 +443,8 @@ class TestParserValidatesUserDeclaredContracts:
                     {
                         "column": "age",
                         "outputColumn": "age_band",
-                        "banding": "continuous",
-                        "rules": [{"max": 25, "value": "0"}],
+                        "banding": "breakpoints",
+                        "rules": [{"boundary": "25", "label": "0"}],
                     }
                 ]
             },
@@ -456,18 +457,16 @@ pipeline = haute.Pipeline("bad")
 
 
 @pipeline.data_input(config="{source_config}")
-def src() -> pl.LazyFrame:
+def src():
     """Source."""
-    return pl.scan_parquet("x.parquet")
 
 
 @pipeline.banding(
     config="{band_config}",
     contract={{"inputs": ["height"], "outputs": ["height_band"]}},
 )
-def band(src: pl.LazyFrame) -> pl.LazyFrame:
+def band(src):
     """Band age but declare height."""
-    return src
 
 
 pipeline.connect("src", "band")
@@ -499,8 +498,8 @@ pipeline.connect("src", "band")
                     {
                         "column": "age",
                         "outputColumn": "age_band",
-                        "banding": "continuous",
-                        "rules": [{"max": 25, "value": "0"}],
+                        "banding": "breakpoints",
+                        "rules": [{"boundary": "25", "label": "0"}],
                     }
                 ]
             },
@@ -513,18 +512,16 @@ pipeline = haute.Pipeline("good")
 
 
 @pipeline.data_input(config="{source_config}")
-def src() -> pl.LazyFrame:
+def src():
     """Source."""
-    return pl.scan_parquet("x.parquet")
 
 
 @pipeline.banding(
     config="{band_config}",
     contract={{"inputs": ["age"], "outputs": ["age_band"]}},
 )
-def band(src: pl.LazyFrame) -> pl.LazyFrame:
+def band(src):
     """Band age."""
-    return src
 
 
 pipeline.connect("src", "band")
@@ -554,8 +551,8 @@ pipeline.connect("src", "band")
                     {
                         "column": "age",
                         "outputColumn": "age_band",
-                        "banding": "continuous",
-                        "rules": [{"max": 25, "value": "0"}],
+                        "banding": "breakpoints",
+                        "rules": [{"boundary": "25", "label": "0"}],
                     }
                 ]
             },
@@ -569,16 +566,14 @@ pipeline = haute.Pipeline("contract_ctor")
 
 
 @pipeline.data_input(config="{source_config}")
-def src() -> pl.LazyFrame:
-    return pl.scan_parquet("x.parquet")
+def src(): ...
 
 
 @pipeline.banding(
     config="{band_config}",
     contract=Contract(inputs=["age"], outputs=["age_band"]),
 )
-def band(src: pl.LazyFrame) -> pl.LazyFrame:
-    return src
+def band(src): ...
 
 
 pipeline.connect("src", "band")
@@ -635,16 +630,14 @@ pipeline = haute.Pipeline("model_score_contract")
 
 
 @pipeline.data_input(config="{source_config}")
-def src() -> pl.LazyFrame:
-    return pl.scan_parquet("x.parquet")
+def src(): ...
 
 
 @pipeline.model_score(
     config="{score_config}",
     contract={{"inputs": ["feature_a"], "outputs": ["prediction"]}},
 )
-def score(src: pl.LazyFrame) -> pl.LazyFrame:
-    return src
+def score(src): ...
 
 
 pipeline.connect("src", "score")
@@ -720,8 +713,8 @@ class TestExecutorAssertsContractsAtBoundaries:
                         {
                             "column": "age",  # not present upstream!
                             "outputColumn": "age_band",
-                            "banding": "continuous",
-                            "rules": [{"max": 25, "value": "0"}],
+                            "banding": "breakpoints",
+                            "rules": [{"boundary": "25", "label": "0"}],
                         }
                     ],
                 ),
@@ -730,9 +723,10 @@ class TestExecutorAssertsContractsAtBoundaries:
         )
         with pytest.raises(cls) as excinfo:
             execute_graph(graph)
-        assert "age" in str(excinfo.value), (
-            "Contract error must name the missing column so the user "
-            "knows what to fix. Got: " + str(excinfo.value)
+        # The preview shows this text as it is: it names the missing column
+        # and nothing about the input's other columns.
+        assert str(excinfo.value) == (
+            "'band' needs the column 'age', which is not in its input. (node_id=band)"
         )
 
     def test_declared_output_missing_raises_contract_mismatch(self, tmp_path: Path):
@@ -771,9 +765,9 @@ class TestExecutorAssertsContractsAtBoundaries:
         )
         with pytest.raises(cls) as excinfo:
             execute_graph(graph)
-        assert "new_col" in str(excinfo.value), (
-            "Contract error on output-side must name the missing promised "
-            f"column. Got: {excinfo.value!r}"
+        assert str(excinfo.value) == (
+            "'t' did not create the column 'new_col', which its contract says it outputs. "
+            "(node_id=t)"
         )
 
     def test_user_declared_input_missing_from_parent_raises_at_execution(self, tmp_path: Path):
@@ -840,14 +834,9 @@ class TestExecutorAssertsContractsAtBoundaries:
     def test_contract_check_does_not_raise_on_clean_pipeline(self, tmp_path: Path):
         """Well-formed pipelines execute end-to-end without spurious errors.
 
-        The rule format uses ``op1 / val1`` + ``assignment`` — the
-        actual schema ``_apply_banding`` consumes — so the banding node
-        truly produces ``age_band`` and the output-side contract check
-        is satisfied.  The earlier ``{"max": 25, "value": "0"}`` form in
-        this test was a spec artefact that never produced an
-        ``age_band`` column at runtime and would always fail the
-        output contract; that was a test bug the adoption work
-        surfaced.
+        The rule is a real breakpoint (``boundary`` + ``label``), so the
+        banding node truly produces ``age_band`` and the output-side
+        contract check is satisfied.
         """
         import polars as pl_
 
@@ -870,9 +859,9 @@ class TestExecutorAssertsContractsAtBoundaries:
                         {
                             "column": "age",
                             "outputColumn": "age_band",
-                            "banding": "continuous",
+                            "banding": "breakpoints",
                             "rules": [
-                                {"op1": "<=", "val1": "25", "assignment": "0"},
+                                {"boundary": "25", "label": "0"},
                             ],
                             "default": "1",
                         }
@@ -884,6 +873,101 @@ class TestExecutorAssertsContractsAtBoundaries:
         # Should not raise — the contract is consistent and inputs present.
         result = execute_graph(graph)
         assert result is not None
+
+    def test_draft_banding_factor_passes_through_without_a_contract_error(self, tmp_path: Path):
+        """A factor with its columns chosen but no rules yet is a draft no-op.
+
+        Execution skips it, so the node's contract must neither promise its
+        output column nor read its input column; otherwise previewing a
+        half-written factor fails the output check.
+        """
+        import polars as pl_
+
+        from haute.executor import execute_graph
+
+        pq = tmp_path / "x.parquet"
+        pl_.DataFrame({"cover": ["comp", "tpft"], "premium": [1.0, 2.0]}).write_parquet(pq)
+        draft = {
+            "banding": "categorical",
+            "column": "cover",
+            "outputColumn": "cover_band",
+            "rules": {},
+            "default": None,
+        }
+        assert get_column_contract(NodeType.BANDING, {"factors": [draft]}) == (set(), set())
+
+        graph = PipelineGraph(
+            nodes=[
+                _node("src", NodeType.DATA_INPUT, **make_ready_file_input_config(pq)),
+                _node("band", NodeType.BANDING, factors=[draft]),
+            ],
+            edges=[_e("src", "band")],
+        )
+        results = execute_graph(graph)
+        assert results["band"].status == "ok", results["band"].error
+        assert [column.name for column in results["band"].columns] == ["cover", "premium"]
+
+    @pytest.mark.parametrize(
+        ("needed", "upstream", "expected"),
+        [
+            pytest.param(
+                {"age"},
+                {"agee", "height"},
+                "'Age band' needs the column 'age', which is not in its input. "
+                "Its input has a similar column: 'agee'. (node_id=band_1)",
+                id="similar-column",
+            ),
+            pytest.param(
+                {"age"},
+                set(),
+                "'Age band' needs the column 'age', but its input has no columns. (node_id=band_1)",
+                id="empty-input",
+            ),
+            pytest.param(
+                {"c1", "c2", "c3", "c4", "c5", "c6", "c7"},
+                {"height"},
+                "'Age band' needs the columns 'c1', 'c2', 'c3', 'c4', 'c5' and 2 more, "
+                "which are not in its input. (node_id=band_1)",
+                id="many-missing",
+            ),
+        ],
+    )
+    def test_input_check_message_names_only_what_is_missing(
+        self, needed: set[str], upstream: set[str], expected: str
+    ):
+        from haute._contracts import Contract
+        from haute._execute_lazy import _assert_inputs_satisfy_contract
+
+        node = GraphNode(
+            id="band_1", data=NodeData(label="Age band", nodeType=NodeType.BANDING, config={})
+        )
+        with pytest.raises(haute_errors.ContractMismatchError) as excinfo:
+            _assert_inputs_satisfy_contract(
+                node,
+                Contract(inputs=frozenset(needed), outputs=None),
+                frozenset(upstream),
+            )
+        assert str(excinfo.value) == expected
+        # The text is bounded; the context still names every missing column.
+        assert excinfo.value.context["missing"] == sorted(needed)
+
+    def test_output_check_message_names_only_the_missing_outputs(self):
+        from haute._contracts import Contract
+        from haute._execute_lazy import _assert_outputs_satisfy_contract
+
+        node = GraphNode(
+            id="t_1", data=NodeData(label="Transform", nodeType=NodeType.POLARS, config={})
+        )
+        with pytest.raises(haute_errors.ContractMismatchError) as excinfo:
+            _assert_outputs_satisfy_contract(
+                node,
+                Contract(inputs=None, outputs=frozenset({"a_band", "b_band", "premium"})),
+                frozenset({"premium", "quote_id", "a_bnd"}),
+            )
+        assert str(excinfo.value) == (
+            "'Transform' did not create the columns 'a_band' and 'b_band', "
+            "which its contract says it outputs. (node_id=t_1)"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -928,9 +1012,8 @@ class TestContractOverheadBenchmark:
                             {
                                 "column": "age",
                                 "outputColumn": f"band_{i}",
-                                "banding": "continuous",
-                                # Use the canonical op1/val1/assignment rule schema.
-                                "rules": [{"op1": "<=", "val1": "25", "assignment": "0"}],
+                                "banding": "breakpoints",
+                                "rules": [{"boundary": "25", "label": "0"}],
                                 "default": "1",
                             }
                         ],

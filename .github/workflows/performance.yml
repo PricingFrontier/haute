@@ -134,14 +134,14 @@ jobs:
           tests/test_interactive_worker_pool.py
           tests/test_interactive_route_isolation.py
           tests/test_json_direct_spill.py
-          tests/test_json_cache_cross_process.py
+          tests/test_api_input_table_snapshots.py
           tests/test_json_runtime_storage.py
           -q
 
-      - name: Fresh-process restart and cache-proof certification
+      - name: Fresh-process restart certification of published API Input tables
         run: >
           uv run pytest
-          tests/performance/test_execution_engine_certification.py::test_fresh_process_restart_reuses_cache_proof_and_safe_telemetry
+          tests/performance/test_execution_engine_certification.py::test_fresh_process_restart_reads_published_tables_and_safe_telemetry
           -m perf
           -q
 

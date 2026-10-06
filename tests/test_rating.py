@@ -7,6 +7,7 @@ from typing import Any
 import polars as pl
 import pytest
 
+from haute._polars_utils import streaming_collect
 from haute._rating import (
     _apply_banding,
     _apply_rating_step_outputs,
@@ -15,6 +16,7 @@ from haute._rating import (
     _combine_rating_columns,
     _normalise_banding_factors,
     apply_rating_step_from_config,
+    normalise_rating_key,
 )
 from haute.errors import (
     RatingExtremaUndefinedError,
@@ -42,20 +44,6 @@ class TestBandingCondition:
         result = lf.select(cond).collect()["x"].to_list()
         assert result == [False, True, True, False]
 
-    def test_eq_operator(self) -> None:
-        cond = _banding_condition(pl.col("x"), {"op1": "=", "val1": 5})
-        assert cond is not None
-        lf = pl.DataFrame({"x": [4, 5, 6]}).lazy()
-        result = lf.select(cond).collect()["x"].to_list()
-        assert result == [False, True, False]
-
-    def test_double_eq_operator(self) -> None:
-        cond = _banding_condition(pl.col("x"), {"op1": "==", "val1": 5})
-        assert cond is not None
-        lf = pl.DataFrame({"x": [4, 5]}).lazy()
-        result = lf.select(cond).collect()["x"].to_list()
-        assert result == [False, True]
-
     def test_empty_rule_returns_none(self) -> None:
         assert _banding_condition(pl.col("x"), {}) is None
 
@@ -65,9 +53,10 @@ class TestBandingCondition:
     def test_none_val_returns_none(self) -> None:
         assert _banding_condition(pl.col("x"), {"op1": "<", "val1": None}) is None
 
-    def test_invalid_op_raises(self) -> None:
+    @pytest.mark.parametrize("op", ["!=", "=", "=="])
+    def test_invalid_op_raises(self, op: str) -> None:
         with pytest.raises(ValueError, match="unsupported operator"):
-            _banding_condition(pl.col("x"), {"op1": "!=", "val1": 5})
+            _banding_condition(pl.col("x"), {"op1": op, "val1": 5})
 
     def test_string_val_coerced_to_float(self) -> None:
         cond = _banding_condition(pl.col("x"), {"op1": ">", "val1": "100"})
@@ -442,7 +431,7 @@ class TestApplyRatingTableNonNumericDefault:
 
         lf = pl.DataFrame({"region": ["North", "Unknown"]}).lazy()
         with pytest.raises(RatingTableMissError) as excinfo:
-            _apply_rating_table(lf, self._make_table(junk_default)).collect()
+            streaming_collect(_apply_rating_table(lf, self._make_table(junk_default)))
         message = str(excinfo.value)
         assert "Unknown" in message
         assert repr(junk_default) in message
@@ -458,7 +447,7 @@ class TestApplyRatingTableNonNumericDefault:
 
         lf = pl.DataFrame({"region": ["North", "Unknown"]}).lazy()
         with pytest.raises(RatingTableMissError) as excinfo:
-            _apply_rating_table(lf, self._make_table(empty_default)).collect()
+            streaming_collect(_apply_rating_table(lf, self._make_table(empty_default)))
         assert "Note:" not in str(excinfo.value)
 
     def test_unusable_default_with_neutral_opt_in_leaves_null(self) -> None:
@@ -728,29 +717,33 @@ class TestApplyBanding:
     through without creating the output column, or assigns wrong bands.
     """
 
-    def test_continuous_single_rule(self) -> None:
-        """A single continuous rule assigns values inside its range."""
+    def test_breakpoints_single_boundary(self) -> None:
+        """A single bounded breakpoint assigns the values up to its boundary."""
         lf = pl.DataFrame({"age": [18, 30, 50]}).lazy()
-        rules = [{"op1": ">=", "val1": 0, "op2": "<=", "val2": 25, "assignment": "young"}]
-        result = _apply_banding(lf, "age", "age_band", "continuous", rules).collect()
+        rules = [{"boundary": "25", "label": "young"}]
+        result = _apply_banding(lf, "age", "age_band", "breakpoints", rules).collect()
         assert result["age_band"].to_list() == ["young", None, None]
 
-    def test_continuous_multiple_rules(self) -> None:
-        """Multiple continuous rules create non-overlapping bands."""
+    def test_breakpoints_multiple_bands(self) -> None:
+        """Multiple breakpoints create non-overlapping bands."""
         lf = pl.DataFrame({"age": [20, 35, 60]}).lazy()
         rules = [
-            {"op1": ">=", "val1": 0, "op2": "<", "val2": 30, "assignment": "young"},
-            {"op1": ">=", "val1": 30, "op2": "<", "val2": 50, "assignment": "mid"},
-            {"op1": ">=", "val1": 50, "op2": "<=", "val2": 100, "assignment": "senior"},
+            {"boundary": "30", "label": "young"},
+            {"boundary": "50", "label": "mid"},
+            {"boundary": "", "label": "senior"},
         ]
-        result = _apply_banding(lf, "age", "age_band", "continuous", rules).collect()
+        result = _apply_banding(
+            lf, "age", "age_band", "breakpoints", rules, right_closed=False
+        ).collect()
         assert result["age_band"].to_list() == ["young", "mid", "senior"]
 
-    def test_continuous_with_default(self) -> None:
-        """Default value is applied when no rule matches."""
+    def test_breakpoints_with_default(self) -> None:
+        """Default value is applied when no band holds the value."""
         lf = pl.DataFrame({"x": [5, 999]}).lazy()
-        rules = [{"op1": ">=", "val1": 0, "op2": "<", "val2": 10, "assignment": "low"}]
-        result = _apply_banding(lf, "x", "band", "continuous", rules, default="unknown").collect()
+        rules = [{"boundary": "10", "label": "low"}]
+        result = _apply_banding(
+            lf, "x", "band", "breakpoints", rules, default="unknown", right_closed=False
+        ).collect()
         assert result["band"].to_list() == ["low", "unknown"]
 
     def test_categorical_banding(self) -> None:
@@ -776,23 +769,13 @@ class TestApplyBanding:
         Catches: silent data corruption if empty rules produce a column of all nulls.
         """
         lf = pl.DataFrame({"x": [1, 2]}).lazy()
-        result = _apply_banding(lf, "x", "band", "continuous", []).collect()
+        result = _apply_banding(lf, "x", "band", "breakpoints", []).collect()
         assert "band" not in result.columns
 
     def test_categorical_empty_rules_returns_frame_unchanged(self) -> None:
         lf = pl.DataFrame({"x": ["a"]}).lazy()
         result = _apply_banding(lf, "x", "band", "categorical", []).collect()
         assert "band" not in result.columns
-
-    def test_continuous_rules_all_invalid_raise(self) -> None:
-        """Rules where all operators are invalid should not add a column.
-
-        Catches: a when/then chain built from zero valid conditions would crash.
-        """
-        lf = pl.DataFrame({"x": [1]}).lazy()
-        rules = [{"op1": "!=", "val1": 5, "assignment": "bad"}]
-        with pytest.raises(ValueError, match="unsupported operator"):
-            _apply_banding(lf, "x", "band", "continuous", rules)
 
     def test_categorical_numeric_column_cast_to_string(self) -> None:
         """Categorical banding on a numeric column casts to Utf8 for matching.
@@ -810,8 +793,8 @@ class TestApplyBanding:
     def test_output_column_different_from_input(self) -> None:
         """Output column name is distinct from input; both preserved."""
         lf = pl.DataFrame({"age": [25]}).lazy()
-        rules = [{"op1": ">=", "val1": 0, "op2": "<=", "val2": 30, "assignment": "young"}]
-        result = _apply_banding(lf, "age", "age_band", "continuous", rules).collect()
+        rules = [{"boundary": "30", "label": "young"}]
+        result = _apply_banding(lf, "age", "age_band", "breakpoints", rules).collect()
         assert "age" in result.columns
         assert "age_band" in result.columns
 
@@ -908,6 +891,29 @@ class TestAllNullRatingTable:
         with pytest.raises(ValueError, match="null"):
             _apply_rating_table(lf, table)
 
+    def test_entries_without_a_value_are_counted_past_the_first_hundred(self) -> None:
+        """Every entry is read, not only the first hundred a frame infers from.
+
+        A table whose only ``value`` came after its first 100 entries once
+        passed through unrated while the step still combined its output
+        column, so the run failed later on a column that was never written.
+        """
+        from haute.errors import ConfigSettingError
+
+        entries: list[dict[str, Any]] = [{"k": f"level_{index}"} for index in range(100)]
+        entries.append({"k": "a", "value": 2.0})
+        table: dict[str, Any] = {"factors": ["k"], "outputColumn": "out", "entries": entries}
+        premium = {"outputColumn": "premium", "operation": "multiply", "baseValue": 100.0}
+
+        with pytest.raises(ConfigSettingError) as caught:
+            _apply_rating_step_outputs(pl.DataFrame({"k": ["a"]}).lazy(), [table], [premium])
+
+        assert str(caught.value) == (
+            "Rating table for 'out' contains 100 null entry value(s); every entry "
+            "requires a finite numeric value"
+        )
+        assert caught.value.setting == "tables"
+
 
 # ===========================================================================
 # GAP 4: Combined rating with non-numeric columns
@@ -966,25 +972,14 @@ class TestBandingBoundaryValues:
     """
 
     def test_boundary_value_inclusive_exclusive(self) -> None:
-        """Value exactly on boundary: [0,25) and [25,50) — 25 goes to second band."""
+        """Value exactly on boundary: [..,25) and [25,50) — 25 goes to second band."""
         lf = pl.DataFrame({"x": [24.9999, 25.0, 25.0001]}).lazy()
         rules = [
-            {"op1": ">=", "val1": 0, "op2": "<", "val2": 25, "assignment": "low"},
-            {"op1": ">=", "val1": 25, "op2": "<", "val2": 50, "assignment": "mid"},
+            {"boundary": "25", "label": "low"},
+            {"boundary": "50", "label": "mid"},
         ]
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        result = _apply_banding(lf, "x", "band", "breakpoints", rules, right_closed=False).collect()
         assert result["band"].to_list() == ["low", "mid", "mid"]
-
-    def test_boundary_both_inclusive(self) -> None:
-        """Overlapping bands where boundary belongs to both: first rule wins."""
-        lf = pl.DataFrame({"x": [25.0]}).lazy()
-        rules = [
-            {"op1": ">=", "val1": 0, "op2": "<=", "val2": 25, "assignment": "low"},
-            {"op1": ">=", "val1": 25, "op2": "<=", "val2": 50, "assignment": "mid"},
-        ]
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
-        # First matching rule in the when/then chain wins
-        assert result["band"].to_list() == ["low"]
 
     def test_floating_point_near_boundary(self) -> None:
         """Floating point arithmetic near boundaries must not cause misclassification.
@@ -993,19 +988,12 @@ class TestBandingBoundaryValues:
         """
         lf = pl.DataFrame({"x": [0.1 + 0.2]}).lazy()  # 0.30000000000000004
         rules = [
-            {"op1": ">=", "val1": 0, "op2": "<", "val2": 0.3, "assignment": "low"},
-            {"op1": ">=", "val1": 0.3, "op2": "<", "val2": 1.0, "assignment": "high"},
+            {"boundary": "0.3", "label": "low"},
+            {"boundary": "1.0", "label": "high"},
         ]
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        result = _apply_banding(lf, "x", "band", "breakpoints", rules, right_closed=False).collect()
         # 0.1+0.2 > 0.3, so it falls into "high"
         assert result["band"].to_list() == ["high"]
-
-    def test_exact_equality_boundary(self) -> None:
-        """Using == operator on a float boundary value."""
-        lf = pl.DataFrame({"x": [0.0, 0.5, 1.0]}).lazy()
-        rules = [{"op1": "=", "val1": 0.5, "assignment": "exact"}]
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
-        assert result["band"].to_list() == [None, "exact", None]
 
 
 # ===========================================================================
@@ -1014,41 +1002,32 @@ class TestBandingBoundaryValues:
 
 
 class TestBandingNegativeValues:
-    """Negative numbers and reversed ranges in banding rules.
+    """Negative numbers in banding breakpoints.
 
-    Production failure caught: banding logic assumes positive values, or
-    reversed min/max silently produces empty bands.
+    Production failure caught: banding logic assumes positive values.
     """
 
     def test_negative_values_banded_correctly(self) -> None:
         lf = pl.DataFrame({"temp": [-20.0, -5.0, 0.0, 10.0]}).lazy()
         rules = [
-            {"op1": ">=", "val1": -30, "op2": "<", "val2": -10, "assignment": "freezing"},
-            {"op1": ">=", "val1": -10, "op2": "<", "val2": 0, "assignment": "cold"},
-            {"op1": ">=", "val1": 0, "op2": "<=", "val2": 20, "assignment": "mild"},
+            {"boundary": "-10", "label": "freezing"},
+            {"boundary": "0", "label": "cold"},
+            {"boundary": "", "label": "mild"},
         ]
-        result = _apply_banding(lf, "temp", "temp_band", "continuous", rules).collect()
+        result = _apply_banding(
+            lf, "temp", "temp_band", "breakpoints", rules, right_closed=False
+        ).collect()
         assert result["temp_band"].to_list() == ["freezing", "cold", "mild", "mild"]
 
     def test_negative_boundary_exact(self) -> None:
         """Value exactly on a negative boundary."""
         lf = pl.DataFrame({"x": [-10.0]}).lazy()
         rules = [
-            {"op1": ">=", "val1": -20, "op2": "<", "val2": -10, "assignment": "lower"},
-            {"op1": ">=", "val1": -10, "op2": "<", "val2": 0, "assignment": "upper"},
+            {"boundary": "-10", "label": "lower"},
+            {"boundary": "0", "label": "upper"},
         ]
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        result = _apply_banding(lf, "x", "band", "breakpoints", rules, right_closed=False).collect()
         assert result["band"].to_list() == ["upper"]
-
-    def test_reversed_range_produces_no_match(self) -> None:
-        """A rule with min > max (e.g. >= 50 AND < 10) should match nothing.
-
-        Catches: reversed ranges silently accepting all values.
-        """
-        lf = pl.DataFrame({"x": [5.0, 30.0, 60.0]}).lazy()
-        rules = [{"op1": ">=", "val1": 50, "op2": "<", "val2": 10, "assignment": "impossible"}]
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
-        assert result["band"].to_list() == [None, None, None]
 
 
 # ===========================================================================
@@ -1063,10 +1042,10 @@ class TestBandingEmptyDataFrame:
     or exceptions when applying when/then to an empty frame.
     """
 
-    def test_continuous_banding_empty_frame(self) -> None:
+    def test_breakpoint_banding_empty_frame(self) -> None:
         lf = pl.DataFrame({"x": pl.Series([], dtype=pl.Float64)}).lazy()
-        rules = [{"op1": ">=", "val1": 0, "op2": "<", "val2": 10, "assignment": "low"}]
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        rules = [{"boundary": "10", "label": "low"}]
+        result = _apply_banding(lf, "x", "band", "breakpoints", rules).collect()
         assert result.height == 0
         assert "band" in result.columns
 
@@ -1238,10 +1217,12 @@ class TestSpecialCharacterFactorNames:
         """Banding also handles special character column names."""
         lf = pl.DataFrame({"sum insured (GBP)": [10000.0, 50000.0]}).lazy()
         rules = [
-            {"op1": ">=", "val1": 0, "op2": "<", "val2": 25000, "assignment": "low"},
-            {"op1": ">=", "val1": 25000, "op2": "<=", "val2": 100000, "assignment": "high"},
+            {"boundary": "25000", "label": "low"},
+            {"boundary": "", "label": "high"},
         ]
-        result = _apply_banding(lf, "sum insured (GBP)", "si_band", "continuous", rules).collect()
+        result = _apply_banding(
+            lf, "sum insured (GBP)", "si_band", "breakpoints", rules, right_closed=False
+        ).collect()
         assert result["si_band"].to_list() == ["low", "high"]
 
 
@@ -1261,9 +1242,10 @@ class TestExtremeFloatValues:
         """Inf input values are sanitized to null, falling to default."""
         lf = pl.DataFrame({"x": [float("inf"), 5.0, float("-inf")]}).lazy()
         rules = [
-            {"op1": ">", "val1": 0, "assignment": "positive"},
+            {"boundary": "0", "label": "non_positive"},
+            {"boundary": "", "label": "positive"},
         ]
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        result = _apply_banding(lf, "x", "band", "breakpoints", rules).collect()
         # Inf and -Inf are sanitized to null → fall to default (None)
         assert result["band"].to_list() == [None, "positive", None]
 
@@ -1271,9 +1253,9 @@ class TestExtremeFloatValues:
         """-Inf input values are sanitized to null, falling to default."""
         lf = pl.DataFrame({"x": [float("-inf"), -200.0, 0.0]}).lazy()
         rules = [
-            {"op1": "<", "val1": -100, "assignment": "extreme_low"},
+            {"boundary": "-100", "label": "extreme_low"},
         ]
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        result = _apply_banding(lf, "x", "band", "breakpoints", rules, right_closed=False).collect()
         # -Inf is sanitized to null → falls to default (None); -200 < -100 → matches
         assert result["band"].to_list() == [None, "extreme_low", None]
 
@@ -1281,11 +1263,13 @@ class TestExtremeFloatValues:
         """Numbers near float max should band correctly without overflow."""
         lf = pl.DataFrame({"x": [1e308, -1e308, 1e-308]}).lazy()
         rules = [
-            {"op1": ">", "val1": 1e307, "assignment": "huge"},
-            {"op1": "<", "val1": -1e307, "assignment": "neg_huge"},
-            {"op1": ">=", "val1": 0, "op2": "<", "val2": 1, "assignment": "tiny"},
+            {"boundary": "-1e307", "label": "neg_huge"},
+            {"boundary": "0", "label": "negative"},
+            {"boundary": "1", "label": "tiny"},
+            {"boundary": "1e307", "label": "large"},
+            {"boundary": "", "label": "huge"},
         ]
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        result = _apply_banding(lf, "x", "band", "breakpoints", rules, right_closed=False).collect()
         assert result["band"].to_list() == ["huge", "neg_huge", "tiny"]
 
     def test_inf_in_rating_table_entry_rejected(self) -> None:
@@ -1416,8 +1400,8 @@ class TestBugB2CategoricalBandingFalsyValues:
 class TestApplyBandingEdgeCases:
     def test_null_values_get_default(self) -> None:
         lf = pl.DataFrame({"x": [1.0, None, 5.0]}).lazy()
-        rules = [{"op1": ">=", "val1": 0, "op2": "<", "val2": 10, "assignment": "low"}]
-        result = _apply_banding(lf, "x", "band", "continuous", rules, default="fallback").collect()
+        rules = [{"boundary": "10", "label": "low"}]
+        result = _apply_banding(lf, "x", "band", "breakpoints", rules, default="fallback").collect()
         assert result["band"].to_list() == ["low", "fallback", "low"]
 
     def test_null_values_categorical_get_default(self) -> None:
@@ -1438,38 +1422,33 @@ class TestApplyBandingEdgeCases:
     def test_float_precision_boundary(self) -> None:
         val = 0.1 + 0.2
         lf = pl.DataFrame({"x": [val]}).lazy()
+        # Right-closed: 0.1 + 0.2 is just above the 0.3 boundary, so not "below".
         rules = [
-            {"op1": ">=", "val1": 0, "op2": "<", "val2": 0.3, "assignment": "below"},
-            {"op1": ">=", "val1": 0.3, "op2": "<", "val2": 1.0, "assignment": "above"},
+            {"boundary": "0.3", "label": "below"},
+            {"boundary": "", "label": "above"},
         ]
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        result = _apply_banding(lf, "x", "band", "breakpoints", rules).collect()
         assert result["band"].to_list() == ["above"]
 
-    def test_overlapping_continuous_first_match_wins(self) -> None:
-        lf = pl.DataFrame({"x": [15.0]}).lazy()
-        rules = [
-            {"op1": ">=", "val1": 10, "op2": "<=", "val2": 20, "assignment": "first"},
-            {"op1": ">=", "val1": 10, "op2": "<=", "val2": 20, "assignment": "second"},
-        ]
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
-        assert result["band"].to_list() == ["first"]
-
-    def test_negative_values_continuous(self) -> None:
+    def test_negative_values_breakpoints(self) -> None:
         lf = pl.DataFrame({"x": [-50.0, -1.0, 0.0]}).lazy()
         rules = [
-            {"op1": ">=", "val1": -100, "op2": "<", "val2": -10, "assignment": "very_neg"},
-            {"op1": ">=", "val1": -10, "op2": "<=", "val2": 0, "assignment": "near_zero"},
+            {"boundary": "-10", "label": "very_neg"},
+            {"boundary": "", "label": "near_zero"},
         ]
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        result = _apply_banding(lf, "x", "band", "breakpoints", rules, right_closed=False).collect()
         assert result["band"].to_list() == ["very_neg", "near_zero", "near_zero"]
 
     def test_inf_values_in_input(self) -> None:
         lf = pl.DataFrame({"x": [float("inf"), float("-inf"), 5.0]}).lazy()
+        # Unsanitised, the infinities would land in the two outer bands.
         rules = [
-            {"op1": ">=", "val1": 0, "op2": "<", "val2": 10, "assignment": "normal"},
+            {"boundary": "0", "label": "negative"},
+            {"boundary": "10", "label": "normal"},
+            {"boundary": "", "label": "large"},
         ]
         result = _apply_banding(
-            lf, "x", "band", "continuous", rules, default="out_of_range"
+            lf, "x", "band", "breakpoints", rules, default="out_of_range", right_closed=False
         ).collect()
         assert result["band"][2] == "normal"
         assert result["band"][0] == "out_of_range"
@@ -1486,23 +1465,20 @@ class TestApplyBandingEdgeCases:
 
     def test_output_column_overwrites_existing(self) -> None:
         lf = pl.DataFrame({"x": [5.0], "band": ["old_value"]}).lazy()
-        rules = [{"op1": ">=", "val1": 0, "op2": "<=", "val2": 10, "assignment": "new"}]
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        rules = [{"boundary": "10", "label": "new"}]
+        result = _apply_banding(lf, "x", "band", "breakpoints", rules).collect()
         assert result["band"].to_list() == ["new"]
 
     def test_large_number_of_rules(self) -> None:
-        rules = [
-            {"op1": ">=", "val1": i, "op2": "<", "val2": i + 1, "assignment": f"band_{i}"}
-            for i in range(150)
-        ]
+        rules = [{"boundary": str(i + 1), "label": f"band_{i}"} for i in range(150)]
         lf = pl.DataFrame({"x": [0.5, 75.5, 149.5]}).lazy()
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        result = _apply_banding(lf, "x", "band", "breakpoints", rules, right_closed=False).collect()
         assert result["band"].to_list() == ["band_0", "band_75", "band_149"]
 
-    def test_empty_dataframe_continuous(self) -> None:
+    def test_empty_dataframe_breakpoints(self) -> None:
         lf = pl.DataFrame({"x": pl.Series([], dtype=pl.Float64)}).lazy()
-        rules = [{"op1": ">", "val1": 0, "op2": "<", "val2": 10, "assignment": "a"}]
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        rules = [{"boundary": "0", "label": "a"}, {"boundary": "", "label": "b"}]
+        result = _apply_banding(lf, "x", "band", "breakpoints", rules).collect()
         assert result.height == 0
         assert "band" in result.columns
 
@@ -1516,10 +1492,12 @@ class TestApplyBandingEdgeCases:
     def test_column_name_with_spaces(self) -> None:
         lf = pl.DataFrame({"my column": [10.0, 20.0]}).lazy()
         rules = [
-            {"op1": ">=", "val1": 0, "op2": "<", "val2": 15, "assignment": "low"},
-            {"op1": ">=", "val1": 15, "op2": "<=", "val2": 30, "assignment": "high"},
+            {"boundary": "15", "label": "low"},
+            {"boundary": "30", "label": "high"},
         ]
-        result = _apply_banding(lf, "my column", "my band", "continuous", rules).collect()
+        result = _apply_banding(
+            lf, "my column", "my band", "breakpoints", rules, right_closed=False
+        ).collect()
         assert result["my band"].to_list() == ["low", "high"]
 
 
@@ -1771,17 +1749,6 @@ class TestCombineRatingColumnsEdgeCases:
 # ---------------------------------------------------------------------------
 
 
-class TestOverlappingBandingRulesFirstMatchWins:
-    def test_first_matching_rule_wins(self) -> None:
-        lf = pl.DataFrame({"x": [5, 3, 10, 11]}).lazy()
-        rules = [
-            {"op1": "<=", "val1": 10, "assignment": "low"},
-            {"op1": "<=", "val1": 5, "assignment": "very_low"},
-        ]
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
-        assert result["band"].to_list() == ["low", "low", "low", None]
-
-
 class TestCombineWithNonExistentColumnRaises:
     def test_missing_column_raises_at_collect(self) -> None:
         lf = pl.DataFrame({"a": [1.0]}).lazy()
@@ -1790,15 +1757,15 @@ class TestCombineWithNonExistentColumnRaises:
             result_lf.collect()
 
 
-class TestBandingWithNanInContinuousRuleValues:
-    def test_nan_val_in_rule_raises(self) -> None:
+class TestBandingWithNanBoundary:
+    def test_nan_boundary_raises(self) -> None:
         """NaN as a boundary value now raises ValueError (fail loudly)."""
         lf = pl.DataFrame({"x": [1, 5, 10]}).lazy()
         rules = [
-            {"op1": ">", "val1": float("nan"), "assignment": "nan_band"},
+            {"boundary": float("nan"), "label": "nan_band"},
         ]
         with pytest.raises(ValueError, match="non-finite"):
-            _apply_banding(lf, "x", "band", "continuous", rules)
+            _apply_banding(lf, "x", "band", "breakpoints", rules)
 
 
 class TestRatingTableEmptyStringFactorValue:
@@ -1980,8 +1947,8 @@ class TestWs11RatingHardening:
     @pytest.mark.parametrize(
         "banding_type,rules",
         [
-            ("continuous", [{"op1": "!!", "val1": "", "assignment": "bad"}]),
-            ("continuous", [{"op1": ">=", "val1": 0, "assignment": ""}]),
+            ("breakpoints", [{"boundary": "10", "label": ""}]),
+            ("breakpoints", [{"boundary": "10", "label": ""}, {"boundary": "", "label": ""}]),
             ("categorical", [{"value": "", "assignment": "bad"}]),
         ],
     )
@@ -2071,4 +2038,52 @@ class TestWs11RatingHardening:
         from haute._rating import RatingTableMissError
 
         with pytest.raises(RatingTableMissError):
-            projected.collect()
+            streaming_collect(projected)
+
+    def test_miss_guard_survives_a_filter_that_excludes_the_missing_row(self) -> None:
+        from haute._rating import RatingTableMissError
+
+        lf = pl.DataFrame({"region": ["north", "missing"]}).lazy()
+        table = {
+            "factors": ["region"],
+            "outputColumn": "factor",
+            "entries": [{"region": "north", "value": 2.0}],
+        }
+
+        filtered = _apply_rating_table(lf, table).filter(pl.col("region") != "missing")
+
+        with pytest.raises(RatingTableMissError):
+            streaming_collect(filtered)
+
+    def test_miss_guard_validates_only_the_rows_a_limit_reads(self) -> None:
+        lf = pl.DataFrame({"region": ["north", "missing"]}).lazy()
+        table = {
+            "factors": ["region"],
+            "outputColumn": "factor",
+            "entries": [{"region": "north", "value": 2.0}],
+        }
+
+        limited = streaming_collect(_apply_rating_table(lf, table).head(1))
+
+        assert limited.to_dicts() == [{"region": "north", "factor": 2.0}]
+
+    @pytest.mark.parametrize(
+        "dtype",
+        [pl.Int64, pl.Float32, pl.String, pl.Date, pl.Boolean],
+    )
+    def test_miss_guard_declares_the_joined_schema(self, dtype: pl.DataType) -> None:
+        value = pl.Series("factor_in", [1], dtype=pl.Int64).cast(dtype).item()
+        lf = pl.DataFrame({"factor_in": pl.Series([value], dtype=dtype), "other": [1]}).lazy()
+        entry_key = normalise_rating_key(value, dtype)
+        guarded = {
+            "factors": ["factor_in"],
+            "outputColumn": "factor",
+            "entries": [{"factor_in": entry_key, "value": 2.0}],
+        }
+        defaulted = {**guarded, "defaultValue": 1.0}
+
+        assert (
+            _apply_rating_table(lf, guarded).collect_schema()
+            == _apply_rating_table(lf, defaulted).collect_schema()
+        )
+        assert streaming_collect(_apply_rating_table(lf, guarded))["factor"].to_list() == [2.0]

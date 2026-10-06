@@ -1,4 +1,4 @@
-"""Bounded pivot calculations over an existing Explore dataframe cache."""
+"""Bounded pivot calculations over the shared data point an Explore node reads."""
 
 from __future__ import annotations
 
@@ -18,10 +18,21 @@ from typing import Any, Literal, cast
 import polars as pl
 from fastapi import HTTPException
 
+from haute._analysis_results import SynchronousAnalysisCache
 from haute._cache import canonical_json
 from haute._column_summary import is_unhashable_dtype
+from haute._data_points import (
+    CacheRequiredError,
+    ConsumerPoint,
+    DataPointResolver,
+    NodeDataPointInvalidError,
+    PointDataChangedError,
+    PointResolution,
+    consumer_point,
+)
 from haute._execution_admission import ExecutionAdmissionError, create_admitted_execution_context
 from haute._execution_context import (
+    ExecutionCancellationToken,
     ExecutionCancelledError,
     ExecutionContext,
     ExecutionMemoryLimitExceededError,
@@ -30,6 +41,7 @@ from haute._execution_context import (
 from haute._explore_pivots import validate_explore_pivots
 from haute._hashing import content_hash_bytes
 from haute._lru_cache import LRUCache
+from haute._node_snapshots import NodeSnapshotStore
 from haute._polars_utils import cancellable_streaming_collect
 from haute._sandbox import safe_globals, validate_user_code
 from haute._types import (
@@ -40,9 +52,10 @@ from haute._types import (
     ExplorePivotValuePlacement,
 )
 from haute.routes._background_jobs import CancellableJobRegistry, JobCancellation
-from haute.routes._explore_service import ExploreCacheSpec, ExploreService
 from haute.routes._job_lifecycle import JobLifecycle, bind_running_execution_metrics_publisher
 from haute.routes._job_store import JobStore, RunningJobFields
+from haute.routes._node_data_service import node_data_project_root
+from haute.routes._synchronous_analysis import run_synchronous_analysis
 from haute.schemas import (
     ExecutionMetricsPayload,
     ExplorePivotCell,
@@ -58,7 +71,6 @@ from haute.schemas import (
     ExplorePivotRunResponse,
     ExplorePivotStatusResponse,
     ExplorePivotValueIdentity,
-    ExploreRunRequest,
 )
 
 
@@ -113,10 +125,27 @@ class PivotContractError(Exception):
 
 
 @dataclass(frozen=True, slots=True)
+class PivotDataPoint:
+    """The data one pivot request reads, and the lease it reads it under.
+
+    A pivot never materialises anything itself: it leases the point its Explore
+    node reads — the same point every other consumer of that data shares — for
+    the whole calculation, so the frame cannot be replaced underneath it.
+    """
+
+    node_id: str
+    source: str
+    point_digest: str
+    data_version: str
+    resolution: PointResolution
+    resolver: DataPointResolver
+
+
+@dataclass(frozen=True, slots=True)
 class PivotCalculationSpec:
     """Resolved identities for one pivot run."""
 
-    explore: ExploreCacheSpec
+    point: PivotDataPoint
     pivot: ExplorePivotConfig
     calculation_key: str
     result_cache_key: str
@@ -518,27 +547,45 @@ def _normalise_cell(value: Any, warnings: set[str]) -> str | float | int | bool 
 class PivotService:
     """Calculate pivots from cached Explore data without executing the graph."""
 
-    def __init__(self, store: JobStore, explore_service: ExploreService) -> None:
+    def __init__(self, store: JobStore) -> None:
         self._store = store
-        self._explore_service = explore_service
         self._lifecycle = JobLifecycle(store)
         self._jobs = CancellableJobRegistry()
         self._result_cache: LRUCache[str, ExplorePivotResult] = LRUCache(max_size=32)
+        self._members_cache = SynchronousAnalysisCache()
         self._completion_lock = threading.RLock()
         self._completion_events: dict[str, threading.Event] = {}
 
-    def _explore_spec(
+    def _consumer(
         self,
         body: ExplorePivotRunRequest | ExplorePivotMembersRequest,
-    ) -> ExploreCacheSpec:
-        values: dict[str, Any] = {
-            "graph": body.graph,
-            "node_id": body.node_id,
-            "source": body.source,
-        }
-        if body.streaming_chunk_size is not None:
-            values["streaming_chunk_size"] = body.streaming_chunk_size
-        return self._explore_service.prepare_spec(ExploreRunRequest(**values))
+    ) -> tuple[ConsumerPoint, DataPointResolver]:
+        """Resolve the Explore node to the data point it reads."""
+        try:
+            consumer = consumer_point(body.graph, body.node_id)
+        except NodeDataPointInvalidError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        resolver = DataPointResolver(
+            body.graph,
+            source=body.source,
+            store=NodeSnapshotStore(node_data_project_root()),
+        )
+        return consumer, resolver
+
+    def _data_point(self, body: ExplorePivotRunRequest) -> PivotDataPoint | None:
+        """Return the leased-data identity of the point, or ``None`` when it is not cached."""
+        consumer, resolver = self._consumer(body)
+        resolution = resolver.resolve(consumer.point, consumer.demand)
+        if resolution.state != "current" or resolution.data_version is None:
+            return None
+        return PivotDataPoint(
+            node_id=body.node_id,
+            source=body.source,
+            point_digest=resolver.point_digest(consumer.point),
+            data_version=resolution.data_version,
+            resolution=resolution,
+            resolver=resolver,
+        )
 
     @staticmethod
     def _cache_required_failure() -> ExplorePivotFailure:
@@ -608,7 +655,7 @@ class PivotService:
     def _calculation_spec(
         self,
         body: ExplorePivotRunRequest,
-        explore: ExploreCacheSpec,
+        point: PivotDataPoint,
         pivot: ExplorePivotConfig,
     ) -> PivotCalculationSpec:
         calculation_key = self._calculation_key(pivot)
@@ -621,12 +668,14 @@ class PivotService:
                 }
             ).encode()
         )
+        # The data version is part of the key, so a result calculated before a
+        # refresh is never returned for the generation that replaced it.
         result_cache_key = (
             f"explore-pivot:v{EXPLORE_PIVOT_RESULT_VERSION}:"
-            f"{explore.dataframe_cache_key}:{result_identity}"
+            f"{point.point_digest}:{point.data_version}:{result_identity}"
         )
         return PivotCalculationSpec(
-            explore=explore,
+            point=point,
             pivot=pivot,
             calculation_key=calculation_key,
             result_cache_key=result_cache_key,
@@ -640,15 +689,14 @@ class PivotService:
         )
 
     def start(self, body: ExplorePivotRunRequest) -> ExplorePivotRunResponse:
-        explore = self._explore_spec(body)
-        cache_key = explore.dataframe_cache_request.keys_by_node[explore.node_id]
-        if explore.dataframe_cache_request.cache.get(cache_key) is None:
+        point = self._data_point(body)
+        if point is None:
             return self._cache_required_response()
         pivot = cast(
             ExplorePivotConfig,
             validate_explore_pivots([body.pivot], context="Explore pivot request")[0],
         )
-        spec = self._calculation_spec(body, explore, pivot)
+        spec = self._calculation_spec(body, point, pivot)
         cached = self._result_cache.get(spec.result_cache_key)
         if cached is not None:
             return ExplorePivotRunResponse(
@@ -748,7 +796,7 @@ class PivotService:
                 "strategy": "not-planned",
                 "profile": "explore_analysis",
                 "boundedness": "bounded",
-                "reason_code": "cached_explore_dataframe",
+                "reason_code": "leased_data_point",
                 "detail_state": "available",
                 "boundaries": {"state": "available", "total_count": 0, "items": []},
                 "reasons": {"state": "available", "total_count": 0, "items": []},
@@ -776,6 +824,19 @@ class PivotService:
                 to="contract_error",
                 message=exc.failure.message,
                 fields={"failure": exc.failure},
+                elapsed_seconds=time.monotonic() - started,
+            )
+        except (CacheRequiredError, PointDataChangedError):
+            # The data the request resolved was retired, cleared, or rewritten
+            # before the calculation could read it: the client asks again for
+            # whatever the point holds now instead of receiving a matrix
+            # attributed to data that is gone.
+            failure = self._cache_required_failure()
+            self._lifecycle.transition(
+                job_id,
+                to="contract_error",
+                message=failure.message,
+                fields={"failure": failure},
                 elapsed_seconds=time.monotonic() - started,
             )
         except ExecutionCancelledError:
@@ -809,17 +870,6 @@ class PivotService:
             with self._completion_lock:
                 if self._completion_events.get(job_id) is completion_event:
                     del self._completion_events[job_id]
-
-    def _cached_lazy_frame(self, explore: ExploreCacheSpec) -> pl.LazyFrame:
-        key = explore.dataframe_cache_request.keys_by_node[explore.node_id]
-        lazy = explore.dataframe_cache_request.cache.scan(key)
-        if lazy is None:
-            raise PivotContractError(
-                "cache_required",
-                "The full Explore dataset is not materialised.",
-                "Process and cache full data, then update the pivot.",
-            )
-        return lazy
 
     def _validate_schema(
         self,
@@ -1007,7 +1057,28 @@ class PivotService:
         spec: PivotCalculationSpec,
         context: ExecutionContext,
     ) -> ExplorePivotResult:
-        lazy = self._cached_lazy_frame(spec.explore)
+        # The lease is held for the whole calculation, so every collect below
+        # reads the generation the request resolved. It is exact: a result is
+        # labelled and cached with one data version, so data that moved on
+        # since the request resolved must not be read under the old version.
+        resolution = spec.point.resolution
+        resolver = spec.point.resolver
+        with resolver.lease_resolved(resolution, exact=True, execution_context=context) as leased:
+            result = self._calculate_leased(spec, context, leased.scan)
+            if resolution.kind == "data_input" and resolution.input_identity is None:
+                # A direct file is not pinned by the lease: prove it was not
+                # rewritten while the aggregation read it.
+                observed = resolver.resolve(resolution.point, resolution.demand)
+                if observed.data_version != leased.data_version:
+                    raise PointDataChangedError(resolution)
+            return result
+
+    def _calculate_leased(
+        self,
+        spec: PivotCalculationSpec,
+        context: ExecutionContext,
+        lazy: pl.LazyFrame,
+    ) -> ExplorePivotResult:
         schema = lazy.collect_schema()
         self._validate_schema(schema, spec.pivot)
         filtered = self._apply_filters(lazy, schema, spec.pivot)
@@ -1239,10 +1310,10 @@ class PivotService:
                     )
                 )
         return ExplorePivotResult(
-            node_id=spec.explore.node_id,
+            node_id=spec.point.node_id,
             pivot_id=spec.pivot["id"],
-            source=spec.explore.source,
-            dataframe_cache_key=spec.explore.dataframe_cache_key,
+            source=spec.point.source,
+            data_version=spec.point.data_version,
             calculation_key=spec.calculation_key,
             row_fields=row_fields,
             column_fields=column_fields,
@@ -1310,68 +1381,47 @@ class PivotService:
         # match queries the column expression never produces.
         return label.str.to_lowercase().str.contains(search.lower(), literal=True)
 
-    def members(self, body: ExplorePivotMembersRequest) -> ExplorePivotMembersResponse:
-        explore = self._explore_spec(body)
-        key = explore.dataframe_cache_request.keys_by_node[explore.node_id]
-        if explore.dataframe_cache_request.cache.get(key) is None:
+    def members(
+        self,
+        body: ExplorePivotMembersRequest,
+        *,
+        cancellation_token: ExecutionCancellationToken | None = None,
+    ) -> ExplorePivotMembersResponse:
+        """List the members of one pivot dimension over the whole leased point.
+
+        This answers inside the request through the shared synchronous-analysis
+        helper, so it runs under an admitted execution context, is memoised per
+        data version and request, reports an admission or memory-limit failure
+        as HTTP 507 with the execution payload, and stops when the client that
+        asked goes away rather than scanning on for nobody.
+        """
+        consumer, resolver = self._consumer(body)
+        request = {
+            "analysis": "explore_pivot_members",
+            "version": EXPLORE_PIVOT_RESULT_VERSION,
+            "field": body.field,
+            "search": body.search or "",
+            # The display limit decides whether this answers with members or
+            # with a cardinality failure, so it belongs to the memo key.
+            "limit": MAX_FILTER_MEMBERS,
+        }
+        try:
+            return run_synchronous_analysis(
+                resolver,
+                consumer.point,
+                consumer.demand,
+                operation="explore_pivot_members",
+                request=request,
+                cache=self._members_cache,
+                compute=lambda leased, context: self._member_options(body, leased.scan, context),
+                cancellation_token=cancellation_token,
+            )
+        except (CacheRequiredError, PointDataChangedError):
+            # Either the point holds no whole dataset, or the file moved on
+            # while its members were read: ask again for what it holds now.
             return ExplorePivotMembersResponse(
                 status="cache_required",
                 failure=self._cache_required_failure(),
-            )
-        context: ExecutionContext | None = None
-        try:
-            context = create_admitted_execution_context(
-                operation="explore_pivot_members",
-                profile=ExecutionProfile.EXPLORE_ANALYSIS,
-                job_id=None,
-            )
-            lazy = self._cached_lazy_frame(explore)
-            schema = lazy.collect_schema()
-            if (
-                body.field not in schema
-                or is_unhashable_dtype(schema[body.field])
-                or not _is_supported_dimension_dtype(schema[body.field])
-            ):
-                raise PivotContractError(
-                    "invalid_pivot_field",
-                    "Pivot member field is not groupable.",
-                    "Choose a supported scalar field.",
-                    field=body.field,
-                )
-            filtered = lazy
-            if body.search:
-                filtered = filtered.filter(
-                    self._member_search_expression(body.field, schema[body.field], body.search)
-                )
-            cardinality = cancellable_streaming_collect(
-                filtered.select(pl.col(body.field).n_unique().alias("__haute_member_count")),
-                execution_context=context,
-            ).item(0, 0)
-            self._limit("filter_members", int(cardinality), MAX_FILTER_MEMBERS)
-            grouped = cancellable_streaming_collect(
-                filtered.group_by(body.field).agg(pl.len().alias("__haute_count")),
-                execution_context=context,
-            )
-            options = []
-            for value, count in grouped.iter_rows():
-                member_key = _member_key(value)
-                options.append(
-                    ExplorePivotMemberOption(
-                        key=member_key,
-                        label=_member_label(member_key),
-                        count=int(count),
-                    )
-                )
-            options.sort(
-                key=lambda option: (
-                    -option.count,
-                    _member_sort_key((option.key.kind, option.key.value)),
-                )
-            )
-            return ExplorePivotMembersResponse(
-                status="ok",
-                field=body.field,
-                members=options,
             )
         except PivotContractError as exc:
             return ExplorePivotMembersResponse(
@@ -1379,6 +1429,53 @@ class PivotService:
                 field=body.field,
                 failure=exc.failure,
             )
-        finally:
-            if context is not None:
-                context.release_admission()
+
+    def _member_options(
+        self,
+        body: ExplorePivotMembersRequest,
+        lazy: pl.LazyFrame,
+        context: ExecutionContext,
+    ) -> ExplorePivotMembersResponse:
+        schema = lazy.collect_schema()
+        if (
+            body.field not in schema
+            or is_unhashable_dtype(schema[body.field])
+            or not _is_supported_dimension_dtype(schema[body.field])
+        ):
+            raise PivotContractError(
+                "invalid_pivot_field",
+                "Pivot member field is not groupable.",
+                "Choose a supported scalar field.",
+                field=body.field,
+            )
+        filtered = lazy
+        if body.search:
+            filtered = filtered.filter(
+                self._member_search_expression(body.field, schema[body.field], body.search)
+            )
+        cardinality = cancellable_streaming_collect(
+            filtered.select(pl.col(body.field).n_unique().alias("__haute_member_count")),
+            execution_context=context,
+        ).item(0, 0)
+        self._limit("filter_members", int(cardinality), MAX_FILTER_MEMBERS)
+        grouped = cancellable_streaming_collect(
+            filtered.group_by(body.field).agg(pl.len().alias("__haute_count")),
+            execution_context=context,
+        )
+        options = []
+        for value, count in grouped.iter_rows():
+            member_key = _member_key(value)
+            options.append(
+                ExplorePivotMemberOption(
+                    key=member_key,
+                    label=_member_label(member_key),
+                    count=int(count),
+                )
+            )
+        options.sort(
+            key=lambda option: (
+                -option.count,
+                _member_sort_key((option.key.kind, option.key.value)),
+            )
+        )
+        return ExplorePivotMembersResponse(status="ok", field=body.field, members=options)

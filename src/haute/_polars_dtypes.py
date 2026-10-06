@@ -1,11 +1,12 @@
-"""Serialisable, struct-capable polars dtype codec.
+"""The one dtype vocabulary: a serialisable, struct-capable polars dtype codec.
 
+Every place Haute names a polars dtype in text goes through this module.
 Data-input/data-output node configs carry schema declarations (``schema``,
-``schema_overrides``, ``hive_schema`` arguments) as JSON. Scalar dtypes are
-plain strings (``"int64"``, ``"String"`` — same vocabulary as the existing
-data-source aliases). Parametric and nested dtypes use a structured JSON
-spec, because struct capability is the point: JSON at full width needs
-``Struct``/``List`` columns as first-class declarable types.
+``schema_overrides``, ``hive_schema`` arguments) as JSON, and API-input
+flat-file sources declare column dtypes the same way. Scalar dtypes are plain
+strings (``"int64"``, ``"String"``). Parametric and nested dtypes use a
+structured JSON spec, because struct capability is the point: JSON at full
+width needs ``Struct``/``List`` columns as first-class declarable types.
 
 Spec grammar (each ``<spec>`` is a string or an object)::
 
@@ -21,11 +22,20 @@ Spec grammar (each ``<spec>`` is a string or an object)::
     {"type": "Int64"}                              object form of any scalar
 
 ``parse_dtype`` and ``dtype_to_spec`` are exact inverses over the supported
-lattice (round-trip tested), so editors can display what configs persist.
+lattice (round-trip tested), so editors can display what configs persist. A
+name outside the grammar is rejected; it is never looked up as an arbitrary
+attribute of the polars module.
+
+Consumers that need a coarser vocabulary get a named view here rather than a
+private table of their own: the rating descriptor renames this codec's keys
+(``haute._rating``), and the feature-contract and MLflow views below serve
+training, deploy scoring and MLflow signatures.
 """
 
 from __future__ import annotations
 
+import ast
+import re
 from collections.abc import Mapping
 from typing import Any, Literal, cast
 
@@ -35,8 +45,7 @@ from haute.errors import SchemaMismatchError
 
 _TimeUnit = Literal["ms", "us", "ns"]
 
-# Scalar string aliases, a superset of the data-source alias table in
-# ``_io.py``.
+# Scalar string aliases, matched case-insensitively.
 POLARS_DTYPE_ALIASES: Mapping[str, pl.DataType | type[pl.DataType]] = {
     "bool": pl.Boolean,
     "boolean": pl.Boolean,
@@ -234,6 +243,63 @@ def dtype_to_spec(dtype: Any) -> Any:
     return str(dtype)
 
 
+def parse_rendered_dtype(rendered: str, *, column: str | None = None) -> pl.DataType:
+    """Rebuild a polars dtype from polars' own rendering, ``str(dtype)``.
+
+    A preview reports each column's type that way (``Int64``,
+    ``Datetime(time_unit='us', time_zone=None)``, ``Struct({'a': Int64})``).
+    The text is read as a Python expression tree and never evaluated: every
+    name must be a polars dtype, a call's callee must be one, and every
+    argument a literal, list, tuple, dict or nested dtype.
+    """
+
+    def unsupported() -> SchemaMismatchError:
+        return SchemaMismatchError("Unsupported rendered dtype.", column=column, dtype=rendered)
+
+    def value(node: ast.expr) -> Any:
+        if isinstance(node, ast.Constant) and (
+            node.value is None or isinstance(node.value, str | int | bool)
+        ):
+            return node.value
+        if isinstance(node, ast.List | ast.Tuple):
+            items = [value(item) for item in node.elts]
+            return items if isinstance(node, ast.List) else tuple(items)
+        if isinstance(node, ast.Dict):
+            keys = [key for key in node.keys if key is not None]
+            if len(keys) != len(node.keys):
+                raise unsupported()
+            return {value(key): value(item) for key, item in zip(keys, node.values, strict=True)}
+        if isinstance(node, ast.Name):
+            return dtype_class(node.id)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            args = [value(arg) for arg in node.args]
+            kwargs = {kw.arg: value(kw.value) for kw in node.keywords if kw.arg is not None}
+            if len(kwargs) != len(node.keywords):
+                raise unsupported()
+            try:
+                return dtype_class(node.func.id)(*args, **kwargs)
+            except (TypeError, ValueError) as exc:
+                raise unsupported() from exc
+        raise unsupported()
+
+    def dtype_class(name: str) -> type[pl.DataType]:
+        candidate = getattr(pl, name, None)
+        if isinstance(candidate, type) and issubclass(candidate, pl.DataType):
+            return candidate
+        raise unsupported()
+
+    try:
+        tree = ast.parse(rendered, mode="eval")
+    except SyntaxError as exc:
+        raise unsupported() from exc
+    dtype = value(tree.body)
+    if isinstance(dtype, type) and issubclass(dtype, pl.DataType):
+        return dtype()
+    if isinstance(dtype, pl.DataType):
+        return dtype
+    raise unsupported()
+
+
 def parse_schema_mapping(raw: Any, *, argument: str) -> dict[str, Any]:
     """Decode a ``{column: dtype-spec}`` mapping argument.
 
@@ -252,3 +318,106 @@ def parse_schema_mapping(raw: Any, *, argument: str) -> dict[str, Any]:
             )
         decoded[name] = parse_dtype(spec, column=name)
     return decoded
+
+
+# ---------------------------------------------------------------------------
+# Feature-contract view
+# ---------------------------------------------------------------------------
+#
+# A model's feature contract records one coarse name per feature. Training
+# writes it and deploy scoring rebuilds it from the live frame to compare, so
+# both must render a dtype identically — which is why the rendering lives here.
+
+_CONTRACT_MLFLOW_TYPES: Mapping[str, str] = {
+    "Int64": "long",
+    "Float64": "double",
+    "String": "string",
+    "Boolean": "boolean",
+}
+CONTRACT_SCALAR_NAMES: tuple[str, ...] = tuple(sorted(_CONTRACT_MLFLOW_TYPES))
+
+_CONTRACT_DATETIME = re.compile(
+    r"Datetime(?:\(time_unit='(?:ns|us|ms)', time_zone=(?:None|'[^']*')\))?\Z"
+)
+_CONTRACT_DECIMAL = re.compile(r"Decimal(?:\(precision=(?:\d+|None), scale=(?:\d+|None)\))?\Z")
+
+
+def contract_dtype_name(dtype: Any) -> str:
+    """The feature-contract name of *dtype*.
+
+    Collapses polars' integer and float widths to ``Int64``/``Float64`` and the
+    string family (``String``, ``Categorical``) to ``String`` — the scalar
+    names an MLflow signature understands. Every other dtype keeps polars' own
+    full rendering (``Date``, a parameterised
+    ``Datetime(time_unit=..., time_zone=...)``, ``Decimal(...)``) so the place
+    that consumes the contract can validate it deliberately.
+    """
+    if dtype == pl.Boolean:
+        return "Boolean"
+    if dtype in (pl.String, pl.Categorical):
+        return "String"
+    if dtype.is_integer():
+        return "Int64"
+    if dtype.is_float():
+        return "Float64"
+    return str(dtype)
+
+
+def contract_mlflow_type_name(name: str) -> str | None:
+    """The MLflow view of a feature-contract name.
+
+    Returns the ``mlflow.types.DataType`` member name for *name*, or ``None``
+    when MLflow has no exact type for it. ``Date`` and every canonical
+    ``Datetime`` rendering map to ``datetime``; a lookalike does not.
+    """
+    mapped = _CONTRACT_MLFLOW_TYPES.get(name)
+    if mapped is not None:
+        return mapped
+    if name == "Date" or _CONTRACT_DATETIME.fullmatch(name):
+        return "datetime"
+    return None
+
+
+def is_contract_decimal_name(name: str) -> bool:
+    """Whether *name* is a feature-contract ``Decimal`` rendering."""
+    return _CONTRACT_DECIMAL.fullmatch(name) is not None
+
+
+# ---------------------------------------------------------------------------
+# Rendered-dtype MLflow view
+# ---------------------------------------------------------------------------
+#
+# A deploy manifest records each input and output column as polars' own
+# rendering, ``str(dtype)``, and a deployed model's signature describes that
+# schema exactly: widths are kept (``Int32`` is ``integer``, ``Float32`` is
+# ``float``), unlike the feature contract, which collapses them.
+
+_RENDERED_DTYPE_MLFLOW_TYPES: Mapping[str, str] = {
+    "Int8": "integer",
+    "Int16": "integer",
+    "Int32": "integer",
+    "Int64": "long",
+    "UInt8": "integer",
+    "UInt16": "integer",
+    "UInt32": "long",
+    "UInt64": "long",
+    "Float32": "float",
+    "Float64": "double",
+    "String": "string",
+    "Utf8": "string",
+    "Categorical": "string",
+    "Enum": "string",
+    "Boolean": "boolean",
+    "Date": "datetime",
+    "Datetime": "datetime",
+}
+
+
+def rendered_dtype_mlflow_type_name(rendered: str) -> str | None:
+    """The MLflow view of a rendered polars dtype (``str(dtype)``).
+
+    Returns the ``mlflow.types.DataType`` member name for the rendering's base
+    type — its parameters, such as a ``Datetime`` time unit, do not change the
+    MLflow type — or ``None`` when MLflow has no type for it.
+    """
+    return _RENDERED_DTYPE_MLFLOW_TYPES.get(rendered.split("(", 1)[0])

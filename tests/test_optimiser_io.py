@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from haute._mlflow_utils import (
+    ResolvedBackend,
     resolve_mlflow_source,
 )
 from haute._mlflow_utils import (
@@ -50,12 +51,22 @@ def mlflow_mocks(tmp_path):
     Yields a namespace with mock_backend, mock_set_uri, mock_download,
     and a helper to write artifact JSON.
     """
+    mock_res_backend = ResolvedBackend(
+        mode="local",
+        tracking_uri="file:///x",
+        registry_uri="file:///x",
+        identity="local:x|registry=file:///x",
+        digest="deadbeefdeadbeef",
+    )
     with (
         patch("mlflow.artifacts.download_artifacts") as mock_download,
         patch("mlflow.set_tracking_uri") as mock_set_uri,
-        patch("haute.modelling._mlflow_log.resolve_tracking_backend") as mock_backend,
+        patch("mlflow.tracking.MlflowClient"),
+        patch(
+            "haute._mlflow_utils.resolve_backend",
+            return_value=mock_res_backend,
+        ) as mock_backend,
     ):
-        mock_backend.return_value = ("http://localhost:5000", "local")
 
         def write_artifact(data: dict) -> str:
             path = tmp_path / "optimiser_result.json"
@@ -148,8 +159,14 @@ class TestLoadMlflowOptimiserArtifactRun:
             patch("mlflow.set_tracking_uri"),
             patch("mlflow.tracking.MlflowClient", side_effect=_client_with_required_env),
             patch(
-                "haute.modelling._mlflow_log.resolve_tracking_backend",
-                return_value=("file:///tmp/mlruns", "local"),
+                "haute._mlflow_utils.resolve_backend",
+                return_value=ResolvedBackend(
+                    mode="local",
+                    tracking_uri="file:///tmp/mlruns",
+                    registry_uri="file:///tmp/mlruns",
+                    identity="local:file:///tmp/mlruns|registry=file:///tmp/mlruns",
+                    digest="0123456789abcdef",
+                ),
             ),
         ):
             resolve_mlflow_source(source_type="run", run_id="run_abc123")
@@ -180,14 +197,12 @@ class TestLoadMlflowOptimiserArtifactRun:
             load_mlflow_optimiser_artifact(
                 source_type="run",
                 run_id="",
-                tracking_uri="http://x",
             )
 
     def test_invalid_source_type_raises(self):
         with pytest.raises(ValueError, match="Invalid sourceType"):
             load_mlflow_optimiser_artifact(
                 source_type="invalid",
-                tracking_uri="http://x",
             )
 
 
@@ -220,30 +235,79 @@ class TestLoadMlflowOptimiserArtifactRegistered:
             load_mlflow_optimiser_artifact(
                 source_type="registered",
                 registered_model="",
-                tracking_uri="http://x",
             )
 
-    def test_tracking_uri_auto_detected(self, mlflow_mocks):
-        """When tracking_uri is empty, resolve_tracking_backend is called."""
+    def test_destination_auto(self, mlflow_mocks):
+        """An omitted destination resolves the auto backend exactly once."""
         mlflow_mocks.write_artifact({"mode": "online"})
 
         load_mlflow_optimiser_artifact(
             source_type="run",
             run_id="run_1",
-            tracking_uri="",  # empty => auto-detect
         )
-        mlflow_mocks.backend.assert_called_once()
+        mlflow_mocks.backend.assert_called_once_with("")
 
-    def test_explicit_tracking_uri_skips_auto_detect(self, mlflow_mocks):
-        """When tracking_uri is provided, resolve_tracking_backend is not called."""
+    def test_destination_explicit_is_forwarded(self, mlflow_mocks):
+        """An explicit destination key reaches resolve_backend verbatim."""
         mlflow_mocks.write_artifact({"mode": "online"})
 
         load_mlflow_optimiser_artifact(
             source_type="run",
             run_id="run_1",
-            tracking_uri="http://explicit:5000",
+            destination="local",
         )
-        mlflow_mocks.backend.assert_not_called()
+        mlflow_mocks.backend.assert_called_once_with("local")
+
+    def test_same_run_on_two_backends_does_not_alias(self, tmp_path):
+        """The same run ID on two backend identities yields two cache entries.
+
+        Both backends carry the *same* tracking URI (a Databricks profile whose
+        workspace was repointed between the two loads), so only the backend
+        identity distinguishes them: a cache keyed on the URI alone would
+        serve the first workspace's artifact for the second.
+        """
+        backend_a = ResolvedBackend(
+            mode="databricks",
+            tracking_uri="databricks://team",
+            registry_uri="databricks-uc://team",
+            identity="databricks:https://host-a.example.net|profile=team|registry=databricks-uc://team",
+            digest="aaaaaaaaaaaaaaaa",
+        )
+        backend_b = ResolvedBackend(
+            mode="databricks",
+            tracking_uri="databricks://team",
+            registry_uri="databricks-uc://team",
+            identity="databricks:https://host-b.example.net|profile=team|registry=databricks-uc://team",
+            digest="bbbbbbbbbbbbbbbb",
+        )
+        assert backend_a.tracking_uri == backend_b.tracking_uri
+        path_a = tmp_path / "a.json"
+        path_a.write_text(json.dumps({"mode": "online", "version": "from_a"}))
+        path_b = tmp_path / "b.json"
+        path_b.write_text(json.dumps({"mode": "online", "version": "from_b"}))
+
+        with (
+            patch("mlflow.set_tracking_uri"),
+            patch("mlflow.tracking.MlflowClient"),
+            patch(
+                "mlflow.artifacts.download_artifacts",
+                side_effect=[str(path_a), str(path_b)],
+            ),
+            patch(
+                "haute._mlflow_utils.resolve_backend",
+                side_effect=[backend_a, backend_b],
+            ),
+        ):
+            from_a = load_mlflow_optimiser_artifact(source_type="run", run_id="run_1")
+            from_b = load_mlflow_optimiser_artifact(
+                source_type="run",
+                run_id="run_1",
+                destination="local",
+            )
+
+        assert from_a["version"] == "from_a"
+        assert from_b["version"] == "from_b"
+        assert _load_mlflow_cached.cache_info().currsize == 2
 
 
 # ===========================================================================

@@ -1,7 +1,7 @@
 """Coverage tests for TrainService pure column-demand helpers.
 
 Restores per-file coverage after the multi-frame merge added column-demand
-edge/error arms (`_string_list_config` validation; evaluation-strategy column
+edge/error arms (`string_list_config` validation; evaluation-strategy column
 derivation) that the route-level and engine tests do not reach directly.
 These are pure functions, so they are exercised by direct call.
 """
@@ -11,16 +11,15 @@ from __future__ import annotations
 import pytest
 
 from haute.modelling._evaluation import EvaluationConfig, generate_evaluation_plan
+from haute.modelling._train_config import role_column_reasons, string_list_config
 from haute.routes._train_service import (
-    _build_training_feature_selection,
     _check_gpu_vram,
     _evaluation_preview_payload,
     _job_elapsed_seconds,
-    _string_list_config,
-    _training_metadata_reasons,
     _training_required_columns_by_node,
     _training_required_metadata_columns,
     _VramCheck,
+    build_training_feature_selection,
 )
 
 
@@ -81,22 +80,22 @@ class TestEvaluationPreviewPayload:
 
 class TestStringListConfig:
     def test_missing_key_returns_empty(self) -> None:
-        assert _string_list_config({}, "id_columns") == []
+        assert string_list_config({}, "id_columns") == []
 
     def test_non_list_raises(self) -> None:
         with pytest.raises(ValueError, match="id_columns must be a list"):
-            _string_list_config({"id_columns": "policy_id"}, "id_columns")
+            string_list_config({"id_columns": "policy_id"}, "id_columns")
 
     def test_empty_string_member_raises(self) -> None:
         with pytest.raises(ValueError, match="non-empty string"):
-            _string_list_config({"id_columns": ["ok", ""]}, "id_columns")
+            string_list_config({"id_columns": ["ok", ""]}, "id_columns")
 
     def test_non_string_member_raises(self) -> None:
         with pytest.raises(ValueError, match="non-empty string"):
-            _string_list_config({"id_columns": [123]}, "id_columns")
+            string_list_config({"id_columns": [123]}, "id_columns")
 
     def test_dedupes_preserving_order(self) -> None:
-        assert _string_list_config({"id_columns": ["a", "b", "a"]}, "id_columns") == ["a", "b"]
+        assert string_list_config({"id_columns": ["a", "b", "a"]}, "id_columns") == ["a", "b"]
 
 
 class TestTrainingRequiredMetadataColumns:
@@ -211,14 +210,14 @@ class TestTrainingMetadataReasons:
         ],
     )
     def test_evaluation_columns_are_explained(self, evaluation, column) -> None:
-        reasons = _training_metadata_reasons({"target": "y", "evaluation": evaluation})
+        reasons = role_column_reasons({"target": "y", "evaluation": evaluation})
 
         assert reasons == {"y": "target", column: "evaluation"}
 
     def test_non_mapping_evaluation_is_ignored_and_role_precedence_is_stable(
         self,
     ) -> None:
-        reasons = _training_metadata_reasons(
+        reasons = role_column_reasons(
             {
                 "target": "shared",
                 "weight": "shared",
@@ -230,7 +229,7 @@ class TestTrainingMetadataReasons:
         assert reasons == {"shared": "target"}
 
     def test_evaluation_key_respects_role_precedence(self) -> None:
-        reasons = _training_metadata_reasons(
+        reasons = role_column_reasons(
             {
                 "target": "shared",
                 "evaluation": {
@@ -248,7 +247,7 @@ class TestTrainingMetadataReasons:
 
         assert reasons == {"shared": "target"}
 
-        reasons = _training_metadata_reasons(
+        reasons = role_column_reasons(
             {
                 "target": "y",
                 "evaluation": {
@@ -270,18 +269,19 @@ class TestTrainingRequiredColumnsByNode:
     def test_returns_none_without_target(self) -> None:
         assert _training_required_columns_by_node("n", {"algorithm": "catboost"}) is None
 
-    def test_glm_demand_omits_dormant_excluded_terms(self) -> None:
+    def test_glm_demand_keeps_every_term_column_despite_a_stale_exclude(self) -> None:
+        """``exclude`` is a CatBoost lever: it never narrows a GLM's demand."""
         demand = _training_required_columns_by_node(
             "n",
             {
                 "algorithm": "glm",
                 "target": "target",
-                "terms": {"age": {}, "region": {}},
+                "terms": {"age": {"type": "linear"}, "region": {"type": "categorical"}},
                 "exclude": ["age"],
             },
         )
 
-        assert demand == {"n": frozenset({"target", "region"})}
+        assert demand == {"n": frozenset({"target", "age", "region"})}
 
 
 class TestTrainingFeatureSelection:
@@ -295,19 +295,18 @@ class TestTrainingFeatureSelection:
     )
     def test_invalid_schema_metadata_fails_before_selection(self, schema, message) -> None:
         with pytest.raises(ValueError, match=message):
-            _build_training_feature_selection(
+            build_training_feature_selection(
                 {"algorithm": "catboost", "target": "target"},
                 schema,
             )
 
     def test_explicit_features_preserve_config_order_and_explain_every_other_column(self) -> None:
-        diagnostic = _build_training_feature_selection(
+        diagnostic = build_training_feature_selection(
             {
                 "algorithm": "catboost",
                 "target": "target",
                 "weight": "weight",
                 "feature_columns": ["feature_b", "feature_a"],
-                "exclude": ["ignored"],
             },
             ["target", "weight", "feature_a", "feature_b", "ignored", "unselected"],
         )
@@ -322,12 +321,12 @@ class TestTrainingFeatureSelection:
         assert [(item.column, item.reason) for item in diagnostic.excluded_columns.items] == [
             ("target", "target"),
             ("weight", "weight"),
-            ("ignored", "configured_exclusion"),
+            ("ignored", "not_selected"),
             ("unselected", "not_selected"),
         ]
 
-    def test_all_except_features_preserve_schema_order(self) -> None:
-        diagnostic = _build_training_feature_selection(
+    def test_role_columns_listed_as_features_are_dormant(self) -> None:
+        diagnostic = build_training_feature_selection(
             {
                 "algorithm": "catboost",
                 "target": "target",
@@ -339,7 +338,13 @@ class TestTrainingFeatureSelection:
                     "seed": 42,
                     "validation": {"method": "single", "size": 0.2},
                 },
-                "exclude": ["ignored"],
+                "feature_columns": [
+                    "feature_b",
+                    "target",
+                    "policy_id",
+                    "household_id",
+                    "feature_a",
+                ],
             },
             [
                 "feature_b",
@@ -351,7 +356,7 @@ class TestTrainingFeatureSelection:
             ],
         )
 
-        assert diagnostic.mode == "all_except"
+        assert diagnostic.mode == "explicit"
         assert diagnostic.features.items == ["feature_b", "feature_a"]
         assert diagnostic.feature_count == 2
         assert (
@@ -360,63 +365,80 @@ class TestTrainingFeatureSelection:
         ) in [(item.column, item.reason) for item in diagnostic.retained_metadata.items]
 
     def test_glm_terms_follow_schema_order_and_missing_columns_fail_before_execution(self) -> None:
-        diagnostic = _build_training_feature_selection(
+        schema = {
+            "feature_b": "Float64",
+            "target": "Float64",
+            "feature_a": "Float64",
+            "unused": "Float64",
+        }
+        diagnostic = build_training_feature_selection(
             {
                 "algorithm": "glm",
                 "target": "target",
-                "terms": {"feature_a": {}, "feature_b": {}},
+                "terms": {"feature_a": {"type": "linear"}, "feature_b": {"type": "linear"}},
             },
-            ["feature_b", "target", "feature_a", "unused"],
+            schema,
         )
 
         assert diagnostic.mode == "glm_terms"
         assert diagnostic.features.items == ["feature_b", "feature_a"]
         assert diagnostic.excluded_columns.items[-1].reason == "not_in_formula"
 
-        dormant = _build_training_feature_selection(
+        stale_exclude = build_training_feature_selection(
             {
                 "algorithm": "glm",
                 "target": "target",
-                "terms": {"feature_a": {}, "feature_b": {}},
+                "terms": {"feature_a": {"type": "linear"}, "feature_b": {"type": "linear"}},
                 "exclude": ["feature_a"],
             },
-            ["feature_b", "target", "feature_a", "unused"],
+            schema,
         )
-        assert dormant.features.items == ["feature_b"]
-        assert [(item.column, item.reason) for item in dormant.excluded_columns.items] == [
+        assert stale_exclude.features.items == ["feature_b", "feature_a"]
+        assert [(item.column, item.reason) for item in stale_exclude.excluded_columns.items] == [
             ("target", "target"),
-            ("feature_a", "configured_exclusion"),
             ("unused", "not_in_formula"),
         ]
 
         with pytest.raises(ValueError, match="Configured feature column.*missing"):
-            _build_training_feature_selection(
+            build_training_feature_selection(
                 {
                     "algorithm": "catboost",
                     "target": "target",
                     "feature_columns": ["missing"],
                 },
-                ["target", "feature"],
+                {"target": "Float64", "feature": "Float64"},
             )
 
         with pytest.raises(ValueError, match="GLM terms reference columns.*missing"):
-            _build_training_feature_selection(
+            build_training_feature_selection(
                 {
                     "algorithm": "glm",
                     "target": "target",
-                    "terms": {"missing": {}},
+                    "terms": {"missing": {"type": "linear"}},
                 },
-                ["target", "feature"],
+                {"target": "Float64", "feature": "Float64"},
+            )
+
+        with pytest.raises(ValueError, match="cannot use role columns: 'target' \\(target\\)"):
+            build_training_feature_selection(
+                {
+                    "algorithm": "glm",
+                    "target": "target",
+                    "terms": {"target": {"type": "linear"}},
+                },
+                {"target": "Float64", "feature": "Float64"},
             )
 
     def test_empty_feature_set_fails_and_high_cardinality_detail_is_bounded(self) -> None:
-        with pytest.raises(ValueError, match="No feature columns remaining"):
-            _build_training_feature_selection(
-                {"algorithm": "catboost", "target": "target"},
-                ["target"],
-            )
+        # Features are opt-in: nothing ticked, or only a dormant role column.
+        for selection in ({}, {"feature_columns": ["target"]}):
+            with pytest.raises(ValueError, match="Modelling config has no features"):
+                build_training_feature_selection(
+                    {"algorithm": "catboost", "target": "target", **selection},
+                    ["target", "feature"],
+                )
 
-        diagnostic = _build_training_feature_selection(
+        diagnostic = build_training_feature_selection(
             {
                 "algorithm": "catboost",
                 "target": "target",

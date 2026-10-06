@@ -1,12 +1,19 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
-import { render, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
+import { act, render, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
 import { useEffect, useRef, useState } from "react"
 import OptimiserConfig from "../OptimiserConfig"
 import { GraphProvider } from "../GraphContext"
 import useNodeResultsStore, { hashConfig } from "../../stores/useNodeResultsStore"
 import useSettingsStore from "../../stores/useSettingsStore"
+import useUIStore, { type OptimiserPane } from "../../stores/useUIStore"
+import useGraphStore from "../../stores/useGraphStore"
+import { buildGraph } from "../../utils/buildGraph"
+import useOptimiserPublishStore from "../../stores/useOptimiserPublishStore"
+import { solveConfigHash } from "../optimiser/solveActions"
 import type { SimpleNode, SimpleEdge } from "../editors"
+import type { MlflowDestinationEntry, MlflowDestinationKey } from "../../api/types"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
+import { makeSolveResult } from "../../test-utils/factories"
 
 // ── Mock API client ──
 const mockSolveOptimiser = vi.fn()
@@ -14,6 +21,10 @@ const mockEstimateOptimiserSolve = vi.fn()
 const mockStartOptimiserFrontierAutoRange = vi.fn()
 const mockGetOptimiserFrontierAutoRangeStatus = vi.fn()
 const mockCancelOptimiserFrontierAutoRange = vi.fn()
+const mockCancelOptimiserSolve = vi.fn()
+const mockSaveOptimiser = vi.fn()
+const mockLogOptimiserToMlflow = vi.fn()
+const mockSelectFrontierPoint = vi.fn()
 
 vi.mock("../../api/client", () => ({
   solveOptimiser: (...args: unknown[]) => mockSolveOptimiser(...args),
@@ -21,6 +32,10 @@ vi.mock("../../api/client", () => ({
   startOptimiserFrontierAutoRange: (...args: unknown[]) => mockStartOptimiserFrontierAutoRange(...args),
   getOptimiserFrontierAutoRangeStatus: (...args: unknown[]) => mockGetOptimiserFrontierAutoRangeStatus(...args),
   cancelOptimiserFrontierAutoRange: (...args: unknown[]) => mockCancelOptimiserFrontierAutoRange(...args),
+  cancelOptimiserSolve: (...args: unknown[]) => mockCancelOptimiserSolve(...args),
+  saveOptimiser: (...args: unknown[]) => mockSaveOptimiser(...args),
+  logOptimiserToMlflow: (...args: unknown[]) => mockLogOptimiserToMlflow(...args),
+  selectFrontierPoint: (...args: unknown[]) => mockSelectFrontierPoint(...args),
 }))
 
 // ── Mock buildGraph ──
@@ -63,6 +78,63 @@ vi.mock("../../hooks/useConstraintHandlers", () => ({
     handleConstraintValueChange: mockHandleConstraintValueChange,
   })),
 }))
+
+// ── MLflow inventory helpers ─────────────────────────────────────
+
+type MlflowSlice = ReturnType<typeof useSettingsStore.getState>["mlflow"]
+
+function mlflowEntry(
+  key: MlflowDestinationKey,
+  over: Partial<MlflowDestinationEntry> = {},
+): MlflowDestinationEntry {
+  return {
+    key,
+    configured: true,
+    destination: "",
+    config_source: "env",
+    detail: "",
+    probed: false,
+    ok: false,
+    category: "",
+    ...over,
+  }
+}
+
+const MLFLOW_DATABRICKS = mlflowEntry("databricks", {
+  destination: "databricks://team",
+  probed: true,
+  ok: true,
+})
+const MLFLOW_SERVER = mlflowEntry("server", {
+  destination: "http://mlflow.example:5000",
+  config_source: "toml",
+  probed: true,
+  ok: true,
+})
+const MLFLOW_LOCAL = mlflowEntry("local", {
+  destination: "C:/proj/mlruns",
+  config_source: "default",
+})
+const MLFLOW_SERVER_UNCONFIGURED = mlflowEntry("server", {
+  configured: false,
+  destination: "",
+  config_source: "",
+  detail: "No MLflow server is configured. Set [mlflow] tracking_uri in haute.toml.",
+})
+
+/** Default inventory: local only, so nothing probes and auto is local. */
+function setMlflowInventory(over: Partial<MlflowSlice> = {}): void {
+  useSettingsStore.setState({
+    mlflow: {
+      status: "ready",
+      installed: true,
+      importable: true,
+      destinations: [MLFLOW_LOCAL],
+      detail: "",
+      ...over,
+    },
+  })
+}
 
 // ── Default graph fixture ───────────────────────────────────────────
 // Matches the pre-refactor `makeProps` fixture — a single upstream data-source
@@ -107,6 +179,14 @@ function withAuthoritativeInputIdentities(
 }
 
 // ── Default props ──
+// The pane each describe block renders; `withPane` sets it per block.
+let defaultPane: OptimiserPane = "data"
+function withPane(pane: OptimiserPane) {
+  beforeEach(() => {
+    defaultPane = pane
+  })
+}
+
 type MakePropsOverrides = Partial<Parameters<typeof OptimiserConfig>[0]> & {
   allNodes?: SimpleNode[]
   edges?: SimpleEdge[]
@@ -137,10 +217,14 @@ function makeProps(overrides: MakePropsOverrides = {}) {
     } as Record<string, unknown>,
     onUpdate: vi.fn(),
     accentColor: "var(--warning-strong)",
+    activePane: defaultPane,
     upstreamColumns: [
       { name: "premium", dtype: "Float64" },
       { name: "loss_ratio", dtype: "Float64" },
       { name: "volume", dtype: "Float64" },
+      { name: "quote_id", dtype: "String" },
+      { name: "scenario_index", dtype: "Int64" },
+      { name: "scenario_value", dtype: "Float64" },
     ],
     ...componentOverrides,
   }
@@ -156,6 +240,21 @@ function makeProps(overrides: MakePropsOverrides = {}) {
 }
 
 /**
+ * The editor bound to the UI store's remembered pane, as NodePanel binds it:
+ * `showPane` and the Solve pane's Go to links switch panes mid-test.
+ */
+function PaneBoundConfig(props: Parameters<typeof OptimiserConfig>[0]) {
+  const remembered = useUIStore((state) => state.optimiserPanes[String(props.config._nodeId)])
+  return <OptimiserConfig {...props} activePane={remembered ?? props.activePane} />
+}
+
+function showPane(pane: OptimiserPane) {
+  act(() => {
+    useUIStore.getState().setOptimiserPane("opt_1", pane)
+  })
+}
+
+/**
  * Renders OptimiserConfig wrapped in a GraphProvider seeded with the graph
  * data from `makeProps`.  This mirrors the production wiring in App.tsx.
  */
@@ -167,7 +266,7 @@ function renderConfig(made: ReturnType<typeof makeProps>) {
       submodels={made.graph.submodels}
       preamble={made.graph.preamble}
     >
-      <OptimiserConfig {...made.componentProps} />
+      <PaneBoundConfig {...made.componentProps} />
     </GraphProvider>,
   )
 }
@@ -201,7 +300,7 @@ function renderStatefulConfig(
         submodels={made.graph.submodels}
         preamble={made.graph.preamble}
       >
-        <OptimiserConfig
+        <PaneBoundConfig
           {...made.componentProps}
           config={config}
           onUpdate={handleUpdate}
@@ -214,7 +313,13 @@ function renderStatefulConfig(
 }
 
 // ── Store reset ──
+const INITIAL_STRUCTURAL_VERSION = useGraphStore.getState().structuralVersion
+
 beforeEach(() => {
+  defaultPane = "data"
+  useGraphStore.setState({ structuralVersion: INITIAL_STRUCTURAL_VERSION })
+  useUIStore.setState({ optimiserPanes: {} })
+  useOptimiserPublishStore.setState({ byNode: {} })
   useNodeResultsStore.setState({
     solveJobs: {},
     solveResults: {},
@@ -222,6 +327,7 @@ beforeEach(() => {
   useSettingsStore.setState({
     openSections: {},
   })
+  setMlflowInventory()
   mockSolveOptimiser.mockReset()
   // Never-resolving promise so tests don't race with the estimate's async
   // settlement — mirrors the ModellingConfig.test.tsx pattern.
@@ -237,6 +343,9 @@ beforeEach(() => {
     { name: "premium", dtype: "Float64" },
     { name: "loss_ratio", dtype: "Float64" },
     { name: "volume", dtype: "Float64" },
+    { name: "quote_id", dtype: "String" },
+    { name: "scenario_index", dtype: "Int64" },
+    { name: "scenario_value", dtype: "Float64" },
   ])
   vi.mocked(classifyBandingNode).mockReset()
   vi.mocked(classifyBandingNode).mockReturnValue({
@@ -258,6 +367,8 @@ afterEach(() => {
 
 describe("OptimiserConfig", () => {
   describe("Mode toggle", () => {
+    withPane("data")
+
     it("renders with online mode selected by default", () => {
       renderConfig(makeProps())
       const onlineBtn = screen.getByRole("button", { name: "Online" })
@@ -284,6 +395,8 @@ describe("OptimiserConfig", () => {
   // ═══════════════════════════════════════════════════════════════════
 
   describe("Input / Objective selection", () => {
+    withPane("data")
+
     it("uses distinct executable edge input names for optimiser selectors", () => {
       const props = makeProps({
         config: { _nodeId: "opt_1", mode: "ratebook", data_input: "quote_info", banding_source: "Banding_node", objective: "premium", constraints: {} },
@@ -304,7 +417,9 @@ describe("OptimiserConfig", () => {
       expect(Array.from(selects[0].options).map((option) => [option.value, option.text])).toEqual(
         expect.arrayContaining([["quote_info", "quote_info"], ["driver_info", "driver_info"]]),
       )
-      expect(selects.find((select) => select.getAttribute("aria-label") === "Rating Factor Source")).toHaveValue("Banding_node")
+
+      showPane("factors")
+      expect(screen.getByRole("combobox", { name: "Rating Factor Source" })).toHaveValue("Banding_node")
     })
 
     it("shows input node selector with connected nodes", () => {
@@ -333,7 +448,11 @@ describe("OptimiserConfig", () => {
         "The configured Objectives & Constraints input is not connected.",
       )
       expect(screen.getByRole("option", { name: "Missing input" })).toBeInTheDocument()
+      showPane("solve")
       expect(screen.getByRole("button", { name: /Optimise/ })).toBeDisabled()
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "The selected Objectives & Constraints input is not connected.",
+      )
       expect(mockUseDataInputColumns).toHaveBeenCalledWith(
         "",
         expect.any(Array),
@@ -358,7 +477,11 @@ describe("OptimiserConfig", () => {
       expect(screen.getByRole("alert")).toHaveTextContent(
         "The configured Objectives & Constraints input must be an input name.",
       )
+      showPane("solve")
       expect(screen.getByRole("button", { name: /Optimise/ })).toBeDisabled()
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "The Objectives & Constraints input must be an input name.",
+      )
       expect(mockUseDataInputColumns).toHaveBeenCalledWith(
         "",
         expect.any(Array),
@@ -510,6 +633,8 @@ describe("OptimiserConfig", () => {
   // ═══════════════════════════════════════════════════════════════════
 
   describe("Ratebook mode", () => {
+    withPane("factors")
+
     it("shows Rating Factor Source section in ratebook mode", () => {
       renderConfig(makeProps({ config: { _nodeId: "opt_1", mode: "ratebook", objective: "premium", constraints: {} } }))
       expect(screen.getByText("Rating Factor Source")).toBeInTheDocument()
@@ -590,7 +715,9 @@ describe("OptimiserConfig", () => {
         "banding_source",
         "Banding",
       )
+      showPane("solve")
       expect(screen.getByRole("button", { name: /Optimise/ })).toBeDisabled()
+      expect(screen.getByRole("alert")).toHaveTextContent("Select a connected Rating Factor Source.")
     })
 
     it("warns for zero-level outputs while keeping healthy factor controls", () => {
@@ -672,10 +799,10 @@ describe("OptimiserConfig", () => {
           ["vehicle_age_band"],
         ])
       })
-      await waitFor(() => {
-        expect(screen.getByRole("button", { name: /Optimise/ })).not.toBeDisabled()
-      })
-      expect(screen.getByText("Rating Factors (3 selected)")).toBeInTheDocument()
+      expect(await screen.findByText("3 ratebook · 0 of 12 validation")).toBeInTheDocument()
+      showPane("solve")
+      expect(screen.getByRole("button", { name: /Optimise/ })).not.toBeDisabled()
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument()
     })
 
     it("changes banding source and derived factor columns in one atomic update", async () => {
@@ -757,7 +884,420 @@ describe("OptimiserConfig", () => {
         ],
       }))
 
+      expect(screen.getByText("0 ratebook · 0 of 12 validation")).toBeInTheDocument()
+      showPane("solve")
       expect(screen.getByRole("button", { name: /Optimise/ })).toBeDisabled()
+      expect(screen.getByRole("alert")).toHaveTextContent("Select at least one rating factor.")
+    })
+  })
+
+  // ═══════════════════════════════════════════════════════════════════
+  // Panes
+  // ═══════════════════════════════════════════════════════════════════
+
+  describe("Saved values before the input's columns load", () => {
+    it("shows the configured objective and column mappings while the column fetch is deferred", () => {
+      mockUseDataInputColumns.mockReturnValue([])
+      renderConfig(makeProps({
+        deferColumnFetch: true,
+        upstreamColumns: [],
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          objective: "profit",
+          quote_id: "qid",
+          constraints: {},
+        },
+      }))
+
+      expect(screen.getByDisplayValue("profit")).toBeInTheDocument()
+      expect(screen.getByDisplayValue("qid")).toBeInTheDocument()
+      // Unset mappings show the default column they fall back to.
+      expect(screen.getByDisplayValue("scenario_index")).toBeInTheDocument()
+      expect(screen.getByDisplayValue("scenario_value")).toBeInTheDocument()
+    })
+
+    it("marks a saved column the loaded input lacks", () => {
+      renderConfig(makeProps({
+        config: { _nodeId: "opt_1", mode: "online", objective: "profit", constraints: {} },
+      }))
+      expect(screen.getByDisplayValue("profit (not in input)")).toBeInTheDocument()
+    })
+
+    it("lists the saved validation factors, ticked and removable, before the columns load", () => {
+      mockUseDataInputColumns.mockReturnValue([])
+      const props = makeProps({
+        deferColumnFetch: true,
+        upstreamColumns: [],
+        activePane: "factors",
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          objective: "premium",
+          constraints: {},
+          analysis_columns: ["region"],
+        },
+      })
+      renderConfig(props)
+
+      expect(screen.getByText("The validation input's columns are not known yet.")).toBeInTheDocument()
+      const region = screen.getByRole("checkbox", { name: "Use region for validation" })
+      expect(region).toBeChecked()
+      expect(region).toBeEnabled()
+      fireEvent.click(region)
+      expect(props.componentProps.onUpdate).toHaveBeenCalledWith("analysis_columns", [])
+    })
+  })
+
+  describe("Panes", () => {
+    it("renders only the selected pane's controls", () => {
+      renderConfig(makeProps({
+        activePane: "data",
+        config: { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1 } } },
+      }))
+      expect(screen.getByRole("tabpanel")).toHaveAttribute("id", "optimiser-data-pane")
+      expect(screen.getByText("Column to maximise")).toBeInTheDocument()
+      expect(screen.queryByText(/Constraints \(1\)/)).not.toBeInTheDocument()
+      expect(screen.queryByRole("button", { name: /Optimise/ })).not.toBeInTheDocument()
+      expect(screen.queryByText("Solver settings")).not.toBeInTheDocument()
+      expect(screen.queryByRole("radiogroup", { name: "MLflow destination" })).not.toBeInTheDocument()
+    })
+
+    it("shows Factors in online mode with the ratebook choices greyed out", () => {
+      renderConfig(makeProps({ activePane: "factors" }))
+      expect(screen.getByRole("tabpanel")).toHaveAttribute("id", "optimiser-factors-pane")
+      expect(screen.queryByText("Rating Factor Source")).not.toBeInTheDocument()
+      expect(screen.getByRole("checkbox", { name: "Use premium for ratebook optimisation" })).toBeDisabled()
+      expect(screen.getByRole("checkbox", { name: "Use premium for validation" })).toBeEnabled()
+      expect(screen.getByText("0 of 12 validation")).toBeInTheDocument()
+    })
+
+    it("lists every solve-blocking issue and links each to its pane", () => {
+      renderConfig(makeProps({
+        activePane: "solve",
+        config: { _nodeId: "opt_1", mode: "ratebook", objective: "", constraints: {} },
+        edges: [],
+      }))
+      expect(screen.getByRole("button", { name: /Optimise/ })).toBeDisabled()
+      const alert = screen.getByRole("alert")
+      expect(alert).toHaveTextContent("Complete before optimising")
+      expect(within(alert).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+        "Connect an input that provides the objectives and constraints.Go to Data",
+        "Choose the objective column to maximise.Go to Data",
+        "Connect a Banding node to define the rating factors.Go to Factors",
+      ])
+
+      fireEvent.click(within(alert).getAllByRole("button", { name: "Go to Factors" })[0])
+      expect(useUIStore.getState().optimiserPanes.opt_1).toBe("factors")
+      expect(screen.getByRole("tabpanel")).toHaveAttribute("id", "optimiser-factors-pane")
+      expect(screen.getByText(/No Banding nodes found/)).toBeInTheDocument()
+    })
+
+    it("persists inferred ratebook factors while another pane is open", async () => {
+      vi.mocked(classifyBandingNode).mockReturnValue({
+        levels: { channel_band: ["direct", "broker"] },
+        configuredOutputs: ["channel_band"],
+        zeroLevelOutputs: [],
+        zeroLevelIssues: [],
+      })
+      const onUpdate = vi.fn()
+      renderStatefulConfig(makeProps({
+        activePane: "constraints",
+        config: { _nodeId: "opt_1", mode: "ratebook", objective: "premium", constraints: {}, data_input: "Data_Input" },
+        allNodes: [
+          { id: "input_1", data: { label: "Data Input", description: "", nodeType: "dataInput", config: {} } },
+          { id: "banding_1", data: { label: "Banding", description: "", nodeType: "banding", config: {} } },
+        ],
+        edges: [
+          { id: "e1", source: "input_1", target: "opt_1" },
+          { id: "e2", source: "banding_1", target: "opt_1" },
+        ],
+      }), onUpdate)
+
+      await waitFor(() => {
+        expect(onUpdate).toHaveBeenCalledWith({
+          banding_source: "Banding",
+          factor_columns: [["channel_band"]],
+        })
+      })
+      showPane("solve")
+      expect(screen.getByRole("button", { name: /Optimise/ })).not.toBeDisabled()
+    })
+  })
+
+  describe("Solve readiness", () => {
+    withPane("solve")
+
+    it("blocks on a mapped column the input does not have, naming the default in use", () => {
+      mockUseDataInputColumns.mockReturnValue([
+        { name: "premium", dtype: "Float64" },
+        { name: "scenario_index", dtype: "Int64" },
+        { name: "scenario_value", dtype: "Float64" },
+      ])
+      renderConfig(makeProps({ upstreamColumns: [] }))
+      expect(screen.getByRole("button", { name: /Optimise/ })).toBeDisabled()
+      expect(screen.getByRole("alert")).toHaveTextContent('Row ID uses "quote_id", which the input does not have.')
+    })
+
+    it("blocks an efficient frontier with an incomplete or inverted range, or too many solves", () => {
+      renderConfig(makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          objective: "premium",
+          constraints: { loss_ratio: { max: 1 }, volume: { min: 10 } },
+          frontier_steps: 101,
+          frontier_ranges: { loss_ratio: { min: 2, max: 1 }, volume: {} },
+        },
+      }))
+      const alert = screen.getByRole("alert")
+      expect(within(alert).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+        "The frontier range for loss_ratio needs a minimum below its maximum.Go to Constraints",
+        "Set both ends of the frontier range for volume.Go to Constraints",
+        "The frontier would run 10,201 solves; the limit is 10,000. Reduce the points per swept constraint or sweep fewer constraints.Go to Constraints",
+      ])
+    })
+
+    it("needs no range for a constraint that is not swept", () => {
+      renderConfig(makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          objective: "premium",
+          constraints: { loss_ratio: { max: 1 }, volume: { min: 10 } },
+          frontier_steps: 101,
+          frontier_ranges: { loss_ratio: { min: 0.5, max: 1 } },
+        },
+      }))
+      showPane("solve")
+      // One swept constraint: 101 solves, under the limit, and volume needs no range.
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+      expect(screen.getByRole("button", { name: /Optimise/ })).toBeEnabled()
+    })
+
+    it("keeps Auto range available while the frontier ranges are still missing", () => {
+      renderConfig(makeProps({
+        activePane: "constraints",
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          objective: "premium",
+          constraints: { loss_ratio: { max: 1 } },
+          frontier_ranges: { loss_ratio: {} },
+        },
+      }))
+      expect(screen.getByRole("button", { name: "Auto range loss_ratio" })).toBeEnabled()
+    })
+
+    it("warns without blocking when each quote has one scenario", async () => {
+      mockEstimateOptimiserSolve.mockResolvedValue({
+        total_rows: 10,
+        quote_count: 10,
+        scenarios_per_quote_min: 1,
+        scenarios_per_quote_max: 1,
+        scenarios_per_quote_mean: 1,
+        expanded_row_count: 10,
+      })
+      renderConfig(makeProps())
+      expect(await screen.findByRole("list", { name: "Input warnings" })).toHaveTextContent(
+        "Each quote has one scenario",
+      )
+      expect(screen.getByRole("button", { name: /Optimise/ })).toBeEnabled()
+    })
+
+    it("says the size is unknown when the server cannot count it", async () => {
+      mockEstimateOptimiserSolve.mockResolvedValue({
+        total_rows: null,
+        quote_count: null,
+        scenarios_per_quote_min: null,
+        scenarios_per_quote_max: null,
+        scenarios_per_quote_mean: null,
+        expanded_row_count: null,
+      })
+      renderConfig(makeProps())
+      expect(await screen.findByText(/Size unknown/)).toBeInTheDocument()
+    })
+
+    it("does not re-request the size estimate for constraint or export edits", async () => {
+      mockEstimateOptimiserSolve.mockResolvedValue({
+        total_rows: 10, quote_count: 10, scenarios_per_quote_min: 2, scenarios_per_quote_max: 2,
+        scenarios_per_quote_mean: 2, expanded_row_count: 20,
+      })
+      const made = makeProps()
+      const view = renderConfig(made)
+      await waitFor(() => expect(mockEstimateOptimiserSolve).toHaveBeenCalledTimes(1))
+      const rerenderWith = (config: Record<string, unknown>) => view.rerender(
+        <GraphProvider allNodes={made.graph.allNodes} edges={made.graph.edges}>
+          <PaneBoundConfig {...made.componentProps} config={config} />
+        </GraphProvider>,
+      )
+      rerenderWith({ ...made.componentProps.config, constraints: { volume: { min: 5 } }, mlflow_experiment: "x", result_export_path: "out.json" })
+      await act(async () => {})
+      expect(mockEstimateOptimiserSolve).toHaveBeenCalledTimes(1)
+      rerenderWith({ ...made.componentProps.config, scenario_value: "premium" })
+      await waitFor(() => expect(mockEstimateOptimiserSolve).toHaveBeenCalledTimes(2))
+    })
+
+    it("does not mark the solve stale for export edits", () => {
+      const config = { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: {} }
+      useNodeResultsStore.setState({
+        solveResults: {
+          opt_1: {
+            result: makeSolveResult(),
+            originalResult: makeSolveResult(),
+            jobId: "job_1",
+            configHash: hashConfig(config),
+            source: "live",
+            structuralVersion: useGraphStore.getState().structuralVersion,
+            constraints: {},
+            nodeLabel: "Opt",
+            frontier: null,
+            selectedPointIndex: null,
+          },
+        },
+      })
+      renderConfig(makeProps({ config: { ...config, mlflow_destination: "databricks", result_export_path: "out.json" } }))
+      expect(screen.queryByText("Config changed since last solve")).not.toBeInTheDocument()
+    })
+
+    it("stops a running solve through the cancel route and records the outcome", async () => {
+      mockCancelOptimiserSolve.mockResolvedValue({
+        status: "cancelled",
+        progress: 0.4,
+        message: "Cancelled by user",
+        elapsed_seconds: 3,
+        result: null,
+        frontier: null,
+        terminal_reason: "cancelled",
+        execution_metrics: null,
+      })
+      useNodeResultsStore.getState().startSolveJob("opt_1", "job_run", "Opt", {}, "hash", "live", 0)
+      renderConfig(makeProps())
+      fireEvent.click(screen.getByRole("button", { name: "Stop" }))
+      await waitFor(() => expect(mockCancelOptimiserSolve).toHaveBeenCalledWith("job_run"))
+      await waitFor(() => expect(useNodeResultsStore.getState().solveJobs.opt_1).toBeUndefined())
+      expect(useNodeResultsStore.getState().solveResults.opt_1?.error).toBe("Cancelled by user")
+    })
+
+    it("Ctrl+Enter in an edited field solves the committed value, not the previous one", async () => {
+      mockSolveOptimiser.mockResolvedValue({ status: "started", job_id: "job_key" })
+      const config = {
+        _nodeId: "opt_1",
+        mode: "online",
+        objective: "premium",
+        constraints: { loss_ratio: { max: 1 } },
+        frontier_ranges: { loss_ratio: { min: 1, max: 5 } },
+      }
+      renderStatefulConfig(makeProps({ activePane: "constraints", config }))
+      const min = screen.getByLabelText("loss_ratio sweep from")
+      fireEvent.change(min, { target: { value: "2" } })
+      fireEvent.keyDown(min, { key: "Enter", ctrlKey: true })
+
+      await waitFor(() => expect(useNodeResultsStore.getState().solveJobs.opt_1?.jobId).toBe("job_key"))
+      expect(useNodeResultsStore.getState().solveJobs.opt_1?.configHash).toBe(solveConfigHash({
+        ...config,
+        frontier_ranges: { loss_ratio: { min: 2, max: 5 } },
+      }))
+    })
+
+    it("Ctrl+Enter judges readiness after the commit, so a now-invalid edit does not solve", async () => {
+      const config = {
+        _nodeId: "opt_1",
+        mode: "online",
+        objective: "premium",
+        constraints: { loss_ratio: { max: 1 } },
+        frontier_ranges: { loss_ratio: { min: 1, max: 5 } },
+      }
+      renderStatefulConfig(makeProps({ activePane: "constraints", config }))
+      const min = screen.getByLabelText("loss_ratio sweep from")
+      fireEvent.change(min, { target: { value: "9" } })
+      fireEvent.keyDown(min, { key: "Enter", ctrlKey: true })
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)) })
+      expect(mockSolveOptimiser).not.toHaveBeenCalled()
+    })
+
+    it("ignores a Stop reply that arrives after the stopped job gave way to a new one", async () => {
+      let replyToStop: (value: unknown) => void = () => {}
+      mockCancelOptimiserSolve.mockReturnValue(new Promise((resolve) => { replyToStop = resolve }))
+      const store = useNodeResultsStore.getState()
+      store.startSolveJob("opt_1", "job_a", "Opt", {}, "hash_a", "live", 0)
+      renderConfig(makeProps())
+      fireEvent.click(screen.getByRole("button", { name: "Stop" }))
+      await waitFor(() => expect(mockCancelOptimiserSolve).toHaveBeenCalledWith("job_a"))
+
+      // Polling finishes A and the user starts B before the Stop reply lands.
+      act(() => {
+        useNodeResultsStore.getState().completeSolveJob("opt_1", makeSolveResult())
+        useNodeResultsStore.getState().startSolveJob("opt_1", "job_b", "Opt", {}, "hash_b", "live", 0)
+      })
+      await act(async () => {
+        replyToStop({
+          status: "cancelled", progress: 1, message: "Cancelled", elapsed_seconds: 1,
+          result: null, frontier: null, terminal_reason: "cancelled", execution_metrics: null,
+        })
+      })
+      expect(useNodeResultsStore.getState().solveJobs.opt_1?.jobId).toBe("job_b")
+      expect(useNodeResultsStore.getState().solveResults.opt_1?.error).toBeUndefined()
+    })
+
+    it("does not re-request the size estimate when the node's own edit moves the structural version", async () => {
+      mockEstimateOptimiserSolve.mockResolvedValue({
+        total_rows: 10, quote_count: 10, scenarios_per_quote_min: 2, scenarios_per_quote_max: 2,
+        scenarios_per_quote_mean: 2, expanded_row_count: 20,
+      })
+      const made = makeProps()
+      const optimiserNode = (config: Record<string, unknown>): SimpleNode => ({
+        id: "opt_1", data: { label: "Opt", description: "", nodeType: "optimiser", config },
+      })
+      const graphNodes = (config: Record<string, unknown>) => [...made.graph.allNodes, optimiserNode(config)]
+      const view = render(
+        <GraphProvider allNodes={graphNodes(made.componentProps.config)} edges={made.graph.edges}>
+          <PaneBoundConfig {...made.componentProps} />
+        </GraphProvider>,
+      )
+      await waitFor(() => expect(mockEstimateOptimiserSolve).toHaveBeenCalledTimes(1))
+
+      // A real edit: the node's config, the graph and the structural version all move.
+      const edited = { ...made.componentProps.config, constraints: { volume: { min: 5 } } }
+      act(() => {
+        useGraphStore.setState({ structuralVersion: useGraphStore.getState().structuralVersion + 1 })
+      })
+      view.rerender(
+        <GraphProvider allNodes={graphNodes(edited)} edges={made.graph.edges}>
+          <PaneBoundConfig {...made.componentProps} config={edited} />
+        </GraphProvider>,
+      )
+      await act(async () => {})
+      expect(mockEstimateOptimiserSolve).toHaveBeenCalledTimes(1)
+
+      // An upstream change does re-estimate.
+      const upstreamChanged = made.graph.allNodes.map((node, index) => (
+        index === 0 ? { ...node, data: { ...node.data, description: "changed" } } : node
+      ))
+      view.rerender(
+        <GraphProvider allNodes={[...upstreamChanged, optimiserNode(edited)]} edges={made.graph.edges}>
+          <PaneBoundConfig {...made.componentProps} config={edited} />
+        </GraphProvider>,
+      )
+      await waitFor(() => expect(mockEstimateOptimiserSolve).toHaveBeenCalledTimes(2))
+    })
+
+    it("starts the solve with Ctrl+Enter from any pane when it can", async () => {
+      mockSolveOptimiser.mockResolvedValue({ status: "started", job_id: "job_key" })
+      renderConfig(makeProps({ activePane: "data" }))
+      fireEvent.keyDown(screen.getByRole("tabpanel"), { key: "Enter", ctrlKey: true })
+      await waitFor(() => expect(mockSolveOptimiser).toHaveBeenCalledTimes(1))
+    })
+  })
+
+  describe("Pane issue report", () => {
+    it("reports the panes holding blocking issues for the tab indicators", () => {
+      const onPaneIssuesChange = vi.fn()
+      renderConfig(makeProps({
+        onPaneIssuesChange,
+        config: { _nodeId: "opt_1", mode: "ratebook", objective: "", constraints: {} },
+      }))
+      expect(onPaneIssuesChange).toHaveBeenLastCalledWith("opt_1", ["data", "factors"])
     })
   })
 
@@ -766,9 +1306,11 @@ describe("OptimiserConfig", () => {
   // ═══════════════════════════════════════════════════════════════════
 
   describe("Column Mappings", () => {
-    it("renders Quote ID, Scenario Index, Scenario Value selectors", () => {
+    withPane("data")
+
+    it("renders Row ID, Scenario Index, Scenario Value selectors", () => {
       renderConfig(makeProps())
-      expect(screen.getByText("Quote ID")).toBeInTheDocument()
+      expect(screen.getByText("Row ID")).toBeInTheDocument()
       expect(screen.getByText("Scenario Index")).toBeInTheDocument()
       expect(screen.getByText("Scenario Value")).toBeInTheDocument()
     })
@@ -776,12 +1318,12 @@ describe("OptimiserConfig", () => {
     it("column mapping change calls onUpdate with correct key", () => {
       const props = makeProps()
       renderConfig(props)
-      // Find all selects — look for the one with "Select quote id..." placeholder
+      // Find all selects — look for the one with "Select row id..." placeholder
       const selects = screen.getAllByRole("combobox")
-      const quoteIdSelect = selects.find(s =>
-        Array.from(s.querySelectorAll("option")).some(o => o.textContent === "Select quote id..."),
+      const rowIdSelect = selects.find(s =>
+        Array.from(s.querySelectorAll("option")).some(o => o.textContent === "Select row id..."),
       )!
-      fireEvent.change(quoteIdSelect, { target: { value: "premium" } })
+      fireEvent.change(rowIdSelect, { target: { value: "premium" } })
       expect(props.componentProps.onUpdate).toHaveBeenCalledWith("quote_id", "premium")
     })
   })
@@ -791,11 +1333,13 @@ describe("OptimiserConfig", () => {
   // ═══════════════════════════════════════════════════════════════════
 
   describe("Constraints", () => {
+    withPane("constraints")
+
     it("shows Constraints (0) with Add button when no constraints", () => {
       renderConfig(makeProps())
       expect(screen.getByText(/Constraints \(0\)/)).toBeInTheDocument()
       expect(screen.getByText("Add")).toBeInTheDocument()
-      expect(screen.queryByTestId("constraint-settings-card")).not.toBeInTheDocument()
+      expect(screen.queryByTestId("constraint-card")).not.toBeInTheDocument()
     })
 
     it("does not render empty-state guidance when there are no constraints", () => {
@@ -821,7 +1365,7 @@ describe("OptimiserConfig", () => {
             },
           }))
       expect(screen.getByText(/Constraints \(1\)/)).toBeInTheDocument()
-      const settingsCard = screen.getByTestId("constraint-settings-card")
+      const settingsCard = screen.getByTestId("constraint-card")
       expect(within(settingsCard).getByTestId("constraint-row")).toBeInTheDocument()
       expect(within(settingsCard).getByRole("combobox", {
         name: "loss_ratio constraint column",
@@ -842,8 +1386,8 @@ describe("OptimiserConfig", () => {
               constraints: { loss_ratio: { max: 1.05 } },
             },
           }))
-      expect(screen.getByText("Minimum")).toBeInTheDocument()
-      expect(screen.getByText("Maximum")).toBeInTheDocument()
+      expect(screen.getByText("at least")).toBeInTheDocument()
+      expect(screen.getByText("at most")).toBeInTheDocument()
       expect(screen.queryByText("Min %")).not.toBeInTheDocument()
       expect(screen.queryByText("Max %")).not.toBeInTheDocument()
       expect(screen.queryByDisplayValue("min_abs")).not.toBeInTheDocument()
@@ -856,6 +1400,8 @@ describe("OptimiserConfig", () => {
   // ═══════════════════════════════════════════════════════════════════
 
   describe("Solver Tuning", () => {
+    withPane("solve")
+
     it("max iterations input renders with default 50", () => {
       renderConfig(makeProps())
       const input = screen.getByDisplayValue("50")
@@ -880,35 +1426,28 @@ describe("OptimiserConfig", () => {
   })
 
   // ═══════════════════════════════════════════════════════════════════
-  // Advanced section
+  // Solver settings
   // ═══════════════════════════════════════════════════════════════════
 
-  describe("Advanced section", () => {
-    it("is collapsed by default", () => {
+  describe("Solver settings", () => {
+    withPane("solve")
+
+    it("shows every solver setting without a disclosure", () => {
       renderConfig(makeProps())
-      // Advanced button exists
-      expect(screen.getByText("Advanced")).toBeInTheDocument()
-      // chunk_size should NOT be visible when collapsed
-      expect(screen.queryByText("Chunk size")).not.toBeInTheDocument()
+      expect(screen.getByRole("heading", { name: "Solver settings" })).toBeInTheDocument()
+      expect(screen.queryByText("Advanced")).not.toBeInTheDocument()
+      expect(screen.getByText("Max iterations")).toBeInTheDocument()
+      expect(screen.getByText("Tolerance")).toBeInTheDocument()
     })
 
-    it("toggles open on click", () => {
-      // Pre-set section as open since toggleSection flips the boolean
-      useSettingsStore.setState({ openSections: { "optimiser.advanced": true } })
+    it("offers no history toggle: every solve records its history", () => {
       renderConfig(makeProps())
-      expect(screen.getByText("Chunk size")).toBeInTheDocument()
-      expect(screen.getByText("Record history")).toBeInTheDocument()
+      expect(screen.getByRole("heading", { name: "Solver settings" })).toBeInTheDocument()
+      expect(screen.queryByText("Record history")).not.toBeInTheDocument()
+      expect(screen.queryByRole("button", { name: /^(On|Off)$/ })).not.toBeInTheDocument()
     })
 
-    it("shows chunk_size and record_history in advanced", () => {
-      useSettingsStore.setState({ openSections: { "optimiser.advanced": true } })
-      renderConfig(makeProps())
-      expect(screen.getByDisplayValue("500000")).toBeInTheDocument()
-      expect(screen.getByText("Off")).toBeInTheDocument()
-    })
-
-    it("ratebook mode shows CD iterations and CD tolerance in advanced", () => {
-      useSettingsStore.setState({ openSections: { "optimiser.advanced": true } })
+    it("ratebook mode shows CD iterations and CD tolerance", () => {
       renderConfig(makeProps({ config: { _nodeId: "opt_1", mode: "ratebook", objective: "premium", constraints: {} } }))
       expect(screen.getByText("CD iterations")).toBeInTheDocument()
       expect(screen.getByText("CD tolerance")).toBeInTheDocument()
@@ -920,6 +1459,8 @@ describe("OptimiserConfig", () => {
   // ═══════════════════════════════════════════════════════════════════
 
   describe("Solve action", () => {
+    withPane("solve")
+
     it("solve button is disabled when no objective is set", () => {
       renderConfig(makeProps({
             config: { _nodeId: "opt_1", mode: "online", objective: "", constraints: {} },
@@ -941,6 +1482,48 @@ describe("OptimiserConfig", () => {
       expect(btn).not.toBeDisabled()
     })
 
+    it("solve sends a global constant edited after the panel mounted", async () => {
+      mockSolveOptimiser.mockResolvedValue({ status: "started", job_id: "job_42", error: null })
+      const actual = await vi.importActual<typeof import("../../utils/buildGraph")>("../../utils/buildGraph")
+      vi.mocked(buildGraph).mockImplementation(actual.buildGraph)
+      renderConfig(makeProps({
+        config: { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: {} },
+      }))
+      act(() => {
+        useGraphStore.getState().setGlobalConstantsRaw([
+          { name: "rate", type: "float", split: false, value: "1.5", bySource: {} },
+        ])
+      })
+      fireEvent.click(screen.getByRole("button", { name: /Optimise/ }))
+      await waitFor(() => expect(mockSolveOptimiser).toHaveBeenCalledTimes(1))
+      expect(mockSolveOptimiser.mock.calls[0][0].graph.global_constants).toEqual([
+        { name: "rate", type: "float", value: 1.5 },
+      ])
+      act(() => useGraphStore.getState().setGlobalConstantsRaw([]))
+      vi.mocked(buildGraph).mockImplementation(
+        () => ({ nodes: [], edges: [], preamble: "" }) as unknown as ReturnType<typeof buildGraph>,
+      )
+    })
+
+    it("the estimate and solve requests carry the preamble", async () => {
+      mockSolveOptimiser.mockResolvedValue({ status: "started", job_id: "job_42", error: null })
+      const actual = await vi.importActual<typeof import("../../utils/buildGraph")>("../../utils/buildGraph")
+      vi.mocked(buildGraph).mockImplementation(actual.buildGraph)
+      act(() => useGraphStore.getState().setPreambleRaw("def helper(x):\n    return x\n"))
+      renderConfig(makeProps({
+        config: { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: {} },
+      }))
+      await waitFor(() => expect(mockEstimateOptimiserSolve).toHaveBeenCalled())
+      fireEvent.click(screen.getByRole("button", { name: /Optimise/ }))
+      await waitFor(() => expect(mockSolveOptimiser).toHaveBeenCalledTimes(1))
+      expect(mockEstimateOptimiserSolve.mock.calls[0][0].graph.preamble).toBe("def helper(x):\n    return x\n")
+      expect(mockSolveOptimiser.mock.calls[0][0].graph.preamble).toBe("def helper(x):\n    return x\n")
+      act(() => useGraphStore.getState().setPreambleRaw(""))
+      vi.mocked(buildGraph).mockImplementation(
+        () => ({ nodes: [], edges: [], preamble: "" }) as unknown as ReturnType<typeof buildGraph>,
+      )
+    })
+
     it("solve button calls solveOptimiser with graph payload", async () => {
       mockSolveOptimiser.mockResolvedValue({ status: "started", job_id: "job_42", error: null })
       const props = makeProps({
@@ -958,7 +1541,7 @@ describe("OptimiserConfig", () => {
       })
       // Verify it was called with a graph payload containing node_id
       expect(mockSolveOptimiser).toHaveBeenCalledWith(
-        expect.objectContaining({ node_id: "opt_1", streamingChunkSize: expect.any(Number) }),
+        expect.objectContaining({ node_id: "opt_1" }),
       )
     })
 
@@ -1061,6 +1644,8 @@ describe("OptimiserConfig", () => {
   // ═══════════════════════════════════════════════════════════════════
 
   describe("Constraint interactions", () => {
+    withPane("constraints")
+
     it("clicking remove button on a constraint calls handleRemoveConstraint with the name", () => {
       renderConfig(makeProps({
             config: {
@@ -1108,7 +1693,27 @@ describe("OptimiserConfig", () => {
         name: "loss_ratio constraint value",
       })
       fireEvent.change(valueInput, { target: { value: "0.95" } })
+      expect(mockHandleConstraintValueChange).not.toHaveBeenCalled()
+      fireEvent.blur(valueInput)
       expect(mockHandleConstraintValueChange).toHaveBeenCalledWith("loss_ratio", "max", 0.95)
+    })
+
+    it("clearing a bound restores its value instead of relaxing the constraint to 0", () => {
+      renderConfig(makeProps({
+            config: {
+              _nodeId: "opt_1",
+              mode: "online",
+              objective: "premium",
+              constraints: { loss_ratio: { max: 1.05 } },
+            },
+          }))
+      const valueInput = screen.getByRole("spinbutton", {
+        name: "loss_ratio constraint value",
+      })
+      fireEvent.change(valueInput, { target: { value: "" } })
+      fireEvent.blur(valueInput)
+      expect(mockHandleConstraintValueChange).not.toHaveBeenCalled()
+      expect(valueInput).toHaveValue(1.05)
     })
 
     it("changing the constraint type dropdown calls handleConstraintValueChange", () => {
@@ -1145,6 +1750,8 @@ describe("OptimiserConfig", () => {
   // ═══════════════════════════════════════════════════════════════════
 
   describe("Solver Tuning extended", () => {
+    withPane("solve")
+
     it("changing tolerance calls onUpdate with tolerance key", () => {
       const props = makeProps()
       renderConfig(props)
@@ -1171,42 +1778,23 @@ describe("OptimiserConfig", () => {
   })
 
   // ═══════════════════════════════════════════════════════════════════
-  // Advanced section extended
+  // Solver settings extended
   // ═══════════════════════════════════════════════════════════════════
 
-  describe("Advanced section extended", () => {
-    it("clicking Advanced toggles the section in the settings store", () => {
+  describe("Solver settings extended", () => {
+    withPane("solve")
+
+    it("has no chunk size: the solve reads in the pipeline settings' chunk size", () => {
       renderConfig(makeProps())
-      fireEvent.click(screen.getByText("Advanced"))
-      const state = useSettingsStore.getState()
-      expect(state.openSections["optimiser.advanced"]).toBe(true)
+      expect(screen.queryByText("Chunk size")).not.toBeInTheDocument()
+      expect(screen.queryByDisplayValue("500000")).not.toBeInTheDocument()
     })
 
-    it("clicking Advanced again collapses the section", () => {
-      useSettingsStore.setState({ openSections: { "optimiser.advanced": true } })
+    it("puts the Optimise button after the solver settings it runs with", () => {
       renderConfig(makeProps())
-      fireEvent.click(screen.getByText("Advanced"))
-      const state = useSettingsStore.getState()
-      expect(state.openSections["optimiser.advanced"]).toBe(false)
-    })
-
-    it("changing chunk_size calls onUpdate", () => {
-      useSettingsStore.setState({ openSections: { "optimiser.advanced": true } })
-      const props = makeProps()
-      renderConfig(props)
-      const input = screen.getByDisplayValue("500000")
-      fireEvent.change(input, { target: { value: "100000" } })
-      expect(props.componentProps.onUpdate).not.toHaveBeenCalled()
-      fireEvent.blur(input)
-      expect(props.componentProps.onUpdate).toHaveBeenCalledWith("chunk_size", 100000)
-    })
-
-    it("toggling record_history calls onUpdate", () => {
-      useSettingsStore.setState({ openSections: { "optimiser.advanced": true } })
-      const props = makeProps()
-      renderConfig(props)
-      fireEvent.click(screen.getByText("Off"))
-      expect(props.componentProps.onUpdate).toHaveBeenCalledWith("record_history", true)
+      const settings = screen.getByRole("heading", { name: "Solver settings" })
+      const optimise = screen.getByRole("button", { name: /Optimise/ })
+      expect(settings.compareDocumentPosition(optimise) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     })
   })
 
@@ -1215,6 +1803,8 @@ describe("OptimiserConfig", () => {
   // ═══════════════════════════════════════════════════════════════════
 
   describe("Mode toggle extended", () => {
+    withPane("data")
+
     it("clicking online mode from ratebook calls onUpdate with mode online", () => {
       const props = makeProps({
         config: { _nodeId: "opt_1", mode: "ratebook", objective: "premium", constraints: {} },
@@ -1230,6 +1820,8 @@ describe("OptimiserConfig", () => {
   // ═══════════════════════════════════════════════════════════════════
 
   describe("Solve action extended", () => {
+    withPane("solve")
+
     it("solve button is enabled when valid config has objective set", () => {
       renderConfig(makeProps({
             config: {
@@ -1263,13 +1855,15 @@ describe("OptimiserConfig", () => {
   // ═══════════════════════════════════════════════════════════════════
 
   describe("Staleness extended", () => {
+    withPane("solve")
+
     it("does not show staleness indicator when config hash matches", () => {
       const cfg = { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: {} }
       const matchingHash = hashConfig(cfg as Record<string, unknown>)
       useNodeResultsStore.setState({
         solveResults: {
           opt_1: {
-            result: {
+            result: makeSolveResult({
               total_objective: 1000,
               baseline_objective: 900,
               constraints: {},
@@ -1277,14 +1871,14 @@ describe("OptimiserConfig", () => {
               lambdas: {},
               converged: true,
               iterations: 5,
-            },
+            }),
             jobId: "job_42",
             configHash: matchingHash,
             source: "live",
             structuralVersion: 0,
             constraints: {},
             nodeLabel: "Optimiser",
-            originalResult: {
+            originalResult: makeSolveResult({
               total_objective: 1000,
               baseline_objective: 900,
               constraints: {},
@@ -1292,7 +1886,7 @@ describe("OptimiserConfig", () => {
               lambdas: {},
               converged: true,
               iterations: 5,
-            },
+            }),
             frontier: null,
             selectedPointIndex: null,
           },
@@ -1307,7 +1901,7 @@ describe("OptimiserConfig", () => {
       useNodeResultsStore.setState({
         solveResults: {
           opt_1: {
-            result: {
+            result: makeSolveResult({
               total_objective: 1000,
               baseline_objective: 900,
               constraints: {},
@@ -1315,14 +1909,14 @@ describe("OptimiserConfig", () => {
               lambdas: {},
               converged: true,
               iterations: 5,
-            },
+            }),
             jobId: "job_42",
             configHash: "definitely_stale_hash",
             source: "live",
             structuralVersion: 0,
             constraints: {},
             nodeLabel: "Optimiser",
-            originalResult: {
+            originalResult: makeSolveResult({
               total_objective: 1000,
               baseline_objective: 900,
               constraints: {},
@@ -1330,7 +1924,7 @@ describe("OptimiserConfig", () => {
               lambdas: {},
               converged: true,
               iterations: 5,
-            },
+            }),
             frontier: null,
             selectedPointIndex: null,
           },
@@ -1351,8 +1945,10 @@ describe("OptimiserConfig", () => {
   // ═══════════════════════════════════════════════════════════════════
 
   describe("Results display", () => {
+    withPane("solve")
+
     const convergedResult = {
-      result: {
+      result: makeSolveResult({
         total_objective: 1000,
         baseline_objective: 900,
         constraints: { loss_ratio: 0.65 },
@@ -1362,12 +1958,12 @@ describe("OptimiserConfig", () => {
         iterations: 15,
         n_quotes: 5000,
         n_steps: 3,
-      },
+      }),
       jobId: "job_42",
       configHash: "",
       constraints: { loss_ratio: { max: 1.05 } },
       nodeLabel: "Optimiser",
-      originalResult: {
+      originalResult: makeSolveResult({
         total_objective: 1000,
         baseline_objective: 900,
         constraints: { loss_ratio: 0.65 },
@@ -1377,7 +1973,7 @@ describe("OptimiserConfig", () => {
         iterations: 15,
         n_quotes: 5000,
         n_steps: 3,
-      },
+      }),
       frontier: null,
       selectedPointIndex: null,
       source: "live",
@@ -1399,18 +1995,18 @@ describe("OptimiserConfig", () => {
         solveResults: {
           opt_1: {
             ...convergedResult,
-            result: {
+            result: makeSolveResult({
               ...convergedResult.result,
               mode: "ratebook",
               iterations: 11,
               cd_iterations: null,
-            },
-            originalResult: {
+            }),
+            originalResult: makeSolveResult({
               ...convergedResult.originalResult,
               mode: "ratebook",
               iterations: 11,
               cd_iterations: null,
-            },
+            }),
           },
         },
       })
@@ -1445,10 +2041,12 @@ describe("OptimiserConfig", () => {
       expect(screen.queryByText("10,000,000")).not.toBeInTheDocument()
     })
 
-    it("shows non-convergence warning when solveResult.converged is false", () => {
+    it("shows non-convergence warning when the solve did not converge", () => {
+      const notConverged = { ...convergedResult.originalResult, converged: false }
       const nonConverged = {
         ...convergedResult,
-        result: { ...convergedResult.result, converged: false },
+        result: notConverged,
+        originalResult: notConverged,
       }
       useNodeResultsStore.setState({ solveResults: { opt_1: nonConverged } })
       renderConfig(makeProps({
@@ -1456,6 +2054,35 @@ describe("OptimiserConfig", () => {
           }))
       expect(screen.getByText(/Solver did not converge/)).toBeInTheDocument()
       expect(screen.getByText(/Did not converge/)).toBeInTheDocument()
+    })
+
+    it("describes the solve, not the frontier point the preview selected", () => {
+      // A frontier solve opens on point 1, whose own bisection converged; the
+      // solve itself ran out of iterations short of its bound.
+      useNodeResultsStore.setState({
+        solveResults: {
+          opt_1: {
+            ...convergedResult,
+            result: makeSolveResult({ ...convergedResult.result, converged: true, iterations: 33 }),
+            originalResult: makeSolveResult({
+              ...convergedResult.originalResult,
+              converged: false,
+              iterations: 20,
+              warning: "Solver did not converge. Consider increasing max_iter or relaxing tolerance.",
+            }),
+            selectedPointIndex: 0,
+          },
+        },
+      })
+      renderConfig(makeProps({
+        config: { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
+      }))
+
+      expect(screen.getByText("Solver did not converge")).toBeInTheDocument()
+      expect(screen.getByText("Solver did not converge. Consider increasing max_iter or relaxing tolerance."))
+        .toBeInTheDocument()
+      expect(screen.getByText(/Did not converge in 20 iterations/)).toBeInTheDocument()
+      expect(screen.queryByText(/Converged in 33 iterations/)).not.toBeInTheDocument()
     })
 
     it("shows error when solveError exists in job", () => {
@@ -1506,6 +2133,8 @@ describe("OptimiserConfig", () => {
   // ═══════════════════════════════════════════════════════════════════
 
   describe("Progress", () => {
+    withPane("solve")
+
     it("shows progress bar when solveProgress exists", () => {
       useNodeResultsStore.setState({
         solveJobs: {
@@ -1531,7 +2160,7 @@ describe("OptimiserConfig", () => {
             config: { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
           }))
       expect(screen.getByText("Iteration 9 of 20")).toBeInTheDocument()
-      expect(screen.getByText("12s")).toBeInTheDocument()
+      expect(screen.getByText("12 s")).toBeInTheDocument()
     })
 
     it("shows structured memory-pressure diagnostics during solve progress", () => {
@@ -1560,8 +2189,8 @@ describe("OptimiserConfig", () => {
         config: { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
       }))
 
-      expect(screen.getByText("Memory pressure reached 75% of the optimiser budget.")).toBeInTheDocument()
-      expect(screen.getByText("RSS 1.7 KB of 2.9 KB limit")).toBeInTheDocument()
+      expect(screen.getByText("Optimiser reached 75% of its memory allowance.")).toBeInTheDocument()
+      expect(screen.getByText("Memory used: 1.7 KB; limit: 2.9 KB")).toBeInTheDocument()
     })
   })
 
@@ -1570,12 +2199,14 @@ describe("OptimiserConfig", () => {
   // ═══════════════════════════════════════════════════════════════════
 
   describe("Staleness", () => {
+    withPane("solve")
+
     it("shows staleness indicator when config hash changed after solve", () => {
       // The cachedResult has configHash "abc", but current config will hash differently
       useNodeResultsStore.setState({
         solveResults: {
           opt_1: {
-            result: {
+            result: makeSolveResult({
               total_objective: 1000,
               baseline_objective: 900,
               constraints: {},
@@ -1583,14 +2214,14 @@ describe("OptimiserConfig", () => {
               lambdas: {},
               converged: true,
               iterations: 5,
-            },
+            }),
             jobId: "job_42",
             configHash: "definitely_stale_hash",
             source: "live",
             structuralVersion: 0,
             constraints: {},
             nodeLabel: "Optimiser",
-            originalResult: {
+            originalResult: makeSolveResult({
               total_objective: 1000,
               baseline_objective: 900,
               constraints: {},
@@ -1598,7 +2229,7 @@ describe("OptimiserConfig", () => {
               lambdas: {},
               converged: true,
               iterations: 5,
-            },
+            }),
             frontier: null,
             selectedPointIndex: null,
           },
@@ -1613,177 +2244,128 @@ describe("OptimiserConfig", () => {
   })
 
   // ═══════════════════════════════════════════════════════════════════
-  // Result type / Efficient Frontier
+  // Constraint cards, sweeps and the frontier
   // ═══════════════════════════════════════════════════════════════════
 
-  describe("Result type / Efficient Frontier", () => {
-    it("does not show result type selector when no constraints are configured", () => {
+  describe("Constraint sweeps / Efficient Frontier", () => {
+    withPane("constraints")
+
+    const LOSS = { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } }
+
+    it("says the optimiser is unconstrained when no constraints are configured", () => {
       renderConfig(makeProps())
-      expect(screen.queryByTestId("constraint-settings-card")).not.toBeInTheDocument()
-      expect(screen.queryByText("Result type")).not.toBeInTheDocument()
-      expect(screen.queryByText("Efficient frontier")).not.toBeInTheDocument()
+      expect(screen.queryByTestId("constraint-card")).not.toBeInTheDocument()
+      expect(screen.getByText(/No constraints: the optimiser maximises the objective alone/)).toBeInTheDocument()
+      expect(screen.queryByTestId("frontier-settings")).not.toBeInTheDocument()
     })
 
-    it("does not show orphan frontier settings when frontier is stale-enabled without constraints", () => {
+    it("shows no frontier settings for stale ranges without constraints", () => {
+      renderConfig(makeProps({
+        config: { ...LOSS, constraints: {}, frontier_ranges: { gone: { min: 1, max: 2 } } },
+      }))
+      expect(screen.queryByTestId("constraint-card")).not.toBeInTheDocument()
+      expect(screen.queryByTestId("frontier-settings")).not.toBeInTheDocument()
+    })
+
+    it("shows every card's bound and an unticked Sweep when nothing is swept", () => {
+      renderConfig(makeProps({ config: LOSS }))
+      const card = screen.getByRole("group", { name: "loss_ratio constraint" })
+      expect(within(card).getByRole("combobox", { name: "loss_ratio constraint bound type" })).toHaveValue("max")
+      expect(within(card).getByRole("combobox", { name: "loss_ratio constraint bound type" })).toHaveDisplayValue("at most")
+      expect(within(card).getByLabelText("loss_ratio constraint value")).toHaveValue(1.05)
+      expect(within(card).getByRole("radio", { name: "Fixed" })).toBeChecked()
+      expect(within(card).queryByLabelText("loss_ratio sweep from")).not.toBeInTheDocument()
+      expect(screen.queryByTestId("frontier-settings")).not.toBeInTheDocument()
+      expect(screen.getByTestId("constraints-result")).toHaveTextContent("Result: single point")
+    })
+
+    it("keeps the bound beside the range of a swept constraint and holds the unswept one", () => {
       renderConfig(makeProps({
         config: {
-          _nodeId: "opt_1",
-          mode: "online",
-          objective: "premium",
-          constraints: {},
-          frontier_enabled: true,
+          ...LOSS,
+          constraints: { loss_ratio: { max: 1.05 }, volume: { min: 900 } },
+          frontier_ranges: { loss_ratio: { min: 0.9, max: 1.2 } },
         },
       }))
-      expect(screen.queryByTestId("constraint-settings-card")).not.toBeInTheDocument()
-      expect(screen.queryByText("Result type")).not.toBeInTheDocument()
-      expect(screen.queryByText("Efficient frontier")).not.toBeInTheDocument()
-      expect(screen.queryByText("Min value")).not.toBeInTheDocument()
-      expect(screen.queryByText("Max value")).not.toBeInTheDocument()
-      expect(screen.queryByText("Steps")).not.toBeInTheDocument()
+      const loss = screen.getByRole("group", { name: "loss_ratio constraint" })
+      // A swept constraint shows its range in place of a fixed value.
+      expect(within(loss).queryByLabelText("loss_ratio constraint value")).not.toBeInTheDocument()
+      expect(within(loss).getByRole("radio", { name: "Sweep" })).toBeChecked()
+      expect(within(loss).getByLabelText("loss_ratio sweep from")).toHaveValue(0.9)
+      expect(within(loss).getByLabelText("loss_ratio sweep to")).toHaveValue(1.2)
+      const volume = screen.getByRole("group", { name: "volume constraint" })
+      expect(within(volume).getByLabelText("volume constraint value")).toHaveValue(900)
+      expect(within(volume).getByRole("radio", { name: "Fixed" })).toBeChecked()
+      // Points and Auto range belong to the whole frontier, not to one card.
+      const frontier = screen.getByTestId("frontier-settings")
+      expect(within(frontier).getByText("Points per swept constraint")).toBeInTheDocument()
+      // Only the swept constraint multiplies the solves.
+      expect(screen.getByTestId("constraints-result")).toHaveTextContent("Result: frontier over loss_ratio · 15 solves")
     })
 
-    it("shows point/frontier choice inside constraints when constraints are configured", () => {
+    it("counts the solves over every swept constraint", () => {
       renderConfig(makeProps({
-            config: {
-              _nodeId: "opt_1",
-              mode: "online",
-              objective: "premium",
-              constraints: { loss_ratio: { max: 1.05 } },
-            },
-          }))
-      expect(screen.getAllByTestId("constraint-settings-card")).toHaveLength(1)
-      const settingsCard = screen.getByTestId("constraint-settings-card")
-      expect(within(settingsCard).getByTestId("constraint-row")).toBeInTheDocument()
-      expect(within(settingsCard).getByText("Result type")).toBeInTheDocument()
-      expect(within(settingsCard).getByRole("button", { name: "Individual point" })).toBeInTheDocument()
-      expect(within(settingsCard).getByRole("button", { name: "Efficient frontier" })).toBeInTheDocument()
-      const pointSettings = within(settingsCard).getByTestId("individual-point-settings")
-      expect(within(pointSettings).queryByText("Individual point settings")).not.toBeInTheDocument()
-      expect(within(pointSettings).queryByText("loss_ratio")).not.toBeInTheDocument()
-      expect(within(pointSettings).getByText("Maximum")).toBeInTheDocument()
-      expect(within(pointSettings).getByDisplayValue("1.05")).toBeInTheDocument()
-      expect(screen.queryByText("Min value")).not.toBeInTheDocument()
-      expect(screen.queryByText("Max value")).not.toBeInTheDocument()
-      expect(screen.queryByText("Steps")).not.toBeInTheDocument()
+        config: {
+          ...LOSS,
+          constraints: { loss_ratio: { max: 1.05 }, volume: { min: 900 } },
+          frontier_steps: 4,
+          frontier_ranges: { loss_ratio: { min: 0.9, max: 1.2 }, volume: { min: 800, max: 1000 } },
+        },
+      }))
+      expect(screen.getByTestId("constraints-result")).toHaveTextContent("Result: frontier over loss_ratio, volume · 16 solves")
     })
 
-    it("shows point/frontier choice inside ratebook constraints", () => {
-      renderConfig(makeProps({
-            config: {
-              _nodeId: "opt_1",
-              mode: "ratebook",
-              objective: "premium",
-              constraints: { loss_ratio: { max: 1.05 } },
-              factor_columns: [["age_band"]],
-            },
-          }))
-      const settingsCard = screen.getByTestId("constraint-settings-card")
-      expect(within(settingsCard).getByText("Result type")).toBeInTheDocument()
-      expect(within(settingsCard).getByRole("button", { name: "Individual point" })).toBeInTheDocument()
-      expect(within(settingsCard).getByRole("button", { name: "Efficient frontier" })).toBeInTheDocument()
-      const pointSettings = within(settingsCard).getByTestId("individual-point-settings")
-      expect(within(pointSettings).queryByText("Individual point settings")).not.toBeInTheDocument()
-      expect(within(pointSettings).queryByText("loss_ratio")).not.toBeInTheDocument()
-      expect(within(pointSettings).getByText("Maximum")).toBeInTheDocument()
-      expect(within(pointSettings).getByDisplayValue("1.05")).toBeInTheDocument()
-      expect(screen.queryByText("Min value")).not.toBeInTheDocument()
-    })
-
-    it("shows frontier settings for ratebook efficient frontier", () => {
-      renderConfig(makeProps({
-            config: {
-              _nodeId: "opt_1",
-              mode: "ratebook",
-              objective: "premium",
-              constraints: { loss_ratio: { max: 1.05 } },
-              factor_columns: [["age_band"]],
-              frontier_enabled: true,
-            },
-          }))
-      const settingsCard = screen.getByTestId("constraint-settings-card")
-      expect(within(settingsCard).queryByTestId("individual-point-settings")).not.toBeInTheDocument()
-      expect(within(settingsCard).queryByText("Maximum")).not.toBeInTheDocument()
-      expect(within(settingsCard).queryByDisplayValue("1.05")).not.toBeInTheDocument()
-      expect(within(settingsCard).getByText("Min value")).toBeInTheDocument()
-      expect(within(settingsCard).getByText("Max value")).toBeInTheDocument()
-      expect(within(settingsCard).queryByText("Min multiplier")).not.toBeInTheDocument()
-      expect(within(settingsCard).queryByText("Max multiplier")).not.toBeInTheDocument()
-      expect(within(settingsCard).getByText("Steps")).toBeInTheDocument()
-    })
-
-    it("selecting efficient frontier updates frontier_enabled", () => {
+    it("Sweep starts the range at the fixed value; Fixed removes the range", () => {
       const props = makeProps({
         config: {
-          _nodeId: "opt_1",
-          mode: "online",
-          objective: "premium",
-          constraints: { loss_ratio: { max: 1.05 } },
+          ...LOSS,
+          constraints: { loss_ratio: { max: 1.05 }, volume: { min: 900 } },
+          frontier_ranges: { volume: { min: 800, max: 1000 } },
         },
       })
       renderConfig(props)
-      fireEvent.click(screen.getByRole("button", { name: "Efficient frontier" }))
-      expect(props.componentProps.onUpdate).toHaveBeenCalledWith("frontier_enabled", true)
+      fireEvent.click(within(screen.getByRole("radiogroup", { name: "loss_ratio bound" })).getByRole("radio", { name: "Sweep" }))
+      expect(props.componentProps.onUpdate).toHaveBeenCalledWith({
+        frontier_ranges: { volume: { min: 800, max: 1000 }, loss_ratio: { min: 1.05 } },
+      })
+      fireEvent.click(within(screen.getByRole("radiogroup", { name: "volume bound" })).getByRole("radio", { name: "Fixed" }))
+      expect(props.componentProps.onUpdate).toHaveBeenCalledWith({ frontier_ranges: {} })
     })
 
-    it("selecting individual point updates frontier_enabled", () => {
+    it("clearing both ends keeps the constraint swept", () => {
       const props = makeProps({
-        config: {
-          _nodeId: "opt_1",
-          mode: "online",
-          objective: "premium",
-          constraints: { loss_ratio: { max: 1.05 } },
-          frontier_enabled: true,
-        },
+        config: { ...LOSS, frontier_ranges: { loss_ratio: { min: 0.9 } } },
       })
       renderConfig(props)
-      fireEvent.click(screen.getByRole("button", { name: "Individual point" }))
-      expect(props.componentProps.onUpdate).toHaveBeenCalledWith("frontier_enabled", false)
+      const from = screen.getByLabelText("loss_ratio sweep from")
+      fireEvent.change(from, { target: { value: "" } })
+      fireEvent.blur(from)
+      expect(props.componentProps.onUpdate).toHaveBeenCalledWith({ frontier_ranges: { loss_ratio: {} } })
     })
 
-    it("highlights missing frontier range values instead of rendering defaults", () => {
+    it("shows the sweep in ratebook mode the same way", () => {
       renderConfig(makeProps({
-            config: {
-              _nodeId: "opt_1",
-              mode: "online",
-              objective: "premium",
-              constraints: { loss_ratio: { max: 1.05 } },
-              frontier_enabled: true,
-            },
-          }))
-      expect(screen.getAllByTestId("constraint-settings-card")).toHaveLength(1)
-      const settingsCard = screen.getByTestId("constraint-settings-card")
-      expect(within(settingsCard).getByTestId("constraint-row")).toBeInTheDocument()
-      expect(within(settingsCard).getByText("Min value")).toBeInTheDocument()
-      expect(within(settingsCard).getByText("Max value")).toBeInTheDocument()
-      expect(within(settingsCard).queryByText("Min multiplier")).not.toBeInTheDocument()
-      expect(within(settingsCard).queryByText("Max multiplier")).not.toBeInTheDocument()
-      expect(within(settingsCard).getByText("Steps")).toBeInTheDocument()
-      const minInput = within(settingsCard).getByLabelText("loss_ratio min value") as HTMLInputElement
-      const maxInput = within(settingsCard).getByLabelText("loss_ratio max value") as HTMLInputElement
-      expect(minInput.value).toBe("")
-      expect(maxInput.value).toBe("")
-      expect(minInput).toHaveAttribute("aria-invalid", "true")
-      expect(maxInput).toHaveAttribute("aria-invalid", "true")
-      expect(within(settingsCard).queryByDisplayValue("0.8")).not.toBeInTheDocument()
-      expect(within(settingsCard).queryByDisplayValue("1.1")).not.toBeInTheDocument()
-      expect(within(settingsCard).getByDisplayValue("15")).toBeInTheDocument()
-      expect(within(settingsCard).queryByTestId("individual-point-settings")).not.toBeInTheDocument()
-      expect(within(settingsCard).queryByTestId("constraint-bound-settings")).not.toBeInTheDocument()
-      expect(within(settingsCard).queryByText("Maximum")).not.toBeInTheDocument()
-      expect(within(settingsCard).queryByDisplayValue("1.05")).not.toBeInTheDocument()
+        config: { ...LOSS, mode: "ratebook", factor_columns: [["age_band"]], frontier_ranges: { loss_ratio: {} } },
+      }))
+      const card = screen.getByRole("group", { name: "loss_ratio constraint" })
+      expect(within(card).getByLabelText("loss_ratio sweep from")).toBeInTheDocument()
+      expect(within(screen.getByTestId("frontier-settings")).getByText("Points per swept constraint")).toBeInTheDocument()
     })
 
-    it("renders per-constraint frontier range values from config", () => {
-      renderConfig(makeProps({
-            config: {
-              _nodeId: "opt_1",
-              mode: "online",
-              objective: "premium",
-              constraints: { loss_ratio: { max: 1.05 } },
-              frontier_enabled: true,
-              frontier_ranges: { loss_ratio: { min: 11, max: 39 } },
-            },
-          }))
+    it("highlights missing sweep ends instead of rendering defaults", () => {
+      renderConfig(makeProps({ config: { ...LOSS, frontier_ranges: { loss_ratio: {} } } }))
+      const card = screen.getByRole("group", { name: "loss_ratio constraint" })
+      const fromInput = within(card).getByLabelText("loss_ratio sweep from") as HTMLInputElement
+      const toInput = within(card).getByLabelText("loss_ratio sweep to") as HTMLInputElement
+      expect(fromInput.value).toBe("")
+      expect(toInput.value).toBe("")
+      expect(fromInput).toHaveAttribute("aria-invalid", "true")
+      expect(toInput).toHaveAttribute("aria-invalid", "true")
+      expect(within(screen.getByTestId("frontier-settings")).getByDisplayValue("15")).toBeInTheDocument()
+    })
+
+    it("renders per-constraint sweep values from config", () => {
+      renderConfig(makeProps({ config: { ...LOSS, frontier_ranges: { loss_ratio: { min: 11, max: 39 } } } }))
       expect(screen.getByDisplayValue("11")).toBeInTheDocument()
       expect(screen.getByDisplayValue("39")).toBeInTheDocument()
     })
@@ -1803,7 +2385,6 @@ describe("OptimiserConfig", () => {
           status: "ok",
           ranges: { loss_ratio: { min: 11, max: 39 } },
           method: "scenario_envelope",
-          warning: null,
         },
       })
       const props = makeProps({
@@ -1812,18 +2393,17 @@ describe("OptimiserConfig", () => {
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 35 } },
-          frontier_enabled: true,
+          frontier_ranges: { loss_ratio: {} },
         },
       })
       renderConfig(props)
 
-      fireEvent.click(screen.getByRole("button", { name: "Auto range" }))
+      fireEvent.click(screen.getByRole("button", { name: "Auto range loss_ratio" }))
 
       await waitFor(() => {
         expect(mockStartOptimiserFrontierAutoRange).toHaveBeenCalledWith({
           graph: { nodes: [], edges: [], preamble: "" },
           node_id: "opt_1",
-          streamingChunkSize: expect.any(Number),
           signal: expect.any(AbortSignal),
         })
         expect(mockGetOptimiserFrontierAutoRangeStatus).toHaveBeenCalledWith(
@@ -1834,6 +2414,100 @@ describe("OptimiserConfig", () => {
       expect(props.componentProps.onUpdate).toHaveBeenCalledWith({
         frontier_ranges: { loss_ratio: { min: 11, max: 39 } },
       })
+    })
+
+    it("the auto-range request carries the preamble", async () => {
+      mockStartOptimiserFrontierAutoRange.mockResolvedValue({ status: "started", job_id: "range-job-1", error: null })
+      mockGetOptimiserFrontierAutoRangeStatus.mockResolvedValue({
+        status: "completed",
+        progress: 1,
+        message: "Completed",
+        elapsed_seconds: 1,
+        result: { status: "ok", ranges: { loss_ratio: { min: 11, max: 39 } }, method: "scenario_envelope" },
+      })
+      const actual = await vi.importActual<typeof import("../../utils/buildGraph")>("../../utils/buildGraph")
+      vi.mocked(buildGraph).mockImplementation(actual.buildGraph)
+      act(() => useGraphStore.getState().setPreambleRaw("import numpy as np"))
+      renderConfig(makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          objective: "premium",
+          constraints: { loss_ratio: { max: 35 } },
+          frontier_ranges: { loss_ratio: {} },
+        },
+      }))
+      fireEvent.click(screen.getByRole("button", { name: "Auto range loss_ratio" }))
+      await waitFor(() => expect(mockStartOptimiserFrontierAutoRange).toHaveBeenCalledTimes(1))
+      expect(mockStartOptimiserFrontierAutoRange.mock.calls[0][0].graph.preamble).toBe("import numpy as np")
+      act(() => useGraphStore.getState().setPreambleRaw(""))
+      vi.mocked(buildGraph).mockImplementation(
+        () => ({ nodes: [], edges: [], preamble: "" }) as unknown as ReturnType<typeof buildGraph>,
+      )
+    })
+
+    it("fills only the clicked constraint and keeps the other swept range", async () => {
+      mockStartOptimiserFrontierAutoRange.mockResolvedValue({
+        status: "started",
+        job_id: "range-job-2",
+        error: null,
+      })
+      mockGetOptimiserFrontierAutoRangeStatus.mockResolvedValue({
+        status: "completed",
+        progress: 1,
+        message: "Completed",
+        elapsed_seconds: 1.2,
+        result: {
+          status: "ok",
+          // The job ranges every constraint; only the clicked one is written.
+          ranges: { loss_ratio: { min: 11, max: 39 }, volume: { min: 1, max: 2 } },
+          method: "scenario_envelope",
+        },
+      })
+      const props = makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          objective: "premium",
+          constraints: { loss_ratio: { max: 35 }, volume: { min: 900 } },
+          frontier_ranges: { loss_ratio: {}, volume: { min: 800, max: 1000 } },
+        },
+      })
+      renderConfig(props)
+
+      const volumeCard = screen.getByRole("group", { name: "volume constraint" })
+      expect(within(volumeCard).getByRole("button", { name: "Auto range volume" })).toBeInTheDocument()
+      fireEvent.click(screen.getByRole("button", { name: "Auto range loss_ratio" }))
+
+      await waitFor(() => {
+        expect(props.componentProps.onUpdate).toHaveBeenCalledWith({
+          frontier_ranges: { loss_ratio: { min: 11, max: 39 }, volume: { min: 800, max: 1000 } },
+        })
+      })
+    })
+
+    it("shows an auto-range failure on the card that asked", async () => {
+      mockStartOptimiserFrontierAutoRange.mockResolvedValue({
+        status: "error",
+        job_id: null,
+        error: "Auto range needs a solvable setup",
+      })
+      renderConfig(makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          objective: "premium",
+          constraints: { loss_ratio: { max: 35 }, volume: { min: 900 } },
+          frontier_ranges: { loss_ratio: {}, volume: {} },
+        },
+      }))
+
+      fireEvent.click(screen.getByRole("button", { name: "Auto range volume" }))
+
+      const volumeCard = screen.getByRole("group", { name: "volume constraint" })
+      expect(await within(volumeCard).findByText(/Auto range needs a solvable setup/)).toBeInTheDocument()
+      const lossCard = screen.getByRole("group", { name: "loss_ratio constraint" })
+      expect(within(lossCard).queryByText(/Auto range needs a solvable setup/)).not.toBeInTheDocument()
     })
 
     it("lets a running auto-range job be restarted and supersedes the old request", async () => {
@@ -1856,7 +2530,6 @@ describe("OptimiserConfig", () => {
             status: "ok",
             ranges: { loss_ratio: { min: 10, max: 40 } },
             method: "scenario_envelope",
-            warning: null,
           },
         })
       const props = makeProps({
@@ -1865,13 +2538,13 @@ describe("OptimiserConfig", () => {
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 35 } },
-          frontier_enabled: true,
+          frontier_ranges: { loss_ratio: {} },
         },
       })
       renderConfig(props)
 
-      fireEvent.click(screen.getByRole("button", { name: "Auto range" }))
-      const restart = await screen.findByRole("button", { name: "Restart auto range" })
+      fireEvent.click(screen.getByRole("button", { name: "Auto range loss_ratio" }))
+      const restart = await screen.findByRole("button", { name: "Restart auto range loss_ratio" })
       expect(restart).toBeEnabled()
       fireEvent.click(restart)
 
@@ -1901,7 +2574,7 @@ describe("OptimiserConfig", () => {
         error_code: "contract_error",
         http_status_code: 422,
         execution_metrics: makeExecutionMetricsFixture({
-          profile: "auto_range",
+          profile: "optimiser_solve",
           status: "running",
           terminal_reason: null,
         }),
@@ -1912,17 +2585,17 @@ describe("OptimiserConfig", () => {
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 35 } },
-          frontier_enabled: true,
+          frontier_ranges: { loss_ratio: {} },
         },
       })
       renderConfig(props)
 
-      fireEvent.click(screen.getByRole("button", { name: "Auto range" }))
+      fireEvent.click(screen.getByRole("button", { name: "Auto range loss_ratio" }))
 
       expect(await screen.findByText(
         "Fan-in projection contract does not cover columns required by the node.",
       )).toBeInTheDocument()
-      expect(screen.queryByText("Memory pressure reached 75% of the auto-range budget.")).not.toBeInTheDocument()
+      expect(screen.queryByText("Auto-range reached 75% of its memory allowance.")).not.toBeInTheDocument()
       expect(screen.queryByText("Technical details")).not.toBeInTheDocument()
       expect(props.componentProps.onUpdate).not.toHaveBeenCalled()
     })
@@ -1950,12 +2623,12 @@ describe("OptimiserConfig", () => {
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 35 } },
-          frontier_enabled: true,
+          frontier_ranges: { loss_ratio: {} },
         },
       })
       renderConfig(props)
 
-      fireEvent.click(screen.getByRole("button", { name: "Auto range" }))
+      fireEvent.click(screen.getByRole("button", { name: "Auto range loss_ratio" }))
 
       expect(await screen.findByText(
         "Configured optimiser data_input 'optimiser_input' did not produce data.",
@@ -1978,7 +2651,7 @@ describe("OptimiserConfig", () => {
         terminal_reason: "memory_limited",
         error_code: "memory_limited",
         http_status_code: 507,
-        execution_metrics: makeExecutionMetricsFixture({ profile: "auto_range" }),
+        execution_metrics: makeExecutionMetricsFixture({ profile: "optimiser_solve" }),
       })
       const props = makeProps({
         config: {
@@ -1986,18 +2659,18 @@ describe("OptimiserConfig", () => {
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 35 } },
-          frontier_enabled: true,
+          frontier_ranges: { loss_ratio: {} },
         },
       })
       renderConfig(props)
 
-      fireEvent.click(screen.getByRole("button", { name: "Auto range" }))
+      fireEvent.click(screen.getByRole("button", { name: "Auto range loss_ratio" }))
 
       expect(await screen.findByText(
-        "Auto range failed: memory pressure reached 75% of the auto-range budget. RSS 1.7 KB of 2.9 KB limit.",
+        "Auto range failed: optimiser reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
       )).toBeInTheDocument()
       expect(screen.getByText("Technical details")).toBeInTheDocument()
-      expect(screen.getByText("Stage collect")).toBeInTheDocument()
+      expect(screen.getByText("During: Collecting results")).toBeInTheDocument()
       expect(props.componentProps.onUpdate).not.toHaveBeenCalled()
     })
 
@@ -2016,7 +2689,7 @@ describe("OptimiserConfig", () => {
         terminal_reason: "memory_limited",
         error_code: "memory_limit",
         http_status_code: 507,
-        execution_metrics: makeExecutionMetricsFixture({ profile: "auto_range", terminal_reason: "memory_limited" }),
+        execution_metrics: makeExecutionMetricsFixture({ profile: "optimiser_solve", terminal_reason: "memory_limited" }),
       })
       const props = makeProps({
         config: {
@@ -2024,22 +2697,22 @@ describe("OptimiserConfig", () => {
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 35 } },
-          frontier_enabled: true,
+          frontier_ranges: { loss_ratio: {} },
         },
       })
       renderConfig(props)
 
-      fireEvent.click(screen.getByRole("button", { name: "Auto range" }))
+      fireEvent.click(screen.getByRole("button", { name: "Auto range loss_ratio" }))
 
       expect(await screen.findByText(
-        "Auto range failed: memory pressure reached 75% of the auto-range budget. RSS 1.7 KB of 2.9 KB limit.",
+        "Auto range failed: optimiser reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
       )).toBeInTheDocument()
       expect(props.componentProps.onUpdate).not.toHaveBeenCalled()
     })
 
     it("auto range preserves structured metrics from admission failures before a job starts", async () => {
       const executionMetrics = makeExecutionMetricsFixture({
-        profile: "auto_range",
+        profile: "optimiser_solve",
         terminal_reason: null,
       })
       mockStartOptimiserFrontierAutoRange.mockRejectedValue(Object.assign(new Error("HTTP 507"), {
@@ -2064,18 +2737,18 @@ describe("OptimiserConfig", () => {
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 35 } },
-          frontier_enabled: true,
+          frontier_ranges: { loss_ratio: {} },
         },
       })
       renderConfig(props)
 
-      fireEvent.click(screen.getByRole("button", { name: "Auto range" }))
+      fireEvent.click(screen.getByRole("button", { name: "Auto range loss_ratio" }))
 
       expect(await screen.findByText(
-        "Auto range failed: memory pressure reached 75% of the auto-range budget. RSS 1.7 KB of 2.9 KB limit.",
+        "Auto range failed: optimiser reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
       )).toBeInTheDocument()
       expect(screen.getByText("Technical details")).toBeInTheDocument()
-      expect(screen.getByText("Stage collect")).toBeInTheDocument()
+      expect(screen.getByText("During: Collecting results")).toBeInTheDocument()
       expect(props.componentProps.onUpdate).not.toHaveBeenCalled()
     })
 
@@ -2102,12 +2775,12 @@ describe("OptimiserConfig", () => {
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 35 } },
-          frontier_enabled: true,
+          frontier_ranges: { loss_ratio: {} },
         },
       })
       renderConfig(props)
 
-      fireEvent.click(screen.getByRole("button", { name: "Auto range" }))
+      fireEvent.click(screen.getByRole("button", { name: "Auto range loss_ratio" }))
 
       expect(await screen.findByText("Auto range failed (contract_error)")).toBeInTheDocument()
       expect(screen.queryByText(/developer-only/)).not.toBeInTheDocument()
@@ -2121,12 +2794,14 @@ describe("OptimiserConfig", () => {
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 1.05 } },
-          frontier_enabled: true,
+          frontier_ranges: { loss_ratio: {} },
         },
       })
       renderConfig(props)
-      const input = screen.getByLabelText("loss_ratio min value")
+      const input = screen.getByLabelText("loss_ratio sweep from")
       fireEvent.change(input, { target: { value: "0.75" } })
+      expect(props.componentProps.onUpdate).not.toHaveBeenCalled()
+      fireEvent.blur(input)
       expect(props.componentProps.onUpdate).toHaveBeenCalledWith({
         frontier_ranges: { loss_ratio: { min: 0.75 } },
       })
@@ -2139,12 +2814,13 @@ describe("OptimiserConfig", () => {
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 1.05 } },
-          frontier_enabled: true,
+          frontier_ranges: { loss_ratio: {} },
         },
       })
       renderConfig(props)
-      const input = screen.getByLabelText("loss_ratio max value")
+      const input = screen.getByLabelText("loss_ratio sweep to")
       fireEvent.change(input, { target: { value: "1.25" } })
+      fireEvent.keyDown(input, { key: "Enter" })
       expect(props.componentProps.onUpdate).toHaveBeenCalledWith({
         frontier_ranges: { loss_ratio: { max: 1.25 } },
       })
@@ -2157,7 +2833,7 @@ describe("OptimiserConfig", () => {
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 1.05 } },
-          frontier_enabled: true,
+          frontier_ranges: { loss_ratio: {} },
         },
       })
       renderConfig(props)
@@ -2167,5 +2843,760 @@ describe("OptimiserConfig", () => {
       fireEvent.blur(input)
       expect(props.componentProps.onUpdate).toHaveBeenCalledWith("frontier_steps", 20)
     })
+  })
+
+  // ═════════════════════════════════════════════════════════════════
+  // MLflow section
+  // ═════════════════════════════════════════════════════════════════
+
+  describe("Publish section", () => {
+    withPane("export")
+
+    const APPLY_NODE: SimpleNode = {
+      id: "apply_1",
+      data: { label: "Apply Rates", description: "", nodeType: "optimiserApply", config: {} },
+    }
+    const OPTIMISER_NODE: SimpleNode = {
+      id: "opt_1",
+      data: { label: "My Optimiser", description: "", nodeType: "optimiser", config: {} },
+    }
+
+    function seedSolve(overrides: Record<string, unknown> = {}) {
+      const config = { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: {} }
+      useNodeResultsStore.setState({
+        solveResults: {
+          opt_1: {
+            result: makeSolveResult(),
+            originalResult: makeSolveResult(),
+            jobId: "job_pub",
+            configHash: hashConfig(config),
+            source: "live",
+            structuralVersion: useGraphStore.getState().structuralVersion,
+            constraints: {},
+            nodeLabel: "My Optimiser",
+            frontier: null,
+            selectedPointIndex: null,
+            ...overrides,
+          },
+        },
+      })
+      return config
+    }
+
+    it("explains there is nothing to publish before any solve", () => {
+      renderConfig(makeProps())
+      expect(screen.getByText(/Nothing to publish yet/)).toBeInTheDocument()
+      expect(screen.queryByRole("button", { name: "Save to file" })).not.toBeInTheDocument()
+    })
+
+    it("saves the solved result to the default path and offers it to an Apply node", async () => {
+      const config = seedSolve()
+      mockSaveOptimiser.mockResolvedValue({
+        status: "ok",
+        path: "C:/proj/output/optimiser_My_Optimiser_opt_1.json",
+        apply_path: "output/optimiser_My_Optimiser_opt_1.json",
+        message: "Saved",
+      })
+      const onUpdateNodeConfig = vi.fn(() => ({ ok: true as const }))
+      renderConfig(makeProps({
+        config,
+        onUpdateNodeConfig,
+        allNodes: [...DEFAULT_GRAPH_NODES, OPTIMISER_NODE, APPLY_NODE],
+      }))
+
+      fireEvent.click(screen.getByRole("button", { name: "Save to file" }))
+      await waitFor(() => expect(mockSaveOptimiser).toHaveBeenCalledWith({
+        job_id: "job_pub",
+        output_path: "output/optimiser_My_Optimiser_opt_1.json",
+        point_index: undefined,
+        version: "",
+        overwrite: false,
+        stale: false,
+      }))
+      const receipt = await screen.findByTestId("optimiser-save-receipt")
+      expect(receipt).toHaveTextContent("Saved the solved result to output/optimiser_My_Optimiser_opt_1.json")
+
+      fireEvent.change(within(receipt).getByRole("combobox", { name: "Apply Optimisation node" }), { target: { value: "apply_1" } })
+      fireEvent.click(within(receipt).getByRole("button", { name: "Use in Apply node" }))
+      expect(onUpdateNodeConfig).toHaveBeenCalledWith("apply_1", {
+        sourceType: "file",
+        artifact_path: "output/optimiser_My_Optimiser_opt_1.json",
+      })
+      expect(receipt).toHaveTextContent("Apply Rates now loads output/optimiser_My_Optimiser_opt_1.json.")
+    })
+
+    it("asks before replacing an existing file and retries with overwrite", async () => {
+      const config = seedSolve()
+      const { ApiError } = await vi.importActual<typeof import("../../api/client")>("../../api/client")
+      mockSaveOptimiser
+        .mockRejectedValueOnce(new ApiError("HTTP 409", 409, undefined, undefined, {
+          error_code: "optimiser_result_exists",
+          message: "output/q3.json already exists.",
+        }))
+        .mockResolvedValueOnce({ status: "ok", path: "C:/proj/output/q3.json", apply_path: "output/q3.json", message: "" })
+      renderConfig(makeProps({ config: { ...config, result_export_path: "output/q3.json" } }))
+
+      fireEvent.click(screen.getByRole("button", { name: "Save to file" }))
+      expect(await screen.findByText("output/q3.json already exists.")).toBeInTheDocument()
+      fireEvent.click(screen.getByRole("button", { name: "Replace existing file" }))
+      await waitFor(() => expect(mockSaveOptimiser).toHaveBeenLastCalledWith(expect.objectContaining({
+        output_path: "output/q3.json",
+        overwrite: true,
+      })))
+      expect(await screen.findByTestId("optimiser-save-receipt")).toHaveTextContent("output/q3.json")
+    })
+
+    it("binds Replace to the refused file, not whatever the path field says later", async () => {
+      const config = seedSolve()
+      const { ApiError } = await vi.importActual<typeof import("../../api/client")>("../../api/client")
+      mockSaveOptimiser
+        .mockRejectedValueOnce(new ApiError("HTTP 409", 409, undefined, undefined, {
+          error_code: "optimiser_result_exists",
+          message: "Optimiser result already exists: output/a.json",
+        }))
+        .mockResolvedValueOnce({ status: "ok", path: "C:/proj/output/a.json", apply_path: "output/a.json", message: "" })
+      renderStatefulConfig(makeProps({ config: { ...config, result_export_path: "output/a.json" } }))
+
+      fireEvent.click(screen.getByRole("button", { name: "Save to file" }))
+      expect(await screen.findByText("Optimiser result already exists: output/a.json")).toBeInTheDocument()
+
+      const pathField = screen.getByLabelText("File path")
+      fireEvent.change(pathField, { target: { value: "output/b.json" } })
+      fireEvent.blur(pathField)
+      expect(screen.queryByRole("button", { name: "Replace existing file" })).not.toBeInTheDocument()
+
+      fireEvent.change(pathField, { target: { value: "output/a.json" } })
+      fireEvent.blur(pathField)
+      fireEvent.click(screen.getByRole("button", { name: "Replace existing file" }))
+      await waitFor(() => expect(mockSaveOptimiser).toHaveBeenLastCalledWith(expect.objectContaining({
+        output_path: "output/a.json",
+        overwrite: true,
+      })))
+    })
+
+    it("loads a ratebook frontier point's factor tables for the CSV", async () => {
+      const ratebook = makeSolveResult({ mode: "ratebook", factor_tables: {}, combined_factor_bounds: { min: 0.9, max: 1.1 } })
+      const summary = (total_objective: number) => ({
+        total_objective, constraints: {}, lambdas: {}, converged: true, iterations: null,
+        cd_iterations: null, clamp_rate: null, history: null, adjustments: null,
+        factor_tables: null, diagnostics_errors: [],
+      })
+      const config = seedSolve({
+        result: ratebook,
+        originalResult: ratebook,
+        selectedPointIndex: 0,
+        frontier: {
+          points: [{ total_objective: 10 }],
+          point_summaries: [summary(10)],
+          n_points: 1,
+          points_returned: 1,
+          constraint_names: [],
+          points_limit: 2000,
+          points_truncated: false,
+        },
+      })
+      mockSelectFrontierPoint.mockResolvedValue({
+        ...summary(10),
+        status: "ok",
+        point_index: 0,
+        frontier_generation: 0,
+        baseline_objective: 0,
+        baseline_constraints: {},
+        factor_tables: { age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1, quote_count: 40 }] },
+        error: null,
+      })
+      renderConfig(makeProps({ config }))
+
+      expect(screen.queryByRole("button", { name: "Download factor tables (CSV)" })).not.toBeInTheDocument()
+      fireEvent.click(screen.getByRole("button", { name: "Load factor tables for CSV" }))
+      await waitFor(() => expect(mockSelectFrontierPoint).toHaveBeenCalledWith({
+        job_id: "job_pub",
+        point_index: 0,
+        include_ratebook_tables: true,
+      }))
+      expect(await screen.findByRole("button", { name: "Download factor tables (CSV)" })).toBeInTheDocument()
+    })
+
+    function seedRatebookFrontier() {
+      const ratebook = makeSolveResult({ mode: "ratebook", factor_tables: {}, combined_factor_bounds: { min: 0.9, max: 1.1 } })
+      const summary = (total_objective: number) => ({
+        total_objective, constraints: {}, lambdas: {}, converged: true, iterations: null,
+        cd_iterations: null, clamp_rate: null, history: null, adjustments: null,
+        factor_tables: null, diagnostics_errors: [],
+      })
+      const config = seedSolve({
+        result: ratebook,
+        originalResult: ratebook,
+        selectedPointIndex: 0,
+        frontier: {
+          points: [{ total_objective: 10 }],
+          point_summaries: [summary(10)],
+          n_points: 1,
+          points_returned: 1,
+          constraint_names: [],
+          points_limit: 2000,
+          points_truncated: false,
+        },
+      })
+      const reply = {
+        ...summary(10),
+        status: "ok",
+        point_index: 0,
+        frontier_generation: 0,
+        baseline_objective: 0,
+        baseline_constraints: {},
+        factor_tables: { age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1, quote_count: 40 }] },
+        error: null,
+      }
+      let resolveReply: (value: unknown) => void = () => {}
+      mockSelectFrontierPoint.mockReturnValue(new Promise((resolve) => { resolveReply = resolve }))
+      return { config, deliver: () => act(async () => { resolveReply(reply) }) }
+    }
+
+    it("keeps the chosen target when a factor-table reply arrives after the choice changed", async () => {
+      const { config, deliver } = seedRatebookFrontier()
+      renderConfig(makeProps({ config }))
+      fireEvent.click(screen.getByRole("button", { name: "Load factor tables for CSV" }))
+      fireEvent.change(screen.getByRole("combobox", { name: "Result to publish" }), { target: { value: "" } })
+
+      await deliver()
+      const cached = useNodeResultsStore.getState().solveResults.opt_1
+      expect(cached?.selectedPointIndex).toBeNull()
+      expect(cached?.frontier?.point_summaries[0].factor_tables).toEqual({
+        age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1, quote_count: 40 }],
+      })
+    })
+
+    it("drops a factor-table reply for a job the node has moved past", async () => {
+      const { config, deliver } = seedRatebookFrontier()
+      renderConfig(makeProps({ config }))
+      fireEvent.click(screen.getByRole("button", { name: "Load factor tables for CSV" }))
+      act(() => {
+        const previous = useNodeResultsStore.getState().solveResults.opt_1
+        if (!previous || previous.result === null) throw new Error("The seeded solve has no result")
+        useNodeResultsStore.setState({
+          solveResults: { opt_1: { ...previous, jobId: "job_newer", selectedPointIndex: 0 } },
+        })
+      })
+
+      await deliver()
+      const cached = useNodeResultsStore.getState().solveResults.opt_1
+      expect(cached?.jobId).toBe("job_newer")
+      expect(cached?.frontier?.point_summaries[0].factor_tables).toBeNull()
+      expect(cached?.result?.factor_tables).toEqual({})
+    })
+
+    it("drops a factor-table reply from a frontier generation the node has recomputed past", async () => {
+      const { config, deliver } = seedRatebookFrontier()
+      renderConfig(makeProps({ config }))
+      fireEvent.click(screen.getByRole("button", { name: "Load factor tables for CSV" }))
+      // The recompute keeps the job and point 0 is a different point now.
+      act(() => {
+        const previous = useNodeResultsStore.getState().solveResults.opt_1
+        if (!previous || previous.result === null) throw new Error("The seeded solve has no result")
+        const recomputed = { ...previous.originalResult, frontier_generation: 1 }
+        useNodeResultsStore.setState({
+          solveResults: {
+            opt_1: {
+              ...previous,
+              result: recomputed,
+              originalResult: recomputed,
+              frontier: previous.frontier && { ...previous.frontier, frontier_generation: 1 },
+            },
+          },
+        })
+      })
+
+      await deliver()
+      const cached = useNodeResultsStore.getState().solveResults.opt_1
+      expect(cached?.originalResult?.frontier_generation).toBe(1)
+      expect(cached?.frontier?.point_summaries[0].factor_tables).toBeNull()
+      expect(cached?.result?.factor_tables).toEqual({})
+    })
+
+    it("reports a factor-table reply from a generation the result does not show", async () => {
+      const { config } = seedRatebookFrontier()
+      mockSelectFrontierPoint.mockResolvedValue({
+        total_objective: 10, constraints: {}, lambdas: {}, converged: true, iterations: null,
+        cd_iterations: null, clamp_rate: null, history: null, adjustments: null, diagnostics_errors: [],
+        status: "ok",
+        point_index: 0,
+        frontier_generation: 3,
+        baseline_objective: 0,
+        baseline_constraints: {},
+        factor_tables: { age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1, quote_count: 40 }] },
+        error: null,
+      })
+      renderConfig(makeProps({ config }))
+      fireEvent.click(screen.getByRole("button", { name: "Load factor tables for CSV" }))
+
+      expect(await screen.findByText(
+        /The server answered for frontier generation 3, but this result shows generation 0\./,
+      )).toBeInTheDocument()
+      const cached = useNodeResultsStore.getState().solveResults.opt_1
+      expect(cached?.frontier?.point_summaries[0].factor_tables).toBeNull()
+    })
+
+    it("publishes the chosen frontier point, the same selection the preview shows", async () => {
+      const config = seedSolve({
+        frontier: {
+          points: [{ total_objective: 10 }, { total_objective: 20 }],
+          point_summaries: [10, 20].map((total_objective) => ({
+            total_objective,
+            constraints: {},
+            lambdas: {},
+            converged: true,
+            iterations: null,
+            cd_iterations: null,
+            clamp_rate: null,
+            history: null,
+            adjustments: null,
+            factor_tables: null,
+          })),
+          n_points: 2,
+          points_returned: 2,
+          constraint_names: [],
+          points_limit: 2000,
+          points_truncated: false,
+        },
+      })
+      mockLogOptimiserToMlflow.mockResolvedValue({ status: "ok", backend: "local", experiment_name: "My Optimiser", run_id: "run_7", run_url: null, tracking_uri: "" })
+      renderConfig(makeProps({ config }))
+
+      fireEvent.change(screen.getByRole("combobox", { name: "Result to publish" }), { target: { value: "1" } })
+      expect(useNodeResultsStore.getState().solveResults.opt_1?.selectedPointIndex).toBe(1)
+      fireEvent.click(screen.getByRole("button", { name: "Log to MLflow" }))
+      await waitFor(() => expect(mockLogOptimiserToMlflow).toHaveBeenCalledWith(expect.objectContaining({
+        job_id: "job_pub",
+        point_index: 1,
+        stale: false,
+      })))
+      expect(await screen.findByTestId("optimiser-log-receipt")).toHaveTextContent("Logged frontier point 2 to My Optimiser: run run_7")
+    })
+
+    it("labels publishing an outdated result and records it on the request", async () => {
+      const config = seedSolve()
+      mockSaveOptimiser.mockResolvedValue({ status: "ok", path: "p", apply_path: "p", message: "" })
+      renderConfig(makeProps({ config: { ...config, objective: "loss_ratio" } }))
+
+      expect(screen.getByText(/has changed since this result was solved/)).toBeInTheDocument()
+      fireEvent.click(screen.getByRole("button", { name: "Save outdated result" }))
+      await waitFor(() => expect(mockSaveOptimiser).toHaveBeenCalledWith(expect.objectContaining({ stale: true })))
+      expect(screen.getByRole("button", { name: "Log outdated result" })).toBeInTheDocument()
+    })
+
+    it("logs to the node's own destination and experiment, read at click time", async () => {
+      const config = seedSolve()
+      mockLogOptimiserToMlflow.mockResolvedValue({ status: "ok", backend: "local", experiment_name: "e", run_id: "r", run_url: null, tracking_uri: "" })
+      const made = makeProps({ config: { ...config, mlflow_destination: "local", mlflow_experiment: "/Shared/pricing/opt" } })
+      const view = renderConfig(made)
+      fireEvent.click(screen.getByRole("button", { name: "Log to MLflow" }))
+      await waitFor(() => expect(mockLogOptimiserToMlflow).toHaveBeenLastCalledWith(expect.objectContaining({
+        destination: "local",
+        experiment_name: "/Shared/pricing/opt",
+      })))
+
+      // Back to Local folder with no experiment: the next log follows the config.
+      view.rerender(
+        <GraphProvider allNodes={made.graph.allNodes} edges={made.graph.edges}>
+          <PaneBoundConfig {...made.componentProps} config={config} />
+        </GraphProvider>,
+      )
+      fireEvent.click(screen.getByRole("button", { name: "Log to MLflow" }))
+      await waitFor(() => expect(mockLogOptimiserToMlflow).toHaveBeenLastCalledWith(expect.objectContaining({
+        destination: "",
+        experiment_name: null,
+      })))
+    })
+
+    it("shows the server's MLflow failure and offers the connection test", async () => {
+      const config = seedSolve()
+      const { ApiError } = await vi.importActual<typeof import("../../api/client")>("../../api/client")
+      mockLogOptimiserToMlflow.mockRejectedValueOnce(new ApiError("HTTP 502", 502, undefined, undefined, {
+        error_code: "mlflow_connectivity",
+        message: "Could not reach the MLflow tracking server, so the run was not logged.",
+      }))
+      renderConfig(makeProps({ config }))
+      fireEvent.click(screen.getByRole("button", { name: "Log to MLflow" }))
+
+      expect(await screen.findByText(
+        "MLflow log failed: Could not reach the MLflow tracking server, so the run was not logged.",
+      )).toBeInTheDocument()
+      expect(screen.queryByText(/ApiError|HTTP 502/)).toBeNull()
+      expect(screen.getByRole("button", { name: "Test connection in MLflow settings" })).toBeInTheDocument()
+    })
+
+    it("shows the server's detail when a save fails", async () => {
+      const config = seedSolve()
+      mockSaveOptimiser.mockRejectedValueOnce({ message: "HTTP 422", detail: "The selected point cannot be saved." })
+      renderConfig(makeProps({ config }))
+      fireEvent.click(screen.getByRole("button", { name: "Save to file" }))
+      expect(await screen.findByText("Save failed: The selected point cannot be saved.")).toBeInTheDocument()
+      expect(screen.queryByText(/\[object Object\]/)).toBeNull()
+    })
+
+    it("disables Log with the node's own destination reason and a Configure link", () => {
+      const config = seedSolve()
+      setMlflowInventory({ destinations: [MLFLOW_SERVER_UNCONFIGURED, MLFLOW_LOCAL] })
+      useUIStore.setState({ mlflowSettingsOpen: false })
+      renderConfig(makeProps({ config: { ...config, mlflow_destination: "server" } }))
+
+      expect(screen.getByRole("button", { name: "Log to MLflow" })).toBeDisabled()
+      expect(screen.getAllByText(new RegExp(MLFLOW_SERVER_UNCONFIGURED.detail.slice(0, 30))).length).toBeGreaterThan(0)
+      fireEvent.click(screen.getAllByRole("button", { name: "Configure MLflow" })[0])
+      expect(useUIStore.getState().mlflowSettingsOpen).toBe(true)
+    })
+
+    it("keeps Log enabled when only another remote is unconfigured", () => {
+      const config = seedSolve()
+      setMlflowInventory({ destinations: [MLFLOW_SERVER_UNCONFIGURED, MLFLOW_LOCAL] })
+      renderConfig(makeProps({ config: { ...config, mlflow_destination: "local" } }))
+      expect(screen.getByRole("button", { name: "Log to MLflow" })).toBeEnabled()
+    })
+
+    it("offers the factor tables as CSV for a ratebook result and states its collar", () => {
+      const ratebook = makeSolveResult({
+        mode: "ratebook",
+        factor_tables: { age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1, quote_count: 40 }] },
+        combined_factor_bounds: { min: 0.8999999761581421, max: 1.100000023841858 },
+      })
+      const config = seedSolve({ result: ratebook, originalResult: ratebook })
+      renderConfig(makeProps({ config }))
+      expect(screen.getByRole("button", { name: "Download factor tables (CSV)" })).toBeInTheDocument()
+      expect(screen.getByTestId("optimiser-combined-factor-collar")).toHaveTextContent(
+        "Combined factor collar [0.8999999761581421, 1.100000023841858] — apply it in your rating engine.",
+      )
+    })
+
+    it("refuses to offer a ratebook CSV without the solve's collar", () => {
+      const ratebook = makeSolveResult({
+        mode: "ratebook",
+        factor_tables: { age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1, quote_count: 40 }] },
+        combined_factor_bounds: null,
+      })
+      const config = seedSolve({ result: ratebook, originalResult: ratebook })
+      renderConfig(makeProps({ config }))
+      expect(screen.queryByRole("button", { name: "Download factor tables (CSV)" })).not.toBeInTheDocument()
+      expect(screen.getByRole("alert")).toHaveTextContent("no combined factor collar")
+    })
+
+    it("states no collar for an online result", () => {
+      const config = seedSolve()
+      renderConfig(makeProps({ config }))
+      expect(screen.queryByTestId("optimiser-combined-factor-collar")).not.toBeInTheDocument()
+    })
+  })
+
+  describe("MLflow section", () => {
+    withPane("export")
+
+    const OPTIMISER_NODE: SimpleNode = {
+      id: "opt_1",
+      data: { label: "My Optimiser", description: "", nodeType: "optimiser", config: {} },
+    }
+
+    /** Render the Export pane with the optimiser node in the graph. */
+    function renderMlflowSection(overrides: MakePropsOverrides = {}) {
+      const made = makeProps({
+        allNodes: [...DEFAULT_GRAPH_NODES, OPTIMISER_NODE],
+        ...overrides,
+      })
+      renderConfig(made)
+      return made.componentProps
+    }
+
+    /** Text anywhere in the panel EXCEPT inside a tooltip. */
+    function proseText(pattern: RegExp) {
+      return screen.queryByText(pattern, { ignore: "[role='tooltip'],script,style" })
+    }
+
+    /** Hover the icon's Tooltip wrapper; read the bubble the icon itself is described by. */
+    function tooltipTextOf(ariaLabel: string): string {
+      const icon = screen.getByLabelText(ariaLabel)
+      fireEvent.mouseEnter(icon.parentElement!)
+      return document.getElementById(icon.getAttribute("aria-describedby")!)!.textContent ?? ""
+    }
+
+    it("mounts the destination selector and drops the instruction prose", () => {
+      renderMlflowSection()
+      expect(screen.getByRole("radiogroup", { name: "MLflow destination" })).toBeTruthy()
+      expect(proseText(/nothing is logged automatically/i)).toBeNull()
+      expect(proseText(/toolbar/i)).toBeNull()
+    })
+
+    it("heads the always-open section with the manual-logging explainer", () => {
+      renderMlflowSection()
+      expect(screen.getByRole("heading", { name: "MLflow logging" })).toBeInTheDocument()
+      expect(screen.queryByRole("button", { name: /MLflow logging/i })).not.toBeInTheDocument()
+      expect(tooltipTextOf("About MLflow logging")).toMatch(/Nothing is logged automatically/)
+    })
+
+    it("names the Databricks default experiment path when the node chooses Databricks", () => {
+      setMlflowInventory({
+        destinations: [MLFLOW_DATABRICKS, MLFLOW_SERVER, MLFLOW_LOCAL],
+      })
+      renderMlflowSection({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          objective: "premium",
+          constraints: {},
+          mlflow_destination: "databricks",
+        },
+      })
+      const help = tooltipTextOf("About the experiment path")
+      expect(help).toContain("Leave blank to use /Shared/haute/My Optimiser.")
+      expect(help).toContain("named group")
+      expect(help).toContain("workspace folder path")
+      expect(screen.getByLabelText("About the experiment path")).toHaveAccessibleDescription(
+        /named group/,
+      )
+      expect(screen.getByLabelText("MLflow experiment path")).toHaveAttribute(
+        "placeholder",
+        "/Shared/haute/My Optimiser",
+      )
+    })
+
+    it("names the bare node label when the node names no destination under the same inventory", () => {
+      setMlflowInventory({
+        destinations: [MLFLOW_DATABRICKS, MLFLOW_SERVER, MLFLOW_LOCAL],
+      })
+      renderMlflowSection({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          objective: "premium",
+          constraints: {},
+        },
+      })
+      const help = tooltipTextOf("About the experiment path")
+      expect(help).toContain("Leave blank to use My Optimiser.")
+      expect(help).toContain("named group")
+      expect(help).toContain("workspace folder path")
+      expect(screen.getByLabelText("MLflow experiment path")).toHaveAttribute(
+        "placeholder",
+        "My Optimiser",
+      )
+    })
+
+    it("writes an explicit destination choice to the node config", () => {
+      setMlflowInventory({
+        destinations: [MLFLOW_DATABRICKS, MLFLOW_SERVER, MLFLOW_LOCAL],
+      })
+      const props = renderMlflowSection()
+      fireEvent.click(screen.getByRole("radio", { name: /MLflow server/ }))
+      expect(props.onUpdate).toHaveBeenCalledWith("mlflow_destination", "server")
+    })
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════
+// Factors table: ratebook and validation factors (OPT-V09A)
+// ═══════════════════════════════════════════════════════════════════
+
+describe("OptimiserConfig factors table", () => {
+  withPane("factors")
+
+  const DATA_COLUMNS = [
+    { name: "premium", dtype: "Float64" },
+    { name: "volume", dtype: "Float64" },
+    { name: "quote_id", dtype: "String" },
+    { name: "scenario_index", dtype: "Int64" },
+    { name: "scenario_value", dtype: "Float64" },
+    { name: "region", dtype: "String" },
+  ]
+  const REGION_COLUMNS = [
+    { name: "quote_id", dtype: "String" },
+    { name: "region", dtype: "String" },
+    { name: "channel", dtype: "String" },
+  ]
+  const NODES: SimpleNode[] = [
+    { id: "scored_node", data: { label: "scored", description: "", nodeType: "dataInput", config: {} } },
+    { id: "regions_node", data: { label: "regions", description: "", nodeType: "dataInput", config: {} } },
+    { id: "stray_node", data: { label: "stray", description: "", nodeType: "dataInput", config: {} } },
+  ]
+  const EDGES: SimpleEdge[] = [
+    { id: "e-scored", source: "scored_node", target: "opt_1" },
+    { id: "e-regions", source: "regions_node", target: "opt_1" },
+  ]
+
+  function analysisProps(config: Record<string, unknown> = {}) {
+    return makeProps({
+      config: {
+        _nodeId: "opt_1",
+        mode: "online",
+        objective: "premium",
+        constraints: {},
+        data_input: "scored",
+        ...config,
+      },
+      allNodes: NODES,
+      edges: EDGES,
+    })
+  }
+
+  function columnChoices(): string[] {
+    const group = screen.getByRole("group", { name: "Factors" })
+    return within(group)
+      .getAllByRole("checkbox", { name: /for validation$/ })
+      .map((box) => (box.getAttribute("aria-label") ?? "").replace(/^Use (.*) for validation$/, "$1"))
+  }
+
+  beforeEach(() => {
+    mockUseDataInputColumns.mockImplementation((nodeId: string) =>
+      nodeId === "regions_node" ? REGION_COLUMNS : DATA_COLUMNS,
+    )
+  })
+
+  it("lists only the connected inputs, the data input first", () => {
+    renderConfig(analysisProps())
+
+    const select = screen.getByRole("combobox", { name: "Validation input" }) as HTMLSelectElement
+    expect(select).toHaveValue("")
+    expect(Array.from(select.options).map((option) => [option.value, option.text])).toEqual([
+      ["", "scored (Objectives & Constraints input)"],
+      ["regions", "regions"],
+    ])
+    expect(screen.getByText(/break the results down by segment/i)).toBeInTheDocument()
+  })
+
+  it("offers the chosen frame's columns, never the quote id", () => {
+    const { unmount } = renderConfig(analysisProps())
+    expect(columnChoices()).toEqual(["premium", "volume", "scenario_index", "scenario_value", "region"])
+    unmount()
+
+    renderConfig(analysisProps({ analysis_input: "regions" }))
+    expect(columnChoices()).toEqual(["region", "channel"])
+    expect(mockUseDataInputColumns).toHaveBeenCalledWith(
+      "regions_node", expect.anything(), expect.anything(), undefined, undefined, expect.anything(),
+    )
+  })
+
+  it("toggles a column into and out of the configuration", () => {
+    const props = analysisProps({ analysis_columns: ["region"] })
+    renderConfig(props)
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Use volume for validation" }))
+    expect(props.componentProps.onUpdate).toHaveBeenCalledWith("analysis_columns", ["region", "volume"])
+    fireEvent.click(screen.getByRole("checkbox", { name: "Use region for validation" }))
+    expect(props.componentProps.onUpdate).toHaveBeenCalledWith("analysis_columns", [])
+  })
+
+  it("switching the frame removes the columns the new frame does not have", async () => {
+    const onUpdate = vi.fn()
+    renderStatefulConfig(analysisProps({ analysis_columns: ["region", "premium"] }), onUpdate)
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Validation input" }), {
+      target: { value: "regions" },
+    })
+
+    await waitFor(() => {
+      expect(onUpdate).toHaveBeenCalledWith("analysis_columns", ["region"])
+    })
+    expect(onUpdate).toHaveBeenCalledWith("analysis_input", "regions")
+    expect(screen.getByRole("checkbox", { name: "Use region for validation" })).toBeChecked()
+  })
+
+  it("flags a configured column the frame lacks without rewriting the configuration", () => {
+    const props = analysisProps({ analysis_input: "regions", analysis_columns: ["region", "segment"] })
+    renderConfig(props)
+
+    expect(screen.getByText(/“segment” is not a column of the validation input/)).toBeInTheDocument()
+    expect(props.componentProps.onUpdate).not.toHaveBeenCalledWith("analysis_columns", expect.anything())
+    showPane("solve")
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Validation factor “segment” is not a column of the validation input.",
+    )
+  })
+
+  it("flags a validation input that is no longer connected", () => {
+    renderConfig(analysisProps({ analysis_input: "stray", analysis_columns: ["region"] }))
+
+    expect(screen.getByRole("combobox", { name: "Validation input" })).toHaveValue("stray")
+    expect(screen.getByText("The configured validation input is not connected.")).toBeInTheDocument()
+    showPane("solve")
+    expect(screen.getByRole("alert")).toHaveTextContent("The selected validation input is not connected.")
+  })
+
+  it("disables further choices at twelve columns", () => {
+    const many = Array.from({ length: 12 }, (_, index) => ({ name: `c${index}`, dtype: "String" }))
+    mockUseDataInputColumns.mockImplementation(() => [...many, { name: "c12", dtype: "String" }])
+    renderConfig(analysisProps({ analysis_columns: many.map((column) => column.name) }))
+
+    expect(screen.getByRole("checkbox", { name: "Use c12 for validation" })).toBeDisabled()
+    expect(screen.getByRole("checkbox", { name: "Use c0 for validation" })).toBeEnabled()
+    expect(screen.getByText("12 of 12 validation")).toBeInTheDocument()
+  })
+
+  it("lists rating factors first, each with a ratebook and a validation choice", () => {
+    vi.mocked(classifyBandingNode).mockReturnValue({
+      levels: { region: ["North", "South"], age_band: ["Young", "Old", "Senior"] },
+      configuredOutputs: ["region", "age_band"],
+      zeroLevelOutputs: [],
+      zeroLevelIssues: [],
+    })
+    const props = makeProps({
+      config: {
+        _nodeId: "opt_1",
+        mode: "ratebook",
+        objective: "premium",
+        constraints: {},
+        data_input: "scored",
+        banding_source: "Banding",
+        factor_columns: [["age_band"]],
+        analysis_columns: ["region"],
+      },
+      allNodes: [...NODES, { id: "banding_1", data: { label: "Banding", description: "", nodeType: "banding", config: {} } }],
+      edges: [...EDGES, { id: "e-banding", source: "banding_1", target: "opt_1" }],
+    })
+    renderConfig(props)
+
+    expect(columnChoices()).toEqual(["age_band", "region", "premium", "volume", "scenario_index", "scenario_value"])
+    expect(screen.getByText("1 ratebook · 1 of 12 validation")).toBeInTheDocument()
+    expect(screen.getByText("3 levels")).toBeInTheDocument()
+
+    // A rating factor the validation input lacks can only be optimised.
+    expect(screen.getByRole("checkbox", { name: "Use age_band for ratebook optimisation" })).toBeChecked()
+    expect(screen.getByRole("checkbox", { name: "Use age_band for validation" })).toBeDisabled()
+    // A rating factor the input has takes both.
+    const regionRatebook = screen.getByRole("checkbox", { name: "Use region for ratebook optimisation" })
+    expect(regionRatebook).not.toBeChecked()
+    expect(screen.getByRole("checkbox", { name: "Use region for validation" })).toBeChecked()
+    // A plain column is validation only.
+    expect(screen.getByRole("checkbox", { name: "Use premium for ratebook optimisation" })).toBeDisabled()
+
+    fireEvent.click(regionRatebook)
+    expect(props.componentProps.onUpdate).toHaveBeenCalledWith("factor_columns", [["age_band"], ["region"]])
+  })
+
+  it("filters the factors by search", () => {
+    renderConfig(analysisProps())
+    fireEvent.change(screen.getByRole("textbox", { name: "Search factors" }), { target: { value: "scen" } })
+    expect(columnChoices()).toEqual(["scenario_index", "scenario_value"])
+    fireEvent.change(screen.getByRole("textbox", { name: "Search factors" }), { target: { value: "zzz" } })
+    expect(screen.getByText("No matching factors.")).toBeInTheDocument()
+  })
+
+  it("marks the solve stale when the validation factors change", () => {
+    const config = { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: {}, data_input: "scored" }
+    useNodeResultsStore.setState({
+      solveResults: {
+        opt_1: {
+          result: makeSolveResult(),
+          originalResult: makeSolveResult(),
+          jobId: "job_1",
+          configHash: hashConfig(config),
+          source: "live",
+          structuralVersion: useGraphStore.getState().structuralVersion,
+          constraints: {},
+          nodeLabel: "Opt",
+          frontier: null,
+          selectedPointIndex: null,
+        },
+      },
+    })
+    renderConfig(analysisProps({ analysis_columns: ["region"] }))
+    showPane("solve")
+    expect(screen.getByText("Config changed since last solve")).toBeInTheDocument()
   })
 })

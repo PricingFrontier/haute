@@ -1,12 +1,11 @@
 import { useState } from "react"
 import { AlertTriangle } from "lucide-react"
 
-import { ApiError, commitMilestone } from "../api/client"
+import { ApiError, commitMilestone, parseGitMilestoneFork } from "../api/client"
 import type { GitMilestoneFork } from "../api/types"
-import { parseGitMilestoneFork } from "../types/guards"
 import useGitStore from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
-import { gitErrorMessage } from "../utils/gitError"
+import { apiErrorMessage } from "../api/errors"
 import ModalShell from "./ModalShell"
 
 interface MilestoneCommitModalProps {
@@ -61,20 +60,25 @@ export default function MilestoneCommitModal({ onConfirmed, onClose }: Milestone
       // U4/D4: a 409 means committing now would fork the remote — surface the
       // warn + "commit anyway" confirm rather than a dead-end error toast.
       if (err instanceof ApiError && err.status === 409) {
+        const body = (err.body as { detail?: unknown } | undefined)?.detail
         try {
-          const parsed = parseGitMilestoneFork(
-            (err.body as { detail?: unknown } | undefined)?.detail,
-          )
+          const parsed = await parseGitMilestoneFork(body)
           if (parsed) {
             setFork(parsed)
             return
           }
         } catch (parseError) {
-          addToast("error", `Could not commit: ${gitErrorMessage(parseError, "malformed fork response")}`)
+          addToast("error", `Could not commit: ${apiErrorMessage(parseError, "malformed fork response")}`)
+          return
+        }
+        // A structured 409 this client cannot read: name the status rather
+        // than print the unread body.
+        if (typeof body === "object" && body !== null) {
+          addToast("error", `Could not commit: ${err.message}`)
           return
         }
       }
-      const detail = gitErrorMessage(err, "unknown error")
+      const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Could not commit: ${detail}`)
     } finally {
       setBusy(false)

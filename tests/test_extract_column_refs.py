@@ -39,7 +39,7 @@ class TestSelectedColumns:
 
 
 class TestModellingConfig:
-    """Modelling nodes store target, weight, offset, and exclude."""
+    """Modelling nodes store target, weight, offset, and feature_columns."""
 
     def test_target_only(self) -> None:
         config = {"target": "loss_ratio"}
@@ -49,22 +49,22 @@ class TestModellingConfig:
         config = {"target": "claim_count", "weight": "exposure", "offset": "log_exposure"}
         assert _extract_column_refs(config) == {"claim_count", "exposure", "log_exposure"}
 
-    def test_exclude_list(self) -> None:
-        config = {"exclude": ["quote_id", "policy_number", "postcode"]}
-        assert _extract_column_refs(config) == {"quote_id", "policy_number", "postcode"}
+    def test_feature_columns_list(self) -> None:
+        config = {"feature_columns": ["driver_age", "region", "postcode"]}
+        assert _extract_column_refs(config) == {"driver_age", "region", "postcode"}
 
     def test_full_modelling_config(self) -> None:
         config = {
             "target": "sale_flag",
             "weight": "exposure",
-            "exclude": ["quote_id", "name"],
-            "selected_columns": ["sale_flag", "exposure", "age", "quote_id", "name"],
+            "feature_columns": ["age", "region"],
+            "selected_columns": ["sale_flag", "exposure", "age", "quote_id"],
         }
         refs = _extract_column_refs(config)
-        assert refs == {"sale_flag", "exposure", "quote_id", "name", "age"}
+        assert refs == {"sale_flag", "exposure", "quote_id", "region", "age"}
 
-    def test_exclude_with_non_string_entries(self) -> None:
-        config = {"exclude": ["valid_col", 123, None]}
+    def test_feature_columns_with_non_string_entries(self) -> None:
+        config = {"feature_columns": ["valid_col", 123, None]}
         assert _extract_column_refs(config) == {"valid_col"}
 
 
@@ -74,8 +74,8 @@ class TestBandingConfig:
     def test_basic_factors(self) -> None:
         config = {
             "factors": [
-                {"column": "driver_age", "outputColumn": "age_band"},
-                {"column": "vehicle_value", "outputColumn": "value_band"},
+                {"banding": "breakpoints", "column": "driver_age", "outputColumn": "age_band"},
+                {"banding": "breakpoints", "column": "vehicle_value", "outputColumn": "value_band"},
             ]
         }
         refs = _extract_column_refs(config)
@@ -139,7 +139,7 @@ class TestOutputColumnExclusion:
 
     def test_outputColumn_camelCase_excluded(self) -> None:  # noqa: N802 - references camelCase config key `outputColumn`
         config = {
-            "factors": [{"column": "age", "outputColumn": "age_band"}],
+            "factors": [{"banding": "breakpoints", "column": "age", "outputColumn": "age_band"}],
             "outputColumn": "combined_rate",
         }
         refs = _extract_column_refs(config)
@@ -164,7 +164,7 @@ class TestCombinedConfigs:
         config = {
             "selected_columns": ["col_a"],
             "target": "col_b",
-            "exclude": ["col_c"],
+            "feature_columns": ["col_c"],
             "factors": [{"column": "col_d"}],
             "tables": [{"factors": ["col_e"]}],
             "output_column": "col_f",
@@ -178,6 +178,6 @@ class TestCombinedConfigs:
         config = {
             "selected_columns": ["age"],
             "target": "age",
-            "exclude": ["age"],
+            "feature_columns": ["age"],
         }
         assert _extract_column_refs(config) == {"age"}

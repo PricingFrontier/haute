@@ -8,7 +8,12 @@ FastAPI endpoint validation.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import datetime as _dt
+import keyword
+import math
+import re
+from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from enum import StrEnum
 from functools import cached_property
 from typing import (
@@ -24,9 +29,20 @@ from typing import (
 )
 
 import polars as pl
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 
-from haute._graph_utils import build_parents_of
+from haute._graph_utils import _sanitize_func_name, build_parents_of
 
 # Type alias - nodes pass lazy frames between each other
 _Frame = pl.LazyFrame
@@ -85,6 +101,19 @@ NODE_TYPE_TO_DECORATOR: dict[NodeType, str] = {
     v: k for k, v in DECORATOR_TO_NODE_TYPE.items() if k != "instance"
 }
 
+#: Node types with no output: nothing may be wired downstream of them. The
+#: editor's ``SINK_ONLY_TYPES`` (``frontend/src/utils/nodeTypes.ts``) is held
+#: equal to this set by test.
+SINK_ONLY_NODE_TYPES: frozenset[NodeType] = frozenset(
+    {
+        NodeType.OUTPUT,
+        NodeType.DATA_OUTPUT,
+        NodeType.EXPLORE,
+        NodeType.MODELLING,
+        NodeType.OPTIMISER,
+    }
+)
+
 
 # ---------------------------------------------------------------------------
 # Typed config shapes (documentation + IDE autocomplete, no runtime change)
@@ -106,6 +135,9 @@ class ApiInputConfig(TypedDict, total=False):
 class _DataInputCommon(TypedDict, total=False):
     arguments: dict[str, Any]
     code: str
+    #: Low-code post-load steps (frame mode); ``code`` is their rendering
+    #: whenever they are present (see ``NodeData``).
+    steps: list[dict[str, Any]]
 
 
 class _DataInputPolarsCommon(_DataInputCommon, total=False):
@@ -196,13 +228,30 @@ DATA_OUTPUT_CONFIG_TYPES = (
 )
 
 
+# Authored column metadata that may be attached to every executable node.
+# Keep this order stable because inline decorators use it as their source form.
+COLUMN_CONFIG_KEYS: tuple[str, ...] = (
+    "selected_columns",
+    "column_renames",
+    "categorical_levels",
+)
+
+
 class TransformConfig(TypedDict, total=False):
-    """Config for transform nodes."""
+    """Config for transform nodes.
+
+    ``steps`` is the low-code step list persisted in the node's optional
+    ``config/polars/<name>.json`` sidecar; ``code`` is always its rendering
+    when it is present (see ``NodeData``).
+    """
 
     code: str
+    steps: list[dict[str, Any]]
     instanceOf: str
     inputMapping: dict[str, str]
     selected_columns: list[str]
+    column_renames: dict[str, str]
+    categorical_levels: dict[str, list[str | None]]
 
 
 class EdgeJoinConfig(TypedDict, total=False):
@@ -216,6 +265,9 @@ class EdgeJoinConfig(TypedDict, total=False):
     coalesce: bool
     validate: str
     maintainOrder: str
+    selected_columns: list[str]
+    column_renames: dict[str, str]
+    categorical_levels: dict[str, list[str | None]]
 
 
 EDGE_JOIN_CONFIG_KEYS: tuple[str, ...] = (
@@ -233,7 +285,9 @@ EDGE_JOIN_CONFIG_KEYS: tuple[str, ...] = (
 class ModelScoreConfig(TypedDict, total=False):
     """Config for modelScore nodes."""
 
-    sourceType: str  # "run" | "registered"
+    sourceType: str  # "run" | "registered" | "file"
+    # file-based selection
+    model_path: str  # a model file in the project, e.g. "models/freq.cbm"
     # run-based selection
     experiment_name: str  # UI-only: display name for panel re-open
     experiment_id: str  # UI-only: MLflow experiment ID for API calls
@@ -242,21 +296,24 @@ class ModelScoreConfig(TypedDict, total=False):
     artifact_path: str  # e.g. "model.cbm"
     # registered model selection
     registered_model: str  # e.g. "catalog.schema.model" or "my-model"
-    version: str  # "1", "2", etc. or "latest"
+    version: str  # "1", "2", etc. or "latest"; absent when alias is set
+    alias: str  # a registered model alias, e.g. "champion"; excludes version
     # common
     task: str  # "regression" | "classification"
     output_column: str  # prediction column name, default "prediction"
-    feature_contract_path: str  # local deploy/runtime feature-contract artifact
+    feature_contract_path: str  # the feature contract the model scores under
     categorical_levels: dict[str, list[str | None]]
     code: str  # optional post-processing code
+    steps: list[dict[str, Any]]  # low-code post-scoring steps; ``code`` is their rendering
     instanceOf: str
     inputMapping: dict[str, str]
+    mlflow_destination: str  # "databricks" | "server"; absent = the local folder
 
 
 class BandingFactor(TypedDict, total=False):
     """A single factor in a banding node config."""
 
-    banding: Literal["continuous", "categorical", "breakpoints"]
+    banding: Literal["breakpoints", "categorical"]
     column: str
     outputColumn: str
     rules: list[dict[str, Any]] | dict[str, Any]
@@ -305,6 +362,7 @@ class RatingStepConfig(TypedDict, total=False):
     tables: list[RatingTable]
     combinedOutputs: list[RatingCombinedOutput]
     code: str
+    steps: list[dict[str, Any]]  # low-code post-rating steps; ``code`` is their rendering
 
 
 class OutputMappingEntry(TypedDict):
@@ -515,19 +573,25 @@ class ExploreConfig(TypedDict, total=False):
     """Config for explore nodes."""
 
     code: str
+    steps: list[dict[str, Any]]  # low-code steps over df, persisted as a decorator argument
     overview: ExploreOverviewConfig
     pivot_formulas: list[ExplorePivotFormula]
     pivots: list[ExplorePivotPersistedConfig]
     charts: list[ExploreChartConfig]
+    selected_columns: list[str]
+    column_renames: dict[str, str]
+    categorical_levels: dict[str, list[str | None]]
 
 
 class ExternalFileConfig(TypedDict, total=False):
     """Config for externalFile nodes."""
 
     path: str
-    fileType: str  # "pickle" | "json" | "joblib" | "catboost"
-    modelClass: str  # "classifier" | "regressor" (catboost only)
+    fileType: str  # "pickle" | "json" | "joblib"
     code: str
+    steps: list[
+        dict[str, Any]
+    ]  # low-code steps over df (the first input) and obj; ``code`` is their rendering
 
 
 class LiveSwitchConfig(TypedDict, total=False):
@@ -548,16 +612,17 @@ class ModellingConfig(TypedDict, total=False):
     target: str
     weight: str
     feature_columns: list[str]
-    exclude: list[str]
-    algorithm: str  # "catboost" | "glm"
+    # A registered model family: "catboost" | "glm" | "xgboost" | "lightgbm" | "ebm" | "tboost".
+    algorithm: str
     task: str  # "regression" | "classification"
     params: dict[str, Any]
     evaluation: dict[str, Any]
     tuning: dict[str, Any]
+    refit_on_development: bool  # absent = True; False keeps the holdout-validation fit
     metrics: list[str]
     mlflow_experiment: str
-    model_name: str
     output_dir: str
+    model_export_path: str  # Export pane file path; absent/"" = frontend default
     row_limit: int
     # GLM-specific (RustyStats)
     terms: dict[str, Any]
@@ -568,8 +633,15 @@ class ModellingConfig(TypedDict, total=False):
     regularization: str
     alpha: float
     l1_ratio: float
+    cv_folds: int
+    cv_selection: str  # "min" | "1se"
+    cv_seed: int
+    max_iter: int
+    tol: float
+    robust_standard_errors: str  # "HC0" | "HC1" | "HC2" | "HC3"
     intercept: bool
     var_power: float
+    theta: float
     # CatBoost / shared
     loss_function: str
     variance_power: float
@@ -578,6 +650,10 @@ class ModellingConfig(TypedDict, total=False):
     fold_column: str
     id_columns: list[str]
     categorical_levels: dict[str, list[str | None]]
+    mlflow_destination: str  # "" | "databricks" | "server" | "local"; absent = auto
+    # Binary classification: the label trained as positive (absent = True / 1)
+    positive_class: str | int | float | bool
+    device: str  # "cpu" | "gpu" (GPU-capable families only: XGBoost); absent = "cpu"
 
 
 class OptimiserConfig(TypedDict, total=False):
@@ -599,30 +675,31 @@ class OptimiserConfig(TypedDict, total=False):
     # Solver tuning
     max_iter: int
     tolerance: float
-    chunk_size: int
-    record_history: bool
 
-    # Frontier
-    frontier_enabled: bool
+    # Frontier: the constraints with a range are swept; the others stay at their bound.
     frontier_ranges: dict[str, dict[str, float]]
     frontier_steps: int
 
     # Ratebook
     factor_columns: list[list[str]]
-    candidate_min: float
-    candidate_max: float
-    candidate_steps: int
     max_cd_iterations: int
     cd_tolerance: float
-    structure_mode: str  # "explicit" | "auto"
 
     # Executable incoming-edge frame name selected for optimisation.
     data_input: str
     banding_source: str
 
+    # Result breakdowns only (never given to the solver): the connected frame the
+    # analysis columns come from (absent = data_input) and up to 12 of its columns.
+    analysis_input: str
+    analysis_columns: list[str]
+
     # MLflow
     mlflow_experiment: str
-    model_name: str
+    mlflow_destination: str  # "" | "databricks" | "server" | "local"; absent = auto
+
+    # Export pane save path, relative to the project root; not part of the solve.
+    result_export_path: str
 
 
 class OptimiserApplyConfig(TypedDict, total=False):
@@ -636,11 +713,13 @@ class OptimiserApplyConfig(TypedDict, total=False):
     # MLflow source fields
     sourceType: str  # "file" | "run" | "registered"
     registered_model: str  # registered model name (when sourceType="registered")
-    version: str  # model version or "latest" (when sourceType="registered")
+    version: str  # model version or "latest" (when sourceType="registered"); absent with alias
+    alias: str  # registered model alias (when sourceType="registered"); excludes version
     experiment_id: str  # MLflow experiment ID (when sourceType="run")
     experiment_name: str  # UI-only: display name for panel re-open
     run_id: str  # MLflow run ID (when sourceType="run")
     run_name: str  # UI-only: display name for panel re-open
+    mlflow_destination: str  # "databricks" | "server"; absent = the local folder
 
 
 class ScenarioExpanderConfig(TypedDict, total=False):
@@ -650,9 +729,10 @@ class ScenarioExpanderConfig(TypedDict, total=False):
     column_name: str  # name of the new value column (e.g. "scenario_value")
     min_value: float  # start of linspace
     max_value: float  # end of linspace
-    steps: int  # number of steps
+    stepCount: int  # number of grid values; required, no absent-key default
     step_column: str  # name of the 0-based step index column (e.g. "scenario_index")
     code: str  # optional Polars transformation code (post-expansion)
+    steps: list[dict[str, Any]]  # low-code post-expansion steps; ``code`` is their rendering
 
 
 # ---------------------------------------------------------------------------
@@ -683,6 +763,8 @@ class SolveResultLike(Protocol):
     def baseline_objective(self) -> float: ...
     @property
     def baseline_constraints(self) -> dict[str, float]: ...
+    @property
+    def constraint_bounds(self) -> dict[str, float]: ...
     @property
     def converged(self) -> bool: ...
 
@@ -715,12 +797,31 @@ class OnlineSolveResultLike(SolveResultLike, Protocol):
 
 
 @runtime_checkable
+class PerFactorRecordLike(Protocol):
+    """Structural interface for ``price_contour.PerFactorRecord``: one inner
+    grouped solve of a ratebook coordinate descent."""
+
+    @property
+    def cd_iteration(self) -> int: ...
+    @property
+    def factor(self) -> str: ...
+    @property
+    def factor_index(self) -> int: ...
+    @property
+    def total_objective(self) -> float: ...
+    @property
+    def total_constraints(self) -> dict[str, float]: ...
+    @property
+    def lambdas(self) -> dict[str, float]: ...
+
+
+@runtime_checkable
 class RatebookSolveResultLike(SolveResultLike, Protocol):
     """Structural interface for ``price_contour.RatebookResult`` (ratebook mode).
 
     Extends the common interface with attributes specific to the ratebook
     solver: factor tables, coordinate-descent iteration count, clamp rate,
-    and baseline values.
+    baseline values, and the canonical per-quote evaluation (``quote_results``).
     """
 
     @property
@@ -733,6 +834,10 @@ class RatebookSolveResultLike(SolveResultLike, Protocol):
     def cd_iterations(self) -> int: ...
     @property
     def clamp_rate(self) -> float: ...
+    @property
+    def per_factor_results(self) -> Sequence[PerFactorRecordLike]: ...
+    @property
+    def quote_results(self) -> pl.DataFrame: ...
 
 
 MODEL_SCORE_CONFIG_KEYS: tuple[str, ...] = (
@@ -742,18 +847,19 @@ MODEL_SCORE_CONFIG_KEYS: tuple[str, ...] = (
     "run_name",
     "registered_model",
     "version",
+    "alias",
     "task",
     "output_column",
     "categorical_levels",
     "experiment_name",
     "experiment_id",
+    "mlflow_destination",
 )
 
 MODELLING_CONFIG_KEYS: tuple[str, ...] = (
     "name",
     "target",
     "weight",
-    "exclude",
     "algorithm",
     "task",
     "params",
@@ -761,9 +867,10 @@ MODELLING_CONFIG_KEYS: tuple[str, ...] = (
     "tuning",
     "metrics",
     "mlflow_experiment",
-    "model_name",
     "output_dir",
     "categorical_levels",
+    "mlflow_destination",
+    "model_export_path",
 )
 
 OPTIMISER_CONFIG_KEYS: tuple[str, ...] = (
@@ -775,22 +882,18 @@ OPTIMISER_CONFIG_KEYS: tuple[str, ...] = (
     "constraints",
     "max_iter",
     "tolerance",
-    "chunk_size",
-    "record_history",
-    "frontier_enabled",
     "frontier_ranges",
     "frontier_steps",
     "factor_columns",
-    "candidate_min",
-    "candidate_max",
-    "candidate_steps",
     "max_cd_iterations",
     "cd_tolerance",
-    "structure_mode",
     "data_input",
     "banding_source",
+    "analysis_input",
+    "analysis_columns",
     "mlflow_experiment",
-    "model_name",
+    "mlflow_destination",
+    "result_export_path",
 )
 
 OPTIMISER_APPLY_CONFIG_KEYS: tuple[str, ...] = (
@@ -802,10 +905,12 @@ OPTIMISER_APPLY_CONFIG_KEYS: tuple[str, ...] = (
     "sourceType",
     "registered_model",
     "version",
+    "alias",
     "experiment_id",
     "experiment_name",
     "run_id",
     "run_name",
+    "mlflow_destination",
 )
 
 SCENARIO_EXPANDER_CONFIG_KEYS: tuple[str, ...] = (
@@ -813,7 +918,7 @@ SCENARIO_EXPANDER_CONFIG_KEYS: tuple[str, ...] = (
     "column_name",
     "min_value",
     "max_value",
-    "steps",
+    "stepCount",
     "step_column",
 )
 
@@ -844,6 +949,45 @@ class NodeData(BaseModel):
     nodeType: NodeType = NodeType.POLARS  # noqa: N815 — matches React Flow frontend convention
     config: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def _materialise_steps(self) -> Self:
+        """Keep ``code`` equal to the rendering of ``steps`` on a stepped node.
+
+        Every consumer of a node's program reads ``config["code"]``; a stepped
+        node therefore never carries any other program than its rendered
+        steps. A step list that cannot be rendered materialises as empty code
+        plus an editor-state ``_steps_error`` message, so consumers see an
+        incomplete node exactly as they see a code-less one. The render mode
+        comes from ``STEPPED_NODE_TYPES``; a ``steps`` key on a node type
+        outside that table (a Scenario Expander's grid size) is left alone.
+        In-process config replacement must go through ``GraphNode.with_config``
+        so this validator runs; ``model_copy`` does not validate.
+        """
+        if "steps" not in self.config:
+            return self
+        from haute._polars_steps import (
+            STEPPED_NODE_TYPES,
+            PolarsStepError,
+            render_node_steps,
+        )
+
+        if self.nodeType not in STEPPED_NODE_TYPES:
+            return self
+        steps = self.config["steps"]
+        if not isinstance(steps, list):
+            raise ValueError("Steps must be a list.")
+        config = dict(self.config)
+        try:
+            rendered = render_node_steps(self.nodeType, steps)
+        except PolarsStepError as exc:
+            config["code"] = ""
+            config["_steps_error"] = str(exc)
+        else:
+            config["code"] = rendered.code
+            config.pop("_steps_error", None)
+        self.config = config
+        return self
+
 
 class GraphNode(BaseModel):
     """A single node in the React Flow graph."""
@@ -852,6 +996,16 @@ class GraphNode(BaseModel):
     type: str = "pipelineNode"
     position: dict[str, float] = Field(default_factory=lambda: {"x": 0.0, "y": 0.0})
     data: NodeData = Field(default_factory=NodeData)
+
+    def with_config(self, config: Mapping[str, Any]) -> GraphNode:
+        """Return a copy carrying ``config``, re-running node data validation."""
+        data = NodeData(
+            label=self.data.label,
+            description=self.data.description,
+            nodeType=self.data.nodeType,
+            config=deepcopy(dict(config)),
+        )
+        return self.model_copy(update={"data": data})
 
 
 class GraphEdge(BaseModel):
@@ -919,26 +1073,29 @@ class SubmodelEndpoint(BaseModel):
 
 
 class SubmodelInputPort(BaseModel):
-    """A public input with one or more ordered internal targets."""
+    """A public input with ordered internal targets, or none while unrouted."""
 
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
-    port_id: str = Field(alias="portId")
-    label: str
-    targets: list[SubmodelEndpoint] = Field(min_length=1)
+    name: str
+    targets: list[SubmodelEndpoint]
 
-    @field_validator("port_id", "label")
+    @field_validator("name")
     @classmethod
-    def _validate_text(cls, value: str) -> str:
-        if not value or value != value.strip():
-            raise ValueError("Submodel port ids and labels must be non-empty and unpadded.")
+    def _validate_name(cls, value: str) -> str:
+        sanitised = _sanitize_func_name(value)
+        if sanitised != value:
+            raise ValueError(
+                f"Submodel port names must be canonical identifiers "
+                f"(got {value!r}; expected {sanitised!r})."
+            )
         return value
 
     @model_validator(mode="after")
     def _reject_duplicate_targets(self) -> Self:
         identities = [(target.node_id, target.handle_id) for target in self.targets]
         if len(identities) != len(set(identities)):
-            raise ValueError(f"Submodel input port {self.port_id!r} has duplicate targets.")
+            raise ValueError(f"Submodel input port {self.name!r} has duplicate targets.")
         return self
 
 
@@ -947,15 +1104,18 @@ class SubmodelOutputPort(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
-    port_id: str = Field(alias="portId")
-    label: str
+    name: str
     source: SubmodelEndpoint
 
-    @field_validator("port_id", "label")
+    @field_validator("name")
     @classmethod
-    def _validate_text(cls, value: str) -> str:
-        if not value or value != value.strip():
-            raise ValueError("Submodel port ids and labels must be non-empty and unpadded.")
+    def _validate_name(cls, value: str) -> str:
+        sanitised = _sanitize_func_name(value)
+        if sanitised != value:
+            raise ValueError(
+                f"Submodel port names must be canonical identifiers "
+                f"(got {value!r}; expected {sanitised!r})."
+            )
         return value
 
 
@@ -979,6 +1139,17 @@ class SubmodelInstanceConfig(BaseModel):
             return value
         if not value or value != value.strip():
             raise ValueError("Submodel definition ids and aliases must be non-empty and unpadded.")
+        return value
+
+    @field_validator("alias")
+    @classmethod
+    def _validate_canonical_alias(cls, value: str) -> str:
+        sanitised = _sanitize_func_name(value)
+        if sanitised != value:
+            raise ValueError(
+                f"Submodel occurrence aliases must be canonical identifiers "
+                f"(got {value!r}; expected {sanitised!r})."
+            )
         return value
 
 
@@ -1005,13 +1176,15 @@ class SubmodelDefinition(BaseModel):
         if self.graph.submodels:
             raise ValueError("Nested submodels are not supported in a definition graph.")
 
-        port_ids = [
-            *(port.port_id for port in self.input_ports),
-            *(port.port_id for port in self.output_ports),
+        port_names = [
+            *(port.name for port in self.input_ports),
+            *(port.name for port in self.output_ports),
         ]
-        duplicates = sorted(port_id for port_id in set(port_ids) if port_ids.count(port_id) > 1)
+        duplicates = sorted(name for name in set(port_names) if port_names.count(name) > 1)
         if duplicates:
-            raise ValueError(f"Submodel definition has duplicate public port ids: {duplicates!r}.")
+            raise ValueError(
+                f"Submodel definition has duplicate public port names: {duplicates!r}."
+            )
 
         graph_node_ids = {node.id for node in self.graph.nodes}
         endpoint_ids = [target.node_id for port in self.input_ports for target in port.targets]
@@ -1022,6 +1195,126 @@ class SubmodelDefinition(BaseModel):
                 f"Submodel public port endpoint references missing child nodes: {missing!r}."
             )
         return self
+
+
+GLOBAL_CONSTANTS_NAME = "global_constants"
+"""The one reserved name through which node code reads global constants."""
+
+GLOBAL_CONSTANTS_FILE = "config/global_constants.json"
+"""A pipeline's global constants file, relative to its folder; its constructor names no other."""
+
+GlobalConstantType: TypeAlias = Literal["integer", "float", "text", "boolean", "date"]
+GlobalConstantValue: TypeAlias = StrictBool | StrictInt | StrictFloat | StrictStr
+
+_GLOBAL_CONSTANT_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+#: The largest integer a global constant may hold: the editor edits values as
+#: JavaScript numbers, which represent every integer up to this one exactly.
+MAX_CONSTANT_INTEGER = 2**53 - 1
+
+
+def _checked_constant_value(
+    name: str,
+    constant_type: GlobalConstantType,
+    value: GlobalConstantValue,
+    *,
+    where: str,
+) -> GlobalConstantValue:
+    """Return *value* if it is valid for *constant_type* (a float as a float), else raise."""
+    if constant_type == "integer":
+        if (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and abs(value) <= MAX_CONSTANT_INTEGER
+        ):
+            return value
+        expected = f"a whole number between -{MAX_CONSTANT_INTEGER} and {MAX_CONSTANT_INTEGER}"
+    elif constant_type == "float":
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+            return float(value)
+        expected = "a finite number"
+    elif constant_type == "text":
+        if isinstance(value, str):
+            return value
+        expected = "text"
+    elif constant_type == "boolean":
+        if isinstance(value, bool):
+            return value
+        expected = "true or false"
+    else:
+        if isinstance(value, str) and _ISO_DATE.fullmatch(value):
+            try:
+                _dt.date.fromisoformat(value)
+            except ValueError:
+                pass
+            else:
+                return value
+        expected = "a real date written YYYY-MM-DD"
+    raise ValueError(
+        f"Global constant {name!r} {where} must be {expected} for type "
+        f"{constant_type!r}, got {value!r}."
+    )
+
+
+class GlobalConstant(BaseModel):
+    """One named, typed value that node code reads as ``global_constants.<name>``.
+
+    A uniform constant holds ``value``, which every source reads. A constant
+    split by source holds ``by_source``, which may lack a source: reading it
+    under that source fails, naming both. Values stay JSON scalars, so a date
+    is its ``YYYY-MM-DD`` text, and a ``float`` is stored as a float however it
+    was written.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    type: GlobalConstantType
+    value: GlobalConstantValue | None = None
+    by_source: dict[str, GlobalConstantValue] | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        if not _GLOBAL_CONSTANT_NAME.fullmatch(value) or keyword.iskeyword(value):
+            raise ValueError(
+                f"Global constant name {value!r} must start with a letter, continue with "
+                "letters, digits and underscores, and not be a Python keyword."
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _validate_values(self) -> Self:
+        if (self.value is None) == (self.by_source is None):
+            raise ValueError(
+                f"Global constant {self.name!r} needs exactly one of 'value' (the same for "
+                "every source) and 'by_source' (split by source)."
+            )
+        if self.value is not None:
+            self.value = _checked_constant_value(self.name, self.type, self.value, where="value")
+        if self.by_source is not None:
+            checked: dict[str, GlobalConstantValue] = {}
+            for source, value in self.by_source.items():
+                if not source or source != source.strip():
+                    raise ValueError(
+                        f"Global constant {self.name!r} has a by_source key {source!r}: a "
+                        "source name must be non-empty and unpadded."
+                    )
+                checked[source] = _checked_constant_value(
+                    self.name, self.type, value, where=f"value for source {source!r}"
+                )
+            self.by_source = checked
+        return self
+
+
+def _reject_duplicate_constant_names(constants: Sequence[GlobalConstant]) -> None:
+    seen: set[str] = set()
+    for constant in constants:
+        if constant.name in seen:
+            raise ValueError(f"Global constant {constant.name!r} is defined more than once.")
+        seen.add(constant.name)
 
 
 class PipelineGraph(BaseModel):
@@ -1039,9 +1332,22 @@ class PipelineGraph(BaseModel):
     pipeline_description: str | None = None
     preamble: str | None = None
     preserved_blocks: list[str] = Field(default_factory=list)
+    global_constants: list[GlobalConstant] = Field(default_factory=list)
+    # Why the declared constants file could not be loaded, set by the parser.
+    # Executions honour it; save derives it from disk instead.
+    global_constants_error: str | None = None
     source_file: str | None = None
     source_revision: str | None = None
     submodels: dict[str, SubmodelDefinition] | None = None
+
+    @field_validator("global_constants")
+    @classmethod
+    def _validate_global_constant_names(
+        cls,
+        value: list[GlobalConstant],
+    ) -> list[GlobalConstant]:
+        _reject_duplicate_constant_names(value)
+        return value
 
     @model_validator(mode="before")
     @classmethod
@@ -1089,10 +1395,14 @@ class PipelineGraph(BaseModel):
     sources: list[str] = Field(default_factory=lambda: ["live"])
     active_source: str = "live"
     _parser_parameter_names: dict[str, list[str]] = PrivateAttr(default_factory=dict)
+    _parser_edge_parameter_names: dict[str, list[str]] = PrivateAttr(default_factory=dict)
 
     _parser_definition_id: str | None = PrivateAttr(default=None)
     _parser_input_ports: list[SubmodelInputPort] | None = PrivateAttr(default=None)
     _parser_output_ports: list[SubmodelOutputPort] | None = PrivateAttr(default=None)
+    # Whether the parsed constructor names the global constants file, which a
+    # declared but empty file leaves invisible in ``global_constants``.
+    _parser_global_constants_declared: bool = PrivateAttr(default=False)
 
     # Names of ``@cached_property`` slots that must be invalidated when
     # ``model_copy`` produces a new instance with changed structure —
@@ -1106,6 +1416,7 @@ class PipelineGraph(BaseModel):
         "node_map",
         "parents_of",
         "_haute_base_fingerprint",
+        "_haute_global_constant_reads",
     )
 
     def model_copy(
@@ -1167,6 +1478,17 @@ class PipelineGraph(BaseModel):
         from haute._cache import _graph_base_fingerprint
 
         return _graph_base_fingerprint(self)
+
+    @cached_property
+    def _haute_global_constant_reads(self) -> Any:
+        """The global constants this graph's nodes read, memoised like the base fingerprint.
+
+        Returns a set of names or ``EVERY_CONSTANT`` (see
+        :func:`haute._global_constants.graph_constant_reads`).
+        """
+        from haute._global_constants import graph_constant_reads
+
+        return graph_constant_reads(self.nodes, self.node_map)
 
 
 SubmodelDefinition.model_rebuild()

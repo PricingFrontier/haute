@@ -1,16 +1,41 @@
-import { memo } from "react"
+import { memo, type ReactNode } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import { AlertCircle, CheckCircle2, Circle, Loader2 } from "lucide-react"
+import {
+  AlertCircle,
+  AlertTriangle,
+  CheckCircle2,
+  Circle,
+  CirclePause,
+  HelpCircle,
+  Loader2,
+  OctagonX,
+  Undo2,
+} from "lucide-react"
 
-import type { TranscriptEntry } from "../../stores/useAssistantStore"
+import useAssistantStore, {
+  CHOOSE_FOR_ME_REPLY,
+  type TranscriptEntry,
+} from "../../stores/useAssistantStore"
+import ChangeCard, { UndoChangeButton } from "./ChangeCard"
+
+/** The question card's one-click reply, supplied by the panel for the latest entry only. */
+export interface OutcomeReply {
+  onSend: () => void
+  /** Why a reply cannot be sent now (the composer's send gate), or `null`. */
+  disabledReason: string | null
+}
 
 interface TranscriptEntryViewProps {
   entry: TranscriptEntry
+  reply?: OutcomeReply
 }
 
-const MARKER_LABELS: Record<Extract<TranscriptEntry, { kind: "marker" }>["outcome"], string> = {
-  completed: "Turn completed",
+type MarkerOutcome = Extract<TranscriptEntry, { kind: "marker" }>["outcome"] | "applied" | "answered"
+
+const MARKER_LABELS: Record<MarkerOutcome, string> = {
+  applied: "Changes applied",
+  answered: "Turn completed",
   failed: "Turn failed",
   stopped: "Turn stopped",
   interrupted: "Turn interrupted",
@@ -93,8 +118,12 @@ function ActivityEntry({ entry }: { entry: Extract<TranscriptEntry, { kind: "act
         style={{ color }}
       />
       <div className="min-w-0 flex-1">
-        <div className="font-medium truncate" style={{ color: "var(--text-secondary)" }}>
-          {entry.name}
+        <div
+          className="font-medium truncate"
+          title={entry.name}
+          style={{ color: "var(--text-secondary)" }}
+        >
+          {entry.title}
         </div>
         {entry.summary && (
           <div className="break-words" style={{ color: "var(--text-muted)" }}>
@@ -106,29 +135,186 @@ function ActivityEntry({ entry }: { entry: Extract<TranscriptEntry, { kind: "act
   )
 }
 
-function MarkerEntry({ entry }: { entry: Extract<TranscriptEntry, { kind: "marker" }> }) {
-  const isFailure = entry.outcome === "failed" || entry.outcome === "interrupted"
+function MarkerEntry({ outcome, detail }: { outcome: MarkerOutcome; detail?: string }) {
+  const isFailure = outcome === "failed" || outcome === "interrupted"
   const color = isFailure
     ? "var(--danger-text)"
-    : entry.outcome === "completed"
+    : outcome === "applied" || outcome === "answered"
       ? "var(--success)"
       : "var(--text-muted)"
 
   return (
     <div
       data-testid="assistant-entry-marker"
-      data-outcome={entry.outcome}
+      data-outcome={outcome}
       className="flex items-center gap-1.5 px-1 py-1 text-[10px]"
       style={{ color }}
     >
       <Circle size={7} fill="currentColor" aria-hidden="true" />
-      <span>{MARKER_LABELS[entry.outcome]}</span>
-      {entry.detail && <span className="truncate" title={entry.detail}>— {entry.detail}</span>}
+      <span>{MARKER_LABELS[outcome]}</span>
+      {detail && <span className="truncate" title={detail}>- {detail}</span>}
     </div>
   )
 }
 
-function TranscriptEntryView({ entry }: TranscriptEntryViewProps) {
+interface OutcomeCardProps {
+  testId: string
+  icon: typeof AlertCircle
+  tone: "accent" | "warning" | "danger"
+  title: string
+  children: ReactNode
+}
+
+const CARD_TONES: Record<OutcomeCardProps["tone"], { background: string; border: string; color: string }> = {
+  accent: { background: "var(--accent-soft)", border: "var(--border)", color: "var(--accent)" },
+  warning: { background: "var(--warning-soft)", border: "var(--border)", color: "var(--warning-strong)" },
+  danger: { background: "var(--danger-soft)", border: "var(--danger-border)", color: "var(--danger-text)" },
+}
+
+function OutcomeCard({ testId, icon: Icon, tone, title, children }: OutcomeCardProps) {
+  const colors = CARD_TONES[tone]
+  return (
+    <div
+      data-testid={testId}
+      role="status"
+      className="rounded-md px-2.5 py-2 text-[11px] space-y-1.5"
+      style={{ background: colors.background, border: `1px solid ${colors.border}` }}
+    >
+      <div className="flex items-center gap-1.5 font-medium" style={{ color: colors.color }}>
+        <Icon size={13} aria-hidden="true" />
+        <span>{title}</span>
+      </div>
+      {children}
+    </div>
+  )
+}
+
+/**
+ * The primary Undo of a saved-but-unverified turn: it undoes the change whose
+ * check failed, the last the outcome lists, found by id among the transcript's cards.
+ */
+function UnverifiedUndo({ changeId }: { changeId: string }) {
+  const change = useAssistantStore((state) => {
+    for (let index = state.entries.length - 1; index >= 0; index -= 1) {
+      const entry = state.entries[index]
+      if (entry.kind === "change" && entry.change.id === changeId) return entry.change
+    }
+    return null
+  })
+  if (change === null || change.parent_sha === null) return null
+  return <UndoChangeButton change={change} primary />
+}
+
+function UndoEntry({ entry }: { entry: Extract<TranscriptEntry, { kind: "undo" }> }) {
+  return (
+    <div
+      data-testid="assistant-entry-undo"
+      className="flex items-center gap-1.5 px-1 py-1 text-[10px]"
+      style={{ color: "var(--text-muted)" }}
+    >
+      <Undo2 size={11} aria-hidden="true" />
+      <span className="truncate" title={entry.change.summary}>
+        You undid: {entry.change.summary}
+      </span>
+    </div>
+  )
+}
+
+/** What a turn saved before it ended, whose change cards are above the outcome. */
+function savedLine(changes: readonly string[]): string {
+  if (changes.length === 0) return "Nothing was saved."
+  return changes.length === 1
+    ? "1 change was saved, shown above."
+    : `${changes.length} changes were saved, shown above.`
+}
+
+function OutcomeEntry({
+  entry,
+  reply,
+}: {
+  entry: Extract<TranscriptEntry, { kind: "outcome" }>
+  reply?: OutcomeReply
+}) {
+  const { outcome } = entry
+  switch (outcome.kind) {
+    case "applied":
+    case "answered":
+      return <MarkerEntry outcome={outcome.kind} />
+    case "needs_input":
+      return (
+        <OutcomeCard
+          testId="assistant-outcome-needs-input"
+          icon={HelpCircle}
+          tone="accent"
+          title="Assistant needs your input"
+        >
+          <AssistantMarkdown text={outcome.detail} streaming={false} />
+          {outcome.changes.length > 0 && (
+            <p style={{ color: "var(--text-secondary)" }}>{savedLine(outcome.changes)}</p>
+          )}
+          {reply && (
+            <button
+              type="button"
+              data-testid="assistant-choose-for-me"
+              onClick={reply.onSend}
+              disabled={reply.disabledReason !== null}
+              title={reply.disabledReason ?? "Let the assistant choose and say what it picked"}
+              className="rounded-md px-2 py-1 text-[11px] font-medium disabled:opacity-40 hover:bg-[var(--bg-hover)]"
+              style={{ border: "1px solid var(--border)", color: "var(--text-primary)" }}
+            >
+              {CHOOSE_FOR_ME_REPLY}
+            </button>
+          )}
+        </OutcomeCard>
+      )
+    case "blocked":
+      return (
+        <OutcomeCard
+          testId="assistant-outcome-blocked"
+          icon={OctagonX}
+          tone="danger"
+          title="Assistant is blocked"
+        >
+          <AssistantMarkdown text={outcome.detail} streaming={false} />
+          <p style={{ color: "var(--text-secondary)" }}>{savedLine(outcome.changes)}</p>
+        </OutcomeCard>
+      )
+    case "committed_unverified":
+      return (
+        <OutcomeCard
+          testId="assistant-outcome-committed-unverified"
+          icon={AlertTriangle}
+          tone="warning"
+          title="Saved, but not verified"
+        >
+          <p style={{ color: "var(--text-primary)" }}>
+            Your changes were saved, but the check after saving failed. Review the pipeline, or
+            undo this change, before continuing.
+          </p>
+          <p className="break-words" style={{ color: "var(--text-muted)" }}>{outcome.detail}</p>
+          {outcome.changes.length > 0 && (
+            <UnverifiedUndo changeId={outcome.changes[outcome.changes.length - 1]} />
+          )}
+        </OutcomeCard>
+      )
+    case "incomplete":
+      return (
+        <OutcomeCard
+          testId="assistant-outcome-incomplete"
+          icon={CirclePause}
+          tone="warning"
+          title="Stopped before finishing"
+        >
+          <p style={{ color: "var(--text-primary)" }}>
+            Ask it to continue. {savedLine(outcome.changes)}
+          </p>
+          <p className="break-words" style={{ color: "var(--text-muted)" }}>{outcome.detail}</p>
+        </OutcomeCard>
+      )
+  }
+}
+
+function TranscriptEntryView({ entry, reply }: TranscriptEntryViewProps) {
   switch (entry.kind) {
     case "user":
       return (
@@ -148,8 +334,14 @@ function TranscriptEntryView({ entry }: TranscriptEntryViewProps) {
       )
     case "activity":
       return <ActivityEntry entry={entry} />
+    case "change":
+      return <ChangeCard change={entry.change} />
+    case "undo":
+      return <UndoEntry entry={entry} />
     case "marker":
-      return <MarkerEntry entry={entry} />
+      return <MarkerEntry outcome={entry.outcome} detail={entry.detail} />
+    case "outcome":
+      return <OutcomeEntry entry={entry} reply={reply} />
   }
 }
 

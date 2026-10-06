@@ -5,7 +5,7 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/__main__.py` | Package-module entry point; imports and invokes the canonical `haute.cli:cli` group for `python -m haute`. |
-| `src/haute/cli/__init__.py` | Builds the Click command group (`cli`), registers all nine subcommands, exposes `--version`. |
+| `src/haute/cli/__init__.py` | Builds the Click command group (`cli`), registers all ten subcommands, exposes `--version`. |
 | `src/haute/cli/_helpers.py` | Cross-command utilities: `resolve_model_name`, `_open_browser`, `_node_env`, `_npm`, `_find_frontend_dir`, the `TransportInfo`/`resolve_transport` transport-dispatch helper, and the shared `ENDPOINT_SUFFIX_HELP` string. |
 | `src/haute/cli/_init_cmd.py` | `haute init` — project scaffolding: `InitConfig`, `handle_init`, TOML-aware `pyproject.toml` dependency injection, CI-provider file generation/pruning. |
 | `src/haute/cli/_run.py` | `haute run` — `RunConfig`, `handle_run`, parses + executes a pipeline and prints per-node results. |
@@ -16,6 +16,7 @@
 | `src/haute/cli/_smoke.py` | `haute smoke` — `SmokeConfig`, `handle_smoke`, sends test quotes to a live endpoint (Databricks or HTTP). |
 | `src/haute/cli/_status.py` | `haute status` — `StatusConfig`, `handle_status`, MLflow Model Registry lookup. |
 | `src/haute/cli/_impact.py` | `haute impact` — `ImpactConfig`, `handle_impact`, staging-vs-production comparison report; `_impact_databricks`/`_impact_http` transport backends. |
+| `src/haute/cli/_gpu_setup.py` | `haute gpu-setup` — `GpuSetupConfig`, `handle_gpu_setup`, swaps `xgboost-cpu` for XGBoost's CUDA build (or back) in the running interpreter and verifies it in a fresh process. |
 
 ## Key types and data structures
 
@@ -37,6 +38,7 @@ Every command uses a plain mutable `@dataclass` as a configuration value bag con
 - `SmokeConfig(endpoint_suffix: str | None)` — `_smoke.py`.
 - `StatusConfig(model_name, version_only)` — `_status.py`.
 - `ImpactConfig(endpoint_suffix, sample, batch_size)` — `src/haute/cli/_impact.py`.
+- `GpuSetupConfig(check_only, to_cpu, assume_yes)` — `_gpu_setup.py`.
 
 Other notable types:
 - `TransportInfo` (`src/haute/cli/_helpers.py`) — `__slots__`-based result of `resolve_transport(config)`. Fields:
@@ -60,7 +62,7 @@ without validating required positional arguments.
 | Command | Arguments and options | Exit and failure contract |
 |---|---|---|
 | `haute` | `--version`; `--help`. | Both print and exit 0. Unknown commands/options are Click usage errors (exit 2). |
-| `haute init` | `--target` choice: `databricks` (default), `container`, `azure-container-apps`, `aws-ecs`, `gcp-run`, `sagemaker`, `azure-ml`; `--ci` choice: `github` (default), `gitlab`, `azure-devops`, `none`; `-f`/`--force`. `sagemaker` and `azure-ml` are accepted scaffold choices even though deploy deliberately rejects those planned targets as unimplemented. | Success 0. Existing `haute.toml` without `--force` exits 1. Invalid choices exit 2 before the handler. File/TOML/scaffold write errors are not converted into a fallback. |
+| `haute init` | `--target` choice: `databricks` (default), `container`, `azure-container-apps`, `aws-ecs`, `gcp-run`; `--ci` choice: `github` (default), `gitlab`, `azure-devops`, `none`; `-f`/`--force`. The `--target` help labels `azure-container-apps`, `aws-ecs` and `gcp-run` build and push only; the planned `sagemaker` and `azure-ml` targets are not offered. | Success 0. Existing `haute.toml` without `--force` exits 1. Invalid choices exit 2 before the handler. File/TOML/scaffold write errors are not converted into a fallback. |
 | `haute run [PIPELINE_FILE]` | Optional path; absent input uses `resolve_pipeline_file` project/discovery rules. | Missing/ambiguous file, parse failure, empty graph, executor failure, or any node result with non-`ok` status exits 1; success exits 0 after the optional final preview. |
 | `haute lint [PIPELINE_FILE]` | Optional path resolved exactly as `run`. | Missing/ambiguous file, parse failure, empty graph, or any collected structural issue exits 1; a clean graph exits 0. |
 | `haute train TRAINING_SCRIPT` | Required positional path. | Omission is a Click exit-2 usage error. Missing/unsafe/unloadable script, missing `job`, script exception, or `job.run` failure exits 1; successful training exits 0. |
@@ -69,13 +71,15 @@ without validating required positional arguments.
 | `haute smoke` | `--endpoint-suffix TEXT`. | Missing config/quotes/endpoint, missing Databricks SDK, an installed SDK too old to expose the required `NotFound` error type, unsupported target, readiness timeout, health-request failure, or any scoring request failure exits 1. Missing and outdated SDKs produce distinct install/upgrade guidance. A successful request can currently pass with an empty prediction payload. |
 | `haute status [MODEL_NAME]` | Optional model name; `--version-only`. | Missing resolvable name or MLflow dependency exits 1. Normal mode prints “not found” and exits 0; `--version-only` prints only a version on success and raises `ClickException` (exit 1, stderr only) when no version exists. |
 | `haute impact` | `--sample INTEGER` (default `10000`; every value `<=0` currently means all, although help documents `0`); `--batch-size INTEGER` (default `500`, minimum `1`); `--endpoint-suffix TEXT`. | Invalid batch size exits 2. Missing config/suffix/dataset or missing Databricks SDK exits 1. Endpoint/scoring/arithmetic/write failures propagate. Unsupported transport returns successfully without a report only after TOML, suffix, and dataset/parquet loading have succeeded; otherwise success writes `impact_report.md` and exits 0. |
+| `haute gpu-setup` | `--check` (report only); `--cpu` (switch back to `xgboost-cpu`); `--yes`/`-y` (skip confirmation). | `--check` exits 0. Exactly one of `xgboost-cpu`/`xgboost` must be installed, else exit 1. The target build already installed exits 0 without changes. Any switch on macOS (which installs the standard `xgboost` package and has no CUDA build), or a CUDA request without an `nvidia-smi` GPU, exits 1 before installing. A declined confirmation, a failed uninstall/install step (the message names the command that restores the previous build), an XGBoost that no longer imports, or a fresh-process CUDA check that disagrees with the request exits 1. |
 
 ## Control flow
 
 **`init`**: `handle_init` checks for an existing `haute.toml` (abort unless `--force`), resolves the
 project name from `pyproject.toml` (creating/patching it via `_ensure_haute_dependency`, which does
 a structural TOML edit rather than string templating so existing content survives), creates the
-`rating/` package tree and empty config/data/model/output placeholders, writes `haute.toml` via `haute._scaffold.haute_toml`,
+`rating/` package tree (including `rating/utility/__init__.py` and
+`rating/utility/features.py`) and empty config/data/outputs placeholders (no `rating/models/`: saved model files go to the project-root `models/` folder the modelling Export pane writes), writes `haute.toml` via `haute._scaffold.haute_toml`,
 writes `.env.example`, writes starter tests, writes CI workflow files for the chosen provider
 (pruning a *different* provider's stale files first on `--force`), installs a pre-commit hook into
 `.githooks/` and — if inside a git repo — `.git/hooks/`, and appends `.gitignore` guard entries via
@@ -86,7 +90,7 @@ point is `rating/main.py`, so the root file is treated as a tooling artifact, no
 name contract without requiring execution data. Init creates neither `prompts/` nor node sidecars.
 
 **`run`**: resolves the pipeline file via `haute._project.resolve_pipeline_file`, calls
-`parse_pipeline_file` then `execute_graph`, prints one line per node (row/column count or error),
+`parse_pipeline_file(..., flatten=True)` then `execute_graph`, prints one line per node (row/column count or error),
 exits 1 if any node failed, then previews the last node's output as a `polars.DataFrame`.
 
 **`lint`**: resolves the pipeline file and parses it through the strict canonical entry point. Any
@@ -95,9 +99,8 @@ fragments never reach lint. For a valid graph it checks edges referencing missin
 multi-node graphs, orphan nodes with no edges at all. Those post-parse findings are collected before
 reporting so one run surfaces every independent structural issue.
 
-**`train`**: validates the script exists, runs it through
-`haute._sandbox.validate_user_code(..., allow_imports=True)` before execution, loads it as a module
-via `importlib.util`, looks up a module-level `job` attribute, and calls
+**`train`**: validates the script exists, loads it as a module (trusted project code, run
+without the server's accident guard) via `importlib.util`, looks up a module-level `job` attribute, and calls
 `job.run(progress=_progress)` without an `isinstance(TrainingJob)` check. The documented/generated
 shape is a `TrainingJob`, but at runtime any object implementing that call and returning the fields
 the formatter reads is accepted. Execution and rendering have separate exception boundaries:
@@ -108,10 +111,10 @@ write (documented as load-bearing — `click.echo(nl=False)` alone can leave the
 
 **`serve`**: `handle_serve` runs, in order: `_require_loopback_host` (rejects every non-loopback
 value before any startup side effect), `_configure_trusted_hosts` (clears any stale
-`TRUSTED_HOSTS_ENV` remote-bind policy), `_abort_if_port_in_use`
-(pre-flight socket bind/close probe — `SO_EXCLUSIVEADDRUSE` on Windows to avoid a false-negative from
-`SO_REUSEADDR`), then `_detect_dev_frontend_dir` to choose dev vs. prod mode. Dev mode also
-pre-flights the fixed Vite listener at `127.0.0.1:5173`. Frontend detection first considers the
+`TRUSTED_HOSTS_ENV` remote-bind policy), `_detect_dev_frontend_dir` to choose dev vs. prod mode,
+then `_abort_if_port_in_use` (pre-flight socket bind/close probe — `SO_EXCLUSIVEADDRUSE` on Windows
+to avoid a false-negative from `SO_REUSEADDR`; dev mode also runs `_abort_if_vite_port_in_use` to
+pre-flight the fixed Vite listener at `127.0.0.1:5173`). Frontend detection first considers the
 nearest `frontend/package.json` in the working directory's ancestor chain. If that candidate has
 no installed `node_modules`, or no such candidate exists, it considers the `frontend/` beside the
 imported package when that package is an editable source checkout. A viable working-directory
@@ -125,7 +128,8 @@ mode rather than serving source through an unrelated generated bundle.
     IPv6) without becoming client code. It schedules a background thread
     that polls both the backend TCP port and Vite's fixed TCP port and opens the browser only
     once both are accepting connections
-    (`_open_browser_after_backend_ready` → `_wait_for_tcp_ready`), then runs `uvicorn.run(...,
+    (`_open_browser_after_servers_ready` → `_wait_for_servers_then_open_browser` → `_wait_for_tcp_ready`),
+    then runs `uvicorn.run(...,
     reload=True, reload_dirs=[haute package dir])`. The Vite subprocess is terminated in a `finally`
     block on every uvicorn exit path.
   - **Prod mode** (`_run_prod_mode`): checks `static_build_ready(STATIC_DIR)`, fails loudly with a
@@ -172,8 +176,11 @@ override, requires a non-empty `tests/quotes/*.json` set, then dispatches on
 scripting) and raises `click.ClickException` — rather than printing a misleading `0` — when no
 version is registered.
 
+**`gpu-setup`**: `installed_xgboost` reads the installed distribution (exactly one of `xgboost-cpu` and `xgboost`, which own the same files); `haute._host_memory.nvidia_gpu_name` asks `nvidia-smi`; this module is the subprocess chokepoint for the installer and the fresh-interpreter check. `--check` prints both plus `xgboost_gpu_status()`. Otherwise the target is `xgboost` (or `xgboost-cpu` with `--cpu`) pinned to the installed version; `installer_commands` uninstalls the current distribution then installs the target into `sys.executable`, through `uv pip --python` when `uv` is on the PATH, else `python -m pip`. `fresh_cuda_build` then imports XGBoost in a new interpreter and checks `build_info()['USE_CUDA']` matches the request. The running server keeps its imported build until restarted, and `uv sync` restores the locked `xgboost-cpu`.
+
 **`impact`**: requires `haute.toml` and `[safety].impact_dataset`; resolves the staging suffix (CLI
-flag wins, else `deploy_config.ci.staging_endpoint_suffix`, else loud error); reads and optionally
+flag wins, else `deploy_config.ci.staging_endpoint_suffix`, else loud error on Databricks transport;
+on other transports an empty suffix yields `staging_name == prod_name`); reads and optionally
 samples (`df.sample(n=..., seed=42)`) the impact dataset parquet; dispatches to
 `_impact_databricks`/`_impact_http` based on `resolve_transport(...).kind`; Databricks probes
 the production endpoint first, while HTTP treats a missing production URL as first deploy and
@@ -245,8 +252,6 @@ appends to `$GITHUB_STEP_SUMMARY` when that env var is set.
   extra — tells the user which `uv add haute[...]` to run), `NotImplementedError` (target not yet
   supported), and `DeployError` (expected target/configuration or operational failure). It has no
   catch-all fallback: implementation exceptions propagate with their original traceback.
-- `_train.handle_train` treats `UnsafeCodeError` from `validate_user_code` as a distinct, clearly
-  labelled failure ("failed safety validation") from a plain execution/import error.
 - Browser auto-open is the one explicit UX fallback: `_helpers._open_browser` catches a
   launcher exception or false return, prints the URL for manual opening, and does not stop
   the server. This does not substitute data or hide a server failure.
@@ -309,6 +314,6 @@ Key files and what they cover:
 
 Known gaps: no test boots a real Vite subprocess or uvicorn server. Readiness/open ordering and
 `finally` cleanup after a mocked uvicorn interruption are covered, but no test invokes the
-registered SIGINT/SIGTERM callbacks themselves. No test snapshots the root plus all nine generated
+registered SIGINT/SIGTERM callbacks themselves. No test snapshots the root plus all ten generated
 Click help surfaces, so defaults/types can drift; notably `serve` help currently omits its effective
 port-8000 default.

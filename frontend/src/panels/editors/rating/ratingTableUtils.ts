@@ -1,3 +1,5 @@
+import { isObjectLiteral } from "../../../utils/objectLiteral"
+
 // ─── Rating Table Types & Pure Utilities ──────────────────────────
 
 type PrimitiveRatingFactorKind =
@@ -17,7 +19,10 @@ export type RatingTable = {
   factors: string[]
   factorDtypes?: Record<string, RatingFactorDtype>
   outputColumn: string
-  defaultValue: string | null
+  /** Fills every miss; absent (or null) means a miss follows `onMissing`. */
+  defaultValue?: string | null
+  /** What a miss does without a usable default: `"error"` (the engine's default) or `"neutral"`. */
+  onMissing?: string
   entries: Record<string, string | number>[]
 }
 
@@ -31,8 +36,9 @@ export type RatingTableStatus = {
   issues: string[]
 }
 
-function defaultRatingTable(): RatingTable {
-  return { factors: [], outputColumn: "", defaultValue: "1.0", entries: [] }
+/** A new table has no default, so a level it does not list stops the run. */
+export function newRatingTable(): RatingTable {
+  return { factors: [], outputColumn: "", entries: [] }
 }
 
 function isEntry(value: unknown): value is Record<string, string | number> {
@@ -46,12 +52,6 @@ const primitiveRatingKinds = new Set<PrimitiveRatingFactorKind>([
   "Date", "Time", "Null",
 ])
 
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false
-  const prototype = Object.getPrototypeOf(value)
-  return prototype === Object.prototype || prototype === null
-}
-
 function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
   const actual = Object.keys(value)
   return actual.length === keys.length && keys.every(key => Object.hasOwn(value, key))
@@ -62,7 +62,7 @@ function isRatingTimeUnit(value: unknown): value is "ms" | "us" | "ns" {
 }
 
 function normaliseRatingFactorDtype(value: unknown): RatingFactorDtype | undefined {
-  if (!isPlainRecord(value) || typeof value.kind !== "string") return undefined
+  if (!isObjectLiteral(value) || typeof value.kind !== "string") return undefined
 
   const kind = value.kind
   if (primitiveRatingKinds.has(kind as PrimitiveRatingFactorKind)) {
@@ -118,9 +118,14 @@ function normaliseFactorDtypes(raw: unknown, factors: string[]): Record<string, 
   return Object.keys(factorDtypes).length > 0 ? factorDtypes : undefined
 }
 
+function normaliseDefaultValue(raw: unknown): { defaultValue?: string | null } {
+  if (typeof raw === "string" || raw === null) return { defaultValue: raw }
+  if (typeof raw === "number") return { defaultValue: String(raw) }
+  return {}
+}
+
 function normaliseRatingTable(raw: unknown): RatingTable {
-  const fallback = defaultRatingTable()
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return fallback
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return newRatingTable()
 
   const table = raw as Record<string, unknown>
   const outputColumn = typeof table.outputColumn === "string" ? table.outputColumn : ""
@@ -132,11 +137,8 @@ function normaliseRatingTable(raw: unknown): RatingTable {
     factors,
     ...(factorDtypes ? { factorDtypes } : {}),
     outputColumn,
-    defaultValue: typeof table.defaultValue === "string" || table.defaultValue === null
-      ? table.defaultValue
-      : typeof table.defaultValue === "number"
-        ? String(table.defaultValue)
-        : fallback.defaultValue,
+    ...normaliseDefaultValue(table.defaultValue),
+    ...(typeof table.onMissing === "string" ? { onMissing: table.onMissing } : {}),
     entries: Array.isArray(table.entries) ? table.entries.filter(isEntry) : [],
   }
 }
@@ -144,7 +146,7 @@ function normaliseRatingTable(raw: unknown): RatingTable {
 export function normaliseRatingTables(config: Record<string, unknown>): RatingTable[] {
   const raw = config.tables
   if (Array.isArray(raw) && raw.length > 0) return raw.map(normaliseRatingTable)
-  return [defaultRatingTable()]
+  return [newRatingTable()]
 }
 
 export function ratingTableStatus(
@@ -201,7 +203,7 @@ export function buildCartesianEntries(
   factors: string[],
   bandingLevels: Record<string, string[]>,
   existing: Record<string, string | number>[],
-  defaultValue: string | null,
+  defaultValue: string | null | undefined,
 ): Record<string, string | number>[] {
   if (factors.length === 0) return []
   const levelArrays = factors.map(f => bandingLevels[f] || [])

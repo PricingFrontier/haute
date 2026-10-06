@@ -7,21 +7,30 @@ import os
 import pickle
 import queue
 import sys
+import threading
 import time
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from multiprocessing.process import BaseProcess
 from typing import Any, Literal, TypeVar, cast
 
+from haute._cpu_performance import configure_process_high_qos
 from haute._logging import get_logger
 from haute._native_memory_limit import (
     NativeMemoryLease,
     cleanup_private_cgroups_for_pid,
+    memory_error_for_thread_start_failure,
     native_memory_backend_scope,
     native_memory_caps_supported,
 )
-from haute._process_memory import process_rss_bytes
+from haute._parent_watch import PARENT_PID_ENV, exit_with_parent
+from haute._process_memory import (
+    current_process_rss_bytes,
+    current_process_thread_count,
+    current_process_virtual_bytes,
+    process_rss_bytes,
+)
 
 logger = get_logger(component="worker_isolation")
 
@@ -51,6 +60,14 @@ class IsolatedWorkerConfig:
     stop_reason: Callable[[], WorkerTerminalReason | None] | None = None
     stop_poll_interval_seconds: float = 0.1
     process_name: str = "haute-isolated-worker"
+    # Widens only an RLIMIT_AS cap, for a model library's thread reservations.
+    address_space_allowance_bytes: int = 0
+    # Modules the protocol worker imports before its cap, so their mapped code and
+    # data count in the baseline rather than the job's budget.
+    preload_modules: tuple[str, ...] = ()
+    # Variables set for the child at spawn only (for example a library's
+    # import-time thread pool size); the parent's environment is unchanged.
+    environment: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.timeout_seconds is not None and self.timeout_seconds <= 0:
@@ -61,6 +78,8 @@ class IsolatedWorkerConfig:
             raise ValueError("required memory enforcement needs a configured memory limit")
         if self.stop_poll_interval_seconds <= 0:
             raise ValueError("stop_poll_interval_seconds must be positive")
+        if self.address_space_allowance_bytes < 0:
+            raise ValueError("address_space_allowance_bytes must not be negative")
 
 
 def resolve_worker_memory_enforcement() -> WorkerMemoryEnforcement:
@@ -80,6 +99,9 @@ def worker_config_for_memory_policy(
     stop_reason: Callable[[], WorkerTerminalReason | None] | None = None,
     stop_poll_interval_seconds: float = 0.1,
     process_name: str = "haute-isolated-worker",
+    address_space_allowance_bytes: int = 0,
+    preload_modules: tuple[str, ...] = (),
+    environment: Mapping[str, str] | None = None,
 ) -> IsolatedWorkerConfig:
     """Build worker controls without implying a hard cap on unsupported hosts."""
     enforcement = resolve_worker_memory_enforcement()
@@ -95,6 +117,9 @@ def worker_config_for_memory_policy(
         stop_reason=stop_reason,
         stop_poll_interval_seconds=stop_poll_interval_seconds,
         process_name=process_name,
+        address_space_allowance_bytes=address_space_allowance_bytes,
+        preload_modules=preload_modules,
+        environment=dict(environment or {}),
     )
 
 
@@ -258,6 +283,70 @@ class IsolatedWorkerTerminationError(IsolatedWorkerError):
             "Isolated worker remained alive after terminate and kill attempts",
             terminal_reason="error",
         )
+
+
+_MEMORY_REMOTE_TYPES = frozenset(
+    {
+        "MemoryError",
+        "ExecutionAdmissionError",
+        "ExecutionMemoryLimitExceededError",
+        "NativeMemoryLimitUnsupportedError",
+    }
+)
+
+
+def isolated_worker_failure_is_memory(exc: BaseException) -> bool:
+    """Return whether a worker failure is a memory outcome.
+
+    An RSS breach and an unsupported native cap always are; a crashed child
+    is memory-bound only when its exit-code heuristic said so; a remote
+    exception is when the child's own exception type names a memory refusal.
+    """
+    if isinstance(
+        exc,
+        IsolatedWorkerMemoryLimitExceededError | IsolatedWorkerMemoryLimitUnsupportedError,
+    ):
+        return True
+    if isinstance(exc, IsolatedWorkerCrashedError):
+        return exc.terminal_reason == "memory_limited"
+    if isinstance(exc, IsolatedWorkerRemoteError):
+        return exc.remote_type in _MEMORY_REMOTE_TYPES
+    return False
+
+
+def isolated_worker_memory_detail(
+    exc: BaseException,
+    *,
+    operation: str,
+    memory_limit_bytes: int | None,
+) -> dict[str, object]:
+    """Return the typed ``memory_limit`` payload for a worker memory outcome.
+
+    Shared by every surface that supervises a hard-capped worker so a worker
+    RSS breach, an unsupported native cap, and a crash that looks memory-bound
+    are reported with the same closed reason codes.
+    """
+    payload: dict[str, object] = {
+        "error_code": "memory_limit",
+        "operation": operation,
+        "reason": "worker_memory_limit",
+    }
+    if memory_limit_bytes is not None:
+        payload["memory_limit_bytes"] = memory_limit_bytes
+    if isinstance(exc, IsolatedWorkerMemoryLimitExceededError):
+        payload.update(
+            rss_bytes=exc.rss_bytes,
+            rss_limit_bytes=exc.rss_limit_bytes,
+            reason="worker_rss_limit_exceeded",
+        )
+    elif isinstance(exc, IsolatedWorkerMemoryLimitUnsupportedError) or (
+        isinstance(exc, IsolatedWorkerRemoteError)
+        and exc.remote_type == "NativeMemoryLimitUnsupportedError"
+    ):
+        payload["reason"] = "native_memory_cap_unavailable"
+    elif isinstance(exc, IsolatedWorkerCrashedError):
+        payload["reason"] = "worker_may_have_exceeded_memory_limit"
+    return payload
 
 
 def address_space_caps_supported() -> bool:
@@ -466,14 +555,9 @@ def _resource_tracker_diagnostics() -> dict[str, Any]:
     except Exception:  # pragma: no cover - POSIX-only, best effort
         pass
 
-    try:
-        with open("/proc/self/status", encoding="utf-8") as handle:
-            for line in handle:
-                if line.startswith(("Threads:", "VmRSS:", "VmSize:")):
-                    key, _, value = line.partition(":")
-                    info[f"proc_{key.strip().lower()}"] = value.strip()
-    except OSError:  # pragma: no cover - Linux-only, best effort
-        pass
+    info["process_threads"] = current_process_thread_count()
+    info["process_rss_bytes"] = current_process_rss_bytes()
+    info["process_virtual_bytes"] = current_process_virtual_bytes()
     return info
 
 
@@ -508,6 +592,18 @@ def _reset_resource_tracker() -> None:
                 pass
         tracker._fd = None
         tracker._pid = None
+
+
+def start_worker_queue_feeder(worker_queue: Any) -> None:
+    """Start a multiprocessing queue's feeder thread now.
+
+    ``Queue.put`` starts it on first use. Under a native cap that first use can come
+    after the cap has left no room for a thread, so a worker starts its reporting
+    threads before installing the cap. An in-process queue has no feeder.
+    """
+    start = getattr(worker_queue, "_start_thread", None)
+    if callable(start) and getattr(worker_queue, "_thread", None) is None:
+        start()
 
 
 def create_worker_queue(ctx: Any, maxsize: int) -> Any:
@@ -546,6 +642,48 @@ def create_worker_queue(ctx: Any, maxsize: int) -> Any:
                 "This server cannot start background work at the moment — the process "
                 "tracker it relies on has stopped. Restart the app and try again."
             ) from retry_exc
+
+
+#: Serialises the parent-side environment overrides a spawned child inherits.
+#: The overrides are necessarily process-wide while ``start()`` runs, so two
+#: concurrent spawns must not be able to observe each other's values.
+_SPAWN_ENVIRONMENT_LOCK = threading.Lock()
+
+
+def start_process_with_environment(process: BaseProcess, environment: Mapping[str, str]) -> None:
+    """Start ``process`` with ``environment`` added to the variables it inherits.
+
+    A spawned child inherits the parent's ``os.environ`` exactly as it stands
+    while ``start()`` runs, and that is the only window in which a variable a
+    library reads at import time can be set for that child. The overrides are
+    therefore applied to the parent globally, under a module-wide lock so no
+    other spawn can inherit them, and every touched variable is restored to its
+    prior value before the lock is released — including when ``start()`` raises.
+    Callers with nothing to override pass an empty mapping so that every spawn
+    takes the same serialised path. A streaming chunk-size cap active in this
+    process stays in force here; the child is handed the setting it caps and
+    applies it at entry (``apply_spawned_streaming_chunk_size``).
+    """
+    from haute._polars_utils import streaming_chunk_size_for_spawn
+
+    with _SPAWN_ENVIRONMENT_LOCK, streaming_chunk_size_for_spawn() as chunk_environment:
+        # Every worker learns its server's pid, so it can end when the server
+        # does (see ``haute._parent_watch``).
+        environment = {
+            **chunk_environment,
+            **environment,
+            PARENT_PID_ENV: str(os.getpid()),
+        }
+        previous: dict[str, str | None] = {name: os.environ.get(name) for name in environment}
+        try:
+            os.environ.update(environment)
+            process.start()
+        finally:
+            for name, value in previous.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
 
 
 def run_isolated_worker(
@@ -592,7 +730,7 @@ def run_isolated_worker(
     process_started = False
     try:
         try:
-            process.start()
+            start_process_with_environment(process, worker_config.environment)
             process_started = True
         except Exception as exc:  # pragma: no cover - depends on multiprocessing internals
             raise IsolatedWorkerStartError(
@@ -714,10 +852,17 @@ def _isolated_worker_entrypoint(
     memory_limit_bytes: int | None,
     require_memory_limit: bool = False,
 ) -> None:
+    from haute._polars_utils import apply_spawned_streaming_chunk_size
+
+    exit_with_parent()
+    apply_spawned_streaming_chunk_size()
     lease = NativeMemoryLease()
+    applied = False
     try:
+        configure_process_high_qos()
+        start_worker_queue_feeder(result_queue)
         if memory_limit_bytes is not None:
-            lease.apply(memory_limit_bytes, required=require_memory_limit)
+            applied = lease.apply(memory_limit_bytes, required=require_memory_limit)
     except BaseException as exc:
         envelope = _worker_error_envelope(exc)
         payload = _serialise_worker_payload(envelope)
@@ -725,11 +870,13 @@ def _isolated_worker_entrypoint(
         result_queue.close()
         result_queue.join_thread()
         return
-    with native_memory_backend_scope(lease.backend):
+    with native_memory_backend_scope(lease.backend if applied else None, lease):
         try:
             envelope = ("ok", function(*args, **kwargs))
         except BaseException as exc:
-            envelope = _worker_error_envelope(exc)
+            envelope = _worker_error_envelope(
+                memory_error_for_thread_start_failure(exc) if applied else exc
+            )
         # The native limit deliberately remains active until the queue feeder has
         # flushed this possibly-large payload.  Do not restore or close the lease:
         # process teardown releases it, and the joined parent removes any private
@@ -760,25 +907,6 @@ def _serialise_worker_payload(envelope: tuple[str, Any]) -> bytes:
             _worker_error_envelope(RuntimeError(f"worker result was not serialisable: {exc}")),
             protocol=pickle.HIGHEST_PROTOCOL,
         )
-
-
-def _apply_address_space_limit(memory_limit_bytes: int) -> None:
-    # ``resource`` only exists on POSIX. Callers gate this via
-    # ``address_space_caps_supported`` so reaching the Windows branch here
-    # means we hit a contract bug — fail loudly rather than silently no-op.
-    if sys.platform == "win32":  # pragma: no cover - guarded by caller's support check
-        raise IsolatedWorkerMemoryLimitUnsupportedError(memory_limit_bytes=memory_limit_bytes)
-    import resource
-
-    resource_module = cast(Any, resource)
-    current_soft, current_hard = resource_module.getrlimit(resource_module.RLIMIT_AS)
-    hard = memory_limit_bytes
-    if current_hard != resource_module.RLIM_INFINITY:
-        hard = min(hard, int(current_hard))
-    soft = min(memory_limit_bytes, hard)
-    if current_soft != resource_module.RLIM_INFINITY:
-        soft = min(soft, int(current_soft))
-    resource_module.setrlimit(resource_module.RLIMIT_AS, (soft, hard))
 
 
 def _read_worker_payload(
@@ -863,6 +991,14 @@ def _run_cleanup_callbacks(
     return IsolatedWorkerCleanupError(errors) if errors else None
 
 
+# ``STATUS_STACK_BUFFER_OVERRUN``: the exit status of a Windows fail-fast abort.
+_WINDOWS_FAIL_FAST_EXITCODE = 0xC0000409
+# ``STATUS_STACK_OVERFLOW``: under a Job Object commit cap, a thread whose next
+# stack page the cap refuses to commit dies with this status, not an allocation
+# failure — a 10M-row preview join capture ended exactly this way.
+_WINDOWS_STACK_OVERFLOW_EXITCODE = 0xC00000FD
+
+
 def _exitcode_looks_memory_limited(
     exitcode: int | None,
     memory_limit_bytes: int | None,
@@ -877,6 +1013,13 @@ def _exitcode_looks_memory_limited(
     # hedges ("may have run out of memory") and the exit code stays on the
     # exception and in ``worker_exitcode``, at the cost of the UI showing
     # memory guidance for such an abort.
+    #
+    # ``_WINDOWS_FAIL_FAST_EXITCODE`` is SIGABRT's Windows counterpart: a
+    # native allocation the Job Object cap refuses aborts through the
+    # fail-fast path (Polars prints ``memory allocation of N bytes failed``),
+    # and a panic or assertion abort exits the same way. A refused stack commit
+    # exits as ``_WINDOWS_STACK_OVERFLOW_EXITCODE``; a genuine deep-recursion
+    # overflow under a cap reads the same, which the hedged wording accepts.
     if memory_limit_bytes is None or exitcode is None:
         return False
     try:
@@ -888,4 +1031,9 @@ def _exitcode_looks_memory_limited(
     # their classification is platform-independent; live Windows RSS breaches
     # are reported directly by the parent watchdog rather than this heuristic.
     sigkill_number = int(getattr(signal, "SIGKILL", 9))
-    return exitcode in {-sigkill_number, -int(signal.SIGABRT)}
+    return exitcode in {
+        -sigkill_number,
+        -int(signal.SIGABRT),
+        _WINDOWS_FAIL_FAST_EXITCODE,
+        _WINDOWS_STACK_OVERFLOW_EXITCODE,
+    }

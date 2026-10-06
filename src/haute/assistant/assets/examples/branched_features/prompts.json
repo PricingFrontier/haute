@@ -1,0 +1,1 @@
+{"user":"Show parallel feature branches merged before the response.","assistant":"Derive each branch from the live quote, join them on quote_id in one node, and connect every edge explicitly."}

@@ -8,7 +8,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from haute._config_validation import VALID_KEYS, warn_unrecognized_config_keys
+from haute._config_validation import VALID_KEYS, unrecognized_config_keys
 from haute._edge_join import (
     build_edge_join_kwargs,
     edge_join_config_to_decorator_kwargs,
@@ -64,11 +64,11 @@ def test_edge_join_node_type_and_decorator_contract() -> None:
     pipeline = Pipeline("joins")
 
     @pipeline.edge_join(how="left", on=["region"])
-    def join_rates(quotes: pl.LazyFrame, lookup: pl.LazyFrame) -> pl.LazyFrame:
-        return quotes.join(lookup, on="region", how="left")
+    def join_rates(quotes, lookup): ...
 
     node = pipeline.nodes[0]
     assert node.config["_node_type"] is NodeType.EDGE_JOIN
+    assert node.kind == "declaration"
 
 
 def test_execute_edge_join_collects_two_eager_frames_when_requested() -> None:
@@ -87,31 +87,39 @@ def test_execute_edge_join_collects_two_eager_frames_when_requested() -> None:
     }
 
 
-def test_edge_join_decorator_registers_original_function_like_other_nodes() -> None:
+def test_edge_join_decorator_returns_a_callable_that_runs_the_node() -> None:
     pipeline = Pipeline("joins")
 
-    def join_rates(quotes: pl.LazyFrame, lookup: pl.LazyFrame) -> pl.LazyFrame:
-        return quotes
+    def join_rates(quotes, lookup): ...
 
     registered = pipeline.edge_join(
         how="left",
         on=["region"],
     )(join_rates)
 
-    assert registered is join_rates
+    # The node keeps the declaration; the name the decorator returns runs the
+    # node, because the declaration's own body does nothing.
     assert pipeline.nodes[0].fn is join_rates
+    assert registered.__wrapped__ is join_rates
+    joined = registered(
+        pl.DataFrame({"region": ["N", "S"]}),
+        pl.DataFrame({"region": ["N"], "rate": [1.5]}),
+    )
+    assert joined.lazy().collect().to_dicts() == [
+        {"region": "N", "rate": 1.5},
+        {"region": "S", "rate": None},
+    ]
 
 
-def test_edge_join_invalid_config_fails_when_shared_helper_runs() -> None:
+def test_edge_join_invalid_config_fails_when_the_node_runs() -> None:
     pipeline = Pipeline("joins")
 
     @pipeline.edge_join
-    def join_rates(quotes: pl.LazyFrame, lookup: pl.LazyFrame) -> pl.LazyFrame:
-        return pipeline._apply_edge_join("join_rates", quotes, lookup)
+    def join_rates(quotes, lookup): ...
 
     df = pl.DataFrame({"region": ["N"]})
     with pytest.raises(ConfigError, match="join keys"):
-        pipeline._apply_edge_join("join_rates", df, df)
+        pipeline.nodes[0](df, df)
 
 
 def test_edge_join_config_keys_are_registered() -> None:
@@ -129,7 +137,7 @@ def test_edge_join_config_keys_are_registered() -> None:
     assert "baseInput" not in VALID_KEYS[NodeType.EDGE_JOIN]
     assert "joinInput" not in VALID_KEYS[NodeType.EDGE_JOIN]
     assert (
-        warn_unrecognized_config_keys(
+        unrecognized_config_keys(
             NodeType.EDGE_JOIN,
             {
                 "how": "left",
@@ -168,13 +176,7 @@ def lookup() -> pl.LazyFrame:
     validate="m:1",
     maintain_order="left",
 )
-def join_rates(quotes: pl.LazyFrame, lookup: pl.LazyFrame) -> pl.LazyFrame:
-    return quotes.join(
-        lookup,
-        left_on="region",
-        right_on="rating_region",
-        how="left",
-    )
+def join_rates(quotes, lookup): ...
 
 
 pipeline.connect("lookup", "join_rates", target_port="join")
@@ -194,7 +196,11 @@ pipeline.connect("quotes", "join_rates", target_port="base")
     }
 
 
-def test_codegen_emits_edge_join_with_base_first_params_and_connects(tmp_path: Path) -> None:
+@pytest.mark.parametrize("selected_columns", [None, [], ["factor"]])
+def test_codegen_emits_edge_join_with_base_first_params_and_connects(
+    tmp_path: Path,
+    selected_columns: list[str] | None,
+) -> None:
     graph = PipelineGraph(
         nodes=[
             GraphNode(
@@ -223,6 +229,11 @@ def test_codegen_emits_edge_join_with_base_first_params_and_connects(tmp_path: P
                     "how": "left",
                     "on": ["region"],
                     "suffix": "_lookup",
+                    **(
+                        {"selected_columns": selected_columns}
+                        if selected_columns is not None
+                        else {}
+                    ),
                 }
             ),
         ],
@@ -237,10 +248,10 @@ def test_codegen_emits_edge_join_with_base_first_params_and_connects(tmp_path: P
     assert "@pipeline.edge_join(" in code
     assert "base_input=" not in code
     assert "join_input=" not in code
-    assert "on=['region']" in code
+    assert 'on=["region"]' in code
     assert ".join(" not in code
-    assert 'return pipeline._apply_edge_join("Join_Rates", quotes, lookup)' in code
-    assert "def Join_Rates(quotes: pl.LazyFrame, lookup: pl.LazyFrame)" in code
+    assert "_apply_edge_join" not in code
+    assert "def Join_Rates(quotes, lookup): ..." in code
     assert 'pipeline.connect("quotes", "Join_Rates", target_port="base")' in code
     assert 'pipeline.connect("lookup", "Join_Rates", target_port="join")' in code
     assert code.index('pipeline.connect("quotes", "Join_Rates", target_port="base")') < code.index(
@@ -268,6 +279,10 @@ def test_codegen_emits_edge_join_with_base_first_params_and_connects(tmp_path: P
     parsed = parse_pipeline_file(_write_pipeline(tmp_path, code))
     parsed_join = parsed.node_map["Join_Rates"]
     assert parsed_join.data.nodeType is NodeType.EDGE_JOIN
+    assert parsed_join.data.config.get("selected_columns", []) == (selected_columns or [])
+    assert _edge_join_decorator_line(
+        graph_to_code(parsed, pipeline_name="joins")
+    ) == _edge_join_decorator_line(code)
     assert "baseInput" not in parsed_join.data.config
     assert "joinInput" not in parsed_join.data.config
     parsed_edges = {(edge.source, edge.target): edge for edge in parsed.edges}
@@ -276,8 +291,11 @@ def test_codegen_emits_edge_join_with_base_first_params_and_connects(tmp_path: P
 
     namespace = {"__file__": str(_write_pipeline(tmp_path, code))}
     exec(compile(code, str(tmp_path / "pipeline.py"), "exec"), namespace)
-    result = namespace["pipeline"].run()
-    assert result.collect()["factor"].to_list() == [1.1]
+    result = namespace["pipeline"].run(source="batch")
+    assert result["factor"].to_list() == [1.1]
+    preview = execute_graph(parsed)["Join_Rates"]
+    assert preview.status == "ok"
+    assert [column.name for column in preview.columns] == (selected_columns or ["region", "factor"])
 
 
 def _edge_join_decorator_line(code: str) -> str:
@@ -366,8 +384,8 @@ def test_edge_join_round_trip_resolves_roles_when_node_ids_differ_from_labels(
     # Preview off the generated module produces the joined frame.
     namespace = {"__file__": str(path)}
     exec(compile(code, str(path), "exec"), namespace)
-    result = namespace["pipeline"].run()
-    assert result.collect()["factor"].to_list() == [1.1]
+    result = namespace["pipeline"].run(source="batch")
+    assert result["factor"].to_list() == [1.1]
 
     # Re-save (second codegen pass) is byte-stable for the decorator kwargs.
     resaved = graph_to_code(parsed, pipeline_name="joins")
@@ -513,8 +531,7 @@ def _submodel_edge_join_graph() -> PipelineGraph:
                 },
                 "inputPorts": [
                     {
-                        "portId": "base",
-                        "label": "Base",
+                        "name": "base",
                         "targets": [{"nodeId": "join", "handleId": "base"}],
                     }
                 ],
@@ -528,8 +545,8 @@ def test_submodel_parent_codegen_preserves_external_edge_join_target_role() -> N
     files = graph_to_code_multi(_submodel_edge_join_graph(), pipeline_name="main")
 
     assert 'pipeline.connect("Src", "rating", target_port="base")' in files["main.py"]
-    assert "pipeline._apply_edge_join" not in files["modules/rating.py"]
-    assert "submodel._apply_edge_join" in files["modules/rating.py"]
+    assert "@submodel.edge_join(" in files["modules/rating.py"]
+    assert "_apply_edge_join" not in files["modules/rating.py"]
 
 
 def test_submodel_edge_join_codegen_uses_public_input_role_edge() -> None:
@@ -539,7 +556,7 @@ def test_submodel_edge_join_codegen_uses_public_input_role_edge() -> None:
     module = files["modules/rating.py"]
     assert "base_input=" not in module
     assert "join_input=" not in module
-    assert "'targets': [{'nodeId': 'join', 'handleId': 'base'}]" in module
+    assert '"targets": [{"nodeId": "join", "handleId": "base"}]' in module
     assert 'submodel.connect("Lookup", "Join", target_port="join")' in module
 
 
@@ -621,7 +638,7 @@ def test_submodel_parent_codegen_resolves_external_edge_join_source_roles(
         node for node in result.graph.nodes if node.data.nodeType == NodeType.SUBMODEL
     )
     definition = result.graph.submodels[occurrence.data.config["definitionId"]]
-    output_port_by_source = {port.source.node_id: port.port_id for port in definition.output_ports}
+    output_port_by_source = {port.source.node_id: port.name for port in definition.output_ports}
 
     join_config = result.graph.node_map["join"].data.config
     assert "baseInput" not in join_config
@@ -707,19 +724,29 @@ def test_edge_join_pipeline_run_honours_configured_roles_for_reversed_connects()
         return pl.DataFrame({"region": ["N", "S"], "factor": [1.1, 0.9]})
 
     @pipeline.edge_join(how="left", on=["region"])
-    def join_rates(base: pl.DataFrame, join: pl.DataFrame) -> pl.DataFrame:
-        return base.lazy().join(join.lazy(), on="region", how="left").collect()
+    def join_rates(base, join): ...
 
     pipeline.connect("lookup", "join_rates", target_port="join")
     pipeline.connect("quotes", "join_rates", target_port="base")
 
-    result = pipeline.run()
+    result = pipeline.run(source="batch")
 
     assert result["quote_id"].to_list() == [1, 2, 3]
     assert result["factor"].to_list() == [1.1, 0.9, None]
 
 
-def test_edge_join_pipeline_run_calls_function_body_like_other_nodes() -> None:
+def test_edge_join_with_a_function_body_fails_at_registration() -> None:
+    """The decorator performs the join, so a body could never run: fail at once."""
+    pipeline = Pipeline("joins")
+
+    with pytest.raises(ConfigError, match="has a function body"):
+
+        @pipeline.edge_join(how="left", on=["region"])
+        def join_rates(base: pl.DataFrame, _join: pl.DataFrame) -> pl.DataFrame:
+            return base.with_columns(pl.lit("called").alias("body_result"))
+
+
+def test_edge_join_declaration_joins_in_pipeline_run() -> None:
     pipeline = Pipeline("joins")
 
     @pipeline.data_input
@@ -731,44 +758,18 @@ def test_edge_join_pipeline_run_calls_function_body_like_other_nodes() -> None:
         return pl.DataFrame({"region": ["N", "S"], "factor": [1.1, 0.9]})
 
     @pipeline.edge_join(how="left", on=["region"])
-    def join_rates(base: pl.DataFrame, _join: pl.DataFrame) -> pl.DataFrame:
-        return base.with_columns(pl.lit("called").alias("body_result"))
+    def join_rates(base, join): ...
 
     pipeline.connect("quotes", "join_rates", target_port="base")
     pipeline.connect("lookup", "join_rates", target_port="join")
 
-    result = pipeline.run()
-
-    assert result["quote_id"].to_list() == [1, 2, 3]
-    assert result["body_result"].to_list() == ["called", "called", "called"]
-    assert "factor" not in result.columns
-
-
-def test_edge_join_pipeline_run_can_use_shared_edge_join_helper() -> None:
-    pipeline = Pipeline("joins")
-
-    @pipeline.data_input
-    def quotes() -> pl.DataFrame:
-        return pl.DataFrame({"quote_id": [1, 2, 3], "region": ["N", "S", "E"]})
-
-    @pipeline.data_input
-    def lookup() -> pl.DataFrame:
-        return pl.DataFrame({"region": ["N", "S"], "factor": [1.1, 0.9]})
-
-    @pipeline.edge_join(how="left", on=["region"])
-    def join_rates(base: pl.DataFrame, join: pl.DataFrame) -> pl.DataFrame:
-        return pipeline._apply_edge_join("join_rates", base, join)
-
-    pipeline.connect("quotes", "join_rates", target_port="base")
-    pipeline.connect("lookup", "join_rates", target_port="join")
-
-    result = pipeline.run()
+    result = pipeline.run(source="batch")
 
     assert result["quote_id"].to_list() == [1, 2, 3]
     assert result["factor"].to_list() == [1.1, 0.9, None]
 
 
-def test_edge_join_pipeline_score_can_use_shared_edge_join_helper() -> None:
+def test_edge_join_declaration_joins_in_pipeline_score() -> None:
     pipeline = Pipeline("joins")
 
     @pipeline.api_input(api_input=True)
@@ -780,8 +781,7 @@ def test_edge_join_pipeline_score_can_use_shared_edge_join_helper() -> None:
         return pl.DataFrame({"region": ["N", "S"], "factor": [1.1, 0.9]})
 
     @pipeline.edge_join(how="left", on=["region"])
-    def join_rates(base: pl.DataFrame, join: pl.DataFrame) -> pl.DataFrame:
-        return pipeline._apply_edge_join("join_rates", base, join)
+    def join_rates(base, join): ...
 
     pipeline.connect("quotes", "join_rates", target_port="base")
     pipeline.connect("lookup", "join_rates", target_port="join")
@@ -944,10 +944,10 @@ def test_edge_join_builder_invalid_config_fails_loudly(
 #
 #   * builder surface — ``_build_node_fn`` (graph executor / preview /
 #     trace / deploy), which joins LazyFrames and collects downstream;
-#   * pipeline surface — generated-code shape: ``@pipeline.edge_join``
-#     decorator kwargs emitted by ``edge_join_config_to_decorator_kwargs``
-#     with a ``pipeline._apply_edge_join`` body, run via ``pipeline.run()``
-#     (eager DataFrames, ``collect_eager=True``).
+#   * pipeline surface — generated-code shape: an ``@pipeline.edge_join``
+#     declaration whose keywords come from ``edge_join_config_to_decorator_kwargs``,
+#     joined by its decorator in ``pipeline.run()`` (eager DataFrames,
+#     ``collect_eager=True``).
 #
 # Row assertions are order-insensitive (sorted row sets): Polars joins do
 # not guarantee row order without ``maintain_order``.
@@ -979,8 +979,8 @@ def _run_pipeline_edge_join(
     """Execute through the generated-code surface (``pipeline.run()``).
 
     Decorator kwargs are derived with the same helper codegen uses, and the
-    node body delegates to ``pipeline._apply_edge_join`` exactly like an
-    emitted pipeline file, so this is byte-equivalent to generated code.
+    node is a declaration exactly like an emitted pipeline file, so its
+    decorator performs the join as generated code does.
     """
     pipeline = Pipeline("join_matrix")
 
@@ -995,12 +995,11 @@ def _run_pipeline_edge_join(
     decorator_kwargs = dict(edge_join_config_to_decorator_kwargs(config))
 
     @pipeline.edge_join(**decorator_kwargs)
-    def joined(base_src: pl.DataFrame, lookup_src: pl.DataFrame) -> pl.DataFrame:
-        return pipeline._apply_edge_join("joined", base_src, lookup_src)
+    def joined(base_src, lookup_src): ...
 
     pipeline.connect("base_src", "joined", target_port="base")
     pipeline.connect("lookup_src", "joined", target_port="join")
-    return pipeline.run()
+    return pipeline.run(source="batch")
 
 
 def _run_edge_join(

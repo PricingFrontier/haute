@@ -40,6 +40,17 @@ describe("ModalShell", () => {
     expect(panel).toBeTruthy()
   })
 
+  it("centres the panel by default and pins it near the top with placement top", () => {
+    const { unmount } = renderShell()
+    expect(screen.getByRole("dialog")).toHaveClass("items-center")
+    expect(screen.getByRole("dialog")).not.toHaveClass("items-start")
+    unmount()
+
+    renderShell({ placement: "top" })
+    expect(screen.getByRole("dialog")).toHaveClass("items-start", "pt-[3vh]")
+    expect(screen.getByRole("dialog")).not.toHaveClass("items-center")
+  })
+
   it("calls onClose when clicking the backdrop", () => {
     const { props } = renderShell()
     const backdrop = screen.getByRole("dialog")
@@ -131,6 +142,38 @@ describe("ModalShell", () => {
     firstBtn.focus()
     expect(document.activeElement).toBe(firstBtn)
     fireEvent.keyDown(document, { key: "Tab", shiftKey: true })
+    expect(document.activeElement).toBe(screen.getByText("Last"))
+  })
+
+  it("focus trap: includes disclosure summaries and skips their collapsed contents", () => {
+    renderShell({
+      children: (
+        <>
+          <button>First</button>
+          <details>
+            <summary>Details</summary>
+            <button>Hidden action</button>
+          </details>
+        </>
+      ),
+    })
+    screen.getByText("First").focus()
+    fireEvent.keyDown(document, { key: "Tab", shiftKey: true })
+    expect(document.activeElement).toBe(screen.getByText("Details"))
+    fireEvent.keyDown(document, { key: "Tab" })
+    expect(document.activeElement).toBe(screen.getByText("First"))
+  })
+
+  it("focus trap: Shift+Tab from the initially focused container reaches its last control", () => {
+    renderShell({
+      children: (
+        <>
+          <button>First</button>
+          <button>Last</button>
+        </>
+      ),
+    })
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Tab", shiftKey: true })
     expect(document.activeElement).toBe(screen.getByText("Last"))
   })
 })

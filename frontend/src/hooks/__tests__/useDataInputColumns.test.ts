@@ -7,6 +7,7 @@ import useSettingsStore from "../../stores/useSettingsStore"
 import useToastStore from "../../stores/useToastStore"
 
 vi.mock("../../api/client", () => ({
+  previewInputs: vi.fn(async () => ({ input_node_ids: [] as string[] })),
   previewNode: vi.fn(),
 }))
 
@@ -480,14 +481,38 @@ describe("useDataInputColumns", () => {
     ).toBe(false)
   })
 
-  it("does not refetch when only streamingChunkSize changes (chunk is a streaming-buffer config, not a preview input)", async () => {
+  it("does not refetch when only the pipeline settings change (they are not a preview input)", async () => {
     mockPreview.mockResolvedValue({ node_id: "ds1", status: "ok", columns: sampleColumns })
 
     renderHook(() => useDataInputColumns("ds1", nodes, edges))
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1))
 
     act(() => {
-      useSettingsStore.setState({ streamingChunkSize: 12345 })
+      useSettingsStore.setState({
+        pipelineSettings: {
+          path: ".haute/pipeline-settings.json",
+          settings: {
+            chunk_rows: 12345,
+            caching: false,
+            cache_size_gb: null,
+            preview_memory_gb: null,
+            kept_free_gb: null,
+            pipeline_time_limit_minutes: null,
+            modelling_time_limit_minutes: null,
+            optimisation_time_limit_minutes: null,
+          },
+          automatic: {
+            chunk_rows: 500_000,
+            caching: true,
+            cache_size_gb: 20,
+            preview_memory_gb: 10,
+            kept_free_gb: 2,
+            pipeline_time_limit_minutes: 30,
+            modelling_time_limit_minutes: 60,
+            optimisation_time_limit_minutes: null,
+          },
+        },
+      })
     })
 
     // Give any effect schedule a chance to fire

@@ -252,18 +252,18 @@ export function resolveSubmodelBoundaryNodes(
     throw new Error(
       "Cannot resolve " + direction + "put handle " + String(handle)
       + " for submodel instance " + boundaryNode.id
-      + ": expected " + prefix + "<portId>",
+      + ": expected " + prefix + "<name>",
     )
   }
-  const portId = handle.slice(prefix.length)
+  const name = handle.slice(prefix.length)
   if (direction === "in") {
     const port = canonical.definition.inputPorts.find(
-      (candidate) => candidate.portId === portId,
+      (candidate) => candidate.name === name,
     )
     if (!port) {
       throw new Error(
         "Cannot resolve input handle " + handle + " for submodel instance "
-        + boundaryNode.id + ": public port " + portId + " is missing",
+        + boundaryNode.id + ": public port " + name + " is missing",
       )
     }
     return port.targets.map((endpoint) => {
@@ -279,12 +279,12 @@ export function resolveSubmodelBoundaryNodes(
   }
 
   const port = canonical.definition.outputPorts.find(
-    (candidate) => candidate.portId === portId,
+    (candidate) => candidate.name === name,
   )
   if (!port) {
     throw new Error(
       "Cannot resolve output handle " + handle + " for submodel instance "
-      + boundaryNode.id + ": public port " + portId + " is missing",
+      + boundaryNode.id + ": public port " + name + " is missing",
     )
   }
   const child = canonical.graph.nodes.find(
@@ -327,8 +327,8 @@ export function resolveSubmodelBoundaryNode(
  * API-input frame handles are already canonical names and are returned
  * verbatim, including a stale non-null handle so the UI can identify the
  * unresolved edge. Ordinary sources consume authoritative backend identity
- * metadata. A submodel output is named from its stable alias plus public port
- * id.
+ * metadata. A submodel output uses the authoritative public output port name
+ * returned by the backend, independent of the occurrence alias or port count.
  */
 export const UNRESOLVED_INPUT_NAME = "<unresolved>"
 
@@ -435,7 +435,7 @@ export function incomingEdgeInputNames({
   const boundaryNode = nodesById.get(boundaryNodeId)
   const names: string[] = []
   for (const edge of edges) {
-    let canonicalPortId: string | undefined
+    let canonicalPortName: string | undefined
     if (edge.target !== targetNodeId) {
       if (
         edge.target !== boundaryNodeId
@@ -448,9 +448,9 @@ export function incomingEdgeInputNames({
         submodels,
       )
       if (!targets.some((target) => target.id === targetNodeId)) continue
-      canonicalPortId = edge.targetHandle?.slice("in__".length)
+      canonicalPortName = edge.targetHandle?.slice("in__".length)
     }
-    if (canonicalPortId) {
+    if (canonicalPortName) {
       const instanceConfig = boundaryNode?.data.config
       if (!isSubmodelInstanceConfig(instanceConfig)) {
         throw new Error(`Cannot resolve input name: submodel ${boundaryNodeId} has malformed identity`)
@@ -459,13 +459,13 @@ export function incomingEdgeInputNames({
       if (!isSubmodelDefinition(definition, instanceConfig.definitionId)) {
         throw new Error(`Cannot resolve input name: submodel definition ${instanceConfig.definitionId} is unavailable`)
       }
-      const inputName = definition._inputPortInputNames?.[canonicalPortId]
-      if (typeof inputName !== "string" || inputName.length === 0) {
+      const port = definition.inputPorts.find((candidate) => candidate.name === canonicalPortName)
+      if (!port) {
         throw new Error(
-          `Cannot resolve input name: public input ${canonicalPortId} has no authoritative identity`,
+          `Cannot resolve input name: public input ${canonicalPortName} has no authoritative identity`,
         )
       }
-      names.push(inputName)
+      names.push(port.name)
       continue
     }
     const sourceNode = nodesById.get(edge.source)
@@ -549,15 +549,15 @@ export function apiInputLabelIssueMessage(issue: ApiInputLabelIssue | null): str
   if (issue === null) return null
   switch (issue.kind) {
     case "blank":
-      return "A label is required — it names this table's frame."
+      return "A label is required - it names this table's frame."
     case "identifier":
       return issue.reason === "keyword"
-        ? "A frame label cannot be a Python hard keyword."
+        ? "A frame label cannot be a Python hard keyword or a name node code binds itself (such as pl or pipeline)."
         : "A frame label must be an ASCII identifier (letters, digits, and underscores only)."
     case "duplicate":
       return `Duplicate label: "${issue.other}" is already used by another table.`
     case "sanitised-collision":
-      return `Label collides with "${issue.other}": both become "${issue.sanitised}" on disk (case-insensitive — macOS/Windows treat case-variant filenames as one file).`
+      return `Label collides with "${issue.other}": both become "${issue.sanitised}" on disk (case-insensitive - macOS/Windows treat case-variant filenames as one file).`
   }
 }
 

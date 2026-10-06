@@ -18,11 +18,20 @@ from pathlib import Path
 from haute._ast_helpers import (
     _extract_connect_calls,
     _extract_function_bodies,
+    _extract_global_constants_declaration,
     _extract_pipeline_meta,
     _extract_preamble,
     _extract_preserved_blocks,
     _is_pipeline_authored_decorator,
+    _reject_reserved_global_constants_bindings,
 )
+from haute._config_io import parse_global_constants
+from haute._executable_names import (
+    NameViolation,
+    executable_name_violations,
+    format_name_violations,
+)
+from haute._flatten import flatten_graph
 from haute._graph_builders import (
     _build_edges,
     _build_rf_nodes,
@@ -31,6 +40,7 @@ from haute._graph_builders import (
 from haute._graph_shape import validate_pipeline_graph_shape_contracts
 from haute._io import read_user_text
 from haute._logging import get_logger
+from haute._parser_bindings import assert_polars_parameters_bound
 from haute._parser_conservation import (
     assert_parser_structure_conserved,
     missing_submodel_error,
@@ -45,6 +55,8 @@ from haute._parser_submodels import merge_submodels as _merge_submodels
 from haute._parser_submodels import parse_submodel_source as _parse_submodel_source
 from haute._project import get_project_root
 from haute._submodel_paths import resolve_submodel_reference
+from haute._support_code_names import UtilityReader, support_code_violations, utility_reader
+from haute._types import GLOBAL_CONSTANTS_FILE, GlobalConstant
 from haute.errors import ConfigError, ParseError
 from haute.graph_utils import PipelineGraph
 
@@ -79,6 +91,63 @@ def _format_load_error_warning(labels: list[str]) -> str | None:
         f"Config files could not be loaded for: {names}{suffix}. "
         "These configs will not be overwritten on save."
     )
+
+
+def load_declared_global_constants(
+    base_dir: Path | None,
+    *,
+    read_bytes: Callable[[Path], bytes] | None = None,
+) -> tuple[list[GlobalConstant], str | None]:
+    """Load the global constants file a pipeline constructor names.
+
+    Returns the constants, or no constants and why the file could not be
+    loaded: a declared file that is missing, unreadable or invalid never fails
+    the parse. *read_bytes* lets editor recovery read the file through the
+    same capture its revision hashes.
+    """
+    if base_dir is None:
+        return [], (
+            f"{GLOBAL_CONSTANTS_FILE} cannot be located: the pipeline source has no folder."
+        )
+    from haute._sandbox import contained_path
+    from haute.errors import InvalidPathError, PathOutsideProjectError
+
+    try:
+        path = contained_path(base_dir, GLOBAL_CONSTANTS_FILE)
+    except (PathOutsideProjectError, InvalidPathError):
+        return [], (
+            f"{GLOBAL_CONSTANTS_FILE} resolves outside the pipeline folder, so it can be neither "
+            "read nor saved. Replace the link with a file inside the project."
+        )
+    try:
+        raw = read_bytes(path) if read_bytes is not None else path.read_bytes()
+    except FileNotFoundError:
+        return [], (
+            f"{GLOBAL_CONSTANTS_FILE} is named by the pipeline constructor but does not exist."
+        )
+    except OSError as exc:
+        return [], f"{GLOBAL_CONSTANTS_FILE} could not be read: {exc}"
+    try:
+        return parse_global_constants(raw), None
+    except ConfigError as exc:
+        return [], str(exc)
+
+
+def _graph_warning(load_error_labels: list[str], global_constants_error: str | None) -> str | None:
+    parts = [
+        part
+        for part in (
+            _format_load_error_warning(load_error_labels),
+            (
+                f"Global constants could not be loaded: {global_constants_error} "
+                "The file will not be overwritten on save."
+                if global_constants_error
+                else None
+            ),
+        )
+        if part
+    ]
+    return " ".join(parts) or None
 
 
 # ---------------------------------------------------------------------------
@@ -138,8 +207,47 @@ def parse_pipeline_source(
     _base_dir: Path | None = None,
     _submodel_base_dir: Path | None = None,
     _read_submodel_source: Callable[[Path], str] | None = None,
+    _read_global_constants_bytes: Callable[[Path], bytes] | None = None,
 ) -> PipelineGraph:
-    """Parse pipeline source code and return a PipelineGraph.
+    """Parse pipeline source code strictly, refusing any executable-name violation.
+
+    The arguments are :func:`parse_pipeline_source_with_name_violations`'s.
+    ``haute run``, deploy and codegen's post-save parse use this form, so a
+    file whose names its own module cannot run is refused before anything runs.
+    """
+    graph, violations = parse_pipeline_source_with_name_violations(
+        source,
+        source_file,
+        flatten=flatten,
+        _base_dir=_base_dir,
+        _submodel_base_dir=_submodel_base_dir,
+        _read_submodel_source=_read_submodel_source,
+        _read_global_constants_bytes=_read_global_constants_bytes,
+    )
+    if violations:
+        raise ParseError(format_name_violations(violations), source_file=source_file or None)
+    return graph
+
+
+def parse_pipeline_source_with_name_violations(
+    source: str,
+    source_file: str = "",
+    *,
+    flatten: bool = False,
+    _base_dir: Path | None = None,
+    _submodel_base_dir: Path | None = None,
+    _read_submodel_source: Callable[[Path], str] | None = None,
+    _read_global_constants_bytes: Callable[[Path], bytes] | None = None,
+    _read_utility_source: UtilityReader | None = None,
+) -> tuple[PipelineGraph, list[NameViolation]]:
+    """Parse pipeline source code and return a PipelineGraph with its name violations.
+
+    Structural name collisions, where two entries would collapse into one
+    graph id (two functions of one name in a file, two occurrences of one
+    name, an occurrence named like a root node), still raise. Every other
+    executable-name violation (:mod:`haute._executable_names`) is collected
+    after the graph is built and returned beside it, so the editor can load
+    the file editable and let the user rename.
 
     Args:
         flatten: If True, dissolve submodels into flat graph.
@@ -150,6 +258,8 @@ def parse_pipeline_source(
             file. Editor recovery injects its first-read byte capture here so
             one load never pairs parsed child content with different bytes
             than its revision authenticates. Defaults to ``read_user_text``.
+        _read_global_constants_bytes: The same override for the global
+            constants file the constructor names. Defaults to reading it.
     """
     if not source_file and _base_dir is not None:
         source_file = str((_base_dir / "__source__.py").resolve())
@@ -167,6 +277,13 @@ def parse_pipeline_source(
 
     # Pipeline metadata
     pipeline_name, pipeline_desc = _extract_pipeline_meta(tree)
+    declares_global_constants = _extract_global_constants_declaration(tree, receiver="pipeline")
+    _reject_reserved_global_constants_bindings(tree, receiver="pipeline")
+    global_constants, global_constants_error = (
+        load_declared_global_constants(_base_dir, read_bytes=_read_global_constants_bytes)
+        if declares_global_constants
+        else ([], None)
+    )
 
     # Find @pipeline.<type> decorated functions
     func_bodies = _extract_function_bodies(source, tree=tree)
@@ -194,11 +311,17 @@ def parse_pipeline_source(
         pipeline_description=pipeline_desc,
         preamble=preamble,
         preserved_blocks=preserved_blocks,
+        global_constants=global_constants,
+        global_constants_error=global_constants_error,
         source_file=source_file,
-        warning=_format_load_error_warning(load_error_labels),
+        warning=_graph_warning(load_error_labels, global_constants_error),
     )
+    graph._parser_global_constants_declared = declares_global_constants
     graph._parser_parameter_names = {
-        str(node["func_name"]): [str(name) for name in node.get("param_names", ())]
+        str(node["func_name"]): [str(name) for name in node["param_names"]] for node in raw_nodes
+    }
+    graph._parser_edge_parameter_names = {
+        str(node["func_name"]): [str(name) for name in node["edge_param_names"]]
         for node in raw_nodes
     }
 
@@ -208,8 +331,8 @@ def parse_pipeline_source(
     submodel_base_dir = _submodel_base_dir or _base_dir
     submodel_graphs: dict[str, PipelineGraph] = {}
     submodel_files: dict[str, str] = {}
-    submodel_instance_paths: list[str] | None = None
-    submodel_aliases: set[str] = set()
+    submodel_occurrence_paths: list[str] = []
+    submodel_names: set[str] = set()
     if registrations:
         if submodel_base_dir is None:
             raise ParseError(
@@ -258,28 +381,13 @@ def parse_pipeline_source(
                 existing[3].append(registration)
 
         definition_sources: dict[str, str] = {}
+        registration_definitions: dict[str, str] = {}
         for source_key, (
             rel_path,
             sm_filepath,
             sm_base_dir,
-            source_registrations,
+            _source_registrations,
         ) in by_source.items():
-            definition_ids = {registration.definition_id for registration in source_registrations}
-            if len(definition_ids) != 1:
-                raise ParseError(
-                    "One resolved submodel file is registered with conflicting definition ids.",
-                    source_file=str(sm_filepath),
-                    definition_ids=sorted(definition_ids),
-                )
-            definition_id = next(iter(definition_ids))
-            previous_source = definition_sources.get(definition_id)
-            if previous_source is not None and previous_source != source_key:
-                raise ParseError(
-                    "One submodel definition id resolves to multiple files.",
-                    definition_id=definition_id,
-                    source_files=[previous_source, source_key],
-                )
-            definition_sources[definition_id] = source_key
             child_source = (
                 _read_submodel_source(sm_filepath)
                 if _read_submodel_source is not None
@@ -290,35 +398,69 @@ def parse_pipeline_source(
                 source_file=str(sm_filepath),
                 _base_dir=sm_base_dir,
             )
+            definition_id = child_graph._parser_definition_id
+            if definition_id is None:
+                raise ParseError(
+                    "Reusable submodel definitions must declare a definition id.",
+                    source_file=str(sm_filepath),
+                )
+            previous_source = definition_sources.get(definition_id)
+            if previous_source is not None and previous_source != source_key:
+                raise ParseError(
+                    "One submodel definition id resolves to multiple files.",
+                    definition_id=definition_id,
+                    source_files=[previous_source, source_key],
+                )
+            definition_sources[definition_id] = source_key
             submodel_graphs[definition_id] = child_graph
             submodel_files[definition_id] = rel_path
+            for reg in _source_registrations:
+                registration_definitions[reg.path] = definition_id
 
-        submodel_instance_paths = list(submodel_paths)
-        submodel_aliases = {registration.alias for registration in registrations}
+        submodel_occurrence_paths = list(submodel_paths)
+        submodel_names = {registration.name for registration in registrations}
+        # Names are checked on the hierarchical graph, where each node is one
+        # authored definition; flattening (below) copies a definition's
+        # children once per occurrence.
         graph = _merge_submodels(
             graph,
             submodel_graphs,
             submodel_files,
             explicit_connects,
-            flatten=flatten,
+            flatten=False,
             registrations=registrations,
+            registration_definitions=registration_definitions,
         )
+        # The merge rebuilds the graph from its dump, which holds no private state.
+        graph._parser_global_constants_declared = declares_global_constants
     assert_parser_structure_conserved(
         raw_nodes=raw_nodes,
         explicit_connects=explicit_connects,
         root_nodes=rf_nodes,
         root_edges=edges,
         submodel_paths=submodel_paths,
-        submodel_graphs=submodel_graphs,
-        submodel_files=submodel_files,
-        submodel_instance_paths=submodel_instance_paths,
-        submodel_aliases=submodel_aliases,
+        submodel_occurrence_paths=submodel_occurrence_paths,
+        submodel_aliases=submodel_names,
     )
+    assert_polars_parameters_bound(graph, raw_nodes)
 
     validate_pipeline_graph_shape_contracts(
         graph,
         graph_label=graph.pipeline_name or source_file or "pipeline",
     )
+    name_violations = executable_name_violations(graph)
+    if _read_utility_source is None and _base_dir is not None:
+        # Support code is checked against the utility files the executor would
+        # import: the pipeline directory's, then the project's.
+        utility_dirs = [_base_dir]
+        if _submodel_base_dir is not None and _submodel_base_dir != _base_dir:
+            utility_dirs.append(_submodel_base_dir)
+        _read_utility_source = utility_reader(*utility_dirs)
+    if _read_utility_source is not None:
+        name_violations += support_code_violations(graph, _read_utility_source)
+    if flatten and graph.submodels:
+        graph = flatten_graph(graph)
+        graph._parser_global_constants_declared = declares_global_constants
 
     logger.info(
         "pipeline_parsed",
@@ -327,4 +469,4 @@ def parse_pipeline_source(
         edge_count=len(graph.edges),
         pipeline_name=graph.pipeline_name,
     )
-    return graph
+    return graph, name_violations

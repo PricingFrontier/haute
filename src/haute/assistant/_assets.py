@@ -127,27 +127,29 @@ def _examples_root() -> Traversable:
     return _asset_root().joinpath(_EXAMPLES_DIR)
 
 
+# Examples that were removed, and the bundle that replaces each. A request for
+# one is refused with the replacement named rather than as an unknown name.
+_REMOVED_EXAMPLES: dict[str, str] = {"joined_reference": "reference_join"}
+
+
 @cache
 def _example_resources() -> tuple[tuple[str, Traversable], ...]:
-    """Return all exemplar resources in stable, source-file order."""
+    """Return every teaching bundle's pipeline source, in stable name order.
 
-    examples_root = _examples_root()
-    legacy_examples = tuple(
-        sorted(
-            (
-                Path(resource.name).stem,
-                resource,
-            )
-            for resource in examples_root.iterdir()
-            if resource.is_file() and resource.name.endswith(".py")
+    A bundle whose manifest sets ``teaching: false`` is a test fixture and is
+    never offered to the model.
+    """
+
+    examples = tuple(
+        (
+            str(manifest["id"]),
+            _examples_root()
+            .joinpath(str(manifest["id"]))
+            .joinpath(*_safe_relative_path(manifest["source"]).split("/")),
         )
+        for manifest in example_bundle_manifests()
+        if manifest["teaching"] is True
     )
-    bundles = tuple(
-        (bundle.name, bundle.joinpath("pipeline.py"))
-        for bundle in examples_root.iterdir()
-        if bundle.is_dir() and bundle.joinpath("manifest.json").is_file()
-    )
-    examples = tuple(sorted((*legacy_examples, *bundles)))
     if not examples:
         raise RuntimeError("No assistant exemplar pipeline assets were found.")
     return examples
@@ -189,12 +191,6 @@ def _module_notes(source: str, *, resource_name: str) -> str:
     return notes
 
 
-def _resource_for_name(name: str) -> Traversable | None:
-    """Find an exemplar by its filename stem."""
-
-    return dict(_example_resources()).get(name)
-
-
 def _bundle_root(name: str) -> Traversable | None:
     candidate = _examples_root().joinpath(name)
     return (
@@ -224,6 +220,7 @@ def _read_bundle_manifest(bundle: Traversable) -> dict[str, object]:
         "source",
         "assertion_tier",
         "review_class",
+        "teaching",
         "resources",
     }
     if (
@@ -242,6 +239,7 @@ def _read_bundle_manifest(bundle: Traversable) -> dict[str, object]:
         or not manifest["summary"].strip()
         or manifest["assertion_tier"] not in _ASSERTION_TIERS
         or manifest["review_class"] not in _REVIEW_CLASSES
+        or not isinstance(manifest["teaching"], bool)
         or not isinstance(manifest["resources"], list)
     ):
         raise RuntimeError(
@@ -531,7 +529,6 @@ def _execute_fast_bundle(bundle: Traversable, manifest: dict[str, object]) -> No
     from haute._input_providers import build_input_snapshot
     from haute._sandbox import _get_project_root, set_project_root
     from haute._source_cache import SourceCacheStore
-    from haute.execution import invalidate_dataframe_execution_cache
     from haute.executor import _preview_cache, execute_graph
     from haute.graph_utils import flatten_graph
     from haute.routes._helpers import parse_pipeline_to_graph
@@ -544,11 +541,10 @@ def _execute_fast_bundle(bundle: Traversable, manifest: dict[str, object]) -> No
         graph = flatten_graph(parse_pipeline_to_graph(destination / str(manifest["source"])))
         original_root = _get_project_root()
         try:
-            # Bundles are independent installed projects. Process-wide preview
-            # and dataframe caches must not carry a same-shaped prior bundle's
+            # Bundles are independent installed projects. The process-wide
+            # preview cache must not carry a same-shaped prior bundle's
             # materialized frames across that project boundary.
             _preview_cache.clear()
-            invalidate_dataframe_execution_cache()
             set_project_root(destination)
             store = SourceCacheStore(destination)
             for node in graph.nodes:
@@ -626,7 +622,6 @@ def _execute_fast_bundle(bundle: Traversable, manifest: dict[str, object]) -> No
                 _verify_fast_dry_run(bundle, destination)
         finally:
             _preview_cache.clear()
-            invalidate_dataframe_execution_cache()
             set_project_root(original_root)
 
 
@@ -711,9 +706,11 @@ def _verify_fast_dry_run(bundle: Traversable, destination: Path) -> None:
         project_root=destination,
         pipeline_root=destination,
         mutations_readiness=lambda _root: (True, None),
-        publish_document_update=lambda _source: "f" * 64,
+        publish_document_update=lambda _source, _change: "f" * 64,
     )
-    plan = service.dry_run("pipeline.py", operations)
+    plan = service.dry_run(
+        "pipeline.py", operations, summary=f"Check example {bundle.name}'s dry-run evidence."
+    ).plan
     if (
         source.read_bytes() != before
         or list(plan.diff.nodes_removed) != removed
@@ -811,7 +808,7 @@ def _load_bundle(bundle: Traversable, manifest: dict[str, object]) -> dict[str, 
             review_class=str(manifest["review_class"]),
         ),
         "narrative": notes,
-        "graph": render_pipeline_graph(graph),
+        "graph": render_pipeline_graph(graph, config_values=True),
     }
 
 
@@ -845,8 +842,23 @@ def example_index() -> list[tuple[str, str]]:
 
 
 def _unknown_example_error(name: str) -> dict[str, object]:
-    """Build the structured error passed back to the model for an unknown name."""
+    """Build the structured error passed back to the model for an unknown name.
 
+    A removed example is refused by name with the bundle that replaces it.
+    """
+
+    replacement = _REMOVED_EXAMPLES.get(name)
+    if replacement is not None:
+        return {
+            "error": {
+                "code": "example_removed",
+                "message": (
+                    f"Assistant example {name!r} was removed; use {replacement!r} instead."
+                ),
+                "name": name,
+                "replacement": replacement,
+            }
+        }
     valid_names = [example_name for example_name, _summary in example_index()]
     message = f"Unknown assistant example {name!r}. Choose one of: {', '.join(valid_names)}."
     return {
@@ -860,44 +872,23 @@ def _unknown_example_error(name: str) -> dict[str, object]:
 
 
 def load_example(name: str) -> dict[str, object]:
-    """Return an exemplar's notes and parser-produced graph rendering.
+    """Return a teaching bundle's notes and parser-produced graph rendering.
 
-    Exemplars are parsed as source files and never imported. The complete
-    example resource tree is materialised together so parser-relative config
-    sidecars work for both filesystem and zip-backed package importers.
+    A test-fixture bundle (``teaching: false``) is refused like an unknown name.
+
+    Bundle sources are parsed, never imported. The bundle's resource tree is
+    materialised together so parser-relative config sidecars work for both
+    filesystem and zip-backed package importers.
     """
 
     bundle = _bundle_root(name)
-    if bundle is not None:
-        manifest = _read_bundle_manifest(bundle)
-        _validate_bundle(bundle, manifest)
-        return _load_bundle(bundle, manifest)
-    resource = _resource_for_name(name)
-    if resource is None:
+    if bundle is None:
         return _unknown_example_error(name)
-
-    source = _read_resource(resource)
-    notes = _module_notes(source, resource_name=resource.name)
-
-    from haute.routes._helpers import parse_pipeline_to_graph
-
-    with TemporaryDirectory(prefix="haute-assistant-example-") as temp_dir:
-        examples_path = Path(temp_dir) / _EXAMPLES_DIR
-        _materialize_resource_tree(_examples_root(), examples_path)
-        graph = parse_pipeline_to_graph(examples_path / resource.name)
-
-    return {
-        "name": name,
-        "attribution": _example_attribution(
-            name=name,
-            version="legacy",
-            summary=notes.splitlines()[0].strip(),
-            assertion_tier="ordinary",
-            review_class="engineering",
-        ),
-        "narrative": notes,
-        "graph": render_pipeline_graph(graph),
-    }
+    manifest = _read_bundle_manifest(bundle)
+    if manifest["teaching"] is not True:
+        return _unknown_example_error(name)
+    _validate_bundle(bundle, manifest)
+    return _load_bundle(bundle, manifest)
 
 
 __all__ = [

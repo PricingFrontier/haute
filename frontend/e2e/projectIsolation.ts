@@ -38,6 +38,42 @@ function runGit(args: string[]): string {
   })
 }
 
+// A test can finish while the backend still completes work that test started
+// (a JSON cache build holds its build-lock file open until it ends), and Windows
+// cannot delete an open file. The scrub is retried until that work releases its
+// files, within a bound that still fails a genuinely stuck project loudly.
+const cleanRetryTimeoutMs = 30_000
+const cleanRetryIntervalMs = 250
+
+// The snapshot store proves its process is alive by holding one marker file open
+// for the whole life of the backend, so no amount of retrying can delete it
+// while the server runs. It carries no data — the generations, slot indexes and
+// analyses beside it are still scrubbed, so each test starts with nothing
+// cached — and the store's own sweep removes a dead owner's marker.
+const cleanExcludes = ["/.haute_cache/inputs/.processes/"]
+
+function sleepSync(milliseconds: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds)
+}
+
+function removeUntrackedFiles(): void {
+  const deadline = Date.now() + cleanRetryTimeoutMs
+  for (;;) {
+    try {
+      runGit(["clean", "-fdx", ...cleanExcludes.flatMap((pattern) => ["-e", pattern])])
+      return
+    } catch (error) {
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `Refusing to start the next e2e test: git clean -fdx still failed after ${cleanRetryTimeoutMs} ms in ${e2eProjectRoot}`,
+          { cause: error },
+        )
+      }
+      sleepSync(cleanRetryIntervalMs)
+    }
+  }
+}
+
 function comparablePath(value: string): string {
   const resolved = resolve(value)
   return process.platform === "win32" ? resolved.toLowerCase() : resolved
@@ -100,7 +136,7 @@ export function resetE2eProject(): void {
     runGit(["tag", "--delete", tag])
   }
 
-  runGit(["clean", "-fdx"])
+  removeUntrackedFiles()
   seedWorkingBranch()
 }
 

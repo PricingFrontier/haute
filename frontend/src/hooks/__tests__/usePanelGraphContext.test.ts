@@ -130,6 +130,22 @@ describe("usePanelGraphContext", () => {
     expect(result.current.edges).toEqual([{ id: "e2", source: "n2", target: "n1" }])
   })
 
+  it("refreshes per-output column suggestions when only a frame schema changes", () => {
+    const node = makeNode("inputs", "Inputs")
+    node.data.nodeType = "submodel"
+    setGraph([node], [makeEdge("e", "inputs", "transform", { sourceHandle: "out__quotes" })])
+    const { result } = renderHook(() => usePanelGraphContext())
+    const initial = result.current
+    const version = useGraphStore.getState().structuralVersion
+    const frames = { out__quotes: [{ name: "premium", dtype: "Float64" }] }
+
+    act(() => useGraphStore.getState().setNodesRaw([{ ...node, data: { ...node.data, _frameColumns: frames } }]))
+
+    expect(result.current.getNode("inputs")?.data._frameColumns).toEqual(frames)
+    expect(result.current).not.toBe(initial)
+    expect(useGraphStore.getState().structuralVersion).toBe(version)
+  })
+
   it("preserves edge handle metadata for role-aware editors", () => {
     setGraph(
       [makeNode("source", "Source"), makeNode("edge_join_1", "Edge Join")],

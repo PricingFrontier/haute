@@ -4,6 +4,11 @@ import "./index.css"
 import App from "./App"
 import { bootstrapHauteSession } from "./api/client"
 import { ErrorBoundary } from "./components/ErrorBoundary"
+import { recordChunkLoadFailures } from "./utils/chunkLoadError"
+
+// Before anything loads lazily: a chunk Vite fails to load then surfaces as a
+// reload offer in the error boundary that catches it.
+recordChunkLoadFailures()
 
 const root = createRoot(document.getElementById("root")!)
 

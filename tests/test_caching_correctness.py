@@ -36,8 +36,7 @@ Mapping/Iterable), empty-string mapping keys, and serialization
 separators.  Post-fix there is exactly ONE encoder —
 ``haute._cache.canonical_json`` — used by every digest site in both
 modules (see ``TestCanonicalJsonEncoder`` / ``TestCanonicalJsonProperties``
-/ ``TestCanonicalEncoderUnification`` here and the policy-fingerprint
-contract tests in ``test_dataframe_execution_cache.py``).  Because the
+/ ``TestCanonicalEncoderUnification`` here).  Because the
 node-config digest bytes changed (compact separators), ``ALGO_VERSION``
 bumped 4 → 5.
 

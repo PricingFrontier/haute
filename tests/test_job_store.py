@@ -775,7 +775,7 @@ class TestJobStoreTTL:
         )
 
         with patch("haute.routes._job_store.logger.warning") as log_warning:
-            JobStore._cleanup_artifact_handles("job-id", handles)  # noqa: SLF001
+            JobStore()._cleanup_artifact_handles("job-id", handles)  # noqa: SLF001
 
         log_warning.assert_called_once()
         assert cleaned == ["later-result"]
@@ -2491,6 +2491,27 @@ class TestJobStoreFactoryAllowList:
         finally:
             get_job_store.cache_clear()
 
+    def test_node_data_prefix_returns_distinct_store(self) -> None:
+        get_job_store.cache_clear()
+        try:
+            node_data = get_job_store("node_data")
+
+            assert node_data is get_job_store("node_data")
+            assert node_data is not get_job_store("explore")
+            assert node_data is not get_job_store("input_cache")
+        finally:
+            get_job_store.cache_clear()
+
+    def test_optimiser_worker_prefix_returns_distinct_store(self) -> None:
+        get_job_store.cache_clear()
+        try:
+            worker = get_job_store("optimiser_worker")
+
+            assert worker is get_job_store("optimiser_worker")
+            assert worker is not get_job_store("optimiser")
+        finally:
+            get_job_store.cache_clear()
+
     def test_unknown_prefix_fails_loudly(self) -> None:
         with pytest.raises(ValueError, match="Unknown JobStore prefix 'pipeline'"):
             get_job_store("pipeline")
@@ -3989,3 +4010,229 @@ class TestScheduleHeavyObjectCleanupRaces:
 
         assert len(timers) == 1
         assert timers[0].started is True
+
+
+# ---------------------------------------------------------------------------
+# Artifact leases
+# ---------------------------------------------------------------------------
+
+
+class TestArtifactLease:
+    """A reader's lease defers an attached artifact's cleanup until it is released."""
+
+    @staticmethod
+    def _leased_job(
+        store: JobStore, tmp_path: Path, kind: str, *, created_at: float | None = None
+    ) -> tuple[str, list[str], Path]:
+        artifact_dir = tmp_path / kind
+        artifact_dir.mkdir()
+        (artifact_dir / "table.parquet").write_bytes(b"table")
+        cleaned: list[str] = []
+
+        def cleaner(handle: dict) -> None:
+            cleaned.append(handle["path"])
+            shutil.rmtree(handle["directory"])
+
+        register_artifact_cleaner(kind, cleaner)
+        job_id = _create_job(
+            store,
+            {
+                "status": "completed",
+                "created_at": time.time() if created_at is None else created_at,
+                "artifact_handles": {
+                    "table": {
+                        "kind": kind,
+                        "version": 1,
+                        "format": "parquet",
+                        "path": str(artifact_dir / "table.parquet"),
+                        "directory": str(artifact_dir),
+                    },
+                    "other": {
+                        "kind": kind,
+                        "version": 1,
+                        "format": "parquet",
+                        "path": str(tmp_path / "other.parquet"),
+                        "directory": str(tmp_path / "other_dir"),
+                    },
+                },
+            },
+        )
+        return job_id, cleaned, artifact_dir
+
+    def test_a_lease_defers_cleanup_across_ttl_expiry(self, tmp_path: Path) -> None:
+        store = JobStore(ttl_seconds=5)
+        job_id, cleaned, artifact_dir = self._leased_job(
+            store, tmp_path, "test_lease_expiry_artifact"
+        )
+
+        with store.lease(job_id, "table") as handle:
+            assert handle["directory"] == str(artifact_dir)
+            with patch("haute.routes._job_store.time.time", return_value=time.time() + 60):
+                assert store.get_job(job_id) is None
+            # Expired and detached, but the file stays until the reader is done.
+            assert artifact_dir.exists()
+            assert cleaned == [str(tmp_path / "other.parquet")]
+        assert not artifact_dir.exists()
+        assert str(artifact_dir / "table.parquet") in cleaned
+
+    def test_cleanup_waits_for_the_last_of_several_leases(self, tmp_path: Path) -> None:
+        store = JobStore()
+        job_id, _cleaned, artifact_dir = self._leased_job(
+            store, tmp_path, "test_lease_nested_artifact"
+        )
+
+        with store.lease(job_id, "table"):
+            with store.lease(job_id, "table"):
+                store.delete_job(job_id)
+            assert artifact_dir.exists()
+        assert not artifact_dir.exists()
+
+    def test_detach_is_deferred_while_leased(self, tmp_path: Path) -> None:
+        store = JobStore()
+        job_id, _cleaned, artifact_dir = self._leased_job(
+            store, tmp_path, "test_lease_detach_artifact"
+        )
+
+        with store.lease(job_id, "table"):
+            assert store.detach_artifact_handle(job_id, "table") is True
+            assert "table" not in store.require_job(job_id)["artifact_handles"]
+            assert artifact_dir.exists()
+        assert not artifact_dir.exists()
+
+    def test_an_unleased_handle_is_cleaned_at_once(self, tmp_path: Path) -> None:
+        store = JobStore()
+        job_id, _cleaned, artifact_dir = self._leased_job(
+            store, tmp_path, "test_lease_unleased_artifact"
+        )
+
+        with store.lease(job_id, "other"):
+            store.delete_job(job_id)
+            assert not artifact_dir.exists()
+
+    def test_a_lease_on_a_gone_job_or_handle_raises(self, tmp_path: Path) -> None:
+        from haute.routes._job_store import ArtifactHandleUnavailableError
+
+        store = JobStore()
+        job_id, _cleaned, _artifact_dir = self._leased_job(
+            store, tmp_path, "test_lease_unavailable_artifact"
+        )
+
+        with pytest.raises(ArtifactHandleUnavailableError, match="no 'missing' artifact"):
+            with store.lease(job_id, "missing"):
+                pass
+        store.delete_job(job_id)
+        with pytest.raises(ArtifactHandleUnavailableError, match="no longer exists"):
+            with store.lease(job_id, "table"):
+                pass
+
+    def test_a_lease_is_released_when_the_reader_raises(self, tmp_path: Path) -> None:
+        store = JobStore()
+        job_id, _cleaned, artifact_dir = self._leased_job(
+            store, tmp_path, "test_lease_raising_artifact"
+        )
+
+        with pytest.raises(ValueError, match="reader failed"):
+            with store.lease(job_id, "table"):
+                store.delete_job(job_id)
+                raise ValueError("reader failed")
+        assert not artifact_dir.exists()
+
+    def test_released_detached_handles_wait_for_a_reader(self, tmp_path: Path) -> None:
+        """A handle a caller removed through its own update is cleaned only after its lease."""
+        store = JobStore()
+        job_id, cleaned, artifact_dir = self._leased_job(
+            store, tmp_path, "test_lease_released_detached_artifact"
+        )
+        handles = dict(store.require_job(job_id)["artifact_handles"])
+
+        with store.lease(job_id, "table"):
+            store.atomic_update(job_id, {"artifact_handles": {}}, expected_status="completed")
+            store.release_detached_artifact_handles(job_id, [handles["table"], handles["other"]])
+            # The unleased handle goes at once; the leased one waits for its reader.
+            assert cleaned == [str(tmp_path / "other.parquet")]
+            assert artifact_dir.exists()
+        assert not artifact_dir.exists()
+        assert str(artifact_dir / "table.parquet") in cleaned
+
+
+class _OwnedProcess:
+    """A heavy value that owns something beyond memory; records each release."""
+
+    def __init__(self) -> None:
+        self.releases = 0
+
+    def release(self) -> None:
+        self.releases += 1
+
+
+class TestHeavyResourceRelease:
+    """A heavy value that owns a process is released on every path that drops it."""
+
+    def _completed_with_session(self, store: JobStore) -> tuple[str, _OwnedProcess]:
+        owned = _OwnedProcess()
+        job_id = _create_job(store, {"status": "completed", "solver_session": owned})
+        return job_id, owned
+
+    def test_clearing_result_data_releases_it(self) -> None:
+        store = JobStore()
+        job_id, owned = self._completed_with_session(store)
+        store.clear_result_data(job_id, keys=("solver_session",))
+        assert owned.releases == 1
+        assert "solver_session" not in store.require_job(job_id)
+
+    def test_deleting_the_job_releases_it(self) -> None:
+        store = JobStore()
+        job_id, owned = self._completed_with_session(store)
+        store.delete_job(job_id)
+        assert owned.releases == 1
+
+    def test_heavy_expiry_releases_it(self) -> None:
+        timers: list = []
+        store = JobStore(
+            heavy_object_ttl_seconds=1,
+            heavy_object_timer_factory=_manual_timer_factory(timers),
+        )
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            job_id, owned = self._completed_with_session(store)
+        with patch("haute.routes._job_store.time.time", return_value=102.0):
+            timers[-1].fire()
+            job = store.require_job(job_id)
+        assert owned.releases == 1
+        assert "solver_session" not in job
+
+    def test_correcting_a_completed_job_to_error_releases_it(self) -> None:
+        store = JobStore()
+        job_id, owned = self._completed_with_session(store)
+        JobLifecycle(store).transition(
+            job_id, to="error", message="corrected", expected_status="completed"
+        )
+        assert owned.releases == 1
+        assert "solver_session" not in store.require_job(job_id)
+
+    def test_a_running_job_that_fails_releases_it_but_plain_heavy_values_stay(self) -> None:
+        store = JobStore()
+        owned = _OwnedProcess()
+        plain = object()
+        job_id = _create_job(store, {"status": "running"})
+        store.update_job(job_id, solver_session=owned, solver=plain)
+        JobLifecycle(store).transition(job_id, to="cancelled")
+        job = store.require_job(job_id)
+        assert owned.releases == 1
+        assert "solver_session" not in job
+        assert job["solver"] is plain
+
+    def test_clearing_all_releases_it(self) -> None:
+        store = JobStore()
+        _job_id, owned = self._completed_with_session(store)
+        store.clear_all()
+        assert owned.releases == 1
+
+    def test_a_failing_release_never_fails_the_store_operation(self) -> None:
+        class Broken:
+            def release(self) -> None:
+                raise RuntimeError("could not end the process")
+
+        store = JobStore()
+        job_id = _create_job(store, {"status": "completed", "solver_session": Broken()})
+        store.clear_result_data(job_id, keys=("solver_session",))
+        assert "solver_session" not in store.require_job(job_id)

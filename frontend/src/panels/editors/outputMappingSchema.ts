@@ -126,7 +126,7 @@ export function validateOutputPath(path: string): string | null {
     return "Output path must start with the root array '$[:]', e.g. $[:].field."
   }
   if (core.startsWith("unsupported output-path selector")) {
-    return "Unsupported selector — only '.name' and the whole-array '[:]' are accepted."
+    return "Unsupported selector - only '.name' and the whole-array '[:]' are accepted."
   }
   if (core.startsWith("output path must name a leaf field")) {
     return "Output path must name a leaf field, not the bare root array."

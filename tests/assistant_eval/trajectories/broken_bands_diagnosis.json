@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "broken_bands_diagnosis",
+  "case": "broken_bands_diagnosis",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "data",
+              "tool": "inspect_node",
+              "arguments": {
+                "node": "vehicle_bands",
+                "parts": [
+                  "data"
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "vehicle_bands has nothing to band because rating_features fails before it: step 2 (logic) reads vehicle_year, which quotes does not have (a ColumnNotFoundError). That one failure is the only error; vehicle_bands is stopped by it rather than failing on its own. I changed nothing.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

@@ -26,7 +26,7 @@
  *     useSubmodelNavigation, useKeyboardShortcuts, useBackgroundJobs,
  *     useNodeHandlers, useEdgeHandlers — all real).
  *   - Sub-components (Toolbar, NodePalette, NodePanel, DataPreview,
- *     TracePanel, UtilityPanel, ImportsPanel, GitPanel, Toast — all real).
+ *     TracePanel, UtilityPanel, GlobalConstantsPanel, GitPanel, Toast — all real).
  *
  * The tradeoff: these tests are slower than the stub-heavy unit tests they
  * replace, but they cover integration — hook wiring, store plumbing, prop
@@ -35,7 +35,7 @@
  */
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from "vitest"
 import { render, screen, cleanup, fireEvent, waitFor, within, act } from "@testing-library/react"
-import { makePipelineEditorDocument } from "../testSupport/pipelineDocumentFixture"
+import { makeLoadedPipeline, makePipelineEditorDocument } from "../testSupport/pipelineDocumentFixture"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -46,7 +46,7 @@ import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 
 vi.mock("../api/client", async () => {
   const actual = await vi.importActual<typeof import("../api/client")>("../api/client")
-  const { makePipelineEditorDocument } = await import("../testSupport/pipelineDocumentFixture")
+  const { makeLoadedPipeline } = await import("../testSupport/pipelineDocumentFixture")
   return {
     // Preserve real non-network exports so production `instanceof` checks and
     // local-session event wiring keep their normal behaviour. Only network
@@ -60,24 +60,35 @@ vi.mock("../api/client", async () => {
     notifyHauteSessionExpired: actual.notifyHauteSessionExpired,
     bootstrapHauteSession: vi.fn(() => Promise.resolve()),
     checkHauteSession: vi.fn(() => Promise.resolve({ ok: true })),
+    // The preview status bar reads the snapshot store's size.
+    fetchCacheUsage: vi.fn(() => Promise.resolve({ schema_version: 1, total_bytes: 0, automatic_bytes: 0, automatic_budget_bytes: 1 })),
     // Pipeline endpoints
-    loadPipeline: vi.fn(() => Promise.resolve(makePipelineEditorDocument({ nodes: [], edges: [], preamble: "", preserved_blocks: [], source_revision: "revision-test" }))),
+    renderPolarsSteps: vi.fn(async ({ steps }: { steps: Array<{ kind: string; input?: string }> }) => ({
+      ok: true,
+      code: steps.map((step) => (step.kind === "source" ? `df = ${step.input}` : "df = df")).join("\n"),
+      step_lines: steps.map((_, index) => [index + 1, index + 1]),
+    })),
+    loadPipeline: vi.fn(() => Promise.resolve(makeLoadedPipeline({ nodes: [], edges: [], preamble: "", preserved_blocks: [], source_revision: "revision-test" }))),
     resolveEditorNodeIdentities: vi.fn(async (payload: {
       nodes: Array<{
         node_id: string
         label: string
         node_type: string
-        submodel_alias: string | null
         source_handles: string[]
+        alias?: string
       }>
     }) => ({
       identities: payload.nodes.map((node) => {
-        const functionName = node.label.trim().replaceAll(" ", "_").replaceAll("-", "_")
+        const identityName = (label: string) => label.trim().replaceAll(" ", "_").replaceAll("-", "_")
+        const functionName = identityName(node.label)
         const special = node.node_type === "apiInput"
           || node.node_type === "submodel"
           || node.node_type === "submodelPort"
         return {
           node_id: node.node_id,
+          label: node.label,
+          alias: node.alias ?? null,
+          collision: null,
           function_name: functionName,
           config_reference: node.node_type === "submodel" || node.node_type === "submodelPort"
             ? null
@@ -85,16 +96,14 @@ vi.mock("../api/client", async () => {
           default_input_name: special ? null : functionName,
           source_handle_input_names: Object.fromEntries(node.source_handles.map((handle) => [
             handle,
-            node.node_type === "submodel"
-              ? `${node.submodel_alias}__${handle.slice("out__".length)}`
-              : handle,
+            handle,
           ])),
         }
       }),
     })),
+    previewInputs: vi.fn(async () => ({ input_node_ids: [] as string[] })),
     previewNode: vi.fn(() => Promise.resolve({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })),
     previewRecoveryNode: vi.fn(() => Promise.resolve({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })),
-    dryRunRemoveUnavailableNode: vi.fn(() => Promise.resolve({})),
     applyRemoveUnavailableNode: vi.fn(() => Promise.resolve({})),
     savePipeline: vi.fn(() => Promise.resolve({ file: "pipeline.py", pipeline_name: "main" })),
     traceCell: vi.fn(() => Promise.resolve({ status: "ok" })),
@@ -105,8 +114,19 @@ vi.mock("../api/client", async () => {
     dissolveSubmodel: vi.fn(() => Promise.resolve({})),
     // Schema
     fetchSchema: vi.fn(() => Promise.resolve({ columns: [] })),
-    // MLflow — checkMlflow is invoked on startup by useSettingsStore.
-    checkMlflow: vi.fn(() => Promise.resolve({ mlflow_installed: false })),
+    // MLflow — getMlflowDestinations is invoked on startup by useSettingsStore.
+    // Inlined rather than shared with the `beforeEach` fixture below: the mock
+    // factory is hoisted above every module-level binding.
+    getMlflowDestinations: vi.fn(() => Promise.resolve({
+      mlflow_installed: true,
+      mlflow_importable: true,
+      destinations: [
+        { key: "databricks", configured: false, destination: "", config_source: "", detail: "", probed: false, ok: false, category: "" },
+        { key: "server", configured: false, destination: "", config_source: "", detail: "", probed: false, ok: false, category: "" },
+        { key: "local", configured: true, destination: "C:/proj/mlruns", config_source: "default", detail: "", probed: false, ok: false, category: "" },
+      ],
+      detail: "",
+    })),
     getTrainStatus: vi.fn(() => Promise.resolve({})),
     trainModel: vi.fn(() => Promise.resolve({})),
     estimateTrainingRam: vi.fn(() => Promise.resolve({})),
@@ -120,21 +140,23 @@ vi.mock("../api/client", async () => {
     logOptimiserToMlflow: vi.fn(() => Promise.resolve({})),
     selectFrontierPoint: vi.fn(() => Promise.resolve({})),
     // Explore
-    runExplore: vi.fn(() => Promise.resolve({ status: "started", job_id: "explore-job-1", cached: false, message: "started" })),
-    getExploreCacheSnapshot: vi.fn(() => Promise.resolve({ state: "missing", message: "No cache", result: null })),
-    getExploreStatus: vi.fn(() => Promise.resolve({ status: "running", progress: 0, message: "running", result: null })),
-    cancelExplore: vi.fn(() => Promise.resolve({ status: "cancelled", progress: 1, message: "cancelled", result: null })),
+    getNodeDataPoint: vi.fn(() => Promise.resolve(missingPoint())),
+    runNodeData: vi.fn(() => Promise.resolve({ status: "started", job_id: "node-data-1", cached: false, message: "Caching started", point: missingPoint() })),
+    getNodeDataStatus: vi.fn(() => Promise.resolve({ status: "running", progress: 0, message: "Caching data" })),
+    cancelNodeData: vi.fn(() => Promise.resolve({ status: "cancelled", progress: 1, message: "cancelled" })),
+    clearNodeData: vi.fn(() => Promise.resolve({ status: "cleared", point: missingPoint() })),
+    getNodeDataProfile: vi.fn(() => Promise.resolve({ status: "cache_required", message: "Cache it first", point: missingPoint() })),
     // Databricks
     getWarehouses: vi.fn(() => Promise.resolve({ warehouses: [] })),
     getCatalogs: vi.fn(() => Promise.resolve({ catalogs: [] })),
     getSchemas: vi.fn(() => Promise.resolve({ schemas: [] })),
     getTables: vi.fn(() => Promise.resolve({ tables: [] })),
-    // JSON cache
-    buildJsonCache: vi.fn(() => Promise.resolve({})),
-    getJsonCacheProgress: vi.fn(() => Promise.resolve({})),
-    getJsonCacheStatus: vi.fn(() => Promise.resolve({})),
-    getJsonCacheStatusForSchema: vi.fn(() => Promise.resolve({})),
-    deleteJsonCache: vi.fn(() => Promise.resolve({ cached: false, data_path: "" })),
+    // Input snapshots (a structured API Input's tables)
+    getInputCacheStatus: vi.fn(() => Promise.resolve({ schema_version: 1, identity_digest: "digest", state: "missing", freshness: "unknown", generation: null, tables: [] })),
+    buildInputCache: vi.fn(() => Promise.resolve({})),
+    getInputCacheJob: vi.fn(() => Promise.resolve({})),
+    cancelInputCacheJob: vi.fn(() => Promise.resolve({})),
+    clearInputCache: vi.fn(() => Promise.resolve({ schema_version: 1, identity_digest: "digest", state: "missing", freshness: "unknown", generation: null, tables: [] })),
     // MLflow browse
     getExperiments: vi.fn(() => Promise.resolve([])),
     getRuns: vi.fn(() => Promise.resolve([])),
@@ -241,11 +263,13 @@ class MockWebSocket {
 import App from "../App"
 import useUIStore from "../stores/useUIStore"
 import useGraphStore from "../stores/useGraphStore"
+import { appEdge } from "../utils/flowElements"
 import useGitStore from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import * as api from "../api/client"
+import { makeGitWorkingBranch, makeTrainResult } from "../test-utils/factories"
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Test helpers
@@ -263,8 +287,12 @@ function resetAllStores(): void {
   useUIStore.setState({
     paletteOpen: true,
     utilityOpen: false,
-    importsOpen: false,
+    constantsOpen: false,
     gitOpen: false,
+    assistantOpen: false,
+    assistantTurn: null,
+    assistantUnseenOutcome: false,
+    assistantPreviewErrorNodeId: null,
     shortcutsOpen: false,
     submodelDialog: null,
     renameDialog: null,
@@ -275,6 +303,7 @@ function resetAllStores(): void {
     explorePreviewPanes: {},
     hoveredNodeId: null,
     nodeSearchOpen: false,
+    calculationMode: "automatic",
   })
   useGitStore.setState({
     status: null,
@@ -291,18 +320,15 @@ function resetAllStores(): void {
     solveJobs: {},
     trainResults: {},
     trainJobs: {},
-    exploreResults: {},
-    exploreJobs: {},
+    expiredTrainJobs: {},
   })
   useSettingsStore.setState({
     rowLimit: 100,
     mlflow: {
       status: "pending",
-      backend: "",
-      host: "",
       installed: null,
       importable: null,
-      trackingConfigured: null,
+      destinations: [],
       detail: "",
     },
     _mlflowFetching: false,
@@ -314,6 +340,42 @@ function resetAllStores(): void {
 }
 
 /** Make a React Flow node with the minimum valid shape + a readable label. */
+function missingPoint(nodeId = "explore_1") {
+  return {
+    consumer_node_id: nodeId,
+    point: { producer_node_id: "source_0", port_label: null },
+    slot_key: "source_0||live",
+    kind: "node_output" as const,
+    state: "missing" as const,
+    demand: "all" as const,
+    data_version: null,
+    generation: null,
+    job: null,
+    reads_directly: false,
+  }
+}
+
+function currentPoint(nodeId = "explore_1") {
+  return {
+    ...missingPoint(nodeId),
+    state: "current" as const,
+    data_version: "gen-1",
+    row_count: 1,
+    size_bytes: 128,
+    retention: "pinned" as const,
+    generation: {
+      generation_id: "gen-1",
+      columns: "all" as const,
+      row_count: 1,
+      column_count: 1,
+      size_bytes: 128,
+      retention: "pinned" as const,
+      fresh: true,
+      created_at: 1,
+    },
+  }
+}
+
 function makeNode(id: string, label: string, nodeType = "polars"): { id: string; type: string; position: { x: number; y: number }; data: Record<string, unknown> } {
   const functionName = label.trim().replaceAll(" ", "_").replaceAll("-", "_")
   const special = nodeType === "apiInput" || nodeType === "submodel" || nodeType === "submodelPort"
@@ -457,27 +519,31 @@ beforeEach(() => {
   MockWebSocket.instances = []
 
   // Reset all api mocks to their default resolution (empty graph, success).
-  vi.mocked(api.loadPipeline).mockReset().mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [], preamble: "", preserved_blocks: [], source_revision: "revision-test" }))
+  vi.mocked(api.loadPipeline).mockReset().mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preamble: "", preserved_blocks: [], source_revision: "revision-test" }))
   vi.mocked(api.savePipeline).mockReset().mockResolvedValue({ file: "pipeline.py", pipeline_name: "main", source_revision: "revision-test" })
   vi.mocked(api.previewNode).mockReset().mockResolvedValue({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })
   vi.mocked(api.previewRecoveryNode).mockReset().mockResolvedValue({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })
-  vi.mocked(api.dryRunRemoveUnavailableNode).mockReset()
   vi.mocked(api.applyRemoveUnavailableNode).mockReset()
-  vi.mocked(api.runExplore).mockReset().mockResolvedValue({ status: "started", job_id: "explore-job-1", cached: false, message: "started" })
-  vi.mocked(api.getExploreCacheSnapshot).mockReset().mockResolvedValue({ state: "missing", message: "No cache", result: null })
-  vi.mocked(api.getExploreStatus).mockReset().mockResolvedValue({ status: "running", progress: 0, message: "running", result: null })
-  vi.mocked(api.cancelExplore).mockReset().mockResolvedValue({ status: "cancelled", progress: 1, message: "cancelled", result: null })
-  vi.mocked(api.checkMlflow).mockReset().mockResolvedValue({
-    mlflow_installed: false,
-    mlflow_importable: false,
-    tracking_configured: false,
-    backend: "",
-    databricks_host: "",
+  vi.mocked(api.getNodeDataPoint).mockReset().mockResolvedValue(missingPoint())
+  vi.mocked(api.runNodeData).mockReset().mockResolvedValue({ status: "started", job_id: "node-data-1", cached: false, message: "Caching started", point: missingPoint() })
+  vi.mocked(api.getNodeDataStatus).mockReset().mockResolvedValue({ status: "running", progress: 0, message: "Caching data" })
+  vi.mocked(api.cancelNodeData).mockReset().mockResolvedValue({ status: "cancelled", progress: 1, message: "cancelled" })
+  vi.mocked(api.clearNodeData).mockReset().mockResolvedValue({ status: "cleared", point: missingPoint() })
+  vi.mocked(api.getNodeDataProfile).mockReset().mockResolvedValue({ status: "cache_required", job_id: null, message: "Cache it first", result: null, point: missingPoint() })
+  vi.mocked(api.getMlflowDestinations).mockReset().mockResolvedValue({
+    mlflow_installed: true,
+    mlflow_importable: true,
+    destinations: [
+      { key: "databricks", configured: false, destination: "", config_source: "", detail: "", probed: false, ok: false, category: "" },
+      { key: "server", configured: false, destination: "", config_source: "", detail: "", probed: false, ok: false, category: "" },
+      { key: "local", configured: true, destination: "C:/proj/mlruns", config_source: "default", detail: "", probed: false, ok: false, category: "" },
+    ],
+    detail: "",
   })
   vi.mocked(api.listUtilityFiles).mockReset().mockResolvedValue({ files: [] })
   // Default to a healthy clone so the startup modal stays closed; tests that
   // need unset/divergent override with mockResolvedValue inside the test.
-  vi.mocked(api.getWorkingBranch).mockReset().mockResolvedValue({ working_branch: "dev", state: "ready", errors: [], current_branch: "dev-save", last_save_sha: "abc1234def", eligible_branches: ["dev"], identity_set: true, user_name: "Test User", user_email: "test@example.com" })
+  vi.mocked(api.getWorkingBranch).mockReset().mockResolvedValue(makeGitWorkingBranch({ working_branch: "dev", state: "ready", errors: [], current_branch: "dev-save", last_save_sha: "abc1234def", eligible_branches: ["dev"], identity_set: true, user_name: "Test User", user_email: "test@example.com" }))
   vi.mocked(api.setWorkingBranch).mockReset().mockResolvedValue({ working_branch: "dev", state: "ready", last_save_sha: null })
   vi.mocked(api.setGitIdentity).mockReset().mockResolvedValue({ user_name: "", user_email: "", scope: "local" })
   vi.mocked(api.commitMilestone).mockReset().mockResolvedValue({ sha: "deadbeef0000", short_sha: "deadbee", working_branch: "dev", version_label: null })
@@ -495,7 +561,16 @@ afterEach(() => {
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe("App integration — mounts and renders main chrome", () => {
+// A startup check, a save gate and a branch confirmation each cross several
+// effects and mocked requests; a whole parallel suite run makes that slower
+// than the one-second default without making it wrong.
+const MODAL_TIMEOUT_MS = 10_000
+// A panel hydrating from a fetched profile crosses a load, several effects and
+// a mocked request; a whole parallel suite run makes that slower without making
+// it wrong, and these queries otherwise keep the 1s default.
+const PANEL_HYDRATION_TIMEOUT_MS = 10_000
+
+describe("App integration - mounts and renders main chrome", () => {
   it("does not open websocket sync while the initial pipeline load is pending", async () => {
     let resolveLoad!: (value: Awaited<ReturnType<typeof api.loadPipeline>>) => void
     vi.mocked(api.loadPipeline).mockImplementationOnce(
@@ -509,7 +584,7 @@ describe("App integration — mounts and renders main chrome", () => {
     expect(screen.getByText("Loading pipeline...")).toBeInTheDocument()
     expect(MockWebSocket.instances).toHaveLength(0)
 
-    resolveLoad(makePipelineEditorDocument({ nodes: [], edges: [], preamble: "", preserved_blocks: [], source_revision: "revision-test" }))
+    resolveLoad(makeLoadedPipeline({ nodes: [], edges: [], preamble: "", preserved_blocks: [], source_revision: "revision-test" }))
     await waitForAppReady()
 
     expect(MockWebSocket.instances).toHaveLength(1)
@@ -527,6 +602,49 @@ describe("App integration — mounts and renders main chrome", () => {
     expect(screen.getByRole("complementary", { name: /node properties/i })).toBeInTheDocument()
     // Save button (toolbar's primary action)
     expect(screen.getByRole("button", { name: /^save$/i })).toBeInTheDocument()
+  })
+
+  it("replaces a loaded canvas with the parse-error view on a live source-only update", async () => {
+    const source = makeNode("source_1", "Claims source")
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
+      source_file: "rating/main.py",
+      source_revision: "revision-ready",
+      nodes: [source],
+      edges: [],
+    }))
+    render(<App />)
+    await waitForAppReady()
+    expect(await screen.findByText("Claims source")).toBeInTheDocument()
+    act(() => {
+      useGraphStore.setState({ dirty: true })
+    })
+
+    const sourceOnly = makePipelineEditorDocument({
+      load_status: "source_only",
+      source_file: "rating/main.py",
+      source_revision: "revision-broken",
+      source_text: "def broken(:\n",
+      nodes: [],
+    })
+    const socket = MockWebSocket.instances[MockWebSocket.instances.length - 1]
+    const deliver = socket.onmessage as unknown as (event: MessageEvent) => void
+    act(() => {
+      deliver(new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "pipeline_document_update",
+          schema_version: 1,
+          document: sourceOnly,
+          document_fingerprint: "fingerprint-broken",
+          source_file: "rating/main.py",
+        }),
+      }))
+    })
+
+    expect(await screen.findByTestId("source-recovery-view")).toBeInTheDocument()
+    expect(screen.queryByText("Claims source")).toBeNull()
+    // The unsaved local graph survives behind the parse-error view.
+    expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["source_1"])
+    expect(useGraphStore.getState().dirty).toBe(true)
   })
 
   it("calls loadPipeline on mount", async () => {
@@ -562,13 +680,13 @@ describe("App integration — mounts and renders main chrome", () => {
   })
 })
 
-describe("App integration — degraded execution fence", () => {
+describe("App integration - degraded execution fence", () => {
   it("uses only the server-planned recovery preview for a ready Explore sibling", async () => {
     const source = makeNode("source_1", "Claims source")
     const explore = makeNode("explore_1", "Claims Explore", "explore")
     const broken = makeNode("broken_1", "Broken sibling")
     broken.data._loadAvailability = "unavailable"
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument({
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
       load_status: "degraded",
       source_file: "rating/main.py",
       source_revision: "revision-degraded",
@@ -603,7 +721,7 @@ describe("App integration — degraded execution fence", () => {
       )
     })
     expect(vi.mocked(api.previewNode)).not.toHaveBeenCalled()
-    expect(vi.mocked(api.getExploreCacheSnapshot)).not.toHaveBeenCalled()
+    expect(vi.mocked(api.getNodeDataPoint)).not.toHaveBeenCalled()
     expect(screen.queryByTestId("explore-preview-frame")).not.toBeInTheDocument()
     expect(screen.getByTestId("node-document-readonly-inspector")).toBeInTheDocument()
   })
@@ -612,33 +730,12 @@ describe("App integration — degraded execution fence", () => {
     const broken = makeNode("broken@10", "Broken", "unavailablePipelineNode")
     broken.data._loadAvailability = "unavailable"
     broken.data._sourceFile = "rating/main.py"
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument({
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
       load_status: "degraded",
       source_file: "rating/main.py",
       source_revision: "revision-degraded",
       nodes: [broken],
     }))
-    const planHash = "a".repeat(64)
-    vi.mocked(api.dryRunRemoveUnavailableNode).mockResolvedValueOnce({
-      repair_kind: "remove_unavailable_node",
-      source_file: "rating/main.py",
-      source_revision: "revision-degraded",
-      target_source_file: "rating/main.py",
-      target_recovery_id: "broken@10",
-      target_authored_id: "broken",
-      delete_config: false,
-      plan_hash: planHash,
-      changes: [{
-        path: "rating/main.py",
-        operation: "update",
-        description: "Remove broken.",
-        diff: "-@pipeline.removed",
-        diff_truncated: false,
-      }],
-      retained_artifacts: [],
-      warnings: [],
-      predicted_load_status: "ready",
-    })
     const repaired = makePipelineEditorDocument({
       source_file: "rating/main.py",
       source_revision: "revision-repaired",
@@ -646,30 +743,50 @@ describe("App integration — degraded execution fence", () => {
     })
     vi.mocked(api.applyRemoveUnavailableNode).mockResolvedValueOnce({
       repair_kind: "remove_unavailable_node",
-      plan_hash: planHash,
       applied_artifacts: ["rating/main.py"],
+      changes: [{
+        path: "rating/main.py",
+        operation: "update",
+        description: "Remove broken.",
+        diff: "-@pipeline.removed",
+        diff_truncated: false,
+      }],
       document: repaired,
+      field_changes: [],
+      completeness: [],
+      previous_config: null,
     })
 
     render(<App />)
     await waitForAppReady()
-    fireEvent.click(await screen.findByTestId("unavailable-node-Broken"))
-    fireEvent.click(await screen.findByRole("button", { name: "Remove unavailable node" }))
-    await screen.findByText("Remove broken.")
+    fireEvent.click(
+      await screen.findByTestId("unavailable-node-Broken", {}, { timeout: PANEL_HYDRATION_TIMEOUT_MS }),
+    )
+    fireEvent.click(
+      await screen.findByRole(
+        "button",
+        { name: "Remove unavailable node" },
+        { timeout: PANEL_HYDRATION_TIMEOUT_MS },
+      ),
+    )
+    await screen.findByTestId("pipeline-repair-dialog", {}, { timeout: PANEL_HYDRATION_TIMEOUT_MS })
     expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["broken@10"])
 
     fireEvent.click(screen.getByRole("button", { name: "Remove node" }))
 
-    await waitFor(() => {
-      expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["survivor"])
-    })
+    await waitFor(
+      () => {
+        expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["survivor"])
+      },
+      { timeout: PANEL_HYDRATION_TIMEOUT_MS },
+    )
     expect(useDocumentStatusStore.getState().sourceRevision).toBe("revision-repaired")
     expect(screen.queryByTestId("pipeline-repair-dialog")).not.toBeInTheDocument()
     expect(screen.queryByTestId("node-recovery-diagnostics")).not.toBeInTheDocument()
   })
 })
 
-describe("App integration — move failure recovery", () => {
+describe("App integration - move failure recovery", () => {
   it("closes the busy move modal when the checkout request rejects", async () => {
     vi.mocked(api.moveToVersion).mockRejectedValueOnce(new Error("checkout failed"))
     render(<App />)
@@ -694,7 +811,7 @@ describe("App integration — move failure recovery", () => {
   })
 })
 
-describe("App integration — empty pipeline state", () => {
+describe("App integration - empty pipeline state", () => {
   it("renders no application nodes when the pipeline is empty", async () => {
     render(<App />)
     await waitForAppReady()
@@ -705,13 +822,13 @@ describe("App integration — empty pipeline state", () => {
   it("exposes the toolbar's primary palette + utility affordances", async () => {
     render(<App />)
     await waitForAppReady()
-    // Utility + Imports buttons are clickable (not disabled). The standalone
+    // Utility + Constants buttons are clickable (not disabled). The standalone
     // Git button was removed in favour of VC's branch indicator, which is the
     // single entry point into the version-control pane.
     const utility = screen.getByRole("button", { name: /^utility$/i })
-    const imports = screen.getByRole("button", { name: /^imports$/i })
+    const constants = screen.getByRole("button", { name: /^constants$/i })
     expect(utility).toBeEnabled()
-    expect(imports).toBeEnabled()
+    expect(constants).toBeEnabled()
     expect(screen.queryByRole("button", { name: /^git$/i })).not.toBeInTheDocument()
   })
 
@@ -725,11 +842,11 @@ describe("App integration — empty pipeline state", () => {
   })
 })
 
-describe("App integration — load a pipeline with nodes", () => {
+describe("App integration - load a pipeline with nodes", () => {
   it("renders node labels from a 3-node graph returned by loadPipeline", async () => {
     // Use labels that deliberately do NOT collide with palette names
     // (e.g. "Data Source", "Model Training") so getByText is unambiguous.
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument({
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
       nodes: [
         makeNode("ds_0", "CustomerDB Loader", "dataInput"),
         makeNode("polars_1", "Feature Cleanup", "polars"),
@@ -761,7 +878,7 @@ describe("App integration — load a pipeline with nodes", () => {
   })
 
   it("enables Centre + Layout once nodes are loaded", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument({
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
       nodes: [makeNode("polars_0", "Node A")],
       edges: [],
       preamble: "",
@@ -774,6 +891,111 @@ describe("App integration — load a pipeline with nodes", () => {
       expect(screen.getByRole("button", { name: /^centre$/i })).toBeEnabled()
       expect(screen.getByRole("button", { name: /^layout$/i })).toBeEnabled()
     })
+  })
+
+  it("offers the columns of the output handle an edge leaves from, not the source's single list", async () => {
+    // A submodel-style producer records columns per output; the edge from
+    // output_1 must feed output_1's columns to the transform's formula box.
+    const producer = makeNode("prod", "Model")
+    const runtimeColumns = {
+      _columns: [{ name: "other", dtype: "f64" }],
+      _frameColumns: {
+        output_1: [{ name: "premium", dtype: "f64" }, { name: "premium_net", dtype: "f64" }],
+        output_2: [{ name: "claims", dtype: "i64" }],
+      },
+    }
+    const stepped = makeNode("t", "Transform")
+    stepped.data.config = {
+      steps: [
+        { id: "s", kind: "source", input: "Model" },
+        { id: "w", kind: "with_column", name: "x", expr: { type: "binary", left: { kind: "column", name: "a" }, op: "+", right: { kind: "literal", type: "number", value: 1 }, text: "" } },
+      ],
+      code: "",
+    }
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
+      nodes: [producer, stepped],
+      edges: [{ id: "e1", source: "prod", target: "t", sourceHandle: "output_1", targetHandle: null }],
+      source_revision: "revision-test",
+    }))
+    render(<App />)
+    await waitForAppReady()
+    // Runtime columns come from a preview, never from the loaded document.
+    act(() => {
+      useGraphStore.getState().setNodesRaw(useGraphStore.getState().nodes.map((node) => (node.id === "prod" ? { ...node, data: { ...node.data, ...runtimeColumns } } : node)))
+    })
+    fireEvent.click(await screen.findByTestId("rf__node-t"))
+    await findEditorTestId("polars-steps-editor")
+    fireEvent.click(screen.getByRole("button", { name: "Step 1: Add column" }))
+    const formula = await screen.findByRole("combobox", { name: "Formula" })
+    fireEvent.change(formula, { target: { value: "pre" } })
+    const list = await screen.findByRole("listbox", { name: "Matching columns, constants and functions" })
+    // Each row is named by its column; the type beside it is a visual note.
+    expect(within(list).getAllByRole("option")).toHaveLength(2)
+    expect(within(list).getAllByRole("option")[0]).toHaveAccessibleName("premium")
+    expect(within(list).getAllByRole("option")[1]).toHaveAccessibleName("premium_net")
+  })
+
+  it("keeps an edge drawn into a stepped transform while its editor seeds the start step", async () => {
+    // The step editor writes the start step from an effect as soon as the
+    // new edge gives it an input; that node update must see the edge.
+    const upstream = makeNode("up", "Quotes")
+    const stepped = makeNode("t", "Transform")
+    stepped.data.config = { steps: [], code: "" }
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
+      nodes: [upstream, stepped],
+      edges: [],
+      source_revision: "revision-test",
+    }))
+    render(<App />)
+    await waitForAppReady()
+    fireEvent.click(await screen.findByTestId("rf__node-t"))
+    await findEditorTestId("polars-steps-editor")
+    act(() => {
+      useGraphStore.getState().setEdges((edges) => [...edges, appEdge({ source: "up", target: "t" })])
+    })
+    await waitFor(() => {
+      const config = useGraphStore.getState().nodes.find((node) => node.id === "t")?.data.config as Record<string, unknown>
+      expect(config.steps).toEqual([expect.objectContaining({ kind: "source", input: "Quotes" })])
+    })
+    expect(useGraphStore.getState().edges.map((edge) => [edge.source, edge.target])).toEqual([["up", "t"]])
+  })
+
+  it("retains deselected edge join columns when switching nodes and returning", async () => {
+    const columns = ["quote_id", "first_name", "last_name", "premium"].map((name) => ({ name, dtype: "String" }))
+    const join = makeNode("join", "Competitor Join", "edgeJoin")
+    join.data.config = { how: "left", on: ["quote_id"] }
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
+      nodes: [join, makeNode("other", "Other Step")],
+      edges: [],
+      source_revision: "revision-test",
+    }))
+    vi.mocked(api.previewNode).mockImplementation(async ({ nodeId, graph }) => {
+      const config = graph.nodes.find((node) => node.id === nodeId)?.data.config as Record<string, unknown> | undefined
+      const selected = config?.selected_columns as string[] | undefined
+      const output = selected?.length ? columns.filter((column) => selected.includes(column.name)) : columns
+      return { node_id: nodeId, status: "ok", columns: output, available_columns: columns, preview: [], row_count: 0, column_count: output.length }
+    })
+    render(<App />)
+    await waitForAppReady()
+    fireEvent.click(await screen.findByTestId("rf__node-join"))
+    const panel = within(await screen.findByTestId("node-panel"))
+    fireEvent.click(panel.getByRole("button", { name: /^columns$/i }))
+    await waitFor(() => expect(panel.getAllByRole("checkbox")).toHaveLength(4))
+    fireEvent.click(panel.getByText("first_name"))
+    fireEvent.click(panel.getByText("last_name"))
+    const savedSelection = () => useGraphStore.getState().nodes.find((node) => node.id === "join")?.data.config
+    expect(savedSelection()).toMatchObject({ selected_columns: ["quote_id", "premium"] })
+    fireEvent.click(screen.getByText("Other Step"))
+    fireEvent.click(screen.getByTestId("rf__node-join"))
+    const returnedPanel = within(await screen.findByTestId("node-panel"))
+    fireEvent.click(returnedPanel.getByRole("button", { name: /^columns$/i }))
+    await waitFor(() => {
+      const refreshedJoin = useGraphStore.getState().nodes.find((node) => node.id === "join")!
+      expect(refreshedJoin.data._columns).toEqual([columns[0], columns[3]])
+      expect(returnedPanel.getAllByRole("checkbox")).toHaveLength(4)
+    })
+    expect(returnedPanel.getAllByRole("checkbox").map((checkbox) => (checkbox as HTMLInputElement).checked)).toEqual([true, false, false, true])
+    expect(savedSelection()).toMatchObject({ selected_columns: ["quote_id", "premium"] })
   })
 
   it("selecting an Explore node previews the post-code dataframe in the Explore lower panel", async () => {
@@ -792,7 +1014,7 @@ describe("App integration — load a pipeline with nodes", () => {
     // Tag the stash with its capture source — untagged stashes are treated
     // as unknown provenance and invalidated on mount (cache-key completeness).
     sourceNode.data._columnsSource = "live"
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument({
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
       nodes: [
         sourceNode,
         makeNode("explore_1", "Claims Explore", "explore"),
@@ -857,11 +1079,10 @@ describe("App integration — load a pipeline with nodes", () => {
     const exploreNode = await screen.findByText("Claims Explore")
     fireEvent.click(exploreNode)
 
-    expect(await screen.findByRole("button", { name: "Needs caching" })).toBeInTheDocument()
-    expect(vi.mocked(api.getExploreCacheSnapshot)).toHaveBeenCalledWith(expect.objectContaining({
+    await waitFor(() => expect(vi.mocked(api.getNodeDataPoint)).toHaveBeenCalledWith(expect.objectContaining({
       node_id: "explore_1",
       source: "live",
-    }))
+    })))
     await waitFor(() => expect(vi.mocked(api.previewNode)).toHaveBeenCalledTimes(1))
     expect(vi.mocked(api.previewNode)).toHaveBeenCalledWith(expect.objectContaining({
       nodeId: "explore_1",
@@ -873,7 +1094,9 @@ describe("App integration — load a pipeline with nodes", () => {
     expect(screen.getByText("11")).toBeInTheDocument()
     expect(screen.getByText(/Showing 2 of 3 rows/)).toBeInTheDocument()
 
-    fireEvent.click(screen.getByTitle("Refresh Explore outputs"))
+    const previewHeader = screen.getByTestId("explore-preview-frame-header")
+    expect(within(screen.getByTestId("node-panel")).queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument()
+    fireEvent.click(within(previewHeader).getByTitle("Refresh Explore outputs"))
 
     await waitFor(() => expect(vi.mocked(api.previewNode)).toHaveBeenCalledTimes(3))
     expect(vi.mocked(api.previewNode)).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -885,20 +1108,76 @@ describe("App integration — load a pipeline with nodes", () => {
     expect(screen.getByText(/Showing 2 of 4 rows/)).toBeInTheDocument()
   })
 
-  it("hydrates Pivot field actions from a current Explore cache report on cold load", async () => {
+  it("in manual calculation, clicking a node runs nothing and Ctrl+Enter calculates it", async () => {
+    const sourceNode = makeNode("source_0", "Claims Source", "dataInput")
+    // Direct Parquet, so the snapshot-ensure stage skips this source.
+    sourceNode.data.config = {
+      inputType: "file",
+      format: "parquet",
+      mode: "scan",
+      path: "data/claims.parquet",
+      arguments: {},
+    }
+    sourceNode.data._columns = [{ name: "premium", dtype: "i64" }]
+    sourceNode.data._availableColumns = [{ name: "premium", dtype: "i64" }]
+    sourceNode.data._columnsSource = "live"
+    // A Polars node, not the Data Input itself: its editor needs no IO
+    // capability request, which this file does not mock.
+    const polarsNode = makeNode("polars_1", "Premium Calc", "polars")
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
+      nodes: [sourceNode, polarsNode],
+      edges: [{ id: "e1", source: "source_0", target: "polars_1" }],
+      preamble: "",
+      preserved_blocks: [],
+      source_revision: "revision-test",
+    }))
+    vi.mocked(api.previewNode).mockResolvedValue({
+      node_id: "polars_1",
+      status: "ok",
+      columns: [{ name: "premium", dtype: "i64" }],
+      preview_columns: ["premium"],
+      preview: [{ premium: 10 }],
+      preview_row_count: 1,
+      row_count: 1,
+      column_count: 1,
+    })
+    useUIStore.setState({ calculationMode: "manual" })
+
+    render(<App />)
+    await waitForAppReady()
+    fireEvent.click(await screen.findByText("Premium Calc"))
+
+    expect(await screen.findByText("Refresh to preview this node.")).toBeInTheDocument()
+    expect(vi.mocked(api.previewNode)).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(window, { key: "Enter", ctrlKey: true })
+
+    await waitFor(() => expect(vi.mocked(api.previewNode)).toHaveBeenCalledWith(
+      expect.objectContaining({ nodeId: "polars_1" }),
+    ))
+    // Let the calculation land so no request outlives the test.
+    expect(await screen.findByText("1 rows · 1 cols")).toBeInTheDocument()
+  })
+
+  it("hydrates Pivot field actions from the shared data profile on cold load", async () => {
     const sourceNode = makeNode("source_0", "Claims Source", "dataInput")
     sourceNode.data.config = { inputType: "file", format: "parquet", mode: "scan", path: "data/claims.parquet", arguments: {} }
     sourceNode.data._columns = [{ name: "upstream_only", dtype: "i64" }]
     sourceNode.data._columnsSource = "live"
     const exploreNode = makeNode("explore_1", "Claims Explore", "explore")
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument({
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
       nodes: [sourceNode, exploreNode], edges: [{ id: "e1", source: "source_0", target: "explore_1" }],
       preamble: "", preserved_blocks: [], source_revision: "revision-test",
     }))
-    vi.mocked(api.getExploreCacheSnapshot).mockResolvedValueOnce({
-      state: "current", message: "Cached", result: {
-        status: "ok", node_id: "explore_1", upstream_node_id: "source_0", source: "live",
-        dataframe_cache_key: "explore_dataset:post-code", row_count: 1, column_count: 1, generated_at: 1,
+    const profiledPoint = currentPoint()
+    vi.mocked(api.getNodeDataPoint).mockResolvedValue(profiledPoint)
+    vi.mocked(api.getNodeDataProfile).mockResolvedValue({
+      status: "completed",
+      job_id: null,
+      message: "Profile is ready",
+      point: profiledPoint,
+      result: {
+        row_count: 1, column_count: 1, generated_at: 1, data_version: "gen-1",
         columns: [{ name: "post_code_only", dtype: "Utf8", kind: "Text", null_count: 0, distinct_count: 1, unique_ratio: 1, is_high_cardinality: false, is_identifier_candidate: false, text_min_length: 1, text_mean_length: 1, text_max_length: 1, temporal_span: null }],
         overview_summary: { data_quality: { issue_count: 0, issues: [], duplicate_row_count: 0, duplicate_ratio: 0 }, categorical_summary: [] },
       },
@@ -906,19 +1185,27 @@ describe("App integration — load a pipeline with nodes", () => {
 
     render(<App />)
     await waitForAppReady()
-    fireEvent.click(await screen.findByText("Claims Explore"))
-    fireEvent.click((await screen.findAllByRole("tab", { name: "Pivots" })).find(
+    fireEvent.click(await screen.findByText("Claims Explore", {}, { timeout: PANEL_HYDRATION_TIMEOUT_MS }))
+    fireEvent.click((await screen.findAllByRole("tab", { name: "Pivots" }, { timeout: PANEL_HYDRATION_TIMEOUT_MS })).find(
       (tab) => tab.id === "explore-pivots-tab",
     )!)
     await findEditorTestId("explore-pivots-config")
-    fireEvent.click(await screen.findByRole("button", { name: "Add Pivot" }))
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Add Pivot" }, { timeout: PANEL_HYDRATION_TIMEOUT_MS }),
+    )
     fireEvent.click(screen.getByRole("button", { name: /configure pivot/i }))
 
-    expect(await screen.findByRole("group", { name: "post_code_only field actions" })).toBeInTheDocument()
+    expect(
+      await screen.findByRole(
+        "group",
+        { name: "post_code_only field actions" },
+        { timeout: PANEL_HYDRATION_TIMEOUT_MS },
+      ),
+    ).toBeInTheDocument()
   })
 })
 
-describe("App integration — add a node via drag-and-drop from the palette", () => {
+describe("App integration - add a node via drag-and-drop from the palette", () => {
   // Note: there is no dedicated 'Add Node' button in the current Toolbar —
   // the canonical add-node flow is dragging a palette item onto the canvas.
   // This test exercises that flow end-to-end: simulate a drop on the
@@ -968,11 +1255,71 @@ describe("App integration — add a node via drag-and-drop from the palette", ()
       expect(useGraphStore.getState().nodes.length).toBe(before + 1)
     })
   })
+
+  it("keeps a Quote Input inside a submodel singleton across the whole document", async () => {
+    const occurrence = makeNode("inputs", "inputs", "submodel")
+    occurrence.data.config = { definitionId: "definition_inputs", alias: "inputs" }
+    const nestedApiInput = makeNode("quote_input", "Nested Quote Input", "apiInput")
+
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
+      nodes: [occurrence],
+      edges: [],
+      preamble: "",
+      preserved_blocks: [],
+      source_file: "main.py",
+      source_revision: "revision-nested-singleton",
+      submodels: {
+        definition_inputs: {
+          definitionId: "definition_inputs",
+          file: "modules/inputs.py",
+          graph: { nodes: [nestedApiInput], edges: [] },
+          inputPorts: [],
+          outputPorts: [],
+        },
+      },
+    }))
+    render(<App />)
+    await waitForAppReady()
+
+    const paletteItem = screen.getByTestId("node-palette-item-apiInput")
+    expect(paletteItem).toHaveAttribute("draggable", "false")
+    expect(paletteItem).toHaveAttribute("title", expect.stringMatching(/only one Quote Input/i))
+    const identityCallsBeforeDrop = vi.mocked(api.resolveEditorNodeIdentities).mock.calls.length
+
+    // The drop handler is an independent commit-time guard: a stale drag that
+    // began before navigation, or a synthetic payload, must not bypass the
+    // palette's presentation state.
+    const canvas = document.querySelector(".react-flow") as HTMLElement | null
+    expect(canvas, "ReactFlow canvas container rendered").not.toBeNull()
+    const data = new Map<string, string>([
+      ["application/reactflow-type", "apiInput"],
+      ["application/reactflow-config", JSON.stringify({ path: "" })],
+    ])
+    const dataTransfer = {
+      dropEffect: "none",
+      effectAllowed: "move",
+      getData: (type: string): string => data.get(type) ?? "",
+      setData: (type: string, value: string): void => { data.set(type, value) },
+      clearData: (): void => { data.clear() },
+      types: [] as ReadonlyArray<string>,
+      files: [] as unknown as FileList,
+      items: [] as unknown as DataTransferItemList,
+    }
+
+    fireEvent.dragOver(canvas!, { dataTransfer })
+    fireEvent.drop(canvas!, { dataTransfer })
+
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/only one Quote Input/i)
+    })
+    expect(useGraphStore.getState().nodes).toHaveLength(1)
+    expect(api.resolveEditorNodeIdentities).toHaveBeenCalledTimes(identityCallsBeforeDrop)
+  })
 })
 
-describe("App integration — save pipeline", () => {
+describe("App integration - save pipeline", () => {
   it("clicking Save calls savePipeline with the current graph serialized", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument({
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
       nodes: [makeNode("polars_0", "Transform A")],
       edges: [],
       preamble: "import polars as pl",
@@ -1020,7 +1367,7 @@ describe("App integration — save pipeline", () => {
 
   it("save-gate: with no working branch, Save opens the modal first, then runs on confirm", async () => {
     // No working branch configured for this clone.
-    vi.mocked(api.getWorkingBranch).mockResolvedValue({
+    vi.mocked(api.getWorkingBranch).mockResolvedValue(makeGitWorkingBranch({
       working_branch: null,
       state: "unset",
       errors: [],
@@ -1030,7 +1377,7 @@ describe("App integration — save pipeline", () => {
       identity_set: true,
       user_name: "U",
       user_email: "u@x.y",
-    })
+    }))
     vi.mocked(api.setWorkingBranch).mockResolvedValue({
       working_branch: "dev",
       state: "ready",
@@ -1040,20 +1387,29 @@ describe("App integration — save pipeline", () => {
     await waitForAppReady()
 
     // The startup check itself surfaces the selection modal (state unset).
-    await waitFor(() => {
-      expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument()
-    })
+    await waitFor(
+      () => {
+        expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument()
+      },
+      { timeout: MODAL_TIMEOUT_MS },
+    )
     // Dismiss the startup modal to isolate the save-gate path.
     fireEvent.keyDown(document, { key: "Escape" })
-    await waitFor(() => {
-      expect(screen.queryByTestId("working-branch-modal")).toBeNull()
-    })
+    await waitFor(
+      () => {
+        expect(screen.queryByTestId("working-branch-modal")).toBeNull()
+      },
+      { timeout: MODAL_TIMEOUT_MS },
+    )
 
     // Clicking Save must NOT save directly — it re-opens the gate modal.
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }))
-    await waitFor(() => {
-      expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument()
-    })
+    await waitFor(
+      () => {
+        expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument()
+      },
+      { timeout: MODAL_TIMEOUT_MS },
+    )
     expect(vi.mocked(api.savePipeline)).not.toHaveBeenCalled()
 
     // Confirming the branch sets it and lets the queued save proceed.
@@ -1097,7 +1453,7 @@ describe("App integration — save pipeline", () => {
   it("commit-gate: with no working branch, Commit chooses a branch first, then commits", async () => {
     // First call (startup) is unset → chooser; after the branch is set, the
     // beforeEach default (ready) takes over so the milestone modal is enabled.
-    vi.mocked(api.getWorkingBranch).mockResolvedValueOnce({
+    vi.mocked(api.getWorkingBranch).mockResolvedValueOnce(makeGitWorkingBranch({
       working_branch: null,
       state: "unset",
       errors: [],
@@ -1107,7 +1463,7 @@ describe("App integration — save pipeline", () => {
       identity_set: true,
       user_name: "U",
       user_email: "u@x.y",
-    })
+    }))
     vi.mocked(api.setWorkingBranch).mockResolvedValue({
       working_branch: "dev",
       state: "ready",
@@ -1117,13 +1473,19 @@ describe("App integration — save pipeline", () => {
     await waitForAppReady()
 
     // Dismiss the startup chooser to isolate the commit-gate path.
-    await waitFor(() => expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument())
+    await waitFor(
+      () => expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument(),
+      { timeout: MODAL_TIMEOUT_MS },
+    )
     fireEvent.keyDown(document, { key: "Escape" })
     await waitFor(() => expect(screen.queryByTestId("working-branch-modal")).toBeNull())
 
     // Commit with no working branch → re-opens the chooser (queued action).
     fireEvent.click(screen.getByTestId("toolbar-save-commit"))
-    await waitFor(() => expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument())
+    await waitFor(
+      () => expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument(),
+      { timeout: MODAL_TIMEOUT_MS },
+    )
     expect(vi.mocked(api.commitMilestone)).not.toHaveBeenCalled()
 
     // Confirm a branch → save flushes, then the milestone modal opens.
@@ -1142,7 +1504,24 @@ describe("App integration — save pipeline", () => {
   })
 })
 
-describe("App integration — error handling", () => {
+describe("App integration - server status", () => {
+  it("reports the server Offline on the Pipeline button once live sync loses it", async () => {
+    render(<App />)
+    await waitForAppReady()
+    const latestSocket = () => MockWebSocket.instances[MockWebSocket.instances.length - 1]
+    const pipeline = screen.getByTestId("toolbar-pipeline-settings")
+    // Still connecting: not evidence of anything, so no "Offline" flash.
+    expect(pipeline).toHaveTextContent(/^Calculating$/)
+
+    act(() => latestSocket().onopen?.())
+    expect(pipeline).toHaveTextContent(/^Calculating$/)
+
+    act(() => (latestSocket().onclose as unknown as (event: CloseEvent) => void)({ code: 1006 } as CloseEvent))
+    expect(pipeline).toHaveTextContent(/^Offline$/)
+  })
+})
+
+describe("App integration - error handling", () => {
   it("shows an error toast when loadPipeline rejects, without crashing", async () => {
     vi.mocked(api.loadPipeline).mockRejectedValueOnce(new Error("Backend offline"))
 
@@ -1176,7 +1555,7 @@ describe("App integration — error handling", () => {
   })
 })
 
-describe("App integration — apiInput emit-port edge reconciliation (Defect 1)", () => {
+describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", () => {
   // A multi-port apiInput (2 emit tables) with a downstream edge bound
   // to the 'drivers' port. Toggling that table's emit off in the editor
   // must prune the now-orphaned edge from the store AND surface a
@@ -1274,6 +1653,11 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
       options.collision ? "collision name" : "Other Source",
       "polars",
     )
+    const codedConsumer = makeNode("coded_consumer", "Coded Consumer", "polars")
+    codedConsumer.data.config = {
+      code: 'df = Other_Source.select("value")',
+      untouched: "coded-consumer-config",
+    }
 
     return {
       nodes: [
@@ -1286,6 +1670,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
         firstOriginalInstance,
         secondOriginalInstance,
         liveSwitchInstance,
+        codedConsumer,
       ],
       edges: [
         {
@@ -1323,6 +1708,13 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
           sourceHandle: null,
           targetHandle: null,
         },
+        {
+          id: "e_ordinary_coded",
+          source: "ordinary_source",
+          target: "coded_consumer",
+          sourceHandle: null,
+          targetHandle: null,
+        },
       ],
       preamble: "",
       preserved_blocks: [],
@@ -1334,7 +1726,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     options: { collision?: boolean; internalCollision?: boolean } = {},
   ) {
     const base = makeApiInputGraph()
-    const boundary = makeNode("instance_pricing", "Pricing", "submodel")
+    const boundary = makeNode("pricing", "pricing", "submodel")
     boundary.data.config = { definitionId: "definition_pricing", alias: "pricing" }
     const childRouter = makeNode("child_router", "Child Router", "liveSwitch")
     childRouter.data.config = {
@@ -1418,19 +1810,16 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
           },
           inputPorts: [
             {
-              portId: "router_input",
-              label: "Router input",
+              name: "router_input",
               targets: [{ nodeId: childRouter.id, handleId: null }],
             },
             {
-              portId: "value_input",
-              label: "Value input",
+              name: "value_input",
               targets: [{ nodeId: childValueInstance.id, handleId: null }],
             },
             ...(options.collision
               ? [{
-                  portId: "ordinary_router",
-                  label: "Ordinary router input",
+                  name: "ordinary_router",
                   targets: [{ nodeId: childRouter.id, handleId: null }],
                 }]
               : []),
@@ -1456,7 +1845,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
   }
 
   it("toggling a bound table's emit off prunes the orphaned edge and warns", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(makeApiInputGraph()))
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline(makeApiInputGraph()))
     render(<App />)
     await waitForAppReady()
 
@@ -1480,8 +1869,8 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     })
   })
 
-  it("W1.3: renaming a CONNECTED port keeps its edge — rebound to the new handle in ONE undo entry", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(makeApiInputGraph()))
+  it("W1.3: renaming a CONNECTED port keeps its edge - rebound to the new handle in ONE undo entry", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline(makeApiInputGraph()))
     // Determinism: the default previewNode mock resolves `columns: []`
     // (truthy), and usePipelineAPI stashes `_columns` via history-aware
     // setNodes whenever a preview lands — an asynchronous undo-stack
@@ -1531,7 +1920,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
   })
 
   it("renames a frame, all persisted input identities, and every instance key in one undoable commit", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(makeRenameMigrationGraph()))
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline(makeRenameMigrationGraph()))
     vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
     render(<App />)
     await waitForAppReady()
@@ -1588,7 +1977,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
   })
 
   it("renames an ordinary source and migrates every downstream input identity atomically", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(makeRenameMigrationGraph()))
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline(makeRenameMigrationGraph()))
     vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
     render(<App />)
     await waitForAppReady()
@@ -1619,6 +2008,11 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
       inputMapping: { Renamed_Source: "Mapped_Ordinary", stable_key: "Stable_Value" },
       untouched: "live-instance-config",
     })
+    expect(configFor("coded_consumer")).toEqual({
+      code: 'df = Other_Source.select("value")',
+      inputMapping: { Other_Source: "Renamed_Source" },
+      untouched: "coded-consumer-config",
+    })
     expect(useGraphStore.getState().undoStack.length).toBe(undoDepthBefore + 1)
 
     await useGraphStore.getState().undo()
@@ -1627,7 +2021,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
   })
 
   it("leaves an ordinary rename untouched when identity resolution fails", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(makeRenameMigrationGraph()))
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline(makeRenameMigrationGraph()))
     vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
     vi.mocked(api.resolveEditorNodeIdentities).mockRejectedValueOnce(
       new Error("identity service unavailable"),
@@ -1648,8 +2042,8 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     expect(graphCommitStateBytes()).toBe(stateBefore)
   })
 
-  it("does not overwrite a newer graph edit with a stale rename identity", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(makeRenameMigrationGraph()))
+  it("applies a rename on top of a newer graph edit instead of overwriting it", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline(makeRenameMigrationGraph()))
     vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
     let resolveIdentity!: (value: Awaited<ReturnType<typeof api.resolveEditorNodeIdentities>>) => void
     vi.mocked(api.resolveEditorNodeIdentities).mockImplementationOnce(
@@ -1673,8 +2067,12 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     const stateAfterNewerEdit = graphCommitStateBytes()
     await act(async () => {
       resolveIdentity({
+        violations: null,
         identities: [{
           node_id: "ordinary_source",
+          label: "Renamed Source",
+          alias: null,
+          collision: null,
           function_name: "Renamed_Source",
           default_input_name: "Renamed_Source",
           source_handle_input_names: {},
@@ -1683,15 +2081,20 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
       })
     })
 
-    expect(await screen.findByTestId("node-panel-label-error")).toHaveTextContent(
-      /graph changed while identity resolution was running/,
-    )
-    expect(graphCommitStateBytes()).toBe(stateAfterNewerEdit)
-    expect(label).toHaveValue("Other Source")
+    // The graph moved while the first identity request was in flight, so the
+    // controller resolves again against the live graph and commits on top of
+    // the newer edit: the moved position survives and the rename lands.
+    await waitFor(() => {
+      expect(useGraphStore.getState().nodes.find((node) => node.id === "ordinary_source")?.data.label)
+        .toBe("Renamed Source")
+    })
+    expect(useGraphStore.getState().nodes.find((node) => node.id === "original_2")?.position.x)
+      .toBe(321)
+    expect(graphCommitStateBytes()).not.toBe(stateAfterNewerEdit)
   })
 
   it("leaves an API frame rename untouched when identity resolution fails", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(makeApiInputGraph()))
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline(makeApiInputGraph()))
     vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
     vi.mocked(api.resolveEditorNodeIdentities).mockRejectedValueOnce(
       new Error("identity service unavailable"),
@@ -1715,7 +2118,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
   })
 
   it("rejects an ordinary source rename that collides at a downstream target", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(makeRenameMigrationGraph()))
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline(makeRenameMigrationGraph()))
     vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
     render(<App />)
     await waitForAppReady()
@@ -1734,7 +2137,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
   })
 
   it("rejects a colliding frame rename before any config, edge, mapping, or history mutation", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(makeRenameMigrationGraph({ collision: true })))
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline(makeRenameMigrationGraph({ collision: true })))
     vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
     render(<App />)
     await waitForAppReady()
@@ -1753,7 +2156,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
 
   it("updates parent bindings atomically without mutating shared definition identities", async () => {
     const graph = makeSubmodelRenameGraph()
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(graph))
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline(graph))
     vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
     render(<App />)
     await waitForAppReady()
@@ -1832,7 +2235,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
 
   it("keeps another occurrence binding isolated from an upstream frame rename", async () => {
     const graph = makeSubmodelRenameGraph({ collision: true })
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(graph))
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline(graph))
     vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
     render(<App />)
     await waitForAppReady()
@@ -1855,7 +2258,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
 
   it("keeps internal child edge names isolated from an upstream frame rename", async () => {
     const graph = makeSubmodelRenameGraph({ internalCollision: true })
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(graph))
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline(graph))
     vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
     render(<App />)
     await waitForAppReady()
@@ -1876,8 +2279,8 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     expect(useGraphStore.getState().submodels).toEqual(submodelsBefore)
   })
 
-  it("W1.4: blanking a port label in the editor never reaches the graph — no synthesized port, edge intact", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(makeApiInputGraph()))
+  it("W1.4: blanking a port label in the editor never reaches the graph - no synthesized port, edge intact", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline(makeApiInputGraph()))
     // Same determinism guard as the W1.3 test above: keep previews
     // pending so no async `_columns` stash mutates nodes mid-test.
     vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
@@ -1903,7 +2306,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
   })
 
   it("editing a non-port field (column) does NOT prune the still-valid edge", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(makeApiInputGraph()))
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline(makeApiInputGraph()))
     render(<App />)
     await waitForAppReady()
 
@@ -1926,8 +2329,8 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
   it("migrates a frame rename through an arbitrary canonical occurrence and every fan-out target", async () => {
     const base = makeApiInputGraph()
     const occurrence = makeNode(
-      "instance_pricing_secondary",
-      "Pricing secondary",
+      "pricing_secondary",
+      "pricing_secondary",
       "submodel",
     )
     occurrence.data.config = {
@@ -1970,8 +2373,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
           },
           inputPorts: [
             {
-              portId: "policy_data",
-              label: "Policy data",
+              name: "policy_data",
               targets: [
                 { nodeId: childRouter.id, handleId: null },
                 { nodeId: childInstance.id, handleId: null },
@@ -1985,7 +2387,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
       preserved_blocks: [],
       source_revision: "revision-test",
     }
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(graph))
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline(graph))
     vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
     render(<App />)
     await waitForAppReady()
@@ -2021,14 +2423,14 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
 
 })
 
-describe("App integration — read-only submodel instance", () => {
+describe("App integration - read-only submodel instance", () => {
   it("keeps the shared definition inspectable while disabling every exposed edit surface", async () => {
-    const owner = makeNode("instance_inputs_owner", "Inputs", "submodel")
+    const owner = makeNode("inputs", "inputs", "submodel")
     owner.data.config = {
       definitionId: "definition_inputs",
       alias: "inputs",
     }
-    const copy = makeNode("instance_inputs_copy", "Inputs instance", "submodel")
+    const copy = makeNode("inputs_2", "inputs_2", "submodel")
     copy.data.config = {
       definitionId: "definition_inputs",
       alias: "inputs_2",
@@ -2040,7 +2442,7 @@ describe("App integration — read-only submodel instance", () => {
       format: "parquet",
       path: "data/claims.parquet",
     }
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument({
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
       nodes: [owner, copy],
       edges: [],
       preamble: "",
@@ -2081,7 +2483,7 @@ describe("App integration — read-only submodel instance", () => {
     expect(screen.getByTestId("toolbar-redo")).toBeDisabled()
     expect(screen.getByTestId("toolbar-layout")).toBeDisabled()
     expect(screen.getByTestId("toolbar-utility")).toBeDisabled()
-    expect(screen.getByTestId("toolbar-imports")).toBeDisabled()
+    expect(screen.getByTestId("toolbar-constants")).toBeDisabled()
     expect(screen.getByTestId("toolbar-assistant")).toBeDisabled()
     expect(document.querySelector('nav[aria-label="Node palette"]')).toHaveAttribute("inert")
 
@@ -2097,7 +2499,78 @@ describe("App integration — read-only submodel instance", () => {
   })
 })
 
-describe("App integration — panel open/close", () => {
+describe("App integration - a running assistant turn", () => {
+  it("makes the canvas read-only with a Stop pill until the turn ends", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
+      nodes: [makeNode("polars_0", "Premium Calc")],
+      edges: [],
+      preamble: "",
+      preserved_blocks: [],
+      source_revision: "revision-test",
+    }))
+    render(<App />)
+    await waitForAppReady()
+    const node = await screen.findByTestId("node-Premium Calc", {}, { timeout: 10000 })
+    expect(document.querySelector('nav[aria-label="Node palette"]')).not.toHaveAttribute("inert")
+
+    const stop = vi.fn()
+    act(() => { useUIStore.getState().startAssistantTurn(stop) })
+
+    expect(document.querySelector('nav[aria-label="Node palette"]')).toHaveAttribute("inert")
+    expect(screen.getByTestId("toolbar-undo")).toBeDisabled()
+    expect(screen.getByTestId("toolbar-save")).toBeDisabled()
+    expect(screen.getByTestId("toolbar-assistant")).toBeEnabled()
+    fireEvent.click(node)
+    fireEvent.keyDown(window, { key: "Delete" })
+    expect(useGraphStore.getState().nodes.map((item) => item.id)).toEqual(["polars_0"])
+    fireEvent.click(screen.getByTestId("assistant-working-stop"))
+    expect(stop).toHaveBeenCalledTimes(1)
+
+    act(() => { useUIStore.getState().endAssistantTurn() })
+    expect(screen.queryByTestId("assistant-working-pill")).not.toBeInTheDocument()
+    expect(document.querySelector('nav[aria-label="Node palette"]')).not.toHaveAttribute("inert")
+    expect(screen.getByTestId("toolbar-save")).toBeEnabled()
+  })
+
+  it("hands a failed top-level preview to the assistant with that node selected", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
+      nodes: [makeNode("polars_0", "Premium Calc"), makeNode("polars_1", "Other Calc")],
+      edges: [],
+      preamble: "",
+      preserved_blocks: [],
+      source_revision: "revision-test",
+    }))
+    vi.mocked(api.previewNode).mockResolvedValue({
+      node_id: "polars_0",
+      status: "error",
+      error: "ColumnNotFoundError: premium",
+      columns: [],
+      preview: [],
+      row_count: 0,
+      column_count: 0,
+    })
+    render(<App />)
+    await waitForAppReady()
+    act(() => {
+      useGraphStore.setState({
+        nodes: useGraphStore.getState().nodes.map((item) => ({ ...item, selected: item.id === "polars_1" })),
+      })
+    })
+    fireEvent.click(await screen.findByTestId("node-Premium Calc", {}, { timeout: 10000 }))
+
+    fireEvent.click(await screen.findByTestId("ask-assistant-to-fix", {}, { timeout: 10000 }))
+
+    expect(useUIStore.getState().assistantPreviewErrorNodeId).toBe("polars_0")
+    expect(useUIStore.getState().assistantOpen).toBe(true)
+    await waitFor(() => {
+      expect(
+        useGraphStore.getState().nodes.filter((item) => item.selected).map((item) => item.id),
+      ).toEqual(["polars_0"])
+    })
+  })
+})
+
+describe("App integration - panel open/close", () => {
   it("clicking Utility opens the UtilityPanel; close button dismisses it", async () => {
     render(<App />)
     await waitForAppReady()
@@ -2122,7 +2595,7 @@ describe("App integration — panel open/close", () => {
     })
   })
 
-  it("clicking Imports opens the ImportsPanel (mutually exclusive with Utility)", async () => {
+  it("clicking Constants opens the Constants pane (mutually exclusive with Utility)", async () => {
     render(<App />)
     await waitForAppReady()
 
@@ -2130,9 +2603,9 @@ describe("App integration — panel open/close", () => {
     fireEvent.click(screen.getByRole("button", { name: /^utility$/i }))
     await waitFor(() => expect(useUIStore.getState().utilityOpen).toBe(true))
 
-    fireEvent.click(screen.getByRole("button", { name: /^imports$/i }))
+    fireEvent.click(screen.getByRole("button", { name: /^constants$/i }))
     await waitFor(() => {
-      expect(useUIStore.getState().importsOpen).toBe(true)
+      expect(useUIStore.getState().constantsOpen).toBe(true)
       // The UIStore setter resets the other panels' flags.
       expect(useUIStore.getState().utilityOpen).toBe(false)
     })
@@ -2150,7 +2623,7 @@ describe("App integration — panel open/close", () => {
   }
 
   it("Submodel and Instance are inert until the selection can support them", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument({
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
       nodes: [makeNode("polars_1", "First"), makeNode("polars_2", "Second")],
       edges: [],
       preamble: "",
@@ -2183,7 +2656,7 @@ describe("App integration — panel open/close", () => {
   })
 
   it("an unavailable selection action explains itself instead of no-opping", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument({
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
       nodes: [makeNode("polars_1", "First"), makeNode("polars_2", "Second")],
       edges: [],
       preamble: "",
@@ -2215,7 +2688,7 @@ describe("App integration — panel open/close", () => {
   })
 
   it("presents Instance as unavailable for a singleton node and explains an attempted click", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument({
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
       nodes: [makeNode("api_1", "Quote Input", "apiInput")],
       edges: [],
       preamble: "",
@@ -2239,7 +2712,7 @@ describe("App integration — panel open/close", () => {
   })
 
   it("Submodel opens the naming dialog for the selected nodes", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument({
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
       nodes: [makeNode("polars_1", "First"), makeNode("polars_2", "Second")],
       edges: [],
       preamble: "",
@@ -2261,7 +2734,7 @@ describe("App integration — panel open/close", () => {
   })
 
   it("Instance creates a linked copy of a plain node, not just submodels", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument({
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
       nodes: [makeNode("polars_1", "First")],
       edges: [],
       preamble: "",
@@ -2285,7 +2758,99 @@ describe("App integration — panel open/close", () => {
     })
   })
 
-  it("the branch indicator opens the Version Control pane (mutually exclusive with Utility/Imports)", async () => {
+  // A main canvas holding one submodel occurrence beside a plain node.
+  function loadSubmodelCanvas(capabilities?: { can_mutate: boolean }): void {
+    const occurrence = makeNode("pricing", "pricing", "submodel")
+    occurrence.data.config = { definitionId: "definition_pricing", alias: "pricing" }
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
+      nodes: [occurrence, makeNode("polars_1", "First")],
+      edges: [],
+      preamble: "",
+      preserved_blocks: [],
+      source_file: "main.py",
+      source_revision: "revision-dissolve",
+      submodels: {
+        definition_pricing: {
+          definitionId: "definition_pricing",
+          file: "modules/pricing.py",
+          graph: { nodes: [makeNode("rate", "Rate")], edges: [] },
+          inputPorts: [],
+          outputPorts: [],
+        },
+      },
+      capabilities,
+    }))
+  }
+
+  it("a lone selected submodel turns Submodel into Dissolve, which dissolves it with one request", async () => {
+    loadSubmodelCanvas()
+    let finishDissolve!: (response: Awaited<ReturnType<typeof api.dissolveSubmodel>>) => void
+    vi.mocked(api.dissolveSubmodel).mockReset().mockReturnValueOnce(
+      new Promise((resolve) => { finishDissolve = resolve }),
+    )
+    useToastStore.setState({ toasts: [] })
+    render(<App />)
+    await waitForAppReady()
+    const button = screen.getByTestId("toolbar-submodel")
+
+    // Beside another node the submodel is just part of a group.
+    await selectNodes(["pricing", "polars_1"])
+    await waitFor(() => expect(button).toHaveAccessibleName("Submodel"))
+
+    await selectNodes(["pricing"])
+    await waitFor(() => expect(button).toHaveAccessibleName("Dissolve"))
+    expect(button).toHaveAttribute("aria-disabled", "false")
+
+    // Unlike the context menu, the button stays on screen while the transform
+    // runs; a second request would supersede the first and report it as not
+    // applied.
+    fireEvent.click(button)
+    fireEvent.click(button)
+    expect(api.dissolveSubmodel).toHaveBeenCalledOnce()
+    expect(api.dissolveSubmodel).toHaveBeenCalledWith(expect.objectContaining({ instance_id: "pricing" }))
+
+    finishDissolve({
+      status: "ok",
+      instance_id: "pricing",
+      definition_id: "definition_pricing",
+      source_revision: "revision-dissolve",
+      graph: {
+        nodes: [makeNode("pricing__rate", "Rate"), makeNode("polars_1", "First")],
+        edges: [],
+        preserved_blocks: [],
+        source_revision: "revision-dissolve",
+      },
+    })
+    await waitFor(() => {
+      expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["pricing__rate", "polars_1"])
+    })
+    const toasts = useToastStore.getState().toasts.map((toast) => toast.text)
+    expect(toasts).toContain('Submodel "pricing" dissolved - save to apply')
+    expect(toasts.filter((text) => text.includes("not applied"))).toEqual([])
+    // The occurrence is gone, so the button groups again.
+    expect(button).toHaveAccessibleName("Submodel")
+  })
+
+  it("Dissolve on a read-only canvas explains the refusal and sends nothing", async () => {
+    loadSubmodelCanvas({ can_mutate: false })
+    vi.mocked(api.dissolveSubmodel).mockReset()
+    render(<App />)
+    await waitForAppReady()
+
+    await selectNodes(["pricing"])
+    const button = screen.getByTestId("toolbar-submodel")
+    await waitFor(() => expect(button).toHaveAccessibleName("Dissolve"))
+    expect(button).toHaveAttribute("aria-disabled", "true")
+
+    fireEvent.click(button)
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts.at(-1)?.text).toBe("This pipeline document is read-only")
+    })
+    expect(api.dissolveSubmodel).not.toHaveBeenCalled()
+    expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["pricing", "polars_1"])
+  })
+
+  it("the branch indicator opens the Version Control pane (mutually exclusive with Utility/Constants)", async () => {
     render(<App />)
     await waitForAppReady()
 
@@ -2294,7 +2859,49 @@ describe("App integration — panel open/close", () => {
     await waitFor(() => {
       expect(useUIStore.getState().gitOpen).toBe(true)
       expect(useUIStore.getState().utilityOpen).toBe(false)
-      expect(useUIStore.getState().importsOpen).toBe(false)
+      expect(useUIStore.getState().constantsOpen).toBe(false)
     })
+  })
+})
+
+describe("App integration - a Model Training node's results panel", () => {
+  const RESULTS_GONE = /no longer available \(the server restarted or it expired\)/
+
+  async function openModelNode(): Promise<void> {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
+      nodes: [makeNode("model", "Claims Model", "modelling")],
+      edges: [],
+      source_revision: "revision-test",
+    }))
+    render(<App />)
+    await waitForAppReady()
+    fireEvent.click(await screen.findByTestId("rf__node-model"))
+    await screen.findByTestId("node-panel")
+  }
+
+  it("shows the data preview, not a lost-results message, when the server no longer holds the result", async () => {
+    useNodeResultsStore.setState({ expiredTrainJobs: { model: "job_gone" } })
+    await openModelNode()
+
+    // The node's ordinary preview frame is shown, as for a node never trained.
+    await waitFor(() => expect(screen.getAllByText("Claims Model").length).toBeGreaterThan(1))
+    expect(screen.queryByText(RESULTS_GONE)).toBeNull()
+    expect(screen.queryByRole("tablist", { name: "Model result panes" })).toBeNull()
+  })
+
+  it("shows the results, and no such message, when a result is present", async () => {
+    useNodeResultsStore.getState().completeTrainJob("model", makeTrainResult())
+    await openModelNode()
+
+    expect(await screen.findByRole("tablist", { name: "Model result panes" }, { timeout: 10_000 })).toBeTruthy()
+    expect(screen.queryByText(RESULTS_GONE)).toBeNull()
+  })
+
+  it("says nothing of lost results when no training was remembered", async () => {
+    await openModelNode()
+
+    // The node's ordinary preview frame is shown instead.
+    await waitFor(() => expect(screen.getAllByText("Claims Model").length).toBeGreaterThan(1))
+    expect(screen.queryByText(RESULTS_GONE)).toBeNull()
   })
 })

@@ -16,7 +16,8 @@ describe("buildGraph", () => {
     const result = buildGraph(nodes, edges)
 
     expect(result.nodes).toHaveLength(2)
-    expect(result.edges).toBe(edges)
+    expect(result.edges).toStrictEqual(edges)
+    expect(result.edges).not.toBe(edges)
 
     // Each node should have id, type, data, and a position
     expect(result.nodes[0]).toEqual({
@@ -62,7 +63,7 @@ describe("buildGraph", () => {
     expect(result.nodes[0].type).toBe("custom")
   })
 
-  it("passes submodels through", () => {
+  it("clones submodels into the outbound graph", () => {
     const submodels = {
       "sub1": { nodes: [], edges: [] },
       "sub2": { nodes: [], edges: [] },
@@ -70,26 +71,14 @@ describe("buildGraph", () => {
 
     const result = buildGraph([], [], submodels)
 
-    expect(result.submodels).toBe(submodels)
+    expect(result.submodels).toStrictEqual(submodels)
+    expect(result.submodels).not.toBe(submodels)
   })
 
   it("handles undefined submodels", () => {
     const result = buildGraph([], [])
 
     expect(result.submodels).toBeUndefined()
-  })
-
-  it("passes preamble through", () => {
-    const preamble = "def helper():\n    return 42\n"
-    const result = buildGraph([], [], undefined, preamble)
-
-    expect(result.preamble).toBe(preamble)
-  })
-
-  it("handles undefined preamble", () => {
-    const result = buildGraph([], [])
-
-    expect(result.preamble).toBeUndefined()
   })
 
   it("preserves all data fields on mapped nodes", () => {

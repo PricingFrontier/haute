@@ -1,7 +1,12 @@
 import type { Edge, Node } from "@xyflow/react"
 
+import type { LoadedPipeline } from "../api/client"
+import type { GlobalConstant } from "../utils/globalConstants"
+
 import type {
   PipelineDiagnostic,
+  PipelineNameViolation,
+  PipelineNodeCompleteness,
   PipelineDocumentCapabilities,
   PipelineEditorDocument,
   PipelineElementAvailability,
@@ -24,6 +29,8 @@ export interface PipelineDocumentFixture extends CanonicalGraphFixture {
   pipeline_description?: string | null
   preamble?: string | null
   preserved_blocks?: string[]
+  global_constants?: GlobalConstant[]
+  global_constants_error?: string | null
   source_file?: string
   source_revision?: string | null
   source_text?: string
@@ -33,6 +40,9 @@ export interface PipelineDocumentFixture extends CanonicalGraphFixture {
   has_authored_content?: boolean
   diagnostics?: PipelineDiagnostic[]
   diagnostics_omitted?: number
+  completeness?: PipelineNodeCompleteness[]
+  completeness_omitted?: number
+  name_violations?: PipelineNameViolation[]
   capabilities?: Partial<PipelineDocumentCapabilities>
   recoveryNodes?: RecoveryNode[]
   recoveryEdges?: RecoveryEdge[]
@@ -94,6 +104,7 @@ function recoveryNode(node: Node, index: number): RecoveryNode {
     blocking_path: Array.isArray(data._loadBlockingPath)
       ? data._loadBlockingPath.filter((item): item is string => typeof item === "string")
       : [],
+    scoped_editable: data._scopedEditable === true,
   }
 }
 
@@ -138,18 +149,6 @@ function recoverySubmodel(id: string, value: unknown): RecoverySubmodel {
   const inputPorts = Array.isArray(definition.inputPorts)
     ? structuredClone(definition.inputPorts)
     : []
-  const explicitInputNames = record(definition._inputPortInputNames)
-  const inputPortInputNames = Object.keys(explicitInputNames).length > 0
-    ? explicitInputNames as Record<string, string>
-    : Object.fromEntries(
-      inputPorts.map((port) => {
-        const portId = record(port).portId
-        if (typeof portId !== "string") {
-          throw new Error("pipeline document test fixture input port requires a string portId")
-        }
-        return [portId, portId]
-      }),
-    )
   return {
     definition_id:
       typeof definition.definitionId === "string" ? definition.definitionId : id,
@@ -162,7 +161,6 @@ function recoverySubmodel(id: string, value: unknown): RecoverySubmodel {
       submodels: record(graph.submodels),
     }),
     input_ports: inputPorts,
-    input_port_input_names: inputPortInputNames,
     output_ports: Array.isArray(definition.outputPorts)
       ? structuredClone(definition.outputPorts)
       : [],
@@ -206,6 +204,17 @@ function capabilitiesFor(
   }
 }
 
+/** Fingerprint `makeLoadedPipeline` names for its document unless a test supplies one. */
+export const LOADED_DOCUMENT_FINGERPRINT = "loaded-document-fingerprint"
+
+/** A `loadPipeline` result: the editor document plus the fingerprint its response header names. */
+export function makeLoadedPipeline(
+  fixture: PipelineDocumentFixture = {},
+  documentFingerprint: string = LOADED_DOCUMENT_FINGERPRINT,
+): LoadedPipeline {
+  return { document: makePipelineEditorDocument(fixture), documentFingerprint }
+}
+
 /** Convert compact canonical graph fixtures into the editor-load wire contract. */
 export function makePipelineEditorDocument(
   fixture: PipelineDocumentFixture = {},
@@ -226,6 +235,8 @@ export function makePipelineEditorDocument(
     pipeline_description: fixture.pipeline_description ?? null,
     preamble: fixture.preamble ?? "",
     preserved_blocks: fixture.preserved_blocks ?? [],
+    global_constants: fixture.global_constants ?? [],
+    global_constants_error: fixture.global_constants_error ?? null,
     source_file: fixture.source_file ?? "",
     source_revision: fixture.source_revision ?? "revision-test",
     source_text: fixture.source_text ?? "",
@@ -240,6 +251,9 @@ export function makePipelineEditorDocument(
     submodels,
     diagnostics: fixture.diagnostics ?? [],
     diagnostics_omitted: fixture.diagnostics_omitted ?? 0,
+    completeness: fixture.completeness ?? [],
+    completeness_omitted: fixture.completeness_omitted ?? 0,
+    name_violations: fixture.name_violations ?? [],
     capabilities: capabilitiesFor(status, trusted, fixture.capabilities),
   }
 }

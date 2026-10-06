@@ -206,7 +206,7 @@ describe("ComboChart option builder", () => {
     expect(options.grid).toMatchObject({ right: 120, left: 56 })
     expect(options.series[0].label.formatter({ dataIndex: 0 })).toBe("£5.00")
     expect(options.series[0].tooltip.valueFormatter(5)).toMatch(/^£5/)
-    expect(options.series[1].tooltip.valueFormatter(null)).toBe("—")
+    expect(options.series[1].tooltip.valueFormatter(null)).toBe("-")
   })
 
   it("uses rich text rather than HTML, deterministic theme colours, and reduced motion", () => {

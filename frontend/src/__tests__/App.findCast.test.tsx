@@ -39,11 +39,21 @@ vi.mock("@xyflow/react", () => ({
     zoomIn: vi.fn(),
     zoomOut: vi.fn(),
   }),
+  useNodesInitialized: () => false,
   SelectionMode: { Partial: 0 },
   ConnectionMode: { Loose: "loose" },
   BackgroundVariant: { Dots: "dots" },
   MarkerType: { ArrowClosed: "arrowclosed" },
 }))
+
+// The viewport-reveal hook reads the React Flow store, which this mock does not provide.
+vi.mock("../hooks/useActiveNodeReveal", () => {
+  const reveal = { handleMoveStart: () => {}, centreNode: () => {} }
+  return { useActiveNodeReveal: () => reveal }
+})
+
+// The box-selection reset subscribes to the React Flow store, which this mock does not provide.
+vi.mock("../components/BoxSelectionReset", () => ({ default: () => null }))
 
 // Mock stateful hooks
 let mockNodes: Array<{ id: string; position: { x: number; y: number }; data: Record<string, unknown> }> = []
@@ -177,7 +187,7 @@ vi.mock("../components/Toolbar", () => ({
   ),
 }))
 vi.mock("../panels/UtilityPanel", () => ({ default: () => <div data-testid="utility-panel" /> }))
-vi.mock("../panels/ImportsPanel", () => ({ default: () => <div data-testid="imports-panel" /> }))
+vi.mock("../panels/GlobalConstantsPanel", () => ({ default: () => <div data-testid="global-constants-panel" /> }))
 vi.mock("../panels/GitPanel", () => ({ default: () => <div data-testid="git-panel" /> }))
 vi.mock("../components/SubmodelDialog", () => ({ default: () => <div data-testid="submodel-dialog" /> }))
 vi.mock("../components/RenameDialog", () => ({ default: () => <div data-testid="rename-dialog" /> }))
@@ -188,7 +198,16 @@ vi.mock("../components/ErrorBoundary", () => ({
 vi.mock("../api/client", () => ({
   HAUTE_SESSION_EXPIRED_EVENT: "haute:session-expired",
   HAUTE_SESSION_EXPIRED_REASON: "Missing or invalid Haute session token",
-  checkMlflow: vi.fn(() => Promise.resolve({ mlflow_installed: false })),
+  getMlflowDestinations: vi.fn(() => Promise.resolve({
+    mlflow_installed: true,
+    mlflow_importable: true,
+    destinations: [
+      { key: "databricks", configured: false, destination: "", config_source: "", detail: "", probed: false, ok: false, category: "" },
+      { key: "server", configured: false, destination: "", config_source: "", detail: "", probed: false, ok: false, category: "" },
+      { key: "local", configured: true, destination: "C:/proj/mlruns", config_source: "default", detail: "", probed: false, ok: false, category: "" },
+    ],
+    detail: "",
+  })),
   getWorkingBranch: vi.fn(() => Promise.resolve({
     state: "no-repository",
     working_branch: null,
@@ -203,7 +222,7 @@ import useGraphStore from "../stores/useGraphStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import { GRAPH_EFFECTS_LITE_GRAPH_SIZE_LIMIT } from "../utils/graphPerformance"
 
-describe("App — lastSelectedId referencing deleted node resolves cleanly (#38)", () => {
+describe("App - lastSelectedId referencing deleted node resolves cleanly (#38)", () => {
   beforeEach(() => {
     mockNodes = []
     mockEdges = []
@@ -216,7 +235,7 @@ describe("App — lastSelectedId referencing deleted node resolves cleanly (#38)
       renameDialog: null,
       syncBanner: null,
       utilityOpen: false,
-      importsOpen: false,
+      constantsOpen: false,
       gitOpen: false,
       ratingStepEditorSections: {},
       explorePanes: {},
@@ -237,11 +256,9 @@ describe("App — lastSelectedId referencing deleted node resolves cleanly (#38)
     useSettingsStore.setState({
       mlflow: {
         status: "pending",
-        backend: "",
-        host: "",
         installed: null,
         importable: null,
-        trackingConfigured: null,
+        destinations: [],
         detail: "",
       },
       _mlflowFetching: false,

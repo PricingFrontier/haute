@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
-from fastapi import HTTPException
 
 from tests._git_helpers import git_run as _git
 from tests._git_helpers import init_repo as _init_repo
@@ -334,40 +333,38 @@ class TestGeneralExceptionHandling:
 
 
 # ---------------------------------------------------------------------------
-# E6: _handle_git_error logs warnings
+# E6: git_error_http_exception logs warnings
 # ---------------------------------------------------------------------------
 
 
-class TestHandleGitErrorLogging:
-    """_handle_git_error should log warnings for GitError and GitGuardrailError."""
+class TestGitErrorHttpExceptionLogging:
+    """git_error_http_exception should log warnings for GitError and GitGuardrailError."""
 
     def test_logs_git_error(self) -> None:
         from unittest.mock import patch
 
         from haute._git import GitError
-        from haute.routes.git import _handle_git_error
+        from haute.routes.git import git_error_http_exception
 
         with patch("haute.routes.git.logger") as mock_logger:
-            with pytest.raises(HTTPException) as exc_info:
-                _handle_git_error(GitError("something broke"))
+            http_exc = git_error_http_exception(GitError("something broke"))
             mock_logger.warning.assert_called_once()
             call_args = mock_logger.warning.call_args
             assert call_args[0][0] == "git_error"
-        assert exc_info.value.status_code == 400
+        assert http_exc.status_code == 400
 
     def test_logs_guardrail_error(self) -> None:
         from unittest.mock import patch
 
         from haute._git import GitGuardrailError
-        from haute.routes.git import _handle_git_error
+        from haute.routes.git import git_error_http_exception
 
         with patch("haute.routes.git.logger") as mock_logger:
-            with pytest.raises(HTTPException) as exc_info:
-                _handle_git_error(GitGuardrailError("not allowed"))
+            http_exc = git_error_http_exception(GitGuardrailError("not allowed"))
             mock_logger.warning.assert_called_once()
             call_args = mock_logger.warning.call_args
             assert call_args[0][0] == "git_guardrail_error"
-        assert exc_info.value.status_code == 403
+        assert http_exc.status_code == 403
 
 
 # ---------------------------------------------------------------------------
@@ -400,13 +397,46 @@ class TestGitShow:
         _git(tmp_path, "add", "pipeline.py")
         _git(tmp_path, "commit", "-m", "v2")
 
-        res = client.get(f"/api/git/show/{sha1}")
+        res = client.get(f"/api/git/show/{sha1}", params={"source_file": "pipeline.py"})
         assert res.status_code == 200
         labels = {n["data"]["label"] for n in res.json()["nodes"]}
         assert labels == {"base"}
 
-    def test_unknown_commit_returns_400(self, client: TestClient) -> None:
+    def test_reads_the_requested_pipeline_when_the_project_has_several(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        # "a_first.py" sorts before "rating.py" and has nodes, so any
+        # discovery-order choice would return the wrong pipeline.
+        (tmp_path / "a_first.py").write_text(self._V2)
+        (tmp_path / "rating.py").write_text(self._V1)
+        _git(tmp_path, "add", "a_first.py", "rating.py")
+        _git(tmp_path, "commit", "-m", "two pipelines")
+        sha = _git(tmp_path, "rev-parse", "HEAD")
+
+        res = client.get(f"/api/git/show/{sha}", params={"source_file": "rating.py"})
+        assert res.status_code == 200
+        body = res.json()
+        assert body["source_file"] == "rating.py"
+        assert {n["data"]["label"] for n in body["nodes"]} == {"base"}
+
+    def test_pipeline_absent_at_the_commit_returns_400(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        (tmp_path / "pipeline.py").write_text(self._V1)
+        _git(tmp_path, "add", "pipeline.py")
+        _git(tmp_path, "commit", "-m", "v1")
+        sha = _git(tmp_path, "rev-parse", "HEAD")
+
+        res = client.get(f"/api/git/show/{sha}", params={"source_file": "later.py"})
+        assert res.status_code == 400
+        assert "later.py" in res.json()["detail"]
+
+    def test_source_file_is_required(self, client: TestClient) -> None:
         res = client.get(f"/api/git/show/{'0' * 40}")
+        assert res.status_code == 422
+
+    def test_unknown_commit_returns_400(self, client: TestClient) -> None:
+        res = client.get(f"/api/git/show/{'0' * 40}", params={"source_file": "pipeline.py"})
         assert res.status_code == 400
 
 
@@ -666,12 +696,12 @@ class TestGitRemotesAndPush:
 
 
 # ---------------------------------------------------------------------------
-# _handle_git_error HTTP status codes
+# git_error_http_exception HTTP status codes
 # ---------------------------------------------------------------------------
 
 
-class TestHandleGitErrorStatusCodes:
-    """_handle_git_error must return 400 for GitError and 403 for GitGuardrailError."""
+class TestGitErrorHttpExceptionStatusCodes:
+    """git_error_http_exception must map GitError to 400 and GitGuardrailError to 403."""
 
     def test_git_error_raises_400(self) -> None:
         """Phase 1C #11: ``GitError`` messages may contain raw git stderr
@@ -682,12 +712,11 @@ class TestHandleGitErrorStatusCodes:
         """
         from haute._git import GitError
         from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
-        from haute.routes.git import _handle_git_error
+        from haute.routes.git import git_error_http_exception
 
-        with pytest.raises(HTTPException) as exc_info:
-            _handle_git_error(GitError("bad ref"))
-        assert exc_info.value.status_code == 400
-        assert exc_info.value.detail == _INTERNAL_ERROR_DETAIL
+        http_exc = git_error_http_exception(GitError("bad ref"))
+        assert http_exc.status_code == 400
+        assert http_exc.detail == _INTERNAL_ERROR_DETAIL
 
     def test_guardrail_error_raises_403(self) -> None:
         """Guardrail errors are hand-written, user-facing, and preserved
@@ -695,12 +724,11 @@ class TestHandleGitErrorStatusCodes:
         failures).
         """
         from haute._git import GitGuardrailError
-        from haute.routes.git import _handle_git_error
+        from haute.routes.git import git_error_http_exception
 
-        with pytest.raises(HTTPException) as exc_info:
-            _handle_git_error(GitGuardrailError("protected branch"))
-        assert exc_info.value.status_code == 403
-        assert exc_info.value.detail == "protected branch"
+        http_exc = git_error_http_exception(GitGuardrailError("protected branch"))
+        assert http_exc.status_code == 403
+        assert http_exc.detail == "protected branch"
 
 
 # ---------------------------------------------------------------------------

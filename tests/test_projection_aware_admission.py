@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import polars as pl
+import pytest
 
 from haute._execution_context import ExecutionAdmission, ExecutionContext, ExecutionProfile
 from haute._ram_estimate import (
@@ -12,6 +13,11 @@ from haute._ram_estimate import (
 from haute.execution import ProjectionRequest, plan_execution_strategy
 from haute.projection import ProjectionEdgeKey
 from tests.conftest import make_edge, make_graph, make_ready_file_input_config
+
+# Every graph here names a real parquet under ``tmp_path``. The estimate index
+# canonicalises paths through the executor's resolver, which contains them in the
+# project root, so the sandbox root has to cover this test's scratch space.
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
 
 def _single_input_graph(path, *, columns: int = 8):

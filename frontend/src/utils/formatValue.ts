@@ -61,9 +61,13 @@ export function formatNullPct(nullCount: number, rowCount: number): string | nul
   return `${((nullCount / rowCount) * 100).toFixed(1)}%`
 }
 
-export function formatElapsed(seconds: number): string {
-  if (seconds < 60) return `${seconds.toFixed(0)}s`
-  const mins = Math.floor(seconds / 60)
-  const secs = Math.floor(seconds % 60)
-  return `${mins}m ${secs}s`
+/**
+ * A duration in seconds a person reads at a glance: "0.4 s", "12 s", "2m 05s".
+ * The unit changes on the printed value, so 9.96 s reads "10 s", not "10.0 s".
+ */
+export function formatDuration(seconds: number): string {
+  if (Number(seconds.toFixed(1)) < 10) return `${seconds.toFixed(1)} s`
+  const whole = Math.round(seconds)
+  if (whole < 60) return `${whole} s`
+  return `${Math.floor(whole / 60)}m ${String(whole % 60).padStart(2, "0")}s`
 }

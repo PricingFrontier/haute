@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -14,7 +15,9 @@ import pytest
 from fastapi import HTTPException
 
 from haute._execution_context import ExecutionContext, ExecutionProfile
+from haute._ram_estimate import RamEstimate
 from haute.errors import HauteValidationError
+from haute.modelling._descriptors import DESCRIPTORS
 from haute.projection import ProjectionRequest, plan
 from haute.routes._train_service import (
     TrainService,
@@ -22,7 +25,7 @@ from haute.routes._train_service import (
     _declared_categorical_levels_for_training,
     _friendly_error,
     _training_required_columns_by_node,
-    _validate_glm_family_link,
+    _validate_glm_config_values,
 )
 from tests.conftest import (
     make_edge,
@@ -31,6 +34,7 @@ from tests.conftest import (
     make_ready_file_input_config,
 )
 from tests.job_store_support import seed_job
+from tests.training_artifacts_support import publish_trained_job
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
@@ -133,6 +137,28 @@ def _evaluation_response_payload() -> dict[str, object]:
     }
 
 
+def _write_trained_model(directory: Path, name: str = "frequency") -> Path:
+    """Write a model file and a complete feature contract as training leaves them."""
+    from haute.modelling._feature_contract import build_contract, save_contract
+    from haute.modelling._training_job import model_contract_filename
+
+    directory.mkdir(parents=True, exist_ok=True)
+    model_path = directory / f"{name}.cbm"
+    model_path.write_bytes(b"model-bytes")
+    save_contract(
+        build_contract(
+            features=["x1"],
+            feature_types={"x1": "Float64"},
+            categorical_features=[],
+            target_name="y",
+            target_type="Float64",
+            task="regression",
+        ),
+        directory / model_contract_filename(name),
+    )
+    return model_path
+
+
 def _completed_train_response(**overrides: object):
     from haute.schemas import TrainResponse
 
@@ -176,24 +202,14 @@ class TestEvaluationResponseContract:
                 "less than or equal to 10",
             ),
             (
-                lambda payload: payload["selection_fits"].reverse(),
-                "ascending",
-            ),
-            (
-                lambda payload: payload["selection_metrics"]["rmse"].update(validation_rows=5),
-                "validation_rows",
-            ),
-            (
-                lambda payload: payload["selection_fits"][0]["metrics"].update(mae=1.0),
-                "metric names",
-            ),
-            (
                 lambda payload: payload.update(plan_sha256="not-a-digest"),
                 "plan_sha256",
             ),
         ],
     )
     def test_completed_response_rejects_malformed_report(self, mutate, message: str) -> None:
+        # Structure only: the report's invariants are checked where its
+        # artifacts are produced (tests/test_evaluation.py).
         from haute.schemas import TrainResponse
 
         payload = _evaluation_response_payload()
@@ -279,6 +295,14 @@ class TestTrainingCategoricalLevelDeclarations:
         assert levels == {"region": ["north", "south"]}
 
 
+def _xgboost_gpu_graph(data_path: str) -> dict:
+    """An XGBoost node set to train on the GPU (MOD-F06)."""
+    graph = _make_modelling_graph(data_path, algorithm="xgboost", params={"num_boost_round": 5})
+    node = next(node for node in graph["nodes"] if node["id"] == "train")
+    node["data"]["config"].update({"loss_function": "RMSE", "device": "gpu"})
+    return graph
+
+
 def _make_modelling_graph(
     data_path: str,
     target: str = "y",
@@ -287,8 +311,14 @@ def _make_modelling_graph(
     task: str = "regression",
     params: dict | None = None,
     evaluation: dict | None = None,
+    feature_columns: list[str] | None = None,
 ) -> dict:
-    """Build a simple 2-node graph: dataInput → modelling."""
+    """Build a simple 2-node graph: dataInput → modelling.
+
+    Features are opt-in, so a tree model ticks ``feature_columns``; the default
+    is the ``training_data`` fixture's features. Data with other columns passes
+    its own list.
+    """
     config: dict = {
         "target": target,
         "algorithm": algorithm,
@@ -305,6 +335,8 @@ def _make_modelling_graph(
     }
     if algorithm == "catboost":
         config["loss_function"] = "RMSE" if task == "regression" else "Logloss"
+    if algorithm != "glm":
+        config["feature_columns"] = ["x1", "x2"] if feature_columns is None else feature_columns
     if weight:
         config["weight"] = weight
 
@@ -330,13 +362,60 @@ def _make_modelling_graph(
     return graph.model_dump()
 
 
+def _make_joined_modelling_graph(tmp_path, rows: int, validate: str | None) -> dict:
+    """quotes left-joined to competitor prices on quote_id, feeding a modelling node."""
+    rng = np.random.RandomState(7)
+    quotes = tmp_path / "quotes.parquet"
+    competitor = tmp_path / "competitor.parquet"
+    pl.DataFrame({"quote_id": range(rows), "x1": rng.randn(rows)}).write_parquet(quotes)
+    pl.DataFrame({"quote_id": range(rows), "y": rng.rand(rows) * 10}).write_parquet(competitor)
+    join_config: dict[str, object] = {"how": "left", "on": ["quote_id"]}
+    if validate is not None:
+        join_config["validate"] = validate
+    model = _make_modelling_graph(str(quotes), feature_columns=["x1"])["nodes"][1]
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "quotes",
+                    "data": {
+                        "label": "quotes",
+                        "nodeType": "dataInput",
+                        "config": make_ready_file_input_config(str(quotes)),
+                    },
+                },
+                {
+                    "id": "competitor",
+                    "data": {
+                        "label": "competitor",
+                        "nodeType": "dataInput",
+                        "config": make_ready_file_input_config(str(competitor)),
+                    },
+                },
+                {
+                    "id": "competitor_join",
+                    "data": {
+                        "label": "competitor_join",
+                        "nodeType": "edgeJoin",
+                        "config": join_config,
+                    },
+                },
+                model,
+            ],
+            "edges": [
+                make_edge("quotes", "competitor_join", target_handle="base").model_dump(),
+                make_edge("competitor", "competitor_join", target_handle="join").model_dump(),
+                make_edge("competitor_join", "train").model_dump(),
+            ],
+        }
+    )
+    return graph.model_dump()
+
+
 @pytest.fixture(autouse=True)
 def _fast_optional_training_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
     """Endpoint tests assert job state, metrics, and warnings, not optional charts."""
-    monkeypatch.setattr(
-        "haute.modelling._algorithms.CatBoostAlgorithm.shap_summary",
-        lambda *a, **kw: [],
-    )
+    monkeypatch.delattr("haute.modelling._algorithms.CatBoostAlgorithm.shap_values")
     monkeypatch.setattr(
         "haute.modelling._algorithms.CatBoostAlgorithm.feature_importance_typed",
         lambda *a, **kw: [],
@@ -430,8 +509,19 @@ class TestTrainEndpoint:
 
         assert job_id not in store._running_activity_at
 
-    def test_train_with_invalid_target(self, client, training_data):
-        graph = _make_modelling_graph(training_data, target="nonexistent")
+    @pytest.mark.parametrize(
+        ("target", "feature_columns"),
+        [
+            pytest.param("nonexistent", None, id="missing-target"),
+            pytest.param("y", ["x1", "nonexistent"], id="missing-selected-feature"),
+        ],
+    )
+    def test_train_with_a_missing_column_names_it(
+        self, client, training_data, target, feature_columns
+    ):
+        """The exact training demand meets the missing column at its source: a
+        422 contract failure naming it, never a generic pipeline failure."""
+        graph = _make_modelling_graph(training_data, target=target, feature_columns=feature_columns)
         resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
         assert resp.status_code == 200
         status = _poll_until_done(client, resp.json()["job_id"])
@@ -448,6 +538,29 @@ class TestTrainEndpoint:
         graph = _make_modelling_graph(training_data)
         resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "source"})
         assert resp.status_code == 400
+
+    @pytest.mark.parametrize(
+        "feature_columns", [None, [], ["y"]], ids=["absent", "empty", "target_only"]
+    )
+    def test_train_refuses_a_catboost_node_without_features(
+        self, client, training_data, feature_columns
+    ):
+        """Features are opt-in: the request is refused before any job starts, rather
+        than training on every non-role column of the data."""
+        from haute.routes.modelling import _store
+
+        graph = _make_modelling_graph(training_data)
+        config = graph["nodes"][1]["data"]["config"]
+        if feature_columns is None:
+            del config["feature_columns"]
+        else:
+            config["feature_columns"] = feature_columns
+
+        resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
+
+        assert resp.status_code == 400
+        assert "Modelling config has no features" in resp.json()["detail"]
+        assert not _store.list_jobs()
 
     def test_train_success(self, client, training_data):
         graph = _make_modelling_graph(training_data)
@@ -471,6 +584,24 @@ class TestTrainEndpoint:
             assert "feature" in entry
             assert "type" in entry
             assert "bins" in entry
+
+    def test_an_unproven_join_bound_trains_on_every_row_without_a_downsample_warning(
+        self, client, tmp_path, monkeypatch
+    ) -> None:
+        """The RAM limit applies to the rows that arrive, not the join's product (MDL-01)."""
+        graph = _make_joined_modelling_graph(tmp_path, 200, None)
+        # Too little RAM for the 40,000-row worst case: the limit floors at 500 rows,
+        # more than the 200 that really arrive.
+        monkeypatch.setattr("haute._ram_estimate.available_ram_bytes", lambda: 1)
+
+        resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
+
+        assert resp.status_code == 200, resp.text
+        status = _poll_until_done(client, resp.json()["job_id"])
+        assert status["status"] == "completed", status
+        assert status["warning"] is None
+        assert status["result"]["warning"] is None
+        assert status["result"]["development_rows"] == 200
 
     def test_train_reports_progress(self, client, training_data):
         """Training should report iteration progress via the status endpoint."""
@@ -543,6 +674,19 @@ class TestTrainEndpoint:
             assert "Select CPU and retry" in detail["message"]
             run.assert_not_called()
 
+    def test_train_xgboost_gpu_refuses_on_vram_limit(self, client, training_data):
+        graph = _xgboost_gpu_graph(training_data)
+        with (
+            patch("haute._host_memory.available_vram_bytes", return_value=1),
+            patch("haute.modelling.TrainingJob.run", return_value=_completed_train_result()) as run,
+        ):
+            resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
+            assert resp.status_code == 200
+            status = _poll_until_done(client, resp.json()["job_id"])
+            assert status["status"] == "memory_limited"
+            assert status["error_code"] == "gpu_vram_limit"
+            run.assert_not_called()
+
 
 class TestTrainBackgroundLaunchFailures:
     def test_launch_background_start_failure_marks_job_error(
@@ -583,6 +727,7 @@ class TestTrainBackgroundLaunchFailures:
                     "algorithm": "catboost",
                     "task": "regression",
                     "loss_function": "RMSE",
+                    "feature_columns": ["x"],
                     "evaluation": _random_evaluation_config(),
                 },
                 {},
@@ -682,6 +827,7 @@ class TestTrainBackgroundLaunchFailures:
                     "algorithm": "catboost",
                     "task": "regression",
                     "loss_function": "RMSE",
+                    "feature_columns": ["x"],
                     "evaluation": _random_evaluation_config(),
                 },
                 {},
@@ -783,20 +929,109 @@ class TestTrainStatusTimeout:
             _store.delete_job("train_done_past_timeout")
 
 
-def test_bounded_loss_history_retains_latest_rows() -> None:
+def test_live_loss_history_spans_its_fit_and_restarts_with_the_next() -> None:
+    from haute.routes import _training_worker
+
+    limit = _training_worker._max_train_loss_history()
+    history: list[dict[str, float]] = []
+    truncated = False
+    peak, trough = -float("inf"), float("inf")
+    for n in range(1, 1001):
+        # A falling curve with a training spike at 500 and a validation dip at 700.
+        train = 5.0 if n == 500 else 1.0 / n
+        evaluation = 0.0001 if n == 700 else 1.0 / n + 0.1
+        row = {"iteration": float(n), "train_rmse": train, "eval_rmse": evaluation}
+        history, truncated = _training_worker._append_live_loss_row(history, truncated, row, 1000)
+        assert len(history) <= limit
+        # Every extreme so far survives thinning, so an axis drawn from the rows never shrinks.
+        peak, trough = max(peak, train), min(trough, evaluation)
+        assert max(entry["train_rmse"] for entry in history) == peak
+        assert min(entry["eval_rmse"] for entry in history) == trough
+    iterations = [row["iteration"] for row in history]
+    assert truncated is True
+    assert iterations[0] == 1.0 and iterations[-1] == 1000.0
+    assert iterations == sorted(set(iterations))
+    # Even coverage of the rounds so far: no gap is wider than two buckets.
+    assert max(b - a for a, b in zip(iterations, iterations[1:])) <= 2 * 1000 / (limit - 2)
+
+    # The next fit's first row starts its own history, even with the same values.
+    first = {"iteration": 1.0, "train_rmse": 1.0, "eval_rmse": 1.1}
+    history, truncated = _training_worker._append_live_loss_row(history, truncated, first, 1000)
+    assert history == [first]
+    assert truncated is False
+
+    # A fit that outruns its stated budget still stays within the limit and spans
+    # every round from its first.
+    for n in range(2, 501):
+        row = {"iteration": float(n), "train_rmse": 1.0 / n}
+        history, truncated = _training_worker._append_live_loss_row(history, truncated, row, 10)
+        assert len(history) <= limit
+    assert history[0] == first and history[-1]["iteration"] == 500.0
+    gaps = [b["iteration"] - a["iteration"] for a, b in zip(history, history[1:])]
+    assert max(gaps) <= 2 * 500 / (limit - 6)
+    assert truncated is True
+
+
+def test_live_loss_history_updates_a_repeated_round_in_place() -> None:
+    from haute.routes import _training_worker
+
+    history: list[dict[str, float]] = []
+    for row in (
+        {"iteration": 1.0, "train_deviance": 0.5},
+        {"iteration": 2.0, "train_deviance": 0.4},
+        # A bagged fit reports its furthest round again as slower bags catch up.
+        {"iteration": 2.0, "train_deviance": 0.45},
+    ):
+        history, truncated = _training_worker._append_live_loss_row(history, False, row, 10)
+    assert history == [
+        {"iteration": 1.0, "train_deviance": 0.5},
+        {"iteration": 2.0, "train_deviance": 0.45},
+    ]
+    assert truncated is False
+
+
+def test_live_loss_history_refuses_a_limit_too_small_for_its_extremes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute.routes import _training_worker
+
+    # Two values need six rows: first, newest, and each value's lowest and highest.
+    monkeypatch.setenv("HAUTE_TRAIN_LOSS_HISTORY_LIMIT", "5")
+    history: list[dict[str, float]] = []
+    truncated = False
+    for n in range(1, 6):
+        row = {"iteration": float(n), "train_rmse": 1.0 / n, "eval_rmse": 1.0 / n}
+        history, truncated = _training_worker._append_live_loss_row(history, truncated, row, 10)
+    with pytest.raises(RuntimeError, match="needs at least 6 rows"):
+        _training_worker._append_live_loss_row(
+            history, truncated, {"iteration": 6.0, "train_rmse": 0.1, "eval_rmse": 0.1}, 10
+        )
+
+
+def test_bounded_loss_history_thins_the_whole_fit_around_its_best_iteration() -> None:
     from haute.routes import _train_service
 
-    history = [
-        {"iteration": float(index), "rmse": float(index)}
-        for index in range(_train_service._max_train_loss_history() + 5)
-    ]
+    # Rows count iterations from one; best_iteration is zero-based.
+    history = [{"iteration": float(n), "train_rmse": 1.0 / n} for n in range(1, 1001)]
 
-    bounded, truncated = _train_service._bounded_loss_history(history)
+    bounded, truncated = _train_service._bounded_loss_history(history, best_iteration=660)
 
     assert truncated is True
-    assert len(bounded) == _train_service._max_train_loss_history()
-    assert bounded[0]["iteration"] == 5.0
-    assert bounded[-1]["iteration"] == float(_train_service._max_train_loss_history() + 4)
+    assert len(bounded) == _train_service._max_train_loss_history() == 200
+    iterations = [row["iteration"] for row in bounded]
+    assert iterations == sorted(set(iterations))
+    assert {1.0, 661.0, 1000.0} <= set(iterations)
+    # An even stride: no gap between kept rows is more than twice the average.
+    gaps = [later - earlier for earlier, later in zip(iterations, iterations[1:], strict=False)]
+    assert max(gaps) <= 2 * (999 / 199)
+
+
+def test_bounded_loss_history_keeps_a_short_history_whole() -> None:
+    from haute.routes import _train_service
+
+    history = [{"iteration": float(n), "train_rmse": 1.0} for n in range(1, 201)]
+
+    assert _train_service._bounded_loss_history(history, best_iteration=None) == (history, False)
 
 
 class TestExportEndpoint:
@@ -815,6 +1050,8 @@ class TestExportEndpoint:
         assert "script" in data
         assert "filename" in data
         assert "TrainingJob" in data["script"]
+        assert "feature_columns=['x1', 'x2']," in data["script"]
+        assert "exclude=" not in data["script"]
         assert data["filename"].endswith(".py")
 
     def test_export_missing_node(self, client, training_data):
@@ -850,6 +1087,34 @@ class TestTrainStatusEndpoint:
     def test_missing_job_returns_404(self, client):
         resp = client.get("/api/modelling/train/status/nonexistent")
         assert resp.status_code == 404
+
+    @pytest.mark.parametrize(
+        "remote_traceback",
+        ["Traceback (most recent call last):\n  ImportError: /opt/lib/engine.so\n", None],
+    )
+    @pytest.mark.parametrize(
+        ("job_type", "route"),
+        [("training", "train/status"), ("dispersion_estimate", "dispersion/status")],
+    )
+    def test_a_failed_job_returns_its_workers_traceback(
+        self, client, remote_traceback, job_type, route
+    ):
+        """The failure message says the full error is in the job's error details: the
+        traceback the supervisor recorded is those details."""
+        from haute.routes._job_lifecycle import JobLifecycle
+        from haute.routes.modelling import _store
+
+        job_id = _store.create_job({"status": "running", "job_type": job_type})
+        fields = {} if remote_traceback is None else {"worker_remote_traceback": remote_traceback}
+        JobLifecycle(_store).transition(
+            job_id, to="error", message="Training failed", fields=fields
+        )
+        try:
+            resp = client.get(f"/api/modelling/{route}/{job_id}")
+            assert resp.status_code == 200
+            assert resp.json()["worker_remote_traceback"] == remote_traceback
+        finally:
+            _store.delete_job(job_id)
 
     def test_non_finite_completed_result_becomes_job_error(self, client):
         """A bad completed payload must not make status polling 500 forever."""
@@ -957,19 +1222,6 @@ class TestTrainStatusEndpoint:
             _assert_json_finite(bad)
 
 
-class TestMlflowCheckEndpoint:
-    def test_mlflow_check_response_shape(self, client):
-        resp = client.get("/api/modelling/mlflow/check")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "mlflow_installed" in data
-        assert "mlflow_importable" in data
-        assert "tracking_configured" in data
-        assert "backend" in data
-        assert "databricks_host" in data
-        assert "detail" in data
-
-
 class TestMlflowLogEndpoint:
     def test_mlflow_log_job_not_found(self, client):
         resp = client.post(
@@ -1008,6 +1260,285 @@ class TestMlflowLogEndpoint:
             _store.delete_job("fake_running")
 
 
+class TestSaveModelEndpoint:
+    """Tests for ``POST /api/modelling/save`` and its destination preview."""
+
+    @pytest.fixture()
+    def _seeded_model(self, tmp_path, monkeypatch, training_artifact_root):
+        """Publish a completed job that owns its trained model + contract."""
+        from haute.routes.modelling import _store
+
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        model_path = _write_trained_model(tmp_path / "trained")
+        published = publish_trained_job(
+            _store,
+            "save_job",
+            root=training_artifact_root,
+            model_file=model_path,
+            result=_completed_train_response(job_id="save_job", model_path=str(model_path)),
+            config={},
+        )
+        monkeypatch.setattr("haute.routes.modelling._get_project_root", lambda: project_root)
+
+        try:
+            yield SimpleNamespace(
+                model_path=published / "frequency.cbm",
+                contract_path=published / "frequency.feature_contract.json",
+                contract_text=(published / "frequency.feature_contract.json").read_text(),
+                project_root=project_root,
+                models=project_root / "models",
+            )
+        finally:
+            _store.delete_job("save_job")
+
+    @staticmethod
+    def _save(client, output_path: str, **extra: object):
+        return client.post(
+            "/api/modelling/save",
+            json={"job_id": "save_job", "output_path": output_path, **extra},
+        )
+
+    def test_save_model_job_not_found(self, client):
+        resp = client.post(
+            "/api/modelling/save",
+            json={"job_id": "nonexistent", "output_path": "frequency"},
+        )
+        assert resp.status_code == 404
+
+    def test_save_model_job_not_completed(self, client):
+        from haute.routes.modelling import _store
+
+        seed_job(
+            _store,
+            "fake_running_save",
+            {
+                "status": "running",
+                "progress": 0.5,
+                "message": "Training...",
+                "created_at": time.time(),
+            },
+        )
+        try:
+            resp = client.post(
+                "/api/modelling/save",
+                json={"job_id": "fake_running_save", "output_path": "frequency"},
+            )
+            assert resp.status_code == 400
+        finally:
+            _store.delete_job("fake_running_save")
+
+    def test_bare_filename_saves_model_and_contract_under_models(self, client, _seeded_model):
+        resp = self._save(client, "frequency")
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "status": "ok",
+            "path": "models/frequency.cbm",
+            "feature_contract_path": "models/frequency.feature_contract.json",
+        }
+        assert (_seeded_model.models / "frequency.cbm").read_bytes() == b"model-bytes"
+        assert (
+            _seeded_model.models / "frequency.feature_contract.json"
+        ).read_text() == _seeded_model.contract_text
+        assert _seeded_model.model_path.read_bytes() == b"model-bytes"
+        assert _seeded_model.contract_path.read_text() == _seeded_model.contract_text
+
+    def test_folder_paths_are_project_root_relative(self, client, _seeded_model):
+        resp = self._save(client, "exports/severity.cbm")
+
+        assert resp.status_code == 200
+        assert resp.json()["path"] == "exports/severity.cbm"
+        assert resp.json()["feature_contract_path"] == "exports/severity.feature_contract.json"
+        assert (_seeded_model.project_root / "exports" / "severity.cbm").is_file()
+
+    def test_existing_destination_requires_overwrite(self, client, _seeded_model):
+        _seeded_model.models.mkdir()
+        (_seeded_model.models / "frequency.cbm").write_bytes(b"stale-model")
+        (_seeded_model.models / "frequency.feature_contract.json").write_text('{"stale": true}')
+
+        refused = self._save(client, "frequency")
+
+        assert refused.status_code == 409
+        assert refused.json()["detail"] == {
+            "error_code": "model_file_exists",
+            "message": "Model file already exists: models/frequency.cbm",
+        }
+        assert (_seeded_model.models / "frequency.cbm").read_bytes() == b"stale-model"
+
+        replaced = self._save(client, "frequency", overwrite=True)
+
+        assert replaced.status_code == 200
+        assert (_seeded_model.models / "frequency.cbm").read_bytes() == b"model-bytes"
+        assert (
+            _seeded_model.models / "frequency.feature_contract.json"
+        ).read_text() == _seeded_model.contract_text
+
+    def test_competing_saves_never_mix_one_jobs_model_with_anothers_contract(
+        self, tmp_path, _seeded_model, training_artifact_root
+    ):
+        """Two saves to one destination: the second waits for the first, then refuses."""
+        import threading
+
+        from haute.routes import modelling as modelling_routes
+        from haute.schemas import SaveModelRequest
+
+        other_model = _write_trained_model(tmp_path / "trained_other")
+        (tmp_path / "trained_other" / "frequency.cbm").write_bytes(b"other-model-bytes")
+        publish_trained_job(
+            modelling_routes._store,
+            "save_job_other",
+            root=training_artifact_root,
+            model_file=other_model,
+            result=_completed_train_response(job_id="save_job_other", model_path=str(other_model)),
+            config={},
+        )
+        real_copy = modelling_routes.atomic_copy_files
+        first_copying = threading.Event()
+        release_first = threading.Event()
+        second_copying = threading.Event()
+        copy_calls: list[int] = []
+
+        def gated_copy(pairs):
+            copy_calls.append(len(copy_calls))
+            if len(copy_calls) == 1:
+                first_copying.set()
+                assert release_first.wait(10), "the test never released the first save"
+            else:
+                second_copying.set()
+            real_copy(pairs)
+
+        outcomes: dict[str, object] = {}
+
+        def save(job_id: str) -> None:
+            try:
+                outcomes[job_id] = modelling_routes.save_model(
+                    SaveModelRequest(job_id=job_id, output_path="frequency")
+                )
+            except HTTPException as exc:
+                outcomes[job_id] = exc
+
+        first = threading.Thread(target=save, args=("save_job",))
+        second = threading.Thread(target=save, args=("save_job_other",))
+        try:
+            with patch.object(modelling_routes, "atomic_copy_files", gated_copy):
+                try:
+                    first.start()
+                    assert first_copying.wait(10)
+                    second.start()
+                    # The second save must not reach publication while the first holds it.
+                    assert not second_copying.wait(0.5)
+                finally:
+                    release_first.set()
+                    for thread in (first, second):
+                        if thread.ident is not None:
+                            thread.join(10)
+        finally:
+            modelling_routes._store.delete_job("save_job_other")
+
+        assert not first.is_alive() and not second.is_alive()
+        assert getattr(outcomes["save_job"], "status", None) == "ok"
+        refused = outcomes["save_job_other"]
+        assert isinstance(refused, HTTPException) and refused.status_code == 409
+        assert copy_calls == [0]
+        assert (_seeded_model.models / "frequency.cbm").read_bytes() == b"model-bytes"
+        assert (
+            _seeded_model.models / "frequency.feature_contract.json"
+        ).read_text() == _seeded_model.contract_text
+
+    def test_an_existing_contract_alone_also_requires_overwrite(self, client, _seeded_model):
+        _seeded_model.models.mkdir()
+        (_seeded_model.models / "frequency.feature_contract.json").write_text('{"stale": true}')
+
+        resp = self._save(client, "frequency")
+
+        assert resp.status_code == 409
+        assert resp.json()["detail"]["error_code"] == "model_file_exists"
+        assert not (_seeded_model.models / "frequency.cbm").exists()
+
+    def test_suffix_mismatch_is_rejected(self, client, _seeded_model):
+        resp = self._save(client, "frequency.pkl")
+
+        assert resp.status_code == 400
+        assert ".cbm" in resp.json()["detail"]
+        assert not _seeded_model.models.exists()
+
+    def test_missing_training_contract_is_gone(self, client, _seeded_model):
+        _seeded_model.contract_path.unlink()
+
+        resp = self._save(client, "frequency")
+
+        assert resp.status_code == 410
+        assert resp.json()["detail"]["error_code"] == "training_artifacts_unavailable"
+        assert str(_seeded_model.contract_path.parent) not in str(resp.json()["detail"])
+        assert not _seeded_model.models.exists()
+
+    def test_released_training_artifacts_are_gone(self, client, _seeded_model):
+        from haute.routes._training_artifacts import TRAINING_ARTIFACTS_HANDLE_KEY
+        from haute.routes.modelling import _store
+
+        assert _store.detach_artifact_handle("save_job", TRAINING_ARTIFACTS_HANDLE_KEY)
+
+        resp = self._save(client, "frequency")
+
+        assert resp.status_code == 410
+        assert resp.json()["detail"]["error_code"] == "training_artifacts_unavailable"
+        assert not _seeded_model.models.exists()
+
+    @pytest.mark.parametrize("output_path", ["../outside.cbm", "models/../../outside.cbm"])
+    def test_escaping_path_is_forbidden(self, client, _seeded_model, output_path):
+        resp = self._save(client, output_path)
+
+        assert resp.status_code == 403
+
+    def test_copy_oserror_returns_sanitized_500(self, client, _seeded_model):
+        with patch(
+            "haute.routes.modelling.atomic_copy_files",
+            side_effect=OSError("disk full"),
+        ):
+            resp = self._save(client, "frequency")
+
+        assert resp.status_code == 500
+        assert "models/frequency.cbm" not in resp.json()["detail"]
+
+    def test_empty_output_path_is_invalid(self, client, _seeded_model):
+        assert self._save(client, "").status_code == 422
+
+    def test_destination_preview_resolves_without_writing(self, client, _seeded_model):
+        resp = client.post(
+            "/api/modelling/save/destination",
+            json={"output_path": "frequency", "algorithm": "glm"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"path": "models/frequency.rsglm", "suffix_mismatch": False}
+        assert not _seeded_model.models.exists()
+
+    def test_destination_preview_flags_a_suffix_mismatch(self, client, _seeded_model):
+        resp = client.post(
+            "/api/modelling/save/destination",
+            json={"output_path": "models/frequency.rsglm", "algorithm": "catboost"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"path": "models/frequency.rsglm", "suffix_mismatch": True}
+
+    def test_destination_preview_rejects_an_escape_and_unknown_algorithm(
+        self, client, _seeded_model
+    ):
+        escaped = client.post(
+            "/api/modelling/save/destination",
+            json={"output_path": "../frequency", "algorithm": "catboost"},
+        )
+        unknown = client.post(
+            "/api/modelling/save/destination",
+            json={"output_path": "frequency", "algorithm": "unregistered"},
+        )
+
+        assert escaped.status_code == 403
+        assert unknown.status_code == 422
+
+
 # ---------------------------------------------------------------------------
 # Phase 1A: Pure function tests
 # ---------------------------------------------------------------------------
@@ -1044,7 +1575,7 @@ class TestFriendlyError:
         exc = type("CatBoostError", (Exception,), {})("NaN values in features")
         result = _friendly_error(exc)
         assert "NaN" in result or "nan" in result.lower()
-        assert "polars" in result.lower()
+        assert "transform node" in result.lower()
 
     def test_catboost_feature_mismatch(self):
         exc = type("CatBoostError", (Exception,), {})("feature number mismatch: expected 10 got 8")
@@ -1119,7 +1650,7 @@ class TestFriendlyError:
         exc = type("CatBoostError", (Exception,), {})("Found inf in column 3")
         result = _friendly_error(exc)
         assert "infinite" in result.lower() or "inf" in result.lower()
-        assert "polars" in result.lower()
+        assert "transform node" in result.lower()
 
     def test_empty_exception_message(self):
         exc = RuntimeError("")
@@ -1229,6 +1760,31 @@ class TestEstimateEndpoint:
         assert "estimated_mb" in data
         assert "training_mb" in data
 
+    @pytest.mark.parametrize(
+        ("validate", "rows", "unbounded"),
+        [(None, 100_000 * 100_000, ["competitor_join"]), ("m:1", 100_000, [])],
+        ids=["undeclared", "many-to-one"],
+    )
+    def test_an_undeclared_join_is_an_unproven_bound_naming_the_join(
+        self, client, tmp_path, validate: str | None, rows: int, unbounded: list[str]
+    ) -> None:
+        """A join's row product is a worst case, never a count to downsample from (MDL-01)."""
+        graph = _make_joined_modelling_graph(tmp_path, 100_000, validate)
+
+        resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["total_rows"] == rows
+        assert data["unbounded_join_node_ids"] == unbounded
+        # Neither says "Will downsample": the product is unproven, and 100,000 rows fit.
+        assert (data["was_downsampled"], data["warning"]) == (False, None)
+        if unbounded:
+            # Ten billion rows cannot fit, so training would sample to this limit.
+            assert data["safe_row_limit"] is not None
+        else:
+            assert data["safe_row_limit"] is None
+
     def test_estimate_gpu_unknown_vram_returns_advisory_warning(self, client, training_data):
         """Unknown VRAM surfaces as gpu_warning in the response, without the
         switch-to-CPU refusal suffix reserved for observed-insufficient VRAM."""
@@ -1281,6 +1837,163 @@ class TestEstimateEndpoint:
             "max_selection_validation_rows": 12,
         }
 
+    @pytest.mark.parametrize(
+        "terms",
+        [
+            {"ghost": {"type": "linear"}},
+            {"x1": {"type": "linear"}, "ratio": {"type": "expression", "expr": "x1 / missing"}},
+        ],
+    )
+    def test_evaluation_preview_ignores_unfinished_terms(self, client, training_data, terms):
+        """The preview reads only the target and the evaluation key, so a GLM
+        term on a column that is not upstream does not fail the estimate."""
+        graph = _make_modelling_graph(training_data, algorithm="glm", params={})
+        config = graph["nodes"][1]["data"]["config"]
+        config.update({"family": "gaussian", "terms": terms})
+
+        resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+
+        assert resp.status_code == 200, resp.text
+        preview = resp.json()["evaluation_preview"]
+        assert preview is not None
+        assert preview["development_rows"] == 60
+
+    def test_estimate_maps_evaluation_preview_validation_failure_to_422(
+        self,
+        client,
+        tmp_path,
+    ):
+        """A data-dependent preflight failure is a 422 with its reason, never a 500."""
+        path = tmp_path / "null_target.parquet"
+        pl.DataFrame(
+            {
+                "x1": [1.0, 2.0, 3.0],
+                "y": pl.Series([None, None, None], dtype=pl.Float64),
+            }
+        ).write_parquet(path)
+        graph = _make_modelling_graph(str(path), feature_columns=["x1"])
+
+        resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert detail.startswith("Evaluation preview failed: ")
+        assert "only null values" in detail
+
+    def test_estimate_maps_contract_mismatch_to_422(self, client, training_data):
+        """A node whose output breaks its declared contract is a 422, never a 500."""
+        base = _make_modelling_graph(training_data)
+        train_config = next(n for n in base["nodes"] if n["id"] == "train")["data"]["config"]
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "data": {
+                            "label": "source",
+                            "nodeType": "dataInput",
+                            "config": make_ready_file_input_config(training_data),
+                        },
+                    },
+                    {
+                        "id": "prep",
+                        "data": {
+                            "label": "prep",
+                            "nodeType": "polars",
+                            "config": {
+                                "code": "df = source",
+                                "contract": {
+                                    "inputs": [],
+                                    "outputs": ["x1", "x2", "y", "phantom"],
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "id": "train",
+                        "data": {"label": "train", "nodeType": "modelling", "config": train_config},
+                    },
+                ],
+                "edges": [
+                    make_edge("source", "prep").model_dump(),
+                    make_edge("prep", "train").model_dump(),
+                ],
+            }
+        ).model_dump()
+
+        resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert detail.startswith("Evaluation preview failed: ")
+        assert "phantom" in detail
+
+    def test_estimate_maps_polars_missing_column_to_422(self, client, training_data):
+        """Post-load code naming a column the source lacks is a 422, never a 500."""
+        graph = _make_modelling_graph(training_data)
+        source = next(n for n in graph["nodes"] if n["id"] == "source")
+        source["data"]["config"]["code"] = "df = df.with_columns(flag = pl.col('missing'))"
+
+        resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert detail.startswith("Evaluation preview failed: ")
+        assert "missing" in detail
+
+    def test_estimate_reports_a_rejected_upstream_node_config_as_its_contract_payload(
+        self, client, training_data
+    ):
+        """A Scenario Expander without its grid size upstream of the model is a
+        public config rejection: its payload, not a stringified ValueError."""
+        graph = _make_modelling_graph(training_data)
+        graph["nodes"].append(_expander_without_step_count())
+        graph["edges"] = [
+            make_edge("source", "expander").model_dump(),
+            make_edge("expander", "train").model_dump(),
+        ]
+
+        resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+
+        assert resp.status_code == 422, resp.text
+        assert resp.json()["detail"] == _MISSING_STEP_COUNT_PAYLOAD
+
+    def test_estimate_evaluation_preview_accepts_upstream_group_by(
+        self,
+        client,
+        training_data,
+    ):
+        graph = _make_modelling_graph(training_data)
+        graph["nodes"].insert(
+            1,
+            {
+                "id": "grouped_features",
+                "data": {
+                    "label": "grouped_features",
+                    "nodeType": "polars",
+                    "config": {
+                        "code": (
+                            "df = source.group_by('x1').agg("
+                            "pl.col('x2').mean().alias('x2'), "
+                            "pl.col('y').mean().alias('y'))"
+                        )
+                    },
+                },
+            },
+        )
+        graph["edges"] = [
+            make_edge("source", "grouped_features").model_dump(),
+            make_edge("grouped_features", "train").model_dump(),
+        ]
+
+        resp = client.post(
+            "/api/modelling/estimate",
+            json={"graph": graph, "node_id": "train"},
+        )
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["evaluation_preview"] is not None
+
     def test_estimate_preview_includes_group_counts(
         self,
         client,
@@ -1296,6 +2009,7 @@ class TestEstimateEndpoint:
         ).write_parquet(path)
         graph = _make_modelling_graph(
             str(path),
+            feature_columns=["x"],
             evaluation={
                 "schema_version": 1,
                 "strategy": "group",
@@ -1343,6 +2057,7 @@ class TestEstimateEndpoint:
         ).write_parquet(path)
         graph = _make_modelling_graph(
             str(path),
+            feature_columns=["x"],
             evaluation={
                 "schema_version": 1,
                 "strategy": "temporal",
@@ -1383,6 +2098,45 @@ class TestEstimateEndpoint:
         assert data.get("gpu_vram_estimated_mb") is not None
         assert data.get("gpu_warning") is not None
 
+    def test_estimate_xgboost_gpu_vram_path(self, client, training_data):
+        graph = _xgboost_gpu_graph(training_data)
+        with patch("haute._host_memory.available_vram_bytes", return_value=1):
+            resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data.get("gpu_vram_estimated_mb") is not None
+        assert "Train on CPU" in data["gpu_warning"]
+
+    @pytest.mark.parametrize(
+        ("algorithm", "device", "message"),
+        [
+            ("lightgbm", "gpu", "LightGBM trains on CPU only"),
+            ("xgboost", "cuda", 'device must be "cpu" or "gpu"'),
+        ],
+    )
+    def test_train_refuses_a_bad_device_before_preparation_with_explicit_metrics(
+        self, client, training_data, algorithm, device, message
+    ):
+        graph = _xgboost_gpu_graph(training_data)
+        node = next(node for node in graph["nodes"] if node["id"] == "train")
+        node["data"]["config"].update(
+            {
+                "algorithm": algorithm,
+                "device": device,
+                "metrics": ["rmse"],
+                "params": {"num_iterations": 5}
+                if algorithm == "lightgbm"
+                else {"num_boost_round": 5},
+            }
+        )
+        with patch(
+            "haute.routes._training_lifecycle.TrainService._launch_training_protocol"
+        ) as launch:
+            resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
+        assert resp.status_code == 400, resp.text
+        assert message in resp.json()["detail"]
+        launch.assert_not_called()
+
     def test_estimate_missing_node(self, client, training_data):
         graph = _make_modelling_graph(training_data)
         resp = client.post(
@@ -1390,17 +2144,172 @@ class TestEstimateEndpoint:
         )
         assert resp.status_code == 404
 
-    def test_estimate_exception_returns_empty(self, client, training_data):
-        """If the RAM estimate fails entirely, return an empty estimate (not 500)."""
+    def test_estimate_failure_is_an_error_not_an_empty_estimate(self, client, training_data):
+        """An estimator exception is a failure the user sees, never the empty
+        estimate that stands for a size the estimator cannot prove."""
         graph = _make_modelling_graph(training_data)
         with patch(
             "haute._ram_estimate.estimate_safe_training_rows",
             side_effect=RuntimeError("probe failed"),
         ):
             resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
-        assert resp.status_code == 200
+        assert resp.status_code == 500
+
+    @pytest.mark.parametrize(
+        ("unavailable", "expected_rows", "expected_reason"),
+        [
+            (
+                RamEstimate.row_count_unprovable("explode_items", 8 * 1024**3),
+                None,
+                {"reason": "row_count_unprovable", "blocking_node_id": "explode_items"},
+            ),
+            (
+                RamEstimate.schema_unresolvable(250_000, 8 * 1024**3),
+                250_000,
+                {"reason": "schema_unresolvable", "blocking_node_id": None},
+            ),
+        ],
+    )
+    def test_estimate_the_estimator_cannot_size_says_why_without_figures(
+        self, client, training_data, unavailable, expected_rows, expected_reason
+    ):
+        """An unavailable estimate carries its reason and no memory figure or
+        VRAM check, even with GPU training and a user row limit configured."""
+        graph = _make_modelling_graph(training_data)
+        for node in graph["nodes"]:
+            if node["id"] == "train":
+                node["data"]["config"]["params"] = {"task_type": "GPU"}
+                node["data"]["config"]["row_limit"] = 500
+        with (
+            patch("haute._ram_estimate.estimate_safe_training_rows", return_value=unavailable),
+            patch("haute.routes.modelling._check_gpu_vram") as vram_check,
+        ):
+            resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+        assert resp.status_code == 200, resp.text
         data = resp.json()
-        assert data.get("total_rows") is None
+        assert data["unavailable"] == expected_reason
+        assert data["total_rows"] == expected_rows
+        assert (data["estimated_mb"], data["training_mb"], data["bytes_per_row"]) == (
+            None,
+            None,
+            None,
+        )
+        assert data["available_mb"] == 8192.0
+        assert data["safe_row_limit"] == 500
+        assert (data["was_downsampled"], data["warning"]) == (False, None)
+        assert data["gpu_vram_estimated_mb"] is None
+        vram_check.assert_not_called()
+
+    def test_available_estimate_reports_figures_and_no_reason(self, client, training_data):
+        graph = _make_modelling_graph(training_data)
+        available = RamEstimate(
+            safe_row_limit=None,
+            total_rows=1_000,
+            estimated_bytes=3 * 1024**2,
+            available_bytes=8 * 1024**3,
+            bytes_per_row=3_145.7,
+            was_downsampled=False,
+            warning=None,
+            probe_columns=4,
+        )
+        with patch("haute._ram_estimate.estimate_safe_training_rows", return_value=available):
+            resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["unavailable"] is None
+        assert (data["total_rows"], data["estimated_mb"], data["training_mb"]) == (1_000, 3.0, 3.0)
+        assert data["bytes_per_row"] == 3_145.7
+
+    @pytest.mark.parametrize(
+        ("overrides", "message"),
+        [
+            ({"estimated_mb": None}, "requires a row total and memory figures"),
+            ({"total_rows": None}, "requires a row total and memory figures"),
+            (
+                {"unbounded_join_node_ids": ["join"], "warning": "downsampled"},
+                "worst-case row bound has no downsampling verdict",
+            ),
+            (
+                {"unavailable": {"reason": "schema_unresolvable", "blocking_node_id": None}},
+                "has no memory figures",
+            ),
+            (
+                {
+                    "estimated_mb": None,
+                    "training_mb": None,
+                    "bytes_per_row": None,
+                    "was_downsampled": True,
+                    "unavailable": {"reason": "schema_unresolvable", "blocking_node_id": None},
+                },
+                "no downsampling verdict or warning",
+            ),
+            (
+                {
+                    "estimated_mb": None,
+                    "training_mb": None,
+                    "bytes_per_row": None,
+                    "gpu_vram_estimated_mb": 12.0,
+                    "unavailable": {"reason": "schema_unresolvable", "blocking_node_id": None},
+                },
+                "no GPU VRAM check",
+            ),
+            (
+                {
+                    "estimated_mb": None,
+                    "training_mb": None,
+                    "bytes_per_row": None,
+                    "unavailable": {"reason": "row_count_unprovable", "blocking_node_id": "j"},
+                },
+                "only a row_count_unprovable estimate lacks a row total",
+            ),
+            (
+                {
+                    "total_rows": None,
+                    "estimated_mb": None,
+                    "training_mb": None,
+                    "bytes_per_row": None,
+                    "unavailable": {"reason": "row_count_unprovable", "blocking_node_id": None},
+                },
+                "names the blocking node",
+            ),
+            (
+                {
+                    "estimated_mb": None,
+                    "training_mb": None,
+                    "bytes_per_row": None,
+                    "unavailable": {"reason": "schema_unresolvable", "blocking_node_id": "j"},
+                },
+                "names no blocking node",
+            ),
+            (
+                {
+                    "estimated_mb": None,
+                    "training_mb": None,
+                    "bytes_per_row": None,
+                    "unavailable": {"reason": "cardinality", "blocking_node_id": None},
+                },
+                "row_count_unprovable",
+            ),
+        ],
+    )
+    def test_estimate_response_rejects_figures_that_disagree_with_availability(
+        self, overrides, message
+    ):
+        from pydantic import ValidationError
+
+        from haute.schemas import TrainEstimateResponse
+
+        payload = {
+            "total_rows": 100,
+            "estimated_mb": 1.0,
+            "training_mb": 1.0,
+            "available_mb": 8192.0,
+            "bytes_per_row": 10.0,
+            "unavailable": None,
+            "unbounded_join_node_ids": [],
+        }
+        with pytest.raises(ValidationError, match=message):
+            TrainEstimateResponse.model_validate({**payload, **overrides})
 
     def test_estimate_suppresses_ram_warning_when_user_limit_binds(self, client, training_data):
         """When user's row_limit is lower than the RAM-safe limit, suppress the RAM warning."""
@@ -1410,13 +2319,13 @@ class TestEstimateEndpoint:
             if node["id"] == "train":
                 node["data"]["config"]["row_limit"] = 500
 
-        mock_est = SimpleNamespace(
+        mock_est = RamEstimate(
             safe_row_limit=9_000_000,
             warning="Dataset downsampled to 9,000,000 of 10,000,000 rows",
             total_rows=10_000_000,
             probe_columns=5,
-            estimated_bytes=1e9,
-            available_bytes=2e10,
+            estimated_bytes=1_000_000_000,
+            available_bytes=20_000_000_000,
             bytes_per_row=100.0,
             was_downsampled=True,
         )
@@ -1438,13 +2347,13 @@ class TestEstimateEndpoint:
             if node["id"] == "train":
                 node["data"]["config"]["row_limit"] = 20_000_000
 
-        mock_est = SimpleNamespace(
+        mock_est = RamEstimate(
             safe_row_limit=9_000_000,
             warning="Dataset downsampled to 9,000,000 of 10,000,000 rows",
             total_rows=10_000_000,
             probe_columns=5,
-            estimated_bytes=1e9,
-            available_bytes=2e10,
+            estimated_bytes=1_000_000_000,
+            available_bytes=20_000_000_000,
             bytes_per_row=100.0,
             was_downsampled=True,
         )
@@ -1463,79 +2372,120 @@ class TestEstimateEndpoint:
 class TestMlflowLogSuccess:
     """Tests for /mlflow/log success and exception paths."""
 
-    def test_mlflow_log_success(self, client):
-        """Inject a completed job and mock log_experiment to test success path."""
+    @staticmethod
+    @contextmanager
+    def _published(
+        job_id: str,
+        root: Path,
+        tmp_path: Path,
+        *,
+        config: dict[str, object] | None = None,
+        **result_overrides: object,
+    ):
         from haute.routes.modelling import _store
 
-        fake_result = _completed_train_response(
-            job_id="test_log",
-            diagnostic_metrics={"gini": 0.85, "rmse": 0.12},
-            final_test_metrics={"gini": 0.85, "rmse": 0.12},
-            model_path="/tmp/model.cbm",
-        )
-        seed_job(
+        model_path = _write_trained_model(tmp_path / job_id)
+        publish_trained_job(
             _store,
-            "test_log",
-            {
-                "status": "completed",
-                "result": fake_result,
-                "config": {"algorithm": "catboost", "task": "regression", "target": "y"},
-                "node_label": "my_model",
-                "created_at": time.time(),
-            },
+            job_id,
+            root=root,
+            model_file=model_path,
+            result=_completed_train_response(
+                job_id=job_id, model_path=str(model_path), **result_overrides
+            ),
+            config=config or {"algorithm": "catboost", "task": "regression", "target": "y"},
+            node_label="my_model",
         )
+        try:
+            yield
+        finally:
+            _store.delete_job(job_id)
+
+    def test_mlflow_log_success(self, client, tmp_path, training_artifact_root):
+        """A published job logs a candidate built from its own artifacts."""
         mock_log_result = SimpleNamespace(
             backend="local",
-            experiment_name="/Shared/haute/my_model",
+            experiment_name="my_model",
             run_id="abc123",
             run_url=None,
             tracking_uri="file:///tmp/mlruns",
         )
-        try:
-            with patch(
+        with (
+            self._published(
+                "test_log",
+                training_artifact_root,
+                tmp_path,
+                final_test_metrics={"gini": 0.85, "rmse": 0.12},
+                diagnostic_metrics={"gini": 0.85, "rmse": 0.12},
+            ),
+            patch(
                 "haute.modelling._mlflow_log.log_experiment",
                 return_value=mock_log_result,
-            ):
-                resp = client.post("/api/modelling/mlflow/log", json={"job_id": "test_log"})
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["status"] == "ok"
-            assert data["backend"] == "local"
-            assert data["run_id"] == "abc123"
-        finally:
-            _store.delete_job("test_log")
+            ) as m_log,
+        ):
+            resp = client.post(
+                "/api/modelling/mlflow/log",
+                json={"job_id": "test_log"},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["backend"] == "local"
+        assert data["run_id"] == "abc123"
+        candidate = m_log.call_args.kwargs["candidate"]
+        assert candidate.metrics["final_test_gini"] == 0.85
+        assert candidate.tags["haute.job_id"] == "test_log"
+        assert candidate.artifacts.model.parent.parent.parent == training_artifact_root
 
-    def test_mlflow_log_exception_returns_500(self, client):
+    def test_fixed_catboost_logs_the_recorded_final_tree_count(
+        self, client, tmp_path, training_artifact_root
+    ):
+        log_result = SimpleNamespace(
+            backend="local",
+            experiment_name="my_model",
+            run_id="trees",
+            run_url=None,
+            tracking_uri="file:///tmp/mlruns",
+        )
+        with (
+            self._published(
+                "test_trees",
+                training_artifact_root,
+                tmp_path,
+                config={
+                    "algorithm": "catboost",
+                    "task": "regression",
+                    "target": "y",
+                    "params": {"n_estimators": 20, "depth": 3, "early_stopping_rounds": 5},
+                },
+                final_tree_count=7,
+            ),
+            patch("haute.modelling._mlflow_log.log_experiment", return_value=log_result) as m_log,
+        ):
+            resp = client.post("/api/modelling/mlflow/log", json={"job_id": "test_trees"})
+        assert resp.status_code == 200
+        candidate = m_log.call_args.kwargs["candidate"]
+        assert candidate.params["param_iterations"] == 7
+        assert candidate.params["param_depth"] == 3
+        assert "param_n_estimators" not in candidate.params
+        assert "param_early_stopping_rounds" not in candidate.params
+
+    def test_mlflow_log_exception_returns_500(self, client, tmp_path, training_artifact_root):
         """If log_experiment raises, should return 500."""
-        from haute.routes.modelling import _store
-
-        fake_result = _completed_train_response(
-            job_id="test_err",
-            diagnostic_metrics={"gini": 0.5},
-            final_test_metrics={"gini": 0.5},
-        )
-        seed_job(
-            _store,
-            "test_err",
-            {
-                "status": "completed",
-                "result": fake_result,
-                "config": {},
-                "node_label": "model",
-                "created_at": time.time(),
-            },
-        )
-        try:
-            with patch(
+        with (
+            self._published("test_err", training_artifact_root, tmp_path),
+            patch(
                 "haute.modelling._mlflow_log.log_experiment",
                 side_effect=RuntimeError("MLflow connection refused"),
-            ):
-                resp = client.post("/api/modelling/mlflow/log", json={"job_id": "test_err"})
-            assert resp.status_code == 500
-            assert "MLflow connection refused" not in resp.json()["detail"]
-            assert "Check the server logs" in resp.json()["detail"]
-        finally:
-            _store.delete_job("test_err")
+            ),
+        ):
+            resp = client.post(
+                "/api/modelling/mlflow/log",
+                json={"job_id": "test_err"},
+            )
+        assert resp.status_code == 500
+        assert "MLflow connection refused" not in resp.json()["detail"]
+        assert "Check the server logs" in resp.json()["detail"]
 
     def test_mlflow_log_no_result_data(self, client):
         """Completed job with no result should return 400."""
@@ -1553,24 +2503,9 @@ class TestMlflowLogSuccess:
         try:
             resp = client.post("/api/modelling/mlflow/log", json={"job_id": "no_result"})
             assert resp.status_code == 400
-            assert "no result" in resp.json()["detail"].lower()
+            assert "no evaluation report" in resp.json()["detail"].lower()
         finally:
             _store.delete_job("no_result")
-
-
-class TestMlflowCheckImportError:
-    """Test /mlflow/check when mlflow is not installed."""
-
-    def test_mlflow_import_error(self, client):
-        """Simulate mlflow not being installed via sys.modules patch."""
-        import sys
-
-        # patch.dict automatically restores sys.modules on exit
-        with patch.dict(sys.modules, {"mlflow": None}):
-            resp = client.get("/api/modelling/mlflow/check")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["mlflow_installed"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -1708,6 +2643,7 @@ class TestBackgroundThreadErrors:
             available_bytes=500.0,
             bytes_per_row=10.0,
             was_downsampled=True,
+            unbounded_join_node_ids=(),
         )
         from tests.test_training_worker_protocol import _SuccessfulTrainingJob
 
@@ -1745,6 +2681,7 @@ class TestBackgroundThreadErrors:
             available_bytes=500.0,
             bytes_per_row=10.0,
             was_downsampled=True,
+            unbounded_join_node_ids=(),
         )
         from tests.test_training_worker_protocol import _SuccessfulTrainingJob
 
@@ -1766,9 +2703,58 @@ class TestBackgroundThreadErrors:
                 assert status.get("warning") is None
 
 
+def test_downsampling_warning_comes_from_the_rows_training_prepared(tmp_path) -> None:
+    """The RAM limit warns only when it removed rows, and never claims a join's product."""
+    from haute._types import PipelineGraph
+    from haute.routes._training_lifecycle import _downsampling_warning
+
+    graph = PipelineGraph.model_validate(
+        _make_joined_modelling_graph(tmp_path, rows=10, validate=None)
+    )
+
+    def estimate(unbounded: tuple[str, ...]) -> RamEstimate:
+        return RamEstimate(
+            safe_row_limit=500,
+            total_rows=40_000,
+            estimated_bytes=10**9,
+            available_bytes=2 * 1024**3,
+            bytes_per_row=100.0,
+            was_downsampled=not unbounded,
+            warning=None if unbounded else "Dataset downsampled to 500 of 40,000 rows",
+            unbounded_join_node_ids=unbounded,
+        )
+
+    unproven = estimate(("competitor_join",))
+    # Fewer rows than the limit arrived: nothing was removed.
+    assert _downsampling_warning(graph, unproven, 200) is None
+    assert _downsampling_warning(graph, unproven, 500) == (
+        "Dataset downsampled to 500 rows to fit in available RAM (2.0 GB). Its row count is "
+        "not proven: 'competitor_join' has no key contract, so up to 40,000 rows could arrive."
+    )
+    assert _downsampling_warning(graph, estimate(()), 500) == (
+        "Dataset downsampled to 500 of 40,000 rows"
+    )
+
+
 # ---------------------------------------------------------------------------
 # TrainService._execute_and_sink checkpoint cleanup
 # ---------------------------------------------------------------------------
+
+
+@contextmanager
+def _training_prep_context():
+    """Yield an admitted TRAINING_PREP context for direct child-core calls."""
+    from haute._execution_admission import create_admitted_execution_context
+    from haute._execution_context import ExecutionProfile
+
+    context = create_admitted_execution_context(
+        operation="training_pipeline",
+        profile=ExecutionProfile.TRAINING_PREP,
+    )
+    try:
+        yield context
+    finally:
+        context.release_admission(preserve_primary_error=True)
 
 
 class TestTrainingProjection:
@@ -1807,22 +2793,29 @@ class TestTrainingProjection:
             )
         }
 
-    def test_catboost_training_columns_use_all_except_demand(self):
+    def test_catboost_training_columns_are_exactly_selected_features_and_roles(self):
+        """Features are opt-in, so the demand is exact before the schema is known:
+        the selected features plus the role columns, never an all-except demand.
+        A role column listed as a feature is dormant and demanded once, as a role;
+        a column nobody selected (``policy_id``) is not demanded at all."""
         demand = _training_required_columns_by_node(
             "train",
             {
                 "algorithm": "catboost",
                 "target": "claim_count",
-                "exclude": ["policy_id"],
+                "weight": "exposure",
+                "feature_columns": ["driver_age", "territory", "claim_count"],
             },
         )
 
-        assert demand is not None
-        assert type(demand["train"]).__name__ == "AllExcept"
-        assert demand["train"].required_columns == frozenset({"claim_count"})
-        assert demand["train"].excluded_columns == frozenset({"claim_count", "policy_id"})
+        assert demand == {
+            "train": frozenset({"driver_age", "territory", "claim_count", "exposure"})
+        }
+        assert type(demand["train"]) is frozenset
 
-    def test_catboost_feature_menu_exclusions_project_before_api_input_loading(self):
+    def test_catboost_feature_selection_projects_before_api_input_loading(self):
+        """An unselected API column is projected away at the input, from the exact
+        selected-features-plus-roles seed."""
         config = {
             "algorithm": "catboost",
             "target": "target",
@@ -1837,7 +2830,7 @@ class TestTrainingProjection:
                 "seed": 42,
                 "validation": {"method": "single", "size": 0.2},
             },
-            "exclude": ["excluded_feature"],
+            "feature_columns": ["feature_a", "feature_b"],
         }
         graph = make_graph(
             {
@@ -1857,7 +2850,7 @@ class TestTrainingProjection:
                                             for column in (
                                                 "feature_a",
                                                 "feature_b",
-                                                "excluded_feature",
+                                                "unselected_feature",
                                                 "target",
                                                 "weight",
                                                 "offset",
@@ -1912,16 +2905,18 @@ class TestTrainingProjection:
             }
         )
 
+        assert required == {"train": expected}
         assert projection.needed_by_node["train"] == expected
         assert projection.demand_for_edge(graph.edges[0]) == expected
-        assert projection.diagnostics.node_reasons["train"].rule == "schema_all_except"
+        assert projection.diagnostics.node_reasons["train"].rule == "projection_seed"
 
-    def test_execute_and_sink_forwards_training_projection(self, tmp_path):
-        from haute.routes._job_store import JobStore
-        from haute.schemas import TrainRequest
+    def test_prepare_training_data_forwards_training_projection(self, tmp_path):
+        from haute.routes._training_preparation import (
+            TrainingPreparationRequest,
+            prepare_training_data,
+        )
 
-        store = JobStore()
-        service = TrainService(store)
+        config = {"target": "claim_count", "feature_columns": ["driver_age"]}
         graph = make_graph(
             {
                 "nodes": [
@@ -1930,15 +2925,13 @@ class TestTrainingProjection:
                         "data": {
                             "label": "train",
                             "nodeType": "modelling",
-                            "config": {"target": "claim_count"},
+                            "config": dict(config),
                         },
                     }
                 ],
                 "edges": [],
             }
         )
-        body = TrainRequest(graph=graph, node_id="train")
-        job_id = store.create_job({"status": "running"})
         captured: dict[str, object] = {}
 
         def fake_execute_lazy(*args, **kwargs):
@@ -1951,41 +2944,262 @@ class TestTrainingProjection:
             )
 
         seeds = {"train": frozenset({"claim_count", "driver_age"})}
+        parquet_path = str(tmp_path / "prepared.parquet")
+        request = TrainingPreparationRequest(
+            graph=graph,
+            node_id="train",
+            job_id="job",
+            source="live",
+            parquet_path=parquet_path,
+            config=config,
+            project_root=str(tmp_path),
+            required_columns_by_node=seeds,
+        )
         with (
             patch(
-                "haute.routes._training_lifecycle.execute_lazy_graph", side_effect=fake_execute_lazy
+                "haute.routes._training_preparation.execute_lazy_graph",
+                side_effect=fake_execute_lazy,
             ),
             patch("haute.executor._build_node_fn", return_value=None),
             patch("haute.modelling._algorithms._mem_checkpoint"),
             patch("haute.modelling._algorithms._MEM_LOG", MagicMock(write_text=MagicMock())),
             patch("haute.executor._preview_cache", MagicMock()),
             patch("haute.trace._cache", MagicMock()),
-            patch("haute._polars_utils.bounded_sink"),
         ):
-            tmp_parquet = service._execute_and_sink(
-                body,
-                preamble_ns=None,
-                row_limit=None,
-                job_id=job_id,
-                required_columns_by_node=seeds,
+            with _training_prep_context() as context:
+                outcome = prepare_training_data(request, execution_context=context)
+
+        assert outcome.failure is None
+        assert captured["required_columns_by_node"] == seeds
+        # The run executes under a seed plan planned for the same demand.
+        plan = captured["snapshot_plan"]
+        assert plan is not None
+        assert captured["prepare_inputs"] is False
+        assert plan.decision.target_node_id == "train"
+        assert seeds["train"] <= set(plan.decision.planning_required_columns["train"])
+        assert outcome.parquet_path == parquet_path
+        assert Path(parquet_path).exists()
+        assert outcome.feature_selection is not None
+        assert outcome.execution_metrics is not None
+        assert pl.read_parquet(parquet_path)["claim_count"].to_list() == [1.0]
+
+    @pytest.mark.parametrize(
+        ("project_to_keep_columns", "written"),
+        [
+            (True, ["claim_count", "driver_age"]),
+            (False, ["claim_count", "driver_age", "unselected"]),
+        ],
+        ids=["projects_to_keep_columns", "no_projection_drops_nothing"],
+    )
+    def test_prepare_training_data_sink_keeps_only_keep_columns_when_projecting(
+        self, tmp_path, project_to_keep_columns, written
+    ) -> None:
+        """A tree model's sink drops every column outside ``keep_columns`` (its
+        selected features and role columns); without projection nothing is dropped."""
+        from haute.routes._training_preparation import (
+            TrainingPreparationRequest,
+            prepare_training_data,
+        )
+
+        config = {"target": "claim_count", "feature_columns": ["driver_age"]}
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "train",
+                        "data": {
+                            "label": "train",
+                            "nodeType": "modelling",
+                            "config": dict(config),
+                        },
+                    }
+                ],
+                "edges": [],
+            }
+        )
+
+        def fake_execute_lazy(*_args, **_kwargs):
+            frame = pl.DataFrame(
+                {"claim_count": [1.0, 2.0], "driver_age": [40, 41], "unselected": ["a", "b"]}
+            ).lazy()
+            return ({"train": frame}, ["train"], {}, {})
+
+        parquet_path = str(tmp_path / "prepared.parquet")
+        request = TrainingPreparationRequest(
+            graph=graph,
+            node_id="train",
+            job_id="job",
+            source="live",
+            parquet_path=parquet_path,
+            config=config,
+            project_root=str(tmp_path),
+            project_to_keep_columns=project_to_keep_columns,
+            keep_columns=["claim_count", "driver_age"],
+        )
+        with (
+            patch(
+                "haute.routes._training_preparation.execute_lazy_graph",
+                side_effect=fake_execute_lazy,
+            ),
+            patch("haute.executor._build_node_fn", return_value=None),
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+            patch("haute.modelling._algorithms._MEM_LOG", MagicMock(write_text=MagicMock())),
+            patch("haute.executor._preview_cache", MagicMock()),
+            patch("haute.trace._cache", MagicMock()),
+        ):
+            with _training_prep_context() as context:
+                outcome = prepare_training_data(request, execution_context=context)
+
+        assert outcome.failure is None
+        assert pl.read_parquet(parquet_path).columns == written
+
+    def test_prepare_training_data_maps_bounded_sink_failure_to_contract_failure(
+        self,
+        tmp_path,
+    ) -> None:
+        from haute.errors import BoundedMemoryUnsupportedError
+        from haute.routes._training_preparation import (
+            TrainingPreparationRequest,
+            prepare_training_data,
+        )
+
+        config = {"target": "claim_count", "feature_columns": ["driver_age"]}
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "train",
+                        "data": {
+                            "label": "train",
+                            "nodeType": "modelling",
+                            "config": dict(config),
+                        },
+                    }
+                ],
+                "edges": [],
+            }
+        )
+
+        def fake_execute_lazy(*_args, **_kwargs):
+            # Filtered so the frame is not sliceable: training's writer slices a
+            # frame it can slice and would never reach the native sink this test
+            # is about.
+            frame = (
+                pl.DataFrame({"claim_count": [1.0], "driver_age": [40]})
+                .lazy()
+                .filter(pl.col("claim_count") > 0)
+            )
+            return ({"train": frame}, ["train"], {}, {})
+
+        parquet_path = str(tmp_path / "prepared.parquet")
+        request = TrainingPreparationRequest(
+            graph=graph,
+            node_id="train",
+            job_id="job",
+            source="live",
+            parquet_path=parquet_path,
+            config=config,
+            project_root=str(tmp_path),
+        )
+        with (
+            patch(
+                "haute.routes._training_preparation.execute_lazy_graph",
+                side_effect=fake_execute_lazy,
+            ),
+            patch("haute.executor._build_node_fn", return_value=None),
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+            patch("haute.modelling._algorithms._MEM_LOG", MagicMock(write_text=MagicMock())),
+            patch(
+                "haute._chunked_writes.bounded_sink",
+                side_effect=BoundedMemoryUnsupportedError("Bounded streaming sink failed"),
+            ),
+        ):
+            with _training_prep_context() as context:
+                outcome = prepare_training_data(request, execution_context=context)
+
+        assert outcome.parquet_path is None
+        failure = outcome.failure
+        assert failure is not None
+        assert failure.terminal_reason == "contract_error"
+        assert failure.http_status_code == 422
+        assert "bounded streaming mode" in failure.message
+        assert not Path(parquet_path).exists()
+
+    def test_prepare_training_data_gate_failure_removes_parquet(self, tmp_path) -> None:
+        """A target/task mismatch fails as a contract failure with no artifact."""
+        from haute.routes._training_preparation import (
+            TrainingPreparationRequest,
+            prepare_training_data,
+        )
+
+        config = {
+            "target": "claim_count",
+            "task": "classification",
+            "metrics": ["auc"],
+        }
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "train",
+                        "data": {
+                            "label": "train",
+                            "nodeType": "modelling",
+                            "config": config,
+                        },
+                    }
+                ],
+                "edges": [],
+            }
+        )
+
+        def fake_execute_lazy(*_args, **_kwargs):
+            return (
+                {
+                    "train": pl.DataFrame(
+                        {"claim_count": [0.5, 1.25, 2.75], "driver_age": [40, 41, 42]}
+                    ).lazy()
+                },
+                ["train"],
+                {},
+                {},
             )
 
-        assert captured["required_columns_by_node"] == seeds
-        cache_request = captured["dataframe_cache_request"]
-        assert cache_request is not None
-        assert set(cache_request.keys_by_node) == {"train"}
-        assert Path(tmp_parquet).exists()
-        Path(tmp_parquet).unlink()
+        parquet_path = str(tmp_path / "prepared.parquet")
+        request = TrainingPreparationRequest(
+            graph=graph,
+            node_id="train",
+            job_id="job",
+            source="live",
+            parquet_path=parquet_path,
+            config=config,
+            project_root=str(tmp_path),
+        )
+        with (
+            patch(
+                "haute.routes._training_preparation.execute_lazy_graph",
+                side_effect=fake_execute_lazy,
+            ),
+            patch("haute.executor._build_node_fn", return_value=None),
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+            patch("haute.modelling._algorithms._MEM_LOG", MagicMock(write_text=MagicMock())),
+        ):
+            with _training_prep_context() as context:
+                outcome = prepare_training_data(request, execution_context=context)
 
-    def test_execute_and_sink_maps_bounded_sink_failure_to_http_422(self) -> None:
-        from fastapi import HTTPException
+        failure = outcome.failure
+        assert failure is not None
+        assert failure.terminal_reason == "contract_error"
+        assert failure.http_status_code == 422
+        assert not Path(parquet_path).exists()
 
-        from haute.errors import BoundedMemoryUnsupportedError
-        from haute.routes._job_store import JobStore
-        from haute.schemas import TrainRequest
+    def test_prepare_training_data_maps_memory_failure_to_memory_outcome(self, tmp_path) -> None:
+        from haute._execution_context import ExecutionMemoryLimitExceededError
+        from haute.routes._training_preparation import (
+            TrainingPreparationRequest,
+            prepare_training_data,
+        )
 
-        store = JobStore()
-        service = TrainService(store)
         graph = make_graph(
             {
                 "nodes": [
@@ -2001,49 +3215,53 @@ class TestTrainingProjection:
                 "edges": [],
             }
         )
-        body = TrainRequest(graph=graph, node_id="train")
-        job_id = store.create_job({"status": "running"})
+        parquet_path = str(tmp_path / "prepared.parquet")
+        request = TrainingPreparationRequest(
+            graph=graph,
+            node_id="train",
+            job_id="job",
+            source="live",
+            parquet_path=parquet_path,
+            config={"target": "claim_count"},
+            project_root=str(tmp_path),
+        )
 
-        def fake_execute_lazy(*_args, **_kwargs):
-            return (
-                {"train": pl.DataFrame({"claim_count": [1.0], "driver_age": [40]}).lazy()},
-                ["train"],
-                {},
-                {},
+        def raise_memory(*_args, **_kwargs):
+            raise ExecutionMemoryLimitExceededError(
+                "training_pipeline",
+                rss_bytes=2048,
+                limit_bytes=1024,
             )
 
         with (
             patch(
-                "haute.routes._training_lifecycle.execute_lazy_graph", side_effect=fake_execute_lazy
+                "haute.routes._training_preparation.execute_lazy_graph",
+                side_effect=raise_memory,
             ),
             patch("haute.executor._build_node_fn", return_value=None),
             patch("haute.modelling._algorithms._mem_checkpoint"),
             patch("haute.modelling._algorithms._MEM_LOG", MagicMock(write_text=MagicMock())),
-            patch(
-                "haute._polars_utils.bounded_sink",
-                side_effect=BoundedMemoryUnsupportedError("Bounded streaming sink failed"),
-            ),
         ):
-            with pytest.raises(HTTPException) as exc_info:
-                service._execute_and_sink(body, preamble_ns=None, row_limit=None, job_id=job_id)
+            with _training_prep_context() as context:
+                outcome = prepare_training_data(request, execution_context=context)
 
-        assert exc_info.value.status_code == 422
-        assert "bounded streaming mode" in exc_info.value.detail
-        job = store.require_job(job_id)
-        assert job["status"] == "contract_error"
-        assert job["terminal_reason"] == "contract_error"
+        failure = outcome.failure
+        assert failure is not None
+        assert failure.terminal_reason == "memory_limited"
+        assert failure.http_status_code == 507
+        assert failure.fields["error_code"] == "memory_limit"
+        assert not Path(parquet_path).exists()
 
 
-class TestExecuteAndSinkCheckpointCleanup:
-    """Verify checkpoint_dir is cleaned up even when _execute_lazy raises."""
+class TestExecuteAndSinkPlanCleanup:
+    """Verify the seed plan is closed even when the lazy execution raises."""
 
-    def test_checkpoint_dir_cleaned_on_error(self, tmp_path):
-        """If _execute_lazy raises, checkpoint_dir must still be cleaned up."""
-        from haute.routes._job_store import JobStore
-        from haute.schemas import TrainRequest
-
-        store = JobStore()
-        service = TrainService(store)
+    def test_seed_plan_closed_on_error(self, tmp_path):
+        """If the lazy execution raises, the plan's leases and staging are released."""
+        from haute.routes._training_preparation import (
+            TrainingPreparationRequest,
+            prepare_training_data,
+        )
 
         graph = make_graph(
             {
@@ -2060,22 +3278,26 @@ class TestExecuteAndSinkCheckpointCleanup:
                 "edges": [],
             }
         )
-        body = TrainRequest(graph=graph, node_id="n")
-        job_id = store.create_job({"status": "running"})
+        parquet_path = str(tmp_path / "prepared.parquet")
+        request = TrainingPreparationRequest(
+            graph=graph,
+            node_id="n",
+            job_id="job",
+            source="live",
+            parquet_path=parquet_path,
+            config={"target": "claim_count"},
+            project_root=str(tmp_path),
+        )
 
-        created_dirs: list[Path] = []
+        plans: list[Any] = []
 
         def failing_execute_lazy(*args, **kwargs):
-            cp_dir = kwargs.get("checkpoint_dir")
-            if cp_dir is not None:
-                created_dirs.append(cp_dir)
+            plans.append(kwargs["snapshot_plan"])
             raise RuntimeError("boom")
-
-        from fastapi import HTTPException
 
         with (
             patch(
-                "haute.routes._training_lifecycle.execute_lazy_graph",
+                "haute.routes._training_preparation.execute_lazy_graph",
                 side_effect=failing_execute_lazy,
             ),
             patch("haute.executor._build_node_fn", return_value=None),
@@ -2083,12 +3305,15 @@ class TestExecuteAndSinkCheckpointCleanup:
             patch("haute.modelling._algorithms._MEM_LOG", MagicMock(write_text=MagicMock())),
             patch("haute.executor._preview_cache", MagicMock()),
         ):
-            with pytest.raises(HTTPException):
-                service._execute_and_sink(body, preamble_ns=None, row_limit=None, job_id=job_id)
+            with _training_prep_context() as context:
+                outcome = prepare_training_data(request, execution_context=context)
 
-        # Checkpoint dir should have been created and then cleaned up
-        assert len(created_dirs) == 1
-        assert not created_dirs[0].exists(), "checkpoint_dir should be cleaned up after error"
+        assert outcome.failure is not None
+        assert outcome.failure.terminal_reason == "error"
+        assert outcome.failure.http_status_code == 500
+        # The plan was opened for the run and closed when it failed.
+        assert len(plans) == 1
+        assert plans[0]._closed
 
 
 # ---------------------------------------------------------------------------
@@ -2111,9 +3336,9 @@ class TestValidateConfig:
 
     def test_unknown_algorithm_raises_400(self):
         with pytest.raises(HTTPException) as exc_info:
-            TrainService._validate_config({"target": "y", "algorithm": "xgboost"})
+            TrainService._validate_config({"target": "y", "algorithm": "unregistered"})
         assert exc_info.value.status_code == 400
-        assert "xgboost" in exc_info.value.detail
+        assert "unregistered" in exc_info.value.detail
         assert "Available algorithms" in exc_info.value.detail
 
     def test_glm_unknown_family_raises_with_suggestions(self):
@@ -2149,6 +3374,7 @@ class TestValidateConfig:
                 "target": "y",
                 "algorithm": "catboost",
                 "loss_function": "RMSE",
+                "feature_columns": ["x"],
                 "params": {"iterations": 10},
                 "evaluation": _random_evaluation_config(),
             }
@@ -2191,7 +3417,7 @@ class TestValidateConfig:
                 "algorithm": "glm",
                 "family": "poisson",
                 "link": "log",
-                "all_factors": True,
+                "terms": {"age": {"type": "linear"}},
                 "evaluation": _random_evaluation_config(),
             }
         )
@@ -2204,7 +3430,7 @@ class TestValidateConfig:
                 "algorithm": "glm",
                 "family": "poisson",
                 "link": "log",
-                "all_factors": True,
+                "terms": {"age": {"type": "linear"}},
                 "params": {"family": "binomial", "link": "identity"},
                 "evaluation": _random_evaluation_config(),
             }
@@ -2222,6 +3448,79 @@ class TestValidateConfig:
             )
         assert exc_info.value.status_code == 400
         assert "loss function" in exc_info.value.detail.lower()
+
+    @pytest.mark.parametrize("algorithm", ["catboost", "xgboost", "lightgbm", "ebm"])
+    @pytest.mark.parametrize(
+        "selection",
+        [{}, {"feature_columns": []}, {"feature_columns": ["y"]}],
+        ids=["absent", "empty", "target_only"],
+    )
+    def test_tree_config_without_a_selected_feature_raises_400(self, algorithm, selection):
+        """Features are opt-in: a tree model with no ticked feature is refused, never
+        trained on every column. A listed role column is dormant, so ticking only
+        the target selects no feature either."""
+        with pytest.raises(HTTPException) as exc_info:
+            TrainService._validate_config(
+                {
+                    "target": "y",
+                    "algorithm": algorithm,
+                    "task": "regression",
+                    "loss_function": "RMSE",
+                    "params": {"max_rounds": 100} if algorithm == "ebm" else {},
+                    "evaluation": _random_evaluation_config(),
+                    **selection,
+                }
+            )
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.detail == (
+            "Modelling config has no features. Tick at least one feature on the Features pane."
+        )
+
+    @pytest.mark.parametrize(
+        ("algorithm", "task", "loss"),
+        [
+            (name, task, loss)
+            for name, descriptor in sorted(DESCRIPTORS.items())
+            if name != "glm"
+            for task, losses in sorted(descriptor.losses.items())
+            for loss in sorted(losses)
+        ],
+    )
+    def test_each_family_accepts_every_loss_it_supports(self, algorithm, task, loss):
+        """The loss is checked against the chosen family, not CatBoost's list: LightGBM,
+        XGBoost and EBM train Gamma, which CatBoost lacks."""
+        TrainService._validate_config(
+            {
+                "target": "y",
+                "algorithm": algorithm,
+                "task": task,
+                "loss_function": loss,
+                "feature_columns": ["x"],
+                **({"variance_power": 1.5} if loss == "Tweedie" else {}),
+                # EBM trains every round it is given and t-boost's ceiling is the
+                # refit's fixed budget, so both need an explicit count.
+                "params": {"max_rounds": 100}
+                if algorithm == "ebm"
+                else {"n_trees": 100}
+                if algorithm == "tboost"
+                else {},
+                "evaluation": _random_evaluation_config(),
+            }
+        )
+
+    def test_a_loss_the_family_lacks_is_refused_in_its_name(self):
+        with pytest.raises(HTTPException) as exc_info:
+            TrainService._validate_config(
+                {
+                    "target": "y",
+                    "algorithm": "catboost",
+                    "task": "regression",
+                    "loss_function": "Gamma",
+                    "evaluation": _random_evaluation_config(),
+                }
+            )
+        assert exc_info.value.status_code == 400
+        assert "CatBoost does not support the Gamma loss" in exc_info.value.detail
 
     def test_catboost_loss_invalid_for_task_raises_400(self):
         with pytest.raises(HTTPException) as exc_info:
@@ -2249,8 +3548,8 @@ class TestValidateConfig:
         assert exc_info.value.status_code == 400
         assert "family" in exc_info.value.detail.lower()
 
-    def test_glm_empty_factors_without_all_raises_400(self):
-        """An empty factor set must not silently auto-term over every column."""
+    def test_glm_empty_terms_raises_400(self):
+        """An empty term set must not silently auto-term over every column."""
         with pytest.raises(HTTPException) as exc_info:
             TrainService._validate_config(
                 {
@@ -2260,7 +3559,7 @@ class TestValidateConfig:
                 }
             )
         assert exc_info.value.status_code == 400
-        assert "factor" in exc_info.value.detail.lower()
+        assert "add a term to at least one feature" in exc_info.value.detail.lower()
 
     def test_glm_tweedie_without_variance_power_raises_400(self):
         with pytest.raises(HTTPException) as exc_info:
@@ -2269,7 +3568,7 @@ class TestValidateConfig:
                     "target": "y",
                     "algorithm": "glm",
                     "family": "tweedie",
-                    "all_factors": True,
+                    "terms": {"age": {"type": "linear"}},
                 }
             )
         assert exc_info.value.status_code == 400
@@ -2282,7 +3581,7 @@ class TestValidateConfig:
                     "target": "y",
                     "algorithm": "glm",
                     "family": "poisson",
-                    "all_factors": True,
+                    "terms": {"age": {"type": "linear"}},
                     "regularization": "elastic_net",
                 }
             )
@@ -2308,72 +3607,516 @@ class TestValidateConfig:
                 "algorithm": "glm",
                 "family": "gaussian",
                 "link": "",
-                "all_factors": True,
+                "terms": {"age": {"type": "linear"}},
                 "evaluation": _random_evaluation_config(),
             }
         )
 
 
 # ---------------------------------------------------------------------------
-# _validate_glm_family_link unit tests
+# Synchronous GLM schema gate on /train and /dispersion/estimate
 # ---------------------------------------------------------------------------
 
 
-class TestValidateGlmFamilyLink:
-    def test_unknown_family(self):
+_GLM_COLLIDING_TERMS: dict = {
+    "x": {"type": "linear"},
+    "x_sq": {"type": "expression", "expr": "x ** 2"},
+}
+
+
+@pytest.fixture()
+def glm_collision_data(tmp_path) -> str:
+    """Source whose unused ``x_sq`` column collides with an expression key."""
+    path = tmp_path / "glm_collision.parquet"
+    pl.DataFrame(
+        {"x": [1.0, 2.0, 3.0], "x_sq": [1.0, 4.0, 9.0], "y": [1.0, 2.0, 3.0]}
+    ).write_parquet(path)
+    return str(path)
+
+
+_MISSING_STEP_COUNT_PAYLOAD = {
+    "error_code": "node_config_invalid",
+    "message": "Scenario expander requires stepCount (the number of grid values).",
+    "setting": "stepCount",
+}
+
+
+def _expander_without_step_count() -> dict:
+    """A Scenario Expander node whose config omits its required grid size."""
+    return {
+        "id": "expander",
+        "data": {
+            "label": "expander",
+            "nodeType": "scenarioExpander",
+            "config": {"column_name": "price", "min_value": 0.1, "max_value": 0.3},
+        },
+    }
+
+
+def _glm_schema_gate_graph(data_path: str | None, config: dict):
+    """Data Input → Modelling graph; ``data_path=None`` leaves the model unfed."""
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    if data_path is not None:
+        nodes.append(
+            {
+                "id": "source",
+                "data": {
+                    "label": "source",
+                    "nodeType": "dataInput",
+                    "config": make_ready_file_input_config(data_path),
+                },
+            }
+        )
+        edges.append(make_edge("source", "train").model_dump())
+    nodes.append(
+        {"id": "train", "data": {"label": "train", "nodeType": "modelling", "config": config}}
+    )
+    return make_graph({"nodes": nodes, "edges": edges})
+
+
+def _glm_transform_gate_graph(data_path: str, code: str, config: dict):
+    """Data Input → Polars → Modelling, with the user's own code in the middle."""
+    return make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataInput",
+                        "config": make_ready_file_input_config(data_path),
+                    },
+                },
+                {
+                    "id": "prep",
+                    "data": {"label": "prep", "nodeType": "polars", "config": {"code": code}},
+                },
+                {
+                    "id": "train",
+                    "data": {"label": "train", "nodeType": "modelling", "config": config},
+                },
+            ],
+            "edges": [
+                make_edge("source", "prep").model_dump(),
+                make_edge("prep", "train").model_dump(),
+            ],
+        }
+    )
+
+
+class TestGlmInputSchemaGate:
+    """GLM term columns are checked against the exact unprojected input schema
+    before a job is created, so a mismatch is a 422 on the request rather than
+    a job that fails later during background preparation."""
+
+    def _service(self):
+        from haute.routes._job_store import JobStore
+
+        store = JobStore()
+        return store, TrainService(store)
+
+    def test_training_route_rejects_expression_key_colliding_with_unprojected_column(
+        self, glm_collision_data
+    ):
+        """Upstream has an unused column ``x_sq``; the model keys an expression
+        ``x_sq``. Projection would drop the column, so the gate must see the
+        unprojected schema."""
+        from haute.schemas import TrainRequest
+
+        body = TrainRequest(
+            graph=_glm_schema_gate_graph(
+                glm_collision_data,
+                {
+                    "algorithm": "glm",
+                    "target": "y",
+                    "family": "gaussian",
+                    "terms": _GLM_COLLIDING_TERMS,
+                    "evaluation": _random_evaluation_config(),
+                },
+            ),
+            node_id="train",
+        )
+        store, service = self._service()
+
+        with pytest.raises(HTTPException) as raised:
+            service.start(body)
+
+        assert raised.value.status_code == 422
+        assert "names a column" in str(raised.value.detail)
+        assert not store.list_jobs()
+
+    def test_dispersion_route_rejects_expression_key_colliding_with_unprojected_column(
+        self, glm_collision_data
+    ):
+        """The dispersion route materialises the same frame, so it gates the
+        same way — a 422 before the estimation job exists."""
+        from haute.schemas import DispersionEstimateRequest
+
+        body = DispersionEstimateRequest(
+            graph=_glm_schema_gate_graph(
+                glm_collision_data,
+                {
+                    "algorithm": "glm",
+                    "target": "y",
+                    "family": "tweedie",
+                    "terms": _GLM_COLLIDING_TERMS,
+                    "evaluation": _random_evaluation_config(),
+                },
+            ),
+            node_id="train",
+            param="var_power",
+        )
+        store, service = self._service()
+
+        with pytest.raises(HTTPException) as raised:
+            service.start_dispersion_estimate(body)
+
+        assert raised.value.status_code == 422
+        assert "names a column" in str(raised.value.detail)
+        assert not store.list_jobs()
+
+    def test_training_route_reports_a_rejected_upstream_node_config_as_its_contract_payload(
+        self, glm_collision_data
+    ):
+        """The GLM gate resolves the input schema by running the upstream graph; a
+        node config the builder rejects keeps its public payload."""
+        from haute.schemas import TrainRequest
+
+        graph = _glm_schema_gate_graph(
+            glm_collision_data,
+            {
+                "algorithm": "glm",
+                "target": "y",
+                "family": "gaussian",
+                "terms": {"x": {"type": "linear"}},
+                "evaluation": _random_evaluation_config(),
+            },
+        ).model_dump()
+        graph["nodes"].append(_expander_without_step_count())
+        graph["edges"] = [
+            make_edge("source", "expander").model_dump(),
+            make_edge("expander", "train").model_dump(),
+        ]
+        body = TrainRequest(graph=make_graph(graph), node_id="train")
+        store, service = self._service()
+
+        with pytest.raises(HTTPException) as raised:
+            service.start(body)
+
+        assert raised.value.status_code == 422
+        assert raised.value.detail == _MISSING_STEP_COUNT_PAYLOAD
+        assert not store.list_jobs()
+
+    def test_training_route_returns_422_when_input_schema_cannot_be_resolved(self):
+        """An unfed modelling node has no schema to check against — an explicit
+        422 naming the cause, never a 500 and never the projected schema."""
+        from haute.schemas import TrainRequest
+
+        body = TrainRequest(
+            graph=_glm_schema_gate_graph(
+                None,
+                {
+                    "algorithm": "glm",
+                    "target": "y",
+                    "family": "gaussian",
+                    "terms": {"x": {"type": "linear"}},
+                    "evaluation": _random_evaluation_config(),
+                },
+            ),
+            node_id="train",
+        )
+        store, service = self._service()
+
+        with pytest.raises(HTTPException) as raised:
+            service.start(body)
+
+        assert raised.value.status_code == 422
+        detail = str(raised.value.detail)
+        assert "Training input schema could not be resolved" in detail
+        assert "No input data available" in detail
+        assert not store.list_jobs()
+
+    @pytest.mark.parametrize(
+        ("code", "error_name"),
+        [
+            ("df = source.with_columns(x2=undefined_name)", "NameError"),
+            ("", "NotImplementedError"),
+        ],
+    )
+    def test_user_transform_error_becomes_422_on_training_and_dispersion_routes(
+        self, glm_collision_data, code, error_name
+    ):
+        """The schema-only build runs the user's own transform code, so any
+        exception that code raises is the user's to fix — a named 422, never a
+        500 that reads as a Haute crash."""
+        from haute.schemas import DispersionEstimateRequest, TrainRequest
+
+        base = {
+            "algorithm": "glm",
+            "target": "y",
+            "terms": {"x": {"type": "linear"}},
+            "evaluation": _random_evaluation_config(),
+        }
+        store, service = self._service()
+
+        with pytest.raises(HTTPException) as raised:
+            service.start(
+                TrainRequest(
+                    graph=_glm_transform_gate_graph(
+                        glm_collision_data, code, {**base, "family": "gaussian"}
+                    ),
+                    node_id="train",
+                )
+            )
+        assert raised.value.status_code == 422
+        assert "could not be resolved" in str(raised.value.detail)
+        assert error_name in str(raised.value.detail)
+
+        with pytest.raises(HTTPException) as raised:
+            service.start_dispersion_estimate(
+                DispersionEstimateRequest(
+                    graph=_glm_transform_gate_graph(
+                        glm_collision_data, code, {**base, "family": "tweedie"}
+                    ),
+                    node_id="train",
+                    param="var_power",
+                )
+            )
+        assert raised.value.status_code == 422
+        assert "could not be resolved" in str(raised.value.detail)
+        assert error_name in str(raised.value.detail)
+        assert not store.list_jobs()
+
+
+# ---------------------------------------------------------------------------
+# Training sink projection
+# ---------------------------------------------------------------------------
+
+
+def _inline_sink_service(monkeypatch: pytest.MonkeyPatch):
+    """Inline-protocol service plus the supervisor threads it launches."""
+    from haute.routes._job_store import JobStore
+    from tests.test_training_worker_protocol import _inline_protocol_runner
+
+    store = JobStore()
+    service = TrainService(store, protocol_runner=_inline_protocol_runner)
+    launched: list = []
+    launch_protocol = service._supervisor.launch_protocol
+
+    def capture_launch(*args, **kwargs):
+        thread = launch_protocol(*args, **kwargs)
+        launched.append(thread)
+        return thread
+
+    monkeypatch.setattr(service._supervisor, "launch_protocol", capture_launch)
+    return service, launched
+
+
+def _spy_on_sink_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[tuple[bool | None, list[str] | None, list[str]]]:
+    """Record each ``_execute_and_sink`` call's ``project_to_keep_columns`` and
+    ``keep_columns`` and the columns the real sink actually wrote.
+
+    The real sink runs; its parquet is read here because the caller deletes it
+    (or hands ownership to the worker) as soon as preparation returns. Asserting
+    on the arguments alone would pass even if preparation never produced a frame.
+    """
+    captured: list[tuple[bool | None, list[str] | None, list[str]]] = []
+    original = TrainService._execute_and_sink
+
+    def spy(self, body, preamble_ns, row_limit, job_id, **kwargs):
+        prepared = original(self, body, preamble_ns, row_limit, job_id, **kwargs)
+        captured.append(
+            (
+                kwargs.get("project_to_keep_columns"),
+                kwargs.get("keep_columns"),
+                pl.read_parquet(prepared).columns,
+            )
+        )
+        return prepared
+
+    monkeypatch.setattr(TrainService, "_execute_and_sink", spy)
+    return captured
+
+
+_GLM_SINK_CONFIG: dict = {
+    "algorithm": "glm",
+    "target": "y",
+    "terms": {"x": {"type": "linear"}},
+}
+
+
+class TestTrainingSinkProjection:
+    """A tree model's training sink keeps exactly its selected features and role
+    columns. A GLM's column membership comes from its terms and interactions, so
+    its training and dispersion sinks never project a column away."""
+
+    def test_catboost_training_sink_keeps_only_selected_features_and_roles(
+        self, glm_collision_data, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HAUTE_MEM_LOG", str(tmp_path / "training_mem.log"))
+        captured = _spy_on_sink_projection(monkeypatch)
+        from haute.schemas import TrainRequest
+        from tests.test_training_worker_protocol import _SuccessfulTrainingJob
+
+        body = TrainRequest(
+            graph=_glm_schema_gate_graph(
+                glm_collision_data,
+                {
+                    "algorithm": "catboost",
+                    "task": "regression",
+                    "target": "y",
+                    "loss_function": "RMSE",
+                    "feature_columns": ["x"],
+                    "evaluation": _random_evaluation_config(),
+                },
+            ),
+            node_id="train",
+        )
+        service, launched = _inline_sink_service(monkeypatch)
+
+        with patch("haute.modelling.TrainingJob", _SuccessfulTrainingJob):
+            response = service.start(body)
+            service._join_preparation(response.job_id)
+            for thread in launched:
+                thread.join(timeout=10)
+
+        # ``x_sq`` is in the data but was never ticked, so it never reaches training.
+        assert captured == [(True, ["x", "y"], ["x", "y"])]
+        job = service._store.require_job(response.job_id)
+        assert job["status"] == "completed", job
+        assert launched
+
+    def test_glm_training_sink_drops_nothing(self, glm_collision_data, tmp_path, monkeypatch):
+        monkeypatch.setenv("HAUTE_MEM_LOG", str(tmp_path / "training_mem.log"))
+        captured = _spy_on_sink_projection(monkeypatch)
+        from haute.schemas import TrainRequest
+        from tests.test_training_worker_protocol import _SuccessfulTrainingJob
+
+        body = TrainRequest(
+            graph=_glm_schema_gate_graph(
+                glm_collision_data,
+                {
+                    **_GLM_SINK_CONFIG,
+                    "family": "gaussian",
+                    "evaluation": _random_evaluation_config(),
+                },
+            ),
+            node_id="train",
+        )
+        service, launched = _inline_sink_service(monkeypatch)
+
+        with patch("haute.modelling.TrainingJob", _SuccessfulTrainingJob):
+            response = service.start(body)
+            service._join_preparation(response.job_id)
+            for thread in launched:
+                thread.join(timeout=10)
+
+        assert len(captured) == 1
+        project_to_keep_columns, _keep_columns, columns = captured[0]
+        assert project_to_keep_columns is False
+        # ``x`` is the live GLM term; the sink never projects it away.
+        assert "x" in columns and "y" in columns
+        job = service._store.require_job(response.job_id)
+        assert job["status"] == "completed", job
+        assert launched
+
+    def test_glm_dispersion_sink_drops_nothing(self, glm_collision_data, tmp_path, monkeypatch):
+        monkeypatch.setenv("HAUTE_MEM_LOG", str(tmp_path / "training_mem.log"))
+        captured = _spy_on_sink_projection(monkeypatch)
+        from haute.schemas import DispersionEstimateRequest
+
+        body = DispersionEstimateRequest(
+            graph=_glm_schema_gate_graph(
+                glm_collision_data,
+                {
+                    **_GLM_SINK_CONFIG,
+                    "family": "tweedie",
+                    "evaluation": _random_evaluation_config(),
+                },
+            ),
+            node_id="train",
+            param="var_power",
+        )
+        service, launched = _inline_sink_service(monkeypatch)
+
+        response = service.start_dispersion_estimate(body)
+        for thread in launched:
+            thread.join(timeout=10)
+
+        assert len(captured) == 1
+        project_to_keep_columns, _keep_columns, columns = captured[0]
+        assert project_to_keep_columns is False
+        assert "x" in columns and "y" in columns
+        job = service._store.require_job(response.job_id)
+        assert job["status"] == "completed", job
+
+
+# ---------------------------------------------------------------------------
+# _validate_glm_config_values unit tests
+# ---------------------------------------------------------------------------
+
+
+def _glm_values(**overrides: object) -> dict[str, object]:
+    return {
+        "algorithm": "glm",
+        "target": "y",
+        "family": "poisson",
+        "terms": {"x": {"type": "linear"}},
+        **overrides,
+    }
+
+
+class TestValidateGlmConfigValues:
+    def test_unknown_family_names_the_supported_families(self):
         with pytest.raises(HTTPException) as exc_info:
-            _validate_glm_family_link("exponential", "log")
+            _validate_glm_config_values(_glm_values(family="exponential"))
         assert exc_info.value.status_code == 400
         assert "exponential" in exc_info.value.detail
         assert "gaussian" in exc_info.value.detail
 
-    def test_invalid_link_for_family(self):
+    def test_invalid_link_names_the_family_links(self):
         with pytest.raises(HTTPException) as exc_info:
-            _validate_glm_family_link("binomial", "identity")
+            _validate_glm_config_values(_glm_values(family="gamma", link="logit"))
         assert exc_info.value.status_code == 400
-        assert "identity" in exc_info.value.detail
-        assert "logit" in exc_info.value.detail
+        assert exc_info.value.detail == (
+            "Link 'logit' is not valid for the gamma family. Valid links: log, identity."
+        )
 
-    def test_valid_family_link(self):
-        _validate_glm_family_link("gamma", "log")
-
-    def test_quasipoisson_accepted(self):
-        """Quasi-Poisson estimates its dispersion (no user parameter), so the
-        route validates it — RustyStats accepts only log/identity, no sqrt."""
-        _validate_glm_family_link("quasipoisson", "log")
-        _validate_glm_family_link("quasipoisson", "identity")
-        _validate_glm_family_link("quasipoisson", "")  # canonical link
-
-    def test_quasipoisson_rejects_bad_link(self):
+    @pytest.mark.parametrize(
+        ("family", "link"),
+        [
+            ("gaussian", "inverse"),
+            ("binomial", "probit"),
+            ("binomial", "cloglog"),
+            ("poisson", "sqrt"),
+            ("gamma", "inverse"),
+            ("inverse_gaussian", ""),
+        ],
+    )
+    def test_unsupported_links_and_inverse_gaussian_are_refused(self, family, link):
         with pytest.raises(HTTPException) as exc_info:
-            _validate_glm_family_link("quasipoisson", "logit")
+            _validate_glm_config_values(_glm_values(family=family, link=link))
         assert exc_info.value.status_code == 400
-        assert "logit" in exc_info.value.detail
 
-    def test_negbinomial_accepted(self):
-        """Neg. Binomial is offered now its theta gate exists: the training
-        objective requires an explicit theta (training_objective_issue), so
-        the silent theta=1.0 failover that held it out of #86 cannot fire.
-        RustyStats accepts only log/identity — no sqrt."""
-        _validate_glm_family_link("negbinomial", "log")
-        _validate_glm_family_link("negbinomial", "identity")
-        _validate_glm_family_link("negbinomial", "")  # canonical link
+    @pytest.mark.parametrize(
+        ("family", "link"),
+        [
+            ("quasipoisson", ""),
+            ("quasipoisson", "identity"),
+            ("negbinomial", "log"),
+            ("quasibinomial", "logit"),
+            ("binomial", "log"),
+            ("gaussian", "log"),
+        ],
+    )
+    def test_supported_family_links_pass(self, family, link):
+        _validate_glm_config_values(_glm_values(family=family, link=link))
 
-    def test_negbinomial_rejects_bad_link(self):
-        with pytest.raises(HTTPException) as exc_info:
-            _validate_glm_family_link("negbinomial", "sqrt")
-        assert exc_info.value.status_code == 400
-        assert "sqrt" in exc_info.value.detail
-
-    def test_empty_family_raises(self):
-        """The old early-return here was the silent gaussian-default channel."""
-        with pytest.raises(HTTPException) as exc_info:
-            _validate_glm_family_link("", "log")
-        assert exc_info.value.status_code == 400
-        assert "family" in exc_info.value.detail.lower()
-
-    def test_empty_link_skips(self):
-        _validate_glm_family_link("poisson", "")
+    def test_absent_family_is_left_to_the_objective_gate(self):
+        _validate_glm_config_values({"algorithm": "glm", "terms": {"x": {"type": "linear"}}})
 
 
 # ---------------------------------------------------------------------------
@@ -2460,9 +4203,43 @@ class TestDispersionEstimateEndpoint:
         assert final["value"] == pytest.approx(2.4487, abs=0.01)
         assert final["n_fits"] > 0
 
+    def test_theta_estimate_keeps_preparation_evidence(self, client, nb_training_data):
+        """The estimate worker reports last; the job keeps what preparation wrote."""
+        from haute.routes import modelling
+
+        graph = _make_negbinomial_graph(nb_training_data)
+        graph["nodes"].append(
+            {
+                "id": "prepared",
+                "data": {
+                    "label": "prepared",
+                    "nodeType": "polars",
+                    "config": {"code": 'df = source.sort("x1")'},
+                },
+            }
+        )
+        graph["edges"] = [
+            make_edge("source", "prepared").model_dump(),
+            make_edge("prepared", "train").model_dump(),
+        ]
+        resp = client.post(
+            "/api/modelling/dispersion/estimate",
+            json={"graph": graph, "node_id": "train", "param": "theta"},
+        )
+        assert resp.status_code == 200, resp.text
+        job_id = resp.json()["job_id"]
+
+        final = _poll_dispersion_until_done(client, job_id)
+        assert final["status"] == "completed", final
+        metrics = modelling._train_service._store.require_job(job_id)["execution_metrics"]
+        assert [
+            (capture["node_id"], capture["outcome"])
+            for capture in metrics["shared_snapshot_captures"]
+        ] == [("prepared", "published")]
+
     def test_train_negbinomial_without_theta_rejected_400(self, client, nb_training_data):
-        """The re-enabled family keeps the failover closed: an unset theta
-        gates at the route, never falls through to RustyStats' theta=1.0."""
+        """The re-enabled family gates early: an unset theta is a 400 at the
+        route, never a RustyStats refusal from inside a training job."""
         graph = _make_negbinomial_graph(nb_training_data)
         resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
         assert resp.status_code == 400
@@ -2501,7 +4278,7 @@ class TestDispersionEstimateEndpoint:
         assert "negbinomial" in resp.json()["detail"]
 
     def test_estimate_rejected_when_rest_of_objective_incomplete(self, client, nb_training_data):
-        """The profile is conditional on the design, so the factor gate still
+        """The profile is conditional on the design, so the term gate still
         applies — only the parameter being estimated is stubbed."""
         graph = _make_negbinomial_graph(nb_training_data, terms=None)
         resp = client.post(
@@ -2509,7 +4286,7 @@ class TestDispersionEstimateEndpoint:
             json={"graph": graph, "node_id": "train", "param": "theta"},
         )
         assert resp.status_code == 400
-        assert "factor" in resp.json()["detail"].lower()
+        assert "add a term to at least one feature" in resp.json()["detail"].lower()
 
     def test_estimate_rejected_for_unknown_param(self, client, nb_training_data):
         graph = _make_negbinomial_graph(nb_training_data)
@@ -2578,6 +4355,51 @@ class TestDispersionErrorPaths:
         assert thread is not None
         return job_id, tmp_parquet, thread
 
+    def test_failed_estimate_keeps_preparation_evidence(self, tmp_path: Path):
+        """A failed estimate worker's metrics carry what preparation recorded."""
+        from tests.test_training_worker_protocol import _context_with_preparation_evidence
+
+        store, service = self._service()
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "job_type": "dispersion_estimate",
+                "param": "theta",
+                "start_time": time.monotonic(),
+                "timeout": 60,
+            }
+        )
+        tmp_parquet = tmp_path / "estimate_data.parquet"
+        tmp_parquet.write_bytes(b"parquet")
+
+        class ExplodingJob:
+            def __init__(self, **_kwargs):
+                pass
+
+            def _prepare_data(self, *_args, **_kwargs):
+                raise RuntimeError("librs panic")
+
+        with patch("haute.modelling.TrainingJob", ExplodingJob):
+            thread = service._launch_dispersion_background(
+                job_id,
+                "train",
+                dict(_NB_ESTIMATION_CONFIG),
+                "theta",
+                str(tmp_parquet),
+                execution_context=_context_with_preparation_evidence(),
+            )
+            assert thread is not None
+            thread.join_and_raise(timeout=10)
+
+        job = store.require_job(job_id)
+        assert job["status"] == "error"
+        metrics = job["execution_metrics"]
+        assert metrics["operation"] == "dispersion_estimate"
+        assert [capture["node_id"] for capture in metrics["shared_snapshot_captures"]] == ["join"]
+        assert [warning["code"] for warning in metrics["warnings"]] == [
+            "snapshot_capture_superseded"
+        ]
+
     def test_worker_fallback_stamps_curated_message(self, tmp_path: Path):
         """Entrypoint-level stamp pin: an unexpected in-worker exception must
         surface the curated dispersion fallback verbatim (no wrapper prefix,
@@ -2626,17 +4448,20 @@ class TestDispersionErrorPaths:
         assert job["status"] == "contract_error"
         assert "missing column" in job["message"]
 
-    def test_start_preserves_explicit_feature_that_is_also_excluded(
+    def test_start_keeps_only_role_columns_because_glm_ignores_catboost_levers(
         self,
         nb_training_data,
     ):
+        """feature_columns is a tree-model lever: a GLM's sink keeps its role
+        columns, projects nothing away, and reads its term columns through
+        projection demand."""
         from haute._execution_context import ExecutionContext, ExecutionProfile
         from haute.schemas import DispersionEstimateRequest
 
         graph = _make_negbinomial_graph(
             nb_training_data,
             feature_columns=["x1"],
-            exclude=["x1"],
+            theta=1.5,
         )
         store, service = self._service()
         body = DispersionEstimateRequest.model_validate(
@@ -2644,7 +4469,8 @@ class TestDispersionErrorPaths:
         )
         captured: dict[str, object] = {}
 
-        def capture_sink(*_args, keep_columns, **_kwargs):
+        def capture_sink(*_args, project_to_keep_columns, keep_columns, **_kwargs):
+            captured["project_to_keep_columns"] = project_to_keep_columns
             captured["keep_columns"] = keep_columns
             return "prepared.parquet"
 
@@ -2654,7 +4480,20 @@ class TestDispersionErrorPaths:
         )
         with (
             patch.object(service, "_compile_preamble", return_value=None),
-            patch.object(service, "_estimate_ram", return_value=(None, None, 100, 3)),
+            patch.object(
+                service,
+                "_estimate_ram",
+                return_value=RamEstimate(
+                    safe_row_limit=None,
+                    total_rows=100,
+                    estimated_bytes=1_000,
+                    available_bytes=10**9,
+                    bytes_per_row=10.0,
+                    was_downsampled=False,
+                    warning=None,
+                    probe_columns=3,
+                ),
+            ),
             patch(
                 "haute.routes._training_lifecycle.create_admitted_execution_context",
                 return_value=context,
@@ -2665,7 +4504,8 @@ class TestDispersionErrorPaths:
             response = service.start_dispersion_estimate(body)
 
         assert response.status == "started"
-        assert "x1" in captured["keep_columns"]
+        assert captured["project_to_keep_columns"] is False
+        assert captured["keep_columns"] == ["y"]
 
     def test_start_maps_unexpected_exception_to_error(self, nb_training_data):
         from haute.schemas import DispersionEstimateRequest
@@ -2714,6 +4554,116 @@ class TestDispersionErrorPaths:
         assert exc_info.value.status_code == 507
         (job_id,) = store.list_jobs()
         assert store.require_job(job_id)["status"] == "memory_limited"
+
+    def test_dispersion_timeout_marks_the_job_timed_out_and_late_completion_cannot_revive_it(
+        self, client, nb_training_data, monkeypatch
+    ):
+        from haute._worker_isolation import IsolatedWorkerTimeoutError
+        from haute.schemas import DispersionEstimateRequest
+
+        graph = _make_negbinomial_graph(nb_training_data)
+        store, service = self._service()
+        monkeypatch.setattr("haute.routes.modelling._train_service", service)
+
+        # Confirm status read has no timeout accounting (unlike /train/status)
+        seed_job(
+            store,
+            "disp_no_status_timeout",
+            {
+                "status": "running",
+                "job_type": "dispersion_estimate",
+                "param": "theta",
+                "progress": 0.2,
+                "message": "Estimating",
+                "start_time": time.monotonic() - 500,
+                "timeout": 10,
+                "created_at": time.time(),
+            },
+        )
+        try:
+            status_read_before = client.get(
+                "/api/modelling/dispersion/status/disp_no_status_timeout"
+            )
+            assert status_read_before.status_code == 200
+            assert status_read_before.json()["status"] == "running"
+        finally:
+            store.delete_job("disp_no_status_timeout")
+
+        # Deadline is enforced via isolated worker timeout
+        def standin_worker(*_args: object, **_kwargs: object) -> None:
+            raise IsolatedWorkerTimeoutError(timeout_seconds=60.0)
+
+        threads: list[object] = []
+        orig_launch = service._launch_dispersion_background
+
+        def capturing_launch(*args: object, **kwargs: object):
+            t = orig_launch(*args, **kwargs)
+            if t is not None:
+                threads.append(t)
+            return t
+
+        body = DispersionEstimateRequest.model_validate(
+            {"graph": graph, "node_id": "train", "param": "theta"}
+        )
+        with (
+            patch.object(service, "_launch_dispersion_background", side_effect=capturing_launch),
+            patch("haute.routes._training_lifecycle._run_dispersion_process_job", standin_worker),
+        ):
+            resp = service.start_dispersion_estimate(body)
+
+        assert resp.status == "started"
+        job_id = resp.job_id
+
+        assert len(threads) == 1
+        threads[0].join(timeout=5.0)
+        assert not threads[0].is_alive()
+
+        expected_message = (
+            "The background process was stopped after exceeding its time limit "
+            "of 60 seconds. Try again with less data, or increase the configured timeout."
+        )
+
+        job = store.require_job(job_id)
+        assert job["status"] == "timed_out"
+        assert job["terminal_reason"] == "timed_out"
+        assert job["message"] == expected_message
+        assert "timed out" in job["message"].lower() or "time limit" in job["message"].lower()
+        assert "Traceback" not in job["message"]
+        assert job.get("elapsed_seconds", 0) >= 0
+        assert job.get("value") is None
+        assert job.get("result") is None
+
+        status_resp = client.get(f"/api/modelling/dispersion/status/{job_id}")
+        assert status_resp.status_code == 200
+        data = status_resp.json()
+        assert data["status"] == "timed_out"
+        assert data["terminal_reason"] == "timed_out"
+        assert data["message"] == expected_message
+        assert data["elapsed_seconds"] >= 0
+        assert data["value"] is None
+
+        # Late completion cannot revive the timed-out job
+        late_result = service._lifecycle.transition(
+            job_id,
+            to="completed",
+            message="Completed",
+            fields={"value": 2.45, "progress": 1.0},
+        )
+        assert late_result is None
+
+        status_again = client.get(f"/api/modelling/dispersion/status/{job_id}")
+        assert status_again.status_code == 200
+        data_again = status_again.json()
+        assert data_again["status"] == "timed_out"
+        assert data_again["terminal_reason"] == "timed_out"
+        assert data_again["message"] == expected_message
+        assert data_again["value"] is None
+
+        stored_again = store.require_job(job_id)
+        assert stored_again["status"] == "timed_out"
+        assert stored_again["terminal_reason"] == "timed_out"
+        assert stored_again["message"] == expected_message
+        assert stored_again.get("value") is None
 
     def test_cancel_dispersion_running_then_terminal_noop(self):
         store, service = self._service()
@@ -2767,7 +4717,11 @@ class TestDispersionErrorPaths:
                     owns_tmp=False,
                     features=["other_column"],
                     cat_features=[],
+                    feature_dtypes={"other_column": "Float64"},
                 )
+
+            def _role_columns(self):
+                return {"y": "target"}
 
         store, service = self._service()
         with patch("haute.modelling.TrainingJob", FakeJob):
@@ -2853,87 +4807,6 @@ class TestDispersionErrorPaths:
         assert job["status"] == "error"
         assert "Failed to start isolated supervisor" in job["message"]
         assert not tmp_parquet.exists()
-
-
-# ---------------------------------------------------------------------------
-# /mlflow/check backend resolution tests
-# ---------------------------------------------------------------------------
-
-
-class TestMlflowCheckBackend:
-    def test_mlflow_installed_detected(self, client):
-        with (
-            patch(
-                "haute.modelling._mlflow_log.resolve_tracking_backend",
-                return_value=("file:///mlruns", "local"),
-            ),
-            patch("importlib.util.find_spec", return_value=SimpleNamespace()),
-            patch("importlib.import_module", return_value=SimpleNamespace()),
-        ):
-            resp = client.get("/api/modelling/mlflow/check")
-        assert resp.status_code == 200
-        assert resp.json()["mlflow_installed"] is True
-        assert resp.json()["mlflow_importable"] is True
-        assert resp.json()["tracking_configured"] is True
-
-    def test_local_backend(self, client):
-        with (
-            patch(
-                "haute.modelling._mlflow_log.resolve_tracking_backend",
-                return_value=("file:///mlruns", "local"),
-            ),
-            patch("importlib.util.find_spec", return_value=SimpleNamespace()),
-            patch("importlib.import_module", return_value=SimpleNamespace()),
-        ):
-            resp = client.get("/api/modelling/mlflow/check")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["mlflow_installed"] is True
-        assert data["mlflow_importable"] is True
-        assert data["tracking_configured"] is True
-        assert data["backend"] == "local"
-        assert data["databricks_host"] == ""
-        assert data["detail"] == ""
-
-    def test_databricks_backend(self, client):
-        with (
-            patch(
-                "haute.modelling._mlflow_log.resolve_tracking_backend",
-                return_value=("databricks", "databricks"),
-            ),
-            patch("importlib.util.find_spec", return_value=SimpleNamespace()),
-            patch.dict("os.environ", {"DATABRICKS_HOST": "https://my.cloud.databricks.com"}),
-            patch("importlib.import_module", return_value=SimpleNamespace()),
-        ):
-            resp = client.get("/api/modelling/mlflow/check")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["mlflow_installed"] is True
-        assert data["mlflow_importable"] is True
-        assert data["tracking_configured"] is True
-        assert data["backend"] == "databricks"
-        assert data["databricks_host"] == "https://my.cloud.databricks.com"
-
-    def test_backend_resolution_failure_keeps_package_available(self, client):
-        with (
-            patch(
-                "haute.modelling._mlflow_log.resolve_tracking_backend",
-                side_effect=RuntimeError("tracking backend misconfigured"),
-            ),
-            patch("importlib.util.find_spec", return_value=SimpleNamespace()),
-            patch("importlib.import_module", return_value=SimpleNamespace()),
-        ):
-            resp = client.get("/api/modelling/mlflow/check")
-
-        assert resp.status_code == 200
-        assert resp.json() == {
-            "mlflow_installed": True,
-            "mlflow_importable": True,
-            "tracking_configured": False,
-            "backend": "",
-            "databricks_host": "",
-            "detail": "tracking backend misconfigured",
-        }
 
 
 # ---------------------------------------------------------------------------
@@ -3113,6 +4986,7 @@ class TestExportScriptDirect:
                                 "algorithm": "catboost",
                                 "task": "regression",
                                 "loss_function": "RMSE",
+                                "feature_columns": ["x1", "x2"],
                                 "params": {"iterations": 100},
                                 "evaluation": _random_evaluation_config(),
                             },
@@ -3125,6 +4999,8 @@ class TestExportScriptDirect:
         body = ExportScriptRequest(graph=graph, node_id="model", data_path="output/data.parquet")
         result = await export_script(body)
         assert "TrainingJob" in result.script
+        assert "feature_columns=['x1', 'x2']," in result.script
+        assert "exclude=" not in result.script
         assert result.filename == "train_my_model.py"
 
     @pytest.mark.asyncio
@@ -3145,6 +5021,7 @@ class TestExportScriptDirect:
                                 "target": "y",
                                 "algorithm": "catboost",
                                 "loss_function": "RMSE",
+                                "feature_columns": ["x1"],
                                 "params": {"iterations": 10},
                                 "evaluation": _random_evaluation_config(),
                             },
@@ -3193,65 +5070,3 @@ class TestClearModelCacheDirect:
             mock.assert_called_once_with("run_xyz")
             assert result.removed == 2
             assert result.run_id == "run_xyz"
-
-
-class TestMlflowCheckDirect:
-    """Test mlflow_check route function directly."""
-
-    @pytest.mark.asyncio
-    async def test_mlflow_installed(self):
-        from haute.routes.modelling import mlflow_check
-
-        result = await mlflow_check()
-        assert result.mlflow_installed is True
-
-    @pytest.mark.asyncio
-    async def test_mlflow_not_installed(self):
-        """When mlflow import fails, returns mlflow_installed=False."""
-        from haute.routes.modelling import mlflow_check
-
-        with patch("importlib.util.find_spec", return_value=None):
-            result = await mlflow_check()
-
-        assert result.mlflow_installed is False
-        assert result.mlflow_importable is False
-        assert result.tracking_configured is False
-        assert result.detail == "MLflow package is not installed"
-
-    @pytest.mark.asyncio
-    async def test_mlflow_import_failure_keeps_package_available(self):
-        from haute.routes.modelling import mlflow_check
-
-        with (
-            patch("importlib.util.find_spec", return_value=SimpleNamespace()),
-            patch("importlib.import_module", side_effect=ImportError("broken dependency")),
-        ):
-            result = await mlflow_check()
-
-        assert result.mlflow_installed is True
-        assert result.mlflow_importable is False
-        assert result.tracking_configured is False
-        assert result.backend == ""
-        assert result.databricks_host == ""
-        assert result.detail == "MLflow package import failed: broken dependency"
-
-    @pytest.mark.asyncio
-    async def test_backend_resolution_failure_returns_tracking_unavailable(self):
-        from haute.routes.modelling import mlflow_check
-
-        with (
-            patch(
-                "haute.modelling._mlflow_log.resolve_tracking_backend",
-                side_effect=RuntimeError("tracking backend misconfigured"),
-            ),
-            patch("importlib.util.find_spec", return_value=SimpleNamespace()),
-            patch("importlib.import_module", return_value=SimpleNamespace()),
-        ):
-            result = await mlflow_check()
-
-        assert result.mlflow_installed is True
-        assert result.mlflow_importable is True
-        assert result.tracking_configured is False
-        assert result.backend == ""
-        assert result.databricks_host == ""
-        assert result.detail == "tracking backend misconfigured"

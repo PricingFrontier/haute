@@ -1,14 +1,15 @@
 import asyncio
-import ctypes
 import json
 import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import Mock, patch
 
 import polars as pl
 import pytest
+from fastapi import Request, Response
 
 from haute._execution_admission import (
     ExecutionAdmissionError,
@@ -24,193 +25,110 @@ from haute._execution_context import (
     ExecutionCancellationToken,
     ExecutionCancelledError,
     ExecutionContext,
-    ExecutionFaultPoint,
+    ExecutionEvidence,
+    ExecutionLease,
+    ExecutionMemoryBudget,
     ExecutionMemoryLimitExceededError,
     ExecutionMetricsRecorder,
     ExecutionProfile,
     ExecutionStageMetric,
+    ExecutionTelemetry,
     ExecutionTelemetryEvent,
     _bounded_telemetry_attributes,
 )
+from haute._graph_walker import CollectPolicy, walk_graph
+from haute._pipeline_recovery import pipeline_document_fingerprint
+from haute._pipeline_settings import PipelineSettings
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.errors import ContractMismatchError, SchemaMismatchError
-from haute.graph_utils import NodeType, _execute_eager_core, _execute_lazy
+from haute.execution import execute_lazy_graph
+from haute.graph_utils import NodeType
 from haute.schemas import ExecutionMetricsPayload
+from tests._execution_faults import ExecutionFaultPoint, FaultInjectingExecutionContext
 from tests.conftest import (
     make_edge,
     make_file_output_config,
     make_graph,
     make_output_config,
+    make_ram_estimate,
     make_source_node,
 )
+from tests.optimiser_fixtures import setup_grid_stub
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
+
+class _ConnectedClient:
+    async def is_disconnected(self) -> bool:
+        return False
+
+
+# A request whose client stays connected, for calling the preview route directly.
+_CONNECTED = cast(Request, _ConnectedClient())
 
 
 def _clear_execution_memory_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Remove memory-budget env vars so tests exercise default policy."""
     from haute import _execution_admission as admission_mod
 
-    for profile in ExecutionProfile:
+    for profile in admission_mod._PROFILE_MEMORY_ENV:
         for key, _multiplier in admission_mod._memory_env_candidates(profile):
             monkeypatch.delenv(key, raising=False)
+    for profile in ExecutionProfile:
         for key, _multiplier in admission_mod._process_rss_env_candidates(profile):
             monkeypatch.delenv(key, raising=False)
     monkeypatch.delenv("HAUTE_EXECUTION_MEMORY_POLICY", raising=False)
-    monkeypatch.delenv("HAUTE_EXECUTION_OS_RESERVE_BYTES", raising=False)
-    monkeypatch.delenv("HAUTE_EXECUTION_OS_RESERVE_MB", raising=False)
     admission_mod._clear_in_flight_reservations_for_tests()
 
 
-def test_windows_current_rss_bytes_returns_none_when_windll_is_unavailable(
+def test_remaining_memory_bytes_samples_once_and_enforces_the_budget() -> None:
+    samples = Mock(return_value=75)
+    context = ExecutionContext(
+        operation="remaining",
+        profile=ExecutionProfile.LAZY_SINK,
+        memory_limit_bytes=100,
+        memory_sampler=samples,
+    )
+
+    assert context.remaining_memory_bytes() == 25
+    samples.assert_called_once_with()
+
+
+def test_remaining_memory_bytes_preserves_memory_sampler_failures() -> None:
+    unavailable = ExecutionContext(
+        operation="remaining-unavailable",
+        profile=ExecutionProfile.LAZY_SINK,
+        memory_limit_bytes=100,
+        memory_sampler=lambda: None,
+    )
+    over_budget = ExecutionContext(
+        operation="remaining-over-budget",
+        profile=ExecutionProfile.LAZY_SINK,
+        memory_limit_bytes=100,
+        memory_sampler=lambda: 101,
+    )
+
+    with pytest.raises(ExecutionMemoryLimitExceededError, match="sampler became unavailable"):
+        unavailable.remaining_memory_bytes()
+    with pytest.raises(ExecutionMemoryLimitExceededError, match="exceeded its memory budget"):
+        over_budget.remaining_memory_bytes()
+
+
+def test_current_rss_bytes_is_a_real_positive_int() -> None:
+    from haute._execution_context import current_rss_bytes
+
+    rss = current_rss_bytes()
+    assert isinstance(rss, int)
+    assert rss > 0
+
+
+def test_current_rss_bytes_is_none_when_the_probe_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from haute import _execution_context as context_mod
 
-    monkeypatch.setattr(context_mod.os, "name", "nt")
-    monkeypatch.delattr(context_mod.ctypes, "WinDLL", raising=False)
-
-    assert context_mod._windows_current_rss_bytes() is None
-
-
-class _FakeWindowsFunction:
-    def __init__(self, result: int | bool = True, callback=None) -> None:
-        self.result = result
-        self.callback = callback
-        self.calls = 0
-
-    def __call__(self, *args):
-        self.calls += 1
-        if self.callback is not None:
-            return self.callback(*args)
-        return self.result
-
-
-class _FakeWindowsApiFactory:
-    def __init__(
-        self,
-        counters_type: type[ctypes.Structure],
-        *,
-        working_set_size: int = 1234,
-        memory_info_result: bool = True,
-    ) -> None:
-        self.working_set_size = working_set_size
-        self.calls: list[tuple[str, bool]] = []
-        self.get_current_process = _FakeWindowsFunction(99)
-
-        def populate_counters(handle, counters, size):
-            assert handle == 99
-            assert size > 0
-            ctypes.cast(
-                counters, ctypes.POINTER(counters_type)
-            ).contents.WorkingSetSize = self.working_set_size
-            return memory_info_result
-
-        self.get_process_memory_info = _FakeWindowsFunction(
-            memory_info_result, callback=populate_counters
-        )
-
-    def __call__(self, name: str, *, use_last_error: bool):
-        self.calls.append((name, use_last_error))
-        if name == "kernel32.dll":
-            return type("Kernel32", (), {"GetCurrentProcess": self.get_current_process})()
-        if name == "psapi.dll":
-            return type("Psapi", (), {"GetProcessMemoryInfo": self.get_process_memory_info})()
-        raise AssertionError(f"unexpected DLL: {name}")
-
-
-def test_windows_current_rss_bytes_memoises_bindings_per_factory(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from haute import _execution_context as context_mod
-
-    factory = _FakeWindowsApiFactory(
-        context_mod._WindowsProcessMemoryCountersEx, working_set_size=4321
-    )
-    context_mod._reset_windows_rss_sampler_for_tests()
-    monkeypatch.setattr(context_mod.os, "name", "nt")
-    monkeypatch.setattr(context_mod.ctypes, "WinDLL", factory, raising=False)
-
-    assert context_mod._windows_current_rss_bytes() == 4321
-    assert context_mod._windows_current_rss_bytes() == 4321
-    assert factory.calls == [("kernel32.dll", True), ("psapi.dll", True)]
-    assert factory.get_current_process.calls == 2
-    assert factory.get_process_memory_info.calls == 2
-
-
-def test_windows_current_rss_bytes_preserves_unavailable_and_failed_call_semantics(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from haute import _execution_context as context_mod
-
-    context_mod._reset_windows_rss_sampler_for_tests()
-    monkeypatch.setattr(context_mod.os, "name", "nt")
-    monkeypatch.delattr(context_mod.ctypes, "WinDLL", raising=False)
-    assert context_mod._windows_current_rss_bytes() is None
-
-    factory = _FakeWindowsApiFactory(
-        context_mod._WindowsProcessMemoryCountersEx, memory_info_result=False
-    )
-    monkeypatch.setattr(context_mod.ctypes, "WinDLL", factory, raising=False)
-    assert context_mod._windows_current_rss_bytes() is None
-
-
-def test_windows_current_rss_bytes_separates_factory_identities_and_reset(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from haute import _execution_context as context_mod
-
-    first = _FakeWindowsApiFactory(
-        context_mod._WindowsProcessMemoryCountersEx, working_set_size=100
-    )
-    second = _FakeWindowsApiFactory(
-        context_mod._WindowsProcessMemoryCountersEx, working_set_size=200
-    )
-    context_mod._reset_windows_rss_sampler_for_tests()
-    monkeypatch.setattr(context_mod.os, "name", "nt")
-    monkeypatch.setattr(context_mod.ctypes, "WinDLL", first, raising=False)
-    assert context_mod._windows_current_rss_bytes() == 100
-    monkeypatch.setattr(context_mod.ctypes, "WinDLL", second, raising=False)
-    assert context_mod._windows_current_rss_bytes() == 200
-    assert first.calls == [("kernel32.dll", True), ("psapi.dll", True)]
-    assert second.calls == [("kernel32.dll", True), ("psapi.dll", True)]
-
-    context_mod._reset_windows_rss_sampler_for_tests()
-    assert context_mod._windows_current_rss_bytes() == 200
-    assert second.calls == [
-        ("kernel32.dll", True),
-        ("psapi.dll", True),
-        ("kernel32.dll", True),
-        ("psapi.dll", True),
-    ]
-
-
-def test_windows_current_rss_bytes_initialises_same_factory_once_concurrently(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from haute import _execution_context as context_mod
-
-    factory = _FakeWindowsApiFactory(
-        context_mod._WindowsProcessMemoryCountersEx, working_set_size=2468
-    )
-    context_mod._reset_windows_rss_sampler_for_tests()
-    monkeypatch.setattr(context_mod.os, "name", "nt")
-    monkeypatch.setattr(context_mod.ctypes, "WinDLL", factory, raising=False)
-    barrier = threading.Barrier(8)
-    results: list[int | None] = []
-
-    def sample() -> None:
-        barrier.wait()
-        results.append(context_mod._windows_current_rss_bytes())
-
-    threads = [threading.Thread(target=sample) for _ in range(8)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
-
-    assert results == [2468] * 8
-    assert factory.calls == [("kernel32.dll", True), ("psapi.dll", True)]
+    monkeypatch.setattr(context_mod, "current_process_rss_bytes", lambda: None)
+    assert context_mod.current_rss_bytes() is None
 
 
 class _ImmediateThread:
@@ -246,7 +164,10 @@ def test_execution_admission_policy_covers_every_engine_profile() -> None:
     expected_profiles = set(ExecutionProfile)
 
     assert set(admission._ADAPTIVE_MEMORY_POLICY) == expected_profiles
-    assert set(admission._PROFILE_MEMORY_ENV) == expected_profiles
+    # A preview's budget is the pipeline settings' preview memory, never a variable.
+    assert set(admission._PROFILE_MEMORY_ENV) == expected_profiles - {
+        ExecutionProfile.PREVIEW_EAGER
+    }
     assert set(admission._PROFILE_PROCESS_RSS_ENV) == expected_profiles
     assert ExecutionProfile.DEPLOY_LIVE not in admission._ADAPTIVE_LOCAL_PROFILES
 
@@ -263,9 +184,7 @@ def test_default_memory_budgets_adapt_to_available_ram(
         ExecutionProfile.LAZY_SINK,
         ExecutionProfile.TRAINING_PREP,
         ExecutionProfile.OPTIMISER_SETUP,
-        ExecutionProfile.AUTO_RANGE,
         ExecutionProfile.DEPLOY_BATCH,
-        ExecutionProfile.CHUNKED_MAP_REDUCE,
     ):
         budget = execution_budget_for_profile(profile)
         assert budget.config_key == f"adaptive:{profile.value}"
@@ -349,14 +268,15 @@ def test_adaptive_default_memory_budgets_never_exceed_available_ram(
 
 def test_adaptive_default_memory_budgets_honor_configured_os_reserve(
     monkeypatch: pytest.MonkeyPatch,
+    pipeline_settings,
 ) -> None:
     _clear_execution_memory_env(monkeypatch)
     gib = 1024 * 1024 * 1024
     monkeypatch.setattr("haute._execution_admission.available_ram_bytes", lambda: 20 * gib)
 
-    default_budget = execution_budget_for_profile(ExecutionProfile.AUTO_RANGE)
-    monkeypatch.setenv("HAUTE_EXECUTION_OS_RESERVE_MB", str(6 * 1024))
-    reserved_budget = execution_budget_for_profile(ExecutionProfile.AUTO_RANGE)
+    default_budget = execution_budget_for_profile(ExecutionProfile.EXPLORE_ANALYSIS)
+    pipeline_settings(kept_free_gb=6)
+    reserved_budget = execution_budget_for_profile(ExecutionProfile.EXPLORE_ANALYSIS)
 
     assert default_budget.os_reserve_bytes == 2 * gib
     assert reserved_budget.os_reserve_bytes == 6 * gib
@@ -383,23 +303,23 @@ def test_explicit_global_memory_cap_remains_hard_for_all_profiles(
     monkeypatch.setattr("haute._execution_admission.available_ram_bytes", lambda: 64 * gib)
     monkeypatch.setenv("HAUTE_EXECUTION_MEMORY_LIMIT_MB", "768")
 
-    for profile in ExecutionProfile:
+    for profile in set(ExecutionProfile) - {ExecutionProfile.PREVIEW_EAGER}:
         budget = execution_budget_for_profile(profile)
         assert budget.memory_limit_bytes == 768 * 1024 * 1024
         assert budget.config_key == "HAUTE_EXECUTION_MEMORY_LIMIT_MB"
+    # Previews are sized by the pipeline settings alone.
+    preview = execution_budget_for_profile(ExecutionProfile.PREVIEW_EAGER)
+    assert preview.budget_policy == "adaptive_local"
 
 
 @pytest.mark.parametrize(
     ("env_name", "resolver", "expected"),
     [
         (
-            "HAUTE_PREVIEW_MEMORY_LIMIT_BYTES",
-            lambda module: module._resolve_required_budget(ExecutionProfile.PREVIEW_EAGER),
-            7,
-        ),
-        (
-            "HAUTE_EXECUTION_OS_RESERVE_BYTES",
-            lambda module: module._resolve_os_reserve_bytes(),
+            "HAUTE_SINK_MEMORY_LIMIT_BYTES",
+            lambda module: module._resolve_required_budget(
+                ExecutionProfile.LAZY_SINK, PipelineSettings()
+            ),
             7,
         ),
         (
@@ -451,14 +371,11 @@ def test_admission_numeric_env_is_read_once(
     ("invalid_key", "lower_precedence_key", "resolver"),
     [
         (
-            "HAUTE_PREVIEW_MEMORY_LIMIT_BYTES",
-            "HAUTE_PREVIEW_MEMORY_LIMIT_MB",
-            lambda module: module._resolve_required_budget(ExecutionProfile.PREVIEW_EAGER),
-        ),
-        (
-            "HAUTE_EXECUTION_OS_RESERVE_BYTES",
-            "HAUTE_EXECUTION_OS_RESERVE_MB",
-            lambda module: module._resolve_os_reserve_bytes(),
+            "HAUTE_SINK_MEMORY_LIMIT_BYTES",
+            "HAUTE_SINK_MEMORY_LIMIT_MB",
+            lambda module: module._resolve_required_budget(
+                ExecutionProfile.LAZY_SINK, PipelineSettings()
+            ),
         ),
         (
             "HAUTE_PREVIEW_PROCESS_RSS_LIMIT_BYTES",
@@ -489,15 +406,12 @@ def test_invalid_highest_precedence_admission_env_does_not_fall_through(
     ("env_name", "resolver", "expected"),
     [
         (
-            "HAUTE_PREVIEW_MEMORY_LIMIT_MB",
+            "HAUTE_SINK_MEMORY_LIMIT_MB",
             lambda module: (
-                module._resolve_required_budget(ExecutionProfile.PREVIEW_EAGER).memory_limit_bytes
+                module._resolve_required_budget(
+                    ExecutionProfile.LAZY_SINK, PipelineSettings()
+                ).memory_limit_bytes
             ),
-            3 * 1024 * 1024,
-        ),
-        (
-            "HAUTE_EXECUTION_OS_RESERVE_MB",
-            lambda module: module._resolve_os_reserve_bytes(),
             3 * 1024 * 1024,
         ),
         (
@@ -534,9 +448,7 @@ def test_default_execution_budget_is_adaptive_across_local_engine_profiles(
         ExecutionProfile.LAZY_SINK,
         ExecutionProfile.TRAINING_PREP,
         ExecutionProfile.OPTIMISER_SETUP,
-        ExecutionProfile.AUTO_RANGE,
         ExecutionProfile.DEPLOY_BATCH,
-        ExecutionProfile.CHUNKED_MAP_REDUCE,
     }
     for profile in heavy_profiles:
         budget = admission_mod.execution_budget_for_profile(profile)
@@ -567,12 +479,12 @@ def test_explicit_memory_limit_env_still_overrides_adaptive_policy(
 
     _clear_execution_memory_env(monkeypatch)
     monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 64 * 1024**3)
-    monkeypatch.setenv("HAUTE_AUTO_RANGE_MEMORY_LIMIT_MB", "512")
+    monkeypatch.setenv("HAUTE_EXPLORE_MEMORY_LIMIT_MB", "512")
 
-    budget = admission_mod.execution_budget_for_profile(ExecutionProfile.AUTO_RANGE)
+    budget = admission_mod.execution_budget_for_profile(ExecutionProfile.EXPLORE_ANALYSIS)
 
     assert budget.memory_limit_bytes == 512 * 1024 * 1024
-    assert budget.config_key == "HAUTE_AUTO_RANGE_MEMORY_LIMIT_MB"
+    assert budget.config_key == "HAUTE_EXPLORE_MEMORY_LIMIT_MB"
     assert budget.budget_policy == "explicit_env"
     assert budget.available_ram_bytes is None
 
@@ -600,6 +512,15 @@ def test_heavy_execution_admission_counts_in_flight_budget(
                 memory_sampler=lambda: 100,
             )
         assert exc_info.value.reason == "in_flight_memory_budget_exceeded"
+        # The refusal names the work it lost to, not just the byte totals.
+        assert exc_info.value.in_flight_operations == ("optimiser_setup:optimiser_setup_a",)
+        assert exc_info.value.to_payload()["in_flight_operations"] == [
+            "optimiser_setup:optimiser_setup_a"
+        ]
+        from haute.routes._memory_messages import memory_limit_user_message
+
+        message = memory_limit_user_message(exc_info.value, operation_noun="Optimiser estimate")
+        assert "reserved by optimiser_setup:optimiser_setup_a" in message
 
         first.release_admission()
 
@@ -611,6 +532,444 @@ def test_heavy_execution_admission_counts_in_flight_budget(
         second.release_admission()
     finally:
         first.release_admission()
+
+
+_PREVIEW_HOLDER = "training_prep:training_evaluation_preview"
+
+
+def _pin_ten_gib_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_execution_memory_env(monkeypatch)
+    gib = 1024 * 1024 * 1024
+    monkeypatch.setattr("haute._execution_admission.available_ram_bytes", lambda: 10 * gib)
+    monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 10 * gib)
+
+
+def test_training_admission_waits_out_an_evaluation_preview(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_admission import create_admitted_execution_context
+
+    _pin_ten_gib_host(monkeypatch)
+    preview = create_admitted_execution_context(
+        operation="training_evaluation_preview",
+        profile=ExecutionProfile.TRAINING_PREP,
+        memory_sampler=lambda: 100,
+    )
+    releaser = threading.Timer(0.2, preview.release_admission)
+    started = time.monotonic()
+    releaser.start()
+    try:
+        training = create_admitted_execution_context(
+            operation="training_pipeline",
+            profile=ExecutionProfile.TRAINING_PREP,
+            memory_sampler=lambda: 100,
+            wait_out_holders={_PREVIEW_HOLDER},
+            wait_seconds=10.0,
+        )
+    finally:
+        releaser.join()
+        preview.release_admission()
+    waited = time.monotonic() - started
+    training.release_admission()
+    # Admitted by the release notification, well before the wait bound.
+    assert 0.15 <= waited < 5.0
+
+
+_GIB = 1024 * 1024 * 1024
+
+
+def _grant(**kwargs: Any) -> ExecutionContext:
+    from haute._execution_admission import admit_growth_grant
+
+    return admit_growth_grant(
+        operation=kwargs.pop("operation", "optimiser_solve"),
+        profile=ExecutionProfile.OPTIMISER_SOLVE,
+        memory_sampler=kwargs.pop("memory_sampler", lambda: 100),
+        **kwargs,
+    )
+
+
+def test_a_growth_grant_waits_for_the_estimate_then_sees_what_it_freed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_admission import create_admitted_execution_context
+    from haute.routes._optimiser_session import ESTIMATE_HOLDERS
+
+    _pin_ten_gib_host(monkeypatch)
+    estimate = create_admitted_execution_context(
+        operation="optimiser_estimate",
+        profile=ExecutionProfile.OPTIMISER_SETUP,
+        memory_sampler=lambda: 100,
+    )
+    releaser = threading.Timer(0.2, estimate.release_admission)
+    started = time.monotonic()
+    releaser.start()
+    try:
+        grant = _grant(wait_out_holders=ESTIMATE_HOLDERS, wait_seconds=10.0)
+    finally:
+        releaser.join()
+        estimate.release_admission()
+    try:
+        assert 0.15 <= time.monotonic() - started < 5.0
+        # Sampled after the estimate released: the whole usable machine, 10 GiB
+        # less the 2 GiB OS reserve.
+        assert grant.memory_limit_bytes == 8 * _GIB
+        assert grant.admission is not None
+        assert grant.admission.headroom_bytes == 8 * _GIB
+    finally:
+        grant.release_admission()
+
+
+def test_a_competing_reservation_shrinks_the_grant_instead_of_refusing_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_admission import create_admitted_execution_context
+
+    _pin_ten_gib_host(monkeypatch)
+    monkeypatch.setenv("HAUTE_TRAINING_MEMORY_LIMIT_MB", str(3 * 1024))
+    training = create_admitted_execution_context(
+        operation="training_pipeline",
+        profile=ExecutionProfile.TRAINING_PREP,
+        memory_sampler=lambda: 100,
+    )
+    try:
+        grant = _grant()
+        try:
+            assert grant.memory_limit_bytes == 5 * _GIB
+        finally:
+            grant.release_admission()
+    finally:
+        training.release_admission()
+
+
+def test_any_positive_grant_is_admitted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """There is no minimum: whether a small grant suffices is for execution to find out."""
+    from haute._execution_admission import create_admitted_execution_context
+
+    _pin_ten_gib_host(monkeypatch)
+    monkeypatch.setenv("HAUTE_TRAINING_MEMORY_LIMIT_BYTES", str(8 * _GIB - 8 * 1024 * 1024))
+    training = create_admitted_execution_context(
+        operation="training_pipeline",
+        profile=ExecutionProfile.TRAINING_PREP,
+        memory_sampler=lambda: 100,
+    )
+    try:
+        grant = _grant()
+        try:
+            assert grant.memory_limit_bytes == 8 * 1024 * 1024
+        finally:
+            grant.release_admission()
+    finally:
+        training.release_admission()
+
+
+def test_a_grant_of_nothing_refuses_with_the_in_flight_cause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_admission import create_admitted_execution_context
+
+    _pin_ten_gib_host(monkeypatch)
+    monkeypatch.setenv("HAUTE_TRAINING_MEMORY_LIMIT_BYTES", str(8 * _GIB))
+    training = create_admitted_execution_context(
+        operation="training_pipeline",
+        profile=ExecutionProfile.TRAINING_PREP,
+        memory_sampler=lambda: 100,
+    )
+    try:
+        with pytest.raises(ExecutionAdmissionError) as refused:
+            _grant()
+        assert refused.value.reason == "in_flight_memory_budget_exceeded"
+        assert refused.value.in_flight_operations == ("training_prep:training_pipeline",)
+    finally:
+        training.release_admission()
+
+
+def test_an_absolute_process_rss_limit_caps_the_grant_and_names_itself(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _pin_ten_gib_host(monkeypatch)
+    monkeypatch.setenv("HAUTE_OPTIMISER_SOLVE_PROCESS_RSS_LIMIT_BYTES", str(1 * _GIB))
+    grant = _grant(memory_sampler=lambda: 256 * 1024 * 1024)
+    try:
+        assert grant.memory_limit_bytes == 768 * 1024 * 1024
+    finally:
+        grant.release_admission()
+    with pytest.raises(ExecutionAdmissionError) as refused:
+        _grant(memory_sampler=lambda: 2 * _GIB)
+    assert refused.value.reason == "process_rss_limit_exceeded"
+
+
+def test_the_solve_profile_takes_the_whole_usable_machine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _pin_ten_gib_host(monkeypatch)
+    assert execution_budget_for_profile(ExecutionProfile.OPTIMISER_SOLVE).memory_limit_bytes == (
+        8 * _GIB
+    )
+    assert execution_budget_for_profile(ExecutionProfile.OPTIMISER_SETUP).memory_limit_bytes == (
+        6 * _GIB
+    )
+    monkeypatch.setenv("HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_MB", "512")
+    assert execution_budget_for_profile(ExecutionProfile.OPTIMISER_SOLVE).memory_limit_bytes == (
+        512 * 1024 * 1024
+    )
+    monkeypatch.delenv("HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_MB")
+    monkeypatch.setenv("HAUTE_EXECUTION_MEMORY_POLICY", "fixed")
+    assert execution_budget_for_profile(ExecutionProfile.OPTIMISER_SOLVE).memory_limit_bytes == (
+        4 * _GIB
+    )
+
+
+def test_training_admission_keeps_waiting_when_a_preview_takes_the_gap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute import _execution_admission as admission_mod
+    from haute._execution_admission import create_admitted_execution_context
+
+    _pin_ten_gib_host(monkeypatch)
+    original_wait = admission_mod._wait_out_in_flight_holders
+    interlopers: list[ExecutionContext] = []
+    releasers: list[threading.Timer] = []
+
+    def wait_then_lose_the_race(*args: object, **kwargs: object) -> None:
+        original_wait(*args, **kwargs)  # type: ignore[arg-type]
+        if not interlopers:
+            # Another preview reserves between the wait and the reservation.
+            interloper = create_admitted_execution_context(
+                operation="training_evaluation_preview",
+                profile=ExecutionProfile.TRAINING_PREP,
+                memory_sampler=lambda: 100,
+            )
+            interlopers.append(interloper)
+            releaser = threading.Timer(0.2, interloper.release_admission)
+            releasers.append(releaser)
+            releaser.start()
+
+    monkeypatch.setattr(admission_mod, "_wait_out_in_flight_holders", wait_then_lose_the_race)
+    try:
+        training = create_admitted_execution_context(
+            operation="training_pipeline",
+            profile=ExecutionProfile.TRAINING_PREP,
+            memory_sampler=lambda: 100,
+            wait_out_holders={_PREVIEW_HOLDER},
+            wait_seconds=10.0,
+        )
+        training.release_admission()
+    finally:
+        for releaser in releasers:
+            releaser.join()
+        for interloper in interlopers:
+            interloper.release_admission()
+    assert len(interlopers) == 1
+
+
+def test_work_estimates_reserve_only_their_own_bytes_in_flight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two bounded operations fit side by side where two whole budgets would not."""
+    from haute._execution_admission import WorkEstimate, create_admitted_execution_context
+
+    _clear_execution_memory_env(monkeypatch)
+    gib = 1024 * 1024 * 1024
+    monkeypatch.setattr("haute._execution_admission.available_ram_bytes", lambda: 10 * gib)
+    monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 10 * gib)
+
+    def admit(name: str) -> ExecutionContext:
+        return create_admitted_execution_context(
+            operation=name,
+            profile=ExecutionProfile.EXPLORE_ANALYSIS,
+            memory_sampler=lambda: 100,
+            estimate=WorkEstimate(estimated_bytes=2 * gib, subject=name, remedy="Ask for less."),
+        )
+
+    first, second = admit("query_a"), admit("query_b")
+    try:
+        with pytest.raises(ExecutionAdmissionError) as whole_budget:
+            create_admitted_execution_context(
+                operation="whole_budget",
+                profile=ExecutionProfile.EXPLORE_ANALYSIS,
+                memory_sampler=lambda: 100,
+            )
+        assert whole_budget.value.reason == "in_flight_memory_budget_exceeded"
+        # The context still enforces the profile's whole budget as its RSS limit.
+        assert first.memory_limit_bytes is not None and first.memory_limit_bytes > 2 * gib
+    finally:
+        first.release_admission()
+        second.release_admission()
+
+
+def test_an_estimate_above_the_allowance_is_refused_by_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_admission import WorkEstimate, create_admitted_execution_context
+
+    _clear_execution_memory_env(monkeypatch)
+    monkeypatch.setenv("HAUTE_EXPLORE_MEMORY_LIMIT_BYTES", str(1000))
+
+    with pytest.raises(ExecutionAdmissionError) as refused:
+        create_admitted_execution_context(
+            operation="big_query",
+            profile=ExecutionProfile.EXPLORE_ANALYSIS,
+            memory_sampler=lambda: 100,
+            estimate=WorkEstimate(
+                estimated_bytes=1001, subject="The big query", remedy="Ask for fewer rows."
+            ),
+        )
+    assert refused.value.reason == (
+        "The big query needs an estimated 1001 bytes; the explore_analysis allowance is "
+        "1000 bytes. Ask for fewer rows."
+    )
+    # At the allowance it is admitted.
+    admitted = create_admitted_execution_context(
+        operation="fitting_query",
+        profile=ExecutionProfile.EXPLORE_ANALYSIS,
+        memory_sampler=lambda: 100,
+        estimate=WorkEstimate(estimated_bytes=1000, subject="The query", remedy="n/a"),
+    )
+    admitted.release_admission()
+
+
+def test_training_admission_retries_when_the_preview_releases_after_the_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute import _execution_admission as admission_mod
+    from haute._execution_admission import create_admitted_execution_context
+
+    _pin_ten_gib_host(monkeypatch)
+    original_admit = admission_mod._admit_once
+    attempts: list[str] = []
+
+    def refused_by_a_preview_that_then_releases(**kwargs: Any) -> ExecutionContext:
+        attempts.append(kwargs["operation"])
+        if len(attempts) == 1:
+            # The reservation lost to a preview that has released by the time
+            # admission decides whether to keep waiting: no holders remain.
+            raise ExecutionAdmissionError(
+                kwargs["operation"],
+                profile=kwargs["profile"],
+                memory_limit_bytes=kwargs["budget"].memory_limit_bytes,
+                rss_at_admission_bytes=100,
+                reason="in_flight_memory_budget_exceeded",
+                in_flight_operations=(_PREVIEW_HOLDER,),
+            )
+        return original_admit(**kwargs)
+
+    monkeypatch.setattr(admission_mod, "_admit_once", refused_by_a_preview_that_then_releases)
+    training = create_admitted_execution_context(
+        operation="training_pipeline",
+        profile=ExecutionProfile.TRAINING_PREP,
+        memory_sampler=lambda: 100,
+        wait_out_holders={_PREVIEW_HOLDER},
+        wait_seconds=10.0,
+    )
+    training.release_admission()
+    assert attempts == ["training_pipeline", "training_pipeline"]
+
+
+def test_training_admission_does_not_wait_for_a_budget_it_can_never_fit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_admission import create_admitted_execution_context
+
+    _pin_ten_gib_host(monkeypatch)
+    monkeypatch.setenv("HAUTE_TRAINING_MEMORY_LIMIT_MB", str(64 * 1024))
+    started = time.monotonic()
+    with pytest.raises(ExecutionAdmissionError) as exc_info:
+        create_admitted_execution_context(
+            operation="training_pipeline",
+            profile=ExecutionProfile.TRAINING_PREP,
+            memory_sampler=lambda: 100,
+            wait_out_holders={_PREVIEW_HOLDER},
+            wait_seconds=10.0,
+        )
+    assert time.monotonic() - started < 1.0
+    assert exc_info.value.reason == "in_flight_memory_budget_exceeded"
+
+
+def test_training_admission_refuses_at_once_behind_other_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_admission import create_admitted_execution_context
+
+    _pin_ten_gib_host(monkeypatch)
+    running = create_admitted_execution_context(
+        operation="training_pipeline",
+        profile=ExecutionProfile.TRAINING_PREP,
+        memory_sampler=lambda: 100,
+    )
+    try:
+        started = time.monotonic()
+        with pytest.raises(ExecutionAdmissionError) as exc_info:
+            create_admitted_execution_context(
+                operation="training_pipeline",
+                profile=ExecutionProfile.TRAINING_PREP,
+                memory_sampler=lambda: 100,
+                wait_out_holders={_PREVIEW_HOLDER},
+                wait_seconds=10.0,
+            )
+        assert time.monotonic() - started < 1.0
+        assert exc_info.value.reason == "in_flight_memory_budget_exceeded"
+        assert exc_info.value.in_flight_operations == ("training_prep:training_pipeline",)
+    finally:
+        running.release_admission()
+
+
+def test_training_admission_refuses_when_a_preview_outlasts_the_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_admission import create_admitted_execution_context
+
+    _pin_ten_gib_host(monkeypatch)
+    preview = create_admitted_execution_context(
+        operation="training_evaluation_preview",
+        profile=ExecutionProfile.TRAINING_PREP,
+        memory_sampler=lambda: 100,
+    )
+    try:
+        started = time.monotonic()
+        with pytest.raises(ExecutionAdmissionError) as exc_info:
+            create_admitted_execution_context(
+                operation="training_pipeline",
+                profile=ExecutionProfile.TRAINING_PREP,
+                memory_sampler=lambda: 100,
+                wait_out_holders={_PREVIEW_HOLDER},
+                wait_seconds=0.3,
+            )
+        assert time.monotonic() - started >= 0.3
+        assert exc_info.value.in_flight_operations == (_PREVIEW_HOLDER,)
+    finally:
+        preview.release_admission()
+
+
+def test_waiting_training_admission_honours_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_admission import create_admitted_execution_context
+
+    _pin_ten_gib_host(monkeypatch)
+    preview = create_admitted_execution_context(
+        operation="training_evaluation_preview",
+        profile=ExecutionProfile.TRAINING_PREP,
+        memory_sampler=lambda: 100,
+    )
+    token = ExecutionCancellationToken()
+    canceller = threading.Timer(0.2, token.cancel)
+    canceller.start()
+    try:
+        started = time.monotonic()
+        with pytest.raises(ExecutionCancelledError):
+            create_admitted_execution_context(
+                operation="training_pipeline",
+                profile=ExecutionProfile.TRAINING_PREP,
+                memory_sampler=lambda: 100,
+                cancellation_token=token,
+                wait_out_holders={_PREVIEW_HOLDER},
+                wait_seconds=10.0,
+            )
+        assert time.monotonic() - started < 2.0
+    finally:
+        canceller.join()
+        preview.release_admission()
 
 
 def test_heavy_admission_releases_reservation_when_context_construction_fails(
@@ -791,13 +1150,13 @@ def test_fixed_memory_policy_uses_profile_defaults(
     monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 64 * 1024**3)
     monkeypatch.setenv("HAUTE_EXECUTION_MEMORY_POLICY", "fixed")
 
-    budget = admission_mod.execution_budget_for_profile(ExecutionProfile.AUTO_RANGE)
+    budget = admission_mod.execution_budget_for_profile(ExecutionProfile.EXPLORE_ANALYSIS)
 
     assert (
         budget.memory_limit_bytes
-        == admission_mod._DEFAULT_MEMORY_LIMIT_BYTES[ExecutionProfile.AUTO_RANGE]
+        == admission_mod._DEFAULT_MEMORY_LIMIT_BYTES[ExecutionProfile.EXPLORE_ANALYSIS]
     )
-    assert budget.config_key == "default:auto_range"
+    assert budget.config_key == "default:explore_analysis"
     assert budget.budget_policy == "fixed_default"
     assert budget.available_ram_bytes is None
 
@@ -811,13 +1170,13 @@ def test_strict_server_memory_policy_uses_profile_defaults(
     monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 64 * 1024**3)
     monkeypatch.setenv("HAUTE_EXECUTION_MEMORY_POLICY", "strict_server")
 
-    budget = admission_mod.execution_budget_for_profile(ExecutionProfile.AUTO_RANGE)
+    budget = admission_mod.execution_budget_for_profile(ExecutionProfile.EXPLORE_ANALYSIS)
 
     assert (
         budget.memory_limit_bytes
-        == admission_mod._DEFAULT_MEMORY_LIMIT_BYTES[ExecutionProfile.AUTO_RANGE]
+        == admission_mod._DEFAULT_MEMORY_LIMIT_BYTES[ExecutionProfile.EXPLORE_ANALYSIS]
     )
-    assert budget.config_key == "default:auto_range"
+    assert budget.config_key == "default:explore_analysis"
     assert budget.budget_policy == "fixed_default"
     assert budget.available_ram_bytes is None
 
@@ -829,12 +1188,12 @@ def test_adaptive_budget_still_respects_process_rss_cap(
     mib = 1024 * 1024
     gib = 1024 * mib
     monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 16 * gib)
-    monkeypatch.setenv("HAUTE_AUTO_RANGE_PROCESS_RSS_LIMIT_MB", "2048")
+    monkeypatch.setenv("HAUTE_EXPLORE_PROCESS_RSS_LIMIT_MB", "2048")
     samples = iter([1500 * mib, 2100 * mib])
 
     context = create_admitted_execution_context(
-        operation="frontier_auto_range",
-        profile=ExecutionProfile.AUTO_RANGE,
+        operation="explore_analysis",
+        profile=ExecutionProfile.EXPLORE_ANALYSIS,
         memory_sampler=lambda: next(samples),
     )
 
@@ -963,16 +1322,189 @@ def test_cancellation_latency_uses_first_request_and_meets_controlled_checkpoint
     )
 
 
-def test_execution_fault_points_are_ordered_and_include_bounded_context() -> None:
-    points: list[ExecutionFaultPoint] = []
+def test_execution_contexts_carry_no_fault_injection() -> None:
+    from haute import _execution_context as context_mod
+
+    assert not hasattr(context_mod, "ExecutionFaultPoint")
+    assert not hasattr(ExecutionContext, "fault_point")
+    with pytest.raises(TypeError, match="fault_injector"):
+        ExecutionContext(
+            operation="fault-test",
+            profile=ExecutionProfile.LAZY_SINK,
+            fault_injector=print,  # type: ignore[call-arg]
+        )
+
+
+def _crossed_thresholds(budget: ExecutionMemoryBudget, rss_bytes: int) -> list[int]:
+    events = budget.pressure_events(
+        rss_bytes,
+        operation="budget-only",
+        profile=ExecutionProfile.LAZY_SINK,
+        job_id=None,
+        stage=None,
+        node_id=None,
+        label="probe",
+    )
+    return [event.threshold_percent for event in events]
+
+
+def test_budget_and_lease_work_without_either_recorder() -> None:
+    budget = ExecutionMemoryBudget(memory_limit_bytes=100, memory_baseline_bytes=0)
+
+    budget.enforce(50, operation="budget-only", job_id=None)
+    assert _crossed_thresholds(budget, 95) == [50, 75, 90]
+    assert _crossed_thresholds(budget, 99) == []
+    # A process cap at or below the baseline leaves no window to measure pressure in.
+    capped = ExecutionMemoryBudget(
+        memory_limit_bytes=100, memory_baseline_bytes=100, rss_limit_bytes=50
+    )
+    assert _crossed_thresholds(capped, 60) == []
+    with pytest.raises(ExecutionMemoryLimitExceededError) as exc_info:
+        budget.enforce(101, operation="budget-only", job_id="job-1")
+    assert exc_info.value.reason == "rss_exceeds_memory_limit"
+
+    released: list[str] = []
+    lease = ExecutionLease(lambda: released.append("admission"))
+    lease.add_cleanup(lambda: released.append("first"))
+    lease.add_cleanup(lambda: released.append("second"))
+    lease.release()
+    lease.release()
+    assert released == ["second", "first", "admission"]
+    assert lease.released
+
+
+def test_context_reads_its_limits_admission_and_sampler_through_its_budget() -> None:
+    def sampler() -> int:
+        return 10
+
     context = ExecutionContext(
+        operation="read-through",
+        profile=ExecutionProfile.LAZY_SINK,
+        memory_limit_bytes=100,
+        rss_limit_bytes=150,
+        memory_sampler=sampler,
+    )
+
+    assert context.memory_limit_bytes == context.budget.memory_limit_bytes == 100
+    assert context.rss_limit_bytes == context.budget.rss_limit_bytes == 150
+    assert context.admission is context.budget.admission is None
+    assert context.memory_sampler is context.budget.sampler is sampler
+
+    def replacement() -> int:
+        return 20
+
+    context.memory_sampler = replacement
+    assert context.budget.sampler is replacement
+
+
+def test_evidence_rejects_invalid_widths_and_byte_counts() -> None:
+    evidence = ExecutionEvidence()
+
+    with pytest.raises(ValueError, match="non-empty node_id"):
+        evidence.record_column_widths(node_id="")
+    with pytest.raises(ValueError, match="input_width must be a non-negative integer"):
+        evidence.record_column_widths(node_id="node-1", input_width=-1)
+    with pytest.raises(ValueError, match="output_width must be a non-negative integer"):
+        evidence.record_column_widths(node_id="node-1", output_width=True)
+    with pytest.raises(ValueError, match="non-negative integers"):
+        evidence.record_bytes_written(-1)
+
+
+def test_cancellation_latency_keeps_the_first_observed_value() -> None:
+    clock = iter([10.0, 10.025, 10.5])
+    token = ExecutionCancellationToken(monotonic_clock=lambda: next(clock))
+    context = ExecutionContext(
+        operation="cancel", profile=ExecutionProfile.LAZY_SINK, cancellation_token=token
+    )
+
+    token.cancel()
+    for _ in range(2):
+        with pytest.raises(ExecutionCancelledError):
+            context.checkpoint(label="after-cancel")
+
+    assert context.metrics_payload()["cancellation_latency_ms"] == pytest.approx(25.0)
+
+
+def test_on_cancel_runs_each_callback_once_when_the_token_is_cancelled() -> None:
+    token = ExecutionCancellationToken()
+    calls: list[str] = []
+    token.on_cancel(lambda: calls.append("first"))
+    token.on_cancel(lambda: calls.append("second"))
+    assert calls == []
+
+    token.cancel()
+    token.cancel()
+
+    assert calls == ["first", "second"]
+
+
+def test_on_cancel_runs_at_once_on_an_already_cancelled_token() -> None:
+    token = ExecutionCancellationToken()
+    token.cancel()
+    calls: list[str] = []
+
+    token.on_cancel(lambda: calls.append("late"))
+
+    assert calls == ["late"]
+
+
+def test_on_cancel_callbacks_run_outside_the_token_lock() -> None:
+    token = ExecutionCancellationToken()
+    seen: list[bool] = []
+
+    def reads_the_token_from_another_thread() -> None:
+        # A callback that needs the token (here, from another thread) must not
+        # deadlock on the lock cancel() holds while setting the flag.
+        thread = threading.Thread(target=lambda: seen.append(token.cancelled))
+        thread.start()
+        thread.join(5)
+
+    token.on_cancel(reads_the_token_from_another_thread)
+    token.cancel()
+
+    assert seen == [True]
+
+
+def test_terminal_telemetry_skips_live_statuses_and_logs_without_a_sink() -> None:
+    telemetry = ExecutionTelemetry(enabled=True)
+
+    with patch("haute._execution_context.logger") as log:
+        telemetry.emit_terminal({"status": "running"})
+        log.info.assert_not_called()
+        telemetry.emit_terminal({"status": "completed"})
+        telemetry.emit_terminal({"status": "completed"})
+
+    log.info.assert_called_once()
+    assert log.info.call_args.args == ("execution_terminal",)
+
+
+@pytest.mark.meta
+def test_no_class_in_the_execution_context_module_exceeds_300_lines() -> None:
+    """The execution-engine specification caps every class in the module at 300 lines."""
+    import ast
+
+    from haute import _execution_context as context_mod
+
+    tree = ast.parse(Path(context_mod.__file__).read_text(encoding="utf-8"))
+    sizes = {
+        node.name: node.end_lineno - node.lineno + 1
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef) and node.end_lineno is not None
+    }
+    assert "ExecutionContext" in sizes
+    assert {name: size for name, size in sizes.items() if size > 300} == {}
+
+
+def test_fault_injecting_context_reports_checkpoints_in_order() -> None:
+    points: list[ExecutionFaultPoint] = []
+    context = FaultInjectingExecutionContext(
         operation="fault-test",
         profile=ExecutionProfile.LAZY_SINK,
         fault_injector=points.append,
     )
 
     context.checkpoint(label="before-node", node_id="node-1")
-    context.fault_point("response_shaping", node_id="node-1")
+    context.checkpoint(label="after-node")
 
     assert points == [
         ExecutionFaultPoint(
@@ -982,9 +1514,9 @@ def test_execution_fault_points_are_ordered_and_include_bounded_context() -> Non
             sequence=1,
         ),
         ExecutionFaultPoint(
-            name="response_shaping",
+            name="after-node",
             operation="fault-test",
-            node_id="node-1",
+            node_id=None,
             sequence=2,
         ),
     ]
@@ -995,7 +1527,7 @@ def test_execution_fault_injector_failure_propagates_before_checkpoint_work() ->
         assert point.name == "before-native"
         raise RuntimeError("deterministic fault")
 
-    context = ExecutionContext(
+    context = FaultInjectingExecutionContext(
         operation="fault-test",
         profile=ExecutionProfile.LAZY_SINK,
         fault_injector=inject,
@@ -1017,9 +1549,8 @@ def test_execution_telemetry_disabled_mode_never_calls_sink() -> None:
         telemetry_sink=events.append,
     )
 
-    with patch.object(
-        ExecutionContext,
-        "_telemetry_attributes",
+    with patch(
+        "haute._execution_context._terminal_telemetry_attributes",
         side_effect=AssertionError("disabled telemetry assembled attributes"),
     ):
         context.metrics_payload(status="completed")
@@ -1129,8 +1660,9 @@ def test_telemetry_attribute_failure_does_not_change_metrics_payload() -> None:
     context = ExecutionContext(
         operation="telemetry", profile=ExecutionProfile.LAZY_SINK, telemetry_enabled=True
     )
-    with patch.object(
-        ExecutionContext, "_telemetry_attributes", side_effect=RuntimeError("bad telemetry")
+    with patch(
+        "haute._execution_context._terminal_telemetry_attributes",
+        side_effect=RuntimeError("bad telemetry"),
     ):
         assert context.metrics_payload(status="completed")["status"] == "completed"
 
@@ -1154,30 +1686,29 @@ def test_preview_cache_unpins_entry_when_preview_projection_fails(tmp_path) -> N
 
 
 def test_execute_graph_response_shaping_fault_releases_preview_cache_pin(
-    tmp_path,
+    tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from haute import executor
     from haute.executor import _preview_cache, execute_graph
 
     data_path = tmp_path / "input.parquet"
     pl.DataFrame({"a": [1, 2]}).write_parquet(data_path)
     graph = make_graph({"nodes": [make_source_node("source", str(data_path))], "edges": []})
 
-    def inject(point: ExecutionFaultPoint) -> None:
-        if point.name == "response_shaping":
-            raise RuntimeError("response shaping fault")
+    def fail_response_shaping(**_fields: object) -> None:
+        raise RuntimeError("response shaping fault")
 
-    context = ExecutionContext(
-        operation="preview",
-        profile=ExecutionProfile.PREVIEW_EAGER,
-        fault_injector=inject,
-    )
+    monkeypatch.setattr(executor, "NodeResult", fail_response_shaping)
 
     with pytest.raises(RuntimeError, match="response shaping fault"):
         execute_graph(
             graph,
             target_node_id="source",
             target_preview_only=True,
-            execution_context=context,
+            execution_context=ExecutionContext(
+                operation="preview",
+                profile=ExecutionProfile.PREVIEW_EAGER,
+            ),
         )
 
     assert _preview_cache.stats()["pinned_entries"] == 0
@@ -1419,7 +1950,7 @@ def test_stage_exit_reports_every_internal_finalization_failure(
 
     with pytest.raises(RuntimeError, match="stage stack is unbalanced") as exc_info:
         with context.stage("collect", node_id="node-1"):
-            context._active_stage_stack().clear()
+            context._open_stages.stack.clear()
 
     notes = getattr(exc_info.value, "__notes__", ())
     assert any("LookupError: context reset failed" in note for note in notes)
@@ -1530,7 +2061,7 @@ def test_execution_context_memory_pressure_events_are_bounded() -> None:
     samples = iter([10, 50, 75, 90, 95])
     context = ExecutionContext(
         operation="auto_range",
-        profile=ExecutionProfile.AUTO_RANGE,
+        profile=ExecutionProfile.OPTIMISER_SOLVE,
         memory_limit_bytes=100,
         metrics=ExecutionMetricsRecorder(max_memory_pressure_events=2),
         memory_sampler=lambda: next(samples),
@@ -1558,7 +2089,7 @@ def test_execution_context_memory_pressure_uses_growth_budget_when_baselined() -
     samples = iter([1_000, 1_049, 1_050, 1_075, 1_090, 1_099])
     context = ExecutionContext(
         operation="auto_range",
-        profile=ExecutionProfile.AUTO_RANGE,
+        profile=ExecutionProfile.OPTIMISER_SOLVE,
         memory_limit_bytes=100,
         memory_baseline_bytes=1_000,
         memory_sampler=lambda: next(samples),
@@ -1889,7 +2420,7 @@ def test_execution_context_without_memory_limit_records_no_pressure_events() -> 
 def test_execution_context_enforces_memory_budget_at_checkpoint() -> None:
     context = ExecutionContext(
         operation="auto-range",
-        profile=ExecutionProfile.AUTO_RANGE,
+        profile=ExecutionProfile.OPTIMISER_SOLVE,
         job_id="job-1",
         memory_limit_bytes=99,
         memory_sampler=lambda: 100,
@@ -1928,8 +2459,10 @@ def test_execution_context_records_stage_metric_when_memory_limit_fails_at_entry
     assert metric.rss_peak_bytes == 111
 
 
-def test_admitted_execution_context_uses_profile_specific_memory_limit(monkeypatch) -> None:
-    monkeypatch.setenv("HAUTE_PREVIEW_MEMORY_LIMIT_MB", "512")
+def test_admitted_execution_context_uses_profile_specific_memory_limit(
+    monkeypatch, pipeline_settings
+) -> None:
+    pipeline_settings(preview_memory_gb=512 / 1024)
 
     context = create_admitted_execution_context(
         operation="pipeline_preview",
@@ -1943,19 +2476,20 @@ def test_admitted_execution_context_uses_profile_specific_memory_limit(monkeypat
     assert context.admission.profile == ExecutionProfile.PREVIEW_EAGER
     assert context.admission.memory_limit_bytes == 512 * 1024 * 1024
     assert context.admission.rss_at_admission_bytes == 128 * 1024 * 1024
-    assert context.memory_baseline_bytes == 128 * 1024 * 1024
+    assert context.budget.memory_baseline_bytes == 128 * 1024 * 1024
     assert context.rss_limit_bytes == 640 * 1024 * 1024
     assert context.admission.rss_limit_bytes == 640 * 1024 * 1024
     assert context.admission.headroom_bytes == 512 * 1024 * 1024
-    assert context.admission.config_key == "HAUTE_PREVIEW_MEMORY_LIMIT_MB"
+    assert context.admission.config_key == "preview_memory_gb"
 
 
 def test_isolated_context_uses_plain_parent_budget_without_reserving_twice(
     monkeypatch: pytest.MonkeyPatch,
+    pipeline_settings,
 ) -> None:
     import haute._execution_admission as admission_mod
 
-    monkeypatch.setenv("HAUTE_PREVIEW_MEMORY_LIMIT_MB", "64")
+    pipeline_settings(preview_memory_gb=64 / 1024)
     parent = create_admitted_execution_context(
         operation="pipeline_preview",
         profile=ExecutionProfile.PREVIEW_EAGER,
@@ -1967,17 +2501,18 @@ def test_isolated_context_uses_plain_parent_budget_without_reserving_twice(
     child = create_isolated_execution_context(budget)
 
     assert budget.memory_limit_bytes == 64 * 1024 * 1024
-    assert child.memory_baseline_bytes == 200
+    assert child.budget.memory_baseline_bytes == 200
     assert child.rss_limit_bytes == 200 + 64 * 1024 * 1024
     assert child.admission is not None
     assert child.admission.operation == "pipeline_preview"
-    assert child.admission_release is None
+    assert child.lease.admission_release is None
     child.release_admission()
     parent.release_admission()
 
 
 def test_isolated_context_requires_admitted_parent_and_child_rss_sampler(
     monkeypatch: pytest.MonkeyPatch,
+    pipeline_settings,
 ) -> None:
     import haute._execution_admission as admission_mod
 
@@ -1990,7 +2525,7 @@ def test_isolated_context_requires_admitted_parent_and_child_rss_sampler(
             )
         )
 
-    monkeypatch.setenv("HAUTE_PREVIEW_MEMORY_LIMIT_MB", "64")
+    pipeline_settings(preview_memory_gb=64 / 1024)
     parent = create_admitted_execution_context(
         operation="pipeline_preview",
         profile=ExecutionProfile.PREVIEW_EAGER,
@@ -2079,16 +2614,17 @@ def test_terminal_calibration_ignores_invalid_positive_evidence() -> None:
     context = ExecutionContext(operation="preview", profile=ExecutionProfile.PREVIEW_EAGER)
     diagnostic = SimpleNamespace(strategy=SimpleNamespace(value="materialisation-boundary"))
 
-    context._record_estimate_calibration(
+    context.evidence.record_estimate_calibration(
         {
             "status": "completed",
             "raw_estimated_bytes": True,
             "observed_peak_rss_growth_bytes": 1,
         },
+        profile=context.profile,
         diagnostic=diagnostic,
     )
 
-    assert context._estimate_calibration_recorded is False
+    assert context.evidence._calibration_recorded is False
 
 
 def test_isolated_context_uses_admitted_headroom_and_absolute_process_cap(
@@ -2121,7 +2657,7 @@ def test_isolated_context_uses_admitted_headroom_and_absolute_process_cap(
     assert budget.memory_limit_bytes == 25
     assert budget.process_rss_limit_bytes == 125
     assert child.memory_limit_bytes == 25
-    assert child.memory_baseline_bytes == 110
+    assert child.budget.memory_baseline_bytes == 110
     assert child.rss_limit_bytes == 125
     assert child.admission is not None
     assert child.admission.headroom_bytes == 15
@@ -2188,8 +2724,9 @@ def test_isolated_context_rejects_child_with_no_absolute_cap_headroom(
 
 def test_admitted_execution_context_allows_warm_process_above_operation_budget(
     monkeypatch,
+    pipeline_settings,
 ) -> None:
-    monkeypatch.setenv("HAUTE_PREVIEW_MEMORY_LIMIT_MB", "512")
+    pipeline_settings(preview_memory_gb=512 / 1024)
     gib = 1024 * 1024 * 1024
     mib = 1024 * 1024
     samples = iter([2 * gib, 2 * gib + 511 * mib, 2 * gib + 513 * mib])
@@ -2200,7 +2737,7 @@ def test_admitted_execution_context_allows_warm_process_above_operation_budget(
         memory_sampler=lambda: next(samples),
     )
 
-    assert context.memory_baseline_bytes == 2 * gib
+    assert context.budget.memory_baseline_bytes == 2 * gib
     assert context.memory_limit_bytes == 512 * mib
     assert context.rss_limit_bytes == 2 * gib + 512 * mib
     context.checkpoint(label="within-operation-growth-budget")
@@ -2213,8 +2750,9 @@ def test_admitted_execution_context_allows_warm_process_above_operation_budget(
 
 def test_admitted_execution_context_runtime_failure_reports_process_rss_cap(
     monkeypatch,
+    pipeline_settings,
 ) -> None:
-    monkeypatch.setenv("HAUTE_PREVIEW_MEMORY_LIMIT_MB", "512")
+    pipeline_settings(preview_memory_gb=512 / 1024)
     monkeypatch.setenv("HAUTE_PREVIEW_PROCESS_RSS_LIMIT_MB", "2304")
     gib = 1024 * 1024 * 1024
     mib = 1024 * 1024
@@ -2236,9 +2774,10 @@ def test_admitted_execution_context_runtime_failure_reports_process_rss_cap(
 
 def test_process_rss_cap_catches_cumulative_warm_process_ratcheting(
     monkeypatch: pytest.MonkeyPatch,
+    pipeline_settings,
 ) -> None:
     """A process cap bounds total RSS even when each operation gets fresh headroom."""
-    monkeypatch.setenv("HAUTE_PREVIEW_MEMORY_LIMIT_MB", "512")
+    pipeline_settings(preview_memory_gb=512 / 1024)
     monkeypatch.setenv("HAUTE_PREVIEW_PROCESS_RSS_LIMIT_MB", "1024")
     mib = 1024 * 1024
     samples = iter([900 * mib, 1030 * mib])
@@ -2249,7 +2788,7 @@ def test_process_rss_cap_catches_cumulative_warm_process_ratcheting(
         memory_sampler=lambda: next(samples),
     )
 
-    assert context.memory_baseline_bytes == 900 * mib
+    assert context.budget.memory_baseline_bytes == 900 * mib
     assert context.memory_limit_bytes == 512 * mib
     assert context.rss_limit_bytes == 1024 * mib
     with pytest.raises(ExecutionMemoryLimitExceededError) as exc_info:
@@ -2306,8 +2845,10 @@ def test_admitted_execution_context_rejects_at_process_rss_cap(
     assert exc_info.value.process_rss_limit_bytes == 100
 
 
-def test_execution_metrics_payload_includes_admission_metadata(monkeypatch) -> None:
-    monkeypatch.setenv("HAUTE_PREVIEW_MEMORY_LIMIT_MB", "256")
+def test_execution_metrics_payload_includes_admission_metadata(
+    monkeypatch, pipeline_settings
+) -> None:
+    pipeline_settings(preview_memory_gb=256 / 1024)
     context = create_admitted_execution_context(
         operation="pipeline_preview",
         profile=ExecutionProfile.PREVIEW_EAGER,
@@ -2325,14 +2866,14 @@ def test_execution_metrics_payload_includes_admission_metadata(monkeypatch) -> N
         "rss_limit_bytes": 288 * 1024 * 1024,
         "process_rss_limit_bytes": None,
         "headroom_bytes": 256 * 1024 * 1024,
-        "config_key": "HAUTE_PREVIEW_MEMORY_LIMIT_MB",
-        "budget_policy": "explicit_env",
+        "config_key": "preview_memory_gb",
+        "budget_policy": "pipeline_settings",
         "available_ram_bytes": None,
         "os_reserve_bytes": None,
         "reason": "within_memory_budget",
     }
     validated = ExecutionMetricsPayload.model_validate(payload).model_dump(mode="json")
-    assert validated["admission"]["budget_policy"] == "explicit_env"
+    assert validated["admission"]["budget_policy"] == "pipeline_settings"
     assert validated["admission"]["available_ram_bytes"] is None
     assert validated["admission"]["os_reserve_bytes"] is None
 
@@ -2442,14 +2983,14 @@ def test_execution_metrics_summary_caps_stage_payload_without_dropping_rollups()
                 name="chunk",
                 elapsed_ms=float(index + 1),
                 operation="auto_range",
-                profile=ExecutionProfile.AUTO_RANGE,
+                profile=ExecutionProfile.OPTIMISER_SOLVE,
                 node_id=f"node-{index}",
             )
         )
 
     summary = recorder.summary(
         operation="auto_range",
-        profile=ExecutionProfile.AUTO_RANGE,
+        profile=ExecutionProfile.OPTIMISER_SOLVE,
         job_id="job-1",
     ).to_dict()
 
@@ -2469,7 +3010,7 @@ def test_background_job_registry_cancels_execution_token_for_superseded_job() ->
 
     context = ExecutionContext(
         operation="frontier_auto_range",
-        profile=ExecutionProfile.AUTO_RANGE,
+        profile=ExecutionProfile.OPTIMISER_SOLVE,
         job_id="job-1",
         cancellation_token=first_token.execution_token,
     )
@@ -2497,6 +3038,25 @@ def test_background_job_registry_uses_caller_execution_token() -> None:
     assert token.execution_token is supplied_token
     registry.cancel("job-1")
     assert supplied_token.cancelled
+
+
+def _run_eager(
+    graph: Any,
+    build_node_fn: Any,
+    *,
+    target_node_id: str,
+    swallow_errors: bool = False,
+    execution_context: ExecutionContext | None = None,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """One eager execution: a display walk, recording node failures when asked."""
+    walked = walk_graph(
+        graph,
+        build_node_fn,
+        policy=CollectPolicy.display(record_failures=swallow_errors),
+        target_node_id=target_node_id,
+        execution_context=execution_context,
+    )
+    return walked.collected, walked.errors
 
 
 def test_eager_graph_execution_records_collect_stages() -> None:
@@ -2538,14 +3098,11 @@ def test_eager_graph_execution_records_collect_stages() -> None:
             False,
         )
 
-    result = _execute_eager_core(
-        graph,
-        build_node_fn,
-        target_node_id="derived",
-        execution_context=context,
+    outputs, _errors = _run_eager(
+        graph, build_node_fn, target_node_id="derived", execution_context=context
     )
 
-    assert result.outputs["derived"]["b"].to_list() == [2, 3]
+    assert outputs["derived"]["b"].to_list() == [2, 3]
     metrics = context.metrics.snapshot()
     assert [metric.node_id for metric in metrics] == ["source", "derived"]
     assert {metric.name for metric in metrics} == {"eager_collect"}
@@ -2579,7 +3136,7 @@ def test_eager_graph_execution_does_not_swallow_memory_budget_failures() -> None
         return node.id, lambda: pl.DataFrame({"a": [1, 2]}).lazy(), True
 
     with pytest.raises(ExecutionMemoryLimitExceededError):
-        _execute_eager_core(
+        _run_eager(
             graph,
             build_node_fn,
             target_node_id="source",
@@ -2614,7 +3171,7 @@ def test_eager_graph_execution_does_not_swallow_cancellation() -> None:
         return node.id, lambda: pl.DataFrame({"a": [1, 2]}).lazy(), True
 
     with pytest.raises(ExecutionCancelledError):
-        _execute_eager_core(
+        _run_eager(
             graph,
             build_node_fn,
             target_node_id="source",
@@ -2654,12 +3211,7 @@ def test_eager_graph_execution_does_not_swallow_mismatches(error: Exception) -> 
         return node.id, raise_mismatch, True
 
     with pytest.raises(type(error), match=error.message):
-        _execute_eager_core(
-            graph,
-            build_node_fn,
-            target_node_id="source",
-            swallow_errors=True,
-        )
+        _run_eager(graph, build_node_fn, target_node_id="source", swallow_errors=True)
 
 
 def test_eager_graph_execution_swallows_ordinary_node_errors() -> None:
@@ -2685,15 +3237,10 @@ def test_eager_graph_execution_swallows_ordinary_node_errors() -> None:
 
         return node.id, raise_runtime_error, True
 
-    result = _execute_eager_core(
-        graph,
-        build_node_fn,
-        target_node_id="source",
-        swallow_errors=True,
-    )
+    outputs, errors = _run_eager(graph, build_node_fn, target_node_id="source", swallow_errors=True)
 
-    assert result.errors == {"source": "ordinary node failure"}
-    assert result.outputs == {"source": None}
+    assert errors == {"source": "ordinary node failure"}
+    assert outputs == {"source": None}
 
 
 def test_lazy_graph_execution_checks_cancellation_before_node_work() -> None:
@@ -2719,10 +3266,13 @@ def test_lazy_graph_execution_checks_cancellation_before_node_work() -> None:
         raise AssertionError("cancelled execution should not build node functions")
 
     with pytest.raises(ExecutionCancelledError):
-        _execute_lazy(graph, build_node_fn, execution_context=context)
+        execute_lazy_graph(graph, build_node_fn, execution_context=context)
 
 
-def test_lazy_graph_execution_records_build_and_checkpoint_stages(tmp_path) -> None:
+def test_lazy_graph_execution_records_build_and_capture_stages(tmp_path) -> None:
+    from haute._node_snapshots import NodeSnapshotStore
+    from haute._seed_plans import SeedPlanRequest, open_resolved_seed_plan
+
     graph = make_graph(
         {
             "nodes": [
@@ -2739,13 +3289,21 @@ def test_lazy_graph_execution_records_build_and_checkpoint_stages(tmp_path) -> N
                     "data": {
                         "label": "mid",
                         "nodeType": NodeType.POLARS.value,
-                        "config": {},
+                        "config": {"code": "df = df.with_columns(pl.col('a').rank().alias('r'))"},
                     },
                 },
                 {
                     "id": "left",
                     "data": {
                         "label": "left",
+                        "nodeType": NodeType.POLARS.value,
+                        "config": {},
+                    },
+                },
+                {
+                    "id": "both",
+                    "data": {
+                        "label": "both",
                         "nodeType": NodeType.POLARS.value,
                         "config": {},
                     },
@@ -2763,6 +3321,8 @@ def test_lazy_graph_execution_records_build_and_checkpoint_stages(tmp_path) -> N
                 make_edge("source", "mid").model_dump(),
                 make_edge("mid", "left").model_dump(),
                 make_edge("mid", "right").model_dump(),
+                make_edge("left", "both").model_dump(),
+                make_edge("right", "both").model_dump(),
             ],
         }
     )
@@ -2777,25 +3337,37 @@ def test_lazy_graph_execution_records_build_and_checkpoint_stages(tmp_path) -> N
             return node.id, lambda: pl.DataFrame({"a": [1, 2]}).lazy(), True
         if node.id == "mid":
             return node.id, lambda df: df.with_columns((pl.col("a") + 1).alias("b")), False
+        if node.id == "both":
+            return node.id, lambda left, right: pl.concat([left, right]), False
         return node.id, lambda df: df.select("b"), False
 
-    outputs, *_ = _execute_lazy(
-        graph,
-        build_node_fn,
-        checkpoint_dir=tmp_path,
-        execution_context=context,
+    request = SeedPlanRequest(
+        graph=graph,
+        target_node_id="both",
+        source="live",
+        profile=ExecutionProfile.LAZY_SINK,
     )
-
-    assert outputs["left"].collect()["b"].to_list() == [2, 3]
+    with open_resolved_seed_plan(request, store=NodeSnapshotStore(tmp_path)) as plan:
+        outputs, *_ = execute_lazy_graph(
+            graph,
+            build_node_fn,
+            target_node_id="both",
+            execution_context=context,
+            prepare_inputs=False,
+            snapshot_plan=plan,
+        )
+        assert outputs["both"].collect()["b"].to_list() == [2, 3, 2, 3]
     metrics = context.metrics.snapshot()
     assert [metric.node_id for metric in metrics if metric.name == "lazy_build"] == [
         "source",
         "mid",
         "left",
         "right",
+        "both",
     ]
+    # The fan-out is materialised as a capture into the shared snapshot store.
     assert any(
-        metric.name == "lazy_checkpoint_parquet" and metric.node_id == "mid" for metric in metrics
+        metric.name == "lazy_snapshot_capture" and metric.node_id == "mid" for metric in metrics
     )
 
 
@@ -2827,9 +3399,11 @@ def test_execute_sink_forwards_execution_context_to_lazy_executor(tmp_path) -> N
 
     def fake_execute_lazy(*_args, **kwargs):
         captured.update(kwargs)
-        return {"sink": pl.DataFrame({"a": [1]}).lazy()}, ["sink"], {}, {}
+        from haute._graph_walker import WalkResult
 
-    with patch("haute.executor._execute_lazy", side_effect=fake_execute_lazy):
+        return WalkResult(frames={"sink": pl.DataFrame({"a": [1]}).lazy()})
+
+    with patch("haute.executor.walk_graph", side_effect=fake_execute_lazy):
         result = write_data_output(graph, "sink", execution_context=context)
 
     assert result.status == "ok"
@@ -2869,7 +3443,7 @@ async def test_sink_route_creates_lazy_sink_execution_context(monkeypatch, tmp_p
     captured = {}
 
     def fake_execute_sink(*args, **_kwargs):
-        captured["budget"] = args[8]
+        captured["budget"] = args[7]
         return WriteOutputResponse(status="ok")
 
     with patch.object(
@@ -2959,11 +3533,15 @@ async def test_get_pipeline_falls_back_after_indexed_and_scanned_load_failures(
     monkeypatch.setattr(pipeline_route, "lookup_pipeline_by_name", lambda _name: indexed)
     monkeypatch.setattr(pipeline_route, "discover_pipelines", lambda: [scanned_bad, scanned_match])
     monkeypatch.setattr(pipeline_route, "load_pipeline_editor_document", load)
+    response = Response()
 
-    result = await pipeline_route.get_pipeline("rating")
+    result = await pipeline_route.get_pipeline("rating", response)
 
     assert result is document
     assert loaded_paths == ["indexed.py", "scanned_bad.py", "scanned_match.py"]
+    assert response.headers[pipeline_route.DOCUMENT_FINGERPRINT_HEADER] == (
+        pipeline_document_fingerprint(document.model_dump(mode="json", by_alias=True))
+    )
 
 
 @pytest.mark.asyncio
@@ -2987,7 +3565,7 @@ async def test_get_pipeline_reraises_indexed_load_error_after_all_candidates_fai
     monkeypatch.setattr(pipeline_route, "load_pipeline_editor_document", load)
 
     with pytest.raises(RuntimeError, match="indexed.py failed"):
-        await pipeline_route.get_pipeline("rating")
+        await pipeline_route.get_pipeline("rating", Response())
 
 
 @pytest.mark.asyncio
@@ -3009,7 +3587,7 @@ async def test_get_first_pipeline_reraises_first_candidate_load_error(
     monkeypatch.setattr(pipeline_route, "load_pipeline_editor_document", load)
 
     with pytest.raises(RuntimeError, match="first.py failed"):
-        await pipeline_route.get_first_pipeline()
+        await pipeline_route.get_first_pipeline(Response())
 
 
 @pytest.mark.asyncio
@@ -3057,10 +3635,15 @@ async def test_get_first_pipeline_keeps_first_authored_empty_document(
     )
     monkeypatch.setattr(pipeline_route, "load_pipeline_editor_document", load)
 
-    result = await pipeline_route.get_first_pipeline()
+    response = Response()
+
+    result = await pipeline_route.get_first_pipeline(response)
 
     assert result is first_document
     assert result.source_file == "empty_first.py"
+    assert response.headers[pipeline_route.DOCUMENT_FINGERPRINT_HEADER] == (
+        pipeline_document_fingerprint(first_document.model_dump(mode="json", by_alias=True))
+    )
 
 
 @pytest.mark.asyncio
@@ -3085,8 +3668,6 @@ async def test_trace_route_maps_target_not_found_and_unknown_value_errors(
     expected_status: int,
     expected_detail: str,
 ) -> None:
-    from fastapi import HTTPException
-
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import TraceRequest
 
@@ -3111,13 +3692,11 @@ async def test_trace_route_maps_target_not_found_and_unknown_value_errors(
 
     monkeypatch.setattr(pipeline_route, "execute_trace", raise_value_error)
 
-    with pytest.raises(HTTPException) as exc_info:
-        await pipeline_route.trace_row(
-            TraceRequest(graph=graph, row_index=0, target_node_id="source")
-        )
+    request = TraceRequest(seed_plan=[], graph=graph, row_index=0, target_node_id="source")
+    response = _app_client().post("/api/pipeline/trace", json=request.model_dump(mode="json"))
 
-    assert exc_info.value.status_code == expected_status
-    assert exc_info.value.detail == expected_detail
+    assert response.status_code == expected_status
+    assert response.json()["detail"] == expected_detail
 
 
 @pytest.mark.asyncio
@@ -3150,7 +3729,7 @@ async def test_trace_route_maps_contract_mismatch_to_http_422(monkeypatch) -> No
     monkeypatch.setattr(pipeline_route, "execute_trace", raise_contract_mismatch)
 
     with pytest.raises(HTTPException) as exc_info:
-        await pipeline_route.trace_row(TraceRequest(graph=graph, row_index=0))
+        await pipeline_route.trace_row(TraceRequest(seed_plan=[], graph=graph, row_index=0))
 
     assert exc_info.value.status_code == 422
     assert exc_info.value.detail == "bad contract (node_id=source)"
@@ -3161,10 +3740,7 @@ async def test_read_json_file_maps_unexpected_read_failure_to_internal_error(
     monkeypatch,
     tmp_path,
 ) -> None:
-    from fastapi import HTTPException
-
     from haute.routes import pipeline as pipeline_route
-    from haute.schemas import ReadJsonRequest
 
     payload = tmp_path / "payload.json"
     payload.write_text("{}", encoding="utf-8")
@@ -3175,19 +3751,20 @@ async def test_read_json_file_maps_unexpected_read_failure_to_internal_error(
         lambda _path: (_ for _ in ()).throw(OSError("disk unavailable")),
     )
 
-    with pytest.raises(HTTPException) as exc_info:
-        await pipeline_route.read_json_file(ReadJsonRequest(path="payload.json"))
+    response = _app_client().post("/api/pipeline/read-json", json={"path": "payload.json"})
 
-    assert exc_info.value.status_code == 500
-    assert exc_info.value.detail == "Operation failed. Check the server logs for details."
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Operation failed. Check the server logs for details."
 
 
 @pytest.mark.asyncio
-async def test_preview_route_creates_admitted_preview_execution_context(monkeypatch) -> None:
+async def test_preview_route_creates_admitted_preview_execution_context(
+    monkeypatch, pipeline_settings
+) -> None:
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import ColumnInfo, NodeResult, PreviewNodeRequest
 
-    monkeypatch.setenv("HAUTE_PREVIEW_MEMORY_LIMIT_MB", "384")
+    pipeline_settings(preview_memory_gb=384 / 1024)
     monkeypatch.setattr(
         "haute._execution_admission.current_rss_bytes",
         lambda: 96 * 1024 * 1024,
@@ -3227,7 +3804,7 @@ async def test_preview_route_creates_admitted_preview_execution_context(monkeypa
 
     with patch.object(pipeline_route, "execute_graph", side_effect=fake_execute_graph):
         response = await pipeline_route.preview_node(
-            PreviewNodeRequest(graph=graph, node_id="source")
+            PreviewNodeRequest(graph=graph, node_id="source"), _CONNECTED
         )
 
     assert response.status == "ok"
@@ -3242,12 +3819,13 @@ async def test_preview_route_creates_admitted_preview_execution_context(monkeypa
 @pytest.mark.asyncio
 async def test_preview_route_admits_when_warm_process_rss_exceeds_operation_budget(
     monkeypatch,
+    pipeline_settings,
 ) -> None:
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import ColumnInfo, NodeResult, PreviewNodeRequest
 
     gib = 1024 * 1024 * 1024
-    monkeypatch.setenv("HAUTE_PREVIEW_MEMORY_LIMIT_MB", "384")
+    pipeline_settings(preview_memory_gb=384 / 1024)
     monkeypatch.setattr(
         "haute._execution_admission.current_rss_bytes",
         lambda: 2 * gib,
@@ -3287,23 +3865,22 @@ async def test_preview_route_admits_when_warm_process_rss_exceeds_operation_budg
 
     with patch.object(pipeline_route, "execute_graph", side_effect=fake_execute_graph):
         response = await pipeline_route.preview_node(
-            PreviewNodeRequest(graph=graph, node_id="source")
+            PreviewNodeRequest(graph=graph, node_id="source"), _CONNECTED
         )
 
     assert response.status == "ok"
     context = captured["execution_context"]
-    assert context.memory_baseline_bytes == 2 * gib
+    assert context.budget.memory_baseline_bytes == 2 * gib
     assert context.rss_limit_bytes == 2 * gib + 384 * 1024 * 1024
 
 
 @pytest.mark.asyncio
-async def test_preview_route_maps_admission_failure_to_http_507(monkeypatch) -> None:
-    from fastapi import HTTPException
-
-    from haute.routes import pipeline as pipeline_route
+async def test_preview_route_maps_admission_failure_to_http_507(
+    monkeypatch, pipeline_settings
+) -> None:
     from haute.schemas import PreviewNodeRequest
 
-    monkeypatch.setenv("HAUTE_PREVIEW_MEMORY_LIMIT_MB", "64")
+    pipeline_settings(preview_memory_gb=64 / 1024)
     monkeypatch.setenv("HAUTE_PREVIEW_PROCESS_RSS_LIMIT_MB", "64")
     monkeypatch.setattr(
         "haute._execution_admission.current_rss_bytes",
@@ -3325,25 +3902,27 @@ async def test_preview_route_maps_admission_failure_to_http_507(monkeypatch) -> 
         }
     )
 
-    with pytest.raises(HTTPException) as exc_info:
-        await pipeline_route.preview_node(PreviewNodeRequest(graph=graph, node_id="source"))
+    request = PreviewNodeRequest(graph=graph, node_id="source")
+    response = _app_client().post("/api/pipeline/preview", json=request.model_dump(mode="json"))
 
-    assert exc_info.value.status_code == 507
-    assert exc_info.value.detail["error_code"] == "memory_limit"
-    assert exc_info.value.detail["profile"] == "preview_eager"
-    assert exc_info.value.detail["reason"] == "process_rss_limit_exceeded"
+    assert response.status_code == 507
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "memory_limit"
+    assert detail["profile"] == "preview_eager"
+    assert detail["reason"] == "process_rss_limit_exceeded"
 
 
 @pytest.mark.asyncio
-async def test_preview_route_cancels_execution_context_on_timeout(monkeypatch) -> None:
+async def test_preview_route_cancels_execution_context_on_timeout(
+    monkeypatch, pipeline_settings
+) -> None:
     from fastapi import HTTPException
 
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import NodeResult, PreviewNodeRequest
 
-    monkeypatch.setenv("HAUTE_PREVIEW_MEMORY_LIMIT_MB", "512")
+    pipeline_settings(preview_memory_gb=512 / 1024, pipeline_time_limit_minutes=0.05 / 60)
     monkeypatch.setattr("haute._execution_admission.current_rss_bytes", lambda: 1)
-    monkeypatch.setenv("HAUTE_PREVIEW_TIMEOUT", "0.05")
     graph = make_graph(
         {
             "nodes": [
@@ -3382,23 +3961,111 @@ async def test_preview_route_cancels_execution_context_on_timeout(monkeypatch) -
 
     with patch.object(pipeline_route, "execute_graph", side_effect=slow_execute_graph):
         with pytest.raises(HTTPException) as exc_info:
-            await pipeline_route.preview_node(PreviewNodeRequest(graph=graph, node_id="source"))
+            await pipeline_route.preview_node(
+                PreviewNodeRequest(graph=graph, node_id="source"), _CONNECTED
+            )
 
     assert exc_info.value.status_code == 504
     assert started.wait(2)
     assert cancel_seen.wait(2)
 
 
+class _LeavingClient:
+    """A client that disconnects as soon as it is asked."""
+
+    async def is_disconnected(self) -> bool:
+        return True
+
+
+@pytest.mark.asyncio
+async def test_a_disconnected_preview_that_times_out_keeps_admission_until_its_thread_ends(
+    monkeypatch,
+    pipeline_settings,
+) -> None:
+    """The client leaves, the thread ignores cancellation past its timeout: its
+    admission must still be released only once the thread finishes."""
+    from fastapi import HTTPException
+
+    from haute.routes import pipeline as pipeline_route
+    from haute.schemas import NodeResult, PreviewNodeRequest
+
+    monkeypatch.setenv("HAUTE_INTERACTIVE_EXECUTION_MODE", "thread")
+    pipeline_settings(pipeline_time_limit_minutes=0.6 / 60)  # past the watcher's first poll
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": NodeType.DATA_INPUT.value,
+                        "config": {},
+                    },
+                },
+            ],
+            "edges": [],
+        }
+    )
+    release_calls = 0
+    release_lock = threading.Lock()
+    release_worker = threading.Event()
+
+    def release_admission() -> None:
+        nonlocal release_calls
+        with release_lock:
+            release_calls += 1
+
+    preview_context = ExecutionContext(
+        operation="pipeline_preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        admission_release=release_admission,
+    )
+
+    def stubborn_execute_graph(*_args, **kwargs):
+        # Never reaches a cancellation checkpoint before its timeout.
+        assert release_worker.wait(5), "preview worker was not released"
+        return {kwargs["target_node_id"]: NodeResult(status="ok", row_count=0, column_count=0)}
+
+    monkeypatch.setattr(
+        pipeline_route, "create_admitted_execution_context", lambda *_a, **_k: preview_context
+    )
+    monkeypatch.setattr(pipeline_route, "execute_graph", stubborn_execute_graph)
+
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            await pipeline_route.preview_node(
+                PreviewNodeRequest(graph=graph, node_id="source"),
+                cast(Request, _LeavingClient()),
+            )
+        assert exc_info.value.status_code == 504
+        with release_lock:
+            assert release_calls == 0, "admission released while the thread still runs"
+
+        release_worker.set()
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            with release_lock:
+                if release_calls == 1:
+                    break
+            await asyncio.sleep(0.005)
+    finally:
+        release_worker.set()
+
+    with release_lock:
+        assert release_calls == 1
+
+
 @pytest.mark.asyncio
 async def test_preview_route_releases_admission_after_timed_out_worker_finishes(
     monkeypatch,
+    pipeline_settings,
 ) -> None:
     from fastapi import HTTPException
 
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import NodeResult, PreviewNodeRequest
 
-    monkeypatch.setenv("HAUTE_PREVIEW_TIMEOUT", "0.05")
+    pipeline_settings(pipeline_time_limit_minutes=0.05 / 60)
     graph = make_graph(
         {
             "nodes": [
@@ -3455,7 +4122,9 @@ async def test_preview_route_releases_admission_after_timed_out_worker_finishes(
 
     try:
         with pytest.raises(HTTPException) as exc_info:
-            await pipeline_route.preview_node(PreviewNodeRequest(graph=graph, node_id="source"))
+            await pipeline_route.preview_node(
+                PreviewNodeRequest(graph=graph, node_id="source"), _CONNECTED
+            )
 
         assert exc_info.value.status_code == 504
         assert worker_started.wait(2)
@@ -3532,7 +4201,9 @@ async def test_preview_route_releases_admission_when_timeout_task_already_finish
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        await pipeline_route.preview_node(PreviewNodeRequest(graph=graph, node_id="source"))
+        await pipeline_route.preview_node(
+            PreviewNodeRequest(graph=graph, node_id="source"), _CONNECTED
+        )
 
     assert exc_info.value.status_code == 504
     with release_lock:
@@ -3577,7 +4248,9 @@ async def test_preview_route_maps_timeout_without_execution_context_to_http_504(
     monkeypatch.setattr(pipeline_route, "_preview_supersession", TimeoutBeforeWorker())
 
     with pytest.raises(HTTPException) as exc_info:
-        await pipeline_route.preview_node(PreviewNodeRequest(graph=graph, node_id="source"))
+        await pipeline_route.preview_node(
+            PreviewNodeRequest(graph=graph, node_id="source"), _CONNECTED
+        )
 
     assert exc_info.value.status_code == 504
     assert "Preview execution timed out" in exc_info.value.detail
@@ -3610,7 +4283,9 @@ async def test_preview_route_returns_error_response_for_mismatch(monkeypatch, er
 
     monkeypatch.setattr(pipeline_route, "execute_graph", raise_mismatch)
 
-    response = await pipeline_route.preview_node(PreviewNodeRequest(graph=graph, node_id="source"))
+    response = await pipeline_route.preview_node(
+        PreviewNodeRequest(graph=graph, node_id="source"), _CONNECTED
+    )
 
     assert response.node_id == "source"
     assert response.status == "error"
@@ -3619,9 +4294,6 @@ async def test_preview_route_returns_error_response_for_mismatch(monkeypatch, er
 
 @pytest.mark.asyncio
 async def test_sink_route_maps_admission_failure_to_http_507(monkeypatch, tmp_path) -> None:
-    from fastapi import HTTPException
-
-    from haute.routes import pipeline as pipeline_route
     from haute.schemas import WriteOutputRequest
 
     monkeypatch.chdir(tmp_path)
@@ -3648,15 +4320,16 @@ async def test_sink_route_maps_admission_failure_to_http_507(monkeypatch, tmp_pa
         }
     )
 
-    with pytest.raises(HTTPException) as exc_info:
-        await pipeline_route.write_output_node(
-            WriteOutputRequest(graph=graph, node_id="sink", source="batch")
-        )
+    request = WriteOutputRequest(graph=graph, node_id="sink", source="batch")
+    response = _app_client().post(
+        "/api/pipeline/write-output", json=request.model_dump(mode="json")
+    )
 
-    assert exc_info.value.status_code == 507
-    assert exc_info.value.detail["error_code"] == "memory_limit"
-    assert exc_info.value.detail["profile"] == "lazy_sink"
-    assert exc_info.value.detail["reason"] == "process_rss_limit_exceeded"
+    assert response.status_code == 507
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "memory_limit"
+    assert detail["profile"] == "lazy_sink"
+    assert detail["reason"] == "process_rss_limit_exceeded"
 
 
 @pytest.mark.asyncio
@@ -3664,8 +4337,6 @@ async def test_sink_route_maps_execution_memory_budget_failure_to_http_507(
     monkeypatch,
     tmp_path,
 ) -> None:
-    from fastapi import HTTPException
-
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import WriteOutputRequest
 
@@ -3700,15 +4371,16 @@ async def test_sink_route_maps_execution_memory_budget_failure_to_http_507(
 
     monkeypatch.setattr(pipeline_route, "_output_write_transaction", raise_memory_budget)
 
-    with pytest.raises(HTTPException) as exc_info:
-        await pipeline_route.write_output_node(
-            WriteOutputRequest(graph=graph, node_id="sink", source="batch")
-        )
+    request = WriteOutputRequest(graph=graph, node_id="sink", source="batch")
+    response = _app_client().post(
+        "/api/pipeline/write-output", json=request.model_dump(mode="json")
+    )
 
-    assert exc_info.value.status_code == 507
-    assert exc_info.value.detail["error_code"] == "memory_limit"
-    assert exc_info.value.detail["operation"] == "pipeline_write_output"
-    assert exc_info.value.detail["reason"] == "process_rss_limit_exceeded"
+    assert response.status_code == 507
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "memory_limit"
+    assert detail["operation"] == "pipeline_write_output"
+    assert detail["reason"] == "process_rss_limit_exceeded"
 
 
 @pytest.mark.asyncio
@@ -3766,8 +4438,6 @@ async def test_sink_route_maps_bounded_streaming_failure_to_http_422(
 async def test_preview_route_maps_execution_memory_budget_failure_to_http_507(
     monkeypatch,
 ) -> None:
-    from fastapi import HTTPException
-
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import PreviewNodeRequest
 
@@ -3800,13 +4470,14 @@ async def test_preview_route_maps_execution_memory_budget_failure_to_http_507(
 
     monkeypatch.setattr(pipeline_route, "execute_graph", raise_memory_budget)
 
-    with pytest.raises(HTTPException) as exc_info:
-        await pipeline_route.preview_node(PreviewNodeRequest(graph=graph, node_id="source"))
+    request = PreviewNodeRequest(graph=graph, node_id="source")
+    response = _app_client().post("/api/pipeline/preview", json=request.model_dump(mode="json"))
 
-    assert exc_info.value.status_code == 507
-    assert exc_info.value.detail["error_code"] == "memory_limit"
-    assert exc_info.value.detail["operation"] == "pipeline_preview"
-    assert exc_info.value.detail["reason"] == "process_rss_limit_exceeded"
+    assert response.status_code == 507
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "memory_limit"
+    assert detail["operation"] == "pipeline_preview"
+    assert detail["reason"] == "process_rss_limit_exceeded"
 
 
 @pytest.mark.asyncio
@@ -4007,7 +4678,9 @@ async def test_sink_route_maps_cancelled_isolated_worker_without_deferred_releas
 
 
 @pytest.mark.asyncio
-async def test_sink_route_does_not_fall_back_after_isolated_timeout(monkeypatch, tmp_path) -> None:
+async def test_sink_route_does_not_fall_back_after_isolated_timeout(
+    monkeypatch, tmp_path, pipeline_settings
+) -> None:
     from fastapi import HTTPException
 
     from haute._worker_isolation import IsolatedWorkerTimeoutError
@@ -4017,7 +4690,7 @@ async def test_sink_route_does_not_fall_back_after_isolated_timeout(monkeypatch,
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HAUTE_SINK_MEMORY_LIMIT_MB", "512")
     monkeypatch.setattr("haute._execution_admission.current_rss_bytes", lambda: 1)
-    monkeypatch.setenv("HAUTE_SINK_TIMEOUT", "0.05")
+    pipeline_settings(pipeline_time_limit_minutes=0.05 / 60)
     output_path = tmp_path / "sink.parquet"
     graph = make_graph(
         {
@@ -4053,7 +4726,9 @@ async def test_sink_route_does_not_fall_back_after_isolated_timeout(monkeypatch,
     fallback.assert_not_called()
 
 
-def test_optimiser_execute_pipeline_forwards_execution_context(tmp_path) -> None:
+def test_optimiser_execute_pipeline_forwards_execution_context() -> None:
+    import contextlib
+
     from haute.routes._job_store import JobStore
     from haute.routes._optimiser_service import OptimiserSolveService
     from haute.schemas import OptimiserSolveRequest
@@ -4090,6 +4765,7 @@ def test_optimiser_execute_pipeline_forwards_execution_context(tmp_path) -> None
         return {"opt": pl.DataFrame({"a": [1]}).lazy()}, ["opt"], {}, {}
 
     with (
+        contextlib.ExitStack() as resources,
         patch("haute.routes._optimiser_service.execute_lazy_graph", side_effect=fake_execute_lazy),
         patch("haute.executor._resolve_batch_scenario", return_value="batch"),
         patch("haute.executor._compile_preamble", return_value={}),
@@ -4097,7 +4773,7 @@ def test_optimiser_execute_pipeline_forwards_execution_context(tmp_path) -> None
         service._execute_pipeline(
             body,
             job_id,
-            tmp_path,
+            resources,
             execution_context=context,
         )
 
@@ -4107,13 +4783,27 @@ def test_optimiser_execute_pipeline_forwards_execution_context(tmp_path) -> None
     assert stored_metrics["job_id"] == job_id
 
 
-def test_optimiser_auto_range_start_creates_admitted_context(monkeypatch) -> None:
+def _auto_range_prepared(node: Any) -> tuple[Any, dict[str, Any]]:
+    """What ``_prepare_frontier_auto_range`` returns: the node and the job's kwargs."""
+    return node, {
+        "config": {"objective": "expected_income", "constraints": {}},
+        "mode": "online",
+        "timeout": 10,
+        "required_columns_by_node": {},
+    }
+
+
+def test_optimiser_auto_range_start_admits_nothing_in_the_request_thread(monkeypatch) -> None:
+    """The background job admits, as solve setup does; the request thread never holds memory."""
     from haute.routes._job_store import JobStore
     from haute.routes._optimiser_service import OptimiserSolveService
     from haute.schemas import OptimiserFrontierAutoRangeRequest
 
-    monkeypatch.setenv("HAUTE_AUTO_RANGE_MEMORY_LIMIT_MB", "320")
-    monkeypatch.setattr("haute._execution_admission.current_rss_bytes", lambda: 7_000)
+    def refuse(**_kwargs: Any) -> Any:
+        raise AssertionError("auto-range start admitted in the request thread")
+
+    monkeypatch.setattr("haute.routes._optimiser_service.admit_growth_grant", refuse)
+    monkeypatch.setattr("haute.routes._optimiser_service.create_admitted_execution_context", refuse)
     graph = make_graph(
         {
             "nodes": [
@@ -4122,7 +4812,7 @@ def test_optimiser_auto_range_start_creates_admitted_context(monkeypatch) -> Non
                     "data": {
                         "label": "opt",
                         "nodeType": NodeType.OPTIMISER.value,
-                        "config": {"objective": "profit", "constraints": {}},
+                        "config": {"objective": "expected_income", "constraints": {}},
                     },
                 },
             ],
@@ -4131,34 +4821,28 @@ def test_optimiser_auto_range_start_creates_admitted_context(monkeypatch) -> Non
     )
     body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
     service = OptimiserSolveService(JobStore())
-    prepared = {
-        "node": graph.node_map["opt"],
-        "config": {"objective": "profit", "constraints": {}},
-        "mode": "online",
-        "chunk_size": 10,
-        "partition_count": 2,
-        "timeout": 30,
-        "required_columns_by_node": None,
-        "streaming_plan": None,
-    }
     with (
-        patch.object(service, "_prepare_frontier_auto_range", return_value=prepared),
+        patch.object(
+            service,
+            "_prepare_frontier_auto_range",
+            return_value=_auto_range_prepared(graph.node_map["opt"]),
+        ),
         patch.object(service, "_launch_frontier_auto_range_background") as launch,
     ):
         started = service.start_frontier_auto_range(body)
 
     assert started.status == "started"
-    background_context = launch.call_args.kwargs["execution_context"]
-    assert background_context.profile == ExecutionProfile.AUTO_RANGE
-    assert background_context.memory_limit_bytes == 320 * 1024 * 1024
-    assert background_context.admission is not None
+    assert "execution_context" not in launch.call_args.kwargs
+    assert launch.call_args.kwargs["execution_token"] is not None
 
 
-def test_train_execute_and_sink_forwards_execution_context(tmp_path) -> None:
-    from haute.routes._job_store import JobStore
-    from haute.routes._train_service import TrainService
-    from haute.schemas import TrainRequest
+def test_train_prepare_training_data_forwards_execution_context(tmp_path) -> None:
+    from haute.routes._training_preparation import (
+        TrainingPreparationRequest,
+        prepare_training_data,
+    )
 
+    config = {"target": "target", "feature_columns": ["feature"]}
     graph = make_graph(
         {
             "nodes": [
@@ -4167,16 +4851,14 @@ def test_train_execute_and_sink_forwards_execution_context(tmp_path) -> None:
                     "data": {
                         "label": "model",
                         "nodeType": NodeType.MODELLING.value,
-                        "config": {},
+                        "config": dict(config),
                     },
                 },
             ],
             "edges": [],
         }
     )
-    body = TrainRequest(graph=graph, node_id="model")
-    service = TrainService(JobStore())
-    job_id = service._store.create_job({"status": "running"})
+    job_id = "job-forwards-context"
     context = ExecutionContext(
         operation="training",
         profile=ExecutionProfile.TRAINING_PREP,
@@ -4187,22 +4869,30 @@ def test_train_execute_and_sink_forwards_execution_context(tmp_path) -> None:
 
     def fake_execute_lazy(*_args, **kwargs):
         captured.update(kwargs)
-        return {"model": pl.DataFrame({"target": [1.0]}).lazy()}, ["model"], {}, {}
+        frame = pl.DataFrame({"target": [1.0], "feature": [2.0]}).lazy()
+        return {"model": frame}, ["model"], {}, {}
 
+    tmp_parquet = str(tmp_path / "prepared.parquet")
+    request = TrainingPreparationRequest(
+        graph=graph,
+        node_id="model",
+        job_id=job_id,
+        source="live",
+        parquet_path=tmp_parquet,
+        config=config,
+        project_root=str(tmp_path),
+    )
     with patch(
-        "haute.routes._training_lifecycle.execute_lazy_graph", side_effect=fake_execute_lazy
+        "haute.routes._training_preparation.execute_lazy_graph", side_effect=fake_execute_lazy
     ):
-        tmp_parquet = service._execute_and_sink(
-            body,
-            preamble_ns=None,
-            row_limit=None,
-            job_id=job_id,
-            execution_context=context,
-        )
+        outcome = prepare_training_data(request, execution_context=context)
 
+    assert outcome.failure is None
     assert captured["execution_context"] is context
     assert any(metric.name == "training_sink_write" for metric in context.metrics.snapshot())
-    stored_metrics = service._store.require_job(job_id)["execution_metrics"]
+    # The child's own payload is the one the supervisor persists on the job.
+    stored_metrics = outcome.execution_metrics
+    assert stored_metrics is not None
     assert stored_metrics["operation"] == "training"
     assert stored_metrics["job_id"] == job_id
     assert pl.read_parquet(tmp_parquet)["target"].to_list() == [1.0]
@@ -4606,7 +5296,7 @@ def test_optimiser_start_creates_admitted_setup_context(
     from haute.routes._optimiser_service import OptimiserSolveService
     from haute.schemas import OptimiserSolveRequest
 
-    monkeypatch.setenv("HAUTE_OPTIMISER_MEMORY_LIMIT_MB", "768")
+    monkeypatch.setenv("HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_MB", "768")
     monkeypatch.setattr(
         "haute._execution_admission.current_rss_bytes",
         lambda: 128 * 1024 * 1024,
@@ -4634,14 +5324,14 @@ def test_optimiser_start_creates_admitted_setup_context(
         patch.object(service, "_execute_pipeline", side_effect=fake_execute_pipeline),
         patch.object(service, "_validate_and_project", return_value=([], scored_lf)) as validate,
         patch.object(service, "_extract_factors", return_value=None) as extract,
-        patch.object(service, "_build_grid", return_value=object()) as build,
+        patch.object(service, "_build_grid", return_value=setup_grid_stub()) as build,
         patch.object(service, "_launch_background") as launch,
     ):
         response = service.start(body)
 
     assert response.status == "started"
     context = captured["execution_context"]
-    assert context.profile == ExecutionProfile.OPTIMISER_SETUP
+    assert context.profile == ExecutionProfile.OPTIMISER_SOLVE
     assert context.memory_limit_bytes == 768 * 1024 * 1024
     assert context.admission is not None
     assert context.admission.rss_at_admission_bytes == 128 * 1024 * 1024
@@ -4706,8 +5396,8 @@ def test_optimiser_start_maps_admission_failure_to_http_507(
     from haute.routes._optimiser_service import OptimiserSolveService
     from haute.schemas import OptimiserSolveRequest
 
-    monkeypatch.setenv("HAUTE_OPTIMISER_MEMORY_LIMIT_MB", "512")
-    monkeypatch.setenv("HAUTE_OPTIMISER_PROCESS_RSS_LIMIT_MB", "64")
+    monkeypatch.setenv("HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_MB", "512")
+    monkeypatch.setenv("HAUTE_OPTIMISER_SOLVE_PROCESS_RSS_LIMIT_MB", "64")
     monkeypatch.setattr(
         "haute._execution_admission.current_rss_bytes",
         lambda: 65 * 1024 * 1024,
@@ -4728,7 +5418,7 @@ def test_optimiser_start_maps_admission_failure_to_http_507(
     assert job["terminal_reason"] == "memory_limited"
     assert job["http_status_code"] == 507
     assert job["error_detail"]["error_code"] == "memory_limit"
-    assert job["error_detail"]["profile"] == "optimiser_setup"
+    assert job["error_detail"]["profile"] == "optimiser_solve"
     assert job["error_detail"]["reason"] == "process_rss_limit_exceeded"
     assert "process_rss_limit_exceeded" in job["message"]
 
@@ -4740,7 +5430,7 @@ def test_optimiser_start_maps_runtime_memory_failure_to_http_507(
     from haute.routes._optimiser_service import OptimiserSolveService
     from haute.schemas import OptimiserSolveRequest
 
-    monkeypatch.setenv("HAUTE_OPTIMISER_MEMORY_LIMIT_BYTES", "512")
+    monkeypatch.setenv("HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_BYTES", "512")
     samples = iter([1, 1, 600])
     monkeypatch.setattr("haute._execution_admission.current_rss_bytes", lambda: next(samples))
     graph = _minimal_optimiser_setup_graph()
@@ -4776,7 +5466,7 @@ def test_optimiser_start_records_setup_stage_metrics_when_memory_limited(
     from haute.routes._optimiser_service import OptimiserSolveService
     from haute.schemas import OptimiserSolveRequest
 
-    monkeypatch.setenv("HAUTE_OPTIMISER_MEMORY_LIMIT_BYTES", "512")
+    monkeypatch.setenv("HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_BYTES", "512")
     samples = iter([1, 1, 600])
     monkeypatch.setattr("haute._execution_admission.current_rss_bytes", lambda: next(samples))
     graph = _minimal_optimiser_setup_graph()
@@ -4817,7 +5507,7 @@ def test_optimiser_start_preserves_typed_memory_http_exception_metrics(
     from haute.routes._optimiser_service import OptimiserSolveService
     from haute.schemas import OptimiserSolveRequest
 
-    monkeypatch.setenv("HAUTE_OPTIMISER_MEMORY_LIMIT_MB", "512")
+    monkeypatch.setenv("HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_MB", "512")
     monkeypatch.setattr("haute._execution_admission.current_rss_bytes", lambda: 1)
     graph = _minimal_optimiser_setup_graph()
     scored_lf = pl.LazyFrame(
@@ -4853,7 +5543,7 @@ def test_optimiser_start_preserves_typed_memory_http_exception_metrics(
     assert metrics["status"] == "memory_limited"
     assert metrics["terminal_reason"] == "memory_limited"
     assert metrics["memory_limit_bytes"] == 512 * 1024 * 1024
-    assert metrics["admission"]["profile"] == ExecutionProfile.OPTIMISER_SETUP.value
+    assert metrics["admission"]["profile"] == ExecutionProfile.OPTIMISER_SOLVE.value
 
 
 def test_optimiser_extract_factors_sinks_without_projected_frame_budget() -> None:
@@ -4902,7 +5592,7 @@ def test_optimiser_build_grid_preserves_memory_limit_error() -> None:
         rss_limit_bytes=513,
     )
 
-    with patch("haute.routes._optimiser_service.bounded_sink", side_effect=memory_error):
+    with patch("haute.routes._optimiser_input.bounded_sink", side_effect=memory_error):
         with pytest.raises(ExecutionMemoryLimitExceededError):
             service._build_grid(
                 pl.LazyFrame({"quote_id": ["q1"], "scenario_index": [0]}),
@@ -4913,18 +5603,11 @@ def test_optimiser_build_grid_preserves_memory_limit_error() -> None:
             )
 
 
-def test_auto_range_start_admits_before_registering_latest_job(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_auto_range_cancel_reaches_the_background_jobs_execution_token() -> None:
     from haute.routes._job_store import JobStore
     from haute.routes._optimiser_service import OptimiserSolveService
     from haute.schemas import OptimiserFrontierAutoRangeRequest
 
-    monkeypatch.setenv("HAUTE_AUTO_RANGE_MEMORY_LIMIT_MB", "512")
-    monkeypatch.setattr(
-        "haute._execution_admission.current_rss_bytes",
-        lambda: 64 * 1024 * 1024,
-    )
     graph = make_graph(
         {
             "nodes": [
@@ -4941,24 +5624,14 @@ def test_auto_range_start_admits_before_registering_latest_job(
         }
     )
     body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
-    node = graph.nodes[0]
     service = OptimiserSolveService(JobStore())
-    captured = {}
+    captured: dict[str, Any] = {}
 
     with (
         patch.object(
             service,
             "_prepare_frontier_auto_range",
-            return_value={
-                "node": node,
-                "config": {"objective": "expected_income"},
-                "mode": "online",
-                "chunk_size": 100,
-                "partition_count": 1,
-                "timeout": 10,
-                "required_columns_by_node": {},
-                "streaming_plan": None,
-            },
+            return_value=_auto_range_prepared(graph.nodes[0]),
         ),
         patch.object(
             service,
@@ -4969,27 +5642,17 @@ def test_auto_range_start_admits_before_registering_latest_job(
         response = service.start_frontier_auto_range(body)
 
     assert response.status == "started"
-    context = captured["execution_context"]
-    assert context.profile == ExecutionProfile.AUTO_RANGE
-    assert context.admission is not None
+    token = captured["execution_token"]
+    assert not token.cancelled
     service.cancel_frontier_auto_range(response.job_id)
-    assert context.cancellation_token.cancelled
+    assert token.cancelled
 
 
-def test_auto_range_duplicate_start_reuses_running_job_without_readmitting(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_auto_range_duplicate_start_reuses_running_job_without_relaunching() -> None:
     from haute.routes._job_store import JobStore
     from haute.routes._optimiser_service import OptimiserSolveService
     from haute.schemas import OptimiserFrontierAutoRangeRequest
 
-    monkeypatch.setenv("HAUTE_AUTO_RANGE_MEMORY_LIMIT_MB", "512")
-    monkeypatch.setenv("HAUTE_AUTO_RANGE_PROCESS_RSS_LIMIT_MB", "1024")
-    samples = iter([64 * 1024 * 1024, 2 * 1024 * 1024 * 1024])
-    monkeypatch.setattr(
-        "haute._execution_admission.current_rss_bytes",
-        lambda: next(samples),
-    )
     graph = make_graph(
         {
             "nodes": [
@@ -5006,32 +5669,20 @@ def test_auto_range_duplicate_start_reuses_running_job_without_readmitting(
         }
     )
     body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
-    node = graph.nodes[0]
     store = JobStore()
     service = OptimiserSolveService(store)
-    captured_contexts = []
+    captured_tokens = []
 
     with (
         patch.object(
             service,
             "_prepare_frontier_auto_range",
-            return_value={
-                "node": node,
-                "config": {"objective": "expected_income", "constraints": {}},
-                "mode": "online",
-                "chunk_size": 100,
-                "partition_count": 1,
-                "timeout": 10,
-                "required_columns_by_node": {},
-                "streaming_plan": None,
-            },
+            return_value=_auto_range_prepared(graph.nodes[0]),
         ),
         patch.object(
             service,
             "_launch_frontier_auto_range_background",
-            side_effect=lambda *_args, **kwargs: captured_contexts.append(
-                kwargs["execution_context"]
-            ),
+            side_effect=lambda *_args, **kwargs: captured_tokens.append(kwargs["execution_token"]),
         ),
     ):
         first = service.start_frontier_auto_range(body)
@@ -5039,8 +5690,8 @@ def test_auto_range_duplicate_start_reuses_running_job_without_readmitting(
 
     assert second.job_id == first.job_id
     assert store.require_job(first.job_id)["status"] == "running"
-    assert not captured_contexts[0].cancellation_token.cancelled
-    assert len(captured_contexts) == 1
+    assert len(captured_tokens) == 1
+    assert not captured_tokens[0].cancelled
 
 
 def test_auto_range_background_memory_limit_status_exposes_typed_error(
@@ -5050,7 +5701,7 @@ def test_auto_range_background_memory_limit_status_exposes_typed_error(
     from haute.routes._optimiser_service import OptimiserSolveService
     from haute.schemas import OptimiserFrontierAutoRangeRequest
 
-    monkeypatch.setenv("HAUTE_AUTO_RANGE_MEMORY_LIMIT_MB", "512")
+    monkeypatch.setenv("HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_MB", "512")
     monkeypatch.setattr("haute._execution_admission.current_rss_bytes", lambda: 1)
     graph = make_graph(
         {
@@ -5083,16 +5734,7 @@ def test_auto_range_background_memory_limit_status_exposes_typed_error(
         patch.object(
             service,
             "_prepare_frontier_auto_range",
-            return_value={
-                "node": node,
-                "config": {"objective": "expected_income", "constraints": {}},
-                "mode": "online",
-                "chunk_size": 100,
-                "partition_count": 1,
-                "timeout": 10,
-                "required_columns_by_node": {},
-                "streaming_plan": None,
-            },
+            return_value=_auto_range_prepared(node),
         ),
         patch.object(service, "_execute_pipeline", side_effect=memory_error),
     ):
@@ -5162,14 +5804,7 @@ def test_auto_range_background_preserves_typed_memory_http_exception_status() ->
             service._run_frontier_auto_range_job(
                 body,
                 job_id,
-                node=graph.nodes[0],
-                config={"objective": "expected_income", "constraints": {}},
-                mode="online",
-                chunk_size=100,
-                partition_count=1,
-                timeout=10,
-                required_columns_by_node={},
-                streaming_plan=None,
+                **_auto_range_prepared(graph.nodes[0])[1],
             )
 
     assert exc_info.value.status_code == 507
@@ -5210,6 +5845,7 @@ def test_training_start_creates_admitted_training_context(
                             "target": "target",
                             "algorithm": "catboost",
                             "loss_function": "RMSE",
+                            "feature_columns": ["feature"],
                             "evaluation": {
                                 "schema_version": 1,
                                 "strategy": "random",
@@ -5235,7 +5871,7 @@ def test_training_start_creates_admitted_training_context(
 
     with (
         patch.object(service, "_compile_preamble", return_value={}),
-        patch.object(service, "_estimate_ram", return_value=(None, None, None, [])),
+        patch.object(service, "_estimate_ram", return_value=make_ram_estimate()),
         patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
         patch.object(service, "_execute_and_sink", side_effect=fake_execute_and_sink),
         patch.object(service, "_launch_background"),
@@ -5278,6 +5914,7 @@ def test_training_start_maps_admission_failure_to_http_507(
                             "target": "target",
                             "algorithm": "catboost",
                             "loss_function": "RMSE",
+                            "feature_columns": ["feature"],
                             "evaluation": {
                                 "schema_version": 1,
                                 "strategy": "random",
@@ -5296,7 +5933,7 @@ def test_training_start_maps_admission_failure_to_http_507(
 
     with (
         patch.object(service, "_compile_preamble", return_value={}),
-        patch.object(service, "_estimate_ram", return_value=(None, None, None, [])),
+        patch.object(service, "_estimate_ram", return_value=make_ram_estimate()),
         patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
         patch.object(service, "_execute_and_sink") as execute_and_sink,
     ):
@@ -5342,6 +5979,7 @@ def test_training_start_maps_runtime_memory_failure_to_http_507(
                             "target": "target",
                             "algorithm": "catboost",
                             "loss_function": "RMSE",
+                            "feature_columns": ["feature"],
                             "evaluation": {
                                 "schema_version": 1,
                                 "strategy": "random",
@@ -5366,7 +6004,7 @@ def test_training_start_maps_runtime_memory_failure_to_http_507(
 
     with (
         patch.object(service, "_compile_preamble", return_value={}),
-        patch.object(service, "_estimate_ram", return_value=(None, None, None, [])),
+        patch.object(service, "_estimate_ram", return_value=make_ram_estimate()),
         patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
         patch.object(service, "_execute_and_sink", side_effect=memory_error),
     ):
@@ -5406,3 +6044,222 @@ def test_deploy_pyfunc_predict_creates_admitted_live_context(monkeypatch) -> Non
     assert context.memory_limit_bytes == 128 * 1024 * 1024
     assert context.admission is not None
     assert context.admission.rss_at_admission_bytes == 11_000
+
+
+def test_conservative_strategy_reports_materialising_streamability() -> None:
+    """A warned conservative run still materialises at its group-by boundary."""
+    from types import SimpleNamespace
+
+    from haute.execution import (
+        BoundedDiagnosticCollection,
+        ExecutionBoundedness,
+        ExecutionStrategy,
+        ExecutionStrategyDiagnostic,
+    )
+
+    context = ExecutionContext(operation="sink", profile=ExecutionProfile.LAZY_SINK)
+    diagnostic = ExecutionStrategyDiagnostic.create(
+        strategy=ExecutionStrategy.FULL_WIDTH_CONSERVATIVE,
+        profile=ExecutionProfile.LAZY_SINK,
+        boundedness=ExecutionBoundedness.UNBOUNDED,
+        reason_code="materialisation_estimate_unavailable_conservative",
+        boundaries=BoundedDiagnosticCollection.available([]),
+        reasons=BoundedDiagnosticCollection.available([]),
+        provenance=BoundedDiagnosticCollection.available([]),
+    )
+    context.projection_plan = SimpleNamespace(diagnostic=diagnostic)  # type: ignore[assignment]
+
+    payload = context.metrics_payload(status="completed")
+
+    assert payload["execution_strategy"]["status"] == "warned"
+    assert payload["streamability"] == "materialising"
+    assert (
+        "materialisation_estimate_unavailable_conservative"
+        in (payload["streamability_evidence"]["items"])
+    )
+
+
+def test_in_flight_refusal_names_sorted_unique_holders_up_to_the_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Holders are ``profile:operation``, deduplicated, sorted, and capped at eight."""
+    from haute._execution_admission import (
+        _MAX_REPORTED_IN_FLIGHT_OPERATIONS,
+        create_admitted_execution_context,
+    )
+
+    _clear_execution_memory_env(monkeypatch)
+    gib = 1024 * 1024 * 1024
+    monkeypatch.setattr("haute._execution_admission.available_ram_bytes", lambda: 10 * gib)
+    monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 10 * gib)
+    monkeypatch.setenv("HAUTE_OPTIMISER_MEMORY_LIMIT_MB", "1")
+
+    held = []
+    # Ten distinct operations plus one duplicate name: eleven reservations, ten
+    # distinct labels, of which only the first eight sorted labels are reported.
+    operations = [f"setup_{index:02d}" for index in range(10)] + ["setup_00"]
+    try:
+        for operation in operations:
+            held.append(
+                create_admitted_execution_context(
+                    operation=operation,
+                    profile=ExecutionProfile.OPTIMISER_SETUP,
+                    memory_sampler=lambda: 100,
+                )
+            )
+        monkeypatch.setenv("HAUTE_TRAINING_MEMORY_LIMIT_MB", str(20 * 1024))
+        with pytest.raises(ExecutionAdmissionError) as exc_info:
+            create_admitted_execution_context(
+                operation="train_prepare",
+                profile=ExecutionProfile.TRAINING_PREP,
+                memory_sampler=lambda: 100,
+            )
+    finally:
+        for context in held:
+            context.release_admission()
+
+    error = exc_info.value
+    assert error.reason == "in_flight_memory_budget_exceeded"
+    assert error.in_flight_reserved_bytes == 11 * 1024 * 1024
+    assert _MAX_REPORTED_IN_FLIGHT_OPERATIONS == 8
+    assert error.in_flight_operations == tuple(
+        f"optimiser_setup:setup_{index:02d}" for index in range(8)
+    )
+    assert error.to_payload()["in_flight_operations"] == list(error.in_flight_operations)
+
+
+def test_input_preparation_records_reach_the_metrics_payload() -> None:
+    from haute._execution_schemas import ExecutionMetricsPayload
+    from haute._input_preparation import InputPreparationRecord
+
+    context = ExecutionContext(operation="metrics", profile=ExecutionProfile.LAZY_SINK)
+    assert context.metrics_payload()["input_preparation"] == []
+
+    context.record_input_preparation(
+        InputPreparationRecord(
+            node_id="input",
+            identity_digest="b" * 64,
+            action="refreshed",
+            build_class="bounded",
+            execution="worker",
+            memory_limit_bytes=1024,
+            elapsed_seconds=0.5,
+            row_count=3,
+            size_bytes=64,
+            generation_id="8f0d4a2c-1c3b-4f5a-9c2d-0e1f2a3b4c5d",
+            warning_code="eager_read_mode_scanned",
+        )
+    )
+    payload = context.metrics_payload()
+
+    assert payload["input_preparation"] == [
+        {
+            "node_id": "input",
+            "identity_digest": "b" * 64,
+            "action": "refreshed",
+            "build_class": "bounded",
+            "execution": "worker",
+            "memory_limit_bytes": 1024,
+            "elapsed_seconds": 0.5,
+            "row_count": 3,
+            "size_bytes": 64,
+            "generation_id": "8f0d4a2c-1c3b-4f5a-9c2d-0e1f2a3b4c5d",
+            "warning_code": "eager_read_mode_scanned",
+        }
+    ]
+    validated = ExecutionMetricsPayload.model_validate(payload)
+    assert validated.input_preparation[0].action == "refreshed"
+
+
+def test_worker_metrics_carry_the_parents_evidence_ahead_of_their_own() -> None:
+    from haute._execution_schemas import ExecutionMetricsPayload
+    from haute._input_preparation import InputPreparationRecord
+    from haute._node_snapshots import NodeSnapshotColumns
+    from haute._seed_plans import (
+        CaptureKind,
+        SharedSnapshotCaptureRecord,
+        SharedSnapshotSeedRecord,
+    )
+
+    parent = ExecutionContext(operation="parent", profile=ExecutionProfile.TRAINING_PREP)
+    parent.record_input_preparation(
+        InputPreparationRecord(
+            node_id="src",
+            identity_digest="a" * 64,
+            action="reused",
+            build_class="bounded",
+            execution="in_process",
+            memory_limit_bytes=None,
+            elapsed_seconds=0.0,
+            row_count=3,
+            size_bytes=64,
+            generation_id="8f0d4a2c-1c3b-4f5a-9c2d-0e1f2a3b4c5d",
+            warning_code="source_unavailable",
+        )
+    )
+    parent.record_execution_warning("snapshot_capture_superseded", node_id="A")
+    worker = ExecutionContext(operation="worker", profile=ExecutionProfile.TRAINING_PREP)
+    worker.record_shared_snapshot_seed(
+        SharedSnapshotSeedRecord("B", "b" * 64, "gen-b", NodeSnapshotColumns.all())
+    )
+    worker.record_shared_snapshot_capture(
+        SharedSnapshotCaptureRecord(
+            "C", "c" * 64, CaptureKind.CONSUMED, "superseded", None, NodeSnapshotColumns.all()
+        )
+    )
+    worker.record_execution_warning("snapshot_capture_superseded", node_id="C")
+
+    merged = parent.metrics_with_worker_evidence(worker.metrics_payload())
+
+    assert merged["operation"] == "worker"
+    assert [record["node_id"] for record in merged["input_preparation"]] == ["src"]
+    assert merged["input_preparation"][0]["warning_code"] == "source_unavailable"
+    assert [seed["node_id"] for seed in merged["shared_snapshot_seeds"]] == ["B"]
+    assert [capture["node_id"] for capture in merged["shared_snapshot_captures"]] == ["C"]
+    assert [(warning["code"], warning["node_id"]) for warning in merged["warnings"]] == [
+        ("snapshot_capture_superseded", "A"),
+        ("snapshot_capture_superseded", "C"),
+    ]
+    # The parent now holds the worker's evidence, so a later worker's metrics
+    # carry both processes' evidence.
+    assert parent.worker_evidence()["shared_snapshot_seeds"] == merged["shared_snapshot_seeds"]
+    ExecutionMetricsPayload.model_validate(merged)
+
+
+def test_adopted_worker_input_preparation_is_copied_into_parent_evidence() -> None:
+    from haute._input_preparation import InputPreparationRecord
+
+    parent = ExecutionContext(operation="parent", profile=ExecutionProfile.TRAINING_PREP)
+    worker = ExecutionContext(operation="worker", profile=ExecutionProfile.TRAINING_PREP)
+    worker.record_input_preparation(
+        InputPreparationRecord(
+            node_id="source",
+            identity_digest="a" * 64,
+            action="built",
+            build_class="bounded",
+            execution="in_process",
+            memory_limit_bytes=None,
+            elapsed_seconds=0.1,
+            row_count=4,
+            size_bytes=16,
+            generation_id="8f0d4a2c-1c3b-4f5a-9c2d-0e1f2a3b4c5d",
+            warning_code=None,
+        )
+    )
+    payload = worker.metrics_payload()
+
+    parent.adopt_worker_evidence(payload)
+    payload["input_preparation"][0]["node_id"] = "mutated"  # type: ignore[index]
+
+    evidence = parent.worker_evidence()
+    assert evidence["input_preparation"][0]["node_id"] == "source"
+    assert parent.metrics_payload()["input_preparation"][0]["node_id"] == "source"
+
+
+def _app_client():
+    """A client for the application, so its exception handlers answer."""
+    from fastapi.testclient import TestClient
+
+    from haute.server import app
+
+    return TestClient(app, raise_server_exceptions=False)

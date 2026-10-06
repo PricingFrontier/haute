@@ -2,7 +2,8 @@ import { useState } from "react"
 import { withAlpha } from "../../../utils/color"
 
 interface CategoricalValuePickerProps {
-  availableValues: { value: string; count: number }[]
+  /** A value, with its row count when it is the whole dataset's. */
+  availableValues: { value: string; count?: number }[]
   existingValues: string[]
   onAddValue: (value: string) => void
   accentColor: string
@@ -75,7 +76,7 @@ export function CategoricalValuePicker({
                 cursor: isUsed ? "default" : "pointer",
               }}
             >
-              {v.value} ({v.count})
+              {v.value}{v.count === undefined ? "" : ` (${v.count})`}
             </button>
           )
         })}

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
+import { act, render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
 import DataPreview from "../DataPreview"
 import type { PreviewData } from "../DataPreview"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
@@ -57,6 +57,72 @@ function makePreview(overrides: Partial<PreviewData> = {}): PreviewData {
   }
 }
 
+const EMULATED_VIEWPORT = { width: 960, height: 200 }
+const EMULATED_HEADER_HEIGHT = 44
+
+/**
+ * jsdom lays nothing out. Give the preview's scroll container a viewport, the
+ * extent of the table it holds, and offsets clamped to that extent, as a
+ * browser does. Returns the function that removes the emulation.
+ */
+function emulateScrollContainerLayout(): () => void {
+  const isContainer = (el: HTMLElement) => el.dataset.testid === "data-preview-scroll"
+  const inherited = (el: HTMLElement, name: string) => Reflect.get(Element.prototype, name, el) as number
+  const scrollWidth = (el: HTMLElement) =>
+    Math.max(EMULATED_VIEWPORT.width, parseFloat(el.querySelector("table")?.style.width ?? "0"))
+  const scrollHeight = (el: HTMLElement) =>
+    Math.max(
+      EMULATED_VIEWPORT.height,
+      Array.from(el.querySelectorAll<HTMLElement>("tbody > tr")).reduce(
+        (height, row) => height + parseFloat(row.style.height),
+        EMULATED_HEADER_HEIGHT,
+      ),
+    )
+  const axes = {
+    scrollTop: (el: HTMLElement) => scrollHeight(el) - EMULATED_VIEWPORT.height,
+    scrollLeft: (el: HTMLElement) => scrollWidth(el) - EMULATED_VIEWPORT.width,
+  }
+  const offsets = new WeakMap<HTMLElement, Record<keyof typeof axes, number>>()
+  const clampedOffset = (el: HTMLElement, axis: keyof typeof axes, value: number) => {
+    const stored = { ...(offsets.get(el) ?? { scrollTop: 0, scrollLeft: 0 }) }
+    stored[axis] = Math.min(Math.max(0, value), axes[axis](el))
+    offsets.set(el, stored)
+    return stored[axis]
+  }
+  const getters = {
+    clientWidth: () => EMULATED_VIEWPORT.width,
+    clientHeight: () => EMULATED_VIEWPORT.height,
+    scrollWidth,
+    scrollHeight,
+  }
+  for (const [name, get] of Object.entries(getters)) {
+    Object.defineProperty(HTMLElement.prototype, name, {
+      configurable: true,
+      get(this: HTMLElement) {
+        return isContainer(this) ? get(this) : inherited(this, name)
+      },
+    })
+  }
+  for (const axis of Object.keys(axes) as (keyof typeof axes)[]) {
+    Object.defineProperty(HTMLElement.prototype, axis, {
+      configurable: true,
+      // A narrower table clamps the offset, which then stays clamped.
+      get(this: HTMLElement) {
+        return isContainer(this) ? clampedOffset(this, axis, offsets.get(this)?.[axis] ?? 0) : inherited(this, axis)
+      },
+      set(this: HTMLElement, value: number) {
+        if (isContainer(this)) clampedOffset(this, axis, value)
+        else Reflect.set(Element.prototype, axis, value, this)
+      },
+    })
+  }
+  return () => {
+    for (const name of [...Object.keys(getters), ...Object.keys(axes)]) {
+      Reflect.deleteProperty(HTMLElement.prototype, name)
+    }
+  }
+}
+
 describe("DataPreview", () => {
   beforeEach(() => {
     resizeObserverStats.constructed = 0
@@ -71,6 +137,24 @@ describe("DataPreview", () => {
   it("returns null when data is null", () => {
     const { container } = render(<DataPreview data={null} />)
     expect(container.innerHTML).toBe("")
+  })
+
+  it("keeps refresh available before the active node has preview data", () => {
+    const onRefresh = vi.fn()
+    render(<DataPreview data={null} nodeLabel="Claims" onRefresh={onRefresh} />)
+
+    expect(screen.getByText("Claims")).toBeInTheDocument()
+    expect(screen.getByLabelText("Collapse preview panel")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
+    expect(onRefresh).toHaveBeenCalledOnce()
+  })
+
+  it.each(["ok", "loading", "error"] as const)("refreshes from the %s preview header", (status) => {
+    const onRefresh = vi.fn()
+    render(<DataPreview data={makePreview({ status })} onRefresh={onRefresh} />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
+    expect(onRefresh).toHaveBeenCalledOnce()
   })
 
   it("renders node label in header", () => {
@@ -136,6 +220,34 @@ describe("DataPreview", () => {
     expect(screen.getByText("Executing pipeline...")).toBeInTheDocument()
   })
 
+  it("shows cache preparation progress while the preview waits", () => {
+    render(<DataPreview data={makePreview({
+      status: "loading", loading_message: "Caching Quote Input as Parquet… · 12s",
+    })} />)
+    expect(screen.getByRole("status")).toHaveTextContent("Caching Quote Input as Parquet… · 12s")
+    expect(screen.queryByText("Executing pipeline...")).not.toBeInTheDocument()
+  })
+
+  it("shows the running step and a bar once the plan is known", () => {
+    render(<DataPreview data={makePreview({
+      status: "loading",
+      progress: { request_id: "r1", phase: "running", done: 1, total: 3, label: "Caching join" },
+    })} />)
+    expect(screen.getByRole("status")).toHaveTextContent("Step 2 of 3 · Caching join")
+    const bar = screen.getByRole("progressbar", { name: "Preview progress" })
+    expect(bar).toHaveAttribute("aria-valuenow", "1")
+    expect(bar).toHaveAttribute("aria-valuemax", "3")
+  })
+
+  it("says it is preparing inputs, without a bar, before the plan is known", () => {
+    render(<DataPreview data={makePreview({
+      status: "loading",
+      progress: { request_id: "r1", phase: "preparing", done: null, total: null, label: null },
+    })} />)
+    expect(screen.getByRole("status")).toHaveTextContent("Preparing inputs…")
+    expect(screen.queryByRole("progressbar")).toBeNull()
+  })
+
   it("renders as an embedded table body without duplicating the outer frame's title", () => {
     render(<DataPreview data={makePreview()} embedded />)
 
@@ -157,7 +269,7 @@ describe("DataPreview", () => {
     expect(screen.getByText(/3 rows/).compareDocumentPosition(warning) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     fireEvent.click(warning)
     expect(screen.getByText("Preview memory pressure")).toBeInTheDocument()
-    expect(screen.getByText("Memory pressure reached 75% of the preview budget.")).toBeInTheDocument()
+    expect(screen.getByText("Preview reached 75% of its memory allowance.")).toBeInTheDocument()
   })
 
   it("explains a projection boundary beside the preview dimensions without raw planner JSON", () => {
@@ -303,6 +415,67 @@ describe("DataPreview", () => {
     expect(screen.getByText("Execution could not use a safe strategy")).toBeInTheDocument()
     expect(screen.getByText(/competitor_premiums/)).toBeInTheDocument()
     expect(screen.getByText(/Define the node columns before previewing/)).toBeInTheDocument()
+  })
+
+  it("surfaces a warned execution strategy as a preview warning, not an error", () => {
+    const metrics = makeExecutionMetricsFixture({
+      memory_pressure_events: [],
+      execution_strategy: {
+        schema_version: 1,
+        status: "warned",
+        strategy: "full-width-conservative",
+        profile: "preview_eager",
+        boundedness: "unbounded",
+        reason_code: "materialisation_estimate_unavailable_conservative",
+        detail_state: "available",
+        boundaries: { state: "available", total_count: 0, items: [] },
+        reasons: { state: "available", total_count: 0, items: [] },
+        provenance: { state: "available", total_count: 0, items: [] },
+        blocking_node_id: "competitor_premiums",
+        blocking_operator: "group_by",
+        headroom_bytes: 2048,
+        remediation: "Give this aggregation a bounded key set.",
+      },
+    })
+    render(<DataPreview data={makePreview({ execution_metrics: metrics })} />)
+
+    expect(screen.queryByLabelText("Preview execution error details")).not.toBeInTheDocument()
+    const warning = screen.getByLabelText("Preview execution warning details")
+    fireEvent.click(warning)
+    expect(screen.getByText("Execution ran without a memory estimate")).toBeInTheDocument()
+    expect(screen.getAllByText(/competitor_premiums/).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/Give this aggregation a bounded key set/)).toHaveLength(1)
+    expect(screen.queryByText(/Boundaries:/)).not.toBeInTheDocument()
+  })
+
+  it("reports memory pressure over a warned execution strategy, appending its message once", () => {
+    const base = makeExecutionMetricsFixture({
+      execution_strategy: {
+        schema_version: 1,
+        status: "warned",
+        strategy: "full-width-conservative",
+        profile: "preview_eager",
+        boundedness: "unbounded",
+        reason_code: "materialisation_estimate_unavailable_conservative",
+        detail_state: "available",
+        boundaries: { state: "available", total_count: 0, items: [] },
+        reasons: { state: "available", total_count: 0, items: [] },
+        provenance: { state: "available", total_count: 0, items: [] },
+        blocking_node_id: "competitor_premiums",
+        blocking_operator: "group_by",
+        headroom_bytes: 2048,
+        remediation: "Give this aggregation a bounded key set.",
+      },
+    })
+    render(<DataPreview data={makePreview({ execution_metrics: base })} />)
+
+    const warning = screen.getByLabelText("Preview execution warning details")
+    fireEvent.click(warning)
+    // The terminal memory-pressure finding names the indicator; the warned
+    // strategy stays in the details rather than taking the title.
+    expect(screen.getByText("Preview memory pressure")).toBeInTheDocument()
+    expect(screen.queryByText("Execution ran without a memory estimate")).not.toBeInTheDocument()
+    expect(screen.getAllByText(/Preview reached 75% of its memory allowance\./)).toHaveLength(1)
   })
 
   it("cell click calls onCellClick with row index and column", () => {
@@ -561,6 +734,149 @@ describe("DataPreview", () => {
 
     expect(screen.getByText("col_79")).toBeInTheDocument()
     expect(screen.getByText("value-79")).toBeInTheDocument()
+  })
+
+  describe("the place the table was scrolled to", () => {
+    // Refresh shows the loading state, which replaces the scroll container,
+    // and a recalculated result can change how far the table scrolls; either
+    // way the table stays where the user left it.
+    let removeLayout: () => void
+    beforeEach(() => {
+      removeLayout = emulateScrollContainerLayout()
+    })
+    afterEach(() => removeLayout())
+
+    const table = ({ columns = 120, rows = 100, status = "ok" as PreviewData["status"] } = {}) => {
+      const columnInfo = Array.from({ length: columns }, (_, i) => ({ name: `col_${i}`, dtype: "i64" }))
+      const preview = Array.from({ length: rows }, (_, row) =>
+        Object.fromEntries(columnInfo.map((col, c) => [col.name, `r${row}-c${c}`])),
+      )
+      return makePreview({ status, column_count: columns, columns: columnInfo, preview, row_count: rows })
+    }
+    const scrollContainer = () => screen.getByTestId("data-preview-scroll")
+    // The emulated container clamps offsets, so a huge one is the far end.
+    const FAR = 1e9
+    const scrollTo = (target: { scrollTop?: number; scrollLeft?: number }) =>
+      fireEvent.scroll(scrollContainer(), { target })
+    const nextFrame = () =>
+      act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())))
+
+    it("keeps its offsets across Refresh", async () => {
+      const { rerender } = render(<DataPreview data={table()} />)
+      scrollTo({ scrollTop: 80 * 28, scrollLeft: 80 * 160 })
+      await waitFor(() => {
+        expect(screen.getByText("r80-c80")).toBeInTheDocument()
+      })
+
+      rerender(<DataPreview data={table({ status: "loading" })} />)
+      rerender(<DataPreview data={table()} />)
+
+      expect(scrollContainer().scrollTop).toBe(80 * 28)
+      expect(scrollContainer().scrollLeft).toBe(80 * 160)
+      expect(screen.getByText("r80-c80")).toBeInTheDocument()
+    })
+
+    it("keeps its offsets when the panel is collapsed and expanded", async () => {
+      render(<DataPreview data={table()} />)
+      scrollTo({ scrollTop: 80 * 28, scrollLeft: 80 * 160 })
+      await waitFor(() => {
+        expect(screen.getByText("r80-c80")).toBeInTheDocument()
+      })
+
+      fireEvent.click(screen.getByLabelText("Collapse preview panel"))
+      fireEvent.click(screen.getByLabelText("Expand preview panel"))
+
+      expect(scrollContainer().scrollTop).toBe(80 * 28)
+      expect(scrollContainer().scrollLeft).toBe(80 * 160)
+      expect(screen.getByText("r80-c80")).toBeInTheDocument()
+    })
+
+    it("stays at the far right and bottom when Refresh adds a column and rows", async () => {
+      const { rerender } = render(<DataPreview data={table()} />)
+      scrollTo({ scrollTop: FAR, scrollLeft: FAR })
+      await waitFor(() => {
+        expect(screen.getByText("r99-c119")).toBeInTheDocument()
+      })
+
+      rerender(<DataPreview data={table({ status: "loading" })} />)
+      rerender(<DataPreview data={table({ columns: 121, rows: 120 })} />)
+
+      const container = scrollContainer()
+      expect(container.scrollLeft).toBe(container.scrollWidth - container.clientWidth)
+      expect(container.scrollTop).toBe(container.scrollHeight - container.clientHeight)
+      expect(screen.getByText("r119-c120")).toBeInTheDocument()
+    })
+
+    it("stays at the far right when a recalculated result adds a column", async () => {
+      const { rerender } = render(<DataPreview data={table()} />)
+      scrollTo({ scrollLeft: FAR })
+      await waitFor(() => {
+        expect(screen.getByText("col_119")).toBeInTheDocument()
+      })
+
+      rerender(<DataPreview data={table({ columns: 121 })} />)
+
+      const container = scrollContainer()
+      expect(container.scrollLeft).toBe(container.scrollWidth - container.clientWidth)
+      expect(screen.getByText("col_120")).toBeInTheDocument()
+    })
+
+    it("goes back to where the user left it after a narrower result clamped it", async () => {
+      const { rerender } = render(<DataPreview data={table()} />)
+      scrollTo({ scrollLeft: 80 * 160 })
+      await waitFor(() => {
+        expect(screen.getByText("col_80")).toBeInTheDocument()
+      })
+
+      rerender(<DataPreview data={table({ columns: 20 })} />)
+      // The browser reports the clamp with a scroll event; it is not the user's.
+      fireEvent.scroll(scrollContainer())
+      await nextFrame()
+      // Scrolling down while it is clamped moves only the vertical place.
+      scrollTo({ scrollTop: 30 * 28 })
+      await nextFrame()
+      rerender(<DataPreview data={table()} />)
+
+      expect(scrollContainer().scrollLeft).toBe(80 * 160)
+      expect(scrollContainer().scrollTop).toBe(30 * 28)
+      expect(screen.getByText("r30-c80")).toBeInTheDocument()
+    })
+
+    it("shows a shorter result's last rows, and the user's row again when the rows return", async () => {
+      const { rerender } = render(<DataPreview data={table({ columns: 20, rows: 1000 })} />)
+      scrollTo({ scrollTop: 900 * 28 })
+      await waitFor(() => {
+        expect(screen.getByText("r900-c0")).toBeInTheDocument()
+      })
+
+      rerender(<DataPreview data={table({ columns: 20, status: "loading" })} />)
+      rerender(<DataPreview data={table({ columns: 20, rows: 100 })} />)
+      // The browser reports the clamp with a scroll event; it is not the user's.
+      fireEvent.scroll(scrollContainer())
+      await nextFrame()
+      expect(screen.getByText("r99-c0")).toBeInTheDocument()
+
+      // Scrolling right while it is clamped moves only the horizontal place.
+      scrollTo({ scrollLeft: 10 * 160 })
+      await nextFrame()
+      rerender(<DataPreview data={table({ columns: 20, status: "loading" })} />)
+      rerender(<DataPreview data={table({ columns: 20, rows: 1000 })} />)
+
+      expect(scrollContainer().scrollTop).toBe(900 * 28)
+      expect(scrollContainer().scrollLeft).toBe(10 * 160)
+      expect(screen.getByText("r900-c10")).toBeInTheDocument()
+    })
+
+    it("drops a scroll frame still pending from the replaced container", async () => {
+      const { rerender } = render(<DataPreview data={table()} />)
+      scrollTo({ scrollLeft: FAR })
+      rerender(<DataPreview data={table({ status: "loading" })} />)
+      rerender(<DataPreview data={table({ columns: 200 })} />)
+
+      await nextFrame()
+
+      expect(screen.getByText("col_199")).toBeInTheDocument()
+    })
   })
 
   it("column search can show a matching column outside the initial virtual window", () => {
@@ -869,5 +1185,43 @@ describe("DataPreview", () => {
       )
       expect(screen.getByText("mystery")).toBeInTheDocument()
     })
+  })
+})
+
+describe("DataPreview status row", () => {
+  const entry = (nodeId: string, nodeLabel: string, kind: "seeded" | "captured") => ({
+    node_id: nodeId,
+    port_label: null,
+    node_label: nodeLabel,
+    identity_digest: "a".repeat(64),
+    generation_id: `${nodeId}-generation`,
+    columns: null,
+    created_at: "2026-09-19T00:00:00+00:00",
+    kind,
+  })
+
+  afterEach(() => {
+    cleanup()
+  })
+
+  // The status row is for things the user has to act on. Which nodes a preview
+  // read cached data from is how the pipeline is meant to work, not a finding,
+  // and naming it here put routine provenance where warnings live.
+  it("says nothing about which cached data the rows were computed from", () => {
+    render(
+      <DataPreview
+        data={makePreview({
+          seed_plan: [
+            entry("claims_join", "Claims join", "seeded"),
+            entry("exposure", "Exposure totals", "seeded"),
+            entry("rating_join", "Rating join", "captured"),
+          ],
+        })}
+      />,
+    )
+
+    expect(screen.queryByTestId("preview-seeded-from")).toBeNull()
+    expect(screen.queryByText(/cached data/i)).toBeNull()
+    expect(screen.queryByText(/Claims join/)).toBeNull()
   })
 })

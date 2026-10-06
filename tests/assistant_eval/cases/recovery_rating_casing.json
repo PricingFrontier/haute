@@ -1,0 +1,83 @@
+{
+  "schema_version": 5,
+  "id": "recovery_rating_casing",
+  "fixture_version": "1",
+  "project_fixture": "data_recovery",
+  "area": "recovery",
+  "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
+  "turns": [
+    {
+      "request": "Add a rating step called region_rating after quotes with one table on region, output region_factor: North 1.2, South 0.95 and East 1.05, with default 1.0.",
+      "expectations": {
+        "outcome": "applied",
+        "saves": true,
+        "required_node_types": [
+          "ratingStep"
+        ],
+        "forbidden_node_types": [],
+        "required_edges": [
+          {
+            "source": "quotes",
+            "target": "region_rating",
+            "target_handle": null
+          }
+        ],
+        "require_connected_graph": true,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [],
+        "node_configs": {
+          "region_rating": {
+            "tables": [
+              {
+                "factors": [
+                  "region"
+                ],
+                "outputColumn": "region_factor",
+                "entries": [
+                  {
+                    "region": "North",
+                    "value": 1.2
+                  },
+                  {
+                    "region": "South",
+                    "value": 0.95
+                  },
+                  {
+                    "region": "East",
+                    "value": 1.05
+                  }
+                ],
+                "defaultValue": 1.0
+              }
+            ]
+          }
+        },
+        "execution": [
+          {
+            "node": "region_rating",
+            "scenario": "live",
+            "golden": "quotes = pl.scan_parquet('data/quotes.parquet')\ndf = quotes.with_columns(\n    region_factor=pl.col('region').replace_strict(\n        {'North': 1.2, 'South': 0.95, 'East': 1.05},\n        default=1.0,\n        return_dtype=pl.Float64,\n    )\n)\n",
+            "order_free": false
+          }
+        ],
+        "efficiency": null,
+        "data_findings": {
+          "reported": [
+            {
+              "kind": "rating_misses",
+              "node": "region_rating"
+            }
+          ],
+          "kept": [
+            {
+              "kind": "rating_misses",
+              "node": "region_rating"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

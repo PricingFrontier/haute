@@ -1,0 +1,97 @@
+name: Property Exploration
+
+# Weekly wide-budget run of the Hypothesis suites. The ordinary backend lanes
+# run every generated family under the small, derandomised PR budget in
+# tests/_property_budget.py (order-independent, no example database), which is
+# what a pull request pays for. This lane runs the same modules with
+# HAUTE_PROPERTY_EXAMPLES set, which lifts the budget and re-randomises the
+# search so repeated weeks cover new ground. It is deliberately NOT a required
+# per-PR check: a wide search is a slow-moving class of evidence, and keeping it
+# off the PR path avoids charging every PR for it (ENG-T11/ENG-T12, 2026-09-06).
+#
+# Loud: a failure finds-or-creates a `property-watch` issue with the run URL.
+# Hypothesis prints the shrunk failing example and a @reproduce_failure blob in
+# the log (print_blob=True in the shared budget), so a red week reproduces from
+# the log alone.
+
+on:
+  workflow_dispatch:
+    inputs:
+      examples:
+        description: "Examples per property (HAUTE_PROPERTY_EXAMPLES). Blank = 1500."
+        type: string
+        default: ""
+      force_fail:
+        description: "Fail deliberately to prove the alarm path rings"
+        type: boolean
+        default: false
+  schedule:
+    # 03:41 UTC Mondays - offset from the other Monday lanes
+    # (performance 03:17, dependencies 04:41, mutation 05:00).
+    - cron: "41 3 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  property-exploration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # uv is pinned exactly, like the rest of the development tooling; this
+      # value is repeated in every workflow and must move together (grep
+      # `setup-uv` across .github/workflows/).
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.8.22"
+          python-version: "3.12"
+
+      - run: uv sync --group dev --locked
+
+      - name: Forced failure (alarm-path test)
+        if: inputs.force_fail
+        run: |
+          echo "force_fail input set - failing deliberately to exercise the alarm step"
+          exit 1
+
+      # The manifest is the single list of Hypothesis modules; a meta test in
+      # tests/test_workflow_coverage.py keeps it equal to the modules that
+      # import hypothesis, so a new property module cannot miss this lane.
+      - name: Run the property suites under the exploration budget
+        env:
+          HAUTE_PROPERTY_EXAMPLES: ${{ inputs.examples || '1500' }}
+        run: >
+          uv run pytest $(grep -v '^#' scripts/property_test_files.txt)
+          -q -p no:warnings --timeout=1500 --timeout-method=signal
+
+      - name: Raise the alarm (find-or-create property-watch issue)
+        if: failure() && (github.event_name == 'schedule' || inputs.force_fail)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Weekly property-exploration lane is red"
+          body="A Hypothesis suite failed under the exploration budget. Run: ${RUN_URL}
+
+          Reproduce locally (from the repository root):
+              HAUTE_PROPERTY_EXAMPLES=1500 uv run pytest <module from the log> -q -p no:warnings
+
+          The log carries the shrunk failing example and a @reproduce_failure blob; add the example as an @example on the failing test so the PR lane keeps it (tests/_property_budget.py)."
+          gh label create property-watch --color FBCA04 --force \
+            --description "Automated: weekly property-exploration lane failures"
+          existing="$(gh issue list --state open --label property-watch \
+            --search "in:title \"${title}\"" --json number --jq '.[0].number // empty')"
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --body "Still red: ${RUN_URL}"
+          else
+            gh issue create --title "${title}" --label property-watch --body "${body}"
+          fi

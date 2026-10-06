@@ -45,6 +45,7 @@ function makeStep(overrides: Partial<EnhancedTraceStep> = {}): EnhancedTraceStep
     output_values: { age: 25, premium: 100 },
     topological_rank: 0,
     column_relevant: true,
+    contributed_columns: [], derivations: [],
     ...overrides,
   }
 }
@@ -87,7 +88,7 @@ function makeTrace(overrides: Partial<TraceResult> = {}): TraceResult {
 // A. Expression Display Tests
 // ---------------------------------------------------------------------------
 
-describe("TracePanel — Expression Display", () => {
+describe("TracePanel - Expression Display", () => {
   afterEach(cleanup)
 
   it("renders an arithmetic expression formula when step has expression", () => {
@@ -305,7 +306,7 @@ describe("TracePanel — Expression Display", () => {
 // B. Calculation Display Tests
 // ---------------------------------------------------------------------------
 
-describe("TracePanel — Calculation Display", () => {
+describe("TracePanel - Calculation Display", () => {
   afterEach(cleanup)
 
   it("shows substituted calculation values when calculation is present", () => {
@@ -465,7 +466,7 @@ describe("TracePanel — Calculation Display", () => {
 // C. Node Detail Tests
 // ---------------------------------------------------------------------------
 
-describe("TracePanel — Node Detail", () => {
+describe("TracePanel - Node Detail", () => {
   afterEach(cleanup)
 
   it("renders banding detail with matched band info", () => {
@@ -515,6 +516,7 @@ describe("TracePanel — Node Detail", () => {
               },
               output_values: { risk_age: 35 },
               column_relevant: false,
+              contributed_columns: [], derivations: [],
             }),
             makeStep({
               node_id: "band",
@@ -690,7 +692,7 @@ describe("TracePanel — Node Detail", () => {
     expect(screen.queryByText(/^computed$/i)).not.toBeInTheDocument()
   })
 
-  it("uses RustyStats contribution totals rather than response predictions in ladders", () => {
+  it("ends a GLM ladder at the linear predictor, then applies the inverse link for the prediction", () => {
     render(
       <TracePanel
         trace={makeTrace({
@@ -730,6 +732,8 @@ describe("TracePanel — Node Detail", () => {
                 explanation: {
                   method: "rustystats_glm_contributions",
                   status: "ok",
+                  family: "binomial",
+                  link: "logit",
                   output_space: "linear_predictor",
                   prediction_space: "response",
                   base_value: 0.1,
@@ -755,10 +759,131 @@ describe("TracePanel — Node Detail", () => {
 
     const ladder = screen.getByLabelText("Model score contribution ladder")
     const rows = within(ladder).getAllByTestId("model-score-ladder-row")
+    expect(rows).toHaveLength(4)
+    expect(rows[2]).toHaveTextContent("Linear predictor")
+    expect(rows[2]).toHaveTextContent("0.3")
+    expect(rows[2]).not.toHaveTextContent("Prediction")
+    expect(rows[2]).not.toHaveTextContent("0.57")
+    expect(rows[3]).toHaveTextContent("Prediction")
+    expect(rows[3]).toHaveTextContent("conversion_prediction")
+    expect(rows[3]).toHaveTextContent("inverse logit")
+    expect(rows[3]).toHaveTextContent("0.57")
+  })
+
+  it("ends a log-link CatBoost ladder at the raw score, then applies exp for the prediction", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "competitor_scoring",
+          column: "competitor_premium",
+          output_value: 377.2116,
+          steps: [
+            makeStep({
+              node_id: "competitor_scoring",
+              node_name: "competitor_scoring",
+              node_type: "modelScore",
+              schema_diff: {
+                columns_added: ["competitor_premium"],
+                columns_removed: [],
+                columns_modified: [],
+                columns_passed: ["year_of_manufacture"],
+              },
+              input_values: { year_of_manufacture: 2024 },
+              output_values: { year_of_manufacture: 2024, competitor_premium: 377.2116 },
+              node_detail: {
+                detail_type: "model_score",
+                prediction_value: 377.2116,
+                prediction_column: "competitor_premium",
+                feature_columns: ["year_of_manufacture"],
+                feature_values: { year_of_manufacture: 2024 },
+                explanation: {
+                  method: "catboost_shap",
+                  status: "ok",
+                  link: "log",
+                  output_space: "raw_formula_val",
+                  prediction_space: "prediction",
+                  base_value: 5.7313,
+                  prediction_from_shap: 5.9328,
+                  model_output_value: 5.9328,
+                  model_prediction_value: 377.2116,
+                  prediction_value: 377.2116,
+                  contributions: [
+                    { feature: "year_of_manufacture", feature_value: 2024, shap_value: 0.2015, rank: 1 },
+                  ],
+                },
+              },
+            }),
+          ] as TraceStep[],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    const ladder = screen.getByLabelText("Model score contribution ladder")
+    const rows = within(ladder).getAllByTestId("model-score-ladder-row")
+    expect(rows).toHaveLength(4)
+    expect(rows[2]).toHaveTextContent("Raw score")
+    expect(rows[2]).toHaveTextContent("5.9328")
+    expect(rows[3]).toHaveTextContent("Prediction")
+    expect(rows[3]).toHaveTextContent("competitor_premium")
+    expect(rows[3]).toHaveTextContent("exp")
+    expect(rows[3]).toHaveTextContent("377.2116")
+  })
+
+  it("keeps an identity-link GLM ladder ending at the prediction", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "severity_score",
+          column: "severity",
+          output_value: 1.25,
+          steps: [
+            makeStep({
+              node_id: "severity_score",
+              node_name: "Severity GLM",
+              node_type: "modelScore",
+              schema_diff: {
+                columns_added: ["severity"],
+                columns_removed: [],
+                columns_modified: [],
+                columns_passed: ["age"],
+              },
+              input_values: { age: 40 },
+              output_values: { age: 40, severity: 1.25 },
+              node_detail: {
+                detail_type: "model_score",
+                prediction_value: 1.25,
+                prediction_column: "severity",
+                feature_columns: ["age"],
+                feature_values: { age: 40 },
+                explanation: {
+                  method: "rustystats_glm_contributions",
+                  status: "ok",
+                  family: "gaussian",
+                  link: "identity",
+                  output_space: "linear_predictor",
+                  prediction_space: "response",
+                  base_value: 1,
+                  prediction_from_contributions: 1.25,
+                  prediction_value: 1.25,
+                  contributions: [{ feature: "age", feature_value: 40, contribution: 0.25, rank: 1 }],
+                },
+              },
+            }),
+          ] as TraceStep[],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    const ladder = screen.getByLabelText("Model score contribution ladder")
+    const rows = within(ladder).getAllByTestId("model-score-ladder-row")
     expect(rows).toHaveLength(3)
     expect(rows[2]).toHaveTextContent("Prediction")
-    expect(rows[2]).toHaveTextContent("0.3")
-    expect(rows[2]).not.toHaveTextContent("0.57")
+    expect(rows[2]).toHaveTextContent("severity")
+    expect(rows[2]).toHaveTextContent("1.25")
+    expect(within(ladder).queryByText("Linear predictor")).not.toBeInTheDocument()
+    expect(within(ladder).queryByText(/inverse/)).not.toBeInTheDocument()
   })
 
   it("renders CatBoost SHAP contributions as a running score ladder", () => {
@@ -989,6 +1114,7 @@ describe("TracePanel — Node Detail", () => {
                 output_value: 0.65,
                 base_value: 1,
                 final_value: 0.65,
+                collar: { min: 0.5, max: 1.5, before: 0.65, after: 0.65, applied: false },
                 factors: [
                   { name: "channel_band", input_value: "market", factor_value: 0.65, running_total: 0.65, status: "matched" },
                 ],
@@ -1269,7 +1395,7 @@ describe("TracePanel — Node Detail", () => {
     expect(screen.getAllByText("default used").length).toBeGreaterThan(0)
     expect(screen.getByText(/default:.*1/)).toBeInTheDocument()
     expect(screen.getByText("status: no match")).toBeInTheDocument()
-    expect(screen.getByText(/selected.*\u2014/)).toBeInTheDocument()
+    expect(screen.getByText(/selected.*-/)).toBeInTheDocument()
   })
 
   it("renders banding detail with edge boundary value", () => {
@@ -1333,7 +1459,7 @@ describe("TracePanel — Node Detail", () => {
 // D. Row Lineage Type Tests
 // ---------------------------------------------------------------------------
 
-describe("TracePanel — Row Lineage Type", () => {
+describe("TracePanel - Row Lineage Type", () => {
   afterEach(cleanup)
 
   it("shows pass-through indicator for passthrough lineage", () => {
@@ -1432,7 +1558,7 @@ describe("TracePanel — Row Lineage Type", () => {
 // E. Waterfall View Concept Tests
 // ---------------------------------------------------------------------------
 
-describe("TracePanel — Waterfall View Concepts", () => {
+describe("TracePanel - Waterfall View Concepts", () => {
   afterEach(cleanup)
 
   it("renders steps in topological order", () => {
@@ -1440,9 +1566,9 @@ describe("TracePanel — Waterfall View Concepts", () => {
       <TracePanel
         trace={makeTrace({
           steps: [
-            makeStep({ node_id: "n1", node_name: "Step A", schema_diff: { columns_added: ["premium"], columns_removed: [], columns_modified: [], columns_passed: [] } }),
-            makeStep({ node_id: "n2", node_name: "Step B", schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["premium"], columns_passed: [] } }),
-            makeStep({ node_id: "n3", node_name: "Step C", schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["premium"], columns_passed: [] } }),
+            makeStep({ node_id: "n1", node_name: "Step A", schema_diff: { columns_added: ["premium"], columns_removed: [], columns_modified: [], columns_passed: [] }, contributed_columns: ["premium"], derivations: [] }),
+            makeStep({ node_id: "n2", node_name: "Step B", schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["premium"], columns_passed: [] }, contributed_columns: ["premium"], derivations: [] }),
+            makeStep({ node_id: "n3", node_name: "Step C", schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["premium"], columns_passed: [] }, contributed_columns: ["premium"] }),
           ] as TraceStep[],
         })}
         onClose={vi.fn()}
@@ -1529,6 +1655,7 @@ describe("TracePanel — Waterfall View Concepts", () => {
                 columns_passed: ["age", "name"],
               },
               column_relevant: false,
+              contributed_columns: [], derivations: [],
             }),
           ] as TraceStep[],
         })}
@@ -1555,6 +1682,7 @@ describe("TracePanel — Waterfall View Concepts", () => {
                 columns_passed: [],
               },
               column_relevant: false,
+              contributed_columns: [], derivations: [],
             }),
             makeStep({
               node_id: "n2",
@@ -1566,6 +1694,7 @@ describe("TracePanel — Waterfall View Concepts", () => {
                 columns_passed: ["age"],
               },
               column_relevant: true,
+              contributed_columns: [], derivations: [],
             }),
           ] as TraceStep[],
         })}
@@ -1575,7 +1704,8 @@ describe("TracePanel — Waterfall View Concepts", () => {
     // The relevant step should NOT have reduced opacity
     // "Creator" may appear in both CalculationHero (nodeName) and StepCard
     expect(screen.getAllByText("Creator").length).toBeGreaterThan(0)
-    // The non-relevant step should have reduced opacity
+    // The focused story hides a step off the lineage; the full trace dims it.
+    fireEvent.click(screen.getByTestId("trace-show-full"))
     const reducedOpacityEl = container.querySelector("[style*='opacity: 0.55']")
     expect(reducedOpacityEl).toBeTruthy()
   })

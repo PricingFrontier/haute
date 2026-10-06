@@ -37,11 +37,11 @@ const mockInferJsonCacheSchema = vi.fn()
 
 vi.mock("../../api/client", () => ({
   fetchDatabricksSchema: vi.fn(),
-  buildJsonCache: vi.fn(),
-  getJsonCacheProgress: vi.fn().mockResolvedValue({ active: false }),
-  getJsonCacheStatus: vi.fn().mockResolvedValue({ cached: false }),
-  getJsonCacheStatusForSchema: vi.fn().mockResolvedValue({ cached: false }),
-  deleteJsonCache: vi.fn(),
+  getInputCacheStatus: vi.fn().mockResolvedValue({ schema_version: 1, identity_digest: "digest", state: "missing", freshness: "unknown", generation: null, tables: [] }),
+  buildInputCache: vi.fn(),
+  getInputCacheJob: vi.fn(),
+  cancelInputCacheJob: vi.fn(),
+  clearInputCache: vi.fn(),
   inferJsonCacheSchema: (...args: unknown[]) => mockInferJsonCacheSchema(...args),
   ApiError: class ApiError extends Error {},
 }))
@@ -571,7 +571,7 @@ describe("confirm-on-use (ruled 2026-07-09): keying a field confirms its carrier
   })
 })
 
-describe("no duplicate paths — ever (ruled 2026-07-09)", () => {
+describe("no duplicate paths - ever (ruled 2026-07-09)", () => {
   const DRIVERS = {
     tables: [
       {
@@ -621,7 +621,7 @@ describe("no duplicate paths — ever (ruled 2026-07-09)", () => {
       status: "Confirmed", // …confirmed,
       selected: true,
       levels: null,
-      origin: "inferred", // …and its inferred pill — NOT manual.
+      origin: "inferred", // …and its inferred pill - NOT manual.
       key: true, // …now tracked as a key.
     })
   })
@@ -654,7 +654,7 @@ describe("no duplicate paths — ever (ruled 2026-07-09)", () => {
     ).toHaveLength(1)
   })
 
-  it("the picker checkbox route cannot duplicate either — an on-frame path is ticked and disabled", () => {
+  it("the picker checkbox route cannot duplicate either - an on-frame path is ticked and disabled", () => {
     render(<StatefulHarness initialConfig={DRIVERS} onUpdateSpy={vi.fn()} />)
     fireEvent.click(screen.getByTestId("api-input-frames-toggle"))
     fireEvent.click(screen.getByTestId("api-input-frames-row-1-add-keys"))

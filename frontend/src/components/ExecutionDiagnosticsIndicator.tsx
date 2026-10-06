@@ -1,8 +1,9 @@
 import { AlertCircle, AlertTriangle } from "lucide-react"
-import type { ExecutionMetrics } from "../api/types"
+import type { ExecutionMetrics, ExecutionStrategyProjectionCause } from "../api/types"
 import {
-  buildExecutionDiagnostic,
+  buildMemoryPressureDiagnostic,
   executionProjectionWarning,
+  executionStrategyLocation,
 } from "../utils/executionDiagnostics"
 
 type ExecutionDiagnosticsIndicatorProps = {
@@ -16,16 +17,41 @@ type IndicatorContent = {
   remediation?: string
 }
 
+/** Names the node that kept part of the pipeline full-width, and which part. */
+function projectionCauseExplanation(cause: ExecutionStrategyProjectionCause): string {
+  const node = `'${cause.node_id}' (${cause.operator})`
+  const others = cause.total_count - 1
+  const elsewhere = others > 0
+    ? ` ${others} other ${others === 1 ? "node" : "nodes"} also kept part of the pipeline full-width.`
+    : ""
+  if (cause.kind === "node") {
+    return `Haute could not narrow the columns ${node} reads, so that part of the pipeline read every column.${elsewhere}`
+  }
+  const parent = cause.parent_node_id ? `'${cause.parent_node_id}'` : null
+  return `${node} stopped Haute narrowing the columns it reads from ${parent ?? "its inputs"}, so ${parent ? `${parent} and the nodes` : "the nodes"} above it read every column.${elsewhere}`
+}
+
 function strategyIndicator(metrics: ExecutionMetrics): IndicatorContent | null {
   const strategy = metrics.execution_strategy
-  if (!strategy || (strategy.status !== "boundary" && strategy.status !== "rejected")) {
+  if (
+    !strategy
+    || (strategy.status !== "boundary" && strategy.status !== "rejected" && strategy.status !== "warned")
+  ) {
     return null
   }
 
+  if (strategy.status === "warned") {
+    const location = executionStrategyLocation(strategy)
+    return {
+      severity: "warning",
+      title: "Execution ran without a memory estimate",
+      explanation: `Haute could not estimate the memory needed${location}, so it ran that step under the run's full reserved memory envelope inside a hard-capped worker. The result is correct, but the run may use more memory and time than an estimated plan.`,
+      remediation: strategy.remediation ?? undefined,
+    }
+  }
+
   if (strategy.status === "rejected") {
-    const location = strategy.blocking_node_id
-      ? ` at '${strategy.blocking_node_id}'${strategy.blocking_operator ? ` (${strategy.blocking_operator})` : ""}`
-      : ""
+    const location = executionStrategyLocation(strategy)
     return {
       severity: "error",
       title: "Execution could not use a safe strategy",
@@ -36,13 +62,16 @@ function strategyIndicator(metrics: ExecutionMetrics): IndicatorContent | null {
 
   const projectionWarning = executionProjectionWarning(metrics)
   if (!projectionWarning) return null
-  const { boundary: projectionBoundary, nodeId, operator } = projectionWarning
+  const { boundary: projectionBoundary, nodeId, operator, cause } = projectionWarning
   const location = nodeId ? ` at '${nodeId}'${operator ? ` (${operator})` : ""}` : ""
+  const summary = cause
+    ? projectionCauseExplanation(cause)
+    : `Haute could not safely push the requested columns through the pipeline${location}, so that section stayed full-width.`
 
   return {
     severity: "warning",
     title: "Column projection was limited",
-    explanation: `Haute could not safely push the requested columns through the pipeline${location}, so that section stayed full-width. The preview result is still correct, but it may read more columns and use more memory than necessary.`,
+    explanation: `${summary} The preview result is still correct, but it may read more columns and use more memory than necessary.`,
     remediation: projectionBoundary && strategy.strategy === "materialisation-boundary"
       ? "Give this node an explicit column contract, or rewrite the transform so Haute can prove its input columns."
       : strategy.remediation ?? undefined,
@@ -52,23 +81,32 @@ function strategyIndicator(metrics: ExecutionMetrics): IndicatorContent | null {
 export default function ExecutionDiagnosticsIndicator({ metrics }: ExecutionDiagnosticsIndicatorProps) {
   if (!metrics) return null
   const strategy = strategyIndicator(metrics)
-  const pressure = buildExecutionDiagnostic(metrics)
-  const content: IndicatorContent | null = strategy?.severity === "error"
-    ? strategy
-    : strategy && pressure
-      ? {
-          ...strategy,
-          explanation: `${strategy.explanation} ${pressure.message}`,
-          remediation: [strategy.remediation, ...pressure.details].filter(Boolean).join("; "),
-        }
-      : strategy ?? (pressure
-        ? {
-        severity: "warning",
-        title: "Preview memory pressure",
-        explanation: pressure.message,
-        remediation: pressure.details.join("; "),
-          }
-        : null)
+  const pressure = buildMemoryPressureDiagnostic(metrics)
+
+  let baseContent: IndicatorContent | null = null
+  if (strategy?.severity === "error") {
+    baseContent = strategy
+  } else if (strategy && pressure) {
+    baseContent = {
+      ...strategy,
+      // The memory-pressure finding is the terminal one: it names the
+      // indicator even when a warned strategy is also rendered.
+      title: "Preview memory pressure",
+      explanation: `${strategy.explanation} ${pressure.message}`,
+      remediation: [strategy.remediation, ...pressure.details].filter(Boolean).join("; "),
+    }
+  } else if (strategy) {
+    baseContent = strategy
+  } else if (pressure) {
+    baseContent = {
+      severity: "warning",
+      title: "Preview memory pressure",
+      explanation: pressure.message,
+      remediation: pressure.details.join("; "),
+    }
+  }
+
+  const content = baseContent
   if (!content) return null
 
   const isError = content.severity === "error"

@@ -1,0 +1,138 @@
+# Regenerate the Playwright screenshot baselines on Linux.
+#
+# The e2e specs keep per-platform baselines (`canvas-assurance.spec.ts` picks
+# `-linux` names when `process.platform === "linux"`), and the browser CI job
+# runs Ubuntu. A developer on Windows or macOS cannot regenerate those, so a UI
+# change to a screenshotted panel leaves the Linux baselines stale and the
+# browser job red for a reason that has nothing to do with the change under
+# test.
+#
+# This job renders them in the same environment `browser-e2e` compares them in,
+# and hands back only the files that actually changed. It never writes to the
+# repository: download the artifact, drop the files over the ones in
+# `frontend/e2e/**-snapshots/`, and commit them with the change that moved the
+# pixels — so a baseline update stays reviewable like any other diff.
+name: e2e snapshots
+
+on:
+  workflow_dispatch:
+    inputs:
+      specs:
+        description: "Spec files to render, space separated. Empty renders every non-benchmark spec."
+        required: false
+        default: "canvas-assurance.spec.ts"
+      project:
+        description: "Playwright project to render."
+        required: false
+        default: "chromium"
+        type: choice
+        options:
+          - chromium
+          - firefox-smoke
+
+permissions:
+  contents: read
+
+jobs:
+  update-snapshots:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      # The environment below mirrors the `browser-e2e` job in ci.yml. It has to:
+      # a baseline rendered against different fonts or a different browser build
+      # is a baseline that fails the job it was made for.
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.8.22"
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.14.0
+
+      - run: uv sync --group dev --locked
+        working-directory: .
+
+      - run: npm ci
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-
+
+      - run: ./node_modules/.bin/playwright install --with-deps chromium firefox
+
+      # The run is expected to pass — updating a snapshot is what makes its
+      # assertion true — so `--retries=0`: a retry would render the same
+      # baseline a second time and tell us nothing.
+      #
+      # The spec list is free text, so it reaches the shell as a value rather
+      # than as script, and is left unquoted only where the word splitting is
+      # the point: several spec files can be given at once.
+      - name: Render baselines
+        env:
+          SPECS: ${{ inputs.specs }}
+          PROJECT: ${{ inputs.project }}
+        run: >
+          ./node_modules/.bin/playwright test
+          $SPECS
+          --project="$PROJECT"
+          --grep-invert @benchmark
+          --retries=0
+          --update-snapshots
+
+      # The collector is `scripts/collect_changed_snapshots.py`, not shell here,
+      # because its two quiet failures — a Git query that errored, and a wholly
+      # untracked snapshot directory Git reports as a single entry — are both
+      # indistinguishable from "nothing changed" once they reach this file.
+      # `tests/test_collect_changed_snapshots.py` holds them.
+      - name: Collect the baselines that changed
+        id: collect
+        if: always()
+        working-directory: .
+        run: |
+          set -euo pipefail
+          uv run python scripts/collect_changed_snapshots.py --repo . \
+            --into /tmp/updated-snapshots --path frontend/e2e | tee /tmp/changed.txt
+          count=$(wc -l < /tmp/changed.txt)
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          if [ "$count" -eq 0 ]; then
+            echo "Every baseline already matched this environment." >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "### Regenerated baselines"
+              echo
+              echo "Download the \`updated-snapshots\` artifact and commit these over the"
+              echo "files of the same name under \`frontend/e2e/\`."
+              echo
+              echo '```'
+              cat /tmp/changed.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the regenerated baselines
+        if: always() && steps.collect.outputs.count != '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: updated-snapshots-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/updated-snapshots
+          if-no-files-found: error
+
+      # Kept for the case the render itself failed: the report says which
+      # assertion never got as far as writing a baseline.
+      - name: Upload the Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-snapshots-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            frontend/playwright-report
+            frontend/test-results

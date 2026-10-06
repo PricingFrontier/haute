@@ -16,8 +16,13 @@ This module provides:
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
+from copy import deepcopy
+from functools import cache
 from pathlib import Path
 from typing import Any, cast
+
+from pydantic import ValidationError
 
 from haute._banding_config import (
     compact_banding_config_for_sidecar,
@@ -28,7 +33,14 @@ from haute._logging import get_logger
 from haute._rating_step_config import (
     normalise_rating_step_config,
 )
-from haute._types import NodeType, PipelineGraph
+from haute._types import (
+    GLOBAL_CONSTANTS_FILE,
+    GlobalConstant,
+    GraphNode,
+    NodeType,
+    PipelineGraph,
+)
+from haute.errors import ConfigError
 
 logger = get_logger(component="config_io")
 
@@ -51,30 +63,17 @@ NODE_TYPE_TO_FOLDER: dict[NodeType, str] = {
     NodeType.OPTIMISER_APPLY: "apply_optimisation",
     NodeType.SCENARIO_EXPANDER: "expander",
     NodeType.CONSTANT: "constant",
+    NodeType.POLARS: "polars",
 }
+
+# Node types whose sidecar is optional: a ``polars`` transform stores its
+# low-code ``steps`` in ``config/polars/<name>.json`` only while it is
+# authored in step mode; a code-only transform has no sidecar at all.
+_OPTIONAL_SIDECAR_TYPES: frozenset[NodeType] = frozenset({NodeType.POLARS})
 
 FOLDER_TO_NODE_TYPE: dict[str, NodeType] = {v: k for k, v in NODE_TYPE_TO_FOLDER.items()}
 
 # Keys that live in the .py function body, NOT in the JSON config file.
-_CODE_KEYS: frozenset[str] = frozenset({"code"})
-
-
-def _strip_internal_keys(obj: Any) -> Any:
-    """Recursively strip keys starting with ``_`` from dicts.
-
-    Frontend-only state (e.g. ``_prevRules``, ``_id``) may be nested inside
-    arrays of objects (like ``factors[].rules[]``).  A top-level-only filter
-    misses these; this function walks the full structure.
-    """
-    if isinstance(obj, dict):
-        return {
-            k: _strip_internal_keys(v)
-            for k, v in obj.items()
-            if not isinstance(k, str) or not k.startswith("_")
-        }
-    if isinstance(obj, list):
-        return [_strip_internal_keys(item) for item in obj]
-    return obj
 
 
 def reject_duplicate_keys_hook(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -123,30 +122,31 @@ def _normalise_loaded_config(config: dict[str, Any], node_type: NodeType | None)
     return config
 
 
-def _prepare_config_for_sidecar(node_type: NodeType, config: dict[str, Any]) -> dict[str, Any]:
-    from haute._config_validation import reject_removed_config_keys
+def _prepare_config_for_sidecar(
+    node_type: NodeType,
+    config: dict[str, Any],
+    *,
+    node_label: str,
+) -> dict[str, Any]:
+    from haute._config_validation import (
+        CODE_CONFIG_KEYS,
+        reject_removed_config_keys,
+        reject_unrecognized_config_keys,
+    )
 
     reject_removed_config_keys(node_type, config)
+    # Save validation has already refused an undeclared key; the write
+    # boundary refuses it too, so no path drops a user key and continues.
+    reject_unrecognized_config_keys(node_type, config, node_label=node_label)
 
-    # Drop user-code keys and internal `_*` keys before the typed allowlist.
-    filtered = {k: v for k, v in config.items() if k not in _CODE_KEYS and not k.startswith("_")}
-    filtered = cast(dict[str, Any], _strip_internal_keys(filtered))
-
-    # Persist only fields declared by the current node config TypedDict.
-    # Unknown fields are logged and omitted so UI save failures are visible
-    # without corrupting the sidecar.
-    from haute._config_validation import VALID_KEYS
-
-    allowed = VALID_KEYS.get(node_type)
-    if allowed is not None:
-        dropped = sorted(k for k in filtered if k not in allowed)
-        if dropped:
-            logger.warning(
-                "config_keys_dropped_at_write",
-                node_type=node_type.value,
-                keys=dropped,
-            )
-            filtered = {k: v for k, v in filtered.items() if k in allowed}
+    # Only the config record's own underscore properties are editor state.
+    # Nested mappings may contain arbitrary column names or user records.
+    # Type-specific serializers own cleanup of their nested editor records.
+    filtered = {
+        k: deepcopy(v)
+        for k, v in config.items()
+        if k not in CODE_CONFIG_KEYS and not k.startswith("_")
+    }
 
     if node_type == NodeType.BANDING:
         return compact_banding_config_for_sidecar(filtered)
@@ -193,9 +193,43 @@ def is_windows_reserved_filename(filename: str) -> bool:
     return stem.casefold() in _WINDOWS_RESERVED_DEVICE_STEMS
 
 
+@cache
+def _palette_defaults() -> dict[str, dict[str, Any]]:
+    return cast(
+        dict[str, dict[str, Any]],
+        json.loads(Path(__file__).with_name("node_defaults.json").read_text(encoding="utf-8")),
+    )
+
+
+def palette_default_config(node_type: NodeType) -> dict[str, Any]:
+    """A fresh copy of the config the editor palette gives a new *node_type* node.
+
+    ``node_defaults.json`` is the one source the palette, config recovery and
+    the assistant share; every node type has an entry.
+    """
+    return deepcopy(_palette_defaults()[node_type.value])
+
+
 def has_config_folder(node_type: NodeType) -> bool:
-    """Whether this node type stores config in an external JSON file."""
-    return node_type in NODE_TYPE_TO_FOLDER
+    """Whether this node type requires an external JSON config file."""
+    return node_type in NODE_TYPE_TO_FOLDER and node_type not in _OPTIONAL_SIDECAR_TYPES
+
+
+def has_optional_config_folder(node_type: NodeType) -> bool:
+    """Whether this node type may, but need not, carry a JSON sidecar."""
+    return node_type in _OPTIONAL_SIDECAR_TYPES
+
+
+def node_emits_sidecar(node: GraphNode) -> bool:
+    """Whether saving ``node`` writes a JSON sidecar.
+
+    Required-sidecar types always do; a ``polars`` transform does only while
+    its config carries a ``steps`` list.
+    """
+    node_type = node.data.nodeType
+    if has_config_folder(node_type):
+        return True
+    return has_optional_config_folder(node_type) and isinstance(node.data.config.get("steps"), list)
 
 
 def config_path_for_node(
@@ -329,7 +363,7 @@ def collect_node_configs(graph: PipelineGraph) -> dict[str, str]:
     configs: dict[str, str] = {}
     for node in graph.nodes:
         nt = node.data.nodeType
-        if not has_config_folder(nt):
+        if not node_emits_sidecar(node):
             continue
         if node.data.config.get("instanceOf"):
             continue
@@ -337,7 +371,7 @@ def collect_node_configs(graph: PipelineGraph) -> dict[str, str]:
             continue
         func_name = _sanitize_func_name(node.data.label)
         rel_path = config_path_for_node(nt, func_name).as_posix()
-        filtered = _prepare_config_for_sidecar(nt, node.data.config)
+        filtered = _prepare_config_for_sidecar(nt, node.data.config, node_label=node.data.label)
         configs[rel_path] = json.dumps(filtered, indent=2, ensure_ascii=False) + "\n"
     return configs
 
@@ -350,7 +384,7 @@ def config_load_errors(graph: PipelineGraph) -> dict[str, str]:
     errors: dict[str, str] = {}
     for node in graph.nodes:
         nt = node.data.nodeType
-        if not has_config_folder(nt):
+        if nt not in NODE_TYPE_TO_FOLDER:
             continue
         err = node.data.config.get("_load_error")
         if not err:
@@ -362,3 +396,88 @@ def config_load_errors(graph: PipelineGraph) -> dict[str, str]:
             continue
         errors[rel_path] = str(err)
     return errors
+
+
+# ---------------------------------------------------------------------------
+# Global constants file
+# ---------------------------------------------------------------------------
+
+_GLOBAL_CONSTANT_KEY_ORDER = ("name", "type", "value", "by_source")
+
+
+def _constant_validation_message(exc: ValidationError) -> str:
+    """The first validation failure of one constant entry, as one readable clause."""
+    error = exc.errors(include_url=False)[0]
+    location = ".".join(str(part) for part in error["loc"])
+    if error["type"] == "extra_forbidden":
+        return f"unknown key {location!r}"
+    message = str(error["msg"]).removeprefix("Value error, ")
+    return f"{location}: {message}" if location else message
+
+
+def parse_global_constants(
+    raw: bytes,
+    *,
+    source: str = GLOBAL_CONSTANTS_FILE,
+) -> list[GlobalConstant]:
+    """Validate the bytes of a global constants file.
+
+    The file holds one object whose only key, ``constants``, lists the
+    entries in display order. Every failure is a ``ConfigError`` naming
+    *source* and, for an entry, its position, its name when it has one, and
+    the field. The bytes are strict UTF-8, as node config JSON is.
+    """
+    try:
+        loaded = json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicate_keys_hook)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ConfigError(f"{source} is not valid JSON: {exc}") from exc
+    if not isinstance(loaded, dict):
+        raise ConfigError(
+            f"{source} must hold a JSON object with a 'constants' list.",
+        )
+    unknown = sorted(set(loaded) - {"constants"})
+    if unknown:
+        raise ConfigError(
+            f"{source} has unknown key(s) {unknown!r}; its only key is 'constants'.",
+        )
+    entries = loaded.get("constants")
+    if not isinstance(entries, list):
+        raise ConfigError(f"{source} must have a 'constants' list.")
+    constants: list[GlobalConstant] = []
+    seen: set[str] = set()
+    for index, entry in enumerate(entries, start=1):
+        name = entry.get("name") if isinstance(entry, dict) else None
+        label = f"constant {index}" + (f" ({name!r})" if isinstance(name, str) else "")
+        if not isinstance(entry, dict):
+            raise ConfigError(f"{source} {label} must be a JSON object.")
+        try:
+            constant = GlobalConstant.model_validate(entry)
+        except ValidationError as exc:
+            raise ConfigError(
+                f"{source} {label}: {_constant_validation_message(exc)}",
+            ) from exc
+        if constant.name in seen:
+            raise ConfigError(
+                f"{source} {label}: the name {constant.name!r} is already defined.",
+            )
+        seen.add(constant.name)
+        constants.append(constant)
+    return constants
+
+
+def load_global_constants(path: Path) -> list[GlobalConstant]:
+    """Read and validate one pipeline's global constants file.
+
+    An ``OSError`` (a missing or unreadable file) propagates to the caller,
+    which decides how a declared file that cannot be read is reported.
+    """
+    return parse_global_constants(path.read_bytes())
+
+
+def global_constants_json(constants: Sequence[GlobalConstant]) -> str:
+    """Serialise *constants* as the canonical file, in order, as node configs are written."""
+    entries = []
+    for constant in constants:
+        record = constant.model_dump(exclude_none=True)
+        entries.append({key: record[key] for key in _GLOBAL_CONSTANT_KEY_ORDER if key in record})
+    return json.dumps({"constants": entries}, indent=2, ensure_ascii=False) + "\n"

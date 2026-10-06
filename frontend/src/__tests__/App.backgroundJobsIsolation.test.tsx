@@ -15,10 +15,20 @@ vi.mock("@xyflow/react", () => ({
     zoomIn: vi.fn(),
     zoomOut: vi.fn(),
   }),
+  useNodesInitialized: () => false,
   SelectionMode: { Partial: 0 },
   ConnectionMode: { Loose: "loose" },
   BackgroundVariant: { Dots: "dots" },
 }))
+
+// The viewport-reveal hook reads the React Flow store, which this mock does not provide.
+vi.mock("../hooks/useActiveNodeReveal", () => {
+  const reveal = { handleMoveStart: () => {}, centreNode: () => {} }
+  return { useActiveNodeReveal: () => reveal }
+})
+
+// The box-selection reset subscribes to the React Flow store, which this mock does not provide.
+vi.mock("../components/BoxSelectionReset", () => ({ default: () => null }))
 
 vi.mock("../hooks/useGraphCanvasState", () => ({
   default: () => ({
@@ -121,7 +131,7 @@ vi.mock("../components/Toolbar", async () => {
     await vi.importActual<typeof import("../stores/useNodeResultsStore")>("../stores/useNodeResultsStore")
 
   return {
-    default: function MockToolbar(props: { nodeCount: number; dirty: boolean }) {
+    default: function MockToolbar(props: { nodeCount: number }) {
       const jobCountSignature = useNodeResultsStore(
         (s) => `${Object.keys(s.solveJobs).length}:${Object.keys(s.trainJobs).length}`,
       )
@@ -129,7 +139,6 @@ vi.mock("../components/Toolbar", async () => {
 
       mockToolbarRender({
         nodeCount: props.nodeCount,
-        dirty: props.dirty,
         solveJobCount,
         trainJobCount,
       })
@@ -139,7 +148,7 @@ vi.mock("../components/Toolbar", async () => {
   }
 })
 vi.mock("../panels/UtilityPanel", () => ({ default: () => <div data-testid="utility-panel" /> }))
-vi.mock("../panels/ImportsPanel", () => ({ default: () => <div data-testid="imports-panel" /> }))
+vi.mock("../panels/GlobalConstantsPanel", () => ({ default: () => <div data-testid="global-constants-panel" /> }))
 vi.mock("../panels/GitPanel", () => ({ default: () => <div data-testid="git-panel" /> }))
 vi.mock("../components/SubmodelDialog", () => ({ default: () => <div data-testid="submodel-dialog" /> }))
 vi.mock("../components/RenameDialog", () => ({ default: () => <div data-testid="rename-dialog" /> }))
@@ -150,7 +159,16 @@ vi.mock("../components/ErrorBoundary", () => ({
 vi.mock("../api/client", () => ({
   HAUTE_SESSION_EXPIRED_EVENT: "haute:session-expired",
   HAUTE_SESSION_EXPIRED_REASON: "Missing or invalid Haute session token",
-  checkMlflow: vi.fn(() => Promise.resolve({ mlflow_installed: false })),
+  getMlflowDestinations: vi.fn(() => Promise.resolve({
+    mlflow_installed: true,
+    mlflow_importable: true,
+    destinations: [
+      { key: "databricks", configured: false, destination: "", config_source: "", detail: "", probed: false, ok: false, category: "" },
+      { key: "server", configured: false, destination: "", config_source: "", detail: "", probed: false, ok: false, category: "" },
+      { key: "local", configured: true, destination: "C:/proj/mlruns", config_source: "default", detail: "", probed: false, ok: false, category: "" },
+    ],
+    detail: "",
+  })),
   getWorkingBranch: vi.fn(() => Promise.resolve({
     state: "no-repository",
     working_branch: null,
@@ -182,7 +200,7 @@ function resetStores(): void {
   useUIStore.setState({
     paletteOpen: true,
     utilityOpen: false,
-    importsOpen: false,
+    constantsOpen: false,
     gitOpen: false,
     shortcutsOpen: false,
     submodelDialog: null,
@@ -200,17 +218,13 @@ function resetStores(): void {
     solveJobs: {},
     trainResults: {},
     trainJobs: {},
-    exploreResults: {},
-    exploreJobs: {},
   })
   useSettingsStore.setState({
     mlflow: {
       status: "pending",
-      backend: "",
-      host: "",
       installed: null,
       importable: null,
-      trackingConfigured: null,
+      destinations: [],
       detail: "",
     },
     _mlflowFetching: false,

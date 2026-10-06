@@ -45,6 +45,7 @@ import structlog.testing
 from haute._builders import _apply_ratebook, _ratebook_lookup_table
 from haute._optimiser_apply_explainability import _match_ratebook_entry
 from haute._rating import _apply_rating_table, rating_dtype_descriptor
+from tests.optimiser_fixtures import make_solved_result
 
 MISS_EVENT = "rating_table_lookup_misses"
 SEP = "\x1f"
@@ -66,6 +67,7 @@ def _artifact(
         "version": "rb_v1",
         "mode": "ratebook",
         "factor_tables": factor_tables,
+        "combined_factor_bounds": {"min": 0.1, "max": 10.0},
         "factor_dtypes": factor_dtypes,
     }
 
@@ -300,7 +302,8 @@ def real_ratebook_artifact_payload(real_ratebook_solve: dict[str, Any]) -> dict[
     `_build_artifact_payload`) so a drift in the saved format fails here, not
     in a hand-rolled fixture.
     """
-    from haute.routes._optimiser_service import (
+    from haute.routes._optimiser_frontier import _summary_solve_result
+    from haute.routes._optimiser_solver import (
         _ratebook_factor_dtypes,
         _ratebook_factor_level_counts,
         _serialise_ratebook_factor_tables,
@@ -331,12 +334,28 @@ def real_ratebook_artifact_payload(real_ratebook_solve: dict[str, Any]) -> dict[
             "scenario_index": "scenario_index",
             "scenario_value": "scenario_value",
         },
-        "result": {
-            "factor_tables": serialised,
-            "factor_dtypes": factor_dtypes,
-        },
+        "result": make_solved_result(
+            mode="ratebook",
+            constraint_names=list(solve_result.total_constraints),
+            lambdas=solve_result.lambdas,
+            total_objective=solve_result.total_objective,
+            constraints=solve_result.total_constraints,
+            baseline_objective=solve_result.baseline_objective,
+            baseline_constraints=solve_result.baseline_constraints,
+            converged=solve_result.converged,
+            cd_iterations=solve_result.cd_iterations,
+            clamp_rate=solve_result.clamp_rate,
+            factor_tables=serialised,
+            combined_factor_bounds={"min": 0.1, "max": 10.0},
+            factor_dtypes=factor_dtypes,
+        ),
     }
-    return _build_artifact_payload(job, solve_result, version_override="rb_e2e_v1")
+    # The save route publishes the anchor from its completion summary.
+    return _build_artifact_payload(
+        job,
+        _summary_solve_result(job["result"]),
+        version_override="rb_e2e_v1",
+    )
 
 
 class TestRealSolverEndToEnd:
@@ -543,7 +562,7 @@ class TestFloatEmittedLevelsCanonicalisedAtSave:
     """
 
     def test_float64_levels_round_trip_solve_save_apply_with_zero_misses(self) -> None:
-        from haute.routes._optimiser_service import (
+        from haute.routes._optimiser_solver import (
             _ratebook_factor_dtypes,
             _ratebook_factor_level_counts,
             _serialise_ratebook_factor_tables,
@@ -611,7 +630,7 @@ class TestFloatEmittedLevelsCanonicalisedAtSave:
         )
 
     def test_composite_float_component_round_trips_with_zero_misses(self) -> None:
-        from haute.routes._optimiser_service import (
+        from haute.routes._optimiser_solver import (
             _ratebook_factor_dtypes,
             _ratebook_factor_level_counts,
             _serialise_ratebook_factor_tables,

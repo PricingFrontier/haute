@@ -1,7 +1,7 @@
 import { AlertTriangle, BarChart3, Loader2, Settings2 } from "lucide-react"
 import { useMemo } from "react"
 
-import type { ExploreCacheReport } from "../../api/types"
+
 import useNodeResultsStore, {
   explorePivotResultKey,
 } from "../../stores/useNodeResultsStore"
@@ -29,6 +29,7 @@ import {
 } from "./pivotConfig"
 import useAutoUpdateExplorePivots from "./useAutoUpdateExplorePivots"
 import useExplorePivotActions from "./useExplorePivotActions"
+import type { ExploreDataView } from "./exploreDataView"
 
 type ExploreChartsPaneProps = {
   node: SimpleNode
@@ -36,7 +37,7 @@ type ExploreChartsPaneProps = {
   edges: SimpleEdge[]
   submodels?: Record<string, unknown>
   preamble?: string
-  report: ExploreCacheReport | null
+  report: ExploreDataView | null
 }
 
 function EmptyCharts({ children }: { children: string }) {
@@ -77,12 +78,12 @@ type ChartCardProps = {
   pivot: ExplorePivotConfig | null
   missingPivotId: string | null
   nodeId: string
-  report: ExploreCacheReport | null
+  report: ExploreDataView | null
   submitting: boolean
   notice?: { message: string; failure?: { remediation: string } | null }
   onRetry: (
     pivot: ExplorePivotConfig,
-    requestedDataframeCacheKey?: string | null,
+    requestedDataVersion?: string | null,
   ) => void
   onCancel: (pivot: ExplorePivotConfig, jobId: string) => void
   onConfigure: () => void
@@ -111,7 +112,7 @@ function ChartCard({
   const currentIdentity = pivot ? pivotCalculationIdentity(pivot) : null
   const fresh =
     currentIdentity !== null &&
-    isPivotResultFresh(cached, report?.dataframe_cache_key, currentIdentity)
+    isPivotResultFresh(cached, report?.data_version, currentIdentity)
   const status = job?.progress
   const failure =
     status?.failure ?? (!job && !submitting ? cached?.terminalStatus?.failure : null)
@@ -180,7 +181,7 @@ function ChartCard({
             canRetry={Boolean(alertMessage)}
             onCancel={(jobId) => void onCancel(pivot, jobId)}
             onRetry={() =>
-              void onRetry(pivot, report?.dataframe_cache_key ?? null)
+              void onRetry(pivot, report?.data_version ?? null)
             }
           />
         )}
@@ -223,7 +224,7 @@ function ChartCard({
         <CardMessage>
           {report
             ? "Calculating source Pivot automatically…"
-            : "Cache the full Explore data above to calculate this chart automatically."}
+            : "Refresh this node to cache its full data; this chart then calculates automatically."}
         </CardMessage>
       )}
       {alertMessage && (

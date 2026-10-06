@@ -45,10 +45,7 @@ _TERMINAL_JOB_STATUSES = {
 @pytest.fixture(autouse=True)
 def _fast_optional_training_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
     """These tests assert param routing and job state, not optional charts."""
-    monkeypatch.setattr(
-        "haute.modelling._algorithms.CatBoostAlgorithm.shap_summary",
-        lambda *a, **kw: [],
-    )
+    monkeypatch.delattr("haute.modelling._algorithms.CatBoostAlgorithm.shap_values")
     monkeypatch.setattr(
         "haute.modelling._algorithms.CatBoostAlgorithm.feature_importance_typed",
         lambda *a, **kw: [],
@@ -116,6 +113,7 @@ class _CapturingTrainingJob:
     """
 
     captured: ClassVar[list[dict[str, Any]]] = []
+    training_identity_sha256 = "a" * 64
 
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
@@ -166,7 +164,7 @@ def frequency_data(tmp_path) -> str:
         {
             "x1": x1,
             "x2": x2,
-            "log_exposure": np.log(exposure),
+            "exposure": exposure,
             "claim_count": rng.poisson(lam).astype(np.float64),
         }
     )
@@ -200,7 +198,7 @@ def target_ordered_data(tmp_path) -> str:
 
 
 class TestCatBoostParamRouting:
-    def test_catboost_log_exposure_frequency_workflow_trains(self, client, frequency_data):
+    def test_catboost_exposure_frequency_workflow_trains(self, client, frequency_data):
         """RED repro for 4b.1: top-level ``offset`` config must not reach CatBoost.
 
         Pre-fix, ``offset`` was merged into train params and forwarded to
@@ -211,8 +209,9 @@ class TestCatBoostParamRouting:
             "target": "claim_count",
             "algorithm": "catboost",
             "task": "regression",
-            "offset": "log_exposure",
+            "offset": "exposure",
             "loss_function": "Poisson",
+            "feature_columns": ["x1", "x2"],
             "params": {"iterations": 4, "depth": 2},
             "evaluation": {
                 "schema_version": 1,
@@ -236,6 +235,7 @@ class TestCatBoostParamRouting:
         frequency_data,
         capturing_job,
         inline_training_worker,
+        training_artifact_root,
     ):
         """Pin the exact params CatBoost training receives: config GLM keys must
         not leak into ``params`` while ``offset`` still arrives as its own kwarg."""
@@ -244,8 +244,9 @@ class TestCatBoostParamRouting:
             "algorithm": "catboost",
             "task": "regression",
             "loss_function": "RMSE",
-            "offset": "log_exposure",
+            "offset": "exposure",
             "weight": "x2",
+            "feature_columns": ["x1"],
             "params": {"iterations": 4, "depth": 2},
             "evaluation": {
                 "schema_version": 1,
@@ -271,8 +272,7 @@ class TestCatBoostParamRouting:
             "name": "train",  # node id (no explicit config name)
             "target": "claim_count",
             "weight": "x2",
-            "exclude": [],
-            "feature_columns": None,
+            "feature_columns": ["x1"],
             "fold_column": None,
             "id_columns": None,
             "algorithm": "catboost",
@@ -286,19 +286,24 @@ class TestCatBoostParamRouting:
             },
             "metrics": ["rmse"],
             "mlflow_experiment": None,
-            "model_name": None,
+            "mlflow_destination": "",
             "output_dir": kwargs["output_dir"],
             "loss_function": "RMSE",
             "variance_power": None,
-            "offset": "log_exposure",
+            "offset": "exposure",
             "monotone_constraints": None,
             "feature_weights": None,
             "categorical_levels": None,
+            "positive_class": None,
+            "device": "cpu",
             "tuning": None,
+            "refit_on_development": True,
         }
         staged_output = Path(kwargs["output_dir"])
         assert staged_output.name == "output"
-        assert staged_output.parent.name.startswith(".haute-training-")
+        # Canvas training writes into a job-owned directory, never the node's output_dir.
+        assert staged_output.parent.parent == training_artifact_root
+        assert staged_output.parent.name.startswith("train_")
 
     def test_glm_receives_merged_glm_config_in_params(
         self,
@@ -320,7 +325,7 @@ class TestCatBoostParamRouting:
             "alpha": 0.5,
             "l1_ratio": 0.1,
             "intercept": True,
-            "offset": "log_exposure",
+            "offset": "exposure",
             "params": {},
             "evaluation": {
                 "schema_version": 1,
@@ -344,8 +349,8 @@ class TestCatBoostParamRouting:
         assert kwargs["params"]["alpha"] == 0.5
         assert kwargs["params"]["l1_ratio"] == 0.1
         assert kwargs["params"]["intercept"] is True
-        assert kwargs["params"]["offset"] == "log_exposure"
-        assert kwargs["offset"] == "log_exposure"
+        assert kwargs["params"]["offset"] == "exposure"
+        assert kwargs["offset"] == "exposure"
         assert kwargs["algorithm"] == "glm"
 
     def test_glm_real_fit_uses_configured_family_and_terms(self, client, frequency_data):
@@ -375,11 +380,11 @@ class TestCatBoostParamRouting:
 
         assert status["status"] == "completed", status.get("message")
         coef_features = {row["feature"] for row in status["result"]["glm_coefficients"]}
-        # Only the configured term (plus intercept) — x2/log_exposure must NOT
+        # Only the configured term (plus intercept) — x2/exposure must NOT
         # have been auto-termed into the model.
         assert any("x1" in feature for feature in coef_features)
         assert not any("x2" in feature for feature in coef_features)
-        assert not any("log_exposure" in feature for feature in coef_features)
+        assert not any("exposure" in feature for feature in coef_features)
 
 
 # ---------------------------------------------------------------------------
@@ -454,6 +459,7 @@ class TestRowLimitDownsample:
             "algorithm": "catboost",
             "task": "regression",
             "loss_function": "RMSE",
+            "feature_columns": ["x"],
             "row_limit": row_limit,
             "params": {"iterations": 4, "depth": 2},
             "evaluation": {

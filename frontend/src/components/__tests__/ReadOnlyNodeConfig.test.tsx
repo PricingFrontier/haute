@@ -69,6 +69,14 @@ describe("ReadOnlyNodeConfig", () => {
     expect(observedInertCommitResults).toHaveBeenCalledWith({ ok: true })
   })
 
+  it.each([NODE_TYPES.EXPLORE, NODE_TYPES.EDGE_JOIN, NODE_TYPES.SUBMODEL_PORT])(
+    "shows the %s config as a dump, since its editor needs live graph context",
+    async (nodeType) => {
+      render(<ReadOnlyNodeConfig nodeType={nodeType} config={{ kept: true }} nodeId="n1" />)
+      expect(await screen.findByTestId("readonly-config-fallback")).toHaveTextContent("\"kept\": true")
+    },
+  )
+
   it("falls back to a config dump for an unknown node type", async () => {
     render(<ReadOnlyNodeConfig nodeType="mysteryType" config={{ a: 1 }} nodeId="n1" />)
     await waitFor(() =>

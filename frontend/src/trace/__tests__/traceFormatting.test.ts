@@ -11,7 +11,7 @@ describe("traceFormatting", () => {
     expect(formatSmartValue(nan)).toBe("NaN")
     expect(formatSmartValue(posInf)).toBe("Infinity")
     expect(formatSmartValue(negInf)).toBe("-Infinity")
-    expect(formatSmartValue(null)).toBe("\u2014")
+    expect(formatSmartValue(null)).toBe("-")
     expect(formatResultValueFull(nan)).toBe("NaN")
   })
 })

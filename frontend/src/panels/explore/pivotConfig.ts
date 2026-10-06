@@ -1,5 +1,6 @@
 import { isNumericDtype } from "../../utils/polarsDtypes"
 import { portableKey } from "../../utils/portableKey"
+import { isObjectLiteral } from "../../utils/objectLiteral"
 
 export const PIVOT_CONFIG_VERSION = 1 as const
 export const PIVOT_DECIMAL_PLACES_MAX = 10
@@ -161,23 +162,9 @@ const CARD_KEYS = new Set([
 const FORMULA_REFERENCE_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
 const RESERVED_FORMULA_REFERENCE_PREFIX = "__haute_"
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return false
-  const prototype = Object.getPrototypeOf(value)
-  return prototype === Object.prototype || prototype === null
-}
-
-function isSimpleLiteral(value: unknown): boolean {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return true
-  if (typeof value === "number") return Number.isFinite(value)
-  if (Array.isArray(value)) return value.every(isSimpleLiteral)
-  if (isPlainObject(value)) return Object.values(value).every(isSimpleLiteral)
-  return false
-}
-
 function cloneLiteral<T>(value: T): T {
   if (Array.isArray(value)) return value.map(cloneLiteral) as T
-  if (isPlainObject(value)) {
+  if (isObjectLiteral(value)) {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cloneLiteral(item)])) as T
   }
   return value
@@ -355,24 +342,23 @@ function memberValueMatchesKind(kind: PivotMemberKind, value: unknown): boolean 
   }
 }
 
-function validateFutureFields(
+/** Mirror the server: a field outside an object's known keys is rejected by name. */
+function validateKnownFields(
   raw: Record<string, unknown>,
   known: ReadonlySet<string>,
   position: number,
   scope: string,
 ): string | null {
-  for (const [key, value] of Object.entries(raw)) {
-    if (!known.has(key) && !isSimpleLiteral(value)) {
-      return `Pivot ${position} ${scope} field "${key}" must contain only simple literal values.`
-    }
+  for (const key of Object.keys(raw)) {
+    if (!known.has(key)) return `Pivot ${position} ${scope} has an unknown field "${key}".`
   }
   return null
 }
 
 function parseMember(raw: unknown, position: number): PivotMember | string {
-  if (!isPlainObject(raw)) return `Pivot ${position} filter members must be objects.`
-  const futureError = validateFutureFields(raw, new Set(["kind", "value"]), position, "member")
-  if (futureError) return futureError
+  if (!isObjectLiteral(raw)) return `Pivot ${position} filter members must be objects.`
+  const unknownFieldError = validateKnownFields(raw, new Set(["kind", "value"]), position, "member")
+  if (unknownFieldError) return unknownFieldError
   if (typeof raw.kind !== "string" || !MEMBER_KINDS.has(raw.kind as PivotMemberKind)) {
     return `Pivot ${position} member has an unsupported kind.`
   }
@@ -394,7 +380,7 @@ function parseAxisZone(
   const fields = new Set<string>()
   const placements: Array<PivotFilterPlacement | PivotAxisPlacement> = []
   for (const entry of raw) {
-    if (!isPlainObject(entry)) return `Pivot ${position} ${zone} entries must be objects.`
+    if (!isObjectLiteral(entry)) return `Pivot ${position} ${zone} entries must be objects.`
     const known = zone === "filters"
       ? new Set(["id", "field", "members"])
       : zone === "rows"
@@ -413,8 +399,8 @@ function parseAxisZone(
             "decimal_places",
             "use_grouping",
           ])
-    const futureError = validateFutureFields(entry, known, position, `${zone} placement`)
-    if (futureError) return futureError
+    const unknownFieldError = validateKnownFields(entry, known, position, `${zone} placement`)
+    if (unknownFieldError) return unknownFieldError
     if (!nonEmptyString(entry.id)) return `Pivot ${position} placement id must be a non-empty string.`
     if (!nonEmptyString(entry.field)) return `Pivot ${position} placement field must be a non-empty string.`
     if (placementIds.has(entry.id)) return `Pivot ${position} has duplicate placement id "${entry.id}".`
@@ -466,8 +452,8 @@ function parseValues(
   if (!Array.isArray(raw)) return `Pivot ${position} values must be a list.`
   const values: PivotValuePlacement[] = []
   for (const entry of raw) {
-    if (!isPlainObject(entry)) return `Pivot ${position} value entries must be objects.`
-    const futureError = validateFutureFields(
+    if (!isObjectLiteral(entry)) return `Pivot ${position} value entries must be objects.`
+    const unknownFieldError = validateKnownFields(
       entry,
       new Set([
         "id",
@@ -485,7 +471,7 @@ function parseValues(
       position,
       "value",
     )
-    if (futureError) return futureError
+    if (unknownFieldError) return unknownFieldError
     if (!nonEmptyString(entry.id)) return `Pivot ${position} placement id must be a non-empty string.`
     if (!nonEmptyString(entry.field)) return `Pivot ${position} placement field must be a non-empty string.`
     if (placementIds.has(entry.id)) return `Pivot ${position} has duplicate placement id "${entry.id}".`
@@ -553,13 +539,13 @@ function parseFormulaDefinition(
   entry: Record<string, unknown>,
   position: number,
 ): PivotFormulaPlacement | string {
-  const futureError = validateFutureFields(
+  const unknownFieldError = validateKnownFields(
     entry,
     FORMULA_KEYS,
     position,
     "formula",
   )
-  if (futureError) return futureError
+  if (unknownFieldError) return unknownFieldError
   if (!nonEmptyString(entry.id)) {
     return `Pivot ${position} formula id must be a non-empty string.`
   }
@@ -606,7 +592,7 @@ function parseSharedFormulaLibrary(raw: unknown): SharedFormulaState | string {
     references: new Set(),
   }
   for (const [index, entry] of raw.entries()) {
-    if (!isPlainObject(entry)) return "Explore shared formula entries must be objects."
+    if (!isObjectLiteral(entry)) return "Explore shared formula entries must be objects."
     const formula = parseFormulaDefinition(entry, index + 1)
     if (typeof formula === "string") return formula
     if (state.byId.has(formula.id)) {
@@ -691,8 +677,8 @@ function parseV1Pivot(
   position: number,
   sharedFormulas: SharedFormulaState,
 ): ExplorePivotConfig | string {
-  const futureError = validateFutureFields(raw, CARD_KEYS, position, "card")
-  if (futureError) return futureError
+  const unknownFieldError = validateKnownFields(raw, CARD_KEYS, position, "card")
+  if (unknownFieldError) return unknownFieldError
   if (raw.version !== 1) return `Pivot ${position} version must be 1.`
   if (!nonEmptyString(raw.id)) return `Pivot ${position} id must be a non-empty string.`
   if (!nonEmptyString(raw.name)) return `Pivot ${position} name must be a non-empty string.`
@@ -734,8 +720,8 @@ function parseV1Pivot(
       return `Pivot ${position} value color scale split must reference a placed Row or Column placement.`
     }
   }
-  if (!isPlainObject(raw.options)) return `Pivot ${position} options must be an object.`
-  const optionError = validateFutureFields(
+  if (!isObjectLiteral(raw.options)) return `Pivot ${position} options must be an object.`
+  const optionError = validateKnownFields(
     raw.options,
     new Set(["row_grand_totals", "column_grand_totals", "sort_by"]),
     position,
@@ -795,7 +781,7 @@ export function parseExplorePivots(config: Record<string, unknown>): ExplorePivo
   const names = new Set<string>()
   for (const [index, raw] of config.pivots.entries()) {
     const position = index + 1
-    if (!isPlainObject(raw)) return { ok: false, error: `Pivot ${position} must be an object.` }
+    if (!isObjectLiteral(raw)) return { ok: false, error: `Pivot ${position} must be an object.` }
     const pivot = parseV1Pivot(raw, position, sharedFormulas)
     if (typeof pivot === "string") return { ok: false, error: pivot }
     if (ids.has(pivot.id)) {
@@ -1024,7 +1010,7 @@ export function pivotCalculationIdentity(pivot: ExplorePivotConfig): string {
 /** The retained-result fields freshness depends on; structurally satisfied by
  * the node-results store's cached pivot entries. */
 export type PivotResultFreshnessEntry = {
-  result: { dataframe_cache_key: string } | null
+  result: { data_version: string } | null
   calculationIdentity: string
 }
 
@@ -1035,13 +1021,13 @@ export type PivotResultFreshnessEntry = {
  */
 export function isPivotResultFresh(
   entry: PivotResultFreshnessEntry | null | undefined,
-  dataframeCacheKey: string | null | undefined,
+  dataVersion: string | null | undefined,
   calculationIdentity: string,
 ): boolean {
   return Boolean(
     entry?.result
-      && dataframeCacheKey
-      && entry.result.dataframe_cache_key === dataframeCacheKey
+      && dataVersion
+      && entry.result.data_version === dataVersion
       && entry.calculationIdentity === calculationIdentity,
   )
 }

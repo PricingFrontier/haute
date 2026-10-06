@@ -4,7 +4,7 @@ E3: Verify no route leaks raw Python exception messages via HTTP 500
     ``detail`` strings. All routes must return a safe, generic message
     and log the actual error server-side.
 
-E8: Verify ``_execute_eager_core`` logs node failures at ``error`` level,
+E8: Verify a display walk that records failures logs them at ``error`` level,
     not ``warning``.
 """
 
@@ -14,15 +14,16 @@ import contextlib
 import json
 import time
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
+from haute._graph_walker import CollectPolicy, walk_graph
 from tests.job_store_support import seed_job
-from tests.optimiser_fixtures import run_frontier_and_wait
+from tests.optimiser_fixtures import make_solved_result, run_frontier_and_wait
+from tests.training_artifacts_support import publish_trained_job
 
 # -- Shared constants and helpers ------------------------------------------
 
@@ -58,6 +59,35 @@ def _completed_modelling_result() -> object:
                 "validation_fit_count": 0,
             },
         },
+    )
+
+
+def _publish_modelling_job(job_id: str, tmp_path: Path, root: Path) -> None:
+    """Publish a completed training job that owns a model and complete contract."""
+    from haute.modelling._feature_contract import build_contract, save_contract
+    from haute.routes.modelling import _store
+
+    model_path = tmp_path / job_id / "model.cbm"
+    model_path.parent.mkdir(parents=True)
+    model_path.write_bytes(b"model")
+    save_contract(
+        build_contract(
+            features=["x"],
+            feature_types={"x": "Float64"},
+            categorical_features=[],
+            target_name="y",
+            target_type="Float64",
+            task="regression",
+        ),
+        model_path.with_name("model.feature_contract.json"),
+    )
+    publish_trained_job(
+        _store,
+        job_id,
+        root=root,
+        model_file=model_path,
+        result=_completed_modelling_result(),
+        config={},
     )
 
 
@@ -242,13 +272,12 @@ def _databricks_client_patch(attr_chain: str, error_msg: str):
     return patch("haute.routes.databricks._get_databricks_client", return_value=mock_ws)
 
 
-def _mlflow_tracking_patch(attr: str, error_msg: str, on_client: bool = False):
+def _mlflow_tracking_patch(attr: str, error_msg: str):
     """Return a context-manager that patches _ensure_tracking so that the
-    mlflow client (or registry client) raises on *attr*."""
+    destination-pinned MLflow client raises on *attr*."""
     mock_mlflow = MagicMock()
     mock_client = MagicMock()
-    target = mock_client if on_client else mock_mlflow
-    getattr(target, attr).side_effect = RuntimeError(error_msg)
+    getattr(mock_client, attr).side_effect = RuntimeError(error_msg)
     return patch(
         "haute.routes.mlflow._ensure_tracking",
         return_value=(mock_mlflow, mock_client),
@@ -256,25 +285,16 @@ def _mlflow_tracking_patch(attr: str, error_msg: str, on_client: bool = False):
 
 
 @contextlib.contextmanager
-def _json_cache_build_patch(error_msg: str):
-    """Patch path resolution, file-existence, schema selection, and
-    the isolated transaction so the json-cache/build route reaches its
-    parent-side failure boundary and raises the expected RuntimeError."""
-    fake_v2_config = {"tables": [{"label": "t", "emit": True, "columns": []}]}
-    mock_path_cls = MagicMock()
-    mock_path_cls.return_value.exists.return_value = True
+def _json_cache_infer_patch(error_msg: str):
+    """Patch path resolution and inference so the json-cache/infer route
+    reaches its failure boundary and raises the expected RuntimeError."""
     with (
         patch(
             "haute.routes.json_cache._resolve_data_path",
             return_value="/tmp/fake/data.jsonl",
         ),
-        patch("haute.routes.json_cache.Path", mock_path_cls),
         patch(
-            "haute.routes.json_cache._select_v2_config",
-            return_value=fake_v2_config,
-        ),
-        patch(
-            "haute.routes.json_cache._json_cache_build_transaction",
+            "haute._json_shred._inference.infer_v2_schema_from_data",
             side_effect=RuntimeError(error_msg),
         ),
     ):
@@ -328,13 +348,13 @@ _SIMPLE_SAFE_DETAIL_CASES: list[tuple] = [
     # JSON cache
     pytest.param(
         "post",
-        "/api/json-cache/build",
+        "/api/json-cache/infer",
         {"json": {"path": "data.jsonl"}},
-        _json_cache_build_patch,
+        _json_cache_infer_patch,
         "OSError: [Errno 28] No space left on device: '/tmp/x'",
         500,
         ["/tmp/x"],
-        id="json-cache-build",
+        id="json-cache-infer",
     ),
     # MLflow discovery routes (502)
     pytest.param(
@@ -361,7 +381,7 @@ _SIMPLE_SAFE_DETAIL_CASES: list[tuple] = [
         "get",
         "/api/mlflow/models",
         None,
-        lambda err: _mlflow_tracking_patch("search_registered_models", err, on_client=True),
+        lambda err: _mlflow_tracking_patch("search_registered_models", err),
         "PermissionDenied: access token for service-account@corp expired",
         502,
         ["service-account@corp"],
@@ -442,7 +462,7 @@ class TestSafeDetailOnError:
         ):
             resp = client.post(
                 "/api/pipeline/trace",
-                json={"graph": pipeline_graph.model_dump(), "row_index": 0},
+                json={"seed_plan": [], "graph": pipeline_graph.model_dump(), "row_index": 0},
             )
         assert resp.status_code == 500
         detail = resp.json()["detail"]
@@ -518,22 +538,20 @@ class TestOptimiserRoutesSafeDetail:
         _store.clear_all()
 
     def test_apply_500_no_leak(self, client: TestClient, clean_job_store) -> None:
-        store = clean_job_store
-        mock_solve_result = MagicMock()
-        type(mock_solve_result).dataframe = property(
-            lambda self: (_ for _ in ()).throw(RuntimeError("numpy internal: segfault at 0xdead"))
-        )
+        from haute.routes._optimiser_artifacts import _persist_apply_frame_artifact
+        from tests.optimiser_fixtures import make_completed_job, make_online_apply_frame
+
+        handle = _persist_apply_frame_artifact(make_online_apply_frame(["q1"]))
         seed_job(
-            store,
+            clean_job_store,
             "test_apply_err",
-            {
-                "status": "completed",
-                "solve_result": mock_solve_result,
-                "created_at": time.time(),
-                "completed_at": time.time(),
-            },
+            make_completed_job(artifact_handles={"apply_result": handle}),
         )
-        resp = client.post("/api/optimiser/apply", json={"job_id": "test_apply_err"})
+        with patch(
+            "haute.routes._optimiser_artifacts._scan_apply_result_artifact",
+            side_effect=RuntimeError("numpy internal: segfault at 0xdead"),
+        ):
+            resp = client.post("/api/optimiser/apply", json={"job_id": "test_apply_err"})
         assert resp.status_code == 500
         detail = resp.json()["detail"]
         assert "segfault" not in detail
@@ -551,6 +569,8 @@ class TestOptimiserRoutesSafeDetail:
             "test_frontier_err",
             {
                 "status": "completed",
+                "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+                "result": make_solved_result(),
                 "solver": mock_solver,
                 "quote_grid": MagicMock(),
                 "created_at": time.time(),
@@ -576,19 +596,18 @@ class TestOptimiserRoutesSafeDetail:
 
         set_project_root(tmp_path)
         store = clean_job_store
-        mock_solve_result = SimpleNamespace(
-            lambdas={"x": 1.0},
-            total_objective=100.0,
-            total_constraints={"vol": 0.5},
-            converged=True,
-        )
         seed_job(
             store,
             "test_save_err",
             {
                 "status": "completed",
-                "solve_result": mock_solve_result,
-                "solver": MagicMock(),
+                "result": {
+                    "lambdas": {"x": 1.0},
+                    "total_objective": 100.0,
+                    "constraints": {"vol": 0.5},
+                    "converged": True,
+                },
+                "publish_summary": {"params": {}, "metrics": {}, "artifacts": {}},
                 "config": {},
                 "created_at": time.time(),
                 "completed_at": time.time(),
@@ -612,15 +631,18 @@ class TestOptimiserRoutesSafeDetail:
 
     def test_mlflow_log_500_no_leak(self, client: TestClient, clean_job_store) -> None:
         store = clean_job_store
-        mock_solver = MagicMock()
-        mock_solve_result = MagicMock()
         seed_job(
             store,
             "test_mlflow_err",
             {
                 "status": "completed",
-                "solver": mock_solver,
-                "solve_result": mock_solve_result,
+                "result": {
+                    "lambdas": {"x": 1.0},
+                    "total_objective": 100.0,
+                    "constraints": {"vol": 0.5},
+                    "converged": True,
+                },
+                "publish_summary": {"params": {}, "metrics": {}, "artifacts": {}},
                 "config": {},
                 "node_label": "opt",
                 "created_at": time.time(),
@@ -647,21 +669,12 @@ class TestOptimiserRoutesSafeDetail:
 class TestModellingRoutesSafeDetail:
     """Modelling mlflow log must not leak details."""
 
-    def test_mlflow_log_500_no_leak(self, client: TestClient) -> None:
+    def test_mlflow_log_500_no_leak(
+        self, client: TestClient, tmp_path: Path, training_artifact_root: Path
+    ) -> None:
         from haute.routes.modelling import _store
 
-        seed_job(
-            _store,
-            "test_err",
-            {
-                "status": "completed",
-                "result": _completed_modelling_result(),
-                "config": {},
-                "node_label": "model",
-                "created_at": time.time(),
-                "completed_at": time.time(),
-            },
-        )
+        _publish_modelling_job("test_err", tmp_path, training_artifact_root)
         try:
             with patch(
                 "haute.modelling._mlflow_log.log_experiment",
@@ -692,30 +705,23 @@ _LOG_ON_ERROR_CASES: list[tuple] = [
         "/api/databricks/warehouses",
         None,
         lambda err: _databricks_client_patch("warehouses.list", err),
-        "haute.routes.databricks",
+        # Unexpected failures are logged, with their traceback, by the
+        # application's unexpected-exception handler in the server module.
+        "haute.server",
         "secret-err",
         500,
         id="databricks-warehouses-log",
     ),
     pytest.param(
         "post",
-        "/api/json-cache/build",
+        "/api/json-cache/infer",
         {"json": {"path": "data.jsonl"}},
-        _json_cache_build_patch,
-        "haute.routes.json_cache",
+        _json_cache_infer_patch,
+        # Left to the application's unexpected-exception handler, like Databricks.
+        "haute.server",
         "internal-json-error",
         500,
-        id="json-cache-build-log",
-    ),
-    pytest.param(
-        "get",
-        "/api/mlflow/experiments",
-        None,
-        lambda err: _mlflow_tracking_patch("search_experiments", err),
-        "haute.routes.mlflow",
-        "secret-mlflow-err",
-        502,
-        id="mlflow-experiments-log",
+        id="json-cache-infer-log",
     ),
 ]
 
@@ -757,6 +763,29 @@ class TestLogOnError:
         mock_logger.error.assert_called()
         assert error_msg in str(mock_logger.error.call_args)
 
+    def test_mlflow_discovery_failure_is_logged_by_type_never_by_text(
+        self, client: TestClient
+    ) -> None:
+        """MLflow discovery is the deliberate exception to logging the real message.
+
+        Tracking errors can echo bearer tokens or credential-bearing URIs, so
+        the server-side record keeps the category and the exception type
+        (enough to diagnose) and never the text; see
+        ``tests/test_mlflow_routes.py::TestFailureLogsCarryNoExceptionText``.
+        """
+        mock_logger = MagicMock()
+        with (
+            _mlflow_tracking_patch("search_experiments", "secret-mlflow-err"),
+            patch("haute.routes.mlflow.logger", mock_logger),
+        ):
+            resp = client.get("/api/mlflow/experiments")
+
+        assert resp.status_code == 502
+        mock_logger.error.assert_called_once()
+        assert mock_logger.error.call_args.kwargs["error_type"] == "RuntimeError"
+        assert "secret-mlflow-err" not in str(mock_logger.error.call_args)
+        assert "secret-mlflow-err" not in resp.text
+
     # -- Pipeline routes need the pipeline_graph fixture --
 
     def test_pipeline_trace_logs_error(self, client: TestClient, pipeline_graph) -> None:
@@ -770,11 +799,11 @@ class TestLogOnError:
                 "haute.routes.pipeline.execute_trace",
                 side_effect=RuntimeError("real-trace-error"),
             ),
-            patch("haute.routes.pipeline.logger", mock_logger),
+            patch("haute.server.logger", mock_logger),
         ):
             resp = client.post(
                 "/api/pipeline/trace",
-                json={"graph": pipeline_graph.model_dump(), "row_index": 0},
+                json={"seed_plan": [], "graph": pipeline_graph.model_dump(), "row_index": 0},
             )
         assert resp.status_code == 500
         mock_logger.error.assert_called()
@@ -790,7 +819,7 @@ class TestLogOnError:
                 "haute.routes.pipeline.execute_graph",
                 side_effect=RuntimeError("real-preview-error"),
             ),
-            patch("haute.routes.pipeline.logger", mock_logger),
+            patch("haute.server.logger", mock_logger),
         ):
             resp = client.post(
                 "/api/pipeline/preview",
@@ -810,7 +839,7 @@ class TestLogOnError:
                 "haute.routes.pipeline._output_write_transaction",
                 side_effect=RuntimeError("real-sink-error"),
             ),
-            patch("haute.routes.pipeline.logger", mock_logger),
+            patch("haute.server.logger", mock_logger),
         ):
             resp = client.post(
                 "/api/pipeline/write-output", json={"graph": graph, "node_id": "sink"}
@@ -889,11 +918,10 @@ class TestInternalErrorDetailConstant:
     @pytest.mark.parametrize(
         "module_path",
         [
-            "haute.routes.databricks",
+            "haute.server",
             "haute.routes.pipeline",
-            "haute.routes.json_cache",
-            "haute.routes.optimiser",
-            "haute.routes.modelling",
+            # The frontier service records it as a failed sweep's message.
+            "haute.routes._optimiser_frontier",
             "haute.routes.git",
             "haute.routes.mlflow",
         ],
@@ -912,7 +940,7 @@ class TestInternalErrorDetailConstant:
 
 
 class TestNodeFailureLogLevel:
-    """Verify that _execute_eager_core logs node failures at ERROR, not WARNING."""
+    """Verify that a display walk logs recorded node failures at ERROR, not WARNING."""
 
     @staticmethod
     def _make_failing_graph():
@@ -937,12 +965,13 @@ class TestNodeFailureLogLevel:
         return node.id, failing_fn, False
 
     def test_node_failure_logged_at_error_level(self) -> None:
-        from haute._execute_lazy import _execute_eager_core
 
         g = self._make_failing_graph()
         mock_logger = MagicMock()
-        with patch("haute._execute_lazy.logger", mock_logger):
-            result = _execute_eager_core(g, self._build_fn, swallow_errors=True)
+        with patch("haute._graph_walker.logger", mock_logger):
+            result = walk_graph(
+                g, self._build_fn, policy=CollectPolicy.display(record_failures=True)
+            )
 
         assert "t" in result.errors
         assert "test node failure" in result.errors["t"]
@@ -951,12 +980,11 @@ class TestNodeFailureLogLevel:
         mock_logger.warning.assert_not_called()
 
     def test_node_failure_not_logged_at_warning(self) -> None:
-        from haute._execute_lazy import _execute_eager_core
 
         g = self._make_failing_graph()
         mock_logger = MagicMock()
-        with patch("haute._execute_lazy.logger", mock_logger):
-            _execute_eager_core(g, self._build_fn, swallow_errors=True)
+        with patch("haute._graph_walker.logger", mock_logger):
+            walk_graph(g, self._build_fn, policy=CollectPolicy.display(record_failures=True))
 
         for call in mock_logger.warning.call_args_list:
             assert "node_failed" not in str(call), (
@@ -969,22 +997,12 @@ class TestNodeFailureLogLevel:
 # =====================================================================
 
 
-class TestMlflowMissingStatusInconsistency:
-    """Document that optimiser and mlflow routes disagree on HTTP status
-    when MLflow is not installed.
+class TestMlflowMissingStatus:
+    """Every MLflow route reports a missing MLflow package with the same 503."""
 
-    - ``routes/optimiser.py`` mlflow_log raises ``400`` (Bad Request)
-    - ``routes/mlflow.py`` _ensure_tracking raises ``503`` (Service Unavailable)
+    _DETAIL = "MLflow is not installed. Install it with: pip install mlflow"
 
-    503 is semantically correct (a dependency is unavailable), while 400
-    implies the client sent a bad request.  This test documents the
-    inconsistency so it is caught if someone "fixes" only one side.
-
-    When harmonising, update BOTH routes to the same status code and
-    update both assertions below.
-    """
-
-    def test_optimiser_mlflow_log_returns_400_when_mlflow_missing(
+    def test_optimiser_mlflow_log_returns_503_when_mlflow_missing(
         self,
         client: TestClient,
     ) -> None:
@@ -1010,13 +1028,19 @@ class TestMlflowMissingStatusInconsistency:
                     "/api/optimiser/mlflow/log",
                     json={"job_id": "inc_test"},
                 )
-            assert resp.status_code == 400, (
-                "optimiser mlflow_log changed its missing-mlflow status code -- "
-                "update this test AND harmonise with routes/mlflow.py"
-            )
-            assert "not installed" in resp.json()["detail"].lower()
+            assert resp.status_code == 503
+            assert resp.json()["detail"] == self._DETAIL
         finally:
             _store.clear_all()
+
+    def test_modelling_mlflow_log_returns_503_when_mlflow_missing(
+        self,
+        client: TestClient,
+    ) -> None:
+        with patch.dict("sys.modules", {"mlflow": None}):
+            resp = client.post("/api/modelling/mlflow/log", json={"job_id": "any"})
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == self._DETAIL
 
     def test_mlflow_routes_return_503_when_mlflow_missing(
         self,
@@ -1024,11 +1048,8 @@ class TestMlflowMissingStatusInconsistency:
     ) -> None:
         with patch.dict("sys.modules", {"mlflow": None}):
             resp = client.get("/api/mlflow/experiments")
-        assert resp.status_code == 503, (
-            "mlflow routes changed their missing-mlflow status code -- "
-            "update this test AND harmonise with routes/optimiser.py"
-        )
-        assert "not installed" in resp.json()["detail"].lower()
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == self._DETAIL
 
 
 # =====================================================================
@@ -1207,7 +1228,7 @@ class TestSensitiveInfoLeakage:
         ):
             resp = client.post(
                 "/api/pipeline/trace",
-                json={"graph": pipeline_graph.model_dump(), "row_index": 0},
+                json={"seed_plan": [], "graph": pipeline_graph.model_dump(), "row_index": 0},
             )
         assert resp.status_code == 500
         detail = resp.json()["detail"]
@@ -1273,8 +1294,13 @@ class TestSensitiveInfoLeakage:
                 "test_uri_leak",
                 {
                     "status": "completed",
-                    "solver": MagicMock(),
-                    "solve_result": MagicMock(),
+                    "result": {
+                        "lambdas": {"x": 1.0},
+                        "total_objective": 100.0,
+                        "constraints": {"vol": 0.5},
+                        "converged": True,
+                    },
+                    "publish_summary": {"params": {}, "metrics": {}, "artifacts": {}},
                     "config": {},
                     "node_label": "opt",
                     "created_at": time.time(),
@@ -1301,22 +1327,13 @@ class TestSensitiveInfoLeakage:
         finally:
             _store.clear_all()
 
-    def test_modelling_mlflow_log_postgres_uri_no_leak(self, client: TestClient) -> None:
+    def test_modelling_mlflow_log_postgres_uri_no_leak(
+        self, client: TestClient, tmp_path: Path, training_artifact_root: Path
+    ) -> None:
         """POST /api/modelling/mlflow/log -- postgres connection string must not leak."""
         from haute.routes.modelling import _store
 
-        seed_job(
-            _store,
-            "test_pg_leak",
-            {
-                "status": "completed",
-                "result": _completed_modelling_result(),
-                "config": {},
-                "node_label": "model",
-                "created_at": time.time(),
-                "completed_at": time.time(),
-            },
-        )
+        _publish_modelling_job("test_pg_leak", tmp_path, training_artifact_root)
         try:
             with patch(
                 "haute.modelling._mlflow_log.log_experiment",

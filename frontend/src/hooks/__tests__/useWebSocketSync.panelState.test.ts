@@ -45,6 +45,7 @@ vi.mock("../../stores/useUIStore.ts", () => {
     setShortcutsOpen: vi.fn(),
     submodelDialog: null as null | { nodeIds: string[] },
     setSubmodelDialog: vi.fn((d: null | { nodeIds: string[] }) => { store.submodelDialog = d }),
+    setChangeFocus: vi.fn(),
     renameDialog: null as null | { nodeId: string; currentLabel: string },
     setRenameDialog: vi.fn((d: null | { nodeId: string; currentLabel: string }) => { store.renameDialog = d }),
   }
@@ -151,7 +152,7 @@ function nodeWithId(id: string): Node {
   }
 }
 
-describe("useWebSocketSync — orphaned dialog state cleared on WS sync (#39)", () => {
+describe("useWebSocketSync - orphaned dialog state cleared on WS sync (#39)", () => {
   let originalWebSocket: typeof globalThis.WebSocket
 
   beforeEach(() => {

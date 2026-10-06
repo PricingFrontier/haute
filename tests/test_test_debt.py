@@ -9,29 +9,25 @@ from __future__ import annotations
 
 import argparse
 import ast
-import hashlib
+import functools
 import json
-import re
 import sys
 import textwrap
-from dataclasses import dataclass
 from pathlib import Path
 
-TESTS_DIR = Path(__file__).parent
-REPO_ROOT = TESTS_DIR.parent
+import pytest
 
-_CALL_DEBT_TARGETS = {
-    "pytest.importorskip",
-    "pytest.skip",
-    "pytest.xfail",
-}
-_MARK_DEBT_TARGETS = {
-    "pytest.mark.flaky",
-    "pytest.mark.skip",
-    "pytest.mark.skipif",
-    "pytest.mark.xfail",
-}
-_DEBT_TARGETS = _CALL_DEBT_TARGETS | _MARK_DEBT_TARGETS
+from tests._source_files import source_files
+from tests._test_debt_scanner import (
+    _FRONTEND_TEST_ROOTS,
+    REPO_ROOT,
+    TESTS_DIR,
+    _DebtSite,
+    _DebtVisitor,
+    _FrontendDebtSite,
+    _is_frontend_test_file,
+    _scan_frontend_source,
+)
 
 _TEST_HEALTH_SUMMARY_PATH = TESTS_DIR / "test-health-summary.md"
 _MUTATION_TARGETS_PATH = REPO_ROOT / "mutation" / "targets.json"
@@ -41,6 +37,11 @@ _PLAYWRIGHT_CI_RETRY_BUDGET = 2
 # path, enclosing scope, debt kind, reason text, and normalized AST source. A new
 # skip/xfail/importorskip, or a changed reason, must be accepted deliberately.
 _EXPECTED_DEBT_IDS = {
+    # Native Windows HighQoS requires the real Windows process API. The
+    # strong-revision cache witness requires a filesystem exposing that proof;
+    # unsupported filesystems are covered separately by cache-bypass tests.
+    "b37a0e4332ab67a7",
+    "d60cb6e25d9d0a46",
     # Offset-through-serving suite — every test trains a real model, so each
     # leg importorskips its optional modelling engine (rustystats for the GLM
     # legs, catboost for the boosted / numeric-only legs), matching the
@@ -50,7 +51,6 @@ _EXPECTED_DEBT_IDS = {
     "3a392e6541a16437",
     "3ab16f01c706b8cf",
     "4908d9a546bf0eb3",
-    "53ef46f50a3e8e3c",
     "78ccd0efb0b58c07",
     "7ecc4c9aac18c56a",
     "8575a86d12fcd9fd",
@@ -68,12 +68,12 @@ _EXPECTED_DEBT_IDS = {
     # installed package whether an assumption still holds, and therefore skip,
     # saying so, where that package is absent. test_sandbox.py
     # `_allowlist_entry` skips an unpickler-allowlist entry whose distribution
-    # (LightGBM, XGBoost) is not installed, reporting it as unverified rather
-    # than passed; `test_real_unpickler_reports_absent_xgboost` is the
-    # converse and skips where xgboost IS installed. test_databricks_io.py
+    # is not installed, reporting it as unverified rather than passed;
+    # `test_real_unpickler_reports_absent_catboost` is the converse and skips
+    # where catboost IS installed. test_databricks_io.py
     # `test_real_databricks_cursor_exposes_rownumber` skips without the
     # databricks-sql-connector extra.
-    "02527322f3266e6a",
+    "bad18e83b4ed758b",
     "3bf4ea089c17f407",
     "963014c76507d368",
     # Data In/Out first pass — engine-gated legs. The dataInput/dataOutput
@@ -112,6 +112,10 @@ _EXPECTED_DEBT_IDS = {
     # environments run both assertions.
     "6fb8a1d2d768c835",
     "a7c21a9dc1f1aada",
+    # MSC-03 — a Model Scoring sibling contract that escapes the project through
+    # a symlink is refused by scoring and bundling; same platform prerequisite.
+    # See tests/test_model_file_source.py.
+    "90c13b0fe47fe9ec",
     # W2.9 — the trace-cache budget wiring assertion cannot hold when an
     # operator deliberately overrides HAUTE_TRACE_CACHE_MAX_BYTES; the skip
     # documents that the pin targets default wiring only. See
@@ -145,28 +149,24 @@ _EXPECTED_DEBT_IDS = {
     "c87e80ef52f08568",
     "50a51dcce3b28cae",
     "fea0501479ba2a0e",
-    "4328a90240a0dbba",
     "55b3c4a50777661d",
     "3c5baaf0a02d232d",
     "7644099cbe0b2599",
     "b999233846eb7ace",
     "02519ef042dc229b",
     "b1fdda1913c30cea",
-    "c1d2feb4a8261f67",
     "a8ba935e2e69547b",
     "1c1a7efd1b6b5496",
     "bc580591bd05253a",
     "ea75218e22580bb4",
     "6f5878234dddd567",
     "df615adf6facd8fc",
-    "46fd8404c50daff6",
     "c60a5a978c60725a",
     "4ae118442dafce1e",
     "8a0f7160d9044069",
     "a78fb6a12665d489",
-    "3512c808a6273e35",
-    "153ecf02f6848509",
-    "b47ee7c16fbf5755",
+    "44ff20785c028602",
+    "707535b7903ffedc",
     "9b58538ec2c90223",
     "6881417aa251afb7",
     "fb0e81ff682c42ba",
@@ -204,6 +204,12 @@ _EXPECTED_DEBT_IDS = {
     # install skipping cleanly while the dev-group CI legs (mlflow
     # installed) execute every test.
     "e278858fa0b5e3b7",
+    # MLF-D03 — tests/test_mlflow_destinations_e2e.py proves per-node destination
+    # isolation against REAL local file stores (logging, scoring, optimiser
+    # apply, deploy scoring, generated scripts). Same module-level
+    # importorskip convention as test_mlflow_log_button_roundtrip.py so the
+    # core-only CI leg (no mlflow) skips cleanly while the dev-group legs run it.
+    "752af62493a1e027",
     # 4b.8 — tests/test_mlflow_log_button_roundtrip.py proves the "Log to
     # MLflow" button's signature/artifact round-trip against a REAL local
     # file-store MLflow (a wrong signature only fails at genuine pyfunc
@@ -212,11 +218,9 @@ _EXPECTED_DEBT_IDS = {
     "c12bf51de96471f5",
     # W4b (4b.1/4b.2/4b.3) — real-GLM route/export/diagnostics tests train
     # actual rustystats models; rustystats is an optional extra, so the
-    # tests importorskip it. See tests/test_train_param_routing.py and
-    # tests/test_glm_integration.py::TestInferenceUnavailableDiagnostics.
+    # tests importorskip it. See tests/test_train_param_routing.py.
     "560f4d4069c7b172",
     "6e4e489debab1b3f",
-    "7b4fe4c7336c7b86",
     # W4b (4b.6/4b.9) — the temp-cleanup and per-model-contract suites fit
     # real CatBoost models (cancel/failure points inside genuine fits; the
     # two-runs-one-dir e2e); catboost is an optional extra. The pre-split
@@ -246,6 +250,14 @@ _EXPECTED_DEBT_IDS = {
     # See tests/test_config_io_gaps.py::TestConfigPathEscapeGuard
     # ::test_escape_guard_triggers_on_resolved_outside.
     "1e4116d06849b611",
+    # Windows symlink privilege — the MLflow settings write-containment guard
+    # test symlinks haute.toml at an external victim file to prove a save
+    # refuses to follow it, but symlink creation needs a privilege Windows
+    # withholds by default (WinError 1314). Skipped when symlink creation
+    # raises, mirroring the other symlink-guard tests; Linux CI runs it.
+    # See tests/test_mlflow_settings.py::TestLoadSaveSettings
+    # ::test_save_refuses_symlinked_haute_toml_escaping_the_project.
+    "0d633b8caaa866db",
     # Windows symlink privilege — the file-browser short-path regression test
     # builds a symlinked project dir so ``Path.cwd()`` differs from its
     # ``resolve()`` (the cross-platform stand-in for a Windows 8.3 short cwd),
@@ -254,6 +266,12 @@ _EXPECTED_DEBT_IDS = {
     # other symlink-guard tests. See tests/test_files_routes.py
     # ::TestBrowseFilesUnresolvedCwd._symlinked_project.
     "e29ebc6050519fc5",
+    # Windows symlink privilege — the SBX-R01 containment matrix proves every
+    # former caller refuses a symlink escape, but symlink creation needs a
+    # privilege Windows withholds by default (WinError 1314). Only the symlink
+    # cases skip; Linux CI runs them. See tests/test_path_containment.py
+    # ::_require_links.
+    "4f163427364999ba",
     # Assistant containment uses real directory/file symlinks to prove that
     # project-knowledge reads/cache writes and durable-session revival cannot
     # escape the project. Windows without Developer Mode or symlink privilege
@@ -269,18 +287,27 @@ _EXPECTED_DEBT_IDS = {
     # one leg can only be exercised where that file exists.
     # See tests/test_worker_isolation.py.
     "e928b1daccb49a17",
-    # macOS available-RAM probe — the Mach ``host_statistics64`` counters exist
-    # only on darwin, so the unmocked-kernel assertion is darwin-gated. This is
-    # the test that would have caught the original defect (darwin had no
-    # working branch at all: no ``/proc/meminfo``, and ``SC_AVPHYS_PAGES`` is
-    # absent from ``os.sysconf_names`` there), so it is deliberately a real
-    # syscall rather than a mock. The branch's logic — free+inactive accounting,
-    # purgeable exclusion, Mach port release, and every failure path — is
-    # covered unconditionally on all platforms by the mocked tests in the same
-    # class, which drive the real ctypes struct. See
-    # tests/test_host_memory.py::TestAvailableRamMacOS
-    # ::test_real_darwin_kernel_reports_available_memory.
-    "23fb0fa7068e4340",
+    # A native allocation refused by the per-worker memory cap is classified as
+    # a memory outcome from the child's real crash status (Linux SIGABRT/SIGKILL,
+    # Windows fail-fast). It needs a host where that native cap can be installed;
+    # the exit-code classification itself is covered on every platform.
+    # See tests/test_worker_isolation.py.
+    "28de4bc1e189b1c6",
+    # The RLIMIT_AS fallback counts reserved address space, which only Linux exposes
+    # through /proc; the warm-up that keeps it honest is measured in a fresh process
+    # there. The ordering and allowance logic is covered on every platform with a fake
+    # resource API. See tests/test_native_memory_limit.py.
+    "0658216fd4d47ec9",
+    # A training fit's protocol worker runs under a real native cap (a Job Object on
+    # Windows, a cgroup or RLIMIT_AS on Linux); macOS has no dependable per-process
+    # cap, so the real-spawn check needs a host that has one. The entrypoint's lease
+    # wiring is covered on every platform. See tests/test_worker_protocol.py.
+    "809667c1ff73f5be",
+    # CatBoost training under the RLIMIT_AS fallback: that cap counts reserved address
+    # space, which only Linux reports, and the test installs it itself so no delegated
+    # cgroup stands in for it. The preload ordering and the allowance formula are covered
+    # on every platform. See tests/test_training_worker_protocol.py.
+    "564994321efac1ec",
     # Polars snapshot contract on a deliberately unpinned resolve — the
     # committed I/O schema records one polars version, so exact snapshot
     # equality is unsatisfiable in the two lanes that resolve polars away from
@@ -304,56 +331,43 @@ _EXPECTED_DEBT_IDS = {
     # primitive assertions. Output and Explore publication also use real hard
     # links to prove the parent rejects aliased staging artifacts. See
     # test_json_shred_mut_validity.py, test_json_shred_runtime_snapshots.py,
-    # test_data_io_nodes.py, and test_explore_routes.py.
-    "0a5df3350d69e1f5",
-    "0c7b2cb3effd87e0",
-    "0ce7f0f48d149323",
-    "0f0d9227e7f4a5ed",
-    "1cc729c443a4270f",
-    "20ec083bffcea5c5",
-    "2c28fda4eed70866",
-    "3f6505dcbcfac128",
-    "513ab2404561fc80",
-    "525220876e76a500",
-    "7108885c10fdca44",
-    "7e926940549a4f58",
-    "7f618766970d6aa2",
+    # and test_data_io_nodes.py.
     "8e42868e79ff264b",
-    "894e7f67b861b301",
-    "91878a6ff56e4c56",
-    "bd96cc6f51a39c67",
-    "bd9cf15e416714c0",
-    "be4b790157583701",
-    "c424c3f1d2cfe91a",
-    "cc655b332f19c3a3",
-    "fc936795d5ac2cdf",
+    # Automatic input preparation through a real hard-capped spawn worker: the
+    # cap is mandatory, so the test can only run where the host can install a
+    # native memory cap (Linux cgroup/rlimit, Windows Job Object); macOS skips.
+    # See tests/test_input_preparation.py.
+    "989b2ba60fe375be",
+    # The optimiser's solver session and its dedicated worker (OPT-W01) exist to
+    # run under a native memory cap, so both suites need one; macOS skips. See
+    # tests/test_dedicated_workers.py and tests/test_optimiser_solver_session.py.
+    "feb425948a23b85f",
+    "2e1f146b53c9a4b1",
+    # Hosted git-credential helper — the askpass helper is a `#!/bin/sh`
+    # script installed only by the hosted container bootstrap
+    # (databricks_app/bootstrap.py), so the two tests that execute it cannot
+    # run on Windows, which has no shebang handling and refuses the file with
+    # WinError 193. The Linux legs run them. The helper's other contracts (no
+    # token in the file, no helper without a token, GIT_ASKPASS registration)
+    # stay platform-neutral and run everywhere.
+    # See tests/test_project_storage.py::TestCredentialHandling.
+    "b4318bcdd014bb2e",
+    "e2be584e12bb5227",
+    # Real-symlink prerequisite in
+    # tests/test_artifact_paths.py::test_safe_path_rejects_lexical_and_alias_paths:
+    # Windows may lack symlink privilege; lexical and hardlink checks run before
+    # the skip, Linux runs the real-symlink assertion.
+    "676d266f149e829d",
+    # Real-device XGBoost GPU tests in tests/test_xgboost_gpu.py (MOD-F06): they
+    # need the full xgboost CUDA build and an NVIDIA GPU, which CI runners and
+    # Haute's default xgboost-cpu install lack; the device-free GPU contract
+    # (config, refusal, fallback detection, VRAM, route, gpu-setup) runs everywhere.
+    "3f2e4ca1be0a6123",
 }
 
 _EXPECTED_NON_STRICT_XFAIL_IDS = {
     "9b58538ec2c90223",
 }
-
-_FRONTEND_TEST_ROOTS = (
-    REPO_ROOT / "frontend" / "src",
-    REPO_ROOT / "frontend" / "e2e",
-)
-_FRONTEND_TEST_SUFFIXES = {
-    ".cjs",
-    ".cts",
-    ".js",
-    ".jsx",
-    ".mjs",
-    ".mts",
-    ".ts",
-    ".tsx",
-}
-_FRONTEND_DEBT_BASE_PATTERN = re.compile(r"(?<![\w$.])(?P<base>test|describe|it)(?![\w$])")
-_FRONTEND_IDENTIFIER_PATTERN = re.compile(r"[A-Za-z_$][\w$]*")
-_FRONTEND_DEBT_METHODS = frozenset(
-    {"fail", "fails", "fixme", "only", "runIf", "skip", "skipIf", "todo"}
-)
-_FRONTEND_UNRESOLVED_COMPUTED_MEMBER = "<computed>"
-_FRONTEND_STATIC_COMPUTED_MEMBER = "<static-computed>"
 
 # Frontend test skip/fixme/fail/only/conditional/todo sites are expected to be rare and
 # reviewed.
@@ -372,280 +386,17 @@ _EXPECTED_FRONTEND_DEBT_REASONS: dict[str, str] = {
 }
 
 
-@dataclass(frozen=True)
-class _PytestAliases:
-    module_names: frozenset[str]
-    mark_names: frozenset[str]
-    direct_names: dict[str, str]
-
-
-@dataclass(frozen=True)
-class _DebtSite:
-    id: str
-    path: Path
-    line: int
-    scope: str
-    kind: str
-    reason: str
-    strict: bool | None
-    reason_is_static: bool
-
-
-@dataclass(frozen=True)
-class _FrontendDebtSite:
-    id: str
-    path: Path
-    line: int
-    callee: str
-    source: str
-
-
-def _attr_path(node: ast.AST) -> str | None:
-    parts: list[str] = []
-    current: ast.AST | None = node
-    while isinstance(current, ast.Attribute):
-        parts.append(current.attr)
-        current = current.value
-    if isinstance(current, ast.Name):
-        parts.append(current.id)
-        return ".".join(reversed(parts))
-    return None
-
-
-def _canonical_pytest_path(node: ast.AST, aliases: _PytestAliases) -> str | None:
-    if isinstance(node, ast.Name):
-        return aliases.direct_names.get(node.id)
-
-    raw_path = _attr_path(node)
-    if raw_path is None:
-        return None
-
-    parts = raw_path.split(".")
-    if parts[0] in aliases.module_names:
-        return ".".join(("pytest", *parts[1:]))
-    if parts[0] in aliases.mark_names:
-        return ".".join(("pytest", "mark", *parts[1:]))
-    if parts[0] in aliases.direct_names:
-        direct = aliases.direct_names[parts[0]]
-        return ".".join((direct, *parts[1:]))
-    return raw_path
-
-
-def _collect_pytest_aliases(tree: ast.AST) -> _PytestAliases:
-    module_names = {"pytest"}
-    mark_names: set[str] = set()
-    direct_names: dict[str, str] = {}
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name == "pytest":
-                    module_names.add(alias.asname or alias.name)
-        elif isinstance(node, ast.ImportFrom) and node.module == "pytest":
-            for alias in node.names:
-                local_name = alias.asname or alias.name
-                if alias.name == "mark":
-                    mark_names.add(local_name)
-                elif alias.name in {"skip", "xfail", "importorskip"}:
-                    direct_names[local_name] = f"pytest.{alias.name}"
-
-    return _PytestAliases(
-        module_names=frozenset(module_names),
-        mark_names=frozenset(mark_names),
-        direct_names=direct_names,
-    )
-
-
-def _keyword(call: ast.Call, name: str) -> ast.AST | None:
-    for keyword in call.keywords:
-        if keyword.arg == name:
-            return keyword.value
-    return None
-
-
-def _static_string_value(expr: ast.AST) -> str | None:
-    if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
-        return expr.value
-    if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
-        left = _static_string_value(expr.left)
-        right = _static_string_value(expr.right)
-        if left is not None and right is not None:
-            return left + right
-    return None
-
-
-def _reason_expr(kind: str, call: ast.Call) -> ast.AST | None:
-    keyword_reason = _keyword(call, "reason")
-    if keyword_reason is not None:
-        return keyword_reason
-    if kind in {"pytest.skip", "pytest.xfail"} and call.args:
-        return call.args[0]
-    return None
-
-
-def _strict_value(call: ast.Call) -> bool | None:
-    strict = _keyword(call, "strict")
-    if isinstance(strict, ast.Constant) and isinstance(strict.value, bool):
-        return strict.value
-    return None
-
-
-def _has_non_empty_reason(kind: str, call: ast.Call) -> bool:
-    expr = _reason_expr(kind, call)
-    if expr is None:
-        return False
-    if isinstance(expr, ast.Constant):
-        if expr.value is None:
-            return False
-        if isinstance(expr.value, str):
-            return bool(expr.value.strip())
-    return True
-
-
-def _reason_text(kind: str, call: ast.Call) -> str:
-    expr = _reason_expr(kind, call)
-    if expr is None:
-        return ""
-    return _static_string_value(expr) or ast.unparse(expr)
-
-
-def _reason_is_static_non_empty(kind: str, call: ast.Call) -> bool:
-    expr = _reason_expr(kind, call)
-    if expr is None:
-        return False
-    value = _static_string_value(expr)
-    return value is not None and bool(value.strip())
-
-
-def _normalized_source(node: ast.AST) -> str:
-    return re.sub(r"\s+", " ", ast.unparse(node)).strip()
-
-
-def _fingerprint(path: Path, scope: str, kind: str, reason: str, node: ast.AST) -> str:
-    raw = "|".join(
-        (
-            path.as_posix(),
-            scope,
-            kind,
-            reason,
-            _normalized_source(node),
-        )
-    )
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
-
-
-class _DebtVisitor(ast.NodeVisitor):
-    def __init__(self, path: Path) -> None:
-        self.path = path
-        self.scope: list[str] = []
-        self.sites: list[_DebtSite] = []
-        self.aliases = _PytestAliases(
-            module_names=frozenset({"pytest"}),
-            mark_names=frozenset(),
-            direct_names={},
-        )
-        self._call_func_node_ids: set[int] = set()
-
-    def scan(self, tree: ast.AST) -> list[_DebtSite]:
-        self.aliases = _collect_pytest_aliases(tree)
-        self.visit(tree)
-        return sorted(self.sites, key=lambda site: (site.path.as_posix(), site.line, site.kind))
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        self.scope.append(node.name)
-        self.generic_visit(node)
-        self.scope.pop()
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self.scope.append(node.name)
-        self.generic_visit(node)
-        self.scope.pop()
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        self.scope.append(node.name)
-        self.generic_visit(node)
-        self.scope.pop()
-
-    def visit_Call(self, node: ast.Call) -> None:
-        self._call_func_node_ids.add(id(node.func))
-        kind = _canonical_pytest_path(node.func, self.aliases)
-        if kind in _DEBT_TARGETS:
-            scope = ".".join(self.scope) or "<module>"
-            reason = _reason_text(kind, node)
-            strict = _strict_value(node) if kind == "pytest.mark.xfail" else None
-            self.sites.append(
-                _DebtSite(
-                    id=_fingerprint(self.path, scope, kind, reason, node),
-                    path=self.path,
-                    line=node.lineno,
-                    scope=scope,
-                    kind=kind,
-                    reason=reason,
-                    strict=strict,
-                    reason_is_static=_reason_is_static_non_empty(kind, node),
-                )
-            )
-        self._record_dynamic_add_marker_debt(node)
-        self.generic_visit(node)
-
-    def visit_Attribute(self, node: ast.Attribute) -> None:
-        if id(node) in self._call_func_node_ids:
-            self.generic_visit(node)
-            return
-
-        kind = _canonical_pytest_path(node, self.aliases)
-        if kind in _MARK_DEBT_TARGETS:
-            scope = ".".join(self.scope) or "<module>"
-            self.sites.append(
-                _DebtSite(
-                    id=_fingerprint(self.path, scope, kind, "", node),
-                    path=self.path,
-                    line=node.lineno,
-                    scope=scope,
-                    kind=kind,
-                    reason="",
-                    strict=None,
-                    reason_is_static=False,
-                )
-            )
-        self.generic_visit(node)
-
-    def _record_dynamic_add_marker_debt(self, node: ast.Call) -> None:
-        call_path = _attr_path(node.func)
-        if call_path is None or not call_path.endswith(".add_marker") or not node.args:
-            return
-
-        marker_arg = node.args[0]
-        if not (
-            isinstance(marker_arg, ast.Constant)
-            and isinstance(marker_arg.value, str)
-            and marker_arg.value in {"flaky", "skip", "skipif", "xfail"}
-        ):
-            return
-
-        kind = f"pytest.mark.{marker_arg.value}"
-        scope = ".".join(self.scope) or "<module>"
-        self.sites.append(
-            _DebtSite(
-                id=_fingerprint(self.path, scope, kind, "", node),
-                path=self.path,
-                line=node.lineno,
-                scope=scope,
-                kind=kind,
-                reason="",
-                strict=None,
-                reason_is_static=False,
-            )
-        )
-
-
-def _scan_debt_sites() -> list[_DebtSite]:
+# The two tree scans below take seconds each (every test module is parsed), and
+# several tests plus the summary read the same result. The test trees do not
+# change during a session, so each process scans once.
+@functools.cache
+def _scan_debt_sites() -> tuple[_DebtSite, ...]:
     sites: list[_DebtSite] = []
-    for path in sorted(TESTS_DIR.rglob("*.py")):
+    for path in source_files(TESTS_DIR):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         visitor = _DebtVisitor(path.relative_to(TESTS_DIR.parent))
         sites.extend(visitor.scan(tree))
-    return sites
+    return tuple(sites)
 
 
 def _scan_source(source: str) -> list[_DebtSite]:
@@ -661,365 +412,8 @@ def _format_site(site: _DebtSite) -> str:
     )
 
 
-def _mask_frontend_comments_and_strings(source: str) -> str:
-    result: list[str] = []
-    index = 0
-    state = "code"
-    quote = ""
-
-    while index < len(source):
-        char = source[index]
-        next_char = source[index + 1] if index + 1 < len(source) else ""
-
-        if state == "code":
-            if char == "/" and next_char == "/":
-                result.extend((" ", " "))
-                index += 2
-                state = "line-comment"
-                continue
-            if char == "/" and next_char == "*":
-                result.extend((" ", " "))
-                index += 2
-                state = "block-comment"
-                continue
-            if char in {"'", '"', "`"}:
-                result.append(" ")
-                index += 1
-                state = "string"
-                quote = char
-                continue
-            result.append(char)
-            index += 1
-            continue
-
-        if state == "line-comment":
-            result.append("\n" if char == "\n" else " ")
-            index += 1
-            if char == "\n":
-                state = "code"
-            continue
-
-        if state == "block-comment":
-            if char == "*" and next_char == "/":
-                result.extend((" ", " "))
-                index += 2
-                state = "code"
-                continue
-            result.append("\n" if char == "\n" else " ")
-            index += 1
-            continue
-
-        if state == "string":
-            if char == "\\":
-                result.append(" ")
-                if next_char:
-                    result.append("\n" if next_char == "\n" else " ")
-                    index += 2
-                else:
-                    index += 1
-                continue
-            result.append("\n" if char == "\n" else " ")
-            index += 1
-            if char == quote:
-                state = "code"
-            continue
-
-    return "".join(result)
-
-
-def _skip_frontend_whitespace(source: str, index: int) -> int:
-    while index < len(source) and source[index].isspace():
-        index += 1
-    return index
-
-
-def _read_frontend_identifier(source: str, index: int) -> tuple[str, int] | None:
-    match = _FRONTEND_IDENTIFIER_PATTERN.match(source, index)
-    if match is None:
-        return None
-    return match.group(0), match.end()
-
-
-def _skip_frontend_balanced_call(source: str, index: int) -> int:
-    pairs = {"(": ")", "[": "]", "{": "}"}
-    closers = set(pairs.values())
-    stack = [")"]
-    index += 1
-
-    while index < len(source) and stack:
-        char = source[index]
-        if char in pairs:
-            stack.append(pairs[char])
-        elif char in closers and char == stack[-1]:
-            stack.pop()
-        index += 1
-
-    return index
-
-
-def _frontend_computed_property_end(masked: str, index: int) -> int | None:
-    pairs = {"(": ")", "[": "]", "{": "}"}
-    closers = set(pairs.values())
-    stack = ["]"]
-    cursor = index + 1
-
-    while cursor < len(masked) and stack:
-        char = masked[cursor]
-        if char in pairs:
-            stack.append(pairs[char])
-        elif char in closers:
-            if char != stack[-1]:
-                return None
-            stack.pop()
-        cursor += 1
-
-    if stack:
-        return None
-    return cursor
-
-
-def _parse_frontend_string_member(expression: str) -> tuple[str, bool] | None:
-    stripped = expression.strip()
-    if not stripped or stripped[0] not in {"'", '"', "`"}:
-        return None
-
-    quote = stripped[0]
-    cursor = 1
-    value: list[str] = []
-    has_template_interpolation = False
-    while cursor < len(stripped):
-        char = stripped[cursor]
-        next_char = stripped[cursor + 1] if cursor + 1 < len(stripped) else ""
-        if char == "\\":
-            if not next_char:
-                return None
-            value.append(next_char)
-            cursor += 2
-            continue
-        if quote == "`" and char == "$" and next_char == "{":
-            has_template_interpolation = True
-        if char == quote:
-            if stripped[cursor + 1 :].strip():
-                return None
-            if has_template_interpolation:
-                return _FRONTEND_UNRESOLVED_COMPUTED_MEMBER, False
-            return "".join(value), True
-        value.append(char)
-        cursor += 1
-
-    return None
-
-
-def _split_frontend_top_level_conditional(masked_expression: str) -> tuple[int, int] | None:
-    pairs = {"(": ")", "[": "]", "{": "}"}
-    closers = set(pairs.values())
-    stack: list[str] = []
-    question_index: int | None = None
-
-    for index, char in enumerate(masked_expression):
-        next_char = masked_expression[index + 1] if index + 1 < len(masked_expression) else ""
-        if char in pairs:
-            stack.append(pairs[char])
-        elif char in closers:
-            if stack and char == stack[-1]:
-                stack.pop()
-        elif not stack and char == "?" and next_char != ".":
-            question_index = index
-            break
-
-    if question_index is None:
-        return None
-
-    stack = []
-    nested_conditionals = 0
-    for index in range(question_index + 1, len(masked_expression)):
-        char = masked_expression[index]
-        next_char = masked_expression[index + 1] if index + 1 < len(masked_expression) else ""
-        if char in pairs:
-            stack.append(pairs[char])
-        elif char in closers:
-            if stack and char == stack[-1]:
-                stack.pop()
-        elif not stack and char == "?" and next_char != ".":
-            nested_conditionals += 1
-        elif not stack and char == ":":
-            if nested_conditionals == 0:
-                return question_index, index
-            nested_conditionals -= 1
-
-    return None
-
-
-def _classify_frontend_computed_member(
-    masked_expression: str,
-    original_expression: str,
-) -> tuple[str, bool]:
-    static_string = _parse_frontend_string_member(original_expression)
-    if static_string is not None:
-        return static_string
-
-    conditional = _split_frontend_top_level_conditional(masked_expression)
-    if conditional is not None:
-        question_index, colon_index = conditional
-        branches = (
-            (
-                masked_expression[question_index + 1 : colon_index],
-                original_expression[question_index + 1 : colon_index],
-            ),
-            (
-                masked_expression[colon_index + 1 :],
-                original_expression[colon_index + 1 :],
-            ),
-        )
-        branch_results = [
-            _classify_frontend_computed_member(masked_branch, original_branch)
-            for masked_branch, original_branch in branches
-        ]
-        if all(
-            is_static and name not in _FRONTEND_DEBT_METHODS for name, is_static in branch_results
-        ):
-            return _FRONTEND_STATIC_COMPUTED_MEMBER, True
-        return _FRONTEND_UNRESOLVED_COMPUTED_MEMBER, False
-
-    if re.fullmatch(
-        r"(?:[+-]?\d+(?:\.\d+)?|true|false|null|undefined)",
-        original_expression.strip(),
-    ):
-        return _FRONTEND_STATIC_COMPUTED_MEMBER, True
-
-    return _FRONTEND_UNRESOLVED_COMPUTED_MEMBER, False
-
-
-def _read_frontend_computed_property(
-    masked: str,
-    original: str,
-    index: int,
-) -> tuple[str, int, int, bool] | None:
-    if index >= len(masked) or masked[index] != "[":
-        return None
-
-    property_start = _skip_frontend_whitespace(original, index + 1)
-    if property_start >= len(original):
-        return None
-    end = _frontend_computed_property_end(masked, index)
-    if end is None:
-        return None
-
-    name, is_static = _classify_frontend_computed_member(
-        masked[index + 1 : end - 1],
-        original[index + 1 : end - 1],
-    )
-    return name, end, property_start, is_static
-
-
-def _frontend_debt_chain(
-    masked: str,
-    original: str,
-    match: re.Match[str],
-) -> tuple[int, int, str] | None:
-    parts = [match.group("base")]
-    index = match.end()
-    first_debt_index: int | None = None
-    called_after_debt = False
-    end = index
-
-    while True:
-        index = _skip_frontend_whitespace(masked, index)
-        if index >= len(masked):
-            break
-
-        if masked[index] == "(":
-            index = _skip_frontend_balanced_call(masked, index)
-            end = index
-            if first_debt_index is not None:
-                called_after_debt = True
-            continue
-
-        if masked.startswith("?.", index):
-            index = _skip_frontend_whitespace(masked, index + 2)
-            if index < len(masked) and masked[index] == "(":
-                index = _skip_frontend_balanced_call(masked, index)
-                end = index
-                if first_debt_index is not None:
-                    called_after_debt = True
-                continue
-        elif masked[index] == ".":
-            index = _skip_frontend_whitespace(masked, index + 1)
-
-        if index < len(masked) and masked[index] == "[":
-            computed = _read_frontend_computed_property(masked, original, index)
-            if computed is None:
-                break
-            name, index, property_start, is_static_literal = computed
-            parts.append(name)
-            end = index
-            if (
-                name in _FRONTEND_DEBT_METHODS
-                or not is_static_literal
-                and name == _FRONTEND_UNRESOLVED_COMPUTED_MEMBER
-            ) and first_debt_index is None:
-                first_debt_index = property_start
-            continue
-
-        identifier_start = index
-        identifier = _read_frontend_identifier(masked, identifier_start)
-        if identifier is None:
-            break
-
-        name, index = identifier
-        parts.append(name)
-        end = index
-        if name in _FRONTEND_DEBT_METHODS and first_debt_index is None:
-            first_debt_index = identifier_start
-
-    if first_debt_index is None or not called_after_debt:
-        return None
-
-    return first_debt_index, end, ".".join(parts)
-
-
-def _is_frontend_test_file(path: Path) -> bool:
-    if path.suffix not in _FRONTEND_TEST_SUFFIXES:
-        return False
-    relative = path.relative_to(REPO_ROOT)
-    if relative.parts[:2] == ("frontend", "e2e"):
-        return True
-    if relative.parts[:2] != ("frontend", "src"):
-        return False
-    return "__tests__" in relative.parts or ".test." in path.name or ".spec." in path.name
-
-
-def _frontend_fingerprint(path: Path, callee: str, source: str) -> str:
-    normalized_source = re.sub(r"\s+", " ", source).strip()
-    raw = "|".join((path.as_posix(), callee, normalized_source))
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
-
-
-def _scan_frontend_source(source: str, path: Path) -> list[_FrontendDebtSite]:
-    masked = _mask_frontend_comments_and_strings(source)
-    lines = source.splitlines()
-    sites: list[_FrontendDebtSite] = []
-    for match in _FRONTEND_DEBT_BASE_PATTERN.finditer(masked):
-        debt_chain = _frontend_debt_chain(masked, source, match)
-        if debt_chain is None:
-            continue
-
-        debt_start, _end, callee = debt_chain
-        line = masked.count("\n", 0, debt_start) + 1
-        source_line = lines[line - 1].strip()
-        sites.append(
-            _FrontendDebtSite(
-                id=_frontend_fingerprint(path, callee, source_line),
-                path=path,
-                line=line,
-                callee=callee,
-                source=source_line,
-            )
-        )
-    return sites
-
-
-def _scan_frontend_debt_sites() -> list[_FrontendDebtSite]:
+@functools.cache
+def _scan_frontend_debt_sites() -> tuple[_FrontendDebtSite, ...]:
     sites: list[_FrontendDebtSite] = []
     for root in _FRONTEND_TEST_ROOTS:
         if not root.exists():
@@ -1029,7 +423,7 @@ def _scan_frontend_debt_sites() -> list[_FrontendDebtSite]:
                 continue
             relative = path.relative_to(REPO_ROOT)
             sites.extend(_scan_frontend_source(path.read_text(encoding="utf-8"), relative))
-    return sorted(sites, key=lambda site: (site.path.as_posix(), site.line, site.callee))
+    return tuple(sorted(sites, key=lambda site: (site.path.as_posix(), site.line, site.callee)))
 
 
 def _format_frontend_site(site: _FrontendDebtSite) -> str:
@@ -1185,7 +579,11 @@ def test_playwright_ci_retry_budget_is_pinned() -> None:
     assert f"retries: process.env.CI ? {_PLAYWRIGHT_CI_RETRY_BUDGET} : 0," in source
 
 
+@pytest.mark.timeout(180)
 def test_test_health_summary_matches_regeneration() -> None:
+    # This regenerates from full backend/frontend source scans. Coverage
+    # tracing plus four-way shard contention can legitimately exceed the
+    # suite's 60-second default, so keep a larger but still bounded ceiling.
     checked_in = _TEST_HEALTH_SUMMARY_PATH.read_text(encoding="utf-8")
     regenerated = _test_health_summary()
     assert checked_in == regenerated, (
@@ -1343,6 +741,20 @@ def test_frontend_scanner_detects_skip_fixme_fail_only_variants() -> None:
         "describe.only",
         "it.only",
         "test.describe.only",
+    ]
+
+
+def test_frontend_scanner_keeps_adjacent_declarations_separate() -> None:
+    source = (
+        'test("ordinary case", () => {})\n'
+        'test.skip("skipped case", () => {})\n'
+        'it.only("focused case", () => {})\n'
+    )
+    sites = _scan_frontend_source(source, Path("frontend/src/example.test.ts"))
+
+    assert [(site.line, site.callee, site.source) for site in sites] == [
+        (2, "test.skip", 'test.skip("skipped case", () => {})'),
+        (3, "it.only", 'it.only("focused case", () => {})'),
     ]
 
 

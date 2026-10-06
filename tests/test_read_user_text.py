@@ -63,8 +63,8 @@ class TestParsePipelineEncodingRobustness:
             b'pipeline = haute.Pipeline("test")\n\n'
             b"# This has an en-dash \x96 in a comment\n\n"
             b"@pipeline.polars\n"
-            b"def transform(df: pl.LazyFrame) -> pl.LazyFrame:\n"
-            b"    return df\n"
+            b"def transform() -> pl.LazyFrame:\n"
+            b'    return pl.LazyFrame({"x": [1]})\n'
         )
         (pipeline_dir / "main.py").write_bytes(content)
 
@@ -83,9 +83,9 @@ class TestParsePipelineEncodingRobustness:
             b"import haute\nimport polars as pl\n\n"
             b'pipeline = haute.Pipeline("test")\n\n'
             b"@pipeline.polars\n"
-            b"def transform(df: pl.LazyFrame) -> pl.LazyFrame:\n"
+            b"def transform() -> pl.LazyFrame:\n"
             b'    """Has en-dash \x96 in docstring"""\n'
-            b"    return df\n"
+            b'    return pl.LazyFrame({"x": [1]})\n'
         )
         (pipeline_dir / "main.py").write_bytes(content)
 
@@ -108,13 +108,16 @@ class TestConfigEncodingRobustness:
         config_dir = pipeline_dir / "config" / "banding"
         config_dir.mkdir(parents=True)
         # JSON with 0x96 in a value — after replacement, JSON is still valid
-        (config_dir / "bands.json").write_bytes(b'{"bands": [{"label": "20\x9627"}]}')
+        (config_dir / "bands.json").write_bytes(
+            b'{"factors": [{"banding": "categorical", "column": "age", '
+            b'"outputColumn": "age_band", "rules": [{"value": "young", '
+            b'"assignment": "20\x9627"}], "default": "other"}]}'
+        )
         (pipeline_dir / "main.py").write_text(
-            "import haute\nimport polars as pl\n\n"
+            "import haute\n\n"
             'pipeline = haute.Pipeline("test")\n\n'
             '@pipeline.banding(config="config/banding/bands.json")\n'
-            "def bands(df: pl.LazyFrame) -> pl.LazyFrame:\n"
-            "    return df\n"
+            "def bands(df): ...\n"
         )
 
         from haute.parser import parse_pipeline_file
@@ -136,11 +139,10 @@ class TestConfigEncodingRobustness:
         config_dir.mkdir(parents=True)
         (config_dir / "bands.json").write_bytes(b'{\x96: "value"}')
         (pipeline_dir / "main.py").write_text(
-            "import haute\nimport polars as pl\n\n"
+            "import haute\n\n"
             'pipeline = haute.Pipeline("test")\n\n'
             '@pipeline.banding(config="config/banding/bands.json")\n'
-            "def bands(df: pl.LazyFrame) -> pl.LazyFrame:\n"
-            "    return df\n"
+            "def bands(df): ...\n"
         )
 
         from haute.errors import ConfigError

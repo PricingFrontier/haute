@@ -11,8 +11,12 @@ import { create } from "zustand"
 
 export type RatingStepEditorSection = "tables" | "combined"
 export type ExplorePane = "code" | "overview" | "pivots" | "charts" | "export"
-export type ExplorePreviewPane = "preview" | "overview" | "pivots" | "charts"
-export type ModellingPane = "target" | "features" | "params" | "split" | "train"
+export type ExplorePreviewPane = "preview" | "overview" | "pivots" | "charts" | "relationships"
+export type ModellingPane = "target" | "features" | "params" | "split" | "train" | "export"
+export type OptimiserPane = "data" | "factors" | "constraints" | "solve" | "export"
+/** Whether clicking a node calculates its preview ("automatic") or only
+ *  shows its last result until Refresh is pressed ("manual"). */
+export type CalculationMode = "automatic" | "manual"
 
 function setNodeIdEntry<T>(map: Record<string, T>, nodeId: string, value: T): Record<string, T> {
   return { ...map, [nodeId]: value }
@@ -24,14 +28,37 @@ interface UIState {
   setPaletteOpen: (open: boolean) => void
   utilityOpen: boolean
   setUtilityOpen: (open: boolean) => void
-  importsOpen: boolean
-  setImportsOpen: (open: boolean) => void
+  constantsOpen: boolean
+  setConstantsOpen: (open: boolean) => void
   assistantOpen: boolean
+  /** Opening the panel clears `assistantUnseenOutcome`. */
   setAssistantOpen: (open: boolean) => void
+  /*
+   * The assistant's eager chrome: the canvas pill, the toolbar button and the fix
+   * action read these, never the lazily loaded assistant store, which mirrors its
+   * turn lock here when it acquires and releases it.
+   */
+  /** The running assistant turn and what stops it; null while no turn runs. */
+  assistantTurn: { stop: () => void } | null
+  startAssistantTurn: (stop: () => void) => void
+  /** Release the mirror; an outcome the closed panel has not shown becomes unseen. */
+  endAssistantTurn: () => void
+  /** A turn ended while the panel was closed. */
+  assistantUnseenOutcome: boolean
+  /** The node whose preview error the next assistant message carries. */
+  assistantPreviewErrorNodeId: string | null
+  /** Open the assistant panel to fix *nodeId*'s preview error. */
+  askAssistantToFix: (nodeId: string) => void
+  clearAssistantPreviewError: () => void
   gitOpen: boolean
   setGitOpen: (open: boolean) => void
   shortcutsOpen: boolean
   setShortcutsOpen: (open: boolean | ((prev: boolean) => boolean)) => void
+  /** MLflow tracking-settings dialog — an overlay like shortcuts, outside
+   *  the panel exclusivity group; openable from the toolbar chip and every
+   *  MLflow surface. */
+  mlflowSettingsOpen: boolean
+  setMlflowSettingsOpen: (open: boolean) => void
   submodelDialog: { nodeIds: string[] } | null
   setSubmodelDialog: (dialog: { nodeIds: string[] } | null) => void
   renameDialog: { nodeId: string; currentLabel: string } | null
@@ -44,6 +71,10 @@ interface UIState {
   // Node panel width (persisted across selection changes)
   nodePanelWidth: number
   setNodePanelWidth: (width: number) => void
+  modellingPreviewHeight: number
+  setModellingPreviewHeight: (height: number) => void
+  optimiserPreviewHeight: number
+  setOptimiserPreviewHeight: (height: number) => void
 
   // Rating step editor section (remembered across node panel remounts)
   ratingStepEditorSections: Record<string, RatingStepEditorSection>
@@ -61,10 +92,29 @@ interface UIState {
   setExploreConfiguredPivot: (nodeId: string, pivotId: string | null) => void
   modellingPanes: Record<string, ModellingPane>
   setModellingPane: (nodeId: string, pane: ModellingPane) => void
+  optimiserPanes: Record<string, OptimiserPane>
+  setOptimiserPane: (nodeId: string, pane: OptimiserPane) => void
 
   // Hover highlight — when set, connected edges glow and unconnected nodes/edges dim
   hoveredNodeId: string | null
   setHoveredNodeId: (id: string | null) => void
+
+  // Trace focus — the node a trace card or derivation row points at: ringed on the
+  // canvas while set, and centred on each request (a new object, so asking for the
+  // same node again centres it again).
+  traceFocusNodeId: string | null
+  setTraceFocusNodeId: (id: string | null) => void
+  traceCentreRequest: { nodeId: string } | null
+  requestTraceCentre: (nodeId: string) => void
+
+  // Change focus — the nodes the latest assistant change or undo touched: ringed
+  // on the canvas while set, and centred once per focus (a new object each time).
+  changeFocus: { nodeIds: string[] } | null
+  setChangeFocus: (nodeIds: string[] | null) => void
+
+  // Preview calculation mode. Session-only: every session starts automatic.
+  calculationMode: CalculationMode
+  setCalculationMode: (mode: CalculationMode) => void
 
   // Node search (Ctrl+K)
   nodeSearchOpen: boolean
@@ -76,13 +126,38 @@ const useUIStore = create<UIState>()((set) => ({
   paletteOpen: true,
   setPaletteOpen: (open) => set({ paletteOpen: open }),
   utilityOpen: false,
-  setUtilityOpen: (open) => set({ utilityOpen: open, importsOpen: false, assistantOpen: false, gitOpen: false }),
-  importsOpen: false,
-  setImportsOpen: (open) => set({ importsOpen: open, utilityOpen: false, assistantOpen: false, gitOpen: false }),
+  setUtilityOpen: (open) => set({ utilityOpen: open, constantsOpen: false, assistantOpen: false, gitOpen: false }),
+  constantsOpen: false,
+  setConstantsOpen: (open) => set({ constantsOpen: open, utilityOpen: false, assistantOpen: false, gitOpen: false }),
   assistantOpen: false,
-  setAssistantOpen: (open) => set({ assistantOpen: open, utilityOpen: false, importsOpen: false, gitOpen: false }),
+  setAssistantOpen: (open) => set({
+    assistantOpen: open,
+    utilityOpen: false,
+    constantsOpen: false,
+    gitOpen: false,
+    ...(open ? { assistantUnseenOutcome: false } : {}),
+  }),
+  assistantTurn: null,
+  startAssistantTurn: (stop) => set({ assistantTurn: { stop } }),
+  endAssistantTurn: () => set((s) => ({
+    assistantTurn: null,
+    assistantUnseenOutcome: s.assistantUnseenOutcome || !s.assistantOpen,
+  })),
+  assistantUnseenOutcome: false,
+  assistantPreviewErrorNodeId: null,
+  askAssistantToFix: (nodeId) => set({
+    assistantPreviewErrorNodeId: nodeId,
+    assistantOpen: true,
+    utilityOpen: false,
+    constantsOpen: false,
+    gitOpen: false,
+    assistantUnseenOutcome: false,
+  }),
+  clearAssistantPreviewError: () => set({ assistantPreviewErrorNodeId: null }),
   gitOpen: false,
-  setGitOpen: (open) => set({ gitOpen: open, utilityOpen: false, importsOpen: false, assistantOpen: false }),
+  setGitOpen: (open) => set({ gitOpen: open, utilityOpen: false, constantsOpen: false, assistantOpen: false }),
+  mlflowSettingsOpen: false,
+  setMlflowSettingsOpen: (open) => set({ mlflowSettingsOpen: open }),
   shortcutsOpen: false,
   setShortcutsOpen: (open) => {
     if (typeof open === "function") {
@@ -103,6 +178,10 @@ const useUIStore = create<UIState>()((set) => ({
   // Node panel width (0 = use dynamic default: 50% of available space)
   nodePanelWidth: 0,
   setNodePanelWidth: (width) => set({ nodePanelWidth: width }),
+  modellingPreviewHeight: 420,
+  setModellingPreviewHeight: (height) => set({ modellingPreviewHeight: height }),
+  optimiserPreviewHeight: 420,
+  setOptimiserPreviewHeight: (height) => set({ optimiserPreviewHeight: height }),
 
   // Per-node UI selections (remembered across node panel remounts)
   ratingStepEditorSections: {},
@@ -137,10 +216,27 @@ const useUIStore = create<UIState>()((set) => ({
   setModellingPane: (nodeId, pane) => set((state) => ({
     modellingPanes: setNodeIdEntry(state.modellingPanes, nodeId, pane),
   })),
+  optimiserPanes: {},
+  setOptimiserPane: (nodeId, pane) => set((state) => ({
+    optimiserPanes: setNodeIdEntry(state.optimiserPanes, nodeId, pane),
+  })),
 
   // Hover highlight
   hoveredNodeId: null,
   setHoveredNodeId: (id) => set({ hoveredNodeId: id }),
+
+  // Trace focus
+  traceFocusNodeId: null,
+  setTraceFocusNodeId: (id) => set({ traceFocusNodeId: id }),
+  traceCentreRequest: null,
+  requestTraceCentre: (nodeId) => set({ traceCentreRequest: { nodeId } }),
+
+  // Change focus
+  changeFocus: null,
+  setChangeFocus: (nodeIds) => set({ changeFocus: nodeIds === null ? null : { nodeIds } }),
+
+  calculationMode: "automatic",
+  setCalculationMode: (mode) => set({ calculationMode: mode }),
 
   // Node search
   nodeSearchOpen: false,

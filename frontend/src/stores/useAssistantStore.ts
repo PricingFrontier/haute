@@ -7,14 +7,22 @@ import {
   createAssistantSession,
   getAssistantStatus,
   listAssistantSessions,
+  MAX_CONTEXT_SELECTION,
   streamAssistantMessage,
+  undoAssistantChange,
+  type AssistantBuildPlan,
+  type AssistantChangeRecord,
   type AssistantHistoryEntry,
+  type AssistantMessageContext,
   type AssistantSessionSummary,
   type AssistantStatus,
   type AssistantStreamEvent,
+  type AssistantTurnOutcome,
 } from "../api/assistant"
+import useDocumentStatusStore from "./useDocumentStatusStore"
 import useGraphStore from "./useGraphStore"
 import useToastStore from "./useToastStore"
+import useUIStore from "./useUIStore"
 
 export type TranscriptEntry =
   | { kind: "user"; text: string }
@@ -23,32 +31,85 @@ export type TranscriptEntry =
       kind: "activity"
       id: string
       name: string
+      /** The plain-words title the backend writes beside the tool. */
+      title: string
       state: "running" | "ok" | "error"
       summary: string
     }
+  /** What an apply saved, built by the backend from the saved graph. */
+  | { kind: "change"; change: AssistantChangeRecord }
+  /** The analyst undid this change. */
+  | { kind: "undo"; change: AssistantChangeRecord }
   | {
       kind: "marker"
-      outcome: "completed" | "failed" | "stopped" | "interrupted"
+      outcome: "failed" | "stopped" | "interrupted"
       detail?: string
     }
+  /** How a completed turn ended; `needs_input` and `blocked` render as cards. */
+  | { kind: "outcome"; outcome: AssistantTurnOutcome }
+
+/**
+ * The selected nodes a message carries: the first `MAX_CONTEXT_SELECTION` in
+ * canvas order. The send and the composer's selection chip both read this.
+ */
+export function contextSelection<T extends { selected?: boolean }>(nodes: readonly T[]): T[] {
+  return nodes.filter((node) => node.selected).slice(0, MAX_CONTEXT_SELECTION)
+}
+
+/**
+ * What the canvas adds to a message: the ids of its selected nodes, and the
+ * node whose preview error the analyst asked the assistant to fix.
+ */
+export function canvasMessageContext(): AssistantMessageContext {
+  const selectedNodeIds = contextSelection(useGraphStore.getState().nodes).map((node) => node.id)
+  return {
+    selectedNodeIds,
+    previewErrorNodeId: useUIStore.getState().assistantPreviewErrorNodeId,
+  }
+}
+
+/** The question card's one-click reply: hand the choice back to the assistant. */
+export const CHOOSE_FOR_ME_REPLY = "You choose, and tell me what you picked."
+
+/** The draft "Ask the assistant to fix" puts in an empty composer. */
+export const FIX_ERROR_PROMPT = "Fix the error this node raises when it runs."
 
 export interface SendMessageOptions {
   isInsideSubmodel: boolean
-  currentSourceFile: string
+  /** The canvas document's source file; `null` while the canvas has none. */
+  currentSourceFile: string | null
   readOnly: boolean
 }
 
 export interface AssistantStoreState {
   sessionId: string | null
+  /** The source file the server bound the open chat to. */
   pipelineSource: string | null
   entries: TranscriptEntry[]
+  /**
+   * The open chat's build plan, rendered as the checklist: from the session on
+   * open, replaced by each `build_plan_updated` event and by an undo's response.
+   */
+  buildPlan: AssistantBuildPlan | null
   turnStatus: "idle" | "streaming"
+  /**
+   * The model is thinking: set by a `thinking` event, cleared by any other
+   * event and when the turn ends. The panel shows a status, never the thinking.
+   */
+  thinking: boolean
   status: AssistantStatus | "unknown" | "error"
+  /**
+   * The detail of a status fetch refused with 400: a malformed `haute.toml` or
+   * invalid assistant table, named by the backend. `null` for any other failure.
+   */
+  statusErrorDetail: string | null
   notice: string | null
   /** Which screen the panel shows: the conversation list, or one chat. */
   view: "list" | "chat"
   sessions: AssistantSessionSummary[]
   sessionsStatus: "unknown" | "loading" | "ready" | "error"
+  /** The source file the panel last listed; a finished turn refreshes this list. */
+  sessionsSource: string | null
   refreshStatus: () => Promise<void>
   loadSessions: (sourceFile: string | null) => Promise<void>
   openSession: (sessionId: string, sourceFile: string) => Promise<void>
@@ -56,6 +117,10 @@ export interface AssistantStoreState {
   sendMessage: (text: string, options: SendMessageOptions) => Promise<void>
   stopTurn: () => void
   newChat: () => void
+  /** The change whose undo is in flight, or null. */
+  undoingChangeId: string | null
+  /** Save the version before *change*, then note the undo in the transcript. */
+  undoChange: (change: AssistantChangeRecord) => Promise<void>
 }
 
 type SetAssistantState = (
@@ -76,19 +141,64 @@ let activeController: AbortController | null = null
 let openGeneration = 0
 let listGeneration = 0
 
-export function assistantSendDisabledReason(
-  status: AssistantStatus | "unknown" | "error",
-  isInsideSubmodel: boolean,
-  dirty: boolean,
-  readOnly: boolean,
-): string | null {
+export interface AssistantSendGate {
+  status: AssistantStatus | "unknown" | "error"
+  isInsideSubmodel: boolean
+  dirty: boolean
+  readOnly: boolean
+  /** The canvas document's source file; `null` while the canvas has none. */
+  sourceFile: string | null
+  /** The source file the open chat is bound to; `null` before its first send. */
+  chatSource: string | null
+}
+
+export function assistantSendDisabledReason({
+  status,
+  isInsideSubmodel,
+  dirty,
+  readOnly,
+  sourceFile,
+  chatSource,
+}: AssistantSendGate): string | null {
   if (status === "unknown") return "Assistant status is unavailable. Refresh its status before sending."
   if (status === "error") return "Assistant status could not be loaded. Try again."
   if (!status.configured) return status.reason ?? "Assistant is not configured."
   if (!status.mutations_enabled) return status.mutations_reason ?? "Assistant mutations are disabled."
+  if (sourceFile === null) return "Save this pipeline to a file before using Assistant."
+  // A chat edits only the pipeline it was started on; sending it from another
+  // pipeline's canvas would change a file the analyst is not looking at.
+  if (chatSource !== null && chatSource !== sourceFile) {
+    return `This chat belongs to ${chatSource}. Open that pipeline to continue it, or start a new chat.`
+  }
   if (isInsideSubmodel) return "Assistant edits are available from the top-level pipeline only."
   if (dirty) return "Save or discard the current canvas changes before using Assistant."
   if (readOnly) return "Resolve the current pipeline recovery issues before using Assistant."
+  return null
+}
+
+export interface UndoGate {
+  change: AssistantChangeRecord
+  /** The revision of the document the canvas shows. */
+  documentRevision: string | null
+  turnStatus: "idle" | "streaming"
+  undoingChangeId: string | null
+}
+
+/**
+ * Why a change cannot be undone now, or `null` when it can. Mirrors the
+ * backend's rule, which stays the authority: only while the pipeline is still
+ * at the revision the change produced, so only the latest change to it.
+ */
+export function undoDisabledReason({
+  change,
+  documentRevision,
+  turnStatus,
+  undoingChangeId,
+}: UndoGate): string | null {
+  if (change.parent_sha === null) return "This change was not saved to Git."
+  if (turnStatus !== "idle") return "Wait for the assistant to finish before undoing."
+  if (undoingChangeId !== null) return "An undo is already running."
+  if (documentRevision !== change.revision) return "The pipeline was saved again after this change."
   return null
 }
 
@@ -99,21 +209,49 @@ export function assistantSendDisabledReason(
  * blank and then produce an earlier transcript mid-conversation.
  */
 
-/** Map a resumed session's backend history to settled transcript entries. */
+/**
+ * Map a resumed session's backend history to the entries the live turn showed.
+ *
+ * The backend stores one assistant row per provider round, while the live
+ * stream joins deltas until a tool row interrupts them, so adjacent assistant
+ * rows are joined the same way. Each outcome row settles its turn through the
+ * same `settleOutcome` the live `completed` event uses.
+ */
 function hydrateEntries(history: AssistantHistoryEntry[]): TranscriptEntry[] {
-  return history.map((entry, index): TranscriptEntry => {
-    if (entry.kind === "user") return { kind: "user", text: entry.text }
+  let entries: TranscriptEntry[] = []
+  history.forEach((entry, index) => {
+    if (entry.kind === "outcome") {
+      entries = settleOutcome(entries, entry.outcome)
+      return
+    }
+    if (entry.kind === "change" || entry.kind === "undo") {
+      entries = [...entries, { kind: entry.kind, change: entry.change }]
+      return
+    }
+    if (entry.kind === "user") {
+      entries = [...entries, { kind: "user", text: entry.text }]
+      return
+    }
     if (entry.kind === "assistant") {
-      return { kind: "assistant", text: entry.text, streaming: false }
+      const last = entries[entries.length - 1]
+      entries = last?.kind === "assistant"
+        ? [...entries.slice(0, -1), { ...last, text: last.text + entry.text }]
+        : [...entries, { kind: "assistant", text: entry.text, streaming: false }]
+      return
     }
-    return {
-      kind: "activity",
-      id: `history-${index}`,
-      name: entry.name,
-      state: entry.is_error ? "error" : "ok",
-      summary: entry.summary,
-    }
+    entries = [
+      ...entries,
+      {
+        kind: "activity",
+        id: `history-${index}`,
+        name: entry.name,
+        title: entry.title,
+        state: entry.is_error ? "error" : "ok",
+        summary: entry.summary,
+      },
+    ]
   })
+  return entries
 }
 
 function isAbortError(error: unknown): boolean {
@@ -131,11 +269,19 @@ function lastIndexMatching(
   return -1
 }
 
+/**
+ * Settle the streaming assistant segment: it stops streaming, and a segment no
+ * text reached (the placeholder opened at send time) is removed.
+ */
 function closeAssistant(entries: TranscriptEntry[]): TranscriptEntry[] {
   const assistantIndex = lastIndexMatching(entries,
     (entry) => entry.kind === "assistant" && entry.streaming,
   )
   if (assistantIndex < 0) return entries
+  const segment = entries[assistantIndex]
+  if (segment.kind === "assistant" && segment.text === "") {
+    return entries.filter((_, index) => index !== assistantIndex)
+  }
 
   return entries.map((entry, index) =>
     index === assistantIndex && entry.kind === "assistant"
@@ -153,7 +299,7 @@ function removeStreamingAssistant(entries: TranscriptEntry[]): TranscriptEntry[]
 
 function appendMarker(
   entries: TranscriptEntry[],
-  outcome: "completed" | "failed" | "stopped" | "interrupted",
+  outcome: "failed" | "stopped" | "interrupted",
   detail?: string,
 ): TranscriptEntry[] {
   const marker: TranscriptEntry = detail === undefined
@@ -167,20 +313,91 @@ function toolStartedEntry(event: Extract<AssistantStreamEvent, { type: "tool_sta
     kind: "activity",
     id: event.id,
     name: event.name,
+    title: event.title,
     state: "running",
     summary: event.summary,
   }
 }
 
+/**
+ * Append streamed text in stream order: it extends the last entry when that is
+ * the streaming segment, and otherwise opens a new segment below whatever the
+ * turn showed last, so prose that follows a tool row renders after it.
+ */
 function appendAssistantText(entries: TranscriptEntry[], text: string): TranscriptEntry[] {
-  const assistantIndex = lastIndexMatching(entries,
-    (entry) => entry.kind === "assistant" && entry.streaming,
-  )
-  if (assistantIndex < 0) return entries
+  const last = entries[entries.length - 1]
+  if (last?.kind === "assistant" && last.streaming) {
+    return [...entries.slice(0, -1), { ...last, text: last.text + text }]
+  }
+  return [...entries, { kind: "assistant", text, streaming: true }]
+}
 
-  return entries.map((entry, index) =>
-    index === assistantIndex && entry.kind === "assistant"
-      ? { ...entry, text: entry.text + text }
+/** Append a tool row or change card after the text streamed before it. */
+function appendActivity(entries: TranscriptEntry[], entry: TranscriptEntry): TranscriptEntry[] {
+  return [...closeAssistant(entries), entry]
+}
+
+const OUTCOME_MARKERS = { needs_input: "NEEDS_INPUT", blocked: "BLOCKED" } as const
+
+/**
+ * The backend's outcome marker (`_loop._OUTCOME_MARKER`) at the end of a text:
+ * a whole, case-sensitive word with its colon and the backticks or emphasis
+ * that wrap it, such as `**NEEDS_INPUT**:` or a backticked `BLOCKED:`.
+ */
+const TRAILING_OUTCOME_MARKER = /(?<![A-Za-z0-9_])[`*_]*(NEEDS_INPUT|BLOCKED)[`*_]*:[`*_]*$/
+
+/**
+ * Remove the model's `NEEDS_INPUT:`/`BLOCKED:` text, which the outcome card
+ * shows instead. By the backend contract the last assistant segment ends with
+ * the marker, anywhere in a line, followed by the outcome's detail; anything
+ * else is contract drift.
+ */
+function withoutOutcomeText(
+  entries: TranscriptEntry[],
+  marker: string,
+  detail: string,
+): TranscriptEntry[] {
+  const index = lastIndexMatching(entries, (entry) => entry.kind === "assistant")
+  const segment = index < 0 ? undefined : entries[index]
+  const text = segment?.kind === "assistant" ? segment.text.trimEnd() : ""
+  const body = text.endsWith(detail)
+    ? text.slice(0, text.length - detail.length).trimEnd()
+    : null
+  const found = body === null ? null : TRAILING_OUTCOME_MARKER.exec(body)
+  if (segment?.kind !== "assistant" || body === null || found?.[1] !== marker) {
+    throw new Error(
+      `Assistant contract violation: the turn's reply does not end with its ${marker}: outcome.`,
+    )
+  }
+  const rest = body.slice(0, found.index).trimEnd()
+  return rest
+    ? entries.map((entry, entryIndex) => (entryIndex === index ? { ...segment, text: rest } : entry))
+    : entries.filter((_, entryIndex) => entryIndex !== index)
+}
+
+/**
+ * Close a completed turn with its outcome. Shared by the live `completed` event
+ * and a resumed chat's history so both render the same transcript.
+ */
+export function settleOutcome(
+  entries: TranscriptEntry[],
+  outcome: AssistantTurnOutcome,
+): TranscriptEntry[] {
+  let settled = closeAssistant(entries)
+  if (outcome.kind === "needs_input" || outcome.kind === "blocked") {
+    settled = withoutOutcomeText(settled, OUTCOME_MARKERS[outcome.kind], outcome.detail)
+  }
+  return [...settled, { kind: "outcome", outcome }]
+}
+
+/** Retitle a running tool's row with the stage it reports, such as checking the data. */
+function retitleTool(
+  entries: TranscriptEntry[],
+  event: Extract<AssistantStreamEvent, { type: "tool_progress" }>,
+): TranscriptEntry[] {
+  return entries.map((entry) =>
+    entry.kind === "activity" && entry.id === event.id && entry.state === "running"
+      ? { ...entry, title: event.title }
       : entry,
   )
 }
@@ -199,6 +416,7 @@ function settleTool(
       ? {
           ...entry,
           name: event.name,
+          title: event.title,
           state: event.is_error ? "error" : "ok",
           summary: event.summary,
         }
@@ -267,26 +485,35 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
   sessionId: null,
   pipelineSource: null,
   entries: [],
+  buildPlan: null,
   turnStatus: "idle",
+  thinking: false,
   status: "unknown",
+  statusErrorDetail: null,
   notice: null,
   view: "list",
   sessions: [],
   sessionsStatus: "unknown",
+  sessionsSource: null,
+  undoingChangeId: null,
 
   refreshStatus: async () => {
     try {
       const status = await getAssistantStatus()
-      set({ status })
-    } catch {
-      set({ status: "error" })
+      set({ status, statusErrorDetail: null })
+    } catch (error) {
+      // A 400 is a configuration the backend could not read; its detail names
+      // what to fix, and asking again cannot succeed until the file changes.
+      const detail = error instanceof ApiError && error.status === 400
+        ? error.detail ?? null
+        : null
+      set({ status: "error", statusErrorDetail: detail })
     }
   },
 
   loadSessions: async (sourceFile) => {
-    // `sourceFile` is the gate, not the query: the request deliberately sends
-    // `pipeline: null` so the server resolves the pipeline exactly as session
-    // creation does. With none resolved there is nothing to list.
+    // The list shows only the canvas pipeline's chats; with no source file
+    // there is nothing to list.
     const current = get()
     if (
       current.turnStatus === "idle" &&
@@ -299,18 +526,19 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
         sessionId: null,
         pipelineSource: null,
         entries: [],
+        buildPlan: null,
         notice: null,
       })
     }
     if (sourceFile === null) {
       listGeneration += 1
-      set({ sessions: [], sessionsStatus: "ready" })
+      set({ sessions: [], sessionsStatus: "ready", sessionsSource: null })
       return
     }
     const generation = (listGeneration += 1)
-    set({ sessionsStatus: "loading" })
+    set({ sessionsStatus: "loading", sessionsSource: sourceFile })
     try {
-      const sessions = await listAssistantSessions(null)
+      const { sessions } = await listAssistantSessions(sourceFile)
       if (generation !== listGeneration) return
       set({ sessions, sessionsStatus: "ready" })
     } catch {
@@ -330,16 +558,24 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
     // replacement arrives — otherwise a message sent during the fetch lands in
     // the chat the user just navigated away from.
     const generation = (openGeneration += 1)
-    set({ view: "chat", entries: [], notice: null, sessionId: null, pipelineSource: null })
+    set({
+      view: "chat",
+      entries: [],
+      buildPlan: null,
+      notice: null,
+      sessionId: null,
+      pipelineSource: null,
+    })
     try {
-      const result = await createAssistantSession(null, sessionId)
+      const result = await createAssistantSession(sourceFile, sessionId)
       // A second choice while this one was in flight owns the screen; letting
       // a slower earlier response land would show a chat nobody picked.
       if (generation !== openGeneration) return
       set({
         sessionId: result.sessionId,
-        pipelineSource: sourceFile,
+        pipelineSource: result.sourceFile,
         entries: hydrateEntries(result.history),
+        buildPlan: result.buildPlan,
       })
     } catch (error) {
       if (generation !== openGeneration) return
@@ -361,49 +597,59 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
     const current = get()
     if (current.turnStatus !== "idle") return
 
-    const disabledReason = assistantSendDisabledReason(
-      current.status,
-      options.isInsideSubmodel,
-      useGraphStore.getState().dirty,
-      options.readOnly,
-    )
-    if (disabledReason !== null) {
+    const disabledReason = assistantSendDisabledReason({
+      status: current.status,
+      isInsideSubmodel: options.isInsideSubmodel,
+      dirty: useGraphStore.getState().dirty,
+      readOnly: options.readOnly,
+      sourceFile: options.currentSourceFile,
+      chatSource: current.pipelineSource,
+    })
+    const sourceFile = options.currentSourceFile
+    if (disabledReason !== null || sourceFile === null) {
       set({ notice: disabledReason })
       return
     }
     if (!text.trim()) return
+    // The selection as the analyst sends, before any await can change it.
+    const context = canvasMessageContext()
 
     // A message sent from the immediately mounted composer becomes the active
     // chat. A slower transcript-open response must not replace it afterwards.
     openGeneration += 1
 
-    if (
-      (current.pipelineSource !== null || current.sessionId !== null) &&
-      current.pipelineSource !== options.currentSourceFile
-    ) {
-      set({ sessionId: null, pipelineSource: null, entries: [] })
-    }
-
     const controller = new AbortController()
     activeController = controller
     set({ turnStatus: "streaming", notice: null })
+    // The eager chrome (canvas pill, toolbar) reads the turn from the UI store;
+    // the canvas is read-only from here until the release below.
+    useUIStore.getState().startAssistantTurn(() => get().stopTurn())
     let sessionId = get().sessionId
     try {
       if (sessionId === null) {
         // Always a fresh session. The panel resolves an existing conversation
         // through `openSession`, so resuming a remembered id here would drop
         // someone else's transcript into a chat the user opened as new.
-        const result = await createAssistantSession(null, null, controller.signal)
+        const result = await createAssistantSession(sourceFile, null, controller.signal)
         sessionId = result.sessionId
-        set({ sessionId, pipelineSource: options.currentSourceFile })
+        set({ sessionId, pipelineSource: result.sourceFile, buildPlan: result.buildPlan })
       }
     } catch (error) {
       rejectSessionCreation(set, error)
       if (activeController === controller) {
         activeController = null
         set({ turnStatus: "idle" })
+        useUIStore.getState().endAssistantTurn()
       }
       return
+    }
+    // The fix request rides on this message only; a later one must not
+    // reproduce the same error again. A newer request stays for the next one.
+    if (
+      context.previewErrorNodeId !== null
+      && useUIStore.getState().assistantPreviewErrorNodeId === context.previewErrorNodeId
+    ) {
+      useUIStore.getState().clearAssistantPreviewError()
     }
 
     set((state) => ({
@@ -421,36 +667,40 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
     }>
     const terminal = { current: null as TerminalEvent | null }
     try {
-      await streamAssistantMessage(sessionId, text, {
+      await streamAssistantMessage(sessionId, text, sourceFile, {
         signal: controller.signal,
+        context,
         onEvent: (event) => {
           if (terminal.current !== null) {
             throw new Error("Assistant stream contract violation: received an event after a terminal event.")
           }
 
+          // Thinking lasts until the model's next text, tool or terminal event.
+          if ((event.type === "thinking") !== get().thinking) {
+            set({ thinking: event.type === "thinking" })
+          }
           switch (event.type) {
+            case "thinking":
+              break
             case "text_delta":
               set((state) => ({ entries: appendAssistantText(state.entries, event.text) }))
               break
             case "tool_started":
-              set((state) => ({ entries: [...state.entries, toolStartedEntry(event)] }))
+              set((state) => ({ entries: appendActivity(state.entries, toolStartedEntry(event)) }))
+              break
+            case "tool_progress":
+              set((state) => ({ entries: retitleTool(state.entries, event) }))
               break
             case "tool_finished":
               set((state) => ({ entries: settleTool(state.entries, event) }))
               break
-            case "graph_updated":
+            case "change_applied":
               set((state) => ({
-                entries: [
-                  ...state.entries,
-                  {
-                    kind: "activity",
-                    id: `graph-${event.fingerprint}`,
-                    name: "graph_updated",
-                    state: "ok",
-                    summary: "Canvas updated",
-                  },
-                ],
+                entries: appendActivity(state.entries, { kind: "change", change: event.change }),
               }))
+              break
+            case "build_plan_updated":
+              set({ buildPlan: event.build_plan })
               break
             case "completed":
               terminal.current = event
@@ -469,9 +719,7 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
       if (terminalEvent === null) {
         set((state) => ({ entries: appendMarker(state.entries, "interrupted") }))
       } else if (terminalEvent.type === "completed") {
-        set((state) => ({
-          entries: appendMarker(state.entries, "completed"),
-        }))
+        set((state) => ({ entries: settleOutcome(state.entries, terminalEvent.outcome) }))
       } else if (terminalEvent.type === "failed") {
         set((state) => ({ entries: appendMarker(state.entries, "failed", terminalEvent.message) }))
         useToastStore.getState().addToast("error", terminalEvent.message)
@@ -483,10 +731,14 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
     } finally {
       if (activeController === controller) {
         activeController = null
-        set({ turnStatus: "idle" })
+        set({ turnStatus: "idle", thinking: false })
+        useUIStore.getState().endAssistantTurn()
         // The turn gave this conversation its first message, and therefore its
-        // title and its place in the list. Refresh so going back shows it.
-        void get().loadSessions(options.currentSourceFile)
+        // title and its place in the list. Refresh so going back shows it —
+        // for the pipeline the canvas shows now, which may have changed mid-turn.
+        // With no listed pipeline there is no list to refresh.
+        const listedSource = get().sessionsSource
+        if (listedSource !== null) void get().loadSessions(listedSource)
       }
     }
   },
@@ -504,7 +756,49 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
     // open still in flight is what keeps this chat empty: its response would
     // otherwise arrive and fill the new chat with an old transcript.
     openGeneration += 1
-    set({ sessionId: null, pipelineSource: null, entries: [], notice: null, view: "chat" })
+    set({
+      sessionId: null,
+      pipelineSource: null,
+      entries: [],
+      buildPlan: null,
+      notice: null,
+      view: "chat",
+    })
+  },
+
+  undoChange: async (change) => {
+    const current = get()
+    const reason = undoDisabledReason({
+      change,
+      documentRevision: useDocumentStatusStore.getState().sourceRevision,
+      turnStatus: current.turnStatus,
+      undoingChangeId: current.undoingChangeId,
+    })
+    if (reason !== null) {
+      set({ notice: reason })
+      return
+    }
+    const { sessionId, pipelineSource } = current
+    if (sessionId === null || pipelineSource === null) {
+      throw new Error("Assistant contract violation: a change card outside an open chat.")
+    }
+    set({ undoingChangeId: change.id, notice: null })
+    try {
+      const result = await undoAssistantChange(sessionId, change.id, pipelineSource)
+      // The canvas updates through /ws/sync; the transcript notes the undo, and
+      // the checklist shows the plan in which the backend marked it undone.
+      if (get().sessionId === sessionId) {
+        set((state) => ({
+          entries: [...state.entries, { kind: "undo", change }],
+          buildPlan: result.buildPlan,
+        }))
+      }
+    } catch (error) {
+      const detail = error instanceof ApiError ? error.detail : null
+      set({ notice: detail ?? "The change could not be undone." })
+    } finally {
+      set({ undoingChangeId: null })
+    }
   },
 }))
 

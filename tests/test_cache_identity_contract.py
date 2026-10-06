@@ -24,10 +24,9 @@ from haute._cache import (
     validate_cache_config_field_classifications,
 )
 from haute._config_validation import VALID_KEYS
-from haute._dataframe_execution_cache import dataframe_execution_cache_key
-from haute._execution_context import ExecutionProfile
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.execution import dataframe_graph_input_fingerprint
+from tests._source_files import source_files
 
 
 def test_json_digest_encoders_use_canonical_json_except_persisted_feature_contract() -> None:
@@ -55,7 +54,7 @@ def test_json_digest_encoders_use_canonical_json_except_persisted_feature_contra
             "blake2b",
         }
 
-    for path in source_root.rglob("*.py"):
+    for path in source_files(source_root):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for function in (node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)):
             dumped_names = {
@@ -193,10 +192,28 @@ def test_every_consumer_totally_classifies_the_closed_logical_input_set() -> Non
 
 
 def test_checked_contract_versions_advance_with_changed_byte_layouts() -> None:
-    assert ALGO_VERSION == 8
+    assert ALGO_VERSION == 9
     assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.GRAPH_STRUCTURE].version == 2
-    assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.PREVIEW_TRACE].version == 3
-    assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.RUNTIME_GRAPH_INPUT].version == 3
+    assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.PREVIEW_TRACE].version == 4
+    assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.RUNTIME_GRAPH_INPUT].version == 4
+    assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.DEPLOY_SCHEMA].version == 2
+    assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.NODE_SNAPSHOT_SIGNATURE].version == 2
+
+
+def test_global_constants_are_signed_by_every_result_identity_and_excluded_elsewhere() -> None:
+    consumed = {
+        CacheConsumer.GRAPH_EXECUTION: ("global_constants",),
+        CacheConsumer.PREVIEW_TRACE: ("global_constants",),
+        CacheConsumer.NODE_SNAPSHOT_SIGNATURE: ("lineage_fingerprint",),
+        CacheConsumer.DEPLOY_SCHEMA: ("graph_fingerprint",),
+    }
+    for consumer, contract in CACHE_CONSUMER_CONTRACTS.items():
+        disposition = contract.input_classes[CacheInputClass.GLOBAL_CONSTANTS]
+        if consumer in consumed:
+            assert disposition.fields == consumed[consumer], consumer
+        else:
+            assert disposition.fields == (), consumer
+            assert disposition.exclusion_reason, consumer
 
 
 def test_preview_contract_checks_lineage_graph_dimensions_individually() -> None:
@@ -225,7 +242,6 @@ def test_runtime_graph_input_declares_structural_identity_as_a_required_companio
 
     for consumer, structural_field in (
         (CacheConsumer.PREVIEW_TRACE, "nodes"),
-        (CacheConsumer.DATAFRAME_EXECUTION, "lineage_fingerprint"),
         (CacheConsumer.DEPLOY_SCHEMA, "graph_fingerprint"),
     ):
         disposition = CACHE_CONSUMER_CONTRACTS[consumer].input_classes[CacheInputClass.NODE_CONFIG]
@@ -373,39 +389,14 @@ def test_graph_identity_is_stable_for_presentation_only_changes(changed) -> None
     assert graph_fingerprint(changed(graph)) == graph_fingerprint(graph)
 
 
-def test_dataframe_identity_consumes_label_and_source_location() -> None:
-    graph = _graph()
-
-    def key(candidate: PipelineGraph):
-        return dataframe_execution_cache_key(
-            candidate,
-            node_id="target",
-            namespace="test",
-            source="live",
-            profile=ExecutionProfile.LAZY_SINK,
-            input_fingerprint="runtime:v1",
-            execution_policy={"target_node_id": "target"},
-        )
-
-    baseline = key(graph)
-    assert key(_replace_node(graph, "target", label="Other target")) != baseline
-    assert key(graph.model_copy(update={"source_file": "other/main.py"})) != baseline
-
-
 @pytest.mark.parametrize(
     ("node_type", "base_config", "field", "changed_value"),
     [
         (
             NodeType.EXTERNAL_FILE,
-            {"path": "artifact.bin", "fileType": "pickle", "modelClass": "Estimator"},
+            {"path": "artifact.bin", "fileType": "pickle"},
             "fileType",
             "joblib",
-        ),
-        (
-            NodeType.EXTERNAL_FILE,
-            {"path": "artifact.bin", "fileType": "pickle", "modelClass": "Estimator"},
-            "modelClass",
-            "OtherEstimator",
         ),
         (
             NodeType.MODEL_SCORE,

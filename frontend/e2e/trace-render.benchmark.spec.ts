@@ -155,6 +155,7 @@ function traceStep(shape: TraceShape, index: number, count: number) {
     output_values: output,
     topological_rank: index,
     column_relevant: true,
+    contributed_columns: [], derivations: [],
     expression: null,
     calculation: null,
     node_detail: null,

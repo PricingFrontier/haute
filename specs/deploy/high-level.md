@@ -72,10 +72,10 @@ the pruned path references, and dry-runs the graph once to infer input and outpu
 schemas. The result is a `ResolvedDeploy` — the single handoff object every backend
 target consumes. Snapshot-backed Data Inputs hold a cache-generation lease from
 resolution through backend shipment; the result owns that lifetime and records the
-selected generation's signed provenance in the deploy manifest. The source-cache lease
-registry is currently process-local: it protects refresh/clear activity in the same
-process, but a second process is not coordinated and remains a known source-cache
-limitation.
+selected generation's signed provenance in the deploy manifest. The lease holds across
+processes: while it is held, a marker naming the holding process sits in the generation's
+directory, and refresh, clear and retirement in any process leave a generation with a
+live holder's marker in place.
 
 Every local file read needed by the pruned deploy graph is resolved with pipeline-relative
 precedence and must remain inside the resolved project root. This includes API sample
@@ -85,7 +85,7 @@ parent-traversal-shaped identifiers are rejected before download. A configured
 `feature_contract_path` is bundled under the canonical model-sidecar name and takes
 precedence over an adjacent downloaded sidecar.
 
-An `apiInput` is the preferred live request source. For legacy single-source graphs,
+An `apiInput` is the preferred live request source. For a graph with no `apiInput`,
 exactly one source may be promoted only when it is a `dataInput`, whose configured data
 provides schema/sample information before live requests replace it. A `constant` or any
 other source type is never promoted accidentally; deployment fails with a correction that
@@ -95,7 +95,9 @@ names the node and asks for an API Input.
 (output/input nodes present in the pruned graph, input nodes are true sources, artefacts
 exist on disk, schemas are non-empty, configured `output_fields` are distinct non-empty
 column names present in the inferred output schema, and every retained Data Input has a
-validated, deploy-ready direct Parquet source or snapshot). When `test_quotes.dir` is configured,
+validated, deploy-ready direct Parquet source or snapshot), and every global constant the
+pruned graph reads has a `live` value, since deployed scoring runs under `live`. When
+`test_quotes.dir` is configured,
 the path must exist, be a directory, and contain at least one `*.json` quote; otherwise
 validation fails rather than silently disabling the gate. Every quote is scored through the
 resolved graph. Test-quote files may be plain input rows or "golden" rows with an
@@ -123,12 +125,33 @@ schema and stores only the selected columns, in configured order, in the resolve
 Test-quote scoring applies the same projection. The deploy manifest, MLflow signature,
 golden validation, and served response therefore describe one output contract.
 
+**Project modules.** A preamble may import the project's `utility` package: the module
+or package that `utility` resolves to from the pipeline directory or the working
+directory, the same resolution the executor uses. Deploy ships that package with the
+bundle. The container copies it beside `app.py`, and the Databricks model logs it as an
+MLflow code path, so the served preamble imports the files that were validated. Any
+other static absolute import, in the preamble or in a bundled `utility` file, that
+resolves from the pipeline directory or the working directory is project code the bundle
+does not carry. `validate_deploy` refuses it, naming the module and the file that imports
+it. Imports that resolve from installed packages are for the serving environment to
+provide. The served preamble's names reach every code box, as in the editor: a bundled
+External File's code sees them beside `obj`, and a Model Score's code beside `model`.
+
 **Packaging and shipping.** Two backends are implemented:
 - **Databricks**: logs the pipeline as an `mlflow.pyfunc.PythonModel` (models-from-code),
   registers it in Unity Catalog, and creates/updates a Databricks Model Serving endpoint.
+  Logging and registration authenticate with the dedicated MLflow credentials, the
+  serving endpoint with the rating credentials.
+  Multi-row scoring stays in the serving process there — there is no worker and no hard
+  memory cap — so this target gets no conservative execution policy: a group-by whose
+  materialisation cannot be estimated fails the bundle with a correction naming the node
+  and pointing at a container target, rather than shipping a promise the runtime cannot
+  keep.
 - **Container**: generates a FastAPI app (`POST /quote`, `GET /health`) and a Dockerfile
   pinned to dependency versions actually installed in the build environment, builds the
-  image, and pushes it to a registry if one is configured. `/quote` accepts a single JSON
+  image, and pushes it to a registry if one is configured. The image installs `haute`
+  without its dependencies plus the pinned scoring runtime (see **Scoring runtime**), so
+  it carries no assistant, tuning or editor package. `/quote` accepts a single JSON
   object or an array, enforces a byte limit before materialisation, and either returns a
   stable JSON envelope capped at 1,000 returned rows or streams all rows as ordered NDJSON
   when requested through `Accept`. NDJSON is collected into a bounded-memory spooled
@@ -136,15 +159,35 @@ golden validation, and served response therefore describe one output contract.
   the event loop remains responsive during scoring and a scoring failure produces the
   same logged HTTP 500 contract as ordinary JSON instead of a misleading 200 with a
   truncated body.
+  A single-row quote scores in the service process; a multi-row batch — the only request
+  shape whose memory grows with the payload — is scored in one hard-capped spawn worker
+  per request, transported to the parent as a parquet file and rendered into the same
+  JSON or NDJSON response. Because that worker runs under a real memory cap, a group-by
+  whose materialisation cannot be estimated runs conservatively there instead of being
+  rejected; the bundle records what the served batch will do — including which runtime it
+  was planned for — and ships it in the manifest. The build's own one-row schema check
+  runs uncapped and would reject such a graph, so the bundle proves the served batch path
+  can produce the schema by running that dry-run in the same hard-capped worker the
+  service uses, and reads the schema from what the worker wrote. If that worker cannot
+  run or cannot finish, the deploy fails at build time rather than at every request. The
+  promise is also enforced at the far end: an image whose policy depends on that cap
+  refuses to start unless the host is configured to enforce worker memory caps and can
+  install one, so a
+  container can never serve batches under weaker guarantees than its manifest
+  advertises.
   Generated images select the fixed application admission policy
   `HAUTE_EXECUTION_MEMORY_POLICY=strict_server`; `/health` reports
-  `memory_enforcement="admission_rss_best_effort"`. These are application-level
-  admission and sampled-RSS guarantees, not a substitute for a platform hard limit.
+  `memory_enforcement="admission_rss_best_effort"` for in-process live scoring, plus
+  `batch_memory_enforcement` (whether the batch worker's hard cap is `required` or
+  `best_effort` on this host) and the bundle's `execution_policy` record. The live figure
+  is an application-level admission and sampled-RSS guarantee, not a substitute for a
+  platform hard limit; the batch worker's cap is a real one.
 
 Three further container-platform targets (Azure Container Apps, AWS ECS, GCP Cloud Run)
-share the container build step (and push only when `container.registry` is configured),
-but their service-update step is not yet implemented — `deploy()` then raises
-`NotImplementedError` naming the image tag.
+share the container build step and are build and push only: they require
+`container.registry`, push the image there, and finish successfully, reporting that the
+service was not updated and naming the image to point it at. Their service-update SDK
+adapters are not built.
 
 **Impact analysis.** `haute impact` (via `src/haute/deploy/_impact.py`) scores a shared dataset through
 both a staging and a production endpoint (Databricks serving or a container's `/quote`
@@ -173,18 +216,18 @@ approving it.
   (`_model_code.py`) reconstructs the graph via `PipelineGraph.model_validate(manifest["pruned_graph"])`
   rather than re-parsing any source file. The graph JSON is inspectable without the
   original source and cannot drift from what was validated. Its embedded preamble still
-  executes at runtime, however: project-local modules imported by that preamble are not
-  collected by the bundler and must be installed/provided separately.
+  executes at runtime, so the bundle carries the project's `utility` package with it
+  (see **Project modules**).
 - **Reproducible container builds.** `container.base_image` must be pinned to an explicit
   patch version or a digest (`src/haute/deploy/_config.py::_validate_base_image_pinning`) — floating tags
   like `python:3.11-slim` are rejected outright, because the image bytes tested today
-  must be the image bytes served tomorrow. Dockerfile dependency versions
-  (`haute`, `polars`, `fastapi`, `uvicorn`) are pinned to whatever is actually installed
-  in the build environment rather than left unpinned or hardcoded, so a build environment
-  drift is caught rather than silently propagated to a fresh, possibly incompatible pull.
+  must be the image bytes served tomorrow. Dockerfile dependency versions (`haute` and
+  every scoring-runtime package) are pinned to whatever is actually installed in the build
+  environment rather than left unpinned or hardcoded, so a build environment drift is
+  caught rather than silently propagated to a fresh, possibly incompatible pull.
 - **Schema-cache identity tracks served bytes, not just graph shape.** The output-schema
-  dry-run cache key folds in `artifact_identity_fingerprint()` — a stat-gated fingerprint
-  of every bundled artefact's resolved path, `(mtime_ns, size)` gate, and content hash — so retraining a model in
+  dry-run cache key folds in `artifact_identity_fingerprint()` — the runtime fingerprint
+  of every bundled artefact's resolved path, size, mtime, and shared content signature — so retraining a model in
   place under an unchanged `run_id`/`version="latest"` config still busts the cache
   instead of baking a stale `ModelSignature` into the manifest.
 - **Pipeline-relative source paths become container-relative manifest paths.**
@@ -201,9 +244,12 @@ approving it.
   Container Apps, Cloud Run, Kubernetes, a VM, a laptop) instead of being tied to one
   platform's compute pricing — and it lets the implemented container-platform targets
   share one build instead of requiring a bespoke packaging pipeline per platform.
-  SageMaker and Azure ML (`sagemaker`, `azure-ml`) are currently only planned target
-  names: `_validate_target` raises `NotImplementedError` before resolution and makes no
-  promise about their eventual packaging design. Databricks remains
+  SageMaker and Azure ML (`sagemaker`, `azure-ml`) are named future targets only:
+  `haute init` does not offer them, and a `haute.toml` naming one is rejected by
+  `_validate_target` with `NotImplementedError` before resolution, which makes no promise
+  about their eventual packaging design. `haute init` labels Azure Container Apps, AWS
+  ECS and GCP Cloud Run build and push only in its generated files and `--target` help,
+  because their service update is not implemented. Databricks remains
   first-class for teams already on that platform, with a documented pandas bridge
   (`_model_code.py::HauteModel.predict`) as the one place the "Polars-native" rule is
   deliberately broken, because MLflow's `pyfunc` protocol requires it.
@@ -229,9 +275,11 @@ approving it.
   (`haute._execution_admission`, `haute._execution_context`).
 - **[mlflow-model-registry](../mlflow-model-registry/high-level.md)** — `_bundler.py`
   downloads `modelScore` model artefacts and feature contracts from MLflow at bundle
-  time (`_mlflow_io._resolve_artifact_local`, `_find_model_artifact`); `_mlflow.py`
+  time (`_mlflow_io._resolve_artifact_local`, `_find_model_artifact`) and copies a
+  file-sourced node's model file and contract from the project; `_mlflow.py`
   registers the deployed pipeline itself as a new MLflow model version. `_scorer.py`
-  loads bundled models via `haute._mlflow_io.load_local_model`.
+  loads bundled models via `haute._mlflow_io.load_local_model_cached`, which binds each
+  to its bundled contract exactly as the preview does.
 - **[modelling](../modelling/high-level.md)** — `_scorer.py` and `_bundler.py` both
   depend on `haute.modelling._feature_contract` (contract loading, matching, and
   categorical-level declarations) to detect train-vs-score drift.
@@ -241,9 +289,9 @@ approving it.
   artefacts.
 - **[io-layer](../io-layer/high-level.md)** — `_bundler.py` validates retained Data
   Inputs through the canonical provider registry and snapshot cache. `_schema.py` uses
-  that path for `dataInput`; its legacy `read_data_source` bridge remains only for the
-  retained non-JSON `apiInput` compatibility path. Both respect
-  `ExecutionProfile.DEPLOY_BATCH` / `DEPLOY_LIVE` bounded-execution semantics.
+  that path for `dataInput`; it reads a non-JSON `apiInput` source through
+  `read_data_source`. Both respect `ExecutionProfile.DEPLOY_BATCH` /
+  `DEPLOY_LIVE` bounded-execution semantics.
 - **[cli](../cli/high-level.md)** — `src/haute/cli/_deploy.py`, `_smoke.py`,
   `src/haute/cli/_impact.py`, and `_status.py` are the production CLI consumers of this
   component's callable surface (`deploy_resolved()`, `resolve_config()`,
@@ -285,8 +333,9 @@ most: a silent wrong answer here mis-prices real policies.
   artefact validates the contract, then raises `RuntimeError` naming the node: the
   contract check happens first so drift is reported precisely even though scoring is
   impossible either way.
-- **Pre-deploy validation failures** (structural checks and test-quote scoring/expected-
-  output mismatches) are all collected and raised together as a single `DeployError`
+- **Pre-deploy validation failures** (structural checks, project-local imports the bundle
+  does not carry, and test-quote scoring/expected-output mismatches) are all collected
+  and raised together as a single `DeployError`
   listing every failure, rather than surfaced one at a time across repeated deploy
   attempts.
 - **Expected backend operational failures** (missing credentials, unavailable Docker,
@@ -310,15 +359,53 @@ most: a silent wrong answer here mis-prices real policies.
   `smoke` and `impact` do not apply that CI guard and can be run wherever their endpoint
   credentials and configured datasets are available.
 - **Platform-container service update** (Azure Container Apps / AWS ECS / GCP Cloud Run)
-  always raises `NotImplementedError` after a successful build and optional configured
-  registry push, naming the image tag so the operator can update the service manually.
+  is manual: the deploy refuses to start without `container.registry` (a local-only image
+  could never reach the service), and after a successful push it succeeds and names the
+  image tag so the operator can update the service. A failed build or push fails the deploy.
 - **Known unsupported deploy inputs** fail rather than being made self-contained: plain
-  JSON static sources are not batch-deployable; project-local preamble imports are not
-  bundled; bundled local `modelScore` serving supports CatBoost `.cbm` and RustyStats
-  `.rsglm`, while a discovered MLflow pyfunc directory cannot currently be bundled and
-  served by this path.
+  JSON static sources are not batch-deployable; a project-local import other than the
+  `utility` package is refused at validation; bundled local `modelScore` serving supports
+  every family the model family registry loads from a file (CatBoost `.cbm`, RustyStats
+  `.rsglm`, XGBoost `.ubj`, LightGBM `.lgbm`, EBM `.ebm`, t-boost `.tboost`), while a discovered MLflow pyfunc
+  directory cannot currently be bundled and served by this path.
 - **Impact-analysis arithmetic** raises `ValueError` rather than producing a misleading
   percentage when predictions contain non-finite values, or when a percent-change or
   total-percent-change calculation would divide by a zero production baseline against a
   non-zero staging value (`src/haute/deploy/_impact.py::_raise_for_non_finite_predictions`,
   `_zero_baseline_change_count`, `_total_percent_change`).
+
+## Scoring runtime
+
+`pip install haute` is unchanged: it brings the editor, assistant, training, tuning and
+MLflow stacks. A container image installs only what scoring imports (decided
+24 September 2026). Its Dockerfile installs a pinned scoring runtime — `polars`,
+`pyarrow`, `numpy`, `pydantic`, `fastapi`, `uvicorn[standard]`, `structlog`, `xxhash`,
+`psutil`, `orjson`, `msgspec`, `joblib`, `packaging` (the price-contour guard's version check)
+and `price-contour` — then `haute` itself with
+`--no-deps`. To that it adds each bundled artefact's model runtime by file suffix, and
+`mlflow` when the served graph has an optimiser apply that loads its artefact from MLflow
+at run time. Every package is pinned to the version installed in the deploying
+environment. `price-contour` is pinned to the version haute's compatibility guard verified
+(see [optimiser](../optimiser/low-level.md#the-price-contour-guard)); a build from an editable
+checkout or a direct URL refuses to deploy with a `DeployError`, because the container
+reinstalls from the package index by version and would not run the same solver code. A third-party package that the pipeline's own code imports, and that is
+neither in the runtime nor detected from an artefact, is not installed. A test serves
+the container smoke example in process with every other `haute` dependency made
+unimportable, and the weekly container-smoke lane builds and serves the real image.
+
+## Model families in deployment
+
+A Databricks Model Serving deployment installs `haute` at the deploying version, whose core
+dependencies bring each model family's engine with the platform marker: `xgboost-cpu`
+(capped below 3.3) on Linux and Windows and `xgboost` on macOS, plus `lightgbm` (below 5),
+`interpret-core` (0.7.x) and `t-boost` (0.8.x). A container image adds the engine each bundled model needs
+from its suffix instead: `.cbm` → `catboost`, `.ubj` → the installed XGBoost distribution
+plus `pandas`, `.lgbm` → `lightgbm` plus `pandas`, `.ebm` → `interpret-core` plus `pandas`,
+`.tboost` → `t-boost` (it scores Polars frames, so no `pandas`), and `.rsglm` → `rustystats`. A pickled or joblib artefact (`.pkl`, `.pickle`, `.joblib`) may
+hold an object of any third-party package haute's restricted unpickler allows, so it adds all
+of them: `catboost`, `interpret-core`, `pandas` and `scikit-learn`. Both
+score XGBoost, LightGBM, EBM and t-boost on CPU with no extra requirement. Bundling discovers `.ubj`, `.lgbm`, `.ebm` and `.tboost`
+artifacts with the other native suffixes and carries each model's feature contract; for an
+`.ebm` it fetches the contract the run logged beside the model, and the deployed scorer loads
+the EBM under that bundled contract. A macOS image must provide `libomp`.
+

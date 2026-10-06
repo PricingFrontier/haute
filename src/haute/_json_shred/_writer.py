@@ -16,13 +16,14 @@ import polars as pl
 from haute._api_input_schema import (
     sanitise_label_for_filesystem as _sanitise_label,
 )
+from haute._cpu_performance import configure_process_high_qos
 from haute._env import int_env
 from haute._execution_context import (
     current_execution_context,
 )
-from haute._json_shred import _records, _runtime_storage, _shred, _source_proof
+from haute._json_shred import _records, _runtime_storage, _shred
 from haute._json_shred._records import ShredSkipStats, _ChunkFailure, _ShredExecutionProgress
-from haute._json_shred._shred import _EmittingTableSpec
+from haute._json_shred._shred import _EmittingTableSpec, _Row
 from haute._logging import get_logger
 
 logger = get_logger(component="json_shred")
@@ -47,6 +48,14 @@ class _ChunkResult:
     # back through the pool's result channel would cost more than the shred.
     part_paths: dict[str, str]
     failure: _ChunkFailure | None = None  # pragma: no mutate
+
+
+@dataclass(frozen=True)  # pragma: no mutate - declaration metadata, not runtime logic
+class _ShredTables:
+    """One scratch shred: its skip evidence and each table's Parquet files in row order."""
+
+    skip_stats: ShredSkipStats
+    files: dict[str, tuple[Path, ...]]
 
 
 def _shred_chunk(
@@ -134,7 +143,7 @@ def _raise_chunk_error(result: _ChunkResult) -> NoReturn:
 
 
 class _BoundedParquetRowGroupWriter:
-    """Shared aggregate-bounded writer for cache artifacts and runtime spills."""
+    """Shared aggregate-bounded writer for snapshot builds and runtime spills."""
 
     def __init__(
         self,
@@ -153,7 +162,14 @@ class _BoundedParquetRowGroupWriter:
         self.max_bytes = int_env(
             "HAUTE_JSON_DIRECT_SPILL_MAX_BYTES", _DIRECT_SPILL_MAX_BYTES_DEFAULT
         )
-        self.buffers: dict[str, list[dict[str, Any]]] = {spec.label: [] for spec in table_specs}
+        self.buffers: dict[str, list[_Row]] = {spec.label: [] for spec in table_specs}
+        # A row's size estimate is its JSON-object encoding. orjson encodes the
+        # row's values as ``[v1,v2]`` and the object as ``{"n1":v1,"n2":v2}``;
+        # the difference is each encoded name plus its colon, fixed per table.
+        self.name_bytes: dict[str, int] = {
+            spec.label: sum(len(orjson.dumps(name)) + 1 for name, *_spec in spec.columns)
+            for spec in table_specs
+        }
         self.buffered_rows = 0
         self.buffered_bytes = 0
         self.paths: dict[str, Path] = {}
@@ -163,7 +179,7 @@ class _BoundedParquetRowGroupWriter:
         try:
             with self._disk_transaction():
                 for spec in table_specs:
-                    frame = _shred._buffer_to_frame([], spec.leaf_specs)
+                    frame = _shred._rows_to_frame([], spec.leaf_specs)
                     path = output_dir / (f"{_sanitise_label(spec.label)}{filename_suffix}.parquet")
                     arrow_schema = frame.to_arrow().schema.with_metadata(
                         _shred._per_frame_metadata(spec.label, spec.leaf_specs)
@@ -190,14 +206,14 @@ class _BoundedParquetRowGroupWriter:
             allow_existing_excess=allow_existing_excess,
         )
 
-    def emit(self, label: str, row: dict[str, Any]) -> None:
+    def emit(self, label: str, row: _Row) -> None:
         if label not in self.buffers:
             raise RuntimeError(f"bounded parquet writer received unknown table {label!r}")
         self.buffers[label].append(row)
         self.row_counts[label] += 1
         self.buffered_rows += 1
         # This is an accounting estimate, not serialisation retained in memory.
-        self.buffered_bytes += len(orjson.dumps(row))
+        self.buffered_bytes += len(orjson.dumps(row)) + self.name_bytes[label]
         if self.buffered_rows >= self.max_rows or self.buffered_bytes >= self.max_bytes:
             self.flush()
 
@@ -209,27 +225,12 @@ class _BoundedParquetRowGroupWriter:
                 rows = self.buffers[spec.label]
                 if not rows:
                     continue
-                frame = _shred._buffer_to_frame(rows, spec.leaf_specs)
+                frame = _shred._rows_to_frame(rows, spec.leaf_specs)
                 self.writers[spec.label].write_table(frame.to_arrow())
                 rows.clear()
         self.buffered_rows = 0
         self.buffered_bytes = 0
         progress.checkpoint("json_shred_row_group_after_flush")
-
-    def write_arrow_table(self, label: str, table: Any) -> None:
-        """Append one already-bounded Arrow table, preserving caller order."""
-        if label not in self.writers:
-            raise RuntimeError(f"bounded parquet writer received unknown table {label!r}")
-        if table.num_rows > self.max_rows:
-            raise RuntimeError(
-                f"bounded parquet part for table {label!r} contains {table.num_rows} rows; "
-                f"configured maximum is {self.max_rows}"
-            )
-        if self.buffered_rows:
-            self.flush()
-        with self._disk_transaction():
-            self.writers[label].write_table(table)
-        self.row_counts[label] += table.num_rows
 
     def close(self) -> None:
         if not self.writers:
@@ -252,19 +253,6 @@ class _BoundedParquetRowGroupWriter:
 
     def lazy_bundle(self) -> dict[str, pl.LazyFrame]:
         return {spec.label: pl.scan_parquet(self.paths[spec.label]) for spec in self.table_specs}
-
-    def table_summaries(self) -> list[dict[str, Any]]:
-        if self.writers:
-            raise RuntimeError("bounded parquet writers must be closed before summarising")
-        return [
-            _table_summary(
-                spec.label,
-                self.paths[spec.label],
-                self.row_counts[spec.label],
-                self.schema_frames[spec.label],
-            )
-            for spec in self.table_specs
-        ]
 
 
 class _DirectSpillBundle(_BoundedParquetRowGroupWriter):
@@ -353,32 +341,13 @@ def _shred_data_file_to_direct_spill(
         raise
 
 
-def _table_summary(
-    label: str,
-    parquet_path: Path,
-    row_count: int,
-    schema_frame: pl.DataFrame,
-) -> dict[str, Any]:
-    """One ``tables[]`` manifest entry. Column shape comes from an empty frame
-    built through :func:`_buffer_to_frame`, so the serial and parallel paths
-    report identical dtypes by construction rather than by agreement."""
-    return {
-        "label": label,
-        "parquet": parquet_path.name,
-        "row_count": row_count,
-        "column_count": schema_frame.width,
-        "columns": {name: str(dtype) for name, dtype in schema_frame.schema.items()},
-        "content_signature": _source_proof._file_content_signature(parquet_path),
-    }
-
-
 def _write_tables_streaming(
     data_path: Path,
     v2_config: dict[str, Any],
     table_specs: tuple[_EmittingTableSpec, ...],
     tmp_dir: Path,
-) -> tuple[list[dict[str, Any]], ShredSkipStats]:
-    """Stream one source into bounded staged Parquet row groups."""
+) -> _ShredTables:
+    """Stream one source into one bounded Parquet file per table in *tmp_dir*."""
     skip_stats = ShredSkipStats()
     emitted_counts: dict[str, int] = {spec.label: 0 for spec in table_specs}
     record_count = 0
@@ -408,7 +377,10 @@ def _write_tables_streaming(
         )
         writer.flush()
         writer.close()
-        return writer.table_summaries(), skip_stats
+        return _ShredTables(
+            skip_stats,
+            {spec.label: (writer.paths[spec.label],) for spec in table_specs},
+        )
     except BaseException as exc:
         try:
             writer.close()
@@ -429,26 +401,44 @@ def _merge_chunk_skip_stats(results: Iterable[_ChunkResult]) -> ShredSkipStats:
     return combined
 
 
+def _config_emitting_only(v2_config: dict[str, Any], labels: set[str]) -> dict[str, Any]:
+    """*v2_config* with every emitting table outside *labels* turned off."""
+    tables = v2_config["tables"]
+    if all(not _shred.table_is_emitting(table) or table["label"] in labels for table in tables):
+        return v2_config
+    return {
+        **v2_config,
+        "tables": [
+            table if table.get("label") in labels else {**table, "emit": False} for table in tables
+        ],
+    }
+
+
 def _write_tables_in_parallel(
     data_path: Path,
     v2_config: dict[str, Any],
     table_specs: tuple[_EmittingTableSpec, ...],
     tmp_dir: Path,
     ranges: list[tuple[int, int]],
-) -> tuple[list[dict[str, Any]], ShredSkipStats]:
-    """Shred *ranges* across worker processes, then assemble one parquet each.
+) -> _ShredTables:
+    """Shred *ranges* across worker processes into one bounded part per table each.
 
-    Parts are streamed one row group at a time into the final parquet in chunk
-    order, so row order matches the serial shred exactly. Each part is released
-    as it is consumed; parent and workers share the same aggregate bounds.
+    Each table's parts are returned in chunk order, so reading them in that
+    order gives the serial shred's rows in the serial order. The parts are not
+    merged here: publication rewrites a table as the store's own part files, so
+    a merge would only write every row one more time.
     """
     import multiprocessing
     from concurrent.futures import ProcessPoolExecutor
 
     import pyarrow.parquet as pq
 
+    # Workers rebuild their table specs from the config, so the config they
+    # receive emits exactly the tables being written: a build of one edited
+    # table never shreds its fresh siblings.
+    worker_config = _config_emitting_only(v2_config, {spec.label for spec in table_specs})
     tasks = [
-        (str(data_path), start, end, index, v2_config, str(tmp_dir))
+        (str(data_path), start, end, index, worker_config, str(tmp_dir))
         for index, (start, end) in enumerate(ranges)
     ]
     workers = _records._parallel_worker_count(len(tasks))
@@ -467,6 +457,7 @@ def _write_tables_in_parallel(
     pool = ProcessPoolExecutor(
         max_workers=workers,
         mp_context=multiprocessing.get_context("spawn"),
+        initializer=configure_process_high_qos,
     )
     try:
         # ``map`` yields in submission order, which is file order.
@@ -481,46 +472,32 @@ def _write_tables_in_parallel(
         # flight (at most one per worker) rather than by the file's size.
         pool.shutdown(wait=True, cancel_futures=True)
 
-    skip_stats = _merge_chunk_skip_stats(results)
-
-    writer = _BoundedParquetRowGroupWriter(tmp_dir, table_specs)
-    try:
-        for spec in table_specs:
-            expected_rows = 0
-            for result in results:
-                part = result.part_paths.get(spec.label)
-                if part is None:
-                    # Every successful chunk writes one part per emitting table
-                    # (worker and parent parse the same config). A missing part
-                    # means the two disagree about the table set — publishing a
-                    # parquet with silently absent rows would be worse than any
-                    # failure, so stop here.
-                    raise RuntimeError(
-                        f"parallel json shred chunk {result.index} wrote no part "
-                        f"for table {spec.label!r} — worker and parent table "
-                        "specs diverged",
-                    )
-                with pq.ParquetFile(part) as part_file:
-                    for row_group_index in range(part_file.num_row_groups):
-                        part_table = part_file.read_row_group(row_group_index)
-                        writer.write_arrow_table(spec.label, part_table)
-                        del part_table
-                expected_rows += result.row_counts.get(spec.label, 0)
-                Path(part).unlink(missing_ok=True)
-            if writer.row_counts[spec.label] != expected_rows:
+    files: dict[str, tuple[Path, ...]] = {}
+    for spec in table_specs:
+        parts: list[Path] = []
+        for result in results:
+            part = result.part_paths.get(spec.label)
+            if part is None:
+                # Every successful chunk writes one part per emitting table
+                # (worker and parent parse the same config). A missing part
+                # means the two disagree about the table set — publishing a
+                # parquet with silently absent rows would be worse than any
+                # failure, so stop here.
                 raise RuntimeError(
-                    f"parallel json shred row-count mismatch for table {spec.label!r}: "
-                    f"assembled {writer.row_counts[spec.label]} != "
-                    f"worker-reported {expected_rows}"
+                    f"parallel json shred chunk {result.index} wrote no part "
+                    f"for table {spec.label!r} — worker and parent table "
+                    "specs diverged",
                 )
-        writer.close()
-        summaries = writer.table_summaries()
-    except BaseException as exc:
-        try:
-            writer.close()
-        except BaseException as cleanup_exc:
-            exc.add_note(f"bounded parallel writer cleanup failed: {cleanup_exc}")
-        raise
+            part_rows = pq.read_metadata(part).num_rows
+            reported_rows = result.row_counts.get(spec.label, 0)
+            if part_rows != reported_rows:
+                raise RuntimeError(
+                    f"parallel json shred row-count mismatch for table {spec.label!r} "
+                    f"in chunk {result.index}: part holds {part_rows} != "
+                    f"worker-reported {reported_rows}"
+                )
+            parts.append(Path(part))
+        files[spec.label] = tuple(parts)
 
     logger.info(
         "json_shred_parallel_complete",
@@ -532,4 +509,4 @@ def _write_tables_in_parallel(
             3,  # pragma: no mutate
         ),
     )
-    return summaries, skip_stats
+    return _ShredTables(_merge_chunk_skip_stats(results), files)

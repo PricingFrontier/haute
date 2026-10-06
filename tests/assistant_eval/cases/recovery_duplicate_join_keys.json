@@ -1,0 +1,66 @@
+{
+  "schema_version": 5,
+  "id": "recovery_duplicate_join_keys",
+  "fixture_version": "1",
+  "project_fixture": "data_recovery",
+  "area": "recovery",
+  "split": "holdout",
+  "egress": "project",
+  "inapplicable_variants": [],
+  "turns": [
+    {
+      "request": "Add the region loadings in data/region_loadings.parquet as a data input called region_loadings, and join them onto quotes in a left, many-to-one join called loaded_quotes, so each quote takes its one loading.",
+      "expectations": {
+        "outcome": "applied",
+        "saves": true,
+        "required_node_types": [
+          "dataInput",
+          "edgeJoin"
+        ],
+        "forbidden_node_types": [],
+        "required_edges": [
+          {
+            "source": "quotes",
+            "target": "loaded_quotes",
+            "target_handle": "base"
+          },
+          {
+            "source": "region_loadings",
+            "target": "loaded_quotes",
+            "target_handle": "join"
+          }
+        ],
+        "require_connected_graph": true,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [],
+        "node_configs": {
+          "region_loadings": {
+            "path": "data/region_loadings.parquet"
+          },
+          "loaded_quotes": {
+            "how": "left",
+            "validate": "m:1"
+          }
+        },
+        "execution": [
+          {
+            "node": "loaded_quotes",
+            "scenario": "live",
+            "golden": "quotes = pl.scan_parquet('data/quotes.parquet')\nloadings = pl.scan_parquet('data/region_loadings.parquet')\ndf = quotes.join(\n    loadings, on=['region', 'cover_type'], how='left', validate='m:1'\n)\n",
+            "order_free": true
+          }
+        ],
+        "efficiency": null,
+        "data_findings": {
+          "reported": [
+            {
+              "kind": "join_validation_failed",
+              "node": "loaded_quotes"
+            }
+          ],
+          "kept": []
+        }
+      }
+    }
+  ]
+}

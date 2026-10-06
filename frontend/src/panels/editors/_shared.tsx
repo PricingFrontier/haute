@@ -1,11 +1,12 @@
 import { useState, useEffect } from "react"
-import { X, Folder, FileText, ChevronLeft, Check, Table2, Loader2, AlertTriangle } from "lucide-react"
+import { X, Folder, FileText, ChevronLeft, Check, Table2, AlertTriangle } from "lucide-react"
 import type { ColumnInfo } from "../../types/node"
 import { listFiles } from "../../api/client"
 import type { FileListItem } from "../../api/types"
 import ColumnTable from "../../components/ColumnTable"
-import useSettingsStore, { useMlflowStatus } from "../../stores/useSettingsStore"
+import useSettingsStore from "../../stores/useSettingsStore"
 import { formatValue } from "../../utils/formatValue"
+import { formatBytes } from "../../utils/formatBytes"
 
 // ─── Shared Styles ───────────────────────────────────────────────
 export const INPUT_STYLE = {
@@ -39,6 +40,8 @@ export type InputSource = {
   sourceLabel: string
   edgeId: string
   frameUnresolved?: boolean
+  /** The columns this input carries, as the last preview recorded them. */
+  columns?: { name: string; dtype: string }[]
 }
 
 // Shared by editor components; this intentional non-component export is the
@@ -88,104 +91,19 @@ export type SimpleEdge = {
   data?: Record<string, unknown>
 }
 
-// ─── MlflowStatusBadge ───────────────────────────────────────────
-
-export function MlflowStatusBadge() {
-  const {
-    mlflowStatus,
-    mlflowBackend,
-    mlflowInstalled,
-    mlflowImportable,
-    mlflowTrackingConfigured,
-    mlflowDetail,
-  } = useMlflowStatus()
-
-  const isConnected = mlflowStatus === "connected"
-  const isLoading = mlflowStatus === "loading"
-  const isPackageMissing = mlflowStatus === "error" && mlflowInstalled === false
-  const isPackageLoadFailed =
-    mlflowStatus === "error" && mlflowInstalled === true && mlflowImportable === false
-  const isTrackingNotConfigured =
-    mlflowStatus === "error" &&
-    mlflowInstalled === true &&
-    mlflowImportable !== false &&
-    mlflowTrackingConfigured === false
-  const tone = isConnected
-    ? "success"
-    : isPackageMissing || isPackageLoadFailed
-      ? "danger"
-      : isTrackingNotConfigured || mlflowStatus === "error"
-        ? "warning"
-        : "neutral"
-  const background = tone === "success"
-    ? "var(--editor-status-success-bg)"
-    : tone === "danger"
-      ? "var(--danger-soft-faint)"
-      : tone === "warning"
-        ? "var(--warning-soft-subtle)"
-        : "var(--bg-panel)"
-  const border = tone === "success"
-    ? "var(--editor-status-success-border)"
-    : tone === "danger"
-      ? "var(--danger-border)"
-      : tone === "warning"
-        ? "var(--warning-border)"
-        : "var(--border)"
-  const iconColor = tone === "success"
-    ? "var(--editor-status-success-text)"
-    : tone === "danger"
-      ? "var(--danger)"
-      : tone === "warning"
-        ? "var(--warning-strong)"
-        : "var(--text-muted)"
-  const labelColor = tone === "danger"
-    ? "var(--danger)"
-    : tone === "warning"
-      ? "var(--warning-strong)"
-      : "var(--text-secondary)"
-  const label = isLoading
-    ? "Checking MLflow..."
-    : isConnected
-      ? `MLflow tracking configured (${mlflowBackend || "local"})`
-      : isPackageMissing
-        ? "MLflow package missing"
-        : isPackageLoadFailed
-          ? "MLflow package failed to load"
-          : isTrackingNotConfigured
-            ? "MLflow tracking not configured"
-          : "MLflow status unavailable"
-
-  return (
-    <div
-      className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[11px]"
-      role="status"
-      title={mlflowDetail || label}
-      style={{
-        background,
-        border: `1px solid ${border}`,
-      }}
-    >
-      {isLoading ? (
-        <><Loader2 size={11} className="animate-spin" style={{ color: iconColor }} /><span style={{ color: "var(--text-muted)" }}>{label}</span></>
-      ) : isConnected ? (
-        <><Check size={11} style={{ color: iconColor }} /><span style={{ color: labelColor }}>{label}</span></>
-      ) : (
-        <><AlertTriangle size={11} style={{ color: iconColor }} /><span style={{ color: labelColor }}>{label}</span></>
-      )}
-    </div>
-  )
-}
-
 // ─── FileBrowser ──────────────────────────────────────────────────
 
 export function FileBrowser({
   currentPath,
   onSelect,
+  onSelectFolder,
   extensions,
   showSelectionSummary = true,
 }: {
   currentPath?: string
   onSelect: (path: string) => void
+  /** Offer the open folder itself as the selection (a table stored as a folder). */
+  onSelectFolder?: (path: string) => void
   extensions?: string
   showSelectionSummary?: boolean
 }) {
@@ -242,11 +160,6 @@ export function FileBrowser({
     onSelect(path)
   }
 
-  const formatSize = (bytes: number) => {
-    if (bytes > 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-    return `${(bytes / 1024).toFixed(1)} KB`
-  }
-
   return (
     <div>
       {showSelectionSummary && selectedPath && (
@@ -267,6 +180,19 @@ export function FileBrowser({
             <ChevronLeft size={14} />
           </button>
           <span className="text-xs font-mono truncate" style={{ color: 'var(--text-muted)' }}>{dir === "." ? "/" : dir}</span>
+          {onSelectFolder && dir !== "." && (
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedPath(dir)
+                onSelectFolder(dir)
+              }}
+              className="ml-auto shrink-0 text-[11px] font-semibold px-2 py-0.5 rounded transition-colors"
+              style={{ color: 'var(--accent)' }}
+            >
+              Use this folder
+            </button>
+          )}
         </div>
 
         <div className="max-h-40 overflow-y-auto" style={{ background: 'var(--bg-input)' }}>
@@ -306,7 +232,7 @@ export function FileBrowser({
                   </span>
                   {typeof item.size === "number" && (
                     <span className="text-[11px] ml-auto shrink-0" style={{ color: 'var(--text-muted)' }}>
-                      {formatSize(item.size)}
+                      {formatBytes(item.size)}
                     </span>
                   )}
                 </button>
@@ -395,9 +321,16 @@ export function SchemaPreview({ schema }: { schema: SchemaInfo }) {
 export function InputSourcesBar({
   inputSources,
   onDeleteInput,
+  deleteTitle = (name) => `Remove connection from ${name}`,
 }: {
   inputSources: InputSource[]
   onDeleteInput?: (edgeId: string) => void
+  /**
+   * Wording for the remove control. Ordinary nodes drop one incoming edge, but
+   * the submodel Input boundary retires a shared public port, so a caller whose
+   * removal reaches further than this chip must say so.
+   */
+  deleteTitle?: (name: string) => string
 }) {
   if (inputSources.length === 0) return null
   return (
@@ -435,7 +368,7 @@ export function InputSourcesBar({
                 <button
                   onClick={() => onDeleteInput(src.edgeId)}
                   className="icon-danger-btn p-0 rounded"
-                  title={`Remove connection from ${src.name}`}
+                  title={deleteTitle(src.name)}
                 >
                   <X size={10} />
                 </button>

@@ -1,8 +1,8 @@
 """C4 — preview/trace cache keys must cover runtime file inputs.
 
 Re-exporting a direct dataInput Parquet, replacing an external file or a model
-artifact, and rebuilding the apiInput JSON cache all happen out-of-band
-(there is no in-GUI upload), so the graph JSON — and therefore the
+artifact, and rebuilding an apiInput table's input snapshot all happen
+out-of-band (there is no in-GUI upload), so the graph JSON — and therefore the
 structural fingerprint — does not change.  Before the fix the preview
 and trace caches kept serving months-stale frames with zero indication.
 
@@ -14,8 +14,9 @@ These tests pin:
 * a vanished dataInput file surfaces the execution error instead of a
   stale ok frame;
 * trace recomputes after a dataInput edit, a raw JSON apiInput edit before
-  any cache rebuild, and a JSON-cache rebuild (the trace key previously
-  omitted the JSON-cache state signature entirely);
+  any snapshot rebuild, and a snapshot rebuild that moves the table's
+  generation pointer (the trace key must track that pointer, not just the
+  raw source file);
 * the stat-gated memo: unchanged files are content-hashed exactly once
   across previews (call-count pin, not timing), edited files re-hash;
 * the deliberate stat-gate semantics: an mtime bump with identical
@@ -35,7 +36,6 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from haute._json_flatten import _json_cache_dir
 from haute._types import GraphEdge
 from haute.executor import _preview_cache, execute_graph
 from haute.trace import _cache as _trace_cache
@@ -97,28 +97,6 @@ def _parquet_input_node(nid: str, path: Path):
     return _source_node(nid, str(path))
 
 
-def test_json_source_runtime_fingerprint_preserves_non_file_semantics(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Directories stay on the generic path; source proofs apply only to files."""
-    import haute.execution as execution_mod
-
-    expected = {"kind": "directory"}
-    calls: list[Path] = []
-
-    def generic_fingerprint(path: Path) -> dict[str, str]:
-        calls.append(path)
-        return expected
-
-    monkeypatch.setattr(execution_mod, "_runtime_path_fingerprint", generic_fingerprint)
-
-    actual = execution_mod._json_source_runtime_path_fingerprint(tmp_path)
-
-    assert actual is expected
-    assert calls == [tmp_path.resolve()]
-
-
 def test_graph_input_fingerprint_uses_canonical_json(monkeypatch, tmp_path: Path) -> None:
     from haute import _cache, execution
 
@@ -174,12 +152,31 @@ _V2_AMOUNT_TABLES = {
 }
 
 
+@pytest.mark.parametrize(
+    ("path", "config"),
+    [
+        ("data.csv", {"tables": _V2_AMOUNT_TABLES["tables"]}),
+        ("data.json", {}),
+        ("data.json", {"tables": [{"label": "", "emit": True, "columns": []}]}),
+    ],
+    ids=["flat_file", "no_tables", "invalid_schema"],
+)
+def test_api_input_without_valid_tables_signs_no_table_pointers(
+    tmp_path: Path, path: str, config: dict
+) -> None:
+    """Only a structured source whose schema parses has table generations to sign."""
+    from haute.execution import _api_input_table_pointer_paths
+
+    assert _api_input_table_pointer_paths({"path": path, **config}, tmp_path / path) == {}
+
+
 def _export_and_cache_amount(data: Path, amount: int) -> None:
-    """Write data.json with one record and (re)build its working-layer cache."""
-    from haute._json_shred._cache import build_per_port_cache
+    """Write data.json with one record and (re)build its table's input snapshot."""
+    from tests.conftest import build_test_api_input_snapshots
 
     data.write_text(json.dumps([{"amount": amount}]), encoding="utf-8")
-    build_per_port_cache(str(data), _V2_AMOUNT_TABLES, _json_cache_dir(str(data), "working"))
+    config = {"path": str(data), "contract": "opaque", **_V2_AMOUNT_TABLES}
+    build_test_api_input_snapshots(str(data), config)
 
 
 def _json_api_input_graph(data: Path):
@@ -327,6 +324,7 @@ class TestPreviewRuntimeFileInvalidation:
                         {"__factor_group__": "Manchester", "optimal_scenario_value": 0.98},
                     ],
                 },
+                "combined_factor_bounds": {"min": 0.1, "max": 10.0},
                 "factor_dtypes": {"region": [{"column": "region", "dtype": {"kind": "String"}}]},
             }
 
@@ -383,7 +381,7 @@ class TestPreviewRuntimeFileInvalidation:
     def test_flat_file_api_input_reexport_recomputes_preview(self, tmp_path):
         """A non-JSON apiInput reads the raw flat file at preview (no JSON
         cache layer exists for it), so a re-export must invalidate exactly
-        like a dataInput file — the json_cache= extra alone is a constant
+        like a dataInput file — the input-snapshot signature alone is a constant
         ``<path-hash>:0:0`` for this shape and catches nothing."""
         p = tmp_path / "quotes.csv"
         _write_csv(p, [1, 2])
@@ -502,95 +500,52 @@ class TestTraceRuntimeInputInvalidation:
         result2 = execute_trace(graph, row_index=0, target_node_id="t", column="y")
         assert result2.output_value == 100
 
-    def test_trace_recomputes_after_json_cache_rebuild(self, tmp_path, monkeypatch):
-        """Rebuilding the apiInput JSON cache must invalidate the trace cache.
+    def test_trace_recomputes_after_input_snapshot_rebuild(self, tmp_path, monkeypatch):
+        """Publishing a new generation of the apiInput's table must invalidate the trace cache.
 
-        The trace key previously omitted the JSON-cache state signature,
-        so a rebuild with fresh data kept serving the old trace.
+        The trace key must track the table's generation pointer, not just the
+        raw source file: the source here is left byte- and stat-identical, and
+        only the generation the table leases moves.
         """
+        from haute._execution_context import ExecutionProfile
+        from haute._json_shred._snapshots import (
+            api_input_snapshot_source,
+            api_input_source_signature,
+        )
+        from haute._sandbox import _get_project_root
+        from haute._source_cache import SourceCacheBuildContext, SourceCacheStore
+
         monkeypatch.chdir(tmp_path)  # .haute_cache/ lives under cwd
 
         data = tmp_path / "data.json"
         _export_and_cache_amount(data, 10)
         graph = _json_api_input_graph(data)
+        source_before = (data.read_bytes(), data.stat().st_mtime_ns, data.stat().st_size)
 
         result1 = execute_trace(graph, row_index=0, target_node_id="t", column="y")
         assert result1.output_value == 20
 
-        _export_and_cache_amount(data, 50)
-        # ms-precision meta.json mtimes are the signature's clock; advance it
-        # deterministically (a rebuild within the same ms granule would tie).
-        meta = _json_cache_dir(str(data), "working") / "meta.json"
-        _bump_mtime(meta)
+        class _Frame:
+            def build(self, context: SourceCacheBuildContext) -> pl.LazyFrame:
+                return pl.LazyFrame({"amount": [50]})
+
+        table = api_input_snapshot_source({"path": str(data), **_V2_AMOUNT_TABLES}, data).tables[0]
+        store = SourceCacheStore(_get_project_root())
+        before = store.open_generation(table.identity)
+        after = store.build(
+            table.identity,
+            _Frame(),
+            context=SourceCacheBuildContext(
+                profile=ExecutionProfile.LAZY_SINK, build_class="bounded"
+            ),
+            source_signature=api_input_source_signature(data),
+            refresh=True,
+        )
+        assert after.generation_id != before.generation_id
+        assert (data.read_bytes(), data.stat().st_mtime_ns, data.stat().st_size) == source_before
 
         result2 = execute_trace(graph, row_index=0, target_node_id="t", column="y")
         assert result2.output_value == 100
-
-    def test_trace_reuses_preview_entry_with_file_signature_present(self, tmp_path, monkeypatch):
-        """Executor and trace must build identical preview keys — including
-        the runtime file-signature extras — or trace silently loses its
-        preview reuse and re-executes the DAG on every cold trace."""
-        import haute.trace as trace_mod
-
-        p = tmp_path / "data.parquet"
-        _write_parquet(p, [7])
-        graph = _g(
-            {
-                "nodes": [
-                    _parquet_input_node("src", p),
-                    _transform_node("t", "df = src.with_columns(y=pl.col('x') * 2)"),
-                ],
-                "edges": [_edge("src", "t")],
-            }
-        )
-
-        preview = execute_graph(graph, target_node_id="t", row_limit=1000)
-        assert preview["t"].status == "ok"
-
-        def forbidden_cold_execute(*args, **kwargs):
-            raise AssertionError("trace must reuse the preview entry, not re-execute")
-
-        monkeypatch.setattr(trace_mod, "_execute_eager_core", forbidden_cold_execute)
-
-        result = execute_trace(
-            graph,
-            row_index=0,
-            target_node_id="t",
-            column="y",
-            preview=_preview_cache,
-        )
-        assert result.output_value == 14
-
-    def test_trace_reuses_preview_entry_for_json_api_input_graph(self, tmp_path, monkeypatch):
-        """Hit-side pin for apiInput graphs: trace's preview-key
-        reconstruction includes the json_cache= extra, so a trace right
-        after a preview reuses the materialised frames.  Before the C4
-        wiring the reconstruction omitted the signature and apiInput-graph
-        traces always re-executed the DAG."""
-        import haute.trace as trace_mod
-
-        monkeypatch.chdir(tmp_path)
-
-        data = tmp_path / "data.json"
-        _export_and_cache_amount(data, 7)
-        graph = _json_api_input_graph(data)
-
-        preview = execute_graph(graph, target_node_id="t", row_limit=1000)
-        assert preview["t"].status == "ok"
-
-        def forbidden_cold_execute(*args, **kwargs):
-            raise AssertionError("apiInput-graph trace must reuse the preview entry")
-
-        monkeypatch.setattr(trace_mod, "_execute_eager_core", forbidden_cold_execute)
-
-        result = execute_trace(
-            graph,
-            row_index=0,
-            target_node_id="t",
-            column="y",
-            preview=_preview_cache,
-        )
-        assert result.output_value == 14
 
 
 # ---------------------------------------------------------------------------
@@ -603,17 +558,17 @@ class TestStatGatedFingerprintMemo:
     @pytest.fixture()
     def hash_calls(self, monkeypatch):
         """Count content hashes issued by the runtime-input signature layer."""
-        import haute.execution as execution_mod
+        from haute._json_shred import _source_proof
 
         calls: dict[str, int] = {}
-        real_content_hash = execution_mod.content_hash
+        real_hash_file = _source_proof._hash_file
 
-        def counting_content_hash(path):
+        def counting_hash_file(path):
             key = str(path)
             calls[key] = calls.get(key, 0) + 1
-            return real_content_hash(path)
+            return real_hash_file(path)
 
-        monkeypatch.setattr(execution_mod, "content_hash", counting_content_hash)
+        monkeypatch.setattr(_source_proof, "_hash_file", counting_hash_file)
         return calls
 
     def test_unchanged_file_is_hashed_once_across_previews(self, tmp_path, hash_calls):
@@ -654,13 +609,17 @@ class TestStatGatedFingerprintMemo:
         dataframe_graph_input_fingerprint(graph, target_node_id=None, source="test")
         assert hash_calls.get(key) == 1
 
-    def test_json_preview_uses_one_authoritative_source_content_proof(
+    def test_json_preview_reuses_the_recorded_source_proof(
         self,
         tmp_path,
         monkeypatch,
     ):
-        """Planning, identity, and loading must reuse the cache-build SHA-256 proof."""
-        import haute.execution as execution_mod
+        """Planning, identity, and loading share one content-hash proof of the source.
+
+        The cache build already proved the source and recorded that proof on
+        disk, so after a memo reset (a new process) no stage of the preview reads
+        the source again: the durable record answers while the file's native
+        revision is unchanged."""
         from haute._json_shred import _source_proof
 
         monkeypatch.chdir(tmp_path)
@@ -669,12 +628,9 @@ class TestStatGatedFingerprintMemo:
         graph = _json_api_input_group_by_graph(data)
         resolved = data.resolve()
 
-        _source_proof._clear_data_file_signature_memo()
-        execution_mod._runtime_path_fingerprint_cache.clear()
+        _source_proof.clear_file_signatures()
         source_hashes = 0
-        generic_hashes = 0
         real_source_hash = _source_proof._hash_file
-        real_generic_hash = execution_mod.content_hash
 
         def counting_source_hash(path: Path) -> str:
             nonlocal source_hashes
@@ -682,20 +638,12 @@ class TestStatGatedFingerprintMemo:
                 source_hashes += 1
             return real_source_hash(path)
 
-        def counting_generic_hash(path: Path) -> str:
-            nonlocal generic_hashes
-            if path.resolve() == resolved:
-                generic_hashes += 1
-            return real_generic_hash(path)
-
         monkeypatch.setattr(_source_proof, "_hash_file", counting_source_hash)
-        monkeypatch.setattr(execution_mod, "content_hash", counting_generic_hash)
 
         result = execute_graph(graph, target_node_id="aggregate")
 
         assert result["aggregate"].preview == [{"amount": 10, "rows": 1}]
         assert source_hashes == 0
-        assert generic_hashes == 0
 
     def test_json_same_stat_byte_rewrite_invalidates_preview_identity(
         self,
@@ -703,15 +651,13 @@ class TestStatGatedFingerprintMemo:
         monkeypatch,
     ):
         """The strong JSON revision, not size/mtime, gates cached previews."""
-        import haute.execution as execution_mod
         from haute._json_shred import _source_proof
 
         monkeypatch.chdir(tmp_path)
         data = tmp_path / "data.json"
         _export_and_cache_amount(data, 10)
         graph = _json_api_input_graph(data)
-        _source_proof._clear_data_file_signature_memo()
-        execution_mod._runtime_path_fingerprint_cache.clear()
+        _source_proof.clear_file_signatures()
 
         first = execute_graph(graph, target_node_id="t")
         first_key = _preview_cache.most_recent_key
@@ -760,9 +706,11 @@ class TestStatGatedFingerprintMemo:
         assert fp_after != fp_before, "mtime change must produce a new preview cache key"
 
     def test_stat_identical_noop_rewrite_serves_cached_preview(self, tmp_path, hash_calls):
-        """Pinned semantics: a rewrite that restores both bytes and stat is
-        below the stat gate's resolution and serves the cached entry —
-        correct, because the bytes are identical."""
+        """Pinned semantics: a rewrite that restores both bytes and stat still
+        moves the native revision token (every regular file has one on this
+        machine and CI), so it re-hashes once — but the resulting fingerprint
+        (size, mtime_ns, digest) is identical, so the same preview cache key
+        and rows are served."""
         p = tmp_path / "data.parquet"
         _write_parquet(p, [1, 2])
         graph = _parquet_graph(p)
@@ -777,7 +725,7 @@ class TestStatGatedFingerprintMemo:
 
         results2 = execute_graph(graph)
         assert _preview_cache.most_recent_key == fp_before
-        assert hash_calls.get(key) == 1, "stat-identical rewrite must not re-hash"
+        assert hash_calls.get(key) == 2, "stat-identical rewrite still moves the revision token"
         assert [row["x"] for row in results2["src"].preview] == [
             row["x"] for row in results1["src"].preview
         ]
@@ -787,43 +735,209 @@ class TestStatGatedFingerprintMemo:
         the stat gate, so the first attempt is discarded and the retry signs
         the file's settled state — never a hash paired with a stale stat."""
         import haute.execution as execution_mod
+        from haute._hashing import content_hash
+        from haute._json_shred import _source_proof
 
         p = tmp_path / "data.csv"
         _write_csv(p, [1, 2])
-        real_content_hash = execution_mod.content_hash
+        real_hash_file = _source_proof._hash_file
         calls = {"n": 0}
 
-        def racing_content_hash(path):
+        def racing_hash_file(path):
             calls["n"] += 1
             if calls["n"] == 1:
                 _write_csv(Path(path), [9, 9, 9])  # different size: gate moves
                 _bump_mtime(Path(path))
-            return real_content_hash(path)
+            return real_hash_file(path)
 
-        monkeypatch.setattr(execution_mod, "content_hash", racing_content_hash)
+        monkeypatch.setattr(_source_proof, "_hash_file", racing_hash_file)
 
         payload = execution_mod._stat_gated_runtime_path_fingerprint(p)
         assert calls["n"] == 2
-        assert payload["content_hash"] == real_content_hash(p.resolve())
+        assert payload["content_hash"] == content_hash(p.resolve())
         assert payload["mtime_ns"] == p.stat().st_mtime_ns
 
     def test_file_mutating_on_every_hash_attempt_fails_loudly(self, tmp_path, monkeypatch):
         """If the file keeps changing under the hash, the fingerprint refuses
         to guess — matching ``_utility_file_hash``'s double-stat guard."""
         import haute.execution as execution_mod
+        from haute._json_shred import _source_proof
 
         p = tmp_path / "data.csv"
         rows = [1]
         _write_csv(p, rows)
-        real_content_hash = execution_mod.content_hash
+        real_hash_file = _source_proof._hash_file
 
-        def perpetually_racing_content_hash(path):
+        def perpetually_racing_hash_file(path):
             rows.append(len(rows))  # size grows: gate moves on every attempt
             _write_csv(Path(path), rows)
             _bump_mtime(Path(path))
-            return real_content_hash(path)
+            return real_hash_file(path)
 
-        monkeypatch.setattr(execution_mod, "content_hash", perpetually_racing_content_hash)
+        monkeypatch.setattr(_source_proof, "_hash_file", perpetually_racing_hash_file)
 
         with pytest.raises(RuntimeError, match="changed on disk while loading"):
             execution_mod._stat_gated_runtime_path_fingerprint(p)
+
+
+# ---------------------------------------------------------------------------
+# File-sourced Model Scoring: the model file and its contract are runtime inputs
+# ---------------------------------------------------------------------------
+
+
+def _catboost_file(path: Path, scale: float) -> None:
+    """A CatBoost model trained outside Haute: its file declares no offset."""
+    from catboost import CatBoostRegressor
+
+    model = CatBoostRegressor(iterations=5, depth=1, verbose=0, allow_writing_files=False)
+    ages = [20.0, 30.0, 40.0, 50.0]
+    model.fit([[age] for age in ages], [scale * age for age in ages])
+    model.set_feature_names(["age"])
+    model.save_model(str(path))
+
+
+def _contract_file(path: Path, *, offset: str | None) -> None:
+    from haute.modelling._feature_contract import build_contract, save_contract
+
+    save_contract(
+        build_contract(
+            features=["age"],
+            feature_types={"age": "Float64"},
+            categorical_features=[],
+            target_name="y",
+            target_type="Float64",
+            task="regression",
+            offset_column=offset,
+            offset_link="identity" if offset else None,
+        ),
+        path,
+    )
+    _bump_mtime(path)
+
+
+class TestModelFileSourceInvalidation:
+    """Warm the model, preview and trace caches, then change a file underneath."""
+
+    @pytest.fixture()
+    def scoring(self, tmp_path: Path):
+        from haute._mlflow_io import clear_local_model_cache
+
+        clear_local_model_cache()
+        data = tmp_path / "data.parquet"
+        pl.DataFrame({"age": [30.0], "exposure": [100.0]}).write_parquet(data)
+        model = tmp_path / "freq.cbm"
+        _catboost_file(model, 1.0)
+
+        def graph(**extra: str):
+            return _g(
+                {
+                    "nodes": [
+                        _source_node("src", str(data)),
+                        _n(
+                            {
+                                "id": "ms",
+                                "data": {
+                                    "label": "ms",
+                                    "nodeType": "modelScore",
+                                    "config": {
+                                        "sourceType": "file",
+                                        "model_path": str(model),
+                                        "task": "regression",
+                                        "output_column": "pred",
+                                        **extra,
+                                    },
+                                },
+                            }
+                        ),
+                    ],
+                    "edges": [_edge("src", "ms")],
+                }
+            )
+
+        return tmp_path, model, graph
+
+    @staticmethod
+    def _observe(graph) -> tuple[float, float, str]:
+        """Preview and trace predictions, and the identity a node-output snapshot is keyed by."""
+        from haute.execution import dataframe_graph_input_fingerprint
+
+        preview = execute_graph(graph, target_node_id="ms")["ms"]
+        assert preview.status == "ok", preview.error
+        trace = execute_trace(graph, row_index=0, target_node_id="ms", column="pred")
+        identity = dataframe_graph_input_fingerprint(graph, target_node_id="ms", source="live")
+        return preview.preview[0]["pred"], trace.output_value, identity
+
+    def test_replacing_the_model_at_the_same_path_scores_the_new_model(self, scoring):
+        root, model, graph = scoring
+        _contract_file(model.with_name("freq.feature_contract.json"), offset=None)
+        before = self._observe(graph())
+
+        _catboost_file(model, 10.0)
+        _bump_mtime(model)
+        after = self._observe(graph())
+
+        assert after[0] == pytest.approx(before[0] * 10, rel=0.2)
+        assert after[1] == after[0]
+        assert after[2] != before[2]
+
+    def test_changing_only_the_sibling_contract_rescores(self, scoring):
+        root, model, graph = scoring
+        sibling = model.with_name("freq.feature_contract.json")
+        _contract_file(sibling, offset=None)
+        before = self._observe(graph())
+
+        # The contract now declares an additive offset the file cannot record.
+        _contract_file(sibling, offset="exposure")
+        after = self._observe(graph())
+
+        assert after[0] == pytest.approx(before[0] + 100.0)
+        assert after[1] == after[0]
+        assert after[2] != before[2]
+
+    def test_adding_a_higher_priority_sibling_contract_selects_it(self, scoring):
+        root, model, graph = scoring
+        _contract_file(root / "feature_contract.json", offset=None)
+        before = self._observe(graph())
+
+        _contract_file(model.with_name("freq.feature_contract.json"), offset="exposure")
+        after = self._observe(graph())
+
+        assert after[0] == pytest.approx(before[0] + 100.0)
+        assert after[2] != before[2]
+
+    def test_changing_an_explicit_contract_rescores(self, scoring):
+        root, model, graph = scoring
+        explicit = root / "explicit.json"
+        _contract_file(explicit, offset=None)
+        before = self._observe(graph(feature_contract_path=str(explicit)))
+
+        _contract_file(explicit, offset="exposure")
+        after = self._observe(graph(feature_contract_path=str(explicit)))
+
+        assert after[0] == pytest.approx(before[0] + 100.0)
+        assert after[2] != before[2]
+
+    def test_removing_the_model_or_its_required_contract_fails_by_name(self, scoring):
+        root, model, graph = scoring
+        sibling = model.with_name("freq.feature_contract.json")
+        _contract_file(sibling, offset=None)
+        self._observe(graph())
+
+        sibling.unlink()
+        assert "does not record whether it was trained with an offset" in self._error(graph())
+
+        _contract_file(sibling, offset=None)
+        model.unlink()
+        assert "freq.cbm" in self._error(graph())
+
+    @staticmethod
+    def _error(graph) -> str:
+        """The refusal, raised by column planning or reported on the node."""
+        from haute.errors import ConfigError
+
+        try:
+            result = execute_graph(graph, target_node_id="ms")["ms"]
+        except ConfigError as exc:
+            return str(exc)
+        assert result.status == "error"
+        return str(result.error)

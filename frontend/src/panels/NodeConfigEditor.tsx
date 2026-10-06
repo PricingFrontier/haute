@@ -1,6 +1,6 @@
 import { NODE_TYPES } from "../utils/nodeTypes"
 import type { NodeTypeValue } from "../utils/nodeTypes"
-import type { ExplorePane, ModellingPane } from "../stores/useUIStore"
+import type { ExplorePane, ModellingPane, OptimiserPane } from "../stores/useUIStore"
 import {
   ApiInputEditor,
   BandingEditor,
@@ -22,15 +22,27 @@ import {
   RatingStepEditor,
   ScenarioExpanderEditor,
   SubmodelEditor,
+  SubmodelPortEditor,
   TransformEditor,
 } from "./LazyNodeEditors"
 import type { LoadPivotFilterMembers } from "./editors/ExplorePivotsConfig"
-import type { InputSource, OnReplaceConfig, OnUpdateConfig, SimpleNode } from "./editors"
+import type { InputSource, OnReplaceConfig, OnUpdateConfig, OnUpdateConfigResult, SimpleNode } from "./editors"
 
 type Column = { name: string; dtype: string }
 
+/**
+ * Node types the read-only comparison view shows as a config dump: their
+ * editors need live graph context (Explore panes, Edge Join inputs, submodel
+ * ports) that a single compared node does not have.
+ */
+const NO_READ_ONLY_EDITOR = new Set<string>([
+  NODE_TYPES.EXPLORE,
+  NODE_TYPES.EDGE_JOIN,
+  NODE_TYPES.SUBMODEL_PORT,
+])
+
 const EXPLORE_PANES = [
-  { key: "code", label: "Polars Code" },
+  { key: "code", label: "Transform" },
   { key: "overview", label: "Overview" },
   { key: "pivots", label: "Pivots" },
   { key: "charts", label: "Charts" },
@@ -46,22 +58,47 @@ export type NodeConfigEditorProps = {
   onReplaceConfig: OnReplaceConfig
   inputSources: InputSource[]
   upstreamColumns: Column[]
+  /** The node's own recorded columns, which its code editors offer after its input columns. */
+  nodeColumns?: Column[]
   pivotColumns: Column[]
   activeExplorePane: ExplorePane
   activeModellingPane: ModellingPane
+  activeOptimiserPane: OptimiserPane
+  onOptimiserPaneIssuesChange?: (nodeId: string, panes: readonly OptimiserPane[]) => void
+  onUpdateNodeConfig?: (nodeId: string, patch: Record<string, unknown>) => OnUpdateConfigResult
+  onModellingPaneIssuesChange?: (nodeId: string, panes: readonly ModellingPane[]) => void
   onDeleteEdge?: (edgeId: string) => void
+  onDeleteSubmodelInputPort?: (portName: string) => void
   onSwapEdgeJoinInputs?: (nodeId: string) => void
   onShowPivots: () => void
   errorLine?: number | null
+  runError?: string | null
   previewRows?: Record<string, unknown>[]
   selectedPreviewLoading?: boolean
   loadPivotFilterMembers: LoadPivotFilterMembers
   exploreConfigHash: string | null
   reservedApiInputFrameLabels: Set<string>
   accentColor: string
+  /**
+   * The comparison view's inert render: node types without a read-only editor
+   * show their config, and nothing offers a config replacement.
+   */
+  readOnly?: boolean
 }
 
-/** Pure known-node editor switch used by the node panel. */
+function ReadOnlyConfigDump({ config }: { config: Record<string, unknown> }) {
+  return (
+    <pre
+      data-testid="readonly-config-fallback"
+      className="text-[11px] font-mono whitespace-pre-wrap break-all px-3 py-2"
+      style={{ color: "var(--text-secondary)" }}
+    >
+      {JSON.stringify(config, null, 2)}
+    </pre>
+  )
+}
+
+/** The one per-type editor switch, for the node panel and the comparison view. */
 export function NodeConfigEditor({
   nodeType,
   config,
@@ -71,23 +108,32 @@ export function NodeConfigEditor({
   onReplaceConfig,
   inputSources,
   upstreamColumns,
+  nodeColumns,
   pivotColumns,
   activeExplorePane,
   activeModellingPane,
+  activeOptimiserPane,
+  onOptimiserPaneIssuesChange,
+  onUpdateNodeConfig,
+  onModellingPaneIssuesChange,
   onDeleteEdge,
+  onDeleteSubmodelInputPort,
   onSwapEdgeJoinInputs,
   onShowPivots,
   errorLine,
+  runError,
   previewRows,
   selectedPreviewLoading,
   loadPivotFilterMembers,
   exploreConfigHash,
   reservedApiInputFrameLabels,
   accentColor,
+  readOnly = false,
 }: NodeConfigEditorProps) {
+  if (readOnly && NO_READ_ONLY_EDITOR.has(nodeType)) return <ReadOnlyConfigDump config={config} />
   const activeExplorePaneMeta = EXPLORE_PANES.find((pane) => pane.key === activeExplorePane) ?? EXPLORE_PANES[0]
-  const nodeColumns = (node.data._columns as Column[] | undefined) ?? []
-  const effectiveColumns = upstreamColumns.length > 0 ? upstreamColumns : nodeColumns
+  const outputColumns = (node.data._columns as Column[] | undefined) ?? []
+  const effectiveColumns = upstreamColumns.length > 0 ? upstreamColumns : outputColumns
 
   switch (nodeType) {
     case NODE_TYPES.API_INPUT:
@@ -96,7 +142,6 @@ export function NodeConfigEditor({
           config={config}
           onUpdate={onUpdateConfig}
           accentColor={accentColor}
-          configPath={typeof node.data._configReference === "string" ? node.data._configReference : undefined}
           reservedFrameLabels={reservedApiInputFrameLabels}
         />
       )
@@ -114,7 +159,7 @@ export function NodeConfigEditor({
       if (activeExplorePane === "code") {
         return (
           <div id="explore-code-pane" role="tabpanel" aria-labelledby="explore-code-tab" data-testid="explore-code-pane" className="h-full min-h-0 flex flex-col">
-            <ExploreCodeEditor config={config} onUpdate={onUpdateConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} upstreamColumns={upstreamColumns} />
+            <ExploreCodeEditor config={config} onUpdate={onUpdateConfig} onReplaceConfig={onReplaceConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} runError={runError} upstreamColumns={upstreamColumns} nodeId={node.id} nodeColumns={nodeColumns} />
           </div>
         )
       }
@@ -133,7 +178,7 @@ export function NodeConfigEditor({
       return <OutputEditor config={config} onUpdate={onUpdateConfig} nodeId={node.id} />
 
     case NODE_TYPES.BANDING:
-      return <BandingEditor config={config} onUpdate={onUpdateConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} upstreamColumns={upstreamColumns} accentColor={accentColor} previewRows={previewRows} />
+      return <BandingEditor config={config} onUpdate={onUpdateConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} upstreamColumns={upstreamColumns} accentColor={accentColor} previewRows={previewRows} nodeId={node.id} />
 
     case NODE_TYPES.SCENARIO_EXPANDER:
       return <ScenarioExpanderEditor config={config} onUpdate={onUpdateConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} upstreamColumns={upstreamColumns} />
@@ -145,10 +190,10 @@ export function NodeConfigEditor({
       return <ModelScoreEditor config={config} onUpdate={onUpdateConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} accentColor={accentColor} />
 
     case NODE_TYPES.MODELLING:
-      return <ModellingConfig config={configWithNodeId} onUpdate={onUpdateConfig} upstreamColumns={effectiveColumns} activePane={activeModellingPane} />
+      return <ModellingConfig config={configWithNodeId} onUpdate={onUpdateConfig} upstreamColumns={effectiveColumns} activePane={activeModellingPane} onPaneIssuesChange={onModellingPaneIssuesChange} />
 
     case NODE_TYPES.OPTIMISER:
-      return <OptimiserConfig config={configWithNodeId} onUpdate={onUpdateConfig} upstreamColumns={effectiveColumns} accentColor={accentColor} deferColumnFetch={selectedPreviewLoading} />
+      return <OptimiserConfig config={configWithNodeId} onUpdate={onUpdateConfig} upstreamColumns={effectiveColumns} accentColor={accentColor} deferColumnFetch={selectedPreviewLoading} activePane={activeOptimiserPane} onPaneIssuesChange={onOptimiserPaneIssuesChange} onUpdateNodeConfig={onUpdateNodeConfig} />
 
     case NODE_TYPES.OPTIMISER_APPLY:
       return <OptimiserApplyEditor config={config} onUpdate={onUpdateConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} accentColor={accentColor} />
@@ -157,7 +202,7 @@ export function NodeConfigEditor({
       return <ConstantEditor config={config} onUpdate={onUpdateConfig} />
 
     case NODE_TYPES.POLARS:
-      return <TransformEditor config={config} onUpdate={onUpdateConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} upstreamColumns={upstreamColumns} />
+      return <TransformEditor config={config} onUpdate={onUpdateConfig} onReplaceConfig={readOnly ? undefined : onReplaceConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} runError={runError} upstreamColumns={upstreamColumns} nodeId={node.id} nodeColumns={nodeColumns} />
 
     case NODE_TYPES.EDGE_JOIN:
       return <EdgeJoinEditor config={config} onUpdate={onUpdateConfig} nodeId={node.id} accentColor={accentColor} onDeleteInput={onDeleteEdge} onSwapInputs={onSwapEdgeJoinInputs ? () => onSwapEdgeJoinInputs(node.id) : undefined} />
@@ -165,7 +210,15 @@ export function NodeConfigEditor({
     case NODE_TYPES.SUBMODEL:
       return <SubmodelEditor config={config} accentColor={accentColor} />
 
+    case NODE_TYPES.SUBMODEL_PORT:
+      return (
+        <SubmodelPortEditor
+          node={node}
+          onDeleteInputPort={onDeleteSubmodelInputPort}
+        />
+      )
+
     default:
-      return null
+      return readOnly ? <ReadOnlyConfigDump config={config} /> : null
   }
 }

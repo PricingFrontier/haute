@@ -18,7 +18,6 @@ import polars as pl
 import pytest
 
 from haute._expression_parser import (
-    _ExprEvaluator,
     _substitute_names_in_ast,
     evaluate_expression,
     parse_expression,
@@ -39,8 +38,8 @@ def _polars_value(expr_text: str, row: dict) -> object:
 
 
 def _eval_node(src: str, row: dict | None = None) -> object:
-    node = ast.parse(src, mode="eval").body
-    return _ExprEvaluator(row or {}).evaluate(node)
+    code = f"df = df.with_columns(r={src})"
+    return evaluate_expression(code, "r", dict(row or {})).result_value
 
 
 def _assert_matches_polars(expr_text: str, row: dict) -> object:
@@ -164,13 +163,13 @@ def test_pow_negative_fractional_is_nan_not_complex() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_integer_overflow_reports_uncomputable() -> None:
+def test_integer_overflow_wraps_like_polars() -> None:
     big = 9223372036854775807  # int64 max
-    # Polars wraps (dtype-dependent); the dtype-unaware evaluator must not
-    # display the unbounded Python bignum, so it reports None instead.
-    assert _eval_node('pl.col("a") * pl.col("b")', {"a": big, "b": 2}) is None
-    assert _eval_node('pl.col("a") + pl.col("b")', {"a": big, "b": 1}) is None
-    assert _eval_node('pl.col("a") ** pl.col("b")', {"a": big, "b": 2}) is None
+    # Polars computes with real int64 semantics and wraps on overflow, so the
+    # evaluator must report the same wrapped value Polars computes, not None.
+    assert _eval_node('pl.col("a") * pl.col("b")', {"a": big, "b": 2}) == -2
+    assert _eval_node('pl.col("a") + pl.col("b")', {"a": big, "b": 1}) == -9223372036854775808
+    assert _eval_node('pl.col("a") ** pl.col("b")', {"a": big, "b": 2}) == 1
 
 
 def test_in_range_integer_arithmetic_still_computes() -> None:
@@ -252,10 +251,14 @@ def test_horizontal_nan_matches_polars(expr_text: str, row: dict) -> None:
     _assert_matches_polars(expr_text, row)
 
 
-def test_max_horizontal_nan_propagates_regardless_of_order() -> None:
+def test_max_horizontal_ignores_nan_regardless_of_order() -> None:
     a = _trace_value('pl.max_horizontal(pl.col("a"), pl.col("b"))', {"a": 1.0, "b": float("nan")})
     b = _trace_value('pl.max_horizontal(pl.col("a"), pl.col("b"))', {"a": float("nan"), "b": 1.0})
-    assert math.isnan(a) and math.isnan(b)
+    assert a == 1.0 and b == 1.0
+    only_nan = _trace_value(
+        'pl.max_horizontal(pl.col("a"), pl.col("b"))', {"a": float("nan"), "b": None}
+    )
+    assert math.isnan(only_nan)
 
 
 def test_min_horizontal_ignores_nan() -> None:
@@ -319,30 +322,31 @@ def test_concat_str_null_makes_result_null() -> None:
 
 
 def test_concat_str_non_str_separator_raises() -> None:
-    # A non-str separator is a malformed authored expression (Polars requires a
-    # str). Fail loud rather than silently coercing to "".
+    # A non-str separator is a malformed authored expression; Polars itself
+    # raises a TypeError rather than silently coercing it to "".
     code = 'df = df.with_columns(pl.concat_str([pl.col("a"), pl.col("b")], separator=5).alias("r"))'
-    with pytest.raises(ValueError, match="separator must be a str"):
+    with pytest.raises(TypeError, match="not an instance of 'str'"):
         evaluate_expression(code, "r", {"a": "x", "b": "y"})
 
 
 def test_concat_str_non_bool_ignore_nulls_raises() -> None:
-    # ignore_nulls must be a bool; a non-bool must not be silently truthiness-coerced.
+    # ignore_nulls must be a bool; Polars raises a TypeError rather than
+    # silently truthiness-coercing a non-bool.
     code = (
         'df = df.with_columns(pl.concat_str([pl.col("a"), pl.col("b")], ignore_nulls=5).alias("r"))'
     )
-    with pytest.raises(ValueError, match="ignore_nulls must be a bool"):
+    with pytest.raises(TypeError, match="not an instance of 'bool'"):
         evaluate_expression(code, "r", {"a": "x", "b": "y"})
 
 
 def test_concat_str_none_ignore_nulls_raises() -> None:
-    # An explicit None for ignore_nulls is not a bool and previously coerced to
-    # the default False silently.
+    # An explicit None for ignore_nulls is not a bool; Polars raises a
+    # TypeError rather than silently coercing it to the default False.
     code = (
         "df = df.with_columns("
         'pl.concat_str([pl.col("a"), pl.col("b")], ignore_nulls=None).alias("r"))'
     )
-    with pytest.raises(ValueError, match="ignore_nulls must be a bool"):
+    with pytest.raises(TypeError, match="not an instance of 'bool'"):
         evaluate_expression(code, "r", {"a": "x", "b": "y"})
 
 
@@ -382,8 +386,13 @@ def test_invert_true_is_false_not_minus_two() -> None:
 
 
 def test_unsupported_comparison_returns_none() -> None:
-    assert _eval_node('pl.col("a") is pl.col("b")', {"a": 1, "b": 1}) is None
-    assert _eval_node('pl.col("a") in [1, 2, 3]', {"a": 2}) is None
+    # `is` compares Python object identity of the two Expr objects (always
+    # False for distinct pl.col(...) calls), not a Polars row comparison.
+    assert _eval_node('pl.col("a") is pl.col("b")', {"a": 1, "b": 1}) is False
+    # `in` on an Expr forces a Python bool context, which Polars refuses.
+    code = 'df = df.with_columns(r=pl.col("a") in [1, 2, 3])'
+    with pytest.raises(TypeError, match="the truth value of an Expr is ambiguous"):
+        evaluate_expression(code, "r", {"a": 2})
 
 
 def test_supported_comparison_still_works() -> None:
@@ -397,8 +406,10 @@ def test_supported_comparison_still_works() -> None:
 
 
 def test_replace_strict_incomplete_raises() -> None:
+    # Polars computes the row, so an incomplete mapping raises exactly as it
+    # does for the column the pipeline ran.
     code = 'df = df.with_columns(pl.col("x").replace_strict({"a": 1}).alias("r"))'
-    with pytest.raises(ValueError, match="incomplete mapping"):
+    with pytest.raises(pl.exceptions.InvalidOperationError, match="incomplete mapping"):
         evaluate_expression(code, "r", {"x": "b"})
 
 
@@ -425,9 +436,9 @@ def test_malformed_code_argument_raises() -> None:
 
 
 def test_replace_strict_failure_propagates_out_of_evaluate() -> None:
-    # A row Polars itself would reject must surface loudly, not as the row value.
+    # The failure propagates: the pre-existing row_values["r"] is never laundered in.
     code = 'df = df.with_columns(pl.col("x").replace_strict({"a": 1}).alias("r"))'
-    with pytest.raises(ValueError):
+    with pytest.raises(pl.exceptions.InvalidOperationError, match="incomplete mapping"):
         evaluate_expression(code, "r", {"x": "b", "r": "LAUNDERED"})
 
 

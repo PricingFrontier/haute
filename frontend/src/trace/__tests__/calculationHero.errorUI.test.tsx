@@ -300,11 +300,86 @@ describe("WaterfallErrorAlert component contract", () => {
   })
 
   it("surfaces long error messages in full (no truncation collapse)", () => {
-    const longMessage = "A".repeat(200) + " — waterfall aborted mid-step"
+    const longMessage = "A".repeat(200) + " - waterfall aborted mid-step"
     render(<WaterfallErrorAlert error={longMessage} />)
     const alert = screen.getByRole("alert")
     // We search within the alert to avoid matching truncation ellipses
     // elsewhere on the page.
     expect(within(alert).getByText(/waterfall aborted mid-step/)).toBeInTheDocument()
+  })
+})
+
+describe("CalculationHero — a result not computed from the traced row", () => {
+  afterEach(cleanup)
+
+  it("marks the result and says why", () => {
+    render(
+      <CalculationHero
+        {...makeProps({
+          calculation: makeCalculation({
+            result_value: null,
+            not_computable_reason: "column_unavailable: age_factor",
+          }),
+        })}
+      />,
+    )
+    expect(screen.getByTestId("trace-result-note")).toHaveTextContent(
+      "Not computed from this row: column age_factor is not in the traced row",
+    )
+  })
+
+  it("explains an uncomputed conditional result", () => {
+    render(
+      <CalculationHero
+        {...makeProps({
+          expression: makeExpression({
+            expression_text: "when x > mean(x) then 1 otherwise 0",
+            expression_type: "conditional",
+          }),
+          calculation: makeCalculation({
+            result_value: null,
+            not_computable_reason: "unresolved_name: RATE",
+          }),
+        })}
+      />,
+    )
+    expect(screen.getByTestId("trace-result-note")).toHaveTextContent(
+      "Not computed from this row: uses RATE, which the trace cannot resolve",
+    )
+  })
+
+  it("does not call an uncomputed opaque result computed", () => {
+    render(
+      <CalculationHero
+        {...makeProps({
+          expression: makeExpression({ expression_text: "", expression_type: "opaque" }),
+          calculation: makeCalculation({
+            result_value: null,
+            not_computable_reason: "not_row_local: map_elements",
+          }),
+        })}
+      />,
+    )
+    expect(screen.getByTestId("trace-result-note")).toHaveTextContent(
+      "Not computed from this row: can depend on other rows (map_elements)",
+    )
+    expect(screen.queryByText("computed")).not.toBeInTheDocument()
+  })
+
+  it("labels a value the traced run supplied", () => {
+    render(
+      <CalculationHero
+        {...makeProps({
+          calculation: makeCalculation({
+            result_value: 30,
+            not_computable_reason: "not_row_local: sum",
+            result_source: "trace_execution",
+          }),
+        })}
+      />,
+    )
+    expect(screen.getByTestId("trace-result-note")).toHaveTextContent(
+      "From the traced run: can depend on other rows (sum)",
+    )
   })
 })

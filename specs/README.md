@@ -64,8 +64,9 @@ index, and the working tree. Component high/low documents, supplemental componen
 root specification-governance documents, and roadmap documents are reported separately;
 Markdown line totals use those same fingerprinted bytes. `corpus.toml` declares every supported
 component document outside the conventional high/low pair, including its closed kind and exact
-required headings. An undeclared `.md` or `.toml` anywhere below `specs/` fails inventory rather
-than disappearing. Coverage totals are derived from per-file records, and only `full` counts as a
+required headings. Root specification-governance `.md` and `.toml` files form an accepted tier, while
+undeclared component-level and nested documents fail inventory rather than disappearing. Coverage
+totals are derived from per-file records, and only `full` counts as a
 fully read file.
 
 Run the current working-tree inventory with:
@@ -93,9 +94,21 @@ accepts exactly its current canonical Haute representation. Production code must
 obsolete Haute format through conversion, fallback, deprecated aliases, temporary
 response keys, old generated-code recognition, warning-only handling, or historical-path cleanup.
 
-The implementation has no branches or diagnostics that recognise historical Haute input. Such
-input has no special status and is subject only to the ordinary validation of the current
-canonical schema. All maintained call sites use current symbols and old symbols are removed.
+Non-canonical input follows one rule:
+
+- A removed field, argument or shape may be rejected with a targeted message that names it and
+  its replacement ("`X` was removed; use `Y`"). Apart from such a message, historical input has
+  no special status: it meets the ordinary validation of the current canonical schema.
+- Nothing migrates it: no branch converts an old form into the current one.
+- Nothing drops it silently. An explicit recover may remove a field it cannot keep, and reports
+  each removal.
+- No boundary passes unknown fields through for a newer version to read (no
+  forward-compatibility passthrough): an unknown key is rejected by name.
+- A check may degrade instead of failing only on a named infrastructure failure: a missing or
+  unreadable file (`OSError`), a missing optional dependency (`ImportError`) or an unreachable
+  MLflow server (`MlflowException`). A configuration error or a programmer error propagates.
+
+All maintained call sites use current symbols and old symbols are removed.
 Compatibility required for supported Python/platform/browser/dependency versions and explicitly
 current public aliases is not historical Haute-format support and remains in scope.
 
@@ -138,10 +151,10 @@ The system has three tiers:
 - **Deploy target** — a live scoring endpoint using the same validated scoring contract as the
   editor. Databricks Model Serving is implemented end to end through an MLflow pyfunc model. The
   generic `container` target builds and pushes a FastAPI scoring image but deliberately does not
-  choose a hosting platform. Azure Container Apps, AWS ECS, and GCP Cloud Run currently validate,
-  build, and push that image, then fail loudly before service update because their SDK adapters are
-  not implemented. SageMaker and Azure ML remain scaffold-visible planned targets and are rejected
-  by deploy. See [deploy](deploy/high-level.md).
+  choose a hosting platform. Azure Container Apps, AWS ECS, and GCP Cloud Run validate, build and
+  push that image to their required registry and finish there: updating the service is a manual
+  step until their SDK adapters exist, and `haute init` labels them build and push only. SageMaker and Azure ML are named
+  future targets that `haute init` does not offer and deploy rejects. See [deploy](deploy/high-level.md).
 
 **One authored pipeline, one derived deploy graph.** Authors maintain one pipeline. Deployment
 derives a scoring-only graph from it by retaining the selected output's ancestors and collapsing
@@ -161,7 +174,7 @@ The component specs cover maintained behaviour, not just the importable runtime:
 
 - Every behavioural source under `src/haute/` is named in a backend component's low-level module
   map. Generated `src/haute/static/` assets are covered as a build output rather than one component
-  per hashed file; `src/haute/py.typed` is a distribution marker.
+  per hashed file; `src/haute/py.typed` is a distribution marker; and the packaged assistant example bundles under `src/haute/assistant/assets/examples/` form an explicitly classified grouped corpus whose individual resource files are covered as a manifested tree rather than separate module-map entries, as do the node cards under `src/haute/assistant/assets/node_cards/`, one per node type, covered by the assistant module map's `<nodeType>.json` row.
 - Every production `.ts`, `.tsx`, and `.css` source under `frontend/src/` is named in a frontend
   component's low-level module map. Test-only directories and the vitest setup files
   (`setupTests.ts`, `setupStorageCanary.ts`) belong to the verification system rather than the
@@ -172,10 +185,9 @@ The component specs cover maintained behaviour, not just the importable runtime:
   the role of the large test/audit corpora are owned by
   [engineering-quality](engineering-quality/high-level.md). Tests that verify a product component
   are also named in that component's `## Testing` section.
-- The checked-in `rating/` project is a non-runnable layout/example snapshot, documented by
-  [reference-pipeline](reference-pipeline/high-level.md). Missing input data and a referenced
-  sidecar remain loud, and no dedicated test suite maintains it as an end-to-end compatibility
-  fixture.
+- `examples/reference/` is the repository's runnable reference pipeline, selected by the root
+  `haute.toml` and documented by [reference-pipeline](reference-pipeline/high-level.md); a test
+  runs it from a fresh copy.
 - A file may be named in several module maps only when one component is its **primary owner** and
   the others are consumers documenting their direct interaction. An explicit cross-component
   ownership claim in prose is subject to the same discipline even when only the primary component
@@ -186,13 +198,13 @@ The component specs cover maintained behaviour, not just the importable runtime:
   present-tense specification.
 
 Current delivery intent lives in the flat [engineering roadmap](roadmap/README.md): the index
-links to one self-contained, non-normative improvement file per component. Roadmaps do not replace
+links to one self-contained, non-normative improvement file per component that has active packages,
+plus explicitly enumerated dated findings reports. Roadmaps do not replace
 code, tests, or behaviour specifications. Generated caches, coverage data, untracked local MLflow
 state, `site/`, and built static assets are outputs, not additional source components. Tracked root
 policy, legal, tooling, and snapshot artifacts are listed explicitly in the appropriate
-repository-level module map even when they are non-runtime or non-normative; in particular, the
-tracked `mlflow.db` is classified as a historical local MLflow SQLite snapshot rather than
-silently grouped with untracked generated state.
+repository-level module map even when they are non-runtime or non-normative. No local MLflow
+store is tracked: `mlflow.db` and `mlruns/` are ignored local state.
 
 ## Where is each node type specced?
 
@@ -229,7 +241,7 @@ tabular persistence; the removed `dataSource` and `dataSink` types have no compa
 | Component | Covers |
 |---|---|
 | [execution-engine](execution-engine/high-level.md) | Graph execution: executor, lazy evaluation, topological ordering, admission control, worker isolation, chunking |
-| [caching](caching/high-level.md) | Dataframe execution cache, fingerprint/stat-gated/LRU caches, hashing, structured API-input cache routes |
+| [caching](caching/high-level.md) | Seed plans and the shared snapshot layer, fingerprint/stat-gated/LRU caches, hashing, structured API-input cache routes |
 | [pipeline-config](pipeline-config/high-level.md) | Pipeline/graph configuration model, builders, validation, config IO, project scaffolding |
 | [codegen](codegen/high-level.md) | Python code generation from pipeline configs, code extraction, AST helpers |
 | [expression-parsing](expression-parsing/high-level.md) | Parsing user expressions and pipeline code into structured form |
@@ -272,4 +284,4 @@ tabular persistence; the removed `dataSource` and `dataSink` types have no compa
 |---|---|
 | [build-and-distribution](build-and-distribution/high-level.md) | Python package metadata and Hatch hook, frontend production build, bundled static assets, dependency locks, typed-package marker, and MkDocs publication |
 | [engineering-quality](engineering-quality/high-level.md) | CI workflows, pre-commit/lint/type/test gates, critical coverage, mutation/performance suites, browser E2E, developer scripts, and non-normative engineering evidence |
-| [reference-pipeline](reference-pipeline/high-level.md) | The checked-in non-runnable `rating/` layout/example snapshot: generated graph code, available sidecars, utilities, and model artefacts, with missing referenced data/sidecar and no dedicated end-to-end tests |
+| [reference-pipeline](reference-pipeline/high-level.md) | The runnable `examples/reference/` pipeline the root `haute.toml` selects: synthetic quotes, one feature step and an output mapping |

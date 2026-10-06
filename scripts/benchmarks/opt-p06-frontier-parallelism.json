@@ -1,0 +1,153 @@
+{
+  "package": "OPT-P06",
+  "question": "Does solver.frontier(parallel=True) improve median wall-clock by >=20% without raising peak memory or changing point order or results?",
+  "library": {
+    "price_contour": "0.4.1"
+  },
+  "host": {
+    "platform": "Windows-10-10.0.26200-SP0",
+    "python": "3.11.13",
+    "logical_cpus": 32,
+    "rayon_num_threads": null
+  },
+  "repeats": 5,
+  "workloads": [
+    {
+      "workload": {
+        "name": "small-1d",
+        "quotes": 5000,
+        "scenarios": 11,
+        "constraints": 1,
+        "points": 20
+      },
+      "serial": {
+        "median_seconds": 0.011766700001317076,
+        "median_peak_rss_growth_bytes": 221184,
+        "points": 20
+      },
+      "parallel": {
+        "median_seconds": 0.0037771999996039085,
+        "median_peak_rss_growth_bytes": 98304,
+        "points": 20
+      },
+      "improvement": 0.678992410855965,
+      "cancellation_latency_seconds": {
+        "serial": 0.011766700001317076,
+        "parallel": 0.0037771999996039085
+      },
+      "peak_rss_ratio": 0.4444444444444444,
+      "agreement": {
+        "same_point_count": true,
+        "same_point_order": true,
+        "same_convergence": true,
+        "max_relative_difference": 0.0008695263041786912,
+        "max_difference_field": "lambda_volume",
+        "points_with_different_iteration_counts": 7,
+        "within_tolerance": false
+      }
+    },
+    {
+      "workload": {
+        "name": "large-1d",
+        "quotes": 200000,
+        "scenarios": 21,
+        "constraints": 1,
+        "points": 20
+      },
+      "serial": {
+        "median_seconds": 0.14067490000161342,
+        "median_peak_rss_growth_bytes": 2592768,
+        "points": 20
+      },
+      "parallel": {
+        "median_seconds": 0.08541220000188332,
+        "median_peak_rss_growth_bytes": 28557312,
+        "points": 20
+      },
+      "improvement": 0.39283980297193233,
+      "cancellation_latency_seconds": {
+        "serial": 0.14067490000161342,
+        "parallel": 0.08541220000188332
+      },
+      "peak_rss_ratio": 11.014218009478673,
+      "agreement": {
+        "same_point_count": true,
+        "same_point_order": true,
+        "same_convergence": true,
+        "max_relative_difference": 0.00011483095248984597,
+        "max_difference_field": "lambda_volume",
+        "points_with_different_iteration_counts": 7,
+        "within_tolerance": false
+      }
+    },
+    {
+      "workload": {
+        "name": "small-2d",
+        "quotes": 5000,
+        "scenarios": 11,
+        "constraints": 2,
+        "points": 8
+      },
+      "serial": {
+        "median_seconds": 0.17312780000065686,
+        "median_peak_rss_growth_bytes": 241664,
+        "points": 64
+      },
+      "parallel": {
+        "median_seconds": 0.01926660000026459,
+        "median_peak_rss_growth_bytes": 1482752,
+        "points": 64
+      },
+      "improvement": 0.8887145796331295,
+      "cancellation_latency_seconds": {
+        "serial": 0.17312780000065686,
+        "parallel": 0.01926660000026459
+      },
+      "peak_rss_ratio": 6.135593220338983,
+      "agreement": {
+        "same_point_count": true,
+        "same_point_order": true,
+        "same_convergence": false,
+        "max_relative_difference": 1.0,
+        "max_difference_field": "lambda_retention",
+        "points_with_different_iteration_counts": 21,
+        "within_tolerance": false
+      }
+    },
+    {
+      "workload": {
+        "name": "large-2d",
+        "quotes": 100000,
+        "scenarios": 21,
+        "constraints": 2,
+        "points": 8
+      },
+      "serial": {
+        "median_seconds": 1.1880228999943938,
+        "median_peak_rss_growth_bytes": 1015808,
+        "points": 64
+      },
+      "parallel": {
+        "median_seconds": 0.4721073000036995,
+        "median_peak_rss_growth_bytes": 41861120,
+        "points": 64
+      },
+      "improvement": 0.6026109429322218,
+      "cancellation_latency_seconds": {
+        "serial": 1.1880228999943938,
+        "parallel": 0.4721073000036995
+      },
+      "peak_rss_ratio": 41.20967741935484,
+      "agreement": {
+        "same_point_count": true,
+        "same_point_order": true,
+        "same_convergence": false,
+        "max_relative_difference": 1.0,
+        "max_difference_field": "lambda_retention",
+        "points_with_different_iteration_counts": 24,
+        "within_tolerance": false
+      }
+    }
+  ],
+  "decision": "no-change"
+}

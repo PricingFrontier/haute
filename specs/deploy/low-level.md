@@ -5,16 +5,19 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/deploy/__init__.py` | Public API surface (`deploy`, `deploy_resolved`, config/result re-exports); target validation (`_validate_target`) and dispatch (`_dispatch_resolved`) by `config.target`. |
-| `src/haute/deploy/_config.py` | `DeployConfig` (user input), target sub-configs (`DatabricksConfig`, `ContainerConfig`, `AzureContainerAppsConfig`, `AwsEcsConfig`, `GcpRunConfig`, `SafetyConfig`, `CIConfig`), `haute.toml` loading + schema validation, base-image pinning validation, `.env` loading, `resolve_config()` producing `ResolvedDeploy`. |
+| `src/haute/deploy/_config.py` | `DeployConfig` (user input), target sub-configs (`DatabricksConfig`, `ContainerConfig`, `AzureContainerAppsConfig`, `AwsEcsConfig`, `GcpRunConfig`, `SafetyConfig`, `CIConfig`), `haute.toml` loading + schema validation (the `[mlflow]` table, owned by the MLflow settings endpoint, is accepted with exactly the tracking-uri and folder keys; the retired single-mode key is an unknown key), base-image pinning validation, `.env` loading, `resolve_config()` producing `ResolvedDeploy`. |
 | `src/haute/deploy/_pruner.py` | Graph pruning to the output node's ancestors; `liveSwitch` live-branch collapsing; output/input/source node discovery. |
-| `src/haute/deploy/_bundler.py` | Artefact discovery and collection (`collect_artifacts`): external files, file-backed optimiser artefacts, supported MLflow-sourced local models + feature contracts, and retained Data Inputs; path resolution plus canonical provider/schema validation and a bounded one-row readability probe. MLflow-sourced optimiser applies are deliberately not bundled. |
-| `src/haute/deploy/_schema.py` | Input schema inference (read source file schema) and output schema inference (dry-run scoring with the bundled artefacts), with a graph-and-artefact-fingerprint-keyed on-disk cache. |
+| `src/haute/deploy/_bundler.py` | Artefact discovery and collection (`collect_artifacts`): external files, file-backed optimiser artefacts, supported MLflow-sourced local models + feature contracts (each model-score node's stored mlflow_destination key, absent = the local folder, is resolved once through `resolve_backend` and that backend drives both the registry lookup and the download), and retained Data Inputs; path resolution plus canonical provider/schema validation and a bounded one-row readability probe. MLflow-sourced optimiser applies are deliberately not bundled. |
+| `src/haute/deploy/_schema.py` | Input schema inference (read source file schema), output schema inference (dry-run scoring with the bundled artefacts) with a graph-and-artefact-fingerprint-keyed on-disk cache, and bundle-time, target-aware batch strategy planning (`infer_deploy_execution_policy`) over the shared one-row sample (`_read_sample_row`), with a hard-capped-worker dry-run fallback (`_capped_worker_output_schema`) for an unprovable group-by. |
+| `src/haute/deploy/_batch_scoring.py` | Multi-row `/quote` scoring in a hard-capped spawn worker: the picklable `BatchScoreRequest`/`BatchScoreOutcome` pair, the child entrypoint `score_batch_worker`, and the parent supervisor helpers `prepare_batch_scoring` / `accept_batch_outcome` / `deploy_batch_timeout_seconds`. |
 | `src/haute/deploy/_scorer.py` | Runtime scoring engine (`score_graph`, `score_graph_lazy`) shared by every deploy target; `NodeBuildHooks` interception for live-input injection and artefact-path remapping; stat-gated model/contract caches; execution admission. |
+| `src/haute/deploy/_project_modules.py` | Project-module resolution for the bundle (`resolve_project_modules`): the project-local `utility` package the preamble resolves, which deploy ships, and every other project-local static import, which validation refuses. |
 | `src/haute/deploy/_validators.py` | Pre-deploy validation (`validate_deploy`): structural checks + exactly one test-quote scoring pass, returning successful per-file results to its caller; golden test-quote parsing and expected-output tolerance comparison; `score_test_quotes`. |
 | `src/haute/deploy/_utils.py` | Shared helpers: `get_user`, `get_haute_version`, `build_manifest` (the canonical deploy-manifest schema). |
-| `src/haute/deploy/_mlflow.py` | Databricks target: `deploy_to_mlflow`, `get_deploy_status`, MLflow signature/conda-env building, Databricks Model Serving endpoint create/update, connectivity pre-check. |
+| `src/haute/deploy/_mlflow.py` | Databricks target: `deploy_to_mlflow`, `get_deploy_status`, MLflow signature building (each rendered dtype is mapped by `_polars_dtypes.rendered_dtype_mlflow_type_name`), conda-env building, Databricks Model Serving endpoint create/update, connectivity pre-check, and the MLflow destination check (`_resolve_mlflow_databricks`) that binds its logging and registry calls. |
 | `src/haute/deploy/_model_code.py` | MLflow models-from-code entry point: `HauteModel` (`mlflow.pyfunc.PythonModel` subclass) wrapping `score_graph`. |
-| `src/haute/deploy/_container.py` | Container build/push orchestration, generated FastAPI `/health` and `/quote` runtime, stable JSON/NDJSON response handling, pinned Dockerfile generation, Docker subprocess calls, and the platform service-update stub. |
+| `src/haute/deploy/_container.py` | Container build/push orchestration, build-directory preparation (`prepare_build_directory`), generated FastAPI `/health` and `/quote` runtime, stable JSON/NDJSON response handling, pinned Dockerfile generation, Docker subprocess calls, and the platform service-update stub. |
+| `scripts/container_smoke.py` | Standalone CLI script to verify the container deployment pipeline for an example (copy bundle, resolve deploy config, prepare build directory, and optionally execute a live uvicorn process smoke check). |
 | `src/haute/deploy/_impact.py` | Impact analysis: batched endpoint scoring (Databricks SDK or HTTP `/quote`), quote-envelope normalisation, percent-change statistics, categorical segment breakdown, terminal/Markdown report formatting. |
 | `src/haute/deploy/_request_limits.py` | Deployed-container request-body size limiting: environment resolution, `Content-Length` and streamed-byte enforcement before JSON materialisation, and structured limit/header/parse errors. |
 
@@ -35,7 +38,16 @@
 - **`ResolvedDeploy`** (`src/haute/deploy/_config.py`) — the target-agnostic handoff object, created only
   by `resolve_config()`: `config`, `full_graph`, `pruned_graph`, `input_node_ids`,
   `output_node_id`, `artifacts` (`dict[str, Path]`), `input_schema`/`output_schema`
-  (`dict[str, str]` of column name → Polars dtype string), `removed_node_ids`.
+  (`dict[str, str]` of column name → Polars dtype string), `execution_policy` (the
+  bundle-time batch strategy record from `_schema.py::infer_deploy_execution_policy`),
+  `removed_node_ids`, `snapshot_provenance` (`dict[str, dict[str, Any]]`), `model_sources`
+  (`dict[str, dict[str, Any]]`: each registered model-score node's `registered_model`,
+  `alias`, resolved `version` and `run_id`), `project_modules` (`ProjectModules`: the
+  `utility` package directory or `utility.py` file to bundle, or `None`, and one message
+  per project-local import the bundle does not carry). It owns
+  an `_resources: ExitStack` released by idempotent `close()` (also implementing
+  `__enter__`/`__exit__`), which `deploy()`/`deploy_resolved()` invoke in a
+  `finally` to drop snapshot leases.
 - **`DeployResult`** (`_mlflow.py`) — returned by every backend: `model_name`,
   `model_version`, `model_uri`, `endpoint_url` (`None` if no endpoint configured/created),
   `manifest_path`.
@@ -48,6 +60,31 @@
   `temporary_paths` (registered-model temp files), `retained_lazy_frames` (kept alive
   when `output_fields` narrows the final select), `_cleaned_up` guard. `cleanup()` is
   idempotent and always releases execution admission.
+- **`BatchScoreRequest`** (`_batch_scoring.py`, frozen dataclass) — the only evidence that
+  crosses the spawn boundary: `graph`, `input_node_ids`, `output_node_id`,
+  `artifact_paths`, `output_fields`, `input_path` (parent-written JSON rows),
+  `result_path` (child-written parquet). The child derives its operation label from
+  the budget, so the request carries no `operation` field.
+- **`BatchScoreOutcome`** (`_batch_scoring.py`, frozen dataclass) — the child's picklable
+  return: `row_count`, `execution_metrics` (the child context's payload), and on failure
+  `failure_kind` (`contract` | `bounded` | `memory` | `cancelled` | `error`), `detail`,
+  `payload`.
+- **`BatchScorePlan`** (`_batch_scoring.py`, slotted dataclass) — parent-owned resources
+  for one supervised worker: `request`, `budget` (`IsolatedExecutionBudget`),
+  `execution_context` (the admitted `DEPLOY_BATCH` parent context), `worker_config`,
+  `temp_dir`. `cleanup(primary_error=...)` removes the temp directory and
+  releases the parent admission exactly once (idempotent).
+- **`BatchScoreResult`** / **`BatchScoreError`** (`_batch_scoring.py`) — the accepted
+  result (`result_path`, `row_count`, `execution_metrics`) and the typed parent-side
+  failure carrying `kind`, `detail`, `payload`.
+- **`BatchScoreCleanupError`** (`_batch_scoring.py`) — raised when the batch temp
+  directory (request rows plus scored parquet) could not be removed and no primary error
+  is in flight; a data-retention defect is never swallowed.
+- **Deploy execution policy** (`_schema.py::infer_deploy_execution_policy`) — the
+  bundle-time record on `ResolvedDeploy.execution_policy`, in the manifest, and on
+  `/health`: `schema_version`, `profile` (`"deploy_batch"`), `runtime`
+  (`hard_capped_worker` | `in_process`), `status`, `strategy`, `reason_code`,
+  `blocking_node_id`, `blocking_operator`, `remediation`.
 - **`ContainerBuildResult`** (`_container.py`) — intermediate result of
   `build_and_push_image`: `image_tag`, `manifest_path`, `build_dir`, `model_name`,
   `model_version`.
@@ -59,8 +96,14 @@
   every target and the generated runtime code (`_container.py`'s `app.py` template,
   `_model_code.py`'s `HauteModel.load_context`): `haute_version`, `pipeline_name`,
   `pipeline_file`, `target`, `created_at`, `created_by`, `input_node_ids`,
-  `output_node_id`, `output_fields`, `input_schema`, `output_schema`, `artifacts`
-  (name → posix path), `pruned_graph` (full `model_dump()`), `nodes_deployed`,
+  `output_node_id`, `output_fields`, `input_schema`, `output_schema`, `execution_policy`,
+  `artifacts` (name → posix path), `snapshot_provenance` (node id → `provider` plus
+  the snapshot generation's metadata record: identity digest and identity, schema
+  version, generation id, source signature, data checksum, size, row and column
+  counts, columns, creation time, profile, build class), `model_sources` (node id →
+  the registered model, alias, concrete version and run ID the bundle packaged),
+  `pruned_graph` (full
+  `model_dump()`), `nodes_deployed`,
   `nodes_skipped`, `nodes_skipped_names`.
 
 ## Control flow
@@ -80,16 +123,54 @@
    one apiInput mapped `quotes=live, drivers=batch` keep exactly the `quotes` edge —
    then `ancestors()` walks backward from the output node over the filtered edge set.
 6. `find_deploy_input_nodes(pruned_graph)` — nodes with `nodeType="apiInput"`. If none,
-   accept a single `dataInput` source as the deliberate legacy live-input form.
+   accept a single `dataInput` source as the live-input form.
    Zero/multiple sources, or a sole `constant`/other unsupported source, fail with a
    correction that names the node/type and asks for an API Input.
 7. `collect_artifacts(pruned_graph, deploy_inputs, pipeline_dir, project_root=...)` →
-   `artifacts` dict. The pipeline and every local runtime input are already canonicalised
+   `artifacts` dict, an `ArtifactKeys` whose `add(node_id, key, path)` refuses, with a
+   `DeployError` naming both nodes and files before anything is uploaded, a `<node>__<filename>`
+   key equal to another artifact's or equal to it ignoring case: the scheme is not injective
+   (node `a` with `b__c.pkl` and node `a__b` with `c.pkl` both give `a__b__c.pkl`), and keys
+   differing only in case clobber each other on a case-insensitive file system. Adding the
+   same file under the same key again is accepted. The pipeline and every local runtime input are already canonicalised
    and checked for project-root containment. Bundling repeats that check at the copy
    boundary. Explicit `modelScore.feature_contract_path` files are copied under the
    canonical `<node>__feature_contract.json` key and override an adjacent downloaded
    contract. MLflow artifact identifiers reject absolute and `..`-containing forms before
-   download.
+   download. Each model-score node's source is read through `parse_model_source`, the
+   parser every other Model Scoring consumer uses: a node with no `sourceType` is untouched
+   and is not bundled (the preview passes it through too), a chosen source with an empty
+   `run_id`/`registered_model` (`IncompleteModelSourceError`) is skipped with a warning, a
+   run source without an `artifact_path` is discovered when served, and any other invalid
+   source raises its `ConfigError`. A file source (`sourceType: "file"`) is copied from the
+   project: its `model_path` resolves with scoring's rule (the project before the
+   pipeline directory, unlike other local artefacts, so the bundle holds the file the
+   preview scored) and must exist, and the model is bundled under
+   `<node>__<configured file name>` (`artifact_basename`, splitting on either separator).
+   Its contract, the explicit `feature_contract_path` (also project-first for every
+   Model Scoring source) or else the first existing sibling (`model_contract_path`, which
+   refuses a sibling that leaves the project through a symlink as a `DeployError`), is
+   bundled under `<node>__feature_contract.json`; a file source never contacts MLflow. For a run or registered source without an explicit
+   contract, the contract logged beside the model in the run is bundled
+   (`_resolve_run_contract`, which fails naming the run when there is none) for a
+   contract-bound family and for a CatBoost model whose file does not declare its offset
+   (`_offset_undeclared` loads the downloaded model to check), so that model is served bound
+   to the same declaration as in the preview; otherwise the bare `feature_contract.json`
+   beside the download is bundled when present. A node left unbundled is then refused by the deploy
+   scorer's passthrough guard below. The bundler resolves each model-score node's
+   `mlflow_destination` to one
+   backend exactly once and passes that object to both registered-model resolution
+   (`_resolve_registered_model`, which resolves a stored `alias` once to its current
+   version and returns `(run_id, artifact_path, resolved_version)`) and the download itself
+   (`_download_model_artifact`), so
+   the bundle is built from the destination the pipeline author browsed and a settings save
+   mid-bundle cannot split lookup and download across backends; the download lands in the
+   shared model disk cache under that backend's digest partition, and an unconfigured
+   explicit destination fails with `MlflowConfigError` rather than resolving another backend.
+   Each registered model-score node's resolution is recorded in `model_sources`, written to
+   the manifest, and printed by both deploy targets as `Model <node>: <model> @<alias> ->
+   version <n> (run <id>)` (`model_source_line`), so the deployed version behind an alias is
+   known after the alias moves.
    A retained file-backed Parquet input is derived direct (`data_input_is_direct`) and
    bundles its validated source file. Every other retained Data Input is snapshot-backed;
    its ready snapshot acquires a `SourceCacheStore.lease()` that
@@ -98,17 +179,78 @@
    manifest provenance.
 8. `infer_input_schema()` (call `collect_schema()` on the first input node's source;
    lazy readers avoid row collection, while the existing plain-JSON reader may parse
-   eagerly) and
-   `infer_output_schema()` (dry-run score up to one sample row through the pruned graph using
-   the just-collected artefact paths, cached by graph+artefact-identity fingerprint).
+   eagerly).
+   Then `infer_deploy_execution_policy()` plans the served `DEPLOY_BATCH` strategy once,
+   over the same one-row sample (`_read_sample_row`) and the same bundled-contract graph
+   preparation `_scorer._score_graph_lazy` performs, under a short-lived
+   `deploy_bundle_policy` admission released in `finally`. The record is target-aware:
+   `resolve_config` passes `batch_runtime="hard_capped_worker"` for a target in
+   `_CONTAINER_BASED_TARGETS` and `"in_process"` otherwise (Databricks pyfunc, which
+   scores multi-row inputs in the serving process via
+   `_model_code.py::HauteModel.predict`), and the value is recorded as the policy's
+   `runtime`. Bundle time has no native cap, so a `GroupByExecutionUnsupportedError` with
+   `reason_code == "materialisation_estimate_unavailable"` is translated — for
+   `hard_capped_worker` only — into the policy that worker will actually apply
+   (`status="warned"`, `strategy="full-width-conservative"`, the runtime
+   `reason_code="materialisation_estimate_unavailable_conservative"`, a remediation naming
+   the hard-capped envelope); for `in_process` it raises `DeployError`, because that
+   runtime has no cap and would reject the same group-by on every request. Every other
+   planning rejection, and an `unsupported` strategy, raises `DeployError` naming the
+   blocking node and operator for both runtimes. The record is logged once
+   (`deploy_execution_policy`, warning when warned).
+   Only then `infer_output_schema()` (dry-run score up to one sample row through the
+   pruned graph using the just-collected artefact paths, cached by
+   graph+artefact-identity fingerprint).
+   The dry-run scores uncapped under `DEPLOY_LIVE`, so a group-by whose materialisation
+   estimate is unavailable is rejected there even though the served batch would run it
+   conservatively. That one rejection
+   (`GroupByExecutionUnsupportedError(reason_code="materialisation_estimate_unavailable")`)
+   falls back to `_capped_worker_output_schema`: the same one-row dry-run re-run inside
+   the *served* batch worker — `prepare_batch_scoring(...,
+   operation="deploy_bundle_schema")` + `run_isolated_worker(score_batch_worker, ...)` +
+   `accept_batch_outcome`, then `pl.read_parquet_schema()` over the parquet the worker
+   wrote, with `plan.cleanup(primary_error=...)` on every path. The group-by therefore
+   runs once under its full hard-capped envelope, exactly the policy the manifest records,
+   and the schema is read from what the worker actually produced. The one-row sample
+   bounds only the request-derived side of the graph — a group-by over a bundled static
+   source still materialises that source in full — so the admission gate is never simply
+   relaxed here; the cap is what keeps the bundle build bounded. A `BatchScoreError` from
+   the child (the group-by exceeded the cap, say) or any `IsolatedWorker*Error`
+   (including `IsolatedWorkerMemoryLimitUnsupportedError` on a host that cannot install a
+   cap) raises `DeployError` naming the node and operator from the original rejection: the
+   bundle could not prove the served batch path can produce the schema, and the deployed
+   endpoint would fail the same way on every batch request. Every other rejection
+   propagates.
+   This ordering is deliberate: policy inference needs only the sample, and an
+   `in_process` target must refuse an unprovable group-by before any capped dry-run is
+   attempted.
    Validate `output_fields` as a non-empty, duplicate-free list of non-empty strings
    present in that full schema, then retain the projected schema in configured order.
-9. Assemble and return `ResolvedDeploy`.
+9. `resolve_project_modules(pruned_graph.preamble, pipeline_dir)`. The project directories
+   are the pipeline directory and the working directory, the two entries the executor
+   puts first on `sys.path` for the preamble
+   (`executor._prioritise_preamble_import_paths`), searched once when they are the same
+   directory. `utility` is looked up in those directories only
+   (`importlib.machinery.PathFinder.find_spec`). A match is the package directory or
+   `utility.py` file to bundle, and a namespace package spanning two distinct directories
+   is refused with `DeployError`. Bundled files are decoded as the import system decodes
+   them (`tokenize.open`: a byte-order mark or a coding declaration). Every static absolute import (`import a.b`,
+   `from a.b import c`; relative imports skipped) in the preamble and in each `.py` file of
+   a bundled package is then looked up the same way, skipping built-in and standard-library
+   names and `utility` itself. Each one found is recorded as a message naming the module,
+   the importing file (the preamble, or `utility/<path>`) and its line. A bundled file that
+   does not parse raises `DeployError` naming it.
+10. Assemble and return `ResolvedDeploy`, carrying the policy on `execution_policy` and
+    the modules on `project_modules`.
 
 **Validation (`_validators.py::validate_deploy`)** — called by `deploy()` after
 `resolve_config()`, before dispatch. Runs seven structural checks (output, inputs,
 source-ness, artefact existence, canonical Data Input direct readability or snapshot readiness, and non-empty input/output
-schemas), rechecks the projected output-field invariant, then — if
+schemas), refuses a pruned graph that reads a global constant with no `live` value, an
+undefined constant, or any constant while the constants file failed to load
+(`_global_constant_errors`, naming the constant or the file; a constant read only on a pruned
+branch needs no `live` value), adds every `project_modules` import message (a project-local
+import the bundle does not carry), rechecks the projected output-field invariant, then — if
 `config.test_quotes_dir` is configured — requires an existing directory containing at
 least one `*.json` file and pre-checks every quote's rows
 against the required input-schema columns (catching a missing column before scoring even
@@ -133,36 +275,70 @@ configured gate.
    what was validated.
 3. `_dispatch_resolved()`: `"databricks"` → `deploy_to_mlflow`; `"container"` →
    `deploy_to_container`; any other `_CONTAINER_BASED_TARGETS` member (`azure-container-apps`,
-   `aws-ecs`, `gcp-run`) → `deploy_to_platform_container`.
+   `aws-ecs`, `gcp-run`) → `deploy_to_platform_container`, which raises `DeployError` before
+   building when `container.registry` is empty, otherwise builds and pushes through
+   `build_and_push_image`, reports through `progress` that the service was not updated and
+   which image to point it at, and returns the `DeployResult` with the image tag as
+   `model_uri` and no `endpoint_url`. `haute deploy` prints the image tag for every
+   container-based target, and for the three platform targets the manual service-update
+   instruction; only a Databricks result prints the `mlflow models serve` hint.
 
 **Container build (`_container.py::build_and_push_image`)** — shared by all
 container-based targets. Creates `.haute_build/` under CWD; on any exception the whole
 directory is removed (`except BaseException: shutil.rmtree(...); raise`). Steps: build
 manifest via `_utils.build_manifest`, remap artefact paths to `artifacts/<name>`
 container-relative paths, write `deploy_manifest.json`, copy every artefact file into
-`artifacts/`, generate `app.py` from an f-string template, generate `Dockerfile` (base
-image + core deps + the model-runtime deps auto-detected from artefact file extensions,
-every one pinned through `importlib.metadata` to the version installed in the deploying
-environment — the container unpickles the model, so a runtime resolved fresh at
-image-build time could load it under a different version than wrote it; a runtime the
-artefacts need that is not installed raises `DeployError` naming the artefact and the
-package — with `HAUTE_EXECUTION_MEMORY_POLICY=strict_server`), record the full pinned
-`pip install` list in the manifest as `container_dependencies`, pick
-an image tag (`<registry>/<model_name>:<git_sha>` or `<model_name>:<git_sha>`, falling
-back to `"local"` if not in a git repo), `docker build`, then `docker push` only if a
-registry is configured.
+`artifacts/`, remove any `utility/` or `utility.py` an earlier build left in a reused build
+directory, then copy the bundled `utility` package to `utility/` (or the module to
+`utility.py`) without `__pycache__` directories, generate `app.py` from an f-string template, generate `Dockerfile` (base
+image; one `pip install` of the scoring runtime `_SCORING_RUNTIME_DEPENDENCIES`, of `mlflow`
+when the pruned graph has an `optimiserApply` node sourced from an MLflow run or registered
+model, and of the model-runtime packages each artefact needs — a Model Scoring artefact's
+registered model family's `distributions` (`family_for_suffix`), a Load File artefact's entry
+in `_LOAD_FILE_EXT_TO_DEPS`; then a second `pip install --no-deps` of `haute` itself; every package pinned
+through `importlib.metadata` to the version installed in the deploying environment — the
+container unpickles the model, so a runtime resolved fresh at image-build time could load it
+under a different version than wrote it; a runtime the artefacts need that is not installed
+raises `DeployError` naming the artefact and the package — with
+`HAUTE_EXECUTION_MEMORY_POLICY=strict_server`), record the full pinned list (`haute` first)
+in the manifest as `container_dependencies`, pick
+an image tag (`<registry>/<model_name>:<git_sha>` or `<model_name>:<git_sha>`; the short
+SHA is read through the git command core's `_run_git_ok`, falling back to `"local"` when
+git is not installed or the directory is not a git repository), `docker build`, then
+`docker push` only if a registry is configured.
 
 The manifest paths are resolved by the generated runtime against the image's
 `WORKDIR /app`. `_container.py`'s `artifacts/<name>` remapping and the Dockerfile's
 `WORKDIR /app` plus `COPY artifacts/ artifacts/` must change together; neither side is
-an independently relocatable contract.
+an independently relocatable contract. A bundled `utility` gets its own `COPY` into
+`/app`, which `uvicorn app:app` puts on `sys.path`, and the preamble compile puts the
+working directory on it too. Spawned batch workers inherit the parent's `sys.path`.
 
 **Generated container HTTP runtime (`_container.py::_generate_app_source`)**
 1. Startup loads `deploy_manifest.json`, reconstructs `PipelineGraph`, and resolves the
    request-body limit. `GET /health` returns status, model/version, deployed-node count,
-   the manifest input/output schemas, and
-   `memory_enforcement="admission_rss_best_effort"`. This describes application
-   admission/RSS checkpoints, not an OS or container hard memory limit.
+   the manifest input/output schemas,
+   `memory_enforcement="admission_rss_best_effort"` (this describes application
+   admission/RSS checkpoints for single-row live scoring, not an OS or container hard
+   memory limit), `batch_memory_enforcement`
+   (`_worker_isolation.resolve_worker_memory_enforcement()` — `"required"` or
+   `"best_effort"`, the hard-cap policy multi-row batches run under), and
+   `execution_policy` (the manifest's bundle-time strategy record).
+   Startup is fail-closed on that record: `_require_fail_closed_batch_enforcement`
+   raises `RuntimeError` at module load when the policy's `status` is `"warned"` — a
+   promise that only holds while the batch worker runs under an enforced hard cap — and
+   `resolve_worker_memory_enforcement()` is not `"required"`, and also when it *is*
+   `"required"` but `_worker_isolation.process_memory_caps_supported()` is `False`,
+   because a host that cannot install a native memory cap cannot keep the promise
+   either. The message names the policy, the blocking node/operator, and either
+   `HAUTE_WORKER_MEMORY_ENFORCEMENT=required` or the host's missing native memory cap.
+   Without the gate, a `best_effort` host whose cap installation fails would start a
+   child with no native backend, and the planner would reject the unavailable estimate on
+   every batch request while `/health` still advertised conservative execution. Under
+   `required` enforcement a host that cannot install a cap instead answers each batch
+   with the typed 507 `native_memory_cap_unavailable` (`run_isolated_worker` raises
+   `IsolatedWorkerMemoryLimitUnsupportedError`, mapped through
+   `isolated_worker_memory_detail`).
 2. `POST /quote` reads JSON through `_request_limits.read_limited_json_body` before
    constructing a `DataFrame`. A JSON object becomes a one-row request; a JSON array is
    used as the batch; any other JSON top-level value returns HTTP 400. Array element
@@ -173,7 +349,46 @@ an independently relocatable contract.
    `row_count`, `returned_rows`, `truncated`, `limit`, and execution metrics. At most
    1,000 rows are returned in that envelope even though `row_count` records the full
    result.
-4. An `Accept` header containing `application/x-ndjson` or `application/ndjson` selects
+4. A request with more than one row never scores in the service process. `_quote_batch`
+   calls `_batch_scoring.prepare_batch_scoring` in the threadpool (admits one
+   `DEPLOY_BATCH` context — the batch path always admits that profile whatever the
+   row count, so the bundle's one-row schema dry-run runs under the served envelope
+   and the batch `modelScore` contract —, derives `isolated_execution_budget`, creates a private
+   `haute_deploy_batch_*` temp directory, writes `input.json`), then awaits
+   `routes._isolated_worker_async.run_isolated_worker_async(score_batch_worker,
+   request, budget, config=...)` — one spawn per batch, `process_name="haute-deploy-batch"`,
+   `memory_limit_bytes` equal to the admitted headroom, `timeout_seconds` from
+   `deploy_batch_timeout_seconds()` (`HAUTE_DEPLOY_BATCH_TIMEOUT`, default 300s). The
+   child creates a worker-local context (`create_isolated_execution_context`), builds the
+   request `DataFrame` and scores it through `score_graph_lazy`, sinks the result to
+   `result.parquet` under a `deploy_batch_sink` stage, and returns row count plus its own
+   `metrics_payload`. Because the child runs under a native cap, an unavailable
+   materialisation estimate is warned and run conservatively there instead of rejected.
+   A child failure the classifier can only collapse to the untyped `error` kind is
+   logged with `logger.exception("deploy_batch_scoring_failed", error_type=...)` before it
+   is returned, so the child's traceback reaches the container logs instead of being lost
+   behind the parent's one-line detail string.
+   `accept_batch_outcome` validates the outcome type, re-reads the parquet's row count,
+   and rejects a missing/unreadable/mismatched file. The parent renders the same JSON
+   envelope from that parquet (`head(limit)`) with the child's `execution_metrics`, or
+   streams every row as NDJSON through `bounded_collect_batches` into the same spool. The
+   plan's `cleanup()` runs on every path.
+5. Batch error mapping: parent-side `ExecutionCancelledError` → 499
+   `execution_cancelled` (`operation`, `job_id`, `reason`),
+   `ExecutionMemoryLimitExceededError` → 507 `to_payload()`,
+   `BoundedMemoryUnsupportedError` → 422 (its public payload, else the typed
+   `bounded_streaming_unsupported` envelope), and a public-contract `HauteError` → 422
+   `to_payload()` — the same mapping the live single-row path uses.
+   `BatchScoreError` kinds `contract`/`bounded` → 422 (the child's
+   payload, else the typed bounded envelope), `memory` → 507, `cancelled` → 499,
+   `error` → 500 `deploy_internal_error`; `IsolatedWorkerMemoryLimitExceededError`,
+   `IsolatedWorkerMemoryLimitUnsupportedError`, a crash whose exit code looks
+   memory-bound, and a remote memory type → 507 carrying
+   `_worker_isolation.isolated_worker_memory_detail(exc, operation="deploy_quote",
+   memory_limit_bytes=plan.budget.memory_limit_bytes)`; `IsolatedWorkerTimeoutError` →
+   504 `{"error_code": "deploy_batch_timeout", "operation": "deploy_quote",
+   "timeout_seconds": ...}`; every other worker death → logged 500.
+6. An `Accept` header containing `application/x-ndjson` or `application/ndjson` selects
    `score_graph_lazy()` and ordered, bounded collection in 50,000-row chunks. Rows are
    encoded into a `SpooledTemporaryFile` from Starlette's worker threadpool before
    response headers are committed; the spool spills to disk above its memory threshold
@@ -182,28 +397,52 @@ an independently relocatable contract.
    and other requests can continue to use the event loop. Plan and spool cleanup run on
    every path.
 
-**Databricks deploy (`_mlflow.py::deploy_to_mlflow`)** — checks Databricks connectivity
-(HTTP GET with a short timeout, distinguishing 403 from unreachable), sets MLflow tracking
-+ registry URI to Databricks/Unity-Catalog, builds the manifest, writes it under
-`<pipeline_dir>/.haute_build/`, builds an MLflow `ModelSignature` from the resolved
-schemas (`Categorical` and parameterised `Enum` map to MLflow string; genuinely
-unrepresentable Polars types fail loudly), sets/creates the experiment
-(suffix-isolated for staging), and inside one
-`mlflow.start_run()` logs `HauteModel` as a `pyfunc` model-from-code with the manifest +
-every bundled artefact attached, a `conda_env` with Python 3.11.11 and Haute exactly
-pinned but `polars>=1.39.2` and optional `catboost>=1.2.8` as lower bounds, and
+**Databricks deploy (`_mlflow.py::deploy_to_mlflow`)** — runs one deploy at a time in
+the process (`_DEPLOY_LOCK`), because deploys share the pipeline's build directory and
+read their registered version back from the registry. It checks Databricks connectivity
+(HTTP GET with a short timeout, distinguishing 403 from unreachable), creates an
+`MlflowClient` bound to the Databricks tracking URI and its Unity Catalog registry URI,
+builds the manifest, writes it under `<pipeline_dir>/.haute_build/`, builds an MLflow
+`ModelSignature` from the resolved schemas (`Categorical` and parameterised `Enum` map to
+MLflow string; genuinely unrepresentable Polars types fail loudly), and selects or creates
+the experiment (suffix-isolated for staging) on that client through
+`ensure_experiment`, so a new experiment's missing Databricks workspace folder is created
+first (see [modelling](../modelling/low-level.md)). The client creates the
+`deploy-<model_name>` run and logs the manifest to it; then, inside
+`mlflow_fluent_operation()` with the destination selected and attached to that run by
+`mlflow.start_run(run_id=...)`, the one fluent call logs `HauteModel` as a `pyfunc`
+model-from-code with the manifest + every bundled artefact attached, the bundled `utility` package as its only MLflow
+`code_paths` entry (MLflow copies it under the model's `code/` directory and puts that on
+`sys.path` when the model loads), a `conda_env` with Python 3.11.11 and Haute exactly
+pinned but `polars>=1.44.2` (Haute's own Polars floor) as a lower bound (the pinned Haute
+brings its own model engines, CatBoost among them), and
 `registered_model_name` set to the UC
-three-level name. Fetches the newly registered version, then creates or updates the
+three-level name. The client marks the run `FINISHED`, or `FAILED` when logging
+raised. Fetches the newly registered version through the client, then creates or updates the
 Databricks Model Serving endpoint (`_create_or_update_serving_endpoint`) if
 `effective_endpoint_name` is set. Any exception during this whole block removes the build
 directory before re-raising.
+
+**Databricks credentials.** Deploy uses two credential spaces. Its MLflow calls —
+experiment setup, model logging, Unity Catalog registration and the version lookup in
+`deploy_to_mlflow`, and the registry client in `get_deploy_status` — first resolve the
+Databricks MLflow destination through `resolve_destination("databricks")`
+([modelling](../modelling/low-level.md)). That enforces the `MLFLOW_ENABLE_DB_SDK` and
+`DATABRICKS_CONFIG_PROFILE` rejections, requires `MLFLOW_TRACKING_URI=databricks://<profile>`
+or the dedicated `DATABRICKS_MLFLOW_HOST`/`DATABRICKS_MLFLOW_TOKEN` pair, and binds MLflow's
+credentials; a resolution failure raises `DeployError` with the non-secret reason before any
+MLflow or HTTP request. The tracking URI and its Unity Catalog registry URI come from the
+resolved destination, so a selected profile is honoured. The connectivity pre-check and the
+Model Serving endpoint client keep the `DATABRICKS_RATING_HOST`/`DATABRICKS_RATING_TOKEN`
+pair. Deploy never uses the general `DATABRICKS_HOST`/`DATABRICKS_TOKEN` pair.
 
 **Runtime scoring (`_scorer.py::score_graph_lazy` → `score_graph`)**
 1. Resolve the graph's relative path configs against `graph.source_file`
    (`_resolve_runtime_graph_paths`) and attach bundled feature-contract paths to
    `modelScore` node configs (`_attach_bundled_feature_contracts`). When a remapped
    native model has no bundled feature-contract sidecar, load that local model through
-   the stat-gated deploy cache and attach its feature names plus any offset column as
+   the shared stat-gated local-model cache (`load_local_model_cached`) and attach its
+   feature names plus any offset column as
    the node's internal deploy-contract inputs before strategy planning. Projection and
    boundary checks therefore describe the artifact actually served and never contact
    the original MLflow run or registry merely to resolve a remapped model's columns.
@@ -213,26 +452,41 @@ directory before re-raising.
    frame `sourceHandle`.
 2. Build a `NodeBuildHooks(before_build=_intercept)` wrapper around the shared
    `_build_node_fn` builder. `_intercept` returns a replacement `(func_name, fn,
-   returns_frame)` tuple — or `None` to fall through to the base builder — for four node
-   categories: `apiInput` or `dataInput` source in the live input set (inject the live `DataFrame`
-   directly); retained direct-Parquet `dataInput` nodes (remap their configured path to the
-   bundled source); retained snapshot-backed `dataInput` nodes with a bundled
-   `node_id__snapshot.parquet` (scan the leased parquet through a deploy-only interception
+   returns_frame)` tuple — or `None` to fall through to the base builder — for these node
+   categories: `apiInput` in the live input set (inject the live `DataFrame` directly);
+   `dataInput` in the live input set (passes the injected raw frame through `apply_source_scan`
+   with the execution profile, required columns, materialized code, and preamble context,
+   without opening the provider, then normal executor column post-processing applies);
+   retained direct-Parquet `dataInput` nodes (remap their configured path to the
+   bundled source); retained snapshot-backed `dataInput` nodes with bundled
+   `node_id__snapshot.part-NNNNN.parquet` parts (one artifact per part of the leased
+   generation; scan them in part order through a deploy-only interception
    path while retaining the canonical config unchanged, user code,
    preamble namespace, and executor post-processing);
    `externalFile` with a remapped bundled path (run its user code against the
    loaded object, or passthrough if no code); `optimiserApply` either file-based-remapped
-   or MLflow-sourced (`run`/`registered`, downloaded at request time); `modelScore` in three sub-cases (remapped
-   model artefact present → score; contract bundled but no model artefact → validate
+   or MLflow-sourced (`run`/`registered`, downloaded at request time from the node's
+   `mlflow_destination` — absent = the local folder of the deployed environment — through
+   `load_mlflow_optimiser_artifact(destination=...)`, so a Local artifact is served from Local
+   even when the deployed environment configures a remote, and an explicit destination
+   that is not configured there fails without consulting another backend); `modelScore` in three sub-cases (remapped
+   model artefact present, found by the basename of `model_path` for a file source and of
+   `artifact_path` otherwise (`_remap_artifact` takes the basename with `artifact_basename`,
+   so a path saved with backslashes on Windows is found on Linux) → score, loaded and bound to its bundled contract through
+   `load_local_model_cached`; contract bundled but no model artefact → validate
    contract then raise `RuntimeError`; neither present and no usable model source
    configured → raise `DeployError` immediately, never a silent passthrough).
 3. Compile the graph's preamble once so transform-node user code has access to the same
    namespace as at dev time.
-4. For non-`DEPLOY_LIVE` profiles, build a `dataframe_cache_request` — the deployed
-   scorer opts into the same dataframe execution cache the dev executor uses, fingerprinted
-   on the live input `DataFrame`, the input node ids, and the resolved artefact-path
-   identities so a cache hit requires byte-identical served artefacts.
-5. `execute_lazy_graph()` runs the pruned graph to `output_node_id`; if `output_fields`
+4. The deployed scorer never disk-batches Model Score, for every profile (`DEPLOY_LIVE` and `DEPLOY_BATCH` alike): Model Score
+   always scores in memory (`source="live"`), so no parquet is written between nodes for
+   any request size. A batch too large to score in memory is refused by the batch worker's
+   hard memory cap (`src/haute/deploy/_batch_scoring.py`) rather than streamed through disk.
+5. `execute_lazy_graph()` runs the pruned graph to `output_node_id` with
+   `prepare_inputs=False`: a deployed scorer serves a request against artefacts that were
+   resolved and validated at deploy time, so it never builds or refreshes a source snapshot
+   on the serving path — a missing generation is a deploy-time packaging failure to be
+   raised, not a per-request build. If `output_fields`
    was requested, the output lazy frame is retained (kept alive against GC) and narrowed
    with `.select(output_fields)`.
 6. Returns a `DeployScorePlan`; `score_graph()` additionally collects it via
@@ -260,6 +514,33 @@ not bypass the cumulative streamed-byte check. Malformed/negative headers and in
 JSON have separate structured payloads. A body exactly at the configured limit is valid.
 
 ## Edge cases and invariants
+
+- **Live scoring adds no per-request process spawn.** A one-row `/quote` (a JSON object,
+  or a one-element array) scores in the service process; only
+  `len(rows) > 1` reaches `_batch_scoring`. A warm worker pool is deliberately out of
+  scope.
+- **Exactly one worker per batch request**, launched with the parent's admitted headroom
+  as its hard RSS cap. The child never re-admits: `create_isolated_execution_context`
+  rebuilds the budget locally, and the parent context is released exactly once by
+  `BatchScorePlan.cleanup`, on every success and every failure path.
+- **The batch temp directory is private and always removed — loudly.** The parent owns
+  `haute_deploy_batch_*/input.json` and `result.parquet`; the child removes a partial
+  `result.parquet` on every classified failure, and `cleanup(primary_error=...)` removes
+  the directory after the JSON envelope or the NDJSON spool has been materialised.
+  Removal never uses `ignore_errors`: with no primary error in flight a failure raises
+  `BatchScoreCleanupError` and the request is answered with a 500 instead of the computed
+  response (a leftover copy of the request rows is a data-retention defect even after a
+  good score); with a primary error in flight the failure is attached to it as a note and
+  logged `deploy_batch_cleanup_failed`, so the original failure still reaches the client.
+  `prepare_batch_scoring` cleans up a setup failure the same way. The parent admission is
+  released exactly once either way.
+- **The bundle's policy is only as strong as the target's runtime.** A `warned` /
+  `full-width-conservative` record is issued only for `runtime == "hard_capped_worker"`;
+  the in-process (Databricks) runtime fails the bundle instead of promising a cap it does
+  not have. The serving host must honour the same promise: a container carrying a
+  `warned` policy refuses to start unless `HAUTE_WORKER_MEMORY_ENFORCEMENT=required`, so
+  the manifest can never advertise conservative execution that the running service would
+  not actually perform.
 
 - **Pipeline-relative path resolution wins within the project**
   (`_bundler.py::_resolve_path`): local paths use
@@ -303,10 +584,12 @@ JSON have separate structured payloads. A body exactly at the configured limit i
   errored): `scored = min(len(staging_preds), len(prod_preds))`, with the shortfall
   recorded as `failed_rows`, before DataFrames are built — avoiding materialising rows
   that will be discarded.
-- **Model/contract artefact caches are stat-gated and per-key-locked**
-  (`StatGatedCache` in `_scorer.py`), so concurrent `/quote` requests on container start
-  perform exactly one disk load per artefact and later requests short-circuit on a cheap
-  `(mtime_ns, size)` stat check; failed loads are never cached.
+- **Model/contract artefact caches are freshness-gated and per-key-locked**
+  (`src/haute/_stat_gated_cache.py::StatGatedCache`, instantiated in `_scorer.py`
+  as `_local_model_cache`), so concurrent `/quote` requests on container start
+  perform exactly one disk load per artefact and later requests short-circuit on the
+  file's freshness token (its native revision; see [caching](../caching/low-level.md));
+  failed loads are never cached.
 - **Empty artefact set produces an empty fingerprint string** (`artifact_identity_fingerprint`
   returns `""` when `artifact_paths` is empty/`None`) specifically so graphs bundling no
   artefacts keep byte-identical cache keys across runs.
@@ -342,11 +625,11 @@ JSON have separate structured payloads. A body exactly at the configured limit i
 - **Deploy scoring never performs persistence writes.** `dataOutput` is a
   pass-through in the served graph, its configured writer is never invoked, and
   persistence-only branches outside the output ancestry are removed by pruning.
-- **Snapshot leases are process-local.** `ResolvedDeploy` holds the selected generation's
-  `SourceCacheStore.lease()` through shipment, which prevents same-process refresh,
-  clear, and eviction from deleting it. The source-cache layer does not yet coordinate
-  leases or retirement across OS processes, so a refresh from another process remains a
-  known limitation rather than a guarantee made by deploy.
+- **Snapshot leases hold across processes.** `ResolvedDeploy` holds the selected
+  generation's `SourceCacheStore.lease()` through shipment. The lease writes a marker
+  naming the holding process's lock-file token into the generation directory, so refresh,
+  clear and retirement in this or any other process skip that generation while its holder
+  is alive.
 
 ## Error handling
 
@@ -361,8 +644,16 @@ JSON have separate structured payloads. A body exactly at the configured limit i
 | `ExecutionAdmissionError` / `ExecutionMemoryLimitExceededError` | Raised by the execution-engine's admission layer, invoked via `admit_deploy_execution` | Caught in `/quote` → HTTP 507. |
 | `ExecutionCancelledError` | Execution engine | Caught in `/quote` → HTTP 499 with `job_id`/`operation` context. |
 | Public `HauteError` (`ContractResolutionError`, `PreambleError`, and other errors with a stable `error_code`) | Execution engine or preamble compilation during scoring | Caught in `/quote` → HTTP 422 with `to_payload()`; server routes use the same stable public payload contract. |
-| `NotImplementedError` | `src/haute/deploy/__init__.py::_validate_target` (planned targets: `sagemaker`, `azure-ml`), `_container.py::_update_service` (platform-container service update not yet built) | Uncaught to caller; the `_update_service` message names the built image tag (which is pushed only when a registry was configured). |
-| Any other `Exception` | Runtime scoring inside `/quote` | Caught by the container's catch-all, logged via `logger.exception("deploy_quote_failed")`, returned as HTTP 500 with `error_code: "deploy_internal_error"`. The MLflow `pyfunc` predict path has no equivalent catch-all. |
+| `NotImplementedError` | `src/haute/deploy/__init__.py::_validate_target` (planned targets: `sagemaker`, `azure-ml`) | Uncaught to caller. |
+| `DeployError` (capped schema dry-run) | `_schema.py::infer_output_schema` when the fallback's worker fails: a `BatchScoreError` from the child, or any `IsolatedWorker*Error` (`IsolatedWorkerMemoryLimitUnsupportedError` on a host without native caps included) | Propagates from `resolve_config()`; names the blocking node/operator from the original group-by rejection and states that the served batch path could not be proven. |
+| `RuntimeError` (startup) | Generated `app.py`'s `_require_fail_closed_batch_enforcement` at module load: a `warned` execution policy with `HAUTE_WORKER_MEMORY_ENFORCEMENT` other than `required`, or `required` on a host where `process_memory_caps_supported()` is `False` | Uncaught — the service refuses to start rather than failing every batch request. |
+| `IsolatedWorkerMemoryLimitUnsupportedError` | `run_isolated_worker` under `required` enforcement on a host that cannot install a native cap | Caught in `_quote_batch` → HTTP 507 with `reason: "native_memory_cap_unavailable"`. |
+| `BatchScoreCleanupError` | `_batch_scoring.py::_remove_batch_temp_dir` (temp directory removal failed with no primary error in flight) | Caught in `_quote_batch`'s `finally`, logged `deploy_quote_batch_cleanup_failed`, replaces the computed response with HTTP 500 `deploy_internal_error`. With a primary error in flight it is attached to that error as a note instead. |
+| `BatchScoreError` | `_batch_scoring.py::accept_batch_outcome` (classified child failure, wrong outcome type, missing/unreadable/row-count-mismatched result parquet) | Caught in `_quote_batch` → 422 (`contract`/`bounded`), 507 (`memory`), 499 (`cancelled`), 500 (`error`). |
+| `IsolatedWorkerMemoryLimitExceededError` / `IsolatedWorkerMemoryLimitUnsupportedError` / memory-bound `IsolatedWorkerCrashedError` / memory-typed `IsolatedWorkerRemoteError` | `_worker_isolation.run_isolated_worker` supervising the batch child | Caught in `_quote_batch` → HTTP 507 with `isolated_worker_memory_detail(...)`. |
+| `IsolatedWorkerTimeoutError` | Batch worker exceeded `deploy_batch_timeout_seconds()` | Caught in `_quote_batch` → HTTP 504 `deploy_batch_timeout`. |
+| Any other `IsolatedWorkerError` | Batch worker supervision | Caught in `_quote_batch`, logged `deploy_quote_batch_failed`, HTTP 500 `deploy_internal_error`. |
+| Any other non-Haute `Exception` | Runtime scoring inside `/quote` (live path) or parent-side batch supervision in `_quote_batch` (typed execution and public-contract Haute errors are mapped to 499/507/422 above and never reach here) | Caught by the container's catch-all, logged via `logger.exception("deploy_quote_failed")` (live) or `logger.exception("deploy_quote_batch_failed")` (batch, after `BatchScorePlan.cleanup`), returned as HTTP 500 with `error_code: "deploy_internal_error"`. The MLflow `pyfunc` predict path has no equivalent catch-all. |
 
 `build_and_push_image` and `deploy_to_mlflow` both wrap their build-directory-writing
 steps in `try/except BaseException: shutil.rmtree(...); raise` — cleanup happens on
@@ -375,6 +666,7 @@ Tests live in `tests/`, one or more files per concern, all using `pytest` with p
 function/class-based tests (no property-based testing in this component). Key files and
 what they cover:
 
+- **`test_deploy_mlflow_credentials.py`** — deploy's credential split: `MLFLOW_ENABLE_DB_SDK=true`, a missing MLflow pair (general pair only) and a conflicting `DATABRICKS_CONFIG_PROFILE` each raise `DeployError` naming the variable before any connectivity request, MLflow call or model log; the MLflow pair form sets `databricks` / `databricks-uc`, a profile URI sets `databricks://<profile>` / `databricks-uc://<profile>`, the serving client receives only the rating host and token, and `get_deploy_status` resolves the same destination before constructing its registry client.
 - **`test_deploy.py`** — broad unit coverage
   across nearly every module: `TestPruner` (ancestor walking, `liveSwitch` collapsing),
   `TestBundler` (artefact discovery per node type, path resolution precedence),
@@ -396,6 +688,40 @@ what they cover:
   admission, cancellation, memory and bounded-streaming error mappings; body-limit env
   precedence and streamed-byte enforcement; JSON response truncation/envelope boundaries;
   NDJSON streaming; Dockerfile dependency pins and build-directory cleanup.
+- **`test_deploy_project_modules.py`** — scores a pipeline whose preamble imports
+  `utility` through the built container bundle and through a saved pyfunc model, each in a
+  separate process after the project's `utility` directory is deleted. It also checks that
+  a project module outside `utility`, imported from the preamble or from a `utility` file,
+  is refused at validation naming the module and file, and that a pipeline without
+  project modules bundles none.
+- **`test_container_smoke_script.py`** — covers the container deployment seam (`prepare_build_directory` writing artefacts and handling custom wheel requirements), `build_and_push_image` build-directory cleanup on Docker failure, the end-to-end `--serve-check` uvicorn subprocess smoke, and the scoring runtime: the generated app scores the smoke example's golden request in a fresh interpreter in which every package haute's dependencies provide and the Dockerfile does not install is unimportable.
+- **`test_deploy_batch_scoring.py`** — the multi-row path end to end: a one-row request
+  launching no worker; a two-row request launching exactly one
+  `haute-deploy-batch` worker with the budget's memory limit and
+  `deploy_batch_timeout_seconds()`; the unchanged JSON envelope carrying the child's
+  metrics and the NDJSON stream over every sunk row; every `failure_kind`, every worker
+  memory/timeout/crash mapping, and every unpublishable success outcome — each asserting
+  one parent admission release and a removed temp directory; the child in process
+  (parquet written, row count, `admission.profile == "deploy_batch"`, result file removed
+  and child admission released on each failure kind); two real spawns (a scored batch,
+  and an unprovable group-by completing as `warned` /
+  `full-width-conservative` under the worker's cap); and
+  `infer_deploy_execution_policy` (ok record, translated warning for the capped worker,
+  `DeployError` for the in-process runtime and for other rejections, one bundle-time
+  release) plus the manifest and `/health` fields. `TestOutputSchemaConservativeFallback`
+  covers the capped-worker fallback on a cache miss (a real spawn admitted as
+  `DEPLOY_BATCH`, the schema read from the worker's parquet) and proves a provable graph still scores
+  its dry-run row; `TestBatchCleanupFailsLoud` injects an `rmtree` failure for a
+  successful batch, a handled child failure, a setup failure, and a direct
+  `plan.cleanup()`; `TestFailClosedBatchEnforcement` covers the startup gate (warned
+  policy refused under `best_effort`, accepted under `required`, provable policy always
+  accepted) and the typed 507 `native_memory_cap_unavailable` a cap-less `required` host
+  returns. `TestOutputSchemaConservativeFallback` covers the capped-worker schema
+  fallback: a real spawn (nothing patched across the boundary) asserting exactly one
+  `haute-deploy-batch` worker ran and the aggregated column's dtype came back, a provable
+  graph spawning nothing, and both failure mappings (`IsolatedWorkerMemoryLimitUnsupportedError`
+  and a child `BatchScoreError`) surfacing as `DeployError`. `tests/test_deploy_internals.py` adds the two `resolve_config`
+  cache-miss regressions (container target bundles the warning, Databricks refuses).
 - **`test_deploy_contract_integrity.py`** — static-data-source schema drift detection,
   `validate_deploy` failing on bad test quotes, feature-contract bundling end-to-end.
 - **`test_deploy_dispatch.py`** — `_dispatch_resolved` routing for every target family
@@ -405,6 +731,16 @@ what they cover:
   tolerance comparison (numeric, boolean, Decimal,
   large-integer zero-tolerance), missing-expected-column and row-count-mismatch failure
   modes, malformed golden-row rejection, end-to-end `validate_deploy` blocking on drift.
+- **`test_scoring_metamorphic_properties.py`** — generated metamorphic relations for
+  row-independent scoring (ENG-T11): over generated 1..8-row frames (float or null `x`, a
+  label) and a small list of row-independent transforms, `score_graph` on a permuted frame
+  equals the unpermuted result permuted the same way; the editor preview (`execute_graph`)
+  and `score_graph` agree row-for-row and each derived column equals a plain-Python oracle
+  computed from the input value; a cold and a warm `execute_graph` of the same graph agree,
+  the warm run is proven to be a preview-cache hit (the cache's `get` is spied), and a code
+  edit is computed afresh against the new transform's oracle. The `hypothesis.find`
+  negative control shows an order-sensitive `cum_sum` transform breaking the permutation
+  relation, which is why the property domain excludes order-sensitive operations.
 - **`test_deploy_identity_parity.py`** — `artifact_identity_fingerprint` determinism, the
   output-schema cache folding artefact identity into its key, the deliberate
   `modelScore`-passthrough-rejection behaviour, artefact threading through
@@ -452,9 +788,9 @@ Databricks endpoint — the seam between "manifest + artefacts are correct" and 
 generated container actually serves them correctly" is not exercised end-to-end in this
 suite.
 
-**Known gaps**: no test exercises the platform-container (`azure-container-apps`,
-`aws-ecs`, `gcp-run`) service-update path beyond confirming it raises
-`NotImplementedError`, since the implementations don't exist yet. Generated `app.py` is
+**Known gaps**: the platform-container targets (`azure-container-apps`, `aws-ecs`,
+`gcp-run`) have no service-update path to test; their tests cover the registry
+requirement, the push and the manual-update report. Generated `app.py` is
 imported and exercised in-process through `TestClient`, but no test boots a built Docker
 image, contacts a real registry/Databricks workspace, or verifies a cloud service update.
 

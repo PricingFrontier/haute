@@ -68,18 +68,21 @@ def commit_save(
     if not ok or not status.strip():
         return None
 
-    changed = [line[3:] for line in status.strip().splitlines()]
-    msg = message if message is not None else _generate_commit_message(changed)
-
     # New files must be known to git before a pathspec'd commit can include
     # them; the explicit-path add also stages deletions of tracked paths.
     _run_git("add", "--", *paths, cwd=cwd)
     # A stale index entry can make porcelain report ``MM`` even when the
     # working-tree content already matches HEAD. The add above reconciles that
-    # entry; if no net path change remains, there is nothing to commit.
-    clean, _ = _run_git_ok("diff", "--cached", "--quiet", "HEAD", "--", *paths, cwd=cwd)
-    if clean:
+    # entry; if no net path change remains, there is nothing to commit. The
+    # staged name list (not porcelain status, whose fixed-width prefix can
+    # begin with a space) is also what names the files in the message.
+    staged = _run_git(
+        "diff", "--cached", "--name-only", "--no-renames", "HEAD", "--", *paths, cwd=cwd
+    )
+    changed = staged.splitlines()
+    if not changed:
         return None
+    msg = message if message is not None else _generate_commit_message(changed)
     # `git commit -- <paths>` commits the working-tree state of exactly those
     # paths, bypassing unrelated index content the user may have pre-staged.
     _run_git("commit", "-m", msg, "--", *paths, cwd=cwd)

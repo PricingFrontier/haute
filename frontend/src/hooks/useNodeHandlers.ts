@@ -6,7 +6,7 @@
  * orchestration and rendering.
  */
 import { useCallback, useRef, useState, type MutableRefObject } from "react"
-import type { Node, Edge } from "@xyflow/react"
+import type { Node, Edge, NodeChange, InternalNode } from "@xyflow/react"
 import useToastStore from "../stores/useToastStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useUIStore from "../stores/useUIStore"
@@ -15,7 +15,12 @@ import {
   isSubmodelInstanceConfig,
   nodeData,
 } from "../types/node"
-import { NODE_TYPES, isSingletonType } from "../utils/nodeTypes"
+import {
+  NODE_TYPES,
+  NODE_TYPE_META,
+  isSingletonType,
+  singletonTypesInSubmodelDefinition,
+} from "../utils/nodeTypes"
 import { getLayoutedElements } from "../utils/layout"
 import type { PreviewData } from "../panels/DataPreview"
 import type { SharedNodeDeletionResult } from "./useSubmodelBoundaryEditing"
@@ -33,10 +38,14 @@ type UseNodeHandlersParams = {
   setLastSelectedId?: (id: string | null) => void
   setPreviewData: (updater: React.SetStateAction<PreviewData | null>) => void
   fitView: (opts?: { padding?: number }) => void
+  getInternalNode?: (id: string) => InternalNode | undefined
+  submodels: Record<string, unknown>
   resolveNodeIdentities: (nodes: readonly Node[]) => Promise<Node[]>
   commitSharedNodeDeletion?: (
     nodeIds: ReadonlySet<string>,
     selectedEdgeIds?: ReadonlySet<string>,
+    nodeChanges?: NodeChange[],
+    onSettled?: (committed: boolean) => void,
   ) => SharedNodeDeletionResult
 }
 // Strips one trailing copy-number so cloning "scoring_10" counts from
@@ -66,6 +75,8 @@ export default function useNodeHandlers({
   setLastSelectedId,
   setPreviewData,
   fitView,
+  getInternalNode,
+  submodels,
   resolveNodeIdentities,
   commitSharedNodeDeletion,
 }: UseNodeHandlersParams) {
@@ -83,8 +94,44 @@ export default function useNodeHandlers({
       addToast("error", 'Use "Dissolve Submodel" to remove a submodel owner; instance copies delete directly')
       return
     }
-    const sharedDeletion = commitSharedNodeDeletion?.(new Set([id]))
+    // Selection, preview and cached-result cleanup only runs once the node has
+    // actually left the graph; a shared-boundary deletion may still be
+    // resolving parent identities and can yet fail.
+    const cleanupAfterRemoval = () => {
+      setSelectedNode((prev) => (prev?.id === id ? null : prev))
+      setPreviewData((prev) => (prev?.nodeId === id ? null : prev))
+      // Defer cache cleanup by one task tick (Issue #32). If `clearNode(id)`
+      // fires synchronously here, any downstream component reading the store
+      // during the same render cycle (before React has committed the
+      // setNodes update that removes the node from the graph) will see a
+      // state where the node still exists in the graph but its cached result
+      // has already been wiped — producing a flicker-crash.
+      setTimeout(() => { clearNode(id) }, 0)
+      if (lastSelectedNodeRef.current?.id === id) {
+        lastSelectedNodeRef.current = null
+        setLastSelectedId?.(null)
+      }
+
+      // Clear UI dialogs that reference the deleted node (Issues #8, #14)
+      const uiState = useUIStore.getState()
+      if (uiState.renameDialog?.nodeId === id) setRenameDialog(null)
+      const subDlg = uiState.submodelDialog
+      if (subDlg && subDlg.nodeIds.includes(id)) setSubmodelDialog(null)
+    }
+
+    let cleanedUp = false
+    const sharedDeletion = commitSharedNodeDeletion?.(
+      new Set([id]),
+      undefined,
+      undefined,
+      (committed) => {
+        if (!committed) return
+        cleanedUp = true
+        cleanupAfterRemoval()
+      },
+    )
     if (sharedDeletion === "blocked") return
+    if (sharedDeletion === "pending") return
 
     // Node + its edges removed as ONE undo step. setNodes-then-setEdges would
     // push two snapshots, so a single delete would need two undos to reverse
@@ -95,25 +142,7 @@ export default function useNodeHandlers({
         (eds) => eds.filter((edge) => edge.source !== id && edge.target !== id),
       )
     }
-    setSelectedNode((prev) => (prev?.id === id ? null : prev))
-    setPreviewData((prev) => (prev?.nodeId === id ? null : prev))
-    // Defer cache cleanup by one task tick (Issue #32). If `clearNode(id)`
-    // fires synchronously here, any downstream component reading the store
-    // during the same render cycle (before React has committed the
-    // setNodes update that removes the node from the graph) will see a
-    // state where the node still exists in the graph but its cached result
-    // has already been wiped — producing a flicker-crash.
-    setTimeout(() => { clearNode(id) }, 0)
-    if (lastSelectedNodeRef.current?.id === id) {
-      lastSelectedNodeRef.current = null
-      setLastSelectedId?.(null)
-    }
-
-    // Clear UI dialogs that reference the deleted node (Issues #8, #14)
-    const uiState = useUIStore.getState()
-    if (uiState.renameDialog?.nodeId === id) setRenameDialog(null)
-    const subDlg = uiState.submodelDialog
-    if (subDlg && subDlg.nodeIds.includes(id)) setSubmodelDialog(null)
+    if (!cleanedUp) cleanupAfterRemoval()
   }, [graphRef, setNodesAndEdges, lastSelectedNodeRef, setSelectedNode, setLastSelectedId, setPreviewData, clearNode, setRenameDialog, setSubmodelDialog, addToast, commitSharedNodeDeletion])
 
   const handleDuplicateNode = useCallback(async (id: string): Promise<void> => {
@@ -166,13 +195,18 @@ export default function useNodeHandlers({
     // second node like any other. The guard lives here rather than in the
     // callers' enabled-state predicates so every entry point inherits it — the
     // paste path (useKeyboardShortcuts) and handleDuplicateNode enforce the same
-    // invariant, and downstream assembly relies on it (conflicting live_switch
-    // nodes raise during execution).
+    // invariant.
     if (isSingletonType(origNodeType)) {
       addToast(
         "info",
         `Cannot create instance of "${origData.label}": only one node of this type is allowed per pipeline`,
       )
+      return
+    }
+    // A Source Switch routes by its own input names, which an instance's
+    // inputs do not share; a second Source Switch is the supported layout.
+    if (origNodeType === NODE_TYPES.LIVE_SWITCH) {
+      addToast("info", `Cannot create instance of "${origData.label}": add another Source Switch instead`)
       return
     }
 
@@ -191,6 +225,20 @@ export default function useNodeHandlers({
       const config = origData.config
       if (!isSubmodelInstanceConfig(config)) {
         addToast("error", `Cannot create instance of "${origData.label}": missing submodel definition identity`)
+        return
+      }
+      const containedSingletons = singletonTypesInSubmodelDefinition(
+        config.definitionId,
+        submodels,
+      )
+      if (containedSingletons.size > 0) {
+        const names = [...containedSingletons]
+          .map((nodeType) => NODE_TYPE_META[nodeType].name)
+          .join(", ")
+        addToast(
+          "info",
+          `Cannot create instance of "${origData.label}": its definition contains ${names}, and only one node of each singleton type is allowed per pipeline`,
+        )
         return
       }
       const ownerId = config.instanceOf ?? original.id
@@ -249,17 +297,21 @@ export default function useNodeHandlers({
     }
 
     let newId: string
-    do {
-      nodeIdCounterRef.current += 1
-      newId = `${origNodeType}_${nodeIdCounterRef.current}`
-    } while (occupiedIdentities.has(newId))
+    if (isSubmodel) {
+      newId = String(instanceConfig.alias)
+    } else {
+      do {
+        nodeIdCounterRef.current += 1
+        newId = `${origNodeType}_${nodeIdCounterRef.current}`
+      } while (occupiedIdentities.has(newId))
+    }
     const newNode: Node = {
       id: newId,
       type: original.type,
       position: { x: original.position.x + 60, y: original.position.y + 80 },
       selected: true,
       data: {
-        label: `${origData.label} instance`,
+        label: isSubmodel ? String(instanceConfig.alias) : `${origData.label} instance`,
         description: `Instance of ${origData.label}`,
         nodeType: origNodeType,
         config: instanceConfig,
@@ -284,7 +336,7 @@ export default function useNodeHandlers({
     } catch (err: unknown) {
       addToast("error", `Create node failed: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [graphRef, nodeIdCounterRef, setNodes, setSelectedNode, setLastSelectedId, addToast, resolveNodeIdentities])
+  }, [graphRef, nodeIdCounterRef, setNodes, setSelectedNode, setLastSelectedId, addToast, submodels, resolveNodeIdentities])
 
   const handleRenameNode = useCallback((id: string) => {
     const { nodes: n } = graphRef.current
@@ -300,7 +352,7 @@ export default function useNodeHandlers({
     layoutInFlightRef.current = true
     setIsAutoLayouting(true)
     try {
-      const layouted = await getLayoutedElements(n, e)
+      const layouted = await getLayoutedElements(n, e, getInternalNode)
       setNodes(() => layouted)
       setTimeout(() => fitView({ padding: 0.15 }), 50)
       addToast("info", "Auto-layout applied")
@@ -308,7 +360,7 @@ export default function useNodeHandlers({
       layoutInFlightRef.current = false
       setIsAutoLayouting(false)
     }
-  }, [graphRef, setNodes, fitView, addToast])
+  }, [graphRef, setNodes, fitView, getInternalNode, addToast])
 
   return {
     handleDeleteNode,

@@ -181,7 +181,9 @@ def discover_spec_files(root: Path) -> list[tuple[Path, str]]:
     if roadmap.exists() and not roadmap.is_dir():
         raise SpecCorpusError(f"roadmap must be a directory: {roadmap}")
     if roadmap.is_dir():
-        for path in sorted(roadmap.iterdir(), key=lambda item: item.name):
+        for path in sorted(
+            roadmap.rglob("*"), key=lambda item: item.relative_to(roadmap).as_posix()
+        ):
             if path.is_file() and path.suffix == MARKDOWN_SUFFIX:
                 discovered.append((path, "roadmap"))
 

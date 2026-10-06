@@ -7,23 +7,32 @@ import gc
 import hashlib
 import os
 import tempfile
+import time
 from collections.abc import Callable, Iterable, Mapping
-from contextlib import AbstractContextManager, nullcontext
+from contextlib import AbstractContextManager, closing, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+import numpy as np
 import polars as pl
 
 from haute._execution_context import ExecutionCancelledError, ExecutionContext
 from haute._logging import get_logger
-from haute._polars_utils import streaming_collect
+from haute._polars_dtypes import contract_dtype_name
+from haute._polars_utils import bounded_collect_batches, streaming_collect
 from haute.errors import HauteError, HauteValidationError
 from haute.modelling._algorithms import (
     ALGORITHM_REGISTRY,
     IterationCallback,
     _malloc_trim,
     resolve_loss_function,
+)
+from haute.modelling._descriptors import (
+    algorithm_descriptor,
+    project_refit_params,
+    round_ceiling,
+    training_threads,
 )
 from haute.modelling._evaluation import (
     EvaluationConfig,
@@ -40,7 +49,10 @@ from haute.modelling._evaluation import (
     save_evaluation_results,
 )
 from haute.modelling._evaluation import file_sha256 as evaluation_file_sha256
+from haute.modelling._feature_contract import ModelIdentity
 from haute.modelling._metrics import compute_metrics
+from haute.modelling._model_export import MODEL_FILE_SUFFIXES
+from haute.modelling._shap import shap_diagnostics, shap_sample
 from haute.modelling._split import (
     PARTITION_HOLDOUT,
     PARTITION_TRAIN,
@@ -48,7 +60,12 @@ from haute.modelling._split import (
     SplitConfig,
     split_mask,
 )
-from haute.modelling._train_config import default_metrics
+from haute.modelling._train_config import (
+    default_metrics,
+    glm_effective_link,
+    glm_params_issue,
+    validate_glm_params,
+)
 from haute.modelling._tuning import (
     TUNING_SCHEMA_VERSION,
     TuningConfig,
@@ -63,12 +80,11 @@ from haute.modelling._tuning import (
     save_tuning_report,
     save_tuning_trials,
     suggest_parameters,
+    tuning_final_projection,
     validation_weighted_tree_count,
 )
 
 logger = get_logger(component="training_job")
-
-_MODEL_EXT_MAP: dict[str, str] = {"catboost": ".cbm", "glm": ".rsglm"}
 
 # The failure classes a target/metric/dtype mismatch produces inside pure
 # metric computation. The metric-stage wrap deliberately trades
@@ -191,6 +207,113 @@ def _training_stage(
     return execution_context.stage(name) if execution_context is not None else nullcontext()
 
 
+#: The least time between two of a run's paced rounds reaching the live display.
+_LIVE_ROUND_SECONDS = 1.0
+#: The paced rounds one run may send, keeping every fit's first and last rounds
+#: and the stage messages well inside the worker's progress-event limit.
+_LIVE_ROUND_BUDGET = 3_000
+
+
+class _LiveRounds:
+    """Paces a run's per-round progress and loss rows across all of its fits.
+
+    Each fit's first and last rounds always pass, so the live chart starts and
+    finishes every fit; the rounds between pass at most once a second until the
+    run's budget is spent.
+    """
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+        self._clock = clock
+        self._last = float("-inf")
+        self._spent = 0
+
+    def fit(self) -> Callable[[int, int], bool]:
+        """A gate for one fit: whether its round *iteration* of *total* is due."""
+        first = True
+
+        def due(iteration: int, total: int) -> bool:
+            nonlocal first
+            now = self._clock()
+            if first or iteration >= total:
+                first = False
+                self._last = now
+                return True
+            if self._spent >= _LIVE_ROUND_BUDGET or now - self._last < _LIVE_ROUND_SECONDS:
+                return False
+            self._spent += 1
+            self._last = now
+            return True
+
+        return due
+
+
+class _FitRounds:
+    """One fit's per-round callback.
+
+    Every round checks for cancellation; a round its gate passes reports
+    "Iteration i of n" across *span* of the fit's progress and hands the round's
+    loss row to *on_iteration*, so each fit draws its own live curve. `finish`
+    sends the fit's last round when the gate held it back, as when early
+    stopping ends the fit before its round budget.
+    """
+
+    def __init__(
+        self,
+        due: Callable[[int, int], bool],
+        on_iteration: IterationCallback | None,
+        report: Callable[[str, float], None],
+        *,
+        span: tuple[float, float],
+        check_cancelled: Callable[[], None] | None,
+        execution_context: ExecutionContext | None,
+    ) -> None:
+        self._due = due
+        self._on_iteration = on_iteration
+        self._report = report
+        self._span = span
+        self._check_cancelled = check_cancelled
+        self._execution_context = execution_context
+        self._held: tuple[int, int, dict[str, float], dict[str, float] | None] | None = None
+
+    def __call__(
+        self,
+        iteration: int,
+        total: int,
+        metrics: dict[str, float],
+        history_row: dict[str, float] | None,
+    ) -> None:
+        if self._check_cancelled is not None:
+            self._check_cancelled()
+        _training_checkpoint(self._execution_context, label="training_round")
+        if self._due(iteration, total):
+            self._held = None
+            self._send(iteration, total, metrics, history_row)
+        else:
+            self._held = (iteration, total, metrics, history_row)
+
+    def finish(self) -> None:
+        """Send the fit's last round if the gate held it back."""
+        if self._held is not None:
+            held, self._held = self._held, None
+            self._send(*held)
+
+    def _send(
+        self,
+        iteration: int,
+        total: int,
+        metrics: dict[str, float],
+        history_row: dict[str, float] | None,
+    ) -> None:
+        start, end = self._span
+        if total > 0:
+            self._report(
+                f"Iteration {iteration} of {total}",
+                start + (end - start) * min(iteration / total, 1.0),
+            )
+        if self._on_iteration is not None:
+            self._on_iteration(iteration, total, metrics, history_row)
+
+
 def _training_streaming_collect(
     lf: pl.LazyFrame,
     *,
@@ -208,31 +331,6 @@ def _training_streaming_collect(
         label=f"after_{stage_name}",
     )
     return df
-
-
-def _polars_dtype_name(dtype: Any) -> str:
-    """Canonical dtype name used by the MLflow signature and feature contract.
-
-    Collapses Polars' many integer/float variants to the scalar numeric/string
-    types ``build_signature`` understands, while preserving Date, full
-    parameterised Datetime, and other unknown descriptors for deliberate
-    validation at contract-build time.
-    """
-    if dtype == pl.Boolean:
-        return "Boolean"
-    if dtype in (pl.Utf8, pl.String, pl.Categorical):
-        return "String"
-    if dtype == pl.Date:
-        return "Date"
-    if getattr(dtype, "base_type", lambda: None)() == pl.Datetime:
-        # Preserve Polars' full canonical descriptor, including time unit and
-        # zone, so the feature contract remains faithful at the MLflow boundary.
-        return str(dtype)
-    if dtype.is_integer() if hasattr(dtype, "is_integer") else False:
-        return "Int64"
-    if dtype.is_float() if hasattr(dtype, "is_float") else False:
-        return "Float64"
-    return str(dtype)
 
 
 def _record_diag_error(
@@ -276,8 +374,16 @@ class TrainResult:
     diagnostics_set: str = "validation"  # "train" | "validation" | "holdout"
     best_iteration: int | None = None
     loss_history: list[dict[str, float]] = field(default_factory=list)
+    #: The holdout validation fit's history when the final model is its refit.
+    validation_loss_history: list[dict[str, float]] = field(default_factory=list)
     double_lift: list[dict[str, Any]] = field(default_factory=list)
     shap_summary: list[dict[str, Any]] = field(default_factory=list)
+    #: Per-row SHAP values of the leading sampled rows for the top features.
+    shap_beeswarm: list[dict[str, Any]] = field(default_factory=list)
+    #: Each feature's SHAP statistics per value band or level.
+    shap_curves: list[dict[str, Any]] = field(default_factory=list)
+    #: The link scale SHAP values add up on; None when no SHAP views exist.
+    shap_link: str | None = None
     feature_importance_loss: list[dict[str, Any]] = field(default_factory=list)
     ave_per_feature: list[dict[str, Any]] = field(default_factory=list)
     residuals_histogram: list[dict[str, Any]] = field(default_factory=list)
@@ -290,7 +396,13 @@ class TrainResult:
     glm_coefficients: list[dict[str, Any]] = field(default_factory=list)
     glm_relativities: list[dict[str, Any]] = field(default_factory=list)
     glm_fit_statistics: dict[str, float] = field(default_factory=dict)
-    glm_regularization_path: dict[str, Any] | None = None
+    glm_inference: dict[str, Any] | None = None
+    glm_smooth_terms: list[dict[str, Any]] = field(default_factory=list)
+    glm_regularization: dict[str, Any] | None = None
+    #: EBM shape functions and pairwise surfaces (empty for other families).
+    ebm_terms: list[dict[str, Any]] = field(default_factory=list)
+    #: t-boost's rating tables (``None`` for other families).
+    tboost_tables: dict[str, Any] | None = None
     # Optional-diagnostic failures surfaced to callers so a degraded
     # run (SHAP/PDP/GLM diagnostics missing) is visible in the UI and
     # in test suites, instead of being silently swallowed.
@@ -300,6 +412,17 @@ class TrainResult:
     final_test_metrics: dict[str, float] = field(default_factory=dict)
     evaluation: dict[str, Any] | None = None
     tuning: dict[str, Any] | None = None
+    final_tree_count: int | None = None
+    #: The final fit's threads, round ceiling, fitted rounds, and stopping reason.
+    fit_evidence: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class SelectionFit:
+    """One selection fit: its persisted result and its loss history, which is not."""
+
+    result: EvaluationFitResult
+    loss_history: list[dict[str, float]]
 
 
 @dataclass
@@ -350,7 +473,10 @@ class _MetricsResult:
     diagnostics_set: str  # "train" | "validation" | "holdout"
     importance: list[dict[str, Any]]
     double_lift: list[dict[str, Any]]
-    shap_summary: list[dict[str, float]]
+    shap_summary: list[dict[str, Any]]
+    shap_beeswarm: list[dict[str, Any]]
+    shap_curves: list[dict[str, Any]]
+    shap_link: str | None
     feature_importance_loss: list[dict[str, Any]]
     ave_per_feature: list[dict[str, Any]]
     residuals_histogram: list[dict[str, Any]]
@@ -363,7 +489,11 @@ class _MetricsResult:
     glm_coefficients: list[dict[str, Any]] = field(default_factory=list)
     glm_relativities: list[dict[str, Any]] = field(default_factory=list)
     glm_fit_statistics: dict[str, float] = field(default_factory=dict)
-    glm_regularization_path: dict[str, Any] | None = None
+    glm_inference: dict[str, Any] | None = None
+    glm_smooth_terms: list[dict[str, Any]] = field(default_factory=list)
+    glm_regularization: dict[str, Any] | None = None
+    ebm_terms: list[dict[str, Any]] = field(default_factory=list)
+    tboost_tables: dict[str, Any] | None = None
     # Optional-diagnostic failures (SHAP, PDP, GLM diagnostics) —
     # surfaced rather than silently swallowed.
     diagnostics_errors: list[dict[str, str]] = field(default_factory=list)
@@ -408,8 +538,8 @@ class TrainingJob:
         Optional bounded, seeded search on the evaluation validation fits.
     mlflow_experiment : str | None
         MLflow experiment path. If set and mlflow is importable, logs the run.
-    model_name : str | None
-        Optional MLflow registered model name.
+    mlflow_destination : str
+        MLflow tracking destination key ("databricks" | "server"; "" = the local folder).
     output_dir : str
         Directory to save the model file.
     """
@@ -431,7 +561,7 @@ class TrainingJob:
         split: dict[str, Any] | SplitConfig | None = None,
         metrics: list[str] | None = None,
         mlflow_experiment: str | None = None,
-        model_name: str | None = None,
+        mlflow_destination: str = "",
         output_dir: str = "outputs",
         loss_function: str | None = None,
         variance_power: float | None = None,
@@ -441,9 +571,12 @@ class TrainingJob:
         categorical_levels: Mapping[str, Iterable[str | None]] | None = None,
         evaluation: Mapping[str, Any] | EvaluationConfig | None = None,
         tuning: Mapping[str, Any] | TuningConfig | None = None,
+        refit_on_development: bool | None = None,
         evaluation_plan: EvaluationPlan | None = None,
         fit_index: int | None = None,
         plan_source_sha256: str | None = None,
+        positive_class: bool | int | str | None = None,
+        device: str = "cpu",
     ) -> None:
         self.name = name
         self._data: str | pl.DataFrame | pl.LazyFrame | None = data
@@ -462,13 +595,61 @@ class TrainingJob:
             family=self.params.get("family") if algorithm == "glm" else None,
         )
         self.mlflow_experiment = mlflow_experiment
-        self.model_name = model_name
+        self.mlflow_destination = mlflow_destination
         self.output_dir = output_dir
         self.loss_function = loss_function
         self.variance_power = variance_power
+        if positive_class is not None and (
+            isinstance(positive_class, float) or not isinstance(positive_class, (bool, int, str))
+        ):
+            raise HauteValidationError(
+                "positive_class must be a Boolean, an integer or a string label."
+            )
+        self.positive_class = positive_class
+        if device not in ("cpu", "gpu"):
+            raise HauteValidationError(f'device must be "cpu" or "gpu", got {device!r}')
+        if device == "gpu" and not algorithm_descriptor(algorithm).gpu_device:
+            raise HauteValidationError(
+                f"{algorithm_descriptor(algorithm).label} trains on CPU only in Haute."
+            )
+        #: ``gpu`` asks a GPU-capable family to train on its device (XGBoost CUDA).
+        self.device = device
+        #: ``(negative, positive)`` once a classification split resolves them.
+        self._class_labels: tuple[bool | int | str, bool | int | str] | None = None
         self.offset = offset
         self.monotone_constraints = monotone_constraints
         self.feature_weights = feature_weights
+        if self.algorithm == "glm":
+            catboost_levers = [
+                name
+                for name, value in (
+                    ("exclude", self.exclude),
+                    ("feature_columns", self.feature_columns),
+                    ("monotone_constraints", monotone_constraints),
+                    ("feature_weights", feature_weights),
+                )
+                if value
+            ]
+            if catboost_levers:
+                raise HauteValidationError(
+                    f"{', '.join(catboost_levers)} only apply to CatBoost. A GLM's features are "
+                    "its terms and interaction factors, and GLM monotonicity lives on each "
+                    "term's 'monotonicity' key."
+                )
+            glm_issue = glm_params_issue(self.params)
+            if glm_issue is not None:
+                raise HauteValidationError(glm_issue)
+            validate_glm_params(self.params)
+        else:
+            descriptor = algorithm_descriptor(self.algorithm)
+            descriptor.validate_params(self.params)
+            config_issue = descriptor.config_issue(
+                self.params, self.loss_function, monotone_constraints
+            )
+            if config_issue is not None:
+                raise HauteValidationError(config_issue)
+        #: One thread allotment per job, passed to every engine that takes one.
+        self.threads = training_threads()
         if split is not None and evaluation is not None:
             raise HauteValidationError("split and evaluation are competing contracts")
         self.evaluation: EvaluationConfig | None
@@ -478,6 +659,33 @@ class TrainingJob:
             self.evaluation = evaluation
         else:
             self.evaluation = EvaluationConfig.from_plain_data(evaluation)
+        method = None if self.evaluation is None else self.evaluation.validation["method"]
+        family = algorithm_descriptor(self.algorithm)
+        if family.publishes_validation_fit and method is not None:
+            # The early-stopped validation fit is the model; only a plan with no
+            # validation has a fit on the development rows, and it is that fit.
+            if method == "cross_validation":
+                raise HauteValidationError(
+                    f"{family.label} publishes its early-stopped validation fit, so it takes "
+                    "holdout validation or none, not cross-validation"
+                )
+            if refit_on_development is not None and refit_on_development != (method == "none"):
+                raise HauteValidationError(
+                    f"{family.label} is never refit: its early-stopped validation fit is the model"
+                )
+            refit_on_development = method == "none"
+        elif refit_on_development is None:
+            refit_on_development = True
+        if not isinstance(refit_on_development, bool):
+            raise HauteValidationError("refit_on_development must be a boolean")
+        if not refit_on_development and method != "single":
+            raise HauteValidationError("Skipping the final refit requires holdout validation")
+        self.refit_on_development = refit_on_development
+        if mlflow_experiment and self.evaluation is None:
+            raise HauteValidationError(
+                "mlflow_experiment requires an explicit evaluation contract: MLflow "
+                "candidate runs publish the evaluation plan and results"
+            )
         if tuning is None:
             self.tuning = None
         elif self.evaluation is None:
@@ -492,6 +700,12 @@ class TrainingJob:
                 evaluation=self.evaluation,
                 configured_metrics=self.metrics,
             )
+        if (
+            self.tuning is not None
+            and not self.refit_on_development
+            and not family.publishes_validation_fit
+        ):
+            raise HauteValidationError("Parameter tuning requires a final refit")
         if evaluation_plan is not None and self.evaluation is None:
             raise HauteValidationError("evaluation_plan requires an explicit evaluation contract")
         if evaluation_plan is None and fit_index is not None:
@@ -519,8 +733,15 @@ class TrainingJob:
         if evaluation_key:
             if evaluation_key in self.feature_columns:
                 raise HauteValidationError("evaluation key cannot be an explicit feature column")
-            if self.algorithm == "glm" and evaluation_key in (self.params.get("terms") or {}):
-                raise HauteValidationError("evaluation key cannot be a GLM term")
+            if self.algorithm == "glm":
+                from haute.modelling._glm_terms import glm_model_columns
+
+                glm_columns = glm_model_columns(
+                    self.params.get("terms") or {},
+                    self.params.get("interactions") or [],
+                )
+                if evaluation_key in glm_columns:
+                    raise HauteValidationError("evaluation key cannot be a GLM term")
             if evaluation_key not in self.id_columns:
                 self.id_columns.append(evaluation_key)
         from haute.modelling._feature_contract import normalise_categorical_levels
@@ -544,6 +765,8 @@ class TrainingJob:
         self._contract_categorical_levels: dict[str, list[str | None]] = {}
         self._contract_target_dtype: str = ""
         self._contract_offset_dtype: str = ""
+        # Shared with the evaluation jobs cloned from this one.
+        self._live_rounds = _LiveRounds()
 
     def run(
         self,
@@ -560,8 +783,8 @@ class TrainingJob:
         progress : callable | None
             Optional callback ``(message, fraction)`` for progress reporting.
         on_iteration : callable | None
-            Optional callback ``(iteration, total, metrics_dict)`` called
-            after each training iteration.
+            Optional callback ``(iteration, total, metrics_dict, history_row)``
+            called after each paced training round of every fit the run makes.
 
         Returns
         -------
@@ -624,14 +847,27 @@ class TrainingJob:
             _checkpoint()
 
             _report("Training model", 0.2)
+            rounds = (
+                self._round_callback(
+                    on_iteration,
+                    _report,
+                    span=(0.3, 0.7),
+                    check_cancelled=check_cancelled,
+                    execution_context=execution_context,
+                )
+                if on_iteration is not None or progress is not None
+                else None
+            )
             train_result = self._train_model(
                 split_result,
                 prepared.features,
                 prepared.cat_features,
-                on_iteration,
+                rounds,
                 _report,
                 execution_context=execution_context,
             )
+            if rounds is not None:
+                rounds.finish()
             _checkpoint()
 
             _report("Evaluating model", 0.7)
@@ -651,7 +887,11 @@ class TrainingJob:
                     train_result,
                     features=prepared.features,
                     cat_features=prepared.cat_features,
-                    categorical_levels=prepared.categorical_levels,
+                    categorical_levels=(
+                        train_result.fit_result.categorical_levels
+                        if getattr(train_result.fit_result, "categorical_levels", None) is not None
+                        else prepared.categorical_levels
+                    ),
                 )
 
             result = TrainResult(
@@ -669,6 +909,9 @@ class TrainingJob:
                 loss_history=train_result.fit_result.loss_history,
                 double_lift=metrics_result.double_lift,
                 shap_summary=metrics_result.shap_summary,
+                shap_beeswarm=metrics_result.shap_beeswarm,
+                shap_curves=metrics_result.shap_curves,
+                shap_link=metrics_result.shap_link,
                 feature_importance_loss=metrics_result.feature_importance_loss,
                 ave_per_feature=metrics_result.ave_per_feature,
                 residuals_histogram=metrics_result.residuals_histogram,
@@ -680,9 +923,32 @@ class TrainingJob:
                 glm_coefficients=metrics_result.glm_coefficients,
                 glm_relativities=metrics_result.glm_relativities,
                 glm_fit_statistics=metrics_result.glm_fit_statistics,
-                glm_regularization_path=metrics_result.glm_regularization_path,
+                glm_inference=metrics_result.glm_inference,
+                glm_smooth_terms=metrics_result.glm_smooth_terms,
+                glm_regularization=metrics_result.glm_regularization,
+                ebm_terms=metrics_result.ebm_terms,
+                tboost_tables=metrics_result.tboost_tables,
                 diagnostics_errors=metrics_result.diagnostics_errors,
             )
+            fit_result = train_result.fit_result
+            result.fit_evidence = {
+                "threads": getattr(fit_result, "threads", None) or self.threads,
+                "rounds_configured": fit_result.rounds_configured,
+                "rounds_fitted": fit_result.rounds_fitted,
+                "stopping_reason": fit_result.stopping_reason,
+            }
+            trained_device = getattr(fit_result, "device", None)
+            if trained_device is not None:
+                result.fit_evidence["device"] = trained_device
+            term_update_steps = getattr(fit_result, "term_update_steps", None)
+            if term_update_steps is not None:
+                result.fit_evidence["term_update_steps"] = list(term_update_steps)
+            if (
+                algorithm_descriptor(self.algorithm).refit_policy == "validation_weighted_rounds"
+                and isinstance(fit_result.rounds_fitted, int)
+                and fit_result.rounds_fitted > 0
+            ):
+                result.final_tree_count = fit_result.rounds_fitted
 
             # An internal final evaluation fit must attach the persisted
             # evaluation/tuning report before the one MLflow handoff.
@@ -773,7 +1039,7 @@ class TrainingJob:
         source_sha256: str | None = None,
     ) -> TrainingJob:
         """Clone this job for one evaluation selection or deployable final fit."""
-        return TrainingJob(
+        child = TrainingJob(
             name=name,
             data=data,
             target=self.target,
@@ -787,7 +1053,7 @@ class TrainingJob:
             params=copy.deepcopy(dict(self.params if params is None else params)),
             metrics=list(self.metrics),
             mlflow_experiment=mlflow_experiment,
-            model_name=self.model_name,
+            mlflow_destination=self.mlflow_destination,
             output_dir=output_dir,
             loss_function=self.loss_function,
             variance_power=self.variance_power,
@@ -797,9 +1063,33 @@ class TrainingJob:
             categorical_levels=self._declared_categorical_levels,
             evaluation=self.evaluation,
             tuning=self.tuning,
+            refit_on_development=self.refit_on_development,
             evaluation_plan=plan,
             fit_index=fit_index,
             plan_source_sha256=source_sha256,
+            positive_class=self.positive_class,
+            device=self.device,
+        )
+        child._live_rounds = self._live_rounds
+        return child
+
+    def _round_callback(
+        self,
+        on_iteration: IterationCallback | None,
+        report: Callable[[str, float], None],
+        *,
+        span: tuple[float, float],
+        check_cancelled: Callable[[], None] | None,
+        execution_context: ExecutionContext | None,
+    ) -> _FitRounds:
+        """One fit's per-round callback, paced by the run's live rounds."""
+        return _FitRounds(
+            self._live_rounds.fit(),
+            on_iteration,
+            report,
+            span=span,
+            check_cancelled=check_cancelled,
+            execution_context=execution_context,
         )
 
     def _prepare_fit_features(
@@ -809,59 +1099,251 @@ class TrainingJob:
     ) -> _PreparedData:
         """Apply the same final feature contract to selection and final fits."""
         if self.algorithm == "glm":
-            glm_terms = self.params.get("terms", {})
-            if glm_terms:
-                term_names = set(glm_terms)
-                missing = term_names - set(prepared.features)
-                if missing:
-                    raise HauteValidationError(
-                        "GLM terms reference columns not found in training data: "
-                        f"{sorted(missing)}. Available columns: "
-                        f"{prepared.features[:20]}" + ("..." if len(prepared.features) > 20 else "")
-                    )
-                prepared = _PreparedData(
-                    data_path=prepared.data_path,
-                    owns_tmp=prepared.owns_tmp,
-                    features=[feature for feature in prepared.features if feature in term_names],
-                    cat_features=[
-                        feature for feature in prepared.cat_features if feature in term_names
-                    ],
-                    total_rows=prepared.total_rows,
-                    feature_dtypes={
-                        feature: dtype
-                        for feature, dtype in prepared.feature_dtypes.items()
-                        if feature in term_names
-                    },
-                    categorical_levels={
-                        feature: levels
-                        for feature, levels in prepared.categorical_levels.items()
-                        if feature in term_names
-                    },
-                    target_dtype=prepared.target_dtype,
-                    target_null_count=prepared.target_null_count,
-                    offset_dtype=prepared.offset_dtype,
-                )
-                report(
-                    f"GLM: using {len(prepared.features)} term features "
-                    f"({len(prepared.cat_features)} categorical)",
-                    0.12,
-                )
-                if not prepared.features:
-                    raise HauteValidationError(
-                        "GLM: no valid features remaining after matching terms to "
-                        "data columns. Check that factor names match the training "
-                        "data."
-                    )
+            from haute.modelling._glm_terms import validate_glm_model_columns
+
+            model_columns = validate_glm_model_columns(
+                self.params["terms"],
+                self.params.get("interactions") or [],
+                prepared.feature_dtypes,
+                role_columns=self._role_columns(),
+            )
+            keep = set(model_columns)
+            prepared = _PreparedData(
+                data_path=prepared.data_path,
+                owns_tmp=prepared.owns_tmp,
+                features=[feature for feature in prepared.features if feature in keep],
+                cat_features=[feature for feature in prepared.cat_features if feature in keep],
+                total_rows=prepared.total_rows,
+                feature_dtypes={
+                    feature: dtype
+                    for feature, dtype in prepared.feature_dtypes.items()
+                    if feature in keep
+                },
+                categorical_levels={
+                    feature: levels
+                    for feature, levels in prepared.categorical_levels.items()
+                    if feature in keep
+                },
+                target_dtype=prepared.target_dtype,
+                target_null_count=prepared.target_null_count,
+                offset_dtype=prepared.offset_dtype,
+            )
+            report(
+                f"GLM: using {len(prepared.features)} model columns "
+                f"({len(prepared.cat_features)} categorical)",
+                0.12,
+            )
         self._validate_monotone_constraints(prepared)
         return prepared
+
+    def _role_columns(self) -> dict[str, str]:
+        """Columns with a modelling role, which can never be GLM model columns."""
+        roles: dict[str, str] = {}
+
+        def add(column: str | None, role: str) -> None:
+            if column:
+                roles.setdefault(column, role)
+
+        add(self.target, "target")
+        add(self.weight, "weight")
+        add(self.offset, "offset")
+        add(self.fold_column, "fold")
+        for column in self.id_columns:
+            add(column, "identifier")
+        if self.evaluation is not None:
+            if self.evaluation.strategy == "group":
+                add(self.evaluation.group_column, "evaluation")
+            elif self.evaluation.strategy == "temporal":
+                add(self.evaluation.date_column, "evaluation")
+        return roles
+
+    def _catboost_loss_function(self) -> str | None:
+        """The CatBoost ``loss_function`` the fit uses.
+
+        The job's loss setting wins over a ``loss_function`` inside ``params``,
+        exactly as the fit params are built, so the offset baseline and the
+        link stamped on the model always describe the same loss.
+        """
+        resolved = resolve_loss_function(self.loss_function, self.task, self.variance_power)
+        if resolved:
+            return resolved
+        in_params = self.params.get("loss_function")
+        return str(in_params) if in_params else None
+
+    def _resolve_class_labels(
+        self,
+        split_lf: pl.LazyFrame,
+        *,
+        execution_context: ExecutionContext | None,
+    ) -> tuple[bool | int | str, bool | int | str]:
+        """``(negative, positive)`` for a binary target, by the shared class rule.
+
+        Boolean and 0/1 targets make ``True``/``1`` positive; any other pair of
+        labels needs an explicit ``positive_class``.
+        """
+        dtype = split_lf.collect_schema()[self.target]
+        values = (
+            _training_streaming_collect(
+                split_lf.select(pl.col(self.target).unique()).head(3),
+                stage_name="training_class_labels_collect",
+                execution_context=execution_context,
+            )
+            .get_column(self.target)
+            .to_list()
+        )
+        if len(values) != 2:
+            shown = ", ".join(repr(v) for v in sorted(values, key=repr))
+            raise HauteValidationError(
+                f"Binary classification needs exactly two classes in '{self.target}', "
+                f"found {'more than two' if len(values) > 2 else len(values)}"
+                f"{f' ({shown})' if values and len(values) <= 2 else ''}. Multiclass targets "
+                "are not supported."
+            )
+        labels: list[bool | int | str] = []
+        for value in values:
+            if isinstance(value, float):
+                if not value.is_integer():
+                    raise HauteValidationError(
+                        f"Classification target '{self.target}' has non-integer labels; "
+                        "cast it to integer or string labels upstream."
+                    )
+                value = int(value)
+            if not isinstance(value, (bool, int, str)):
+                raise HauteValidationError(
+                    f"Classification target '{self.target}' must hold Boolean, integer or "
+                    "string labels."
+                )
+            labels.append(value)
+        if dtype == pl.Boolean or sorted(labels) in ([0, 1], [False, True]):
+            positive: bool | int | str = True if dtype == pl.Boolean else 1
+            if self.positive_class is not None and self.positive_class != positive:
+                raise HauteValidationError(
+                    f"'{self.target}' is a Boolean/0-1 target, whose positive class is "
+                    f"{positive!r}; remove positive_class or recode the target upstream."
+                )
+        else:
+            if self.positive_class is None:
+                raise HauteValidationError(
+                    f"'{self.target}' has the labels {labels[0]!r} and {labels[1]!r}; choose "
+                    "which one is the positive class."
+                )
+            if self.positive_class not in labels:
+                raise HauteValidationError(
+                    f"positive_class {self.positive_class!r} is not one of the labels in "
+                    f"'{self.target}': {labels[0]!r}, {labels[1]!r}."
+                )
+            positive = next(label for label in labels if label == self.positive_class)
+        negative = next(label for label in labels if label != positive)
+        return negative, positive
+
+    def _model_identity(self) -> ModelIdentity:
+        """The feature contract's record of which model this job trains."""
+        from importlib import import_module
+
+        from haute import __version__ as haute_version
+
+        descriptor = algorithm_descriptor(self.algorithm)
+        task = "classification" if self.task == "classification" else "regression"
+        loss: str | None = None
+        glm_family: str | None = None
+        variance_power: float | None = None
+        if descriptor.key == "glm":
+            glm_family = str(self.params["family"])
+            link = glm_effective_link(self.params)
+            if glm_family == "tweedie" and self.params.get("var_power") is not None:
+                variance_power = float(self.params["var_power"])
+        else:
+            loss = self._haute_loss()
+            if loss is not None:
+                link = descriptor.native_loss(task, loss).link
+            else:
+                link = "logit" if task == "classification" else "identity"
+            if loss == "Tweedie" and self.variance_power is not None:
+                variance_power = float(self.variance_power)
+        return ModelIdentity(
+            algorithm=descriptor.key,
+            link=link,
+            engine_name=descriptor.engine_module,
+            engine_version=str(import_module(descriptor.engine_module).__version__),
+            haute_version=haute_version,
+            loss=loss,
+            glm_family=glm_family,
+            variance_power=variance_power,
+            class_labels=self._class_labels if task == "classification" else None,
+        )
+
+    def _haute_loss(self) -> str | None:
+        """The Haute loss name this job trains (``None`` for the GLM)."""
+        if self.algorithm == "glm":
+            return None
+        if self.algorithm == "catboost":
+            resolved = self._catboost_loss_function()
+            return resolved.partition(":")[0] if resolved else None
+        return self.loss_function
+
+    def _offset_link(self) -> str:
+        """How the offset enters the model: ``log`` multiplies, ``identity`` adds."""
+        if self.algorithm == "glm":
+            return glm_effective_link(self.params)
+        if self.algorithm == "catboost":
+            from haute.modelling._algorithms import catboost_offset_link
+
+            return catboost_offset_link(self._catboost_loss_function())
+        loss = self._haute_loss()
+        task = "classification" if self.task == "classification" else "regression"
+        link = algorithm_descriptor(self.algorithm).native_loss(task, str(loss)).link
+        return "log" if link == "log" else "identity"
+
+    def _contract_offset_link(self) -> str | None:
+        """How the feature contract records the offset entering the raw score.
+
+        A GLM's non-log link adds the offset to the linear predictor, as every
+        other family's ``identity`` offset does.
+        """
+        if not self.offset:
+            return None
+        return "log" if self._offset_link() == "log" else "identity"
+
+    def _shap_link(self) -> str:
+        """The scale SHAP values add up on: log-odds for classification, else the offset link."""
+        return "logit" if self.task == "classification" else self._offset_link()
+
+    def _require_positive_log_link_offset(
+        self,
+        data_path: str,
+        *,
+        execution_context: ExecutionContext | None,
+    ) -> None:
+        """Refuse null, zero, or negative offsets before fitting under a log link."""
+        if not self.offset or self._offset_link() != "log":
+            return
+        offset = pl.col(self.offset).cast(pl.Float64)
+        invalid = _training_streaming_collect(
+            pl.scan_parquet(data_path)
+            .filter(pl.col(self.target).is_not_null())
+            .select((offset.is_null() | offset.is_nan() | (offset <= 0)).sum()),
+            stage_name="training_offset_check",
+            execution_context=execution_context,
+        ).item()
+        if invalid:
+            raise HauteValidationError(
+                f"Offset column {self.offset!r} must be positive under a log link, but "
+                f"{int(invalid):,} training rows are null, zero, or negative. The offset "
+                "multiplies the prediction (an exposure), so fix or remove those rows upstream."
+            )
 
     def run_evaluation_fit(
         self,
         progress: Callable[[str, float], None] | None = None,
         check_cancelled: Callable[[], None] | None = None,
         execution_context: ExecutionContext | None = None,
-    ) -> EvaluationFitResult:
-        """Fit one selection partition without publishing model or diagnostics."""
+        on_iteration: IterationCallback | None = None,
+    ) -> SelectionFit:
+        """Fit one selection partition without publishing model or diagnostics.
+
+        *on_iteration* receives the fit's paced rounds, so the live display
+        draws a selection fit the job does not keep.
+        """
         if self.evaluation_plan is None or self.evaluation_fit_index is None:
             raise HauteValidationError(
                 "run_evaluation_fit requires an internal evaluation selection job"
@@ -880,30 +1362,31 @@ class TrainingJob:
             prepared = self._prepare_fit_features(prepared, report)
             split_result = self._split_data(prepared, report, execution_context=execution_context)
 
-            def selection_iteration(
-                _iteration: int,
-                _total: int,
-                _metrics: dict[str, float],
-            ) -> None:
-                if check_cancelled is not None:
-                    check_cancelled()
-                _training_checkpoint(
-                    execution_context,
-                    label="evaluation_selection_iteration",
+            rounds = (
+                self._round_callback(
+                    on_iteration,
+                    report,
+                    span=(0.3, 0.8),
+                    check_cancelled=check_cancelled,
+                    execution_context=execution_context,
                 )
-
+                if progress is not None
+                or on_iteration is not None
+                or check_cancelled is not None
+                or execution_context is not None
+                else None
+            )
             trained = self._train_model(
                 split_result,
                 prepared.features,
                 prepared.cat_features,
-                (
-                    selection_iteration
-                    if check_cancelled is not None or execution_context is not None
-                    else None
-                ),
+                rounds,
                 report,
                 execution_context=execution_context,
             )
+            if rounds is not None:
+                rounds.finish()
+            report("Evaluating validation predictions", 0.85)
             validation = self._read_partition(
                 split_result.split_path,
                 PARTITION_VALIDATION,
@@ -930,7 +1413,7 @@ class TrainingJob:
                     exc,
                     evaluation_set=f"validation fit {self.evaluation_fit_index}",
                 ) from exc
-            return EvaluationFitResult(
+            result = EvaluationFitResult(
                 1,
                 self.evaluation_fit_index,
                 split_result.n_train,
@@ -938,6 +1421,8 @@ class TrainingJob:
                 metrics,
                 trained.fit_result.best_iteration,
             )
+            report("Validation complete", 1.0)
+            return SelectionFit(result, trained.fit_result.loss_history)
         finally:
             self._cleanup_owned_temp_parquets(prepared, split_result)
 
@@ -956,6 +1441,7 @@ class TrainingJob:
         check_cancelled: Callable[[], None] | None,
         execution_context: ExecutionContext | None,
         on_tuning_progress: Callable[[dict[str, Any]], None] | None,
+        on_iteration: IterationCallback | None,
     ) -> tuple[
         tuple[EvaluationFitResult, ...],
         dict[str, Any],
@@ -1074,7 +1560,8 @@ class TrainingJob:
                         child.run_evaluation_fit(
                             check_cancelled=check_cancelled,
                             execution_context=execution_context,
-                        )
+                            on_iteration=on_iteration,
+                        ).result
                     )
                     completed_fits += 1
                     checkpoint(f"after_tuning_trial_{trial_index}_fit_{fit_index}")
@@ -1140,36 +1627,22 @@ class TrainingJob:
         created.append(trials_path)
         trials_digest = evaluation_file_sha256(trials_path)
         winner = choose_winner(trials, direction=config.direction)
-        iteration_ceiling = self.params.get("iterations", 1000)
+        descriptor = algorithm_descriptor(self.algorithm)
+        iteration_ceiling = round_ceiling(descriptor, self.params, 1000)
         if (
             isinstance(iteration_ceiling, bool)
             or not isinstance(iteration_ceiling, int)
             or iteration_ceiling <= 0
         ):
             raise HauteValidationError(
-                "Fixed CatBoost iterations must be a positive exact integer when tuning is enabled"
+                f"Fixed {descriptor.label} {descriptor.round_key} must be a positive exact "
+                "integer when tuning is enabled"
             )
-        if any(fit.best_iteration is None for fit in winner.fits):
-            raise HauteValidationError(
-                "Winning tuning validation fits did not report best_iteration"
-            )
-        final_tree_count = validation_weighted_tree_count(
-            best_iterations=[
-                fit.best_iteration for fit in winner.fits if fit.best_iteration is not None
-            ],
-            validation_rows=[fit.validation_rows for fit in winner.fits],
-            iteration_ceiling=iteration_ceiling,
+        final_params, final_tree_count = tuning_final_projection(
+            descriptor,
+            winner.resolved_params,
+            [(fit.best_iteration, fit.validation_rows) for fit in winner.fits],
         )
-        final_params = copy.deepcopy(dict(winner.resolved_params))
-        for key in (
-            "early_stopping_rounds",
-            "od_pval",
-            "od_type",
-            "od_wait",
-            "use_best_model",
-        ):
-            final_params.pop(key, None)
-        final_params["iterations"] = final_tree_count
         tuning_report = build_tuning_report(
             tuning_plan,
             trials_artifact,
@@ -1274,6 +1747,10 @@ class TrainingJob:
             plan_digest = evaluation_file_sha256(plan_path)
             selection_fit_count = len(plan.validation_fits)
             tuning_response: dict[str, Any] | None = None
+            # Refit selection fits' histories; tuning trials keep none.
+            selection_histories: list[list[dict[str, float]]] = []
+            # The published model when no refit runs: the holdout validation fit.
+            selected_result: TrainResult | None = None
             if self.tuning is not None:
                 with tempfile.TemporaryDirectory(prefix="haute_tuning_fits_") as tuning_fit_root:
                     fits, final_params, tuning_response = self._run_tuning_trials(
@@ -1289,100 +1766,219 @@ class TrainingJob:
                         check_cancelled=check_cancelled,
                         execution_context=execution_context,
                         on_tuning_progress=on_tuning_progress,
+                        on_iteration=on_iteration,
                     )
                 total = self.tuning.total_fit_count
                 completed_before_final = self.tuning.trial_fit_count
+                if not self.refit_on_development:
+                    # A validation-fit family publishes the winning trial's holdout
+                    # fit, reproduced from its parameters (fits are deterministic), so
+                    # it must see exactly the source the trials saw.
+                    if evaluation_file_sha256(prepared.data_path) != plan.source_sha256:
+                        raise HauteValidationError(
+                            "evaluation source changed before the winning validation fit"
+                        )
+                    report("Evaluation: winning validation fit", completed_before_final / total)
+                    if on_tuning_progress is not None:
+                        on_tuning_progress(
+                            {
+                                "phase": "final_fit",
+                                "trial_index": None,
+                                "trial_count": self.tuning.trial_count,
+                                "fold_index": None,
+                                "fold_count": self.tuning.validation_fit_count,
+                                "completed_fits": completed_before_final,
+                                "total_fits": total,
+                                "best_objective": tuning_response["winner_objective"],
+                            }
+                        )
+                    winner = self._new_evaluation_job(
+                        name=self.name,
+                        data=prepared.data_path,
+                        output_dir=self.output_dir,
+                        plan=plan,
+                        fit_index=0,
+                        mlflow_experiment=None,
+                        params=final_params,
+                        source_sha256=source_digest,
+                    )
+                    selected_result = winner.run(
+                        progress=lambda message, fraction: report(
+                            f"Evaluation: winning validation fit: {message}",
+                            (completed_before_final + fraction) / total,
+                        ),
+                        on_iteration=on_iteration,
+                        check_cancelled=check_cancelled,
+                        execution_context=execution_context,
+                    )
             else:
+                descriptor = algorithm_descriptor(self.algorithm)
                 ordinary_fits: list[EvaluationFitResult] = []
-                total = selection_fit_count + 1
+                total = selection_fit_count + int(self.refit_on_development)
                 completed_before_final = selection_fit_count
                 with tempfile.TemporaryDirectory(prefix="haute_evaluation_fits_") as root:
                     for fit_index in range(selection_fit_count):
                         report(
-                            f"Evaluation: fit {fit_index + 1}/{total}",
+                            f"Fit {fit_index + 1} of {total} (validation)",
                             fit_index / total,
                         )
                         child = self._new_evaluation_job(
-                            name=f"{self.name}.evaluation-{fit_index}",
+                            name=(
+                                f"{self.name}.evaluation-{fit_index}"
+                                if self.refit_on_development
+                                else self.name
+                            ),
                             data=prepared.data_path,
-                            output_dir=root,
+                            output_dir=root if self.refit_on_development else self.output_dir,
                             plan=plan,
                             fit_index=fit_index,
                             mlflow_experiment=None,
                             params=self.params,
                             source_sha256=source_digest,
                         )
-                        ordinary_fits.append(
-                            child.run_evaluation_fit(
+
+                        def fit_progress(
+                            message: str, fraction: float, *, fit_index: int = fit_index
+                        ) -> None:
+                            report(
+                                f"Fit {fit_index + 1} of {total} (validation): {message}",
+                                (fit_index + fraction) / total,
+                            )
+
+                        if self.refit_on_development:
+                            selection = child.run_evaluation_fit(
+                                progress=fit_progress,
+                                check_cancelled=check_cancelled,
+                                execution_context=execution_context,
+                                on_iteration=on_iteration,
+                            )
+                            ordinary_fits.append(selection.result)
+                            selection_histories.append(selection.loss_history)
+                        else:
+                            selected_result = child.run(
+                                progress=fit_progress,
+                                on_iteration=on_iteration,
                                 check_cancelled=check_cancelled,
                                 execution_context=execution_context,
                             )
-                        )
+                            if (
+                                descriptor.refit_policy == "validation_weighted_rounds"
+                                and selected_result.final_tree_count is None
+                            ):
+                                raise HauteValidationError(
+                                    f"{descriptor.label} validation fit did not report its "
+                                    "trained round count"
+                                )
+                            ordinary_fits.append(
+                                EvaluationFitResult(
+                                    1,
+                                    fit_index,
+                                    selected_result.train_rows,
+                                    selected_result.validation_rows,
+                                    selected_result.metrics,
+                                    selected_result.best_iteration,
+                                )
+                            )
                 fits = tuple(ordinary_fits)
                 final_params = copy.deepcopy(self.params)
+                if (
+                    descriptor.refit_policy == "validation_weighted_rounds"
+                    and fits
+                    and self.refit_on_development
+                ):
+                    if any(fit.best_iteration is None for fit in fits):
+                        raise HauteValidationError(
+                            f"{descriptor.label} validation fits did not report best_iteration"
+                        )
+                    final_tree_count = validation_weighted_tree_count(
+                        best_iterations=[
+                            fit.best_iteration for fit in fits if fit.best_iteration is not None
+                        ],
+                        validation_rows=[fit.validation_rows for fit in fits],
+                        iteration_ceiling=round_ceiling(descriptor, self.params, 1000),
+                    )
+                    final_params = project_refit_params(descriptor, final_params, final_tree_count)
             artifact = EvaluationResultsArtifact(1, plan_digest, tuple(fits))
             save_evaluation_results(artifact, results_path)
             created.append(results_path)
             results = load_evaluation_results(results_path, plan_sha256=plan_digest)
             results_digest = evaluation_file_sha256(results_path)
             aggregate = aggregate_evaluation_results(
-                plan, results, self.metrics, results_sha256=results_digest
+                plan,
+                results,
+                self.metrics,
+                results_sha256=results_digest,
+                refit_on_development=self.refit_on_development,
             )
             save_evaluation_report(aggregate, report_path)
             created.append(report_path)
             aggregate = load_evaluation_report(report_path)
-            final_source_digest = evaluation_file_sha256(prepared.data_path)
-            if final_source_digest != plan.source_sha256:
-                raise HauteValidationError("evaluation source changed before final fit")
-            report("Evaluation: final fit", completed_before_final / total)
-            if self.tuning is not None and on_tuning_progress is not None:
-                on_tuning_progress(
-                    {
-                        "phase": "final_fit",
-                        "trial_index": None,
-                        "trial_count": self.tuning.trial_count,
-                        "fold_index": None,
-                        "fold_count": self.tuning.validation_fit_count,
-                        "completed_fits": completed_before_final,
-                        "total_fits": total,
-                        "best_objective": (
-                            tuning_response["winner_objective"]
-                            if tuning_response is not None
-                            else None
-                        ),
-                    }
+            if self.refit_on_development:
+                final_source_digest = evaluation_file_sha256(prepared.data_path)
+                if final_source_digest != plan.source_sha256:
+                    raise HauteValidationError("evaluation source changed before final fit")
+                report("Evaluation: final fit", completed_before_final / total)
+                if self.tuning is not None and on_tuning_progress is not None:
+                    on_tuning_progress(
+                        {
+                            "phase": "final_fit",
+                            "trial_index": None,
+                            "trial_count": self.tuning.trial_count,
+                            "fold_index": None,
+                            "fold_count": self.tuning.validation_fit_count,
+                            "completed_fits": completed_before_final,
+                            "total_fits": total,
+                            "best_objective": (
+                                tuning_response["winner_objective"]
+                                if tuning_response is not None
+                                else None
+                            ),
+                        }
+                    )
+                final = self._new_evaluation_job(
+                    name=self.name,
+                    data=prepared.data_path,
+                    output_dir=self.output_dir,
+                    plan=plan,
+                    fit_index=None,
+                    # The outer orchestration logs exactly once after attaching
+                    # evaluation/tuning reports and canonical final-test labels.
+                    mlflow_experiment=None,
+                    params=final_params,
+                    source_sha256=final_source_digest,
                 )
-            final = self._new_evaluation_job(
-                name=self.name,
-                data=prepared.data_path,
-                output_dir=self.output_dir,
-                plan=plan,
-                fit_index=None,
-                # The outer orchestration logs exactly once after attaching
-                # evaluation/tuning reports and canonical final-test labels.
-                mlflow_experiment=None,
-                params=final_params,
-                source_sha256=final_source_digest,
-            )
-            result = final.run(
-                progress=lambda message, fraction: report(
-                    f"Evaluation: final fit: {message}",
-                    (completed_before_final + fraction) / total,
-                ),
-                on_iteration=on_iteration,
-                check_cancelled=check_cancelled,
-                execution_context=execution_context,
-            )
+                result = final.run(
+                    progress=lambda message, fraction: report(
+                        f"Evaluation: final fit: {message}",
+                        (completed_before_final + fraction) / total,
+                    ),
+                    on_iteration=on_iteration,
+                    check_cancelled=check_cancelled,
+                    execution_context=execution_context,
+                )
+                if len(selection_histories) == 1:
+                    # One holdout fit chose the refit's tree count: keep its curves.
+                    result.validation_loss_history = selection_histories[0]
+            else:
+                assert selected_result is not None
+                result = selected_result
             result.development_rows = len(plan.development_positions)
             result.final_test_rows = len(plan.test_positions)
             result.final_test_metrics = dict(result.holdout_metrics) if plan.test_positions else {}
-            result.diagnostics_set = "final_test" if plan.test_positions else "development"
+            result.diagnostics_set = (
+                "final_test"
+                if plan.test_positions
+                else "development"
+                if self.refit_on_development
+                else "validation"
+            )
             result.evaluation = {
                 "schema_version": 1,
                 "strategy": self.evaluation.strategy,
                 "validation_method": self.evaluation.validation["method"],
                 "validation_fit_count": selection_fit_count,
                 "fit_count": total,
+                "refit_on_development": self.refit_on_development,
                 "development_rows": len(plan.development_positions),
                 "final_test_rows": len(plan.test_positions),
                 "selection_fits": [fit.to_plain_data() for fit in results.fits],
@@ -1397,6 +1993,13 @@ class TrainingJob:
                 "summary": dict(plan.summary),
             }
             result.tuning = tuning_response
+            refit = algorithm_descriptor(self.algorithm)
+            if (
+                refit.refit_policy == "validation_weighted_rounds"
+                and selection_fit_count
+                and self.refit_on_development
+            ):
+                result.final_tree_count = final_params[refit.refit_round_key]
             if self.tuning is not None and on_tuning_progress is not None:
                 on_tuning_progress(
                     {
@@ -1422,6 +2025,7 @@ class TrainingJob:
                 ):
                     self._log_to_mlflow(
                         result,
+                        final_params=final_params,
                         check_cancelled=lambda: checkpoint("evaluation_mlflow_checkpoint"),
                     )
             report("Done", 1.0)
@@ -1592,22 +2196,27 @@ class TrainingJob:
                         f"wrote clean temp parquet without {target_null_count:,} null target rows"
                     )
 
+            self._require_positive_log_link_offset(
+                data_path,
+                execution_context=execution_context,
+            )
+
             # Derive features from schema
             features, cat_features = self._derive_features(schema_df)
             # Snapshot dtypes before we drop the schema frame — downstream
             # consumers (MLflow signature, feature contract) need them.
-            feature_dtypes = {f: _polars_dtype_name(schema_df[f].dtype) for f in features}
+            feature_dtypes = {f: contract_dtype_name(schema_df[f].dtype) for f in features}
             categorical_levels = self._categorical_levels_for_contract(
                 features,
                 cat_features,
             )
             target_dtype = (
-                _polars_dtype_name(schema_df[self.target].dtype)
+                contract_dtype_name(schema_df[self.target].dtype)
                 if self.target in schema_df.columns
                 else ""
             )
             offset_dtype = (
-                _polars_dtype_name(schema_df[self.offset].dtype)
+                contract_dtype_name(schema_df[self.offset].dtype)
                 if self.offset and self.offset in schema_df.columns
                 else ""
             )
@@ -1652,6 +2261,15 @@ class TrainingJob:
         split_lf = pl.scan_parquet(data_path)
         if target_null_count > 0:
             split_lf = split_lf.filter(pl.col(self.target).is_not_null())
+        if self.task == "classification":
+            self._class_labels = self._resolve_class_labels(
+                split_lf, execution_context=execution_context
+            )
+            # Every consumer of the split file (fit, metrics, diagnostics)
+            # sees one encoding: the positive class is 1.0, the other 0.0.
+            split_lf = split_lf.with_columns(
+                (pl.col(self.target) == self._class_labels[1]).cast(pl.Float64).alias(self.target)
+            )
 
         if self.evaluation_plan is not None:
             # The orchestrator hashes the prepared source once per run (and
@@ -1670,7 +2288,12 @@ class TrainingJob:
                 mask = pl.Series("_partition", self.evaluation_plan.final_mask())
             else:
                 mask = pl.Series(
-                    "_partition", self.evaluation_plan.selection_mask(self.evaluation_fit_index)
+                    "_partition",
+                    (
+                        self.evaluation_plan.selection_mask(self.evaluation_fit_index)
+                        if self.refit_on_development
+                        else self.evaluation_plan.saved_selection_mask(self.evaluation_fit_index)
+                    ),
                 )
         else:
             # Compute mask -- for temporal/group we need a small scan
@@ -1766,14 +2389,11 @@ class TrainingJob:
 
         # GLM: pack all GLM-specific config into fit_params for the algorithm
         is_glm = self.algorithm == "glm"
-        if not is_glm:
-            resolved_loss = resolve_loss_function(
-                self.loss_function,
-                self.task,
-                self.variance_power,
-            )
-            if resolved_loss:
-                fit_params["loss_function"] = resolved_loss
+        frame_based = self.algorithm != "catboost"
+        if self.algorithm == "catboost":
+            loss_function = self._catboost_loss_function()
+            if loss_function:
+                fit_params["loss_function"] = loss_function
 
         # Read train partition
         _report("Loading training data", 0.2)
@@ -1786,21 +2406,35 @@ class TrainingJob:
         )
         _mem_checkpoint(f"read train partition ({len(train_df):,} rows)")
 
-        eval_df = None
-        if has_validation:
+        def load_validation() -> pl.DataFrame:
             _report("Loading validation data", 0.25)
-            eval_df = _training_streaming_collect(
+            validation = _training_streaming_collect(
                 self._scan_with_columns(data_path, features)
                 .filter(pl.col("_partition") == PARTITION_VALIDATION)
                 .drop("_partition"),
                 stage_name="training_validation_partition_materialise",
                 execution_context=execution_context,
             )
-            _mem_checkpoint(f"read validation partition ({len(eval_df):,} rows)")
+            _mem_checkpoint(f"read validation partition ({len(validation):,} rows)")
+            return validation
 
-        if is_glm:
-            # GLM: pass DataFrames directly (no Pool conversion needed)
-            _report("Fitting GLM", 0.3)
+        if frame_based:
+            # GLM and the new-family adapters take DataFrames and build their
+            # own native data (no CatBoost Pool).
+            eval_df = load_validation() if has_validation else None
+            _report(f"Fitting {algorithm_descriptor(self.algorithm).label}", 0.3)
+            adapter_kwargs: dict[str, Any] = {}
+            if not is_glm:
+                adapter_kwargs = {
+                    "loss": self._haute_loss(),
+                    "variance_power": self.variance_power,
+                    "threads": self.threads,
+                    "categorical_levels": self._declared_categorical_levels or None,
+                    "class_labels": self._class_labels,
+                    "seed": self.evaluation.seed if self.evaluation is not None else 0,
+                    "device": self.device,
+                    "groups": self._plan_group_column(),
+                }
             with _training_stage(execution_context, "training_algorithm_fit"):
                 fit_result = algo.fit(
                     train_df,
@@ -1815,8 +2449,9 @@ class TrainingJob:
                     offset=self.offset,
                     monotone_constraints=self.monotone_constraints,
                     feature_weights=self.feature_weights,
+                    **adapter_kwargs,
                 )
-            _mem_checkpoint("glm algo.fit() returned")
+            _mem_checkpoint("frame-based algo.fit() returned")
             del train_df, eval_df
             gc.collect()
             _malloc_trim()
@@ -1826,8 +2461,18 @@ class TrainingJob:
 
             train_y = train_df[self.target].cast(pl.Float64).to_numpy()
             train_w = train_df[self.weight].cast(pl.Float64).to_numpy() if self.weight else None
+            from haute.modelling._algorithms import offset_baseline
+
+            offset_link = self._offset_link()
             train_baseline = (
-                train_df[self.offset].cast(pl.Float64).to_numpy() if self.offset else None
+                offset_baseline(
+                    train_df[self.offset].cast(pl.Float64).to_numpy(),
+                    column=self.offset,
+                    link=offset_link,
+                    context="CatBoost training",
+                )
+                if self.offset
+                else None
             )
             train_features_df = train_df.select(features)
             del train_df
@@ -1850,12 +2495,20 @@ class TrainingJob:
             _mem_checkpoint("train pool built")
 
             eval_pool = None
-            if eval_df is not None:
+            if has_validation:
+                eval_df = load_validation()
                 _report("Building eval pool", 0.25)
                 val_y = eval_df[self.target].cast(pl.Float64).to_numpy()
                 val_w = eval_df[self.weight].cast(pl.Float64).to_numpy() if self.weight else None
                 val_baseline = (
-                    eval_df[self.offset].cast(pl.Float64).to_numpy() if self.offset else None
+                    offset_baseline(
+                        eval_df[self.offset].cast(pl.Float64).to_numpy(),
+                        column=self.offset,
+                        link=offset_link,
+                        context="CatBoost validation",
+                    )
+                    if self.offset
+                    else None
                 )
                 val_features_df = eval_df.select(features)
                 del eval_df
@@ -1892,6 +2545,8 @@ class TrainingJob:
                     feature_weights=self.feature_weights,
                     pool=train_pool,
                     eval_pool=eval_pool,
+                    threads=self.threads,
+                    class_labels=self._class_labels,
                 )
             _mem_checkpoint("algo.fit() returned")
             del train_pool, eval_pool
@@ -1929,13 +2584,26 @@ class TrainingJob:
         weight, and offset columns required to extract labels/aux arrays.
         Returning ``None`` means "read all columns" for non-CatBoost paths.
         """
-        if self.algorithm != "catboost":
+        if self.algorithm == "glm":
             return None
         needed: list[str] = []
-        for column in [*features, self.target, self.weight, self.offset]:
+        for column in [
+            *features,
+            self.target,
+            self.weight,
+            self.offset,
+            self._plan_group_column(),
+        ]:
             if column and column not in needed:
                 needed.append(column)
         return needed
+
+    def _plan_group_column(self) -> str | None:
+        """The entity column of a group plan, for an engine that carves its own
+        internal holdouts (t-boost) and must not split an entity across them."""
+        if self.evaluation is not None and self.evaluation.strategy == "group":
+            return self.evaluation.group_column
+        return None
 
     def _scan_with_columns(self, data_path: str, features: list[str]) -> pl.LazyFrame:
         """Scan parquet with training-column projection when the algorithm supports it."""
@@ -1973,7 +2641,7 @@ class TrainingJob:
             execution_context=execution_context,
         )
 
-    def _metric_stage_error(self, exc: Exception, *, evaluation_set: str) -> ValueError:
+    def _metric_stage_error(self, exc: Exception, *, evaluation_set: str) -> HauteValidationError:
         """Wrap a mandatory metric failure with the user-model objects involved.
 
         The library error alone ("continuous format is not supported") names
@@ -1989,7 +2657,7 @@ class TrainingJob:
         if self.evaluation_plan is not None:
             label = _PUBLIC_EVALUATION_SET_LABELS.get(evaluation_set, evaluation_set)
         metric_list = ", ".join(self.metrics)
-        return ValueError(
+        return HauteValidationError(
             f"Could not evaluate the trained model on the {label} data. The "
             f"metrics ({metric_list}) were computed against target column "
             f"'{self.target}' with task '{self.task}'. Check that the target's values "
@@ -1997,6 +2665,44 @@ class TrainingJob:
             f"then adjust the target column, the task, or the reported metrics. "
             f"Underlying error: {exc}"
         )
+
+    def _predict_diagnostic_batches(
+        self,
+        algo: Any,
+        model: Any,
+        frame: pl.DataFrame,
+        features: list[str],
+        *,
+        execution_context: ExecutionContext | None,
+    ) -> np.ndarray:
+        """Predict diagnostics in bounded row batches without changing empty semantics."""
+        if frame.height == 0:
+            return np.asarray(algo.predict(model, frame, features, offset=self.offset))
+        result: np.ndarray | None = None
+        offset = 0
+        with closing(
+            bounded_collect_batches(
+                frame.lazy(),
+                chunk_size=65_536,
+                execution_context=execution_context,
+                stage_name="training_diagnostic_predictions",
+            )
+        ) as batches:
+            for batch in batches:
+                prediction = np.asarray(algo.predict(model, batch, features, offset=self.offset))
+                if prediction.ndim == 0 or prediction.shape[0] != batch.height:
+                    raise ValueError("Diagnostic predictions must have one row per input row")
+                if result is None:
+                    result = np.empty((frame.height, *prediction.shape[1:]), dtype=prediction.dtype)
+                elif prediction.dtype != result.dtype or prediction.shape[1:] != result.shape[1:]:
+                    raise ValueError("Diagnostic prediction shape or dtype changed between batches")
+                next_offset = offset + len(batch)
+                result[offset:next_offset] = prediction
+                offset = next_offset
+                del batch, prediction
+        if result is None or offset != frame.height:
+            raise RuntimeError("Diagnostic prediction batches did not cover the input rows")
+        return result
 
     def _compute_metrics(
         self,
@@ -2055,6 +2761,33 @@ class TrainingJob:
             diag_partition = PARTITION_TRAIN
             diagnostics_set = "train"
 
+        # Holdout diagnostics are the largest live allocation in this branch.
+        # Calculate and release validation quality first so the two partitions
+        # are never resident together.
+        validation_metrics: dict[str, float] | None = None
+        vp = self.variance_power
+        if has_holdout and has_validation:
+            val_df = self._read_partition(
+                data_path,
+                PARTITION_VALIDATION,
+                columns=glm_columns,
+                execution_context=execution_context,
+                stage_name="training_validation_metrics_materialise",
+            )
+            val_y_true = val_df[self.target].to_numpy()
+            val_y_pred = self._predict_diagnostic_batches(
+                algo, model, val_df, features, execution_context=execution_context
+            )
+            val_w = val_df[self.weight].to_numpy() if self.weight else None
+            try:
+                validation_metrics = compute_metrics(
+                    val_y_true, val_y_pred, val_w, self.metrics, variance_power=vp
+                )
+            except _METRIC_STAGE_FAILURE_TYPES as exc:
+                raise self._metric_stage_error(exc, evaluation_set="validation") from exc
+            del val_df, val_y_true, val_y_pred, val_w
+            gc.collect()
+
         # ── Read the diagnostics partition ONCE — metrics + all diagnostics ──
         _report("Computing diagnostics", 0.8)
         diag_df = self._read_partition(
@@ -2067,11 +2800,12 @@ class TrainingJob:
         _mem_checkpoint(f"read {diagnostics_set} partition for diagnostics ({len(diag_df):,} rows)")
         y_true = diag_df[self.target].to_numpy()
         # Reported fit quality describes the predictions the model serves.
-        y_pred = algo.predict(model, diag_df, features, offset=self.offset)
+        y_pred = self._predict_diagnostic_batches(
+            algo, model, diag_df, features, execution_context=execution_context
+        )
         w = diag_df[self.weight].to_numpy() if self.weight else None
 
         # Primary metrics from the diagnostics set
-        vp = self.variance_power
         try:
             metrics = compute_metrics(
                 y_true,
@@ -2084,33 +2818,12 @@ class TrainingJob:
             raise self._metric_stage_error(exc, evaluation_set=diagnostics_set) from exc
 
         # When holdout is present, diagnostics were computed on holdout.
-        # Also compute validation metrics separately so both are available.
+        # Validation quality was already computed and released before this read.
         holdout_metrics: dict[str, float] = {}
         if diagnostics_set == "holdout":
             holdout_metrics = metrics
-            # Compute validation metrics separately if a validation set exists
-            if has_validation:
-                val_df = self._read_partition(
-                    data_path,
-                    PARTITION_VALIDATION,
-                    columns=glm_columns,
-                    execution_context=execution_context,
-                    stage_name="training_validation_metrics_materialise",
-                )
-                val_y_true = val_df[self.target].to_numpy()
-                val_y_pred = algo.predict(model, val_df, features, offset=self.offset)
-                val_w = val_df[self.weight].to_numpy() if self.weight else None
-                try:
-                    metrics = compute_metrics(
-                        val_y_true,
-                        val_y_pred,
-                        val_w,
-                        self.metrics,
-                        variance_power=vp,
-                    )
-                except _METRIC_STAGE_FAILURE_TYPES as exc:
-                    raise self._metric_stage_error(exc, evaluation_set="validation") from exc
-                del val_df
+            if validation_metrics is not None:
+                metrics = validation_metrics
 
         # Double-lift
         double_lift = compute_double_lift(y_true, y_pred, w)
@@ -2127,15 +2840,33 @@ class TrainingJob:
 
         # SHAP + LossFunctionChange importance (OPTIONAL: failures
         # surface in diagnostics_errors so the UI can flag a degraded run.)
-        _report("Computing SHAP values", 0.85)
-        shap_summary: list[dict[str, float]] = []
+        shap_summary: list[dict[str, Any]] = []
+        shap_beeswarm: list[dict[str, Any]] = []
+        shap_curves: list[dict[str, Any]] = []
+        shap_link: str | None = None
         feature_importance_loss: list[dict[str, Any]] = []
-        if hasattr(algo, "shap_summary"):
+        if hasattr(algo, "shap_values"):
+            _report("Computing SHAP values", 0.85)
             try:
-                shap_summary = algo.shap_summary(model, diag_df, features, cat_features)
+                # One bounded sample for every family; every view or none.
+                shap_rows = shap_sample(diag_df)
+                views = shap_diagnostics(
+                    algo.shap_values(model, shap_rows, features, cat_features),
+                    shap_rows,
+                    features,
+                    cat_features,
+                )
+                del shap_rows
+                shap_link = self._shap_link()
+                shap_summary, shap_beeswarm, shap_curves = (
+                    views.summary,
+                    views.beeswarm,
+                    views.curves,
+                )
             except Exception as exc:
                 _record_diag_error(diagnostics_errors, "shap", exc)
         if hasattr(algo, "feature_importance_typed"):
+            _report("Computing loss-based feature importance", 0.855)
             try:
                 _diag_pool = _build_pool(
                     diag_df,
@@ -2143,6 +2874,7 @@ class TrainingJob:
                     cat_features,
                     target=self.target,
                     offset=self.offset,
+                    offset_link=self._offset_link() if self.offset else None,
                 )
                 feature_importance_loss = algo.feature_importance_typed(
                     model,
@@ -2169,43 +2901,38 @@ class TrainingJob:
                 model,
                 algo,
                 diag_df,
-                sorted_features,
+                features,
                 cat_features,
                 offset=self.offset,
             )
+            # Importance ranks charts, never the positional inputs to prediction.
+            pdp_order = {feature: index for index, feature in enumerate(sorted_features)}
+            pdp_data.sort(key=lambda entry: pdp_order[entry["feature"]])
         except Exception as exc:
             _record_diag_error(diagnostics_errors, "pdp", exc)
 
         # ── GLM-specific diagnostics (all OPTIONAL) ──
-        glm_coefficients: list[dict[str, Any]] = []
-        glm_relativities: list[dict[str, Any]] = []
-        glm_fit_statistics: dict[str, float] = {}
-        glm_regularization_path: dict[str, Any] | None = None
+        glm_report = None
+        if hasattr(algo, "glm_result"):
+            glm_report = algo.glm_result(model, train_result.fit_params)
+            for diagnostic, glm_error in glm_report.errors:
+                _record_diag_error(diagnostics_errors, diagnostic, glm_error)
 
-        if hasattr(algo, "coefficients_table"):
+        # ── EBM term report (OPTIONAL) ──
+        ebm_terms: list[dict[str, Any]] = []
+        if hasattr(algo, "ebm_terms"):
             try:
-                glm_coefficients = algo.coefficients_table(model)
+                ebm_terms = algo.ebm_terms(model)
             except Exception as exc:
-                _record_diag_error(diagnostics_errors, "glm_coefficients", exc)
-        if hasattr(algo, "relativities"):
+                _record_diag_error(diagnostics_errors, "ebm_terms", exc)
+
+        # ── t-boost table report (OPTIONAL) ──
+        tboost_tables: dict[str, Any] | None = None
+        if hasattr(algo, "tboost_tables"):
             try:
-                glm_relativities = algo.relativities(model)
+                tboost_tables = algo.tboost_tables(model)
             except Exception as exc:
-                _record_diag_error(diagnostics_errors, "glm_relativities", exc)
-        if hasattr(algo, "fit_statistics"):
-            try:
-                glm_fit_statistics = algo.fit_statistics(model)
-            except Exception as exc:
-                _record_diag_error(diagnostics_errors, "glm_fit_statistics", exc)
-        if hasattr(model, "regularization_path") and model.regularization_path:
-            try:
-                rp = model.regularization_path
-                glm_regularization_path = {
-                    "selected_alpha": float(getattr(rp, "selected_alpha", 0)),
-                    "n_nonzero": int(model.n_nonzero()) if hasattr(model, "n_nonzero") else 0,
-                }
-            except Exception as exc:
-                _record_diag_error(diagnostics_errors, "glm_regularization_path", exc)
+                _record_diag_error(diagnostics_errors, "tboost_tables", exc)
 
         del diag_df
         gc.collect()
@@ -2221,6 +2948,9 @@ class TrainingJob:
             importance=importance,
             double_lift=double_lift,
             shap_summary=shap_summary,
+            shap_beeswarm=shap_beeswarm,
+            shap_curves=shap_curves,
+            shap_link=shap_link,
             feature_importance_loss=feature_importance_loss,
             ave_per_feature=ave_per_feature,
             residuals_histogram=residuals_histogram,
@@ -2229,10 +2959,14 @@ class TrainingJob:
             lorenz_curve=lorenz_model,
             lorenz_curve_perfect=lorenz_perfect,
             pdp_data=pdp_data,
-            glm_coefficients=glm_coefficients,
-            glm_relativities=glm_relativities,
-            glm_fit_statistics=glm_fit_statistics,
-            glm_regularization_path=glm_regularization_path,
+            glm_coefficients=glm_report.coefficients if glm_report else [],
+            glm_relativities=glm_report.relativities if glm_report else [],
+            glm_fit_statistics=glm_report.fit_statistics if glm_report else {},
+            glm_inference=glm_report.inference if glm_report else None,
+            glm_smooth_terms=glm_report.smooth_terms if glm_report else [],
+            glm_regularization=glm_report.regularization if glm_report else None,
+            ebm_terms=ebm_terms,
+            tboost_tables=tboost_tables,
             diagnostics_errors=diagnostics_errors,
         )
 
@@ -2262,7 +2996,12 @@ class TrainingJob:
         """
         from haute.modelling._feature_contract import build_contract, save_contract
 
-        ext = _MODEL_EXT_MAP.get(self.algorithm, ".model")
+        ext = MODEL_FILE_SUFFIXES.get(self.algorithm)
+        if ext is None:
+            raise HauteValidationError(
+                f"Algorithm {self.algorithm!r} has no model file suffix; "
+                "register its descriptor before saving."
+            )
         output_dir = Path(self.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         model_path = output_dir / f"{self.name}{ext}"
@@ -2285,6 +3024,8 @@ class TrainingJob:
                 target_type=self._target_dtype_for_contract(),
                 task="classification" if self.task == "classification" else "regression",
                 offset_column=self.offset,
+                offset_link=self._contract_offset_link(),
+                model=self._model_identity(),
             )
             contract_path = output_dir / model_contract_filename(self.name)
             save_contract(contract, contract_path)
@@ -2487,25 +3228,63 @@ class TrainingJob:
             categorical_features=cat_features,
         )
 
+    @property
+    def training_identity_sha256(self) -> str:
+        """Digest of the parsed inputs that determine what this job trains."""
+        from haute.modelling._candidate_run import training_identity_sha256
+
+        return training_identity_sha256(
+            {
+                "target": self.target,
+                "weight": self.weight,
+                # Empty optional lists hash as ``None``, exactly as the
+                # config builder passes them (it never passes ``exclude``), so a
+                # canvas run and a scripted run of one configuration share one
+                # identity.
+                "exclude": list(self.exclude) or None,
+                "feature_columns": list(self.feature_columns) or None,
+                "fold_column": self.fold_column,
+                "id_columns": list(self.id_columns) or None,
+                "algorithm": self.algorithm,
+                "task": self.task,
+                "params": self.params,
+                "evaluation": self.evaluation,
+                "tuning": self.tuning,
+                "metrics": list(self.metrics),
+                "loss_function": self.loss_function,
+                "variance_power": self.variance_power,
+                "offset": self.offset,
+                "monotone_constraints": self.monotone_constraints,
+                "feature_weights": self.feature_weights,
+                "categorical_levels": self._declared_categorical_levels or None,
+                "positive_class": self.positive_class,
+                "device": self.device,
+            }
+        )
+
     def _log_to_mlflow(
         self,
         result: TrainResult,
         *,
+        final_params: Mapping[str, Any] | None = None,
         check_cancelled: Callable[[], None] | None = None,
     ) -> None:
-        """Log training run to MLflow (conditional import).
+        """Log this scripted run to MLflow as a contracted candidate run."""
+        import uuid
 
-        Delegates to the standalone ``log_experiment()`` function so the
-        same logic is reused by the "Log to MLflow" button in the UI.
-        """
-        from haute.modelling._mlflow_log import log_experiment
-        from haute.modelling._result_types import (
-            ModelCardMetadata,
-            ModelDiagnostics,
+        from haute._sandbox import _get_project_root
+        from haute.modelling._candidate_run import (
+            CandidateArtifacts,
+            build_candidate_run,
+            capture_provenance,
         )
+        from haute.modelling._mlflow_log import log_experiment
+        from haute.modelling._result_types import ModelDiagnostics
 
         if not self.mlflow_experiment:
             return
+        if result.evaluation is None:
+            raise HauteValidationError("MLflow logging requires an evaluated training run")
 
         diagnostics = ModelDiagnostics(
             feature_importance=result.feature_importance,
@@ -2521,81 +3300,70 @@ class TrainingJob:
             glm_coefficients=result.glm_coefficients,
             glm_relativities=result.glm_relativities,
             glm_fit_statistics=result.glm_fit_statistics,
-            glm_regularization_path=result.glm_regularization_path,
+            glm_inference=result.glm_inference,
+            glm_smooth_terms=result.glm_smooth_terms,
+            glm_regularization=result.glm_regularization,
+            ebm_terms=result.ebm_terms,
+            tboost_tables=result.tboost_tables,
             lorenz_curve_perfect=result.lorenz_curve_perfect,
             pdp_data=result.pdp_data,
             final_test_metrics=result.final_test_metrics,
-            selection_metrics=(
-                dict(result.evaluation.get("selection_metrics", {}))
-                if result.evaluation is not None
-                else {}
-            ),
+            selection_metrics=dict(result.evaluation.get("selection_metrics", {})),
             evaluation=result.evaluation,
             tuning=result.tuning,
             diagnostics_set=result.diagnostics_set,
         )
-        # Populate the feature-contract metadata so ``log_experiment``
-        # can attach an MLflow ``ModelSignature`` to the logged model.
-        feature_types = self._feature_dtypes_for_contract(result.features)
-        metadata = ModelCardMetadata(
+        model_path = Path(result.model_path)
+        evidence = {
+            "evaluation_plan": Path(result.evaluation["plan_path"]),
+            "evaluation_results": Path(result.evaluation["results_path"]),
+            "evaluation_report": Path(result.evaluation["report_path"]),
+        }
+        if result.tuning is not None:
+            evidence.update(
+                {
+                    "tuning_plan": Path(result.tuning["plan_path"]),
+                    "tuning_trials": Path(result.tuning["trials_path"]),
+                    "tuning_report": Path(result.tuning["report_path"]),
+                }
+            )
+        if final_params is not None:
+            logged_final_params = dict(final_params)
+        elif result.tuning is not None:
+            logged_final_params = dict(result.tuning["final_params"])
+        else:
+            logged_final_params = self.params
+        assert self.evaluation is not None  # result.evaluation implies the contract
+        candidate = build_candidate_run(
+            provenance=capture_provenance(
+                job_id=uuid.uuid4().hex,
+                node_label=self.name,
+                training_identity_sha256=self.training_identity_sha256,
+                project_root=_get_project_root(),
+            ),
             algorithm=self.algorithm,
-            task=self.task,
+            weight=self.weight or "",
+            evaluation_strategy=self.evaluation.strategy,
+            validation_method=self.evaluation.validation["method"],
+            evaluation_config=self.evaluation.to_plain_data(),
+            evaluation_plan_sha256=str(result.evaluation["plan_sha256"]),
+            final_params=logged_final_params,
+            final_test_metrics=result.final_test_metrics,
+            development_metrics=(result.metrics if result.diagnostics_set == "development" else {}),
+            diagnostics=diagnostics,
             development_rows=result.development_rows,
             final_test_rows=result.final_test_rows,
-            features=result.features,
-            evaluation_config=(
-                self.evaluation.to_plain_data() if self.evaluation is not None else {}
-            ),
             best_iteration=result.best_iteration,
-            feature_types=feature_types,
-            categorical_features=list(result.cat_features),
-            target_name=self.target,
-            target_type=self._target_dtype_for_contract(),
-            offset_name=self.offset or "",
-            offset_type=(self._contract_offset_dtype or "Float64") if self.offset else "",
+            fit_evidence=result.fit_evidence,
+            artifacts=CandidateArtifacts(
+                model=model_path,
+                feature_contract=model_path.parent / model_contract_filename(model_path.stem),
+                evidence=evidence,
+            ),
         )
-
-        final_params = (
-            dict(result.tuning["final_params"]) if result.tuning is not None else self.params
-        )
-        artifact_paths: dict[str, str] = {}
-        if result.evaluation is not None:
-            artifact_paths.update(
-                {
-                    "evaluation_plan": result.evaluation["plan_path"],
-                    "evaluation_results": result.evaluation["results_path"],
-                    "evaluation_report": result.evaluation["report_path"],
-                }
-            )
-        if result.tuning is not None:
-            artifact_paths.update(
-                {
-                    "tuning_plan": result.tuning["plan_path"],
-                    "tuning_trials": result.tuning["trials_path"],
-                    "tuning_report": result.tuning["report_path"],
-                }
-            )
         log_experiment(
             experiment_name=self.mlflow_experiment,
-            run_name=self.name,
-            metrics=result.final_test_metrics or result.metrics,
-            params={
-                "algorithm": self.algorithm,
-                "task": self.task,
-                "target": self.target,
-                "weight": self.weight or "",
-                "evaluation_strategy": (
-                    self.evaluation.strategy if self.evaluation is not None else ""
-                ),
-                "validation_method": (
-                    self.evaluation.validation["method"] if self.evaluation is not None else ""
-                ),
-                **{f"param_{k}": v for k, v in final_params.items()},
-            },
-            diagnostics=diagnostics,
-            metadata=metadata,
-            model_path=result.model_path or None,
-            model_name=self.model_name,
-            artifact_paths=artifact_paths,
+            candidate=candidate,
+            destination=self.mlflow_destination,
             check_cancelled=check_cancelled,
         )

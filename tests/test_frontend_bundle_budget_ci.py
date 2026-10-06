@@ -39,9 +39,8 @@ def _run_lines(job: dict[str, Any]) -> list[str]:
     ]
 
 
-def _uses_frontend_preflight(run_lines: list[str]) -> bool:
-    preflight = re.compile(r"\bbash\s+scripts/preflight\.sh\b.*\s--frontend-only\b")
-    return any(preflight.search(line) for line in run_lines)
+def _npm_scripts(lines: list[str]) -> list[str]:
+    return [script for line in lines for script in re.findall(r"\bnpm run ([\w:.-]+)", line)]
 
 
 def _runs_bundle_budget_after_build(run_lines: list[str]) -> bool:
@@ -77,13 +76,25 @@ def test_frontend_ci_runs_on_main_pushes_and_pull_requests() -> None:
     assert triggers["pull_request"]["branches"] == ["main"]
 
 
-def test_frontend_ci_runs_bundle_gate_through_preflight_or_direct_commands() -> None:
+def test_frontend_ci_checks_the_bundle_budget_after_building() -> None:
     workflow = _workflow()
-    frontend_job = workflow["jobs"]["frontend"]
 
-    run_lines = _run_lines(frontend_job)
+    assert _runs_bundle_budget_after_build(_run_lines(workflow["jobs"]["frontend-static"]))
 
-    assert _uses_frontend_preflight(run_lines) or _runs_bundle_budget_after_build(run_lines)
+
+def test_frontend_ci_jobs_run_exactly_the_frontend_preflight_scripts() -> None:
+    jobs = _workflow()["jobs"]
+    preflight = _read(REPO_ROOT / "scripts" / "preflight.sh").splitlines()
+    preflight_scripts = _npm_scripts(
+        [line for line in preflight if line.strip().startswith("if (cd frontend && npm run ")]
+    )
+
+    ci_scripts = _npm_scripts(
+        _run_lines(jobs["frontend-static"]) + _run_lines(jobs["frontend-tests"])
+    )
+
+    assert "test:coverage" in preflight_scripts
+    assert sorted(ci_scripts) == sorted(preflight_scripts)
 
 
 def test_preflight_builds_frontend_before_checking_bundle_budget() -> None:

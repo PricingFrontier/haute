@@ -1,8 +1,9 @@
-import { mkdirSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 
 import { expect, test, type Locator, type Page, type Request } from "@playwright/test"
 
+import { dispatchAppShortcut, dispatchNodeDoubleClick } from "./browserInteractions"
 import { e2eProjectRoot, resetE2eProject } from "./projectIsolation"
 
 const ratingDir = resolve(e2eProjectRoot, "rating")
@@ -152,8 +153,6 @@ function seedPipeline(): void {
     [
       '"""Small deterministic pipeline for Edge Join browser coverage."""',
       "",
-      "from pathlib import Path",
-      "",
       "import polars as pl",
       "",
       "import haute",
@@ -161,26 +160,13 @@ function seedPipeline(): void {
       'pipeline = haute.Pipeline("edge_join_e2e")',
       "",
       '@pipeline.data_input(config="config/data_input/raw_rows.json")',
-      "def raw_rows() -> pl.LazyFrame:",
-      "    from haute.graph_utils import resolve_data_input_from_config",
-      "    df = resolve_data_input_from_config(",
-      '        "config/data_input/raw_rows.json",',
-      "        base_dir=Path(__file__).parent,",
-      "    )",
-      "    return df",
+      "def raw_rows(): ...",
       "",
       '@pipeline.data_input(config="config/data_input/lookup_rows.json")',
-      "def lookup_rows() -> pl.LazyFrame:",
-      "    from haute.graph_utils import resolve_data_input_from_config",
-      "    df = resolve_data_input_from_config(",
-      '        "config/data_input/lookup_rows.json",',
-      "        base_dir=Path(__file__).parent,",
-      "    )",
-      "    return df",
+      "def lookup_rows(): ...",
       "",
       '@pipeline.api_input(config="config/quote_input/quotes.json")',
-      "def quotes() -> pl.LazyFrame:",
-      "    return pl.LazyFrame()",
+      "def quotes(): ...",
       "",
       "@pipeline.polars",
       "def enriched(raw_rows: pl.LazyFrame) -> pl.LazyFrame:",
@@ -304,12 +290,165 @@ function expectJoinTopology(graph: NormalizedGraph, join: GraphNode, base: strin
   expect(graph.edges.find((edge) => edge.source === join.id && edge.target === downstream), "split downstream edge").toBeDefined()
 }
 
-test.describe.configure({ mode: "serial" })
+const columnMetadata = {
+  column_renames: { _id: "identifier", segment: "region" },
+  categorical_levels: { region: ["North", "South"] },
+}
+
+function seedColumnSettingsPipeline(nodeType: "polars" | "edgeJoin" | "dataInput"): void {
+  mkdirSync(dataInputDir, { recursive: true })
+  mkdirSync(resolve(ratingDir, "data"), { recursive: true })
+  writeFileSync(resolve(ratingDir, "data", "columns.csv"), "_id,premium,segment,discard\n1,12.5,North,99\n2,25.0,South,88\n", "utf8")
+  writeFileSync(resolve(ratingDir, "data", "keys.csv"), "_id\n1\n2\n", "utf8")
+  const inputConfig = {
+    inputType: "file", format: "csv", mode: "read", path: "data/columns.csv",
+    arguments: { schema: { _id: "Int64", premium: "Float64", segment: "String", discard: "Int64" } },
+    contract: "opaque",
+  }
+  for (const name of ["raw_rows", "subject"]) {
+    writeFileSync(resolve(dataInputDir, `${name}.json`), JSON.stringify({
+      ...inputConfig, ...(name === "subject" ? columnMetadata : {}),
+    }), "utf8")
+  }
+  writeFileSync(resolve(dataInputDir, "lookup_rows.json"), JSON.stringify({
+    ...inputConfig, path: "data/keys.csv", arguments: { schema: { _id: "Int64" } },
+  }), "utf8")
+  const inputFunction = (name: string) => [
+    `@pipeline.data_input(config="config/data_input/${name}.json")`,
+    `def ${name}(): ...`, "",
+  ]
+  // Renames and category declarations are authored configuration without a
+  // dedicated Columns-tab editor. Seed them, then verify real UI selection
+  // edits preserve them across saves and reloads.
+  const metadataArgs = `column_renames=${JSON.stringify(columnMetadata.column_renames)}, categorical_levels=${JSON.stringify(columnMetadata.categorical_levels)}, contract="opaque"`
+  const subjectFunction = nodeType === "dataInput" ? inputFunction("subject") : nodeType === "edgeJoin" ? [
+    `@pipeline.edge_join(how="left", on=["_id"], ${metadataArgs})`,
+    "def subject(raw_rows, lookup_rows): ...", "",
+  ] : [
+    `@pipeline.polars(${metadataArgs})`,
+    "def subject(raw_rows: pl.LazyFrame) -> pl.LazyFrame:",
+    "    return raw_rows", "",
+  ]
+  writeFileSync(pipelinePath, [
+    '"""Column persistence browser fixture."""', "import polars as pl", "import haute",
+    'pipeline = haute.Pipeline("columns_e2e")', "",
+    ...inputFunction("raw_rows"), ...inputFunction("lookup_rows"), ...subjectFunction,
+    ...(nodeType === "dataInput" ? [] : nodeType === "edgeJoin" ? [
+      'pipeline.connect("raw_rows", "subject", target_port="base")',
+      'pipeline.connect("lookup_rows", "subject", target_port="join")',
+    ] : ['pipeline.connect("raw_rows", "subject")']), "",
+  ].join("\n"), "utf8")
+}
+
+test.describe("Authored column settings survive the complete browser persistence path", () => {
+  test.describe.configure({ mode: "default" })
+  for (const nodeType of ["polars", "edgeJoin", "dataInput"] as const) {
+    test(`${nodeType}: deselect, navigate, undo/redo, save, reload and select all`, async ({ page }) => {
+      test.slow()
+      page.setDefaultTimeout(15_000)
+      resetE2eProject()
+      seedColumnSettingsPipeline(nodeType)
+      await captureInitialGraph(page)
+      const openSubject = async () => {
+        await page.getByTestId("rf__node-subject").click()
+        await page.getByRole("button", { name: /^columns$/i }).click()
+        // Undo clears derived schema metadata. Recompute it through the UI
+        // before asserting the restored authored selection.
+        await page.getByRole("button", { name: "Refresh", exact: true }).click()
+        await expect(page.getByTestId("node-panel-editor").getByRole("checkbox")).toHaveCount(4)
+      }
+      const discardCheckbox = () => page.getByTestId("node-panel-editor").getByRole("row").filter({ hasText: "discard" }).getByRole("checkbox")
+      const assertPreview = async (includesDiscard: boolean) => {
+        // Configuration edits mark the preview stale; the user explicitly
+        // refreshes before inspecting the newly computed result.
+        await page.getByRole("button", { name: "Refresh", exact: true }).click()
+        const table = page.getByTestId("data-preview-table")
+        await expect(table.locator("thead th > div:first-child")).toHaveText(
+          includesDiscard ? ["identifier", "premium", "region", "discard"] : ["identifier", "premium", "region"],
+        )
+        // Row order is not part of what a preview promises — a preview may read
+        // a join's rows from a shared snapshot — so find the row by identifier.
+        const identifierOne = table.locator("tbody tr").filter({
+          has: page.locator("td:nth-child(2)", { hasText: /^1$/ }),
+        })
+        await expect(identifierOne.getByRole("cell")).toHaveText(
+          includesDiscard ? [/^\d+$/, "1", "12.5", "North", "99"] : [/^\d+$/, "1", "12.5", "North"],
+        )
+      }
+      await openSubject()
+      await assertPreview(true)
+      await discardCheckbox().uncheck()
+      await assertPreview(false)
+      // Undo and redo the same authored setting through the real app shortcuts.
+      await page.getByTestId("rf__node-subject").click()
+      await dispatchAppShortcut(page, "z")
+      await openSubject()
+      await expect(discardCheckbox()).toBeChecked()
+      await assertPreview(true)
+      await dispatchAppShortcut(page, "y")
+      await openSubject()
+      await expect(discardCheckbox()).not.toBeChecked()
+      await assertPreview(false)
+      await page.getByTestId("rf__node-lookup_rows").click()
+      await openSubject()
+      await expect(discardCheckbox()).not.toBeChecked()
+
+      await saveAndCapture(page)
+      const diskGraph = await reloadAndCaptureGraph(page)
+      expect(diskGraph.nodes.find((node) => node.id === "subject")?.data.config).toMatchObject({
+        ...columnMetadata, selected_columns: ["_id", "premium", "segment"],
+      })
+      await openSubject()
+      await expect(discardCheckbox()).not.toBeChecked()
+      await assertPreview(false)
+      // Verify the actual artifact too: the server cannot satisfy this with
+      // an in-memory response that never persisted the setting.
+      const artifact = nodeType === "dataInput"
+        ? readFileSync(resolve(dataInputDir, "subject.json"), "utf8")
+        : readFileSync(pipelinePath, "utf8")
+      expect(artifact).toContain("selected_columns")
+      expect(artifact).toContain("column_renames")
+
+      await page.getByTestId("node-panel-editor").getByRole("button", { name: "All", exact: true }).click()
+      await assertPreview(true)
+      await saveAndCapture(page)
+      const clearedGraph = await reloadAndCaptureGraph(page)
+      const cleared = clearedGraph.nodes.find((node) => node.id === "subject")?.data.config
+      expect(cleared).toMatchObject(columnMetadata)
+      expect(cleared?.selected_columns ?? []).toEqual([])
+      await openSubject()
+      await expect(discardCheckbox()).toBeChecked()
+      await assertPreview(true)
+    })
+  }
+})
 
 test.describe("Edge Join insertion workflow", () => {
+  test.describe.configure({ mode: "serial" })
   test.beforeEach(() => {
     resetE2eProject()
     seedPipeline()
+  })
+
+  test("drills into an unsaved submodel containing an API Input", async ({ page }) => {
+    await captureInitialGraph(page)
+    const apiInput = page.getByRole("button", { name: /Quote Input node: quotes/i })
+    await expect(apiInput).toBeVisible()
+    await apiInput.click()
+    await dispatchAppShortcut(page, "a")
+    await dispatchAppShortcut(page, "g")
+
+    await expect(page.getByRole("dialog", { name: "Create submodel" })).toBeVisible()
+    await page.getByPlaceholder("e.g. model_scoring").fill("api_input_group")
+    await page.getByRole("button", { name: "Create", exact: true }).click()
+    await expect(page.getByRole("button", { name: /Submodel node: api_input_group/i })).toBeVisible()
+
+    await dispatchNodeDoubleClick(page, "api_input_group")
+
+    await expect(page.getByRole("button", { name: "api_input_group", exact: true })).toBeVisible()
+    await expect(page.getByRole("button", { name: /Quote Input node: quotes/i })).toBeVisible()
+    await expect(page.getByTestId("rf__node-quotes").locator('[data-handleid="api_lookup"]')).toBeVisible()
+    await expect(page.getByText("Something went wrong", { exact: true })).toHaveCount(0)
   })
 
   test("inserts lookup and named API joins on rendered edges, persists them, and traces both", async ({ page }) => {
@@ -388,15 +527,27 @@ test.describe("Edge Join insertion workflow", () => {
     const response = await traceResponse
     expect(response.status(), "trace request succeeds").toBe(200)
     const tracePayload = await response.json() as {
-      trace?: { steps?: Array<{ node_id?: string }> }
+      trace?: {
+        steps?: Array<{ node_id?: string }>
+        omissions?: Array<{ node_id?: string; reason?: string; diagnostic_index?: number }>
+        correlation_diagnostics?: Array<{ seed_node_ids?: string[] }>
+      }
     }
     const tracedNodeIds = tracePayload.trace?.steps?.map((step) => step.node_id) ?? []
-    expect(tracedNodeIds, "trace retains both Edge Join ancestors").toEqual(
+    // The previews above captured the joins, so the trace may read one from
+    // its snapshot. It traces above that point when a recompute reproduces the
+    // snapshot's row, and otherwise reports the join above it as not traced
+    // there. Either way both joins stay in the trace.
+    const diagnostics = tracePayload.trace?.correlation_diagnostics ?? []
+    const notTracedAboveSnapshot = (tracePayload.trace?.omissions ?? [])
+      .filter((omission) => (diagnostics[omission.diagnostic_index ?? -1]?.seed_node_ids ?? []).length > 0)
+      .map((omission) => omission.node_id)
+    expect([...tracedNodeIds, ...notTracedAboveSnapshot], "trace retains both Edge Join ancestors").toEqual(
       expect.arrayContaining([finalFirstJoin.id, finalSecondJoin.id]),
     )
     await expect(page.getByRole("complementary", { name: /node properties/i })).toContainText(/Trace:/)
     await expect(
-      page.getByTestId("rf__node-enriched").getByLabel(/Polars node:.*trace active/i),
+      page.getByTestId("rf__node-enriched").getByLabel(/Transform node:.*trace active/i),
     ).toBeVisible()
 
     for (const join of [finalFirstJoin, finalSecondJoin]) {

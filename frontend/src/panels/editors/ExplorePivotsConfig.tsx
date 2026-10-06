@@ -208,12 +208,12 @@ function PivotEditor({
                 className="mt-1 block w-full min-w-0 rounded px-1 py-0.5 text-[10px]"
                 style={INPUT_STYLE}
               >
-                <option value="">Default — Row labels</option>
+                <option value="">Default - Row labels</option>
                 <optgroup label="Rows">
-                  {pivot.rows.map((row) => <option key={row.id} value={row.id}>Row — {row.field}</option>)}
+                  {pivot.rows.map((row) => <option key={row.id} value={row.id}>Row - {row.field}</option>)}
                 </optgroup>
                 <optgroup label="Values">
-                  {pivot.values.map((value) => <option key={value.id} value={value.id}>Value — {valueDisplayLabel(value)}</option>)}
+                  {pivot.values.map((value) => <option key={value.id} value={value.id}>Value - {valueDisplayLabel(value)}</option>)}
                 </optgroup>
               </select>
             </label>
@@ -366,18 +366,18 @@ function PivotEditor({
                       className="mt-1 block rounded px-1 py-0.5 text-[10px]"
                       style={INPUT_STYLE}
                     >
-                      <option value="">None — entire Value</option>
+                      <option value="">None - entire Value</option>
                       {pivot.rows.length > 0 && (
                         <optgroup label="Rows">
                           {pivot.rows.map((row) => (
-                            <option key={row.id} value={row.id}>Row — {row.field}</option>
+                            <option key={row.id} value={row.id}>Row - {row.field}</option>
                           ))}
                         </optgroup>
                       )}
                       {pivot.columns.length > 0 && (
                         <optgroup label="Columns">
                           {pivot.columns.map((column) => (
-                            <option key={column.id} value={column.id}>Column — {column.field}</option>
+                            <option key={column.id} value={column.id}>Column - {column.field}</option>
                           ))}
                         </optgroup>
                       )}

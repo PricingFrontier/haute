@@ -108,6 +108,7 @@ test.describe("data input/output nodes", () => {
           name: document.pipeline_name ?? "main",
           description: document.pipeline_description ?? "",
           source_file: document.source_file,
+          base_revision: document.source_revision,
           preamble: document.preamble ?? "",
           preserved_blocks: document.preserved_blocks,
           sources: document.sources,
@@ -156,7 +157,6 @@ test.describe("data input/output nodes", () => {
     expect(optionLabels.some((t) => /Text lines \(unstable\)/.test(t))).toBe(true)
     await expect(formatSelect.locator('option[value="delta"]')).toHaveCount(0)
     await expect(nodePanel.getByLabel("Mode")).toHaveCount(0)
-    await expect(nodePanel.getByRole("button", { name: "Cache as Parquet" })).toHaveCount(0)
 
     // The saved path round-tripped through sidecar + codegen + parse.
     const pathPicker = nodePanel.getByTestId("path-picker")
@@ -165,7 +165,6 @@ test.describe("data input/output nodes", () => {
 
     await formatSelect.selectOption("csv")
     await expect(nodePanel.getByLabel("Mode")).toHaveCount(0)
-    await expect(nodePanel.getByRole("button", { name: "Cache as Parquet" })).toBeVisible()
 
     await providerGroup.getByRole("radio", { name: "Lakehouse" }).click()
     await expect(formatSelect.locator('option[value="delta"]')).toContainText("Delta Lake")

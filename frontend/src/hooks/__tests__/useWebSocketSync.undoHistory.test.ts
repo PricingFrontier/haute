@@ -42,6 +42,7 @@ vi.mock("../../stores/useUIStore.ts", () => {
     setShortcutsOpen: vi.fn(),
     submodelDialog: null,
     setSubmodelDialog: vi.fn(),
+    setChangeFocus: vi.fn(),
     renameDialog: null,
     setRenameDialog: vi.fn(),
   }
@@ -150,7 +151,7 @@ const baseNode: Node = {
   data: { label: "Disk", nodeType: "polars", config: {} },
 }
 
-describe("useWebSocketSync — WS sync must not corrupt undo history (#8)", () => {
+describe("useWebSocketSync - WS sync must not corrupt undo history (#8)", () => {
   let originalWebSocket: typeof globalThis.WebSocket
 
   beforeEach(() => {
@@ -262,5 +263,41 @@ describe("useWebSocketSync — WS sync must not corrupt undo history (#8)", () =
     expect(graphStore.loadGraphSnapshot).toHaveBeenCalledTimes(5)
     expect(graphStore.undoStack).toEqual([])
     expect(graphStore.redoStack).toEqual([])
+  })
+
+  it("retains an exact dirty column configuration and its history when a watcher update arrives", async () => {
+    const params = makeHookParams()
+    const graphStore = useGraphStore.getState()
+    const local = {
+      ...baseNode,
+      id: "local-columns",
+      data: {
+        label: "Local columns", nodeType: "polars",
+        config: { selected_columns: ["city"], column_renames: { city: "Municipality" }, categorical_levels: { city: ["London", "Paris"] } },
+      },
+    }
+    graphStore.dirty = true
+    graphStore.nodes = [local]
+    graphStore.undoStack = [{ nodes: [baseNode], edges: [], preamble: "", submodels: {} }]
+    graphStore.redoStack = [{ nodes: [], edges: [], preamble: "", submodels: {} }]
+    const originalNodes = structuredClone(graphStore.nodes)
+    const originalUndo = structuredClone(graphStore.undoStack)
+    const originalRedo = structuredClone(graphStore.redoStack)
+    renderHook(() => useWebSocketSync(params))
+    act(() => { latestWS().onopen?.(new Event("open")) })
+    const incoming = makePipelineEditorDocument({
+      source_file: SOURCE_FILE,
+      source_revision: "revision-external",
+      nodes: [{ ...baseNode, id: "disk-columns", data: { label: "Disk", nodeType: "polars", config: { selected_columns: ["disk"] } } }],
+    })
+    await act(async () => {
+      latestWS().onmessage?.(new MessageEvent("message", { data: JSON.stringify(pipelineDocumentFrame(incoming, "external-columns")) }))
+    })
+    expect(graphStore.loadGraphSnapshot).not.toHaveBeenCalled()
+    expect(graphStore.nodes).toEqual(originalNodes)
+    expect(graphStore.undoStack).toEqual(originalUndo)
+    expect(graphStore.redoStack).toEqual(originalRedo)
+    expect(useDocumentStatusStore.getState().graphSynchronized).toBe(false)
+    expect(useUIStore.getState().setSyncBanner).toHaveBeenCalledWith(expect.stringContaining("unsaved changes"))
   })
 })

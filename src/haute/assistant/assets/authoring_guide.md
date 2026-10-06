@@ -16,52 +16,40 @@ Most pricing pipelines have a source, a sequence of transformations, and one
 terminal output:
 
 ```python
-from pathlib import Path as _HautePath
-
-import polars as pl
 import haute
+import polars as pl
 
 pipeline = haute.Pipeline("pricing", description="Short analyst-facing description")
 
-_HAUTE_CONFIG_BASE = _HautePath(__file__).resolve().parent
-
 
 @pipeline.data_input(config="config/data_input/quotes.json")
-def quotes() -> pl.LazyFrame:
-    from haute._project import get_project_root
-    from haute.graph_utils import resolve_data_input_from_config
-
-    project_root = get_project_root(_HAUTE_CONFIG_BASE)
-    df = resolve_data_input_from_config(
-        "config/data_input/quotes.json",
-        base_dir=_HAUTE_CONFIG_BASE,
-        project_root=project_root,
-    )
-    return df
+def quotes(): ...
 
 
 @pipeline.polars
 def enriched(quotes: pl.LazyFrame) -> pl.LazyFrame:
-    return quotes.with_columns(
-        vehicle_age=pl.col("vehicle_year").map_elements(
-            lambda year: 2026 - year,
-            return_dtype=pl.Int64,
-        )
-    )
+    return quotes.with_columns(vehicle_age=2026 - pl.col("vehicle_year"))
 
 
 @pipeline.output(config="config/quote_response/priced.json")
-def priced(enriched: pl.LazyFrame) -> pl.LazyFrame:
-    return enriched
+def priced(enriched): ...
 ```
 
-This is also the shape produced by `haute init`: its starter pipeline reads
-`config/data_input/raw_rows.json`, enriches the frame with a `polars` stage,
-and writes the terminal response through
-`config/quote_response/priced.json`.  Keep those project-relative sidecar
-references when authoring a real project.  The packaged examples use only
-self-contained decorators where possible so the parser guard can load them
-without inventing project sidecar files.
+Every node type except `polars` is configured: its decorator names its settings
+and performs the node's work (reading the source, scoring, rating, joining,
+assembling the response) when the file runs.  Such a node is a one-line
+declaration whose parameters name its inputs and whose body is `...` (or its
+docstring).  New logic on a `polars` node, and post-processing on a Data Input,
+Load File, Rating Step, Model Scoring, Expander or Explore node, is authored as
+steps (see "Steps" below); the saved file holds the code the steps render.
+Never call Haute's loader or scoring helpers from a function body, and never
+import from a `haute._` module.
+
+`haute init` scaffolds a blank pipeline: `rating/main.py` declares the
+`haute.Pipeline` and no nodes, and the analyst adds nodes in the editor.
+Configured nodes keep their settings in project-relative `config/...` JSON
+sidecars, and the packaged examples do the same, so follow their sidecar
+references when authoring a real project.
 
 Use `api_input` for the live request source, `data_input` for configured file,
 database, lakehouse, Databricks, or inline tabular data, and `polars` for
@@ -76,6 +64,10 @@ one of those operations inside an unlabelled transform.
   `quotes`, `customer_features`, `rated_quotes`.
 - A function parameter with the exact upstream node name gives a clear implicit
   edge for a simple linear chain.
+- An input is named after its incoming edge: the upstream node's name, except
+  that an edge from a Quote Input frame, which `add_edge`'s `source_handle`
+  selects, is named by that frame, and an edge from a submodel output by its
+  port. Steps, code and config fields read inputs by these names.
 - Use `pipeline.connect("source", "target")` when a graph branches, has more
   than one input, or needs named ports.  Keep explicit connections together at
   the bottom of the module so the topology is easy to audit.
@@ -97,24 +89,105 @@ path.  Preserve that convention when adding or changing a node.  Do not put
 secrets, credentials, or machine-specific absolute paths in pipeline source.
 
 Prefer lazy Polars expressions (`pl.col`, `with_columns`, `select`, `join`, and
-`drop`) over collecting a frame in a node.  A polars node's inputs are its
-named parameters (one per incoming edge) and `df` is only its output variable —
-`df` is never pre-bound to an input, so start from the input you mean by name
-(`df = quotes.filter(...)`) and never read `df` before assigning it.  Polars
-frames are immutable: explicit node code must assign the transformed result to
-`df` or return the transformed frame.  A bare `quotes.filter(...)` expression
-is discarded by the generated wrapper and is therefore invalid, and a polars
-node with no code at all raises if the pipeline is run — there is no implicit
-passthrough.
-Make joins explicit about their keys and join type, and name derived columns so
-downstream steps can refer to them without guessing.
+`drop`) and vectorised arithmetic (`2026 - pl.col("vehicle_year")`) over
+collecting a frame or calling Python per row.  Polars frames are immutable: a
+bare `df.filter(...)` expression is discarded and is refused, so assign the
+result to `df`.  A `polars` node with no steps has not chosen its input and is
+refused; there is no implicit passthrough.  Make joins explicit about their keys
+and join type, and name derived columns so downstream steps can refer to them
+without guessing.
+
+A modelling node's `algorithm` (`catboost`, `xgboost`, `lightgbm`, `ebm`, or
+`glm`) is fixed when the node is created: to try another family, add a new
+node rather than editing `algorithm`.  For the tree and EBM families, put the
+loss in `loss_function` and the family's own keys in `params` (`iterations`,
+`num_boost_round`, `num_iterations`, or EBM's required `max_rounds`); never set
+objectives, threads, seeds, or aliases there.  An EBM never stops early, so give
+it an explicit `max_rounds`.  A GLM is different: it has no `loss_function` or
+`params`, and is configured by top-level `family`, `link`, `terms` and
+`interactions` instead.
+
+## Steps
+
+A `polars` node and every node that takes post-processing (Data Input, Load
+File, Rating Step, Model Scoring, Expander, Explore) holds an ordered `steps`
+list in its config, and the editor's step builder shows each step as a card.
+Write new logic as steps with one free-code card:
+
+- On a `polars` node, start with a `source` step whose `input` names the
+  incoming edge that becomes `df`, then a `free_code` step:
+  `[{"id": "start", "kind": "source", "input": "quotes"}, {"id": "logic", "kind": "free_code", "code": "..."}]`.
+- On every other stepped node `df` is already bound, so the list is one
+  `free_code` step: `[{"id": "logic", "kind": "free_code", "code": "..."}]`.
+  On a Load File node `df` is the first input; elsewhere it is the frame the
+  node produced.
+
+Every step needs a non-empty id, unique in its list.  The code transforms `df`
+and assigns the result to `df` (a `return` is refused).  It reads other inputs
+by their edge names only on a `polars` or Load File node; every other stepped
+node sees only `df`.  On a Load File node the loaded object is `obj`.  Start the
+code with a one-line `# intent` comment: the step builder shows it as the
+card's title.  A node that needs no post-processing keeps `steps: []`.
+
+Keep what the analyst built.  Change a node that already holds steps with
+`edit_steps`, which names steps by the ids `get_pipeline` and the graph brief
+list: `{"insert_after": "<step id>", "step": {...}}` (`null` inserts at the
+start), `{"replace": "<step id>", "step": {...}}` or `{"remove": "<step id>"}`,
+applied in order.  A step sent without an id gets one.  Every step you do not
+name keeps its id, its place and its content, so a free-code step whose code
+the project's policy withholds is kept, or replaced or removed whole, but never
+edited in place.  A node in code mode (a `code` config without `steps`) is
+edited through its `code`.  Never switch a node between steps and code; that is
+the analyst's choice in the editor.  To edit a structured step, read
+`step_grammar`, which comes with this guide: each step kind with its fields and
+the closed vocabularies those fields take.  A `pivot` step reshapes a frame; an
+analyst's pivot table on an Explore node is a `pivots` entry in its config,
+never a step.
+
+A `polars` node fed by `proposer_claims` and `additional_drivers_claims` that
+totals both sources' August claims per policy:
+
+```json
+[
+  {"id": "start", "kind": "source", "input": "proposer_claims"},
+  {"id": "logic", "kind": "free_code", "code": "# Total August claims per policy across both claim sources\ndf = pl.concat([df, additional_drivers_claims]).filter(pl.col(\"claim_month\") == \"2026-08\").group_by(\"policy_id\").agg(august_claims=pl.col(\"amount\").sum())"}
+]
+```
+
+A Rating Step capping the premium it produced:
+
+```json
+[
+  {"id": "logic", "kind": "free_code", "code": "# Cap the premium at 150\ndf = df.with_columns(premium=pl.col(\"premium\").clip(0, 150))"}
+]
+```
+
+A Load File node whose file holds regional loadings, with `quotes` as its first
+input and `regions` as its second:
+
+```json
+[
+  {"id": "logic", "kind": "free_code", "code": "# Add each quote's zone and regional loading\ndf = df.join(regions, on=\"region\", how=\"left\").with_columns(loading=pl.col(\"region\").replace_strict(obj, default=1.0))"}
+]
+```
+
+Keeping only the policies with more than 100 of August claims on that `polars`
+node, once it is saved, without resending its other steps:
+
+```json
+{"op": "edit_steps", "node": "august_totals", "edits": [
+  {"insert_after": "logic", "step": {"kind": "free_code", "code": "# Keep policies with over 100 of August claims\ndf = df.filter(pl.col(\"august_claims\") > 100)"}}
+]}
+```
 
 ## A safe editing pattern
 
 1. Read the saved graph before editing; node ids are the function names.
 2. Retrieve the complete capability descriptor for every node type that will
    be added or configured, and follow its ports, wiring rules, closed config
-   schema, enums, and anti-patterns.
+   schema, enums, and anti-patterns. Its card shows a minimal and a realistic
+   configuration with real values and the meaning of each field; write the
+   node's configuration in the same shape.
 3. Make the smallest ordered graph edit that expresses the user's intent.
 4. Connect new nodes immediately and check that every input has the intended
    upstream frame.  Do not add disconnected decorative nodes.

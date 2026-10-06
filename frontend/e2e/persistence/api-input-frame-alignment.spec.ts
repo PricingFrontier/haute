@@ -1,5 +1,5 @@
 /**
- * Real-browser acceptance evidence for API-input frame identity.
+ * Real-browser acceptance evidence for port-row geometry and API-input frame identity.
  *
  * JSDOM can prove that a row contains its Handle, but only a browser can
  * prove their rendered centres coincide.  These tests therefore measure the
@@ -225,6 +225,7 @@ async function installTraceRoute(page: Page): Promise<void> {
               output_values: { quote_id: TRACE_VALUE },
               topological_rank: 0,
               column_relevant: true,
+              contributed_columns: [], derivations: [],
             },
           ],
         },
@@ -257,6 +258,8 @@ function sourceHandles(envelope: GraphEnvelope): (string | null | undefined)[] {
 function expectGeneratedInputIdentity(
   labels: readonly string[],
   absentLabels: readonly string[] = [],
+  parameterLabels: readonly string[] = labels,
+  inputMapping: Readonly<Record<string, string>> = {},
 ): void {
   const source = readFileSync(pipelinePath, "utf8")
   const signature = source.match(/def\s+enriched\s*\(([\s\S]*?)\)\s*->/)
@@ -265,19 +268,29 @@ function expectGeneratedInputIdentity(
     throw new Error("Generated main.py has no enriched function signature")
   }
 
-  const parameterNames = signature[1]
+  // A coded consumer keeps the parameter names its code was authored with
+  // (ENG-T08): a renamed frame is recorded on the decorator's inputMapping as
+  // logical -> current edge name, and the connect lines carry the new name.
+  // The signature may be broken over lines, as ruff lays out a long one.
+  const parameters = signature[1]
     .split(",")
-    .map((parameter) => parameter.trim().split(":", 1)[0])
+    .map((parameter) => parameter.trim())
+    .filter((parameter) => parameter.length > 0)
+  const parameterNames = parameters.map((parameter) => parameter.split(":", 1)[0])
   expect(
     parameterNames,
-    "generated arguments preserve edge-derived names one-to-one and in edge order",
-  ).toEqual(["raw_rows", ...labels])
-  const expectedDefinition = `def enriched(${["raw_rows", ...labels]
-    .map((name) => `${name}: pl.LazyFrame`)
-    .join(", ")}) -> pl.LazyFrame:`
-  expect(source, "generated main.py exposes the exact executable signature").toContain(
-    expectedDefinition,
+    "generated arguments keep the authored names one-to-one and in edge order",
+  ).toEqual(["raw_rows", ...parameterLabels])
+  expect(parameters, "generated main.py exposes the exact executable signature").toEqual(
+    ["raw_rows", ...parameterLabels].map((name) => `${name}: pl.LazyFrame`),
   )
+  expect(source).toMatch(/def\s+enriched\s*\([\s\S]*?\)\s*-> pl\.LazyFrame:/)
+  for (const [logical, current] of Object.entries(inputMapping)) {
+    const binding = new RegExp(
+      String.raw`inputMapping=\{[^}]*["']${logical}["']:\s*["']${current}["']`,
+    )
+    expect(source, `inputMapping binds ${logical} to ${current}`).toMatch(binding)
+  }
 
   for (const label of labels) {
     expect(source, `generated connect persists source_port ${label}`).toMatch(
@@ -385,6 +398,7 @@ async function extendStarterGraphWithFrameEdges(
           name: document.pipeline_name ?? "main",
           description: document.pipeline_description ?? "",
           source_file: document.source_file,
+          base_revision: document.source_revision,
           preamble: document.preamble ?? "",
           preserved_blocks: document.preserved_blocks,
           sources: document.sources,
@@ -518,7 +532,7 @@ async function expectEdgesAttachedToFrameHandles(
 
 test.describe.configure({ mode: "serial" })
 
-test.describe("apiInput frame-row alignment and identity", () => {
+test.describe("port-row alignment and API-input identity", () => {
   test.beforeEach(() => {
     resetE2eProject()
   })
@@ -535,6 +549,58 @@ test.describe("apiInput frame-row alignment and identity", () => {
       await expectFrameRowsAligned(page, labels)
     })
   }
+
+  test("an ordinary node shares one aligned input/output slot", async ({
+    page,
+  }) => {
+    seedFrames(["frame_1"])
+    await openCanvas(page)
+
+    const node = page.getByTestId(`node-${DOWNSTREAM_NODE_ID}`)
+    const inputLabel = node.getByText("inputs", { exact: true })
+    const name = node.getByText(DOWNSTREAM_NODE_ID, { exact: true })
+    const inputHandle = node.getByTestId(`input-connector[0]:${DOWNSTREAM_NODE_ID}`)
+    const handle = node.getByTestId(`output-connector[0]:${DOWNSTREAM_NODE_ID}`)
+    const [inputLabelBox, inputHandleBox, nameBox, handleBox] = await Promise.all([
+      inputLabel.boundingBox(),
+      inputHandle.boundingBox(),
+      name.boundingBox(),
+      handle.boundingBox(),
+    ])
+
+    expect(inputLabelBox, "ordinary input label has measurable geometry").not.toBeNull()
+    expect(inputHandleBox, "ordinary target handle has measurable geometry").not.toBeNull()
+    expect(nameBox, "ordinary output name has measurable geometry").not.toBeNull()
+    expect(handleBox, "ordinary source handle has measurable geometry").not.toBeNull()
+    if (
+      inputLabelBox === null
+      || inputHandleBox === null
+      || nameBox === null
+      || handleBox === null
+    ) {
+      throw new Error("Could not measure ordinary input/output row geometry")
+    }
+
+    expect(
+      Math.abs(
+        inputLabelBox.y + inputLabelBox.height / 2 - (nameBox.y + nameBox.height / 2),
+      ),
+      "ordinary input and output labels share a vertical centre",
+    ).toBeLessThanOrEqual(MAX_CENTRE_DELTA_PX)
+    expect(
+      Math.abs(
+        inputLabelBox.y + inputLabelBox.height / 2
+        - (inputHandleBox.y + inputHandleBox.height / 2),
+      ),
+      "ordinary input label and handle vertical centres",
+    ).toBeLessThanOrEqual(MAX_CENTRE_DELTA_PX)
+    expect(
+      Math.abs(
+        nameBox.y + nameBox.height / 2 - (handleBox.y + handleBox.height / 2),
+      ),
+      "ordinary output name and handle vertical centres",
+    ).toBeLessThanOrEqual(MAX_CENTRE_DELTA_PX)
+  })
 
   test("warning-complete dot stays clear of the frame handles", async ({
     page,
@@ -660,7 +726,9 @@ test.describe("apiInput frame-row alignment and identity", () => {
     expect(saveResponse.status(), "pipeline save succeeds").toBe(200)
     const savedGraph = saveRequest.postDataJSON() as GraphEnvelope
     expect(sourceHandles(savedGraph)).toEqual([...renamedLabels].sort())
-    expectGeneratedInputIdentity(renamedLabels, [originalLabels[0]])
+    expectGeneratedInputIdentity(renamedLabels, [originalLabels[0]], originalLabels, {
+      [originalLabels[0]]: renamedLabels[0],
+    })
 
     const graphAfterRenameReload = await reloadAndCaptureGraph(page)
     expect(sourceHandles(graphAfterRenameReload)).toEqual([...renamedLabels].sort())

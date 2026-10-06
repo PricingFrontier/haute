@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import keyword
 import re
 from collections import Counter, deque
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -16,35 +17,31 @@ from haute._ast_helpers import (
     _chained_receiver_calls,
     _connect_call_edge,
     _extract_function_bodies,
+    _extract_global_constants_declaration,
     _extract_pipeline_meta,
     _extract_preamble,
     _extract_preserved_blocks,
     _get_decorator_kwargs,
-    _get_docstring,
     _is_pipeline_authored_decorator,
     _is_submodel_authored_decorator,
+    unkept_module_statements,
 )
 from haute._cache import canonical_json
-from haute._config_builder import _resolve_node_config
 from haute._editor_identities import (
     recoverable_api_input_source_handles,
     resolve_editor_identity,
 )
+from haute._executable_names import RESERVED_NAMES, ROOT_MODULE, NameViolation
 from haute._graph_builders import (
     PipelineNodeSkeleton,
     _edge_param_names_for_node,
     _extract_decorated_node_skeletons,
     _resolve_node_skeleton,
 )
-from haute._graph_utils import executable_input_name
+from haute._graph_utils import edge_input_name, executable_input_name
 from haute._hashing import content_hash_bytes
 from haute._io import read_user_bytes_and_text, read_user_text
 from haute._logging import get_logger
-from haute._parser_regex import (
-    RecoveredFunctionFragment,
-    _parse_decorator_kwargs_regex,
-    recover_pipeline_fragments,
-)
 from haute._parser_submodels import (
     SubmodelRegistration,
     _extract_definition_contract,
@@ -58,15 +55,30 @@ from haute._sidecar import (
     read_sidecar_state,
 )
 from haute._submodel_paths import resolve_submodel_reference
-from haute._types import NODE_TYPE_TO_DECORATOR, GraphNode, NodeType, PipelineGraph
+from haute._submodel_recovery import submodel_registration_evidence
+from haute._types import (
+    GLOBAL_CONSTANTS_FILE,
+    NODE_TYPE_TO_DECORATOR,
+    GlobalConstant,
+    GraphNode,
+    NodeType,
+    PipelineGraph,
+)
 from haute.errors import ConfigError, HauteError, ParseError
-from haute.parser import _infer_parse_base_dir, parse_pipeline_source
+from haute.parser import (
+    _infer_parse_base_dir,
+    load_declared_global_constants,
+    parse_pipeline_source_with_name_violations,
+)
 from haute.schemas import (
     PipelineDiagnosticScope,
     PipelineDocumentCapabilities,
     PipelineEditorDocument,
     PipelineElementAvailability,
     PipelineLoadStatus,
+    PipelineNameViolation,
+    PipelineNameViolationParty,
+    PipelineNodeCompleteness,
     PipelineRecoveryDiagnostic,
     RecoveryGraphSnapshot,
     RecoveryPipelineEdge,
@@ -127,6 +139,7 @@ class _RecoveredCandidate:
     endpoint_ids: tuple[str, ...] = ()
     submodel_input_ports: tuple[str, ...] = ()
     submodel_output_ports: tuple[str, ...] = ()
+    position_key: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,7 +240,7 @@ def _node_failure_code(exc: BaseException) -> str:
 
 
 def _unavailable_candidate(
-    authored: PipelineNodeSkeleton | RecoveredFunctionFragment,
+    authored: PipelineNodeSkeleton,
     *,
     recovery_id: str,
     node_type: NodeType | None,
@@ -364,139 +377,6 @@ def _candidate_from_ast(
         config_reference=config_reference,
         param_names=tuple(str(value) for value in raw_node["param_names"]),
         edge_param_names=tuple(str(value) for value in raw_node["edge_param_names"]),
-        span=span,
-        availability="ready",
-        diagnostic_ids=[],
-    )
-
-
-def _candidate_from_regex(
-    fragment: RecoveredFunctionFragment,
-    *,
-    recovery_id: str,
-    source_file: str,
-    base_dir: Path,
-    diagnostics: list[PipelineRecoveryDiagnostic],
-) -> _RecoveredCandidate:
-    span = _span(fragment.start_line, 0, fragment.end_line, 0)
-    config_reference: str | None = None
-    description = ""
-    try:
-        decorator_kwargs = _parse_decorator_kwargs_regex(fragment.decorator_text)
-        raw_reference = decorator_kwargs.get("config")
-        if isinstance(raw_reference, str) and raw_reference.strip():
-            config_reference = raw_reference.replace("\\", "/")
-
-        if fragment.explicit_node_type is None:
-            return _unavailable_candidate(
-                fragment,
-                recovery_id=recovery_id,
-                node_type=None,
-                description="",
-                config_reference=config_reference,
-                span=span,
-                diagnostic=_diagnostic(
-                    code="node_decorator_unknown",
-                    scope="node",
-                    message=(
-                        f"The authored @{fragment.decorator_name} node type is not "
-                        "available in this Haute version."
-                    ),
-                    source_file=source_file,
-                    element_id=recovery_id,
-                    source_span=span,
-                    remediation=(
-                        "Install a compatible node implementation or update the source explicitly."
-                    ),
-                ),
-                diagnostics=diagnostics,
-            )
-
-        function_source = (
-            f"{fragment.decorator_text}\n"
-            f"def {fragment.authored_id}({fragment.params_text}):\n"
-            f"{fragment.body_text}"
-        )
-        function_tree = ast.parse(function_source)
-        function = next(
-            (item for item in function_tree.body if isinstance(item, ast.FunctionDef)),
-            None,
-        )
-        if function is None:
-            raise ParseError("The decorated function could not be recovered.")
-        description = _get_docstring(function)
-        node_type, config = _resolve_node_config(
-            decorator_kwargs,
-            fragment.body_text,
-            list(fragment.param_names),
-            len(fragment.param_names),
-            base_dir,
-            func_name=fragment.authored_id,
-            explicit_node_type=fragment.explicit_node_type,
-            edge_param_names=list(fragment.edge_param_names),
-        )
-    except (HauteError, SyntaxError) as exc:
-        return _unavailable_candidate(
-            fragment,
-            recovery_id=recovery_id,
-            node_type=fragment.explicit_node_type,
-            description=description,
-            config_reference=config_reference,
-            span=span,
-            diagnostic=_diagnostic(
-                code=(
-                    "node_syntax_invalid"
-                    if isinstance(exc, SyntaxError)
-                    else _node_failure_code(exc)
-                ),
-                scope="node",
-                message=_exception_message(exc),
-                source_file=source_file,
-                element_id=recovery_id,
-                source_span=span,
-                remediation="Open the referenced source or config and correct this node.",
-            ),
-            diagnostics=diagnostics,
-        )
-    except Exception:
-        incident_id = uuid4().hex
-        logger.error(
-            "pipeline_recovery_regex_node_unexpected",
-            source_file=source_file,
-            node_id=fragment.authored_id,
-            incident_id=incident_id,
-            exc_info=True,
-        )
-        return _unavailable_candidate(
-            fragment,
-            recovery_id=recovery_id,
-            node_type=fragment.explicit_node_type,
-            description=description,
-            config_reference=config_reference,
-            span=span,
-            diagnostic=_diagnostic(
-                code="node_recovery_internal_error",
-                scope="node",
-                message="This node could not be recovered because of an internal error.",
-                source_file=source_file,
-                element_id=recovery_id,
-                source_span=span,
-                remediation="Check the server logs with the incident id and report the defect.",
-                incident_id=incident_id,
-            ),
-            diagnostics=diagnostics,
-        )
-
-    return _RecoveredCandidate(
-        authored_id=fragment.authored_id,
-        recovery_id=recovery_id,
-        decorator_name=fragment.decorator_name,
-        node_type=node_type,
-        description=description,
-        config=config,
-        config_reference=config_reference,
-        param_names=fragment.param_names,
-        edge_param_names=fragment.edge_param_names,
         span=span,
         availability="ready",
         diagnostic_ids=[],
@@ -709,6 +589,8 @@ def _recover_ast_submodel_registrations(
     *,
     source_file: str,
     diagnostics: list[PipelineRecoveryDiagnostic],
+    unavailable_candidates: list[_RecoveredCandidate] | None = None,
+    include_invalid_references: bool = False,
 ) -> list[SubmodelRegistration]:
     """Recover independent valid registrations when one sibling is malformed."""
     registrations: list[SubmodelRegistration] = []
@@ -730,16 +612,49 @@ def _recover_ast_submodel_registrations(
                 statement.end_lineno or statement.lineno,
                 statement.end_col_offset or statement.col_offset,
             )
-            diagnostics.append(
-                _diagnostic(
-                    code="submodel_registration_invalid",
-                    scope="submodel",
-                    message=_exception_message(exc),
-                    source_file=source_file,
-                    source_span=span,
-                    remediation="Correct the submodel registration identity and file path.",
-                )
+            evidence = submodel_registration_evidence(statement)
+            diagnostic = _diagnostic(
+                code="submodel_registration_invalid",
+                scope="submodel",
+                message=_exception_message(exc),
+                source_file=source_file,
+                source_span=span,
+                element_id=evidence.name if evidence is not None else None,
+                remediation=exc.context.get(
+                    "remediation", "Correct the submodel registration identity and file path."
+                ),
             )
+            diagnostics.append(diagnostic)
+            if evidence is not None:
+                if include_invalid_references:
+                    registrations.append(
+                        SubmodelRegistration(
+                            path=evidence.path,
+                            name=evidence.name,
+                            line=statement.lineno,
+                        )
+                    )
+                if unavailable_candidates is not None:
+                    unavailable_candidates.append(
+                        _RecoveredCandidate(
+                            authored_id=evidence.name,
+                            recovery_id=evidence.name,
+                            decorator_name="submodel",
+                            node_type=NodeType.SUBMODEL,
+                            description=evidence.name,
+                            config={
+                                "definitionId": evidence.definition_id or evidence.path,
+                                "alias": evidence.name,
+                            },
+                            config_reference=evidence.path,
+                            param_names=(),
+                            edge_param_names=(),
+                            span=span,
+                            availability="unavailable",
+                            diagnostic_ids=[diagnostic.diagnostic_id],
+                            position_key=evidence.instance_id,
+                        )
+                    )
     return registrations
 
 
@@ -756,6 +671,16 @@ def _build_recovery_graph(
     list[RecoveryPipelineEdge],
     list[RecoveryUnresolvedConnection],
 ]:
+    # Skeletons and registrations are discovered independently. Assign ids across
+    # their combined set so collisions still produce a valid recovery document.
+    for candidate, recovery_id in zip(
+        candidates,
+        _candidate_ids(
+            [(candidate.authored_id, candidate.span.start_line) for candidate in candidates]
+        ),
+        strict=True,
+    ):
+        candidate.recovery_id = recovery_id
     _mark_duplicate_candidates(
         candidates,
         source_file=source_file,
@@ -1010,30 +935,24 @@ def _build_recovery_graph(
     for index, candidate in enumerate(candidates):
         position = positions.get(
             candidate.authored_id,
-            {"x": float(index * 300), "y": 0.0},
+            positions.get(candidate.position_key or "", {"x": float(index * 300), "y": 0.0}),
         )
         resolved_identity = None
         if candidate.node_type is not None:
             try:
-                alias = (
-                    candidate.config.get("alias")
-                    if isinstance(candidate.config, dict)
-                    and isinstance(candidate.config.get("alias"), str)
-                    else None
-                )
                 source_handles = handles_by_source.get(candidate.recovery_id, [])
                 if candidate.node_type == NodeType.API_INPUT and isinstance(candidate.config, dict):
                     source_handles = list(recoverable_api_input_source_handles(candidate.config))
                 elif candidate.node_type == NodeType.SUBMODEL:
                     source_handles = [
-                        f"out__{port_id}" for port_id in candidate.submodel_output_ports
+                        f"out__{port_name}" for port_name in candidate.submodel_output_ports
                     ]
                 resolved_identity = resolve_editor_identity(
                     node_type=candidate.node_type,
                     label=candidate.authored_id,
                     source_handles=source_handles,
-                    submodel_alias=alias,
                     config_reference_override=candidate.config_reference,
+                    alias=(candidate.config or {}).get("alias") if candidate.config else None,
                 )
             except (HauteError, ValueError):
                 resolved_identity = None
@@ -1075,18 +994,11 @@ def _build_recovery_graph(
         input_name: str | None = None
         source_candidate = candidate_by_id[edge.source.recovery_id]
         if edge_availability == "ready" and source_candidate.node_type is not None:
-            alias = (
-                source_candidate.config.get("alias")
-                if isinstance(source_candidate.config, dict)
-                and isinstance(source_candidate.config.get("alias"), str)
-                else None
-            )
             try:
                 input_name = executable_input_name(
                     node_type=source_candidate.node_type,
                     label=source_candidate.authored_id,
                     source_handle=edge.source_handle,
-                    submodel_alias=alias,
                 )
             except ValueError:
                 input_name = None
@@ -1183,23 +1095,23 @@ def _canonical_snapshot(
             )
             if definition is None:
                 raise ValueError(f"Submodel node {node.id!r} references a missing definition.")
-            return [f"out__{port.port_id}" for port in definition.output_ports]
+            return [f"out__{port.name}" for port in definition.output_ports]
         if node.data.nodeType == NodeType.SUBMODEL_PORT:
             return connected_handles_by_source.get(node.id, [])
         return []
 
     nodes: list[RecoveryPipelineNode] = []
     for node in graph.nodes:
-        alias = (
-            node.data.config.get("alias")
-            if isinstance(node.data.config.get("alias"), str)
-            else None
-        )
+        source_handles = source_handles_for(node)
         identity = resolve_editor_identity(
             node_type=node.data.nodeType,
             label=node.data.label,
-            source_handles=source_handles_for(node),
-            submodel_alias=alias,
+            source_handles=source_handles,
+            alias=(
+                (node.data.config or {}).get("alias")
+                if node.data.nodeType == NodeType.SUBMODEL
+                else None
+            ),
         )
         nodes.append(
             RecoveryPipelineNode(
@@ -1231,15 +1143,10 @@ def _canonical_snapshot(
             target_handle=edge.targetHandle,
             source_port=edge.sourcePort,
             target_port=edge.targetPort,
-            input_name=executable_input_name(
-                node_type=source_nodes[edge.source].data.nodeType,
-                label=source_nodes[edge.source].data.label,
-                source_handle=edge.sourceHandle,
-                submodel_alias=(
-                    source_nodes[edge.source].data.config.get("alias")
-                    if isinstance(source_nodes[edge.source].data.config.get("alias"), str)
-                    else None
-                ),
+            input_name=edge_input_name(
+                edge,
+                source_nodes[edge.source],
+                submodels=graph.submodels,
             ),
             availability="ready",
         )
@@ -1265,12 +1172,6 @@ def _canonical_snapshot(
             input_ports=[
                 port.model_dump(mode="json", by_alias=True) for port in definition.input_ports
             ],
-            input_port_input_names={
-                port.port_id: executable_input_name(
-                    node_type=NodeType.SUBMODEL_PORT, label="", source_handle=port.port_id
-                )
-                for port in definition.input_ports
-            },
             output_ports=[
                 port.model_dump(mode="json", by_alias=True) for port in definition.output_ports
             ],
@@ -1282,11 +1183,11 @@ def _canonical_snapshot(
     )
 
 
-def _port_ids(ports: list[dict[str, Any]]) -> tuple[str, ...]:
+def _port_names(ports: list[dict[str, Any]]) -> tuple[str, ...]:
     return tuple(
-        str(port.get("portId"))
+        str(port.get("name"))
         for port in ports
-        if isinstance(port.get("portId"), str) and port.get("portId")
+        if isinstance(port.get("name"), str) and port.get("name")
     )
 
 
@@ -1370,24 +1271,20 @@ def _recover_submodel_snapshot(
 def _unavailable_submodel_definition(
     registration: SubmodelRegistration,
     *,
+    definition_id: str | None = None,
     graph: RecoveryGraphSnapshot | None = None,
     input_ports: list[dict[str, Any]] | None = None,
     output_ports: list[dict[str, Any]] | None = None,
     diagnostic_ids: list[str] | None = None,
 ) -> RecoverySubmodelDefinition:
+    def_id = definition_id or registration.path
     return RecoverySubmodelDefinition(
-        definition_id=registration.definition_id,
+        definition_id=def_id,
         file=registration.path,
         availability="unavailable",
         diagnostic_ids=list(diagnostic_ids or []),
         graph=graph or RecoveryGraphSnapshot(),
         input_ports=list(input_ports or []),
-        input_port_input_names={
-            port_id: executable_input_name(
-                node_type=NodeType.SUBMODEL_PORT, label="", source_handle=port_id
-            )
-            for port_id in _port_ids(list(input_ports or []))
-        },
         output_ports=list(output_ports or []),
     )
 
@@ -1396,6 +1293,7 @@ def _recover_unavailable_submodel_definition(
     registration: SubmodelRegistration,
     child_path: Path,
     *,
+    definition_id: str | None = None,
     project_root: Path,
     config_base: Path,
     diagnostics: list[PipelineRecoveryDiagnostic],
@@ -1406,6 +1304,7 @@ def _recover_unavailable_submodel_definition(
     incident_id: str | None = None,
 ) -> RecoverySubmodelDefinition:
     """Recover a child snapshot while keeping its definition non-canonical."""
+    def_id = definition_id or registration.path
     before_count = len(diagnostics)
     graph, input_ports, output_ports = _recover_submodel_snapshot(
         child_path,
@@ -1419,13 +1318,14 @@ def _recover_unavailable_submodel_definition(
         scope="submodel",
         message=message,
         source_file=_wire_path(child_path, project_root),
-        element_id=registration.definition_id,
+        element_id=def_id,
         remediation=remediation,
         incident_id=incident_id,
     )
     diagnostics.insert(before_count, diagnostic)
     return _unavailable_submodel_definition(
         registration,
+        definition_id=def_id,
         graph=graph,
         input_ports=input_ports,
         output_ports=output_ports,
@@ -1447,30 +1347,16 @@ def _recover_registered_submodels(
         return None, []
 
     definitions: dict[str, RecoverySubmodelDefinition] = {}
-    aliases = Counter(registration.alias for registration in registrations)
-    definition_sources: dict[str, set[str]] = {}
-    for registration in registrations:
-        try:
-            child_path, _config_base = resolve_submodel_reference(
-                registration.path,
-                pipeline_dir=parent_path.parent,
-                project_root=project_root,
-            )
-        except ValueError:
-            normalised_path = registration.path.replace("\\", "/").casefold()
-            source_key = f"invalid:{normalised_path}"
-        else:
-            source_key = f"resolved:{str(child_path.resolve()).casefold()}"
-        definition_sources.setdefault(registration.definition_id, set()).add(source_key)
-    conflicting_definitions = {
-        definition_id for definition_id, sources in definition_sources.items() if len(sources) > 1
-    }
+    names = Counter(registration.name for registration in registrations)
     occurrence_ids = _candidate_ids(
-        [(registration.instance_id, registration.line or 1) for registration in registrations]
+        [(registration.name, registration.line or 1) for registration in registrations]
     )
 
+    path_to_def_id: dict[str, str] = {}
+    definition_sources: dict[str, str] = {}
+
     for registration in registrations:
-        if registration.definition_id in definitions:
+        if registration.path in path_to_def_id:
             continue
         span = _span(
             registration.line or 1,
@@ -1478,22 +1364,6 @@ def _recover_registered_submodels(
             registration.line or 1,
             0,
         )
-        if registration.definition_id in conflicting_definitions:
-            diagnostic = _diagnostic(
-                code="submodel_definition_duplicate",
-                scope="submodel",
-                message="One submodel definition id resolves to more than one file.",
-                source_file=source_file,
-                element_id=registration.definition_id,
-                source_span=span,
-                remediation="Give each submodel file a unique definition id.",
-            )
-            diagnostics.append(diagnostic)
-            definitions[registration.definition_id] = _unavailable_submodel_definition(
-                registration,
-                diagnostic_ids=[diagnostic.diagnostic_id],
-            )
-            continue
         try:
             child_path, config_base = resolve_submodel_reference(
                 registration.path,
@@ -1501,35 +1371,41 @@ def _recover_registered_submodels(
                 project_root=project_root,
             )
         except ValueError as exc:
+            def_id = registration.path
+            path_to_def_id[registration.path] = def_id
             diagnostic = _diagnostic(
                 code="submodel_path_invalid",
                 scope="submodel",
                 message=str(exc),
                 source_file=source_file,
-                element_id=registration.definition_id,
+                element_id=def_id,
                 source_span=span,
                 remediation="Use a project-contained relative submodel path.",
             )
             diagnostics.append(diagnostic)
-            definitions[registration.definition_id] = _unavailable_submodel_definition(
+            definitions[def_id] = _unavailable_submodel_definition(
                 registration,
+                definition_id=def_id,
                 diagnostic_ids=[diagnostic.diagnostic_id],
             )
             continue
 
         if not child_path.is_file():
+            def_id = registration.path
+            path_to_def_id[registration.path] = def_id
             diagnostic = _diagnostic(
                 code="submodel_file_missing",
                 scope="submodel",
                 message=f"Referenced submodel file {registration.path!r} does not exist.",
                 source_file=source_file,
-                element_id=registration.definition_id,
+                element_id=def_id,
                 source_span=span,
                 remediation="Restore the file or update the registration path.",
             )
             diagnostics.append(diagnostic)
-            definitions[registration.definition_id] = _unavailable_submodel_definition(
+            definitions[def_id] = _unavailable_submodel_definition(
                 registration,
+                definition_id=def_id,
                 diagnostic_ids=[diagnostic.diagnostic_id],
             )
             continue
@@ -1542,35 +1418,48 @@ def _recover_registered_submodels(
                 _base_dir=config_base,
             )
         except (HauteError, OSError, UnicodeError) as exc:
+            def_id = registration.path
+            path_to_def_id[registration.path] = def_id
             code = (
                 "submodel_syntax_invalid"
                 if isinstance(exc, ParseError) and isinstance(exc.__cause__, SyntaxError)
                 else "submodel_definition_invalid"
             )
-            definitions[registration.definition_id] = _recover_unavailable_submodel_definition(
+            definitions[def_id] = _recover_unavailable_submodel_definition(
                 registration,
                 child_path,
+                definition_id=def_id,
                 project_root=project_root,
                 config_base=config_base,
                 diagnostics=diagnostics,
                 captures=captures,
                 code=code,
                 message=_exception_message(exc),
-                remediation=("Open the submodel source and correct the diagnosed definition."),
+                remediation=(
+                    exc.context.get(
+                        "remediation",
+                        "Open the submodel source and correct the diagnosed definition.",
+                    )
+                    if isinstance(exc, HauteError)
+                    else "Open the submodel source and correct the diagnosed definition."
+                ),
             )
             continue
         except Exception:  # noqa: BLE001 - named submodel recovery isolation boundary
+            def_id = registration.path
+            path_to_def_id[registration.path] = def_id
             incident_id = uuid4().hex
             logger.error(
                 "pipeline_recovery_submodel_unexpected",
                 source_file=_wire_path(child_path, project_root),
-                definition_id=registration.definition_id,
+                definition_id=def_id,
                 incident_id=incident_id,
                 exc_info=True,
             )
-            definitions[registration.definition_id] = _recover_unavailable_submodel_definition(
+            definitions[def_id] = _recover_unavailable_submodel_definition(
                 registration,
                 child_path,
+                definition_id=def_id,
                 project_root=project_root,
                 config_base=config_base,
                 diagnostics=diagnostics,
@@ -1582,6 +1471,29 @@ def _recover_registered_submodels(
             )
             continue
 
+        def_id = child_graph._parser_definition_id or registration.path
+        path_to_def_id[registration.path] = def_id
+        source_key = str(child_path.resolve()).casefold()
+
+        if def_id in definition_sources and definition_sources[def_id] != source_key:
+            diagnostic = _diagnostic(
+                code="submodel_definition_duplicate",
+                scope="submodel",
+                message="One submodel definition id resolves to more than one file.",
+                source_file=source_file,
+                element_id=def_id,
+                source_span=span,
+                remediation="Give each submodel file a unique definition id.",
+            )
+            diagnostics.append(diagnostic)
+            definitions[def_id] = _unavailable_submodel_definition(
+                registration,
+                definition_id=def_id,
+                diagnostic_ids=[diagnostic.diagnostic_id],
+            )
+            continue
+
+        definition_sources[def_id] = source_key
         input_ports = [
             port.model_dump(mode="json", by_alias=True)
             for port in (child_graph._parser_input_ports or [])
@@ -1590,31 +1502,8 @@ def _recover_registered_submodels(
             port.model_dump(mode="json", by_alias=True)
             for port in (child_graph._parser_output_ports or [])
         ]
-        if child_graph._parser_definition_id != registration.definition_id:
-            diagnostic = _diagnostic(
-                code="submodel_definition_id_mismatch",
-                scope="submodel",
-                message="The registration and submodel file declare different definition ids.",
-                source_file=_wire_path(child_path, project_root),
-                element_id=registration.definition_id,
-                remediation="Make the registered and authored definition ids match.",
-            )
-            diagnostics.append(diagnostic)
-            definitions[registration.definition_id] = _unavailable_submodel_definition(
-                registration,
-                graph=_canonical_snapshot(
-                    child_graph,
-                    source_path=child_path,
-                    project_root=project_root,
-                    diagnostics=diagnostics,
-                ),
-                input_ports=input_ports,
-                output_ports=output_ports,
-                diagnostic_ids=[diagnostic.diagnostic_id],
-            )
-            continue
-        definitions[registration.definition_id] = RecoverySubmodelDefinition(
-            definition_id=registration.definition_id,
+        definitions[def_id] = RecoverySubmodelDefinition(
+            definition_id=def_id,
             file=registration.path,
             availability="ready",
             graph=_canonical_snapshot(
@@ -1624,18 +1513,16 @@ def _recover_registered_submodels(
                 diagnostics=diagnostics,
             ),
             input_ports=input_ports,
-            input_port_input_names={
-                port_id: executable_input_name(
-                    node_type=NodeType.SUBMODEL_PORT, label="", source_handle=port_id
-                )
-                for port_id in _port_ids(input_ports)
-            },
             output_ports=output_ports,
         )
 
     occurrences: list[_RecoveredCandidate] = []
     for registration, recovery_id in zip(registrations, occurrence_ids, strict=True):
-        definition = definitions[registration.definition_id]
+        def_id = path_to_def_id.get(registration.path, registration.path)
+        definition = definitions.get(def_id)
+        if definition is None:
+            definition = _unavailable_submodel_definition(registration, definition_id=def_id)
+            definitions[def_id] = definition
         span = _span(
             registration.line or 1,
             0,
@@ -1644,29 +1531,29 @@ def _recover_registered_submodels(
         )
         diagnostic_ids = list(definition.diagnostic_ids)
         availability = definition.availability
-        if aliases[registration.alias] > 1:
+        if names[registration.name] > 1:
             diagnostic = _diagnostic(
                 code="submodel_alias_duplicate",
                 scope="submodel",
-                message=f"Submodel alias {registration.alias!r} is duplicated.",
+                message=f"Submodel name {registration.name!r} is duplicated.",
                 source_file=source_file,
                 element_id=recovery_id,
                 source_span=span,
-                remediation="Give every submodel occurrence a unique alias.",
+                remediation="Give every submodel occurrence a unique name.",
             )
             diagnostics.append(diagnostic)
             diagnostic_ids.append(diagnostic.diagnostic_id)
             availability = "unavailable"
         occurrences.append(
             _RecoveredCandidate(
-                authored_id=registration.instance_id,
+                authored_id=registration.name,
                 recovery_id=recovery_id,
                 decorator_name="submodel",
                 node_type=NodeType.SUBMODEL,
-                description=registration.label or registration.alias,
+                description=registration.name,
                 config={
-                    "definitionId": registration.definition_id,
-                    "alias": registration.alias,
+                    "definitionId": def_id,
+                    "alias": registration.name,
                     **(
                         {"instanceOf": registration.instance_of}
                         if registration.instance_of is not None
@@ -1679,9 +1566,9 @@ def _recover_registered_submodels(
                 span=span,
                 availability=availability,
                 diagnostic_ids=diagnostic_ids,
-                endpoint_ids=(registration.instance_id, registration.alias),
-                submodel_input_ports=_port_ids(definition.input_ports),
-                submodel_output_ports=_port_ids(definition.output_ports),
+                endpoint_ids=(registration.name,),
+                submodel_input_ports=_port_names(definition.input_ports),
+                submodel_output_ports=_port_names(definition.output_ports),
             )
         )
     return definitions, occurrences
@@ -1697,19 +1584,8 @@ def _source_references(
     try:
         tree = ast.parse(source)
     except SyntaxError:
-        try:
-            fragments = recover_pipeline_fragments(source)
-        except HauteError:
-            return config_refs, registrations
-        for function in fragments.functions:
-            try:
-                kwargs = _parse_decorator_kwargs_regex(function.decorator_text)
-            except HauteError:
-                continue
-            reference = kwargs.get("config")
-            if isinstance(reference, str) and reference.strip():
-                config_refs.append(reference)
-        registrations.extend(fragments.submodel_registrations)
+        # A syntax-invalid file is a source-only document: it references no
+        # config or submodel artifact the revision could depend on.
         return config_refs, registrations
 
     bodies = _extract_function_bodies(source, tree=tree)
@@ -1729,6 +1605,18 @@ def _source_references(
         reference = kwargs.get("config")
         if isinstance(reference, str) and reference.strip():
             config_refs.append(reference)
+    # The global constants file the pipeline constructor names is a config
+    # artifact too: the revision must authenticate the constants a document
+    # carries, as it does node configs.
+    if not child:
+        try:
+            declared = _extract_global_constants_declaration(tree, receiver="pipeline")
+        except ParseError:
+            # A keyword the parser refuses names no file; the document reports
+            # the refusal itself, so the manifest has nothing to hash.
+            declared = False
+        if declared:
+            config_refs.append(GLOBAL_CONSTANTS_FILE)
     # Revision discovery must be at least as tolerant as the editor recovery
     # pass.  The strict extractor validates cross-registration uniqueness and
     # would otherwise turn a representable duplicate alias/instance into a
@@ -1738,6 +1626,7 @@ def _source_references(
             tree,
             source_file="<revision-manifest>",
             diagnostics=[],
+            include_invalid_references=True,
         )
     )
     return config_refs, registrations
@@ -1804,21 +1693,163 @@ def _recovery_artifacts(
     return artifacts
 
 
+def name_violations_payload(violations: Sequence[NameViolation]) -> list[PipelineNameViolation]:
+    """The wire form of executable-name violations, each party with its submodel."""
+    return [
+        PipelineNameViolation(
+            kind=violation.kind,
+            name=violation.name,
+            message=violation.message(),
+            parties=[
+                PipelineNameViolationParty(
+                    node_id=party.node_id,
+                    label=party.label,
+                    submodel=None if party.module == ROOT_MODULE else party.module,
+                )
+                for party in violation.parties
+            ],
+        )
+        for violation in violations
+    ]
+
+
+def _unkept_statement_diagnostics(
+    source: str, *, source_file: str
+) -> list[PipelineRecoveryDiagnostic]:
+    """One diagnostic per module statement that a save would drop.
+
+    Each degrades the document, so nothing regenerates the file without the
+    statement until it moves into the preamble or a preserved block.
+    """
+    lines = source.splitlines()
+    diagnostics = []
+    for start_line, end_line in unkept_module_statements(source):
+        first = lines[start_line - 1].strip()
+        excerpt = first if len(first) <= 60 else f"{first[:57]}..."
+        diagnostics.append(
+            _diagnostic(
+                code="unkept_module_statement",
+                scope="pipeline",
+                message=(
+                    f"`{excerpt}` is outside the preamble and preserved blocks, where a save "
+                    "would drop it."
+                ),
+                source_file=source_file,
+                source_span=RecoverySourceSpan(
+                    start_line=start_line,
+                    start_column=0,
+                    end_line=end_line,
+                    end_column=len(lines[end_line - 1]),
+                ),
+                remediation=(
+                    "Move it between the `import haute` line and `pipeline = haute.Pipeline(...)`, "
+                    "where it becomes part of the preamble, or wrap it in "
+                    "`# haute:preserve-start` and `# haute:preserve-end` lines."
+                ),
+            )
+        )
+    return diagnostics
+
+
 def _capabilities(
     status: PipelineLoadStatus,
     *,
     source_selection_trusted: bool,
+    names_valid: bool = True,
 ) -> PipelineDocumentCapabilities:
+    """The admission fence; a file with name violations is editable but not runnable."""
     ready = status == "ready"
     return PipelineDocumentCapabilities(
         can_mutate=ready,
-        can_save=ready,
-        can_execute=ready,
-        can_preview=status != "source_only" and source_selection_trusted,
+        can_save=ready and names_valid,
+        can_execute=ready and names_valid,
+        can_preview=status != "source_only" and source_selection_trusted and names_valid,
         can_manage_submodels=ready,
         can_repair=status == "degraded",
-        reserved_api_input_frame_labels=sorted(keyword.kwlist),
+        reserved_api_input_frame_labels=sorted({*keyword.kwlist, *RESERVED_NAMES}),
     )
+
+
+_SCOPED_EDITABLE_TYPES = {
+    kind.value for kind in NodeType if kind not in {NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}
+}
+
+
+def _mark_scoped_editable(
+    nodes: list[RecoveryPipelineNode],
+    submodels: dict[str, RecoverySubmodelDefinition] | None,
+) -> None:
+    """Advisory per-node isolation-save eligibility; the endpoint re-derives it.
+
+    Eligible: a known ordinary type that loads (ready or blocked), with a
+    trustworthy source span, not a shared instance, and no config reference
+    shared with another node. Document-wide fences stay separate.
+    """
+    all_nodes: list[RecoveryPipelineNode] = []
+
+    def collect(
+        graph_nodes: list[RecoveryPipelineNode],
+        graph_submodels: dict[str, RecoverySubmodelDefinition] | None,
+    ) -> None:
+        all_nodes.extend(graph_nodes)
+        for definition in (graph_submodels or {}).values():
+            collect(definition.graph.nodes, definition.graph.submodels)
+
+    collect(nodes, submodels)
+    reference_counts = Counter(node.config_reference for node in all_nodes if node.config_reference)
+    for node in all_nodes:
+        node.scoped_editable = (
+            node.node_type in _SCOPED_EDITABLE_TYPES
+            and node.availability != "unavailable"
+            and node.source_file is not None
+            and node.source_span is not None
+            and not (node.config or {}).get("instanceOf")
+            and (node.config_reference is None or reference_counts[node.config_reference] == 1)
+        )
+
+
+def _node_completeness(
+    nodes: list[RecoveryPipelineNode],
+    submodels: dict[str, RecoverySubmodelDefinition] | None,
+) -> list[PipelineNodeCompleteness]:
+    """Field-level required-value gaps for loadable Data Input/Output nodes.
+
+    Completeness is recomputed from the io-layer validators' tolerant mode;
+    unavailable nodes are excluded because their problems belong to
+    ``diagnostics``. A ready node's config already passed the same structural
+    validation at parse, so the reporters cannot raise here.
+    """
+    from haute._polars_io_registry import data_input_completeness, data_output_completeness
+
+    entries: list[PipelineNodeCompleteness] = []
+
+    def visit(
+        graph_nodes: list[RecoveryPipelineNode],
+        graph_submodels: dict[str, RecoverySubmodelDefinition] | None,
+    ) -> None:
+        for node in graph_nodes:
+            if node.availability == "unavailable" or node.config is None:
+                continue
+            if node.node_type == NodeType.DATA_INPUT.value:
+                gaps = data_input_completeness(node.config)
+            elif node.node_type == NodeType.DATA_OUTPUT.value:
+                gaps = data_output_completeness(node.config)
+            else:
+                continue
+            entries.extend(
+                PipelineNodeCompleteness(
+                    element_id=node.recovery_id,
+                    path=gap.path,
+                    code=gap.code,
+                    message=gap.message,
+                )
+                for gap in gaps
+            )
+        for definition in (graph_submodels or {}).values():
+            visit(definition.graph.nodes, definition.graph.submodels)
+
+    visit(nodes, submodels)
+    return entries
 
 
 def empty_pipeline_editor_document() -> PipelineEditorDocument:
@@ -1827,6 +1858,28 @@ def empty_pipeline_editor_document() -> PipelineEditorDocument:
         load_status="ready",
         has_authored_content=False,
         capabilities=_capabilities("ready", source_selection_trusted=True),
+    )
+
+
+def _recover_global_constants(
+    tree: ast.Module,
+    path: Path,
+    captures: _SourceCaptures,
+) -> tuple[list[GlobalConstant], str | None]:
+    """The global constants a recovered document carries, read through *captures*.
+
+    A constructor keyword the strict parser would refuse leaves no constants
+    and its reason, so the pane shows why instead of an empty list.
+    """
+    try:
+        declared = _extract_global_constants_declaration(tree, receiver="pipeline")
+    except ParseError as exc:
+        return [], str(exc)
+    if not declared:
+        return [], None
+    return load_declared_global_constants(
+        path.parent,
+        read_bytes=lambda constants_path: captures.read(constants_path)[0],
     )
 
 
@@ -1847,6 +1900,8 @@ def _load_readable_pipeline_editor_document(
     pipeline_description: str | None = None
     preamble: str | None = None
     preserved_blocks: list[str] = []
+    global_constants: list[GlobalConstant] = []
+    global_constants_error: str | None = None
     nodes: list[RecoveryPipelineNode] = []
     edges: list[RecoveryPipelineEdge] = []
     unresolved: list[RecoveryUnresolvedConnection] = []
@@ -1857,16 +1912,18 @@ def _load_readable_pipeline_editor_document(
 
     strict_failure: BaseException | None = None
     strict_graph: PipelineGraph | None = None
+    name_violations: list[NameViolation] = []
     try:
         # Parse the exact bytes this document presents. Re-reading the file
         # here could straddle a concurrent external edit and silently disagree
         # with ``source_text`` and the recovery pass.
-        strict_graph = parse_pipeline_source(
+        strict_graph, name_violations = parse_pipeline_source_with_name_violations(
             source,
             source_file=str(path),
             _base_dir=path.parent,
             _submodel_base_dir=_infer_parse_base_dir(path),
             _read_submodel_source=lambda child_path: captures.read(child_path)[1],
+            _read_global_constants_bytes=lambda constants_path: captures.read(constants_path)[0],
         )
     except (HauteError, OSError, UnicodeError) as exc:
         strict_failure = exc
@@ -1882,10 +1939,13 @@ def _load_readable_pipeline_editor_document(
         pipeline_description = strict_graph.pipeline_description
         preamble = strict_graph.preamble
         preserved_blocks = list(strict_graph.preserved_blocks)
+        global_constants = list(strict_graph.global_constants)
+        global_constants_error = strict_graph.global_constants_error
         nodes = snapshot.nodes
         edges = snapshot.edges
         unresolved = snapshot.unresolved_connections
         submodels = snapshot.submodels
+        diagnostics.extend(_unkept_statement_diagnostics(source, source_file=source_file))
 
     if strict_graph is None:
         if sidecar_issue is not None:
@@ -1906,86 +1966,25 @@ def _load_readable_pipeline_editor_document(
                     message="Pipeline source contains invalid Python syntax.",
                     source_file=source_file,
                     source_span=syntax_span,
-                    remediation="Open the source at this location and correct the syntax.",
+                    remediation=(
+                        "Open the source at this location in your editor and correct the syntax."
+                    ),
                 )
             )
-            try:
-                fragments = recover_pipeline_fragments(source)
-            except Exception:  # noqa: BLE001 - named source recovery isolation boundary
-                source_wide_failed = True
-                incident_id = uuid4().hex
-                logger.error(
-                    "pipeline_source_recovery_unexpected",
-                    source_file=source_file,
-                    incident_id=incident_id,
-                    exc_info=True,
-                )
-                diagnostics.append(
-                    _diagnostic(
-                        code="pipeline_recovery_internal_error",
-                        scope="pipeline",
-                        message=(
-                            "The pipeline source could not be reconstructed because of an "
-                            "internal error."
-                        ),
-                        source_file=source_file,
-                        remediation=(
-                            "Check the server logs with the incident id and report the defect."
-                        ),
-                        incident_id=incident_id,
-                    )
-                )
-                pipeline_name = path.stem
-                pipeline_description = ""
-                preamble = _extract_preamble(source)
-                preserved_blocks = _extract_preserved_blocks(source)
-            else:
-                pipeline_name = fragments.pipeline_name or path.stem
-                pipeline_description = fragments.pipeline_description
-                preamble = fragments.preamble
-                preserved_blocks = list(fragments.preserved_blocks)
-                connections = list(fragments.connections)
-                registrations = list(fragments.submodel_registrations)
-                identities = [
-                    (fragment.authored_id, fragment.start_line) for fragment in fragments.functions
-                ]
-                candidates = [
-                    _candidate_from_regex(
-                        fragment,
-                        recovery_id=recovery_id,
-                        source_file=source_file,
-                        base_dir=path.parent,
-                        diagnostics=diagnostics,
-                    )
-                    for fragment, recovery_id in zip(
-                        fragments.functions,
-                        _candidate_ids(identities),
-                        strict=True,
-                    )
-                ]
-                submodels, submodel_occurrences = _recover_registered_submodels(
-                    registrations,
-                    parent_path=path,
-                    project_root=root,
-                    source_file=source_file,
-                    diagnostics=diagnostics,
-                    captures=captures,
-                )
-                candidates.extend(submodel_occurrences)
-                nodes, edges, unresolved = _build_recovery_graph(
-                    candidates,
-                    connections,
-                    source_file=source_file,
-                    positions=positions,
-                    diagnostics=diagnostics,
-                )
-                if not candidates:
-                    source_wide_failed = True
+            # There is no textual recovery of syntax-invalid source: the
+            # document is source-only and the canvas shows this parse error.
+            source_wide_failed = True
+            pipeline_name = path.stem
+            pipeline_description = ""
+            preserved_blocks = _extract_preserved_blocks(source)
         else:
             pipeline_name, pipeline_description = _extract_pipeline_meta(tree)
             pipeline_name = pipeline_name or path.stem
             preamble = _extract_preamble(source, tree=tree)
             preserved_blocks = _extract_preserved_blocks(source)
+            global_constants, global_constants_error = _recover_global_constants(
+                tree, path, captures
+            )
             recovered_connections, initially_unresolved = _recover_ast_connections(
                 tree,
                 receiver="pipeline",
@@ -1993,10 +1992,12 @@ def _load_readable_pipeline_editor_document(
                 diagnostics=diagnostics,
             )
             connections = recovered_connections
+            unavailable_registrations: list[_RecoveredCandidate] = []
             registrations = _recover_ast_submodel_registrations(
                 tree,
                 source_file=source_file,
                 diagnostics=diagnostics,
+                unavailable_candidates=unavailable_registrations,
             )
             bodies = _extract_function_bodies(source, tree=tree)
             skeletons = _extract_decorated_node_skeletons(
@@ -2029,6 +2030,50 @@ def _load_readable_pipeline_editor_document(
                 captures=captures,
             )
             candidates.extend(submodel_occurrences)
+            for unavailable in unavailable_registrations:
+                # These handles are authored connection evidence only. The unavailable
+                # card remains non-executable and its downstream path stays blocked.
+                unavailable.submodel_output_ports = tuple(
+                    dict.fromkeys(
+                        connection.source_port
+                        for connection in recovered_connections
+                        if connection.source_authored_id == unavailable.authored_id
+                        and connection.source_port is not None
+                    )
+                )
+                unavailable.submodel_input_ports = tuple(
+                    dict.fromkeys(
+                        connection.target_port
+                        for connection in recovered_connections
+                        if connection.target_authored_id == unavailable.authored_id
+                        and connection.target_port is not None
+                    )
+                )
+            candidates.extend(unavailable_registrations)
+            if (
+                isinstance(strict_failure, ParseError)
+                and "unbound_parameters" in strict_failure.context
+            ):
+                failed_node_id = strict_failure.context.get("node_id")
+                matching = [
+                    candidate for candidate in candidates if candidate.authored_id == failed_node_id
+                ]
+                if len(matching) == 1 and matching[0].availability == "ready":
+                    failed = matching[0]
+                    diagnostic = _diagnostic(
+                        code="node_parse_invalid",
+                        scope="node",
+                        message=strict_failure.message,
+                        source_file=source_file,
+                        element_id=failed.recovery_id,
+                        source_span=failed.span,
+                        remediation=strict_failure.context.get(
+                            "remediation", "Correct this node's source or reset it."
+                        ),
+                    )
+                    diagnostics.append(diagnostic)
+                    failed.diagnostic_ids.append(diagnostic.diagnostic_id)
+                    failed.availability = "unavailable"
             nodes, edges, unresolved = _build_recovery_graph(
                 candidates,
                 connections,
@@ -2072,12 +2117,17 @@ def _load_readable_pipeline_editor_document(
         known_bytes=captures.known_bytes(),
     )
     kept_diagnostics = diagnostics[:_MAX_DIAGNOSTICS]
+    _mark_scoped_editable(nodes, submodels)
+    completeness = _node_completeness(nodes, submodels)
+    kept_completeness = completeness[:_MAX_DIAGNOSTICS]
     return PipelineEditorDocument(
         load_status=load_status,
         pipeline_name=pipeline_name or path.stem,
         pipeline_description=pipeline_description or "",
         preamble=preamble,
         preserved_blocks=preserved_blocks,
+        global_constants=global_constants,
+        global_constants_error=global_constants_error,
         source_file=source_file,
         source_revision=source_revision,
         source_text=source,
@@ -2091,11 +2141,24 @@ def _load_readable_pipeline_editor_document(
         submodels=submodels,
         diagnostics=kept_diagnostics,
         diagnostics_omitted=max(0, len(diagnostics) - len(kept_diagnostics)),
+        completeness=kept_completeness,
+        completeness_omitted=max(0, len(completeness) - len(kept_completeness)),
+        name_violations=name_violations_payload(name_violations),
         capabilities=_capabilities(
             load_status,
             source_selection_trusted=source_selection_trusted,
+            names_valid=not name_violations,
         ),
     )
+
+
+def pipeline_document_fingerprint(document_payload: Mapping[str, Any]) -> str:
+    """Fingerprint a complete editor document's JSON-mode, by-alias wire payload.
+
+    Load responses, live-sync frames, and resync comparisons all use this one digest, so a
+    document loaded over HTTP compares equal to the same document recovered for a resync.
+    """
+    return hashlib.sha256(canonical_json(document_payload).encode("utf-8")).hexdigest()
 
 
 def load_pipeline_editor_document(

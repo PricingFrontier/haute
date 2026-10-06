@@ -54,7 +54,7 @@ function currentLabel(): string {
   return (useGraphStore.getState().nodes.find((n) => n.id === ID)?.data.label ?? "") as string
 }
 
-describe("useGraphStore — one undo per inline field edit", () => {
+describe("useGraphStore - one undo per inline field edit", () => {
   beforeEach(resetGraphStoreForTests)
   afterEach(cleanup)
 

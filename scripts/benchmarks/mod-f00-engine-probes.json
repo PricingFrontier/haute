@@ -1,0 +1,686 @@
+{
+  "generated": "2026-09-23",
+  "runs": {
+    "linux-py3.11": {
+      "ebm": {
+        "bags_early_stopping_best_iteration": [
+          [
+            1041
+          ]
+        ],
+        "bags_early_stopping_ok": true,
+        "bags_leakage_fixed_budget": {
+          "gamma_deviance": {
+            "interaction_terms_equal": true,
+            "intercept_equal": false,
+            "predictions_equal": false,
+            "term_scores_equal": true
+          },
+          "log_loss": {
+            "interaction_terms_equal": true,
+            "intercept_equal": false,
+            "predictions_equal": false,
+            "term_scores_equal": true
+          },
+          "poisson_deviance": {
+            "interaction_terms_equal": true,
+            "intercept_equal": false,
+            "predictions_equal": false,
+            "term_scores_equal": true
+          },
+          "rmse": {
+            "interaction_terms_equal": true,
+            "intercept_equal": false,
+            "predictions_equal": false,
+            "term_scores_equal": true
+          },
+          "tweedie_deviance": {
+            "interaction_terms_equal": true,
+            "intercept_equal": false,
+            "predictions_equal": false,
+            "term_scores_equal": true
+          }
+        },
+        "classifier_classes": [
+          0,
+          1
+        ],
+        "classifier_joblib_globals": [
+          "interpret.glassbox._ebm._ebm:ExplainableBoostingClassifier",
+          "joblib.numpy_pickle:NumpyArrayWrapper",
+          "numpy:dtype",
+          "numpy:ndarray"
+        ],
+        "classifier_restricted_reload_bit_identical": true,
+        "crafted_payload": "blocked: Blocked unpickling of posix.system \u2014 not in the allowlist. If this is a legitimate model/data class, add its exact (modu",
+        "eval_terms_sum_plus_intercept_vs_log_predict_max_rel": 2.624061580131541e-16,
+        "fit_signature": "(self, X, y, sample_weight=None, bags=None, init_score=None)",
+        "fitted_attribute_types": [
+          "builtins.NoneType",
+          "builtins.bool",
+          "builtins.float",
+          "builtins.int",
+          "builtins.list",
+          "builtins.str",
+          "numpy.float64",
+          "numpy.ndarray"
+        ],
+        "has_from_json": false,
+        "has_monotone_constraints": true,
+        "has_to_json": true,
+        "haute_safe_joblib_load_unchanged": "blocked: Blocked unpickling of interpret.glassbox._ebm._ebm.ExplainableBoostingRegressor \u2014 not in the allowlist. If this is a legitimate model/data class, add its exact ",
+        "haute_safe_joblib_load_with_ebm_classes_bit_identical": true,
+        "joblib_globals": [
+          "interpret.glassbox._ebm._ebm:ExplainableBoostingRegressor",
+          "joblib.numpy_pickle:NumpyArrayWrapper",
+          "numpy._core.multiarray:scalar",
+          "numpy:dtype",
+          "numpy:ndarray"
+        ],
+        "joblib_reload_bit_identical": true,
+        "predict_init_score_multiplies_log_link": true,
+        "predict_signature": "(self, X, init_score=None)",
+        "state_hooks": {
+          "__getstate__": "sklearn.base.BaseEstimator",
+          "__reduce__": "builtins.object",
+          "__reduce_ex__": "builtins.object",
+          "__setstate__": "sklearn.base.BaseEstimator"
+        }
+      },
+      "lightgbm": {
+        "alias_conflict_effective_num_leaves": 8,
+        "alias_conflict_warnings": [],
+        "best_iteration": 18,
+        "best_iteration_is_count": "best_iteration is a 1-based count; predict(num_iteration=best_iteration)",
+        "constant_feature_configured_rounds": 17,
+        "constant_feature_current_iteration": 1,
+        "constant_feature_num_trees": 1,
+        "contrib_shape": [
+          400,
+          3
+        ],
+        "contrib_sum_minus_raw_max_rel": 6.500326052059701e-16,
+        "current_iteration_after_early_stop": 18,
+        "no_validation_rounds_for_17": 17,
+        "objective_line_in_model_text": "objective=poisson",
+        "objectives_accepted": {
+          "binary": true,
+          "gamma": true,
+          "regression": true,
+          "regression_l1": true,
+          "tweedie": true
+        },
+        "pandas_categorical_stored": true,
+        "predict_ignores_init_score": true,
+        "reordered_categories_same_predictions": true,
+        "saved_best_reload_bit_identical": true,
+        "saved_best_reload_trees": 18,
+        "served_equals_exp_raw_plus_offset": true,
+        "served_prediction_example": 0.041978169242341816,
+        "unseen_category": "no error; raw [-2.0666042973621837, -1.3000983707333786]"
+      },
+      "platform": {
+        "python": "3.11.14",
+        "system": "Linux x86_64"
+      },
+      "versions": {
+        "interpret_core": "0.7.8",
+        "lightgbm": "4.7.0",
+        "numpy": "2.3.5",
+        "pandas": "2.3.3",
+        "xgboost": "3.2.0"
+      },
+      "xgboost": {
+        "base_score_in_config": 0.107343875,
+        "best_iteration": 17,
+        "best_iteration_is_zero_based": "best_iteration is the 0-based index; iteration_range=(0, best_iteration + 1)",
+        "contrib_shape": [
+          400,
+          3
+        ],
+        "contrib_sum_minus_margin_max_rel": 3.412509623277138e-07,
+        "contrib_sum_vs_margin_without_offset_max_rel": 1.3775977580203436,
+        "feature_names_after_reload": [
+          "region",
+          "age"
+        ],
+        "feature_types_after_reload": [
+          "c",
+          "float"
+        ],
+        "margin_with_minus_without_minus_offset": 2.231717770462669,
+        "margin_with_minus_without_minus_offset_is_constant": true,
+        "no_validation_rounds_for_17": 17,
+        "num_boosted_rounds_after_early_stop": 23,
+        "objective_in_saved_config": "count:poisson",
+        "objectives_accepted": {
+          "binary:logistic": true,
+          "reg:absoluteerror": true,
+          "reg:gamma": true,
+          "reg:squarederror": true,
+          "reg:tweedie": true
+        },
+        "reordered_categories_same_predictions": false,
+        "response_is_exp_margin": true,
+        "that_constant_equals_minus_log_base_score": true,
+        "trimmed_reload_bit_identical": true,
+        "trimmed_reload_rounds": 18,
+        "unknown_param_python_warnings": [
+          "[10:49:46] WARNING: /workspace/src/learner.cc:782: \nParameters: { \"not_a_param\" } are not used.\n"
+        ],
+        "unseen_category": "no error; predictions [0.014775109477341175, 0.03203044459223747]"
+      }
+    },
+    "linux-py3.13": {
+      "ebm": {
+        "bags_early_stopping_best_iteration": [
+          [
+            1041
+          ]
+        ],
+        "bags_early_stopping_ok": true,
+        "bags_leakage_fixed_budget": {
+          "gamma_deviance": {
+            "interaction_terms_equal": true,
+            "intercept_equal": false,
+            "predictions_equal": false,
+            "term_scores_equal": true
+          },
+          "log_loss": {
+            "interaction_terms_equal": true,
+            "intercept_equal": false,
+            "predictions_equal": false,
+            "term_scores_equal": true
+          },
+          "poisson_deviance": {
+            "interaction_terms_equal": true,
+            "intercept_equal": false,
+            "predictions_equal": false,
+            "term_scores_equal": true
+          },
+          "rmse": {
+            "interaction_terms_equal": true,
+            "intercept_equal": false,
+            "predictions_equal": false,
+            "term_scores_equal": true
+          },
+          "tweedie_deviance": {
+            "interaction_terms_equal": true,
+            "intercept_equal": false,
+            "predictions_equal": false,
+            "term_scores_equal": true
+          }
+        },
+        "classifier_classes": [
+          0,
+          1
+        ],
+        "classifier_joblib_globals": [
+          "interpret.glassbox._ebm._ebm:ExplainableBoostingClassifier",
+          "joblib.numpy_pickle:NumpyArrayWrapper",
+          "numpy:dtype",
+          "numpy:ndarray"
+        ],
+        "classifier_restricted_reload_bit_identical": true,
+        "crafted_payload": "blocked: Blocked unpickling of posix.system \u2014 not in the allowlist. If this is a legitimate model/data class, add its exact (modu",
+        "eval_terms_sum_plus_intercept_vs_log_predict_max_rel": 2.624061580131541e-16,
+        "fit_signature": "(self, X, y, sample_weight=None, bags=None, init_score=None)",
+        "fitted_attribute_types": [
+          "builtins.NoneType",
+          "builtins.bool",
+          "builtins.float",
+          "builtins.int",
+          "builtins.list",
+          "builtins.str",
+          "numpy.float64",
+          "numpy.ndarray"
+        ],
+        "has_from_json": false,
+        "has_monotone_constraints": true,
+        "has_to_json": true,
+        "haute_safe_joblib_load_unchanged": "blocked: Blocked unpickling of interpret.glassbox._ebm._ebm.ExplainableBoostingRegressor \u2014 not in the allowlist. If this is a legitimate model/data class, add its exact ",
+        "haute_safe_joblib_load_with_ebm_classes_bit_identical": true,
+        "joblib_globals": [
+          "interpret.glassbox._ebm._ebm:ExplainableBoostingRegressor",
+          "joblib.numpy_pickle:NumpyArrayWrapper",
+          "numpy._core.multiarray:scalar",
+          "numpy:dtype",
+          "numpy:ndarray"
+        ],
+        "joblib_reload_bit_identical": true,
+        "predict_init_score_multiplies_log_link": true,
+        "predict_signature": "(self, X, init_score=None)",
+        "state_hooks": {
+          "__getstate__": "sklearn.base.BaseEstimator",
+          "__reduce__": "builtins.object",
+          "__reduce_ex__": "builtins.object",
+          "__setstate__": "sklearn.base.BaseEstimator"
+        }
+      },
+      "lightgbm": {
+        "alias_conflict_effective_num_leaves": 8,
+        "alias_conflict_warnings": [],
+        "best_iteration": 18,
+        "best_iteration_is_count": "best_iteration is a 1-based count; predict(num_iteration=best_iteration)",
+        "constant_feature_configured_rounds": 17,
+        "constant_feature_current_iteration": 1,
+        "constant_feature_num_trees": 1,
+        "contrib_shape": [
+          400,
+          3
+        ],
+        "contrib_sum_minus_raw_max_rel": 6.500326052059701e-16,
+        "current_iteration_after_early_stop": 18,
+        "no_validation_rounds_for_17": 17,
+        "objective_line_in_model_text": "objective=poisson",
+        "objectives_accepted": {
+          "binary": true,
+          "gamma": true,
+          "regression": true,
+          "regression_l1": true,
+          "tweedie": true
+        },
+        "pandas_categorical_stored": true,
+        "predict_ignores_init_score": true,
+        "reordered_categories_same_predictions": true,
+        "saved_best_reload_bit_identical": true,
+        "saved_best_reload_trees": 18,
+        "served_equals_exp_raw_plus_offset": true,
+        "served_prediction_example": 0.041978169242341816,
+        "unseen_category": "no error; raw [-2.0666042973621837, -1.3000983707333786]"
+      },
+      "platform": {
+        "python": "3.13.11",
+        "system": "Linux x86_64"
+      },
+      "versions": {
+        "interpret_core": "0.7.8",
+        "lightgbm": "4.7.0",
+        "numpy": "2.3.5",
+        "pandas": "2.3.3",
+        "xgboost": "3.2.0"
+      },
+      "xgboost": {
+        "base_score_in_config": 0.107343875,
+        "best_iteration": 17,
+        "best_iteration_is_zero_based": "best_iteration is the 0-based index; iteration_range=(0, best_iteration + 1)",
+        "contrib_shape": [
+          400,
+          3
+        ],
+        "contrib_sum_minus_margin_max_rel": 3.412509623277138e-07,
+        "contrib_sum_vs_margin_without_offset_max_rel": 1.3775977580203436,
+        "feature_names_after_reload": [
+          "region",
+          "age"
+        ],
+        "feature_types_after_reload": [
+          "c",
+          "float"
+        ],
+        "margin_with_minus_without_minus_offset": 2.231717770462669,
+        "margin_with_minus_without_minus_offset_is_constant": true,
+        "no_validation_rounds_for_17": 17,
+        "num_boosted_rounds_after_early_stop": 23,
+        "objective_in_saved_config": "count:poisson",
+        "objectives_accepted": {
+          "binary:logistic": true,
+          "reg:absoluteerror": true,
+          "reg:gamma": true,
+          "reg:squarederror": true,
+          "reg:tweedie": true
+        },
+        "reordered_categories_same_predictions": false,
+        "response_is_exp_margin": true,
+        "that_constant_equals_minus_log_base_score": true,
+        "trimmed_reload_bit_identical": true,
+        "trimmed_reload_rounds": 18,
+        "unknown_param_python_warnings": [
+          "[10:49:51] WARNING: /workspace/src/learner.cc:782: \nParameters: { \"not_a_param\" } are not used.\n"
+        ],
+        "unseen_category": "no error; predictions [0.014775109477341175, 0.03203044459223747]"
+      }
+    },
+    "windows-py3.11": {
+      "ebm": {
+        "bags_early_stopping_best_iteration": [
+          [
+            1041
+          ]
+        ],
+        "bags_early_stopping_ok": true,
+        "bags_leakage_fixed_budget": {
+          "gamma_deviance": {
+            "interaction_terms_equal": true,
+            "intercept_equal": false,
+            "predictions_equal": false,
+            "term_scores_equal": true
+          },
+          "log_loss": {
+            "interaction_terms_equal": true,
+            "intercept_equal": false,
+            "predictions_equal": false,
+            "term_scores_equal": true
+          },
+          "poisson_deviance": {
+            "interaction_terms_equal": true,
+            "intercept_equal": false,
+            "predictions_equal": false,
+            "term_scores_equal": true
+          },
+          "rmse": {
+            "interaction_terms_equal": true,
+            "intercept_equal": false,
+            "predictions_equal": false,
+            "term_scores_equal": true
+          },
+          "tweedie_deviance": {
+            "interaction_terms_equal": true,
+            "intercept_equal": false,
+            "predictions_equal": false,
+            "term_scores_equal": true
+          }
+        },
+        "classifier_classes": [
+          0,
+          1
+        ],
+        "classifier_joblib_globals": [
+          "interpret.glassbox._ebm._ebm:ExplainableBoostingClassifier",
+          "joblib.numpy_pickle:NumpyArrayWrapper",
+          "numpy:dtype",
+          "numpy:ndarray"
+        ],
+        "classifier_restricted_reload_bit_identical": true,
+        "crafted_payload": "blocked: Blocked unpickling of nt.system \u2014 not in the allowlist. If this is a legitimate model/data class, add its exact (module,",
+        "eval_terms_sum_plus_intercept_vs_log_predict_max_rel": 2.624061580131541e-16,
+        "fit_signature": "(self, X, y, sample_weight=None, bags=None, init_score=None)",
+        "fitted_attribute_types": [
+          "builtins.NoneType",
+          "builtins.bool",
+          "builtins.float",
+          "builtins.int",
+          "builtins.list",
+          "builtins.str",
+          "numpy.float64",
+          "numpy.ndarray"
+        ],
+        "has_from_json": false,
+        "has_monotone_constraints": true,
+        "has_to_json": true,
+        "haute_safe_joblib_load_unchanged": "blocked: Blocked unpickling of interpret.glassbox._ebm._ebm.ExplainableBoostingRegressor \u2014 not in the allowlist. If this is a legitimate model/data class, add its exact ",
+        "haute_safe_joblib_load_with_ebm_classes_bit_identical": true,
+        "joblib_globals": [
+          "interpret.glassbox._ebm._ebm:ExplainableBoostingRegressor",
+          "joblib.numpy_pickle:NumpyArrayWrapper",
+          "numpy._core.multiarray:scalar",
+          "numpy:dtype",
+          "numpy:ndarray"
+        ],
+        "joblib_reload_bit_identical": true,
+        "predict_init_score_multiplies_log_link": true,
+        "predict_signature": "(self, X, init_score=None)",
+        "state_hooks": {
+          "__getstate__": "sklearn.base.BaseEstimator",
+          "__reduce__": "builtins.object",
+          "__reduce_ex__": "builtins.object",
+          "__setstate__": "sklearn.base.BaseEstimator"
+        }
+      },
+      "lightgbm": {
+        "alias_conflict_effective_num_leaves": 8,
+        "alias_conflict_warnings": [],
+        "best_iteration": 18,
+        "best_iteration_is_count": "best_iteration is a 1-based count; predict(num_iteration=best_iteration)",
+        "constant_feature_configured_rounds": 17,
+        "constant_feature_current_iteration": 1,
+        "constant_feature_num_trees": 1,
+        "contrib_shape": [
+          400,
+          3
+        ],
+        "contrib_sum_minus_raw_max_rel": 6.500326052059701e-16,
+        "current_iteration_after_early_stop": 18,
+        "no_validation_rounds_for_17": 17,
+        "objective_line_in_model_text": "objective=poisson",
+        "objectives_accepted": {
+          "binary": true,
+          "gamma": true,
+          "regression": true,
+          "regression_l1": true,
+          "tweedie": true
+        },
+        "pandas_categorical_stored": true,
+        "predict_ignores_init_score": true,
+        "reordered_categories_same_predictions": true,
+        "saved_best_reload_bit_identical": true,
+        "saved_best_reload_trees": 18,
+        "served_equals_exp_raw_plus_offset": true,
+        "served_prediction_example": 0.041978169242341816,
+        "unseen_category": "no error; raw [-2.0666042973621837, -1.3000983707333786]"
+      },
+      "platform": {
+        "python": "3.11.14",
+        "system": "Windows AMD64"
+      },
+      "versions": {
+        "interpret_core": "0.7.8",
+        "lightgbm": "4.7.0",
+        "numpy": "2.3.5",
+        "pandas": "2.3.3",
+        "xgboost": "3.2.0"
+      },
+      "xgboost": {
+        "base_score_in_config": 0.107343875,
+        "best_iteration": 17,
+        "best_iteration_is_zero_based": "best_iteration is the 0-based index; iteration_range=(0, best_iteration + 1)",
+        "contrib_shape": [
+          400,
+          3
+        ],
+        "contrib_sum_minus_margin_max_rel": 3.412509623277138e-07,
+        "contrib_sum_vs_margin_without_offset_max_rel": 1.3775977580203436,
+        "feature_names_after_reload": [
+          "region",
+          "age"
+        ],
+        "feature_types_after_reload": [
+          "c",
+          "float"
+        ],
+        "margin_with_minus_without_minus_offset": 2.231717770462669,
+        "margin_with_minus_without_minus_offset_is_constant": true,
+        "no_validation_rounds_for_17": 17,
+        "num_boosted_rounds_after_early_stop": 23,
+        "objective_in_saved_config": "count:poisson",
+        "objectives_accepted": {
+          "binary:logistic": true,
+          "reg:absoluteerror": true,
+          "reg:gamma": true,
+          "reg:squarederror": true,
+          "reg:tweedie": true
+        },
+        "reordered_categories_same_predictions": false,
+        "response_is_exp_margin": true,
+        "that_constant_equals_minus_log_base_score": true,
+        "trimmed_reload_bit_identical": true,
+        "trimmed_reload_rounds": 18,
+        "unknown_param_python_warnings": [
+          "[10:49:28] WARNING: C:\\actions-runner\\_work\\xgboost\\xgboost\\src\\learner.cc:782: \nParameters: { \"not_a_param\" } are not used.\n"
+        ],
+        "unseen_category": "no error; predictions [0.014775109477341175, 0.03203044459223747]"
+      }
+    },
+    "windows-py3.13": {
+      "ebm": {
+        "bags_early_stopping_best_iteration": [
+          [
+            1041
+          ]
+        ],
+        "bags_early_stopping_ok": true,
+        "bags_leakage_fixed_budget": {
+          "gamma_deviance": {
+            "interaction_terms_equal": true,
+            "intercept_equal": false,
+            "predictions_equal": false,
+            "term_scores_equal": true
+          },
+          "log_loss": {
+            "interaction_terms_equal": true,
+            "intercept_equal": false,
+            "predictions_equal": false,
+            "term_scores_equal": true
+          },
+          "poisson_deviance": {
+            "interaction_terms_equal": true,
+            "intercept_equal": false,
+            "predictions_equal": false,
+            "term_scores_equal": true
+          },
+          "rmse": {
+            "interaction_terms_equal": true,
+            "intercept_equal": false,
+            "predictions_equal": false,
+            "term_scores_equal": true
+          },
+          "tweedie_deviance": {
+            "interaction_terms_equal": true,
+            "intercept_equal": false,
+            "predictions_equal": false,
+            "term_scores_equal": true
+          }
+        },
+        "classifier_classes": [
+          0,
+          1
+        ],
+        "classifier_joblib_globals": [
+          "interpret.glassbox._ebm._ebm:ExplainableBoostingClassifier",
+          "joblib.numpy_pickle:NumpyArrayWrapper",
+          "numpy:dtype",
+          "numpy:ndarray"
+        ],
+        "classifier_restricted_reload_bit_identical": true,
+        "crafted_payload": "blocked: Blocked unpickling of nt.system \u2014 not in the allowlist. If this is a legitimate model/data class, add its exact (module,",
+        "eval_terms_sum_plus_intercept_vs_log_predict_max_rel": 2.624061580131541e-16,
+        "fit_signature": "(self, X, y, sample_weight=None, bags=None, init_score=None)",
+        "fitted_attribute_types": [
+          "builtins.NoneType",
+          "builtins.bool",
+          "builtins.float",
+          "builtins.int",
+          "builtins.list",
+          "builtins.str",
+          "numpy.float64",
+          "numpy.ndarray"
+        ],
+        "has_from_json": false,
+        "has_monotone_constraints": true,
+        "has_to_json": true,
+        "haute_safe_joblib_load_unchanged": "blocked: Blocked unpickling of interpret.glassbox._ebm._ebm.ExplainableBoostingRegressor \u2014 not in the allowlist. If this is a legitimate model/data class, add its exact ",
+        "haute_safe_joblib_load_with_ebm_classes_bit_identical": true,
+        "joblib_globals": [
+          "interpret.glassbox._ebm._ebm:ExplainableBoostingRegressor",
+          "joblib.numpy_pickle:NumpyArrayWrapper",
+          "numpy._core.multiarray:scalar",
+          "numpy:dtype",
+          "numpy:ndarray"
+        ],
+        "joblib_reload_bit_identical": true,
+        "predict_init_score_multiplies_log_link": true,
+        "predict_signature": "(self, X, init_score=None)",
+        "state_hooks": {
+          "__getstate__": "sklearn.base.BaseEstimator",
+          "__reduce__": "builtins.object",
+          "__reduce_ex__": "builtins.object",
+          "__setstate__": "sklearn.base.BaseEstimator"
+        }
+      },
+      "lightgbm": {
+        "alias_conflict_effective_num_leaves": 8,
+        "alias_conflict_warnings": [],
+        "best_iteration": 18,
+        "best_iteration_is_count": "best_iteration is a 1-based count; predict(num_iteration=best_iteration)",
+        "constant_feature_configured_rounds": 17,
+        "constant_feature_current_iteration": 1,
+        "constant_feature_num_trees": 1,
+        "contrib_shape": [
+          400,
+          3
+        ],
+        "contrib_sum_minus_raw_max_rel": 6.500326052059701e-16,
+        "current_iteration_after_early_stop": 18,
+        "no_validation_rounds_for_17": 17,
+        "objective_line_in_model_text": "objective=poisson",
+        "objectives_accepted": {
+          "binary": true,
+          "gamma": true,
+          "regression": true,
+          "regression_l1": true,
+          "tweedie": true
+        },
+        "pandas_categorical_stored": true,
+        "predict_ignores_init_score": true,
+        "reordered_categories_same_predictions": true,
+        "saved_best_reload_bit_identical": true,
+        "saved_best_reload_trees": 18,
+        "served_equals_exp_raw_plus_offset": true,
+        "served_prediction_example": 0.041978169242341816,
+        "unseen_category": "no error; raw [-2.0666042973621837, -1.3000983707333786]"
+      },
+      "platform": {
+        "python": "3.13.11",
+        "system": "Windows AMD64"
+      },
+      "versions": {
+        "interpret_core": "0.7.8",
+        "lightgbm": "4.7.0",
+        "numpy": "2.3.5",
+        "pandas": "2.3.3",
+        "xgboost": "3.2.0"
+      },
+      "xgboost": {
+        "base_score_in_config": 0.107343875,
+        "best_iteration": 17,
+        "best_iteration_is_zero_based": "best_iteration is the 0-based index; iteration_range=(0, best_iteration + 1)",
+        "contrib_shape": [
+          400,
+          3
+        ],
+        "contrib_sum_minus_margin_max_rel": 3.412509623277138e-07,
+        "contrib_sum_vs_margin_without_offset_max_rel": 1.3775977580203436,
+        "feature_names_after_reload": [
+          "region",
+          "age"
+        ],
+        "feature_types_after_reload": [
+          "c",
+          "float"
+        ],
+        "margin_with_minus_without_minus_offset": 2.231717770462669,
+        "margin_with_minus_without_minus_offset_is_constant": true,
+        "no_validation_rounds_for_17": 17,
+        "num_boosted_rounds_after_early_stop": 23,
+        "objective_in_saved_config": "count:poisson",
+        "objectives_accepted": {
+          "binary:logistic": true,
+          "reg:absoluteerror": true,
+          "reg:gamma": true,
+          "reg:squarederror": true,
+          "reg:tweedie": true
+        },
+        "reordered_categories_same_predictions": false,
+        "response_is_exp_margin": true,
+        "that_constant_equals_minus_log_base_score": true,
+        "trimmed_reload_bit_identical": true,
+        "trimmed_reload_rounds": 18,
+        "unknown_param_python_warnings": [
+          "[10:49:31] WARNING: C:\\actions-runner\\_work\\xgboost\\xgboost\\src\\learner.cc:782: \nParameters: { \"not_a_param\" } are not used.\n"
+        ],
+        "unseen_category": "no error; predictions [0.014775109477341175, 0.03203044459223747]"
+      }
+    }
+  },
+  "script": "specs/roadmap/mod-f00-engine-probes.py"
+}

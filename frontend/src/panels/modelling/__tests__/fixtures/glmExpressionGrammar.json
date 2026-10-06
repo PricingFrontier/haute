@@ -1,0 +1,35 @@
+{
+  "accepted": [
+    { "expr": "age", "identifiers": ["age"] },
+    { "expr": "age ** 2", "identifiers": ["age"] },
+    { "expr": "age**2.5", "identifiers": ["age"] },
+    { "expr": "  age ** 2  ", "identifiers": ["age"] },
+    { "expr": "age * income", "identifiers": ["age", "income"] },
+    { "expr": "age + 1", "identifiers": ["age"] },
+    { "expr": "age - income", "identifiers": ["age", "income"] },
+    { "expr": "age / 12", "identifiers": ["age"] },
+    { "expr": "age ** age", "identifiers": ["age"] },
+    { "expr": "_private ** 2", "identifiers": ["_private"] },
+    { "expr": "größe * 2", "identifiers": ["größe"] },
+    { "expr": "año / edad", "identifiers": ["año", "edad"] },
+    { "expr": "x² + 1", "identifiers": ["x²"] },
+    { "expr": "col1 * col2", "identifiers": ["col1", "col2"] }
+  ],
+  "rejected": [
+    "",
+    "   ",
+    "log(age)",
+    "age ** 2 + 1",
+    "age > 65",
+    "2 * age",
+    "age ** income ** 2",
+    "a.b * c",
+    "age * -1",
+    "age ** 1e5",
+    "age * inf",
+    "age / NaN",
+    "age + Infinity",
+    "annual mileage ** 2",
+    "age * ٣"
+  ]
+}

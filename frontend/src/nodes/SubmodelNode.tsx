@@ -1,5 +1,5 @@
 import { memo, useEffect } from "react"
-import { useUpdateNodeInternals, type NodeProps } from "@xyflow/react"
+import { Handle, Position, useUpdateNodeInternals, type NodeProps } from "@xyflow/react"
 import { Package } from "lucide-react"
 import { STRUCTURE_COLORS } from "../theme/colors"
 import { nodeTypeColors } from "../utils/nodeTypes"
@@ -7,10 +7,10 @@ import {
   isSubmodelDefinition,
   isSubmodelInstanceConfig,
   type SubmodelFlowNode,
-  type SubmodelInputPort,
   type SubmodelOutputPort,
 } from "../types/node"
-import FramePortRows from "./FramePortRows"
+import { SUBMODEL_INPUT_HANDLE } from "../utils/flowHandles"
+import FramePortRows, { DefaultInputPortRow } from "./FramePortRows"
 import useGraphStore from "../stores/useGraphStore"
 
 const accent = nodeTypeColors.submodel || STRUCTURE_COLORS.fallbackAccent
@@ -31,6 +31,7 @@ function SubmodelNode({
   id,
   data: nodeData,
   selected,
+  isConnectable,
 }: NodeProps<SubmodelFlowNode>) {
   const config = nodeData.config
   const canonicalIdentityValid = isSubmodelInstanceConfig(config)
@@ -40,18 +41,28 @@ function SubmodelNode({
     ? definition
     : undefined
   const definitionInvalid = canonicalDefinition === undefined
-  const inputFrames = canonicalDefinition?.inputPorts.map(toInputFrame) ?? []
+  const hasInputSocket = canonicalDefinition !== undefined
+  const inputAnchorIds = canonicalDefinition?.inputPorts.map(
+    (port) => `in__${port.name}`,
+  ) ?? []
   const outputFrames = canonicalDefinition?.outputPorts.map(toOutputFrame) ?? []
+  const loadAvailability = nodeData._loadAvailability ?? "ready"
+  const showRecoveryHandles = definitionInvalid && loadAvailability !== "ready"
   const childCount = canonicalDefinition?.graph.nodes.length ?? 0
-  const hasBody = inputFrames.length > 0 || outputFrames.length > 0 || definitionInvalid
+  const hasBody = hasInputSocket
+    || outputFrames.length > 0
+    || definitionInvalid
   const traceActive = !!nodeData._traceActive
   const traceDimmed = !!nodeData._traceDimmed
   const hoverDimmed = !!nodeData._hoverDimmed
   const traceMotionDisabled = !!nodeData._traceMotionDisabled
   const updateNodeInternals = useUpdateNodeInternals()
   const portSignature = JSON.stringify([
-    inputFrames.map((frame) => frame.id),
+    inputAnchorIds,
     outputFrames.map((frame) => frame.id),
+    showRecoveryHandles,
+    hasInputSocket,
+    isConnectable,
   ])
 
   useEffect(() => {
@@ -60,7 +71,7 @@ function SubmodelNode({
 
   return (
     <div
-      aria-label={`Submodel node: ${nodeData.label}, ${childCount} child nodes${traceActive ? ", trace active" : ""}`}
+      aria-label={`Submodel node: ${nodeData.label}, ${childCount} child nodes${loadAvailability !== "ready" ? `, ${loadAvailability}` : ""}${traceActive ? ", trace active" : ""}`}
       role="button"
       className="relative w-[240px] cursor-pointer rounded-xl"
       style={{
@@ -96,15 +107,25 @@ function SubmodelNode({
         <span
           data-testid="submodel-name-badge"
           title={nodeData.label}
-          className="ml-auto min-w-0 max-w-[110px] truncate rounded-full px-1.5 py-0.5 font-mono text-[9px]"
+          className="ml-auto min-w-0 max-w-[110px] truncate rounded-full px-1.5 py-0.5 text-[13px] font-semibold leading-tight"
           style={{
             background: `${accent}18`,
             border: `1px solid ${accent}30`,
-            color: accent,
+            color: "var(--text-primary)",
           }}
         >
           {nodeData.label}
         </span>
+        {loadAvailability !== "ready" && (
+          <span
+            role="status"
+            data-testid="submodel-load-availability"
+            className="text-[10px] font-semibold uppercase"
+            style={{ color: loadAvailability === "unavailable" ? "var(--danger)" : "var(--warning)" }}
+          >
+            {loadAvailability}
+          </span>
+        )}
       </div>
 
       {hasBody && (
@@ -119,12 +140,15 @@ function SubmodelNode({
               Definition unavailable or invalid
             </div>
           )}
-          {inputFrames.length > 0 && (
-            <FramePortRows
-              ports={inputFrames}
-              direction="target"
+          {showRecoveryHandles && <RecoveryHandles id={id} data={nodeData} />}
+          {hasInputSocket && outputFrames.length === 0 && (
+            <DefaultInputPortRow
               accent={accent}
-              testIdPrefix="submodel-input"
+              handleId={SUBMODEL_INPUT_HANDLE}
+              rowTestId="submodel-input-row"
+              handleTestId="submodel-input-handle"
+              edgeAnchorIds={inputAnchorIds}
+              isConnectable={isConnectable}
             />
           )}
           {outputFrames.length > 0 && (
@@ -133,6 +157,14 @@ function SubmodelNode({
               direction="source"
               accent={accent}
               testIdPrefix="submodel-output"
+              firstRowInput={hasInputSocket
+                ? {
+                    handleId: SUBMODEL_INPUT_HANDLE,
+                    handleTestId: "submodel-input-handle",
+                    edgeAnchorIds: inputAnchorIds,
+                    isConnectable,
+                  }
+                : undefined}
             />
           )}
         </div>
@@ -141,12 +173,50 @@ function SubmodelNode({
   )
 }
 
-function toInputFrame(port: SubmodelInputPort) {
-  return { id: `in__${port.portId}`, label: port.label, parentEdges: [] }
+function RecoveryHandles({ id, data: nodeData }: Pick<NodeProps<SubmodelFlowNode>, "id" | "data">) {
+  const recoveryEdges = useGraphStore((state) => state.edges)
+  const inputHandleIds = [...new Set(recoveryEdges
+    .filter((edge) => edge.target === id && typeof edge.targetHandle === "string" && edge.targetHandle.startsWith("in__"))
+    .map((edge) => edge.targetHandle as string))]
+  const outputHandleIds = Object.keys(nodeData._sourceHandleInputNames ?? {})
+    .filter((handle) => handle.startsWith("out__"))
+
+  if (inputHandleIds.length === 0 && outputHandleIds.length === 0) return null
+  return (
+    <div
+      data-testid="submodel-recovery-ports"
+      className="relative mt-2 flex min-h-5 items-center justify-between text-[10px]"
+      style={{ color: "var(--text-muted)" }}
+    >
+      <span>Retained recovery connections</span>
+      {inputHandleIds.map((handleId) => (
+        <Handle
+          key={handleId}
+          id={handleId}
+          type="target"
+          position={Position.Left}
+          isConnectable={false}
+          aria-label={`Unavailable input ${handleId}`}
+          style={{ top: "50%", opacity: 0.45, pointerEvents: "none" }}
+        />
+      ))}
+      {outputHandleIds.map((handleId) => (
+        <Handle
+          key={handleId}
+          id={handleId}
+          type="source"
+          position={Position.Right}
+          isConnectable={false}
+          aria-label={`Unavailable output ${handleId}`}
+          style={{ top: "50%", opacity: 0.45, pointerEvents: "none" }}
+        />
+      ))}
+    </div>
+  )
 }
 
 function toOutputFrame(port: SubmodelOutputPort) {
-  return { id: `out__${port.portId}`, label: port.label, parentEdges: [] }
+  return { id: `out__${port.name}`, label: port.name, parentEdges: [] }
 }
 
 export default memo(SubmodelNode)

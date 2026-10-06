@@ -70,15 +70,13 @@ def _definition_payload(
         "graph": graph or _definition_graph(),
         "inputPorts": [
             {
-                "portId": "records",
-                "label": "Records",
+                "name": "records",
                 "targets": [{"nodeId": "child_input", "handleId": None}],
             }
         ],
         "outputPorts": [
             {
-                "portId": "priced",
-                "label": "Priced",
+                "name": "priced",
                 "source": {"nodeId": "child_output", "handleId": None},
             }
         ],
@@ -86,18 +84,20 @@ def _definition_payload(
 
 
 def _occurrence(
-    instance_id: str = "instance_primary",
-    alias: str = "pricing",
+    name: str = "pricing",
     *,
     instance_of: str | None = None,
 ) -> GraphNode:
-    config: dict[str, object] = {"definitionId": "definition_pricing", "alias": alias}
+    config: dict[str, object] = {"definitionId": "definition_pricing", "alias": name}
     if instance_of is not None:
         config["instanceOf"] = instance_of
-    return _node(
-        instance_id,
-        node_type=NodeType.SUBMODEL,
-        config=config,
+    return GraphNode(
+        id=name,
+        data=NodeData(
+            label=name,
+            nodeType=NodeType.SUBMODEL,
+            config=config,
+        ),
     )
 
 
@@ -120,12 +120,12 @@ def _bound_graph(
                 _edge(
                     "incoming",
                     "upstream",
-                    "instance_primary",
+                    "pricing",
                     target_handle=input_handle,
                 ),
                 _edge(
                     "outgoing",
-                    "instance_primary",
+                    "pricing",
                     "downstream",
                     source_handle=output_handle,
                 ),
@@ -170,8 +170,8 @@ def test_internal_edges_are_preserved_with_qualified_endpoints() -> None:
     result = flatten_graph(_bound_graph())
 
     expected = (
-        qualified_runtime_node_id("instance_primary", "child_input"),
-        qualified_runtime_node_id("instance_primary", "child_output"),
+        qualified_runtime_node_id("pricing", "child_input"),
+        qualified_runtime_node_id("pricing", "child_output"),
     )
     assert expected in {(edge.source, edge.target) for edge in result.edges}
 
@@ -183,8 +183,8 @@ def test_duplicate_internal_edges_are_deduplicated_by_full_identity() -> None:
 
     result = flatten_graph(_bound_graph(definition=definition))
 
-    source = qualified_runtime_node_id("instance_primary", "child_input")
-    target = qualified_runtime_node_id("instance_primary", "child_output")
+    source = qualified_runtime_node_id("pricing", "child_input")
+    target = qualified_runtime_node_id("pricing", "child_output")
     matching = [edge for edge in result.edges if edge.source == source and edge.target == target]
     assert len(matching) == 1
 
@@ -237,9 +237,8 @@ def test_definition_support_code_is_merged_once_for_repeated_occurrences() -> No
             "nodes": [
                 _occurrence(),
                 _occurrence(
-                    "instance_secondary",
                     "pricing_2",
-                    instance_of="instance_primary",
+                    instance_of="pricing",
                 ),
             ],
             "preamble": "PARENT_HELPER = 1",

@@ -10,7 +10,7 @@ from collections.abc import Callable
 
 # ── Per-target configuration ─────────────────────────────────────────
 #
-# Central registry of every deploy target.  Each entry carries:
+# Central registry of every deploy target ``haute init`` offers.  Each entry carries:
 #   label        – human-readable name for .env.example header
 #   env_body     – literal body appended after the .env.example header
 #   secrets      – ordered list of CI secret / env-var names
@@ -22,15 +22,24 @@ TARGETS: dict[str, _TargetConfig] = {
     "databricks": {
         "label": "Databricks",
         "env_body": """
-# General credentials — data warehouse + MLflow tracking
+# Data access credentials — SQL warehouse reads and writes, workspace browsing
 DATABRICKS_HOST=https://adb-1234567890123456.12.azuredatabricks.net
 DATABRICKS_TOKEN=your_databricks_token_here
+
+# MLflow credentials — experiment tracking, the model registry, loading logged
+# models, and deploy's model registration. MLflow never uses the data access
+# pair above; copy its values here if one token's scopes cover both.
+# (Alternatively set MLFLOW_TRACKING_URI=databricks://<profile> to use a profile.)
+DATABRICKS_MLFLOW_HOST=https://adb-1234567890123456.12.azuredatabricks.net
+DATABRICKS_MLFLOW_TOKEN=your_databricks_mlflow_token_here
 
 # Production serving endpoint credentials
 DATABRICKS_RATING_HOST=https://adb-1234567890123456.12.azuredatabricks.net
 DATABRICKS_RATING_TOKEN=your_databricks_token_here
 """,
         "secrets": [
+            "DATABRICKS_MLFLOW_HOST",
+            "DATABRICKS_MLFLOW_TOKEN",
             "DATABRICKS_RATING_HOST",
             "DATABRICKS_RATING_TOKEN",
         ],
@@ -154,54 +163,44 @@ service = "{name}"
 """
         ),
     },
-    "sagemaker": {
-        "label": "AWS SageMaker",
-        "env_body": """
-AWS_ACCESS_KEY_ID=
-AWS_SECRET_ACCESS_KEY=
-AWS_DEFAULT_REGION=eu-west-1
-SAGEMAKER_ROLE_ARN=arn:aws:iam::123456789012:role/SageMakerRole
-""",
-        "secrets": [
-            "AWS_ACCESS_KEY_ID",
-            "AWS_SECRET_ACCESS_KEY",
-            "AWS_DEFAULT_REGION",
-            "SAGEMAKER_ROLE_ARN",
-        ],
-        "toml_section": lambda name: (
-            """\
-[deploy.sagemaker]
-region = "eu-west-1"
-instance_type = "ml.m5.large"
-initial_instance_count = 1
-"""
-        ),
-    },
-    "azure-ml": {
-        "label": "Azure ML",
-        "env_body": """
-AZURE_SUBSCRIPTION_ID=
-AZURE_TENANT_ID=
-AZURE_CLIENT_ID=
-AZURE_CLIENT_SECRET=
-""",
-        "secrets": [
-            "AZURE_SUBSCRIPTION_ID",
-            "AZURE_TENANT_ID",
-            "AZURE_CLIENT_ID",
-            "AZURE_CLIENT_SECRET",
-        ],
-        "toml_section": lambda name: (
-            """\
-[deploy.azure-ml]
-resource_group = ""
-workspace_name = ""
-instance_type = "Standard_DS3_v2"
-instance_count = 1
-"""
-        ),
-    },
 }
+
+
+# Container platforms whose service update is not implemented: ``haute deploy``
+# builds and pushes the image and finishes without updating the service. The same
+# set as ``haute.deploy._CONTAINER_PLATFORM_TARGETS`` (a test keeps them equal).
+BUILD_AND_PUSH_ONLY_TARGETS = ("azure-container-apps", "aws-ecs", "gcp-run")
+
+
+# Targets whose deploy builds a container image. ``haute status`` reads the
+# MLflow registry, so these have no registered version to tag a release with.
+_CONTAINER_BASED_TARGETS = ("container", *BUILD_AND_PUSH_ONLY_TARGETS)
+
+
+def _release_tag_script(target: str, indent: str) -> str:
+    """Shell lines, indented, that tag the production release in git.
+
+    Databricks tags the registered MLflow model version. A container-based
+    target tags the deployed commit, the identity its image tag carries; a
+    redeploy of a commit that is already tagged leaves the tag as it is.
+    """
+    if target in _CONTAINER_BASED_TARGETS:
+        lines = [
+            'TAG="deploy/$(git rev-parse --short HEAD)"',
+            'if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then',
+            '  echo "Release tag $TAG already exists."',
+            "else",
+            '  git tag "$TAG"',
+            '  git push origin "$TAG"',
+            "fi",
+        ]
+    else:
+        lines = [
+            'VERSION=$(uv run haute status --version-only 2>/dev/null || echo "unknown")',
+            'git tag "deploy/v$VERSION"',
+            'git push origin "deploy/v$VERSION"',
+        ]
+    return "\n".join(indent + line for line in lines)
 
 
 def _get_target(target: str) -> _TargetConfig:
@@ -211,6 +210,24 @@ def _get_target(target: str) -> _TargetConfig:
     except KeyError:
         msg = f"Unknown target: {target}"
         raise ValueError(msg) from None
+
+
+def _build_only_notice(target: str) -> str:
+    """The comment that labels a build-and-push-only target in its generated files.
+
+    Empty for a target that deploys end to end.
+    """
+    if target not in BUILD_AND_PUSH_ONLY_TARGETS:
+        return ""
+    return (
+        f"# Build and push only: for {_get_target(target)['label']}, `haute deploy` builds the\n"
+        "# scoring image, pushes it to the registry [deploy.container] names (required),\n"
+        "# and finishes without updating the service, which is not implemented yet.\n"
+        "# Point the service at the image yourself; the deploy output names the image tag.\n"
+        "# The generated CI stops after the push: a smoke test or impact analysis would\n"
+        "# test the service before it runs the new image, so run `haute smoke` and\n"
+        "# `haute impact` once it does.\n"
+    )
 
 
 # ── haute.toml ────────────────────────────────────────────────────────
@@ -256,7 +273,7 @@ def _target_section(name: str, target: str) -> str:
     cfg = _get_target(target)
     fn = cfg["toml_section"]
     assert callable(fn)
-    return fn(name)
+    return _build_only_notice(target) + fn(name)
 
 
 # ── .env.example ──────────────────────────────────────────────────────
@@ -277,7 +294,8 @@ def env_example(target: str) -> str:
     assert isinstance(label, str)
     env_body = cfg["env_body"]
     assert isinstance(env_body, str)
-    return _ENV_EXAMPLE_HEADER.format(label=label) + env_body
+    notice = _build_only_notice(target)
+    return _ENV_EXAMPLE_HEADER.format(label=label) + (f"#\n{notice}" if notice else "") + env_body
 
 
 # ── CI secrets helpers ────────────────────────────────────────────────
@@ -415,10 +433,62 @@ def github_deploy_yml(target: str) -> str:
 
     The impact-analysis job outputs the deployed git SHA so the
     production workflow can verify it is deploying exactly what was tested.
+    A build-and-push-only target stops after staging's image push: there is
+    no updated service to smoke-test or compare.
     """
     secrets_env = _github_secrets_env(target)
+    verification_jobs = (
+        ""
+        if target in BUILD_AND_PUSH_ONLY_TARGETS
+        else f"""
+  smoke-test:
+    name: Smoke Test Staging
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          python-version: "3.11"
+      - run: uv sync --frozen
+      - name: Score test quotes against staging endpoint
+        env:
+{secrets_env}
+        run: uv run haute smoke --endpoint-suffix "-staging"
 
-    return f"""\
+  impact-analysis:
+    name: Impact Analysis
+    needs: smoke-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          python-version: "3.11"
+      - run: uv sync --frozen
+      - name: Compare staging vs production predictions
+        env:
+{secrets_env}
+        run: uv run haute impact --endpoint-suffix "-staging"
+      - name: Upload impact report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: impact-report
+          path: impact_report.md
+      - name: Record deployed SHA
+        run: >-
+          echo "Staged commit: $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+"""
+    )
+
+    return (
+        _build_only_notice(target)
+        + f"""\
 name: Deploy
 
 on:
@@ -475,50 +545,9 @@ jobs:
         env:
 {secrets_env}
         run: uv run haute deploy --endpoint-suffix "-staging"
-
-  smoke-test:
-    name: Smoke Test Staging
-    needs: deploy-staging
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
-        with:
-          enable-cache: true
-          python-version: "3.11"
-      - run: uv sync --frozen
-      - name: Score test quotes against staging endpoint
-        env:
-{secrets_env}
-        run: uv run haute smoke --endpoint-suffix "-staging"
-
-  impact-analysis:
-    name: Impact Analysis
-    needs: smoke-test
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
-        with:
-          enable-cache: true
-          python-version: "3.11"
-      - run: uv sync --frozen
-      - name: Compare staging vs production predictions
-        env:
-{secrets_env}
-        run: uv run haute impact --endpoint-suffix "-staging"
-      - name: Upload impact report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: impact-report
-          path: impact_report.md
-      - name: Record deployed SHA
-        run: >-
-          echo "Staged commit: $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
 """
+        + verification_jobs
+    )
 
 
 def github_deploy_prod_yml(target: str) -> str:
@@ -534,8 +563,11 @@ def github_deploy_prod_yml(target: str) -> str:
     untested code.
     """
     secrets_env = _github_secrets_env(target)
+    release_tag = _release_tag_script(target, " " * 10)
 
-    return f"""\
+    return (
+        _build_only_notice(target)
+        + f"""\
 name: Deploy → Production
 
 on:
@@ -582,10 +614,9 @@ jobs:
       - name: Tag release
         run: |
           set -euo pipefail
-          VERSION=$(uv run haute status --version-only 2>/dev/null || echo "unknown")
-          git tag "deploy/v$VERSION"
-          git push origin "deploy/v$VERSION"
+{release_tag}
 """
+    )
 
 
 # ── GitLab CI ────────────────────────────────────────────────────────
@@ -601,14 +632,50 @@ def gitlab_ci_yml(target: str) -> str:
     jobs (protected-branch jobs), not in the MR validation job.
     """
     secrets_env = _gitlab_secrets_env(target)
+    release_tag = _release_tag_script(target, " " * 6)
+    verify = target not in BUILD_AND_PUSH_ONLY_TARGETS
+    verification_stages = "  - smoke-test\n  - impact-analysis\n" if verify else ""
+    verification_jobs = (
+        f"""\
+# ── Smoke test ────────────────────────────────────────────────
+smoke-test:
+  stage: smoke-test
+  timeout: 10 minutes
+  resource_group: deploy
+  variables:
+{secrets_env}
+  script:
+    - uv run haute smoke --endpoint-suffix "-staging"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
-    return f"""\
+# ── Impact analysis ──────────────────────────────────────────
+impact-analysis:
+  stage: impact-analysis
+  timeout: 10 minutes
+  resource_group: deploy
+  variables:
+{secrets_env}
+  script:
+    - uv run haute impact --endpoint-suffix "-staging"
+  artifacts:
+    paths:
+      - impact_report.md
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+"""
+        if verify
+        else ""
+    )
+
+    return (
+        _build_only_notice(target)
+        + f"""\
 stages:
   - validate
   - deploy-staging
-  - smoke-test
-  - impact-analysis
-  - deploy-production
+{verification_stages}  - deploy-production
 
 default:
   image: python:3.11
@@ -645,34 +712,7 @@ deploy-staging:
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
-# ── Smoke test ────────────────────────────────────────────────
-smoke-test:
-  stage: smoke-test
-  timeout: 10 minutes
-  resource_group: deploy
-  variables:
-{secrets_env}
-  script:
-    - uv run haute smoke --endpoint-suffix "-staging"
-  rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-
-# ── Impact analysis ──────────────────────────────────────────
-impact-analysis:
-  stage: impact-analysis
-  timeout: 10 minutes
-  resource_group: deploy
-  variables:
-{secrets_env}
-  script:
-    - uv run haute impact --endpoint-suffix "-staging"
-  artifacts:
-    paths:
-      - impact_report.md
-  rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-
-# ── Production (manual approval) ─────────────────────────────
+{verification_jobs}# ── Production (manual approval) ─────────────────────────────
 deploy-production:
   stage: deploy-production
   timeout: 15 minutes
@@ -682,14 +722,13 @@ deploy-production:
   script:
     - uv run haute deploy
     - |
-      VERSION=$(uv run haute status --version-only 2>/dev/null || echo "unknown")
-      git tag "deploy/v$VERSION"
-      git push origin "deploy/v$VERSION"
+{release_tag}
   when: manual
   allow_failure: false
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 """
+    )
 
 
 # ── Azure DevOps ─────────────────────────────────────────────────────
@@ -710,8 +749,70 @@ def azure_devops_yml(target: str) -> str:
     # The DeployProduction deployment strategy nests ``env:`` at 18 spaces, so
     # its secret keys must sit at 20 — deeper than the 14-space job-level block.
     secrets_env_production = _azure_devops_secrets_env(target, indent=" " * 20)
+    release_tag = _release_tag_script(target, " " * 20)
+    verify = target not in BUILD_AND_PUSH_ONLY_TARGETS
+    production_depends_on = "ImpactAnalysis" if verify else "DeployStaging"
+    verification_stages = (
+        f"""\
+  # ── Smoke test staging ───────────────────────────────────────
+  - stage: SmokeTest
+    displayName: Smoke Test Staging
+    dependsOn: DeployStaging
+    variables:
+      - group: haute-credentials
+    jobs:
+      - job: smoke_test
+        displayName: Score test quotes against staging
+        timeoutInMinutes: 10
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: "3.11"
+          - script: pip install "uv>=0.5,<1" && uv sync --frozen
+            displayName: Install dependencies
+          - script: uv run haute smoke --endpoint-suffix "-staging"
+            displayName: Smoke test
+            env:
+{secrets_env}
 
-    return f"""\
+  # ── Impact analysis ──────────────────────────────────────────
+  - stage: ImpactAnalysis
+    displayName: Impact Analysis
+    dependsOn: SmokeTest
+    variables:
+      - group: haute-credentials
+    jobs:
+      - job: impact
+        displayName: Compare staging vs production
+        timeoutInMinutes: 10
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: "3.11"
+          - script: pip install "uv>=0.5,<1" && uv sync --frozen
+            displayName: Install dependencies
+          - script: uv run haute impact --endpoint-suffix "-staging"
+            displayName: Impact analysis
+            env:
+{secrets_env}
+          - publish: impact_report.md
+            artifact: impact-report
+            condition: succeededOrFailed()
+
+"""
+        if verify
+        else ""
+    )
+
+    return (
+        _build_only_notice(target)
+        + f"""\
 trigger:
   branches:
     include: [main]
@@ -823,61 +924,10 @@ stages:
             env:
 {secrets_env}
 
-  # ── Smoke test staging ───────────────────────────────────────
-  - stage: SmokeTest
-    displayName: Smoke Test Staging
-    dependsOn: DeployStaging
-    variables:
-      - group: haute-credentials
-    jobs:
-      - job: smoke_test
-        displayName: Score test quotes against staging
-        timeoutInMinutes: 10
-        pool:
-          vmImage: ubuntu-latest
-        steps:
-          - checkout: self
-          - task: UsePythonVersion@0
-            inputs:
-              versionSpec: "3.11"
-          - script: pip install "uv>=0.5,<1" && uv sync --frozen
-            displayName: Install dependencies
-          - script: uv run haute smoke --endpoint-suffix "-staging"
-            displayName: Smoke test
-            env:
-{secrets_env}
-
-  # ── Impact analysis ──────────────────────────────────────────
-  - stage: ImpactAnalysis
-    displayName: Impact Analysis
-    dependsOn: SmokeTest
-    variables:
-      - group: haute-credentials
-    jobs:
-      - job: impact
-        displayName: Compare staging vs production
-        timeoutInMinutes: 10
-        pool:
-          vmImage: ubuntu-latest
-        steps:
-          - checkout: self
-          - task: UsePythonVersion@0
-            inputs:
-              versionSpec: "3.11"
-          - script: pip install "uv>=0.5,<1" && uv sync --frozen
-            displayName: Install dependencies
-          - script: uv run haute impact --endpoint-suffix "-staging"
-            displayName: Impact analysis
-            env:
-{secrets_env}
-          - publish: impact_report.md
-            artifact: impact-report
-            condition: succeededOrFailed()
-
-  # ── Deploy to production (manual approval) ───────────────────
+{verification_stages}  # ── Deploy to production (manual approval) ───────────────────
   - stage: DeployProduction
     displayName: Deploy → Production
-    dependsOn: ImpactAnalysis
+    dependsOn: {production_depends_on}
     variables:
       - group: haute-credentials
     jobs:
@@ -903,11 +953,10 @@ stages:
 {secrets_env_production}
                 - script: |
                     set -euo pipefail
-                    VERSION=$(uv run haute status --version-only 2>/dev/null || echo "unknown")
-                    git tag "deploy/v$VERSION"
-                    git push origin "deploy/v$VERSION"
+{release_tag}
                   displayName: Tag release
 """
+    )
 
 
 # ── Pre-commit hook ───────────────────────────────────────────────────

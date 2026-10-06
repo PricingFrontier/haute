@@ -1,0 +1,13 @@
+{
+  "status": "completed",
+  "progress": 1.0,
+  "message": "Data is cached",
+  "terminal_reason": "completed",
+  "error": null,
+  "error_code": null,
+  "error_detail": null,
+  "execution_metrics": null,
+  "generation_id": "b41f0a2c9d5e4f7a",
+  "outcome": "published",
+  "profile": null
+}

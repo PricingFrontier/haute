@@ -17,6 +17,7 @@ from datetime import date
 import polars as pl
 import pytest
 
+from haute._native_memory_limit import native_memory_backend_scope
 from haute.executor import _preview_cache, execute_graph
 from haute.graph_utils import GraphNode, NodeData, NodeType
 from haute.trace import (
@@ -39,6 +40,20 @@ from tests.conftest import (
 from tests.conftest import (
     make_transform_node as _transform_node,
 )
+
+
+@pytest.fixture(autouse=True)
+def _hard_capped_native_memory():
+    """Run each trace test under a declared native memory cap.
+
+    Production trace and preview run inside a hard-capped isolated worker
+    (``routes.pipeline._execute_trace_worker``). Declaring the backend here
+    lets an unmeasured materialisation boundary (a user cross join) run warned
+    exactly as it does there, instead of being rejected in-process.
+    """
+    with native_memory_backend_scope("rlimit"):
+        yield
+
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
@@ -351,18 +366,14 @@ class TestJoinTraceNullLeftJoin:
         preview_rows = results["join"].preview
         null_row_idx = next(i for i, r in enumerate(preview_rows) if r["key"] == 2)
 
-        # Pass the executor's preview cache explicitly so the trace
-        # reuses the exact DataFrames ``execute_graph`` just populated
-        # — a cold re-execution would pick a different row ordering
-        # for non-deterministic polars joins.  Wave 9E (#104) removed
-        # the implicit reach-through that used to happen inside the
-        # trace module.
+        # A cold re-execution may order a non-deterministic join differently,
+        # so the clicked row's values anchor the trace to the previewed row.
         result = execute_trace(
             graph,
             row_index=null_row_idx,
             target_node_id="join",
             column="val_b",
-            preview=_preview_cache,
+            row_values=preview_rows[null_row_idx],
         )
         assert result.output_value is None
 
@@ -686,7 +697,7 @@ class TestRatingStepMultiplyTables:
 class TestBandingThenRating:
     """C.3: data_source -> banding -> rating_step -> output
 
-    Pattern: Continuous variable banded, then looked up in a rate table.
+    Pattern: A numeric variable banded, then looked up in a rate table.
     Why: Banding + rating is the standard actuarial pipeline pattern.
     """
 
@@ -763,17 +774,12 @@ class TestBandingTraceLineage:
                 {
                     "column": "risk_age",
                     "outputColumn": "age_band",
-                    "banding": "continuous",
+                    "banding": "breakpoints",
                     "rules": [
-                        {"op1": "<", "val1": 25, "assignment": "young"},
-                        {
-                            "op1": ">=",
-                            "val1": 25,
-                            "op2": "<",
-                            "val2": 65,
-                            "assignment": "adult",
-                        },
+                        {"boundary": "25", "label": "young"},
+                        {"boundary": "65", "label": "adult"},
                     ],
+                    "rightClosed": False,
                     "default": "senior",
                 }
             ]
@@ -1499,14 +1505,14 @@ class TestRowCorrelationFilterReducesRows:
 
 
 class TestRowCorrelationAggregation:
-    """I.3: Aggregation (group_by) -- ambiguous source rows are surfaced.
+    """I.3: Aggregation (group_by) -- the aggregated source rows are reported.
 
     Source: 5 rows, 2 groups. group_by produces 2 rows.
-    Why: Aggregation changes cardinality drastically; multiple source rows can
+    Why: Aggregation changes cardinality drastically; multiple source rows
     share the group key, so trace must not pick one arbitrarily.
     """
 
-    def test_aggregation_surfaces_ambiguous_group_key_source(self, tmp_path):
+    def test_aggregation_reports_the_source_rows_sharing_its_group_key(self, tmp_path):
         p = tmp_path / "data.parquet"
         pl.DataFrame(
             {
@@ -1536,14 +1542,15 @@ class TestRowCorrelationAggregation:
         assert "src" not in _step_ids(result)
         assert len(result.correlation_diagnostics) == 1
         diagnostic = result.correlation_diagnostics[0]
-        assert diagnostic["code"] == "ambiguous_row_match"
-        assert diagnostic["reason"] == "relaxed_match_ambiguous"
+        # The grouping carries only its key: the row aggregates the source rows
+        # sharing it, which are counted over the whole source rather than one
+        # of them being chosen.
+        assert diagnostic["code"] == "aggregated_rows"
+        assert diagnostic["severity"] == "info"
         assert diagnostic["node_id"] == "src"
         assert diagnostic["child_node_id"] == "agg"
-        assert diagnostic["match_strategy"] == "relaxed"
-        assert set(diagnostic["match_columns"]) == {"region", "premium"}
-        assert set(diagnostic["ignored_columns"]) == {"region", "premium"}
-        assert diagnostic["matched_row_count"] == 3
+        assert set(diagnostic["match_columns"]) == {"region"}
+        assert diagnostic["matched_row_count"] == 2
 
 
 class TestRowCorrelationSortChangesOrder:
@@ -1895,15 +1902,15 @@ class TestCacheInvalidatesOnGraphChange:
         assert r2.output_value["y"] == 15
 
 
-class TestCacheReusesPreview:
-    """K.5: Preview cache available -- trace reuses it.
+class TestTraceAfterPreview:
+    """K.5: A trace after a preview shows the previewed rows.
 
-    When execute_graph has already been called, the trace should reuse
-    those DataFrames instead of re-executing.
-    Why: Prevents redundant computation and ensures trace/preview consistency.
+    The trace never reads the preview cache: it executes its own lineage (or
+    reuses its own trace cache), and still shows the row the preview showed.
+    Why: trace/preview consistency must not depend on a shared cache.
     """
 
-    def test_trace_reuses_preview_cache(self, tmp_path):
+    def test_trace_after_a_full_preview_shows_the_previewed_row(self, tmp_path):
         _trace_cache.clear()
         _preview_cache.clear()
 
@@ -1920,11 +1927,10 @@ class TestCacheReusesPreview:
         # Preview first
         execute_graph(graph, target_node_id="t", row_limit=_ROW_LIMIT)
 
-        # Trace should reuse preview cache
         result = execute_trace(graph, row_index=0, target_node_id="t", row_limit=_ROW_LIMIT)
         assert result.output_value["x"] == 1
 
-    def test_trace_reexecutes_when_projected_preview_cache_has_only_target(
+    def test_trace_after_a_target_only_preview_executes_its_lineage(
         self,
         tmp_path,
     ):
@@ -1957,8 +1963,8 @@ class TestCacheReusesPreview:
         )["t"].preview[0]
 
         with patch(
-            "haute.trace._execute_eager_core",
-            wraps=trace_mod._execute_eager_core,
+            "haute.trace.walk_graph",
+            wraps=trace_mod.walk_graph,
         ) as execute_eager:
             result = execute_trace(
                 graph,
@@ -1967,7 +1973,6 @@ class TestCacheReusesPreview:
                 column="z",
                 row_limit=_ROW_LIMIT,
                 row_values=preview,
-                preview=_preview_cache,
             )
 
         execute_eager.assert_called_once()
@@ -2621,15 +2626,14 @@ class TestBurnCostExample:
         preview_rows = results["join_premiums"].preview
         null_row_idx = next(i for i, r in enumerate(preview_rows) if r["quote_id"] == 102)
 
-        # Pass the executor's preview cache so the trace correlates
-        # against the exact same join output ``execute_graph`` produced.
-        # See the matching note in ``test_trace_null_from_left_join``.
+        # The clicked row's values anchor the trace to the previewed row; see
+        # the matching note in ``test_trace_null_from_left_join``.
         result = execute_trace(
             graph,
             row_index=null_row_idx,
             target_node_id="join_premiums",
             column="burn_cost",
-            preview=_preview_cache,
+            row_values=preview_rows[null_row_idx],
         )
         assert result.output_value is None
 

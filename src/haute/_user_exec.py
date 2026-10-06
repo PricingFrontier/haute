@@ -12,10 +12,28 @@ from typing import Any
 
 import polars as pl
 
+from haute._executable_names import RESERVED_NAMES, reserved_input_problem
+from haute._global_constants import bind_code_view
 from haute._graph_utils import build_instance_mapping
-from haute._sandbox import UnsafeCodeError, safe_globals, validate_user_code
+from haute._sandbox import (
+    UnsafeCodeError,
+    compile_project_code,
+    project_code_module,
+    safe_globals,
+    validate_user_code,
+)
 from haute._types import _Frame
 from haute.errors import ExecutionError
+
+
+def user_code_line(exc: BaseException) -> int | None:
+    """The line of node code *exc* was raised from, or None when node code did not raise it.
+
+    ``_exec_user_code`` records the line from the traceback of any exception
+    that escapes the code it runs.
+    """
+    line = getattr(exc, "_user_code_line", None)
+    return None if line is None else int(line)
 
 
 def _exec_user_code(
@@ -36,7 +54,7 @@ def _exec_user_code(
     explore, and post-code hooks) pass ``alias_first_input_as_df=True`` to
     keep that contract. Polars transforms never do.
     """
-    local_ns: dict[str, Any] = {"pl": pl}
+    local_ns: dict[str, Any] = {}
     for i, d in enumerate(dfs):
         if i < len(src_names):
             local_ns[src_names[i]] = d
@@ -45,9 +63,15 @@ def _exec_user_code(
         for orig, inst in mapping.items():
             if orig not in local_ns and inst in local_ns:
                 local_ns[orig] = local_ns[inst]
+    # ``df`` has its own rule below; the other reserved names would replace
+    # what node code reads under them (polars, the constants view).
+    reserved_inputs = [name for name in local_ns if name in RESERVED_NAMES]
+    if reserved_inputs:
+        problem = reserved_input_problem(reserved_inputs)
+        raise ExecutionError(str(problem))
     if not alias_first_input_as_df and "df" in local_ns:
         raise ExecutionError(
-            "The input name 'df' conflicts with the reserved output name for polars node "
+            "The input name 'df' conflicts with the reserved output name in a Transform's "
             "code. Rename the upstream node or frame so the transform can assign its result "
             "to 'df'."
         )
@@ -61,18 +85,22 @@ def _exec_user_code(
             raise uce.__cause__ from None
         raise
 
-    # Start from the restricted globals/preamble, then overlay dataframe
+    # Start from the execution globals/preamble, then overlay dataframe
     # bindings so inputs have ordinary function-parameter precedence. One
     # shared namespace also makes those inputs visible to comprehensions and
     # nested helpers, matching generated function execution. ``df`` is the
     # transform's reserved output slot (or an explicitly seeded implicit input
     # above), so a preamble binding must never supply it.
-    global_ns = {name: value for name, value in (extra_ns or {}).items() if name != "df"}
+    # The code reads the pipeline's constants through a view restricted to the
+    # ones it names, so a read the cache identities cannot see fails here.
+    code_ns = bind_code_view(extra_ns, code)
+    global_ns = {name: value for name, value in (code_ns or {}).items() if name != "df"}
     execution_ns = safe_globals(pl=pl, **global_ns)
     execution_ns.update(local_ns)
 
     try:
-        exec(code, execution_ns, execution_ns)
+        with project_code_module(execution_ns):
+            exec(compile_project_code(code), execution_ns, execution_ns)
     except Exception as exc:
         if exc.__traceback__:
             import traceback as _tb

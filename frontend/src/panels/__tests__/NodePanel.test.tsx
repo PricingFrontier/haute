@@ -4,22 +4,26 @@ import { render, screen, fireEvent, cleanup, within, act } from "@testing-librar
 import NodePanel from "../NodePanel"
 import { GraphProvider } from "../GraphContext"
 import type { OnUpdateConfigResult, SimpleNode, SimpleEdge } from "../editors"
-import type { ExploreCacheReport } from "../../api/types"
 import useUIStore from "../../stores/useUIStore"
-import useNodeResultsStore from "../../stores/useNodeResultsStore"
+import type { ExploreColumnStat } from "../../api/types"
+import useNodeDataStore from "../../stores/useNodeDataStore"
+import useNodeResultsStore, { hashConfig } from "../../stores/useNodeResultsStore"
+import { buildNodeDataCacheIdentity } from "../dataPointIdentity"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
 import { apiInputFrameLabels } from "../../utils/apiInputPorts"
 
-const { transformEditorProps, edgeJoinEditorProps, exploreCodeEditorProps, explorePivotsConfigProps, bandingEditorProps, dataInputEditorProps, dataOutputEditorProps, columnsTabProps, modellingConfigProps, optimiserConfigProps, fetchExplorePivotMembers, simulatePickerRefetch } = vi.hoisted(() => ({
+const { transformEditorProps, steppedCodePaneProps, edgeJoinEditorProps, exploreCodeEditorProps, explorePivotsConfigProps, bandingEditorProps, dataInputEditorProps, dataOutputEditorProps, submodelPortEditorProps, columnsTabProps, modellingConfigProps, optimiserConfigProps, fetchExplorePivotMembers, simulatePickerRefetch } = vi.hoisted(() => ({
   transformEditorProps: [] as Record<string, unknown>[],
+  steppedCodePaneProps: [] as Record<string, unknown>[],
   edgeJoinEditorProps: [] as Record<string, unknown>[],
   exploreCodeEditorProps: [] as Record<string, unknown>[],
   explorePivotsConfigProps: [] as Record<string, unknown>[],
   bandingEditorProps: [] as Record<string, unknown>[],
   dataInputEditorProps: [] as Record<string, unknown>[],
   dataOutputEditorProps: [] as Record<string, unknown>[],
+  submodelPortEditorProps: [] as Record<string, unknown>[],
   columnsTabProps: [] as Record<string, unknown>[],
   modellingConfigProps: [] as Record<string, unknown>[],
   optimiserConfigProps: [] as Record<string, unknown>[],
@@ -49,6 +53,15 @@ vi.mock("../LazyNodeEditors", async () => {
       <textarea data-testid="code-editor" />
     </div>
   ),
+  SteppedCodePane: (props: Record<string, unknown>) => {
+    steppedCodePaneProps.push(props)
+    return (
+      <div data-testid="SteppedCodePane">
+        <span data-testid="polars-hint">{props.codeHint as React.ReactNode}</span>
+        <textarea data-testid="code-editor" />
+      </div>
+    )
+  },
   TransformEditor: (props: Record<string, unknown>) => {
     transformEditorProps.push(props)
     return (
@@ -74,13 +87,12 @@ vi.mock("../LazyNodeEditors", async () => {
     const loadFilterMembers = props.loadFilterMembers as
       | ((field: string, search: string, signal: AbortSignal) => Promise<unknown>)
       | undefined
-    const currentConfigHash = props.currentConfigHash as string | null
     useEffect(() => {
       if (!simulatePickerRefetch.enabled || !loadFilterMembers) return
       const controller = new AbortController()
       void loadFilterMembers("premium", "", controller.signal).catch(() => {})
       return () => controller.abort()
-    }, [currentConfigHash, loadFilterMembers])
+    }, [loadFilterMembers])
     return <div data-testid="explore-pivots-config" />
   },
   ExploreChartsConfig: (props: Record<string, unknown>) => {
@@ -105,12 +117,7 @@ vi.mock("../LazyNodeEditors", async () => {
   ),
   OutputEditor: () => <div data-testid="OutputEditor" />,
   ExternalFileEditor: () => <div data-testid="ExternalFileEditor" />,
-  ApiInputEditor: (props: Record<string, unknown>) => (
-    <div
-      data-testid="ApiInputEditor"
-      data-config-path={typeof props.configPath === "string" ? props.configPath : undefined}
-    />
-  ),
+  ApiInputEditor: () => <div data-testid="ApiInputEditor" />,
   LiveSwitchEditor: () => <div data-testid="LiveSwitchEditor" />,
   DataInputEditor: (props: Record<string, unknown>) => {
     dataInputEditorProps.push(props)
@@ -124,6 +131,10 @@ vi.mock("../LazyNodeEditors", async () => {
   OptimiserApplyEditor: () => <div data-testid="OptimiserApplyEditor" />,
   ConstantEditor: () => <div data-testid="ConstantEditor" />,
   SubmodelEditor: () => <div data-testid="SubmodelEditor" />,
+  SubmodelPortEditor: (props: Record<string, unknown>) => {
+    submodelPortEditorProps.push(props)
+    return <div data-testid="SubmodelPortEditor" />
+  },
   ColumnsTab: (props: Record<string, unknown>) => {
     columnsTabProps.push(props)
     return <div data-testid="ColumnsTab" />
@@ -250,6 +261,99 @@ function eligibleApiInputTable(label: string) {
   }
 }
 
+/**
+ * Put a shared data profile in place for one consumer node, as the node-data
+ * store holds it once any consumer of the point has asked for it.
+ */
+/**
+ * The data identity the panel computes for one node, which every read of the
+ * shared store is gated on.
+ */
+function dataIdentity(
+  node: SimpleNode,
+  allNodes: SimpleNode[],
+  edges: SimpleEdge[],
+  source = "live",
+) {
+  return hashConfig({
+    graph: buildNodeDataCacheIdentity({ node, allNodes, edges }),
+    source,
+  })
+}
+
+function seedSharedProfile(
+  consumerNodeId: string,
+  {
+    producerNodeId = "source_1",
+    source = "live",
+    dataVersion = "explore_dataset:current",
+    columns = [] as ExploreColumnStat[],
+    rowCount = 1,
+    columnCount = 1,
+    staleProfile = false,
+    identity = "identity-the-panel-never-computes",
+  } = {},
+) {
+  const slotKey = `${producerNodeId}||${source}`
+  // A stale profile describes a version the point has already moved past.
+  const slotVersion = staleProfile ? `${dataVersion}-next` : dataVersion
+  useNodeDataStore.setState({
+    consumerSlots: { [consumerNodeId]: { slotKey, identity } },
+    slots: {
+      [slotKey]: {
+        slotKey,
+        producerNodeId,
+        portLabel: null,
+        source,
+        kind: "node_output",
+        reportedState: "current",
+        reportedDemand: "all",
+        dataVersion: slotVersion,
+        rowCount,
+        sizeBytes: 128,
+        retention: "pinned",
+        generation: {
+          generation_id: slotVersion,
+          columns: "all",
+          row_count: rowCount,
+          column_count: columnCount,
+          size_bytes: 128,
+          retention: "pinned",
+          fresh: true,
+          created_at: 1,
+        },
+        readsDirectly: false,
+        buildEndpoint: null,
+        clearEndpoint: null,
+        job: null,
+        delegatedBuild: null,
+      },
+    },
+    profiles: {
+      [slotKey]: {
+        dataVersion,
+        executionMetrics: null,
+        profile: {
+          row_count: rowCount,
+          column_count: columnCount,
+          columns,
+          overview_summary: {
+            data_quality: {
+              issue_count: 0,
+              issues: [],
+              duplicate_row_count: 0,
+              duplicate_ratio: 0,
+            },
+            categorical_summary: [],
+          },
+          data_version: dataVersion,
+          generated_at: 1,
+        },
+      },
+    },
+  })
+}
+
 describe("NodePanel", () => {
   beforeEach(() => {
     Object.defineProperty(window, "innerWidth", { value: 1920, writable: true, configurable: true })
@@ -259,8 +363,9 @@ describe("NodePanel", () => {
       explorePanes: {},
       explorePreviewPanes: {},
       modellingPanes: {},
+      optimiserPanes: {},
     })
-    useNodeResultsStore.setState({ trainJobs: {}, exploreResults: {} })
+    useNodeDataStore.getState().reset()
     useDocumentStatusStore.getState().reset()
     transformEditorProps.length = 0
     edgeJoinEditorProps.length = 0
@@ -269,11 +374,12 @@ describe("NodePanel", () => {
     bandingEditorProps.length = 0
     dataInputEditorProps.length = 0
     dataOutputEditorProps.length = 0
+    submodelPortEditorProps.length = 0
     columnsTabProps.length = 0
     modellingConfigProps.length = 0
     optimiserConfigProps.length = 0
     fetchExplorePivotMembers.mockReset()
-    useSettingsStore.setState({ activeSource: "live", streamingChunkSize: 500_000 })
+    useSettingsStore.setState({ activeSource: "live" })
   })
 
   afterEach(cleanup)
@@ -370,6 +476,137 @@ describe("NodePanel", () => {
       _sourceFile: "main.py", _recoveryId: "blocked@10",
     } }) })
     expect(screen.queryByRole("button", { name: "Remove unavailable node" })).not.toBeInTheDocument()
+  })
+
+  it("offers no migration for unavailable submodels and reset for known ordinary nodes only", () => {
+    const onRemoveUnavailableNode = vi.fn()
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({ load_status: "degraded", capabilities: { can_repair: true } }))
+    const { unmount } = renderPanel({ onRemoveUnavailableNode, node: makeNode({ data: { label: "Inputs", description: "", nodeType: "submodel", _loadAvailability: "unavailable", _sourceFile: "main.py", _recoveryId: "inputs@1" } }) })
+    expect(screen.queryByRole("button", { name: "Update to current format" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Reset node" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Recover settings" })).not.toBeInTheDocument()
+    unmount()
+    onRemoveUnavailableNode.mockClear()
+    renderPanel({ onRemoveUnavailableNode, node: makeNode({ data: { label: "Broken", description: "", nodeType: "polars", _loadAvailability: "unavailable", _sourceFile: "main.py", _recoveryId: "broken@1" } }) })
+    const resetButton = screen.getByRole("button", { name: "Reset node" })
+    expect(resetButton).toBeInTheDocument()
+    fireEvent.click(resetButton)
+    expect(onRemoveUnavailableNode).toHaveBeenCalledTimes(1)
+    expect(onRemoveUnavailableNode).toHaveBeenCalledWith({ sourceFile: "main.py", recoveryId: "broken@1", action: "reset" })
+  })
+
+  it("does not offer reset for an unavailable node instance", () => {
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+      load_status: "degraded",
+      capabilities: { can_repair: true },
+    }))
+    renderPanel({ node: makeNode({ data: {
+      label: "Copied Polars",
+      description: "",
+      nodeType: "polars",
+      config: { instanceOf: "source-polars" },
+      _authoredDecorator: "instance",
+      _loadAvailability: "unavailable",
+      _sourceFile: "main.py",
+      _recoveryId: "copy@1",
+    } }) })
+    expect(screen.queryByRole("button", { name: "Reset node" })).not.toBeInTheDocument()
+  })
+
+  it("recovers settings for an unavailable known polars node as the primary action", () => {
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+      load_status: "degraded",
+      capabilities: { can_repair: true },
+    }))
+    const onRemoveUnavailableNode = vi.fn()
+    const { props } = renderPanel({
+      onRemoveUnavailableNode,
+      node: makeNode({
+        id: "child_polars_id",
+        data: {
+          label: "Child Polars Label",
+          description: "",
+          nodeType: "polars",
+          _loadAvailability: "unavailable",
+          _sourceFile: "modules/child.py",
+          _recoveryId: "authored@7",
+        },
+      }),
+    })
+
+    fireEvent.click(screen.getByRole("button", { name: "Recover settings" }))
+    expect(onRemoveUnavailableNode).toHaveBeenCalledTimes(1)
+    expect(onRemoveUnavailableNode).toHaveBeenCalledWith({
+      sourceFile: "modules/child.py",
+      recoveryId: "authored@7",
+      action: "recover",
+    })
+    expect(props.onUpdateNode).not.toHaveBeenCalled()
+  })
+
+  it.each(["ready", "blocked"] as const)(
+    "offers no recover action for a %s node",
+    (availability) => {
+      if (availability !== "ready") {
+        useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+          load_status: "degraded",
+          capabilities: { can_repair: true },
+        }))
+      }
+      renderPanel({
+        onRemoveUnavailableNode: vi.fn(),
+        node: makeNode({
+          id: "child_polars_id",
+          data: {
+            label: "Child Polars Label",
+            description: "",
+            nodeType: "polars",
+            _loadAvailability: availability,
+            _sourceFile: "modules/child.py",
+            _recoveryId: "authored@7",
+          },
+        }),
+      })
+      expect(screen.queryByRole("button", { name: "Recover settings" })).not.toBeInTheDocument()
+    },
+  )
+
+  it.each([
+    {
+      scenario: "sourceFile missing",
+      sourceFile: undefined,
+      recoveryId: "authored@7",
+      hasCallback: true,
+    },
+    {
+      scenario: "recoveryId missing",
+      sourceFile: "modules/child.py",
+      recoveryId: undefined,
+      hasCallback: true,
+    },
+    {
+      scenario: "callback missing",
+      sourceFile: "modules/child.py",
+      recoveryId: "authored@7",
+      hasCallback: false,
+    },
+  ])("does not offer recovery button for ready node when $scenario", ({ sourceFile, recoveryId, hasCallback }) => {
+    const onRemoveUnavailableNode = hasCallback ? vi.fn() : undefined
+    renderPanel({
+      onRemoveUnavailableNode,
+      node: makeNode({
+        id: "child_polars_id",
+        data: {
+          label: "Child Polars Label",
+          description: "",
+          nodeType: "polars",
+          _loadAvailability: "ready",
+          _sourceFile: sourceFile,
+          _recoveryId: recoveryId,
+        },
+      }),
+    })
+    expect(screen.queryByRole("button", { name: "Recover settings" })).not.toBeInTheDocument()
   })
 
   it("inspects a ready degraded sibling without mounting its normal editor", () => {
@@ -616,49 +853,110 @@ describe("NodePanel", () => {
     expect(screen.getByTestId("ApiInputEditor")).toBeInTheDocument()
   })
 
-  it("passes the exact server-owned API-input config reference to cache controls", () => {
-    renderPanel({
-      node: makeNode({
-        id: "unrelated-local-id",
-        data: {
-          label: "class café",
-          description: "",
-          nodeType: "apiInput",
-          config: {},
-          _configReference: "config/quote_input/node_class_caf_xe9_.json",
-        },
-      }),
-    })
-
-    expect(screen.getByTestId("ApiInputEditor")).toHaveAttribute(
-      "data-config-path",
-      "config/quote_input/node_class_caf_xe9_.json",
-    )
-  })
-
   it("renders DataInputEditor for dataInput nodes", () => {
     renderPanel({ node: makeNode({ data: { label: "In", description: "", nodeType: "dataInput", config: {} } }) })
     expect(screen.getByTestId("DataInputEditor")).toBeInTheDocument()
   })
 
   it.each([
-    ["dataInput", "the opened input snapshot"],
-    ["externalFile", "loaded file, assign to"],
-    ["scenarioExpander", "expanded data"],
-    ["ratingStep", "use"],
-    ["modelScore", "Post-processing Code (optional)"],
-  ])("shows the Polars tab and shared code panel for %s nodes", (nodeType, hint) => {
-    renderPanel({ node: makeNode({ data: { label: "Code node", description: "", nodeType, config: {} } }) })
+    ["externalFile", "loaded file, assign to", ["claims"]],
+    ["scenarioExpander", "expanded data", []],
+    ["ratingStep", "use", []],
+    ["modelScore", "Post-processing Code (optional)", []],
+  ])("shows the Polars tab and the stepped pane in frame mode for %s nodes", (nodeType, hint, eligible) => {
+    steppedCodePaneProps.length = 0
+    const claims = makeNode({ id: "claims_src", data: { label: "claims", description: "", nodeType: "polars", config: {} } })
+    const node = makeNode({ data: { label: "Code node", description: "", nodeType, config: { steps: [] } } })
+    renderPanel({
+      node,
+      allNodes: [claims, node],
+      edges: [{ id: "e1", source: "claims_src", target: node.id }],
+    })
 
     expect(screen.getByRole("button", { name: /^config$/i })).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: /^polars$/i })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /^transform$/i })).toBeInTheDocument()
     expect(screen.queryByTestId("code-editor")).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole("button", { name: /^polars$/i }))
+    fireEvent.click(screen.getByRole("button", { name: /^transform$/i }))
 
-    expect(screen.getByTestId("PolarsCodePanel")).toBeInTheDocument()
+    expect(screen.getByTestId("SteppedCodePane")).toBeInTheDocument()
     expect(screen.getByTestId("polars-hint")).toHaveTextContent(hint)
-    expect(screen.getByTestId("code-editor")).toBeInTheDocument()
+    const paneProps = steppedCodePaneProps.at(-1) as Record<string, unknown>
+    expect(paneProps.start).toBe("frame")
+    // Only an External File may reference its inputs; the others see just df.
+    expect(paneProps.inputNames).toEqual(eligible)
+    expect((paneProps.inputSources as Array<{ name: string }>).map((source) => source.name)).toEqual(["claims"])
+  })
+
+  it("passes the node's recorded columns to its Polars tab and keeps them while only its code changes", () => {
+    steppedCodePaneProps.length = 0
+    const scored = [
+      { name: "policy_id", dtype: "String" },
+      { name: "prediction", dtype: "Float64" },
+    ]
+    const scoreNode = (config: Record<string, unknown>, recorded: boolean) => makeNode({
+      id: "score_1",
+      data: {
+        label: "Score",
+        description: "",
+        nodeType: "modelScore",
+        config,
+        ...(recorded ? { _columns: scored, _availableColumns: scored, _columnsSource: "live" } : {}),
+      },
+    })
+    const { rerender, props } = renderPanel({ node: scoreNode({ output_column: "prediction" }, true) })
+    fireEvent.click(screen.getByRole("button", { name: /^transform$/i }))
+    expect(steppedCodePaneProps.at(-1)?.nodeColumns).toEqual(scored)
+
+    // A code edit clears the stash until the refreshed preview records it again.
+    rerender(
+      <GraphProvider allNodes={[]} edges={[]}>
+        <NodePanel {...props} node={scoreNode({ output_column: "prediction", code: "df = df.filter(pl.col(\"pre" }, false)} />
+      </GraphProvider>,
+    )
+    expect(steppedCodePaneProps.at(-1)?.nodeColumns).toEqual(scored)
+
+    // Any other setting drops them until the node is previewed again.
+    rerender(
+      <GraphProvider allNodes={[]} edges={[]}>
+        <NodePanel {...props} node={scoreNode({ output_column: "pred_freq", code: "df = df.filter(pl.col(\"pre" }, false)} />
+      </GraphProvider>,
+    )
+    expect(steppedCodePaneProps.at(-1)?.nodeColumns).toBeUndefined()
+  })
+
+  it.each([
+    ["polars", transformEditorProps],
+    ["explore", exploreCodeEditorProps],
+  ] as const)("passes a %s node's recorded columns to its code editor", (nodeType, editorProps) => {
+    const recorded = [{ name: "loss_ratio", dtype: "Float64" }]
+    renderPanel({
+      node: makeNode({
+        data: { label: "Code", description: "", nodeType, config: {}, _availableColumns: recorded, _columnsSource: "live" },
+      }),
+    })
+    expect(editorProps.at(-1)?.nodeColumns).toEqual(recorded)
+  })
+
+  it("mounts the stepped code pane in frame mode on a Data Input's Polars tab", () => {
+    steppedCodePaneProps.length = 0
+    renderPanel({
+      node: makeNode({ data: { label: "In", description: "", nodeType: "dataInput", config: { steps: [] } } }),
+      runError: "boom",
+    })
+    expect(screen.queryByTestId("SteppedCodePane")).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: /^transform$/i }))
+
+    expect(screen.getByTestId("SteppedCodePane")).toBeInTheDocument()
+    expect(screen.queryByTestId("PolarsCodePanel")).not.toBeInTheDocument()
+    expect(screen.getByTestId("polars-hint")).toHaveTextContent("the opened input snapshot")
+    const paneProps = steppedCodePaneProps.at(-1) as Record<string, unknown>
+    expect(paneProps.start).toBe("frame")
+    expect(paneProps.inputNames).toEqual([])
+    expect(paneProps.inputSources).toEqual([])
+    expect(paneProps.runError).toBe("boom")
+    expect(typeof paneProps.onReplaceConfig).toBe("function")
+    expect(paneProps.config).toEqual({ steps: [] })
   })
 
   it("returns to Config when switching between Polars-tab nodes", () => {
@@ -667,8 +965,8 @@ describe("NodePanel", () => {
       data: { label: "First input", description: "", nodeType: "dataInput", config: {} },
     })
     const { rerender, props } = renderPanel({ node: first })
-    fireEvent.click(screen.getByRole("button", { name: /^polars$/i }))
-    expect(screen.getByTestId("PolarsCodePanel")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: /^transform$/i }))
+    expect(screen.getByTestId("SteppedCodePane")).toBeInTheDocument()
 
     const second = makeNode({
       id: "input_2",
@@ -773,7 +1071,7 @@ describe("NodePanel", () => {
     expect(screen.getByTestId("ModellingConfig")).toBeInTheDocument()
   })
 
-  it("shows five modelling panes only for supported configured algorithms", () => {
+  it("shows six CatBoost modelling panes only for supported configured algorithms", () => {
     const supported = makeNode({
       id: "model_1",
       data: {
@@ -786,14 +1084,16 @@ describe("NodePanel", () => {
     const rendered = renderPanel({ node: supported })
     const tablist = screen.getByRole("tablist", { name: "Modelling panes" })
 
-    expect(within(tablist).getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
-      "Target",
-      "Features",
-      "Params",
-      "Split",
-      "Train",
+    expect(within(tablist).getAllByRole("tab").map((tab) => tab.id.replace("modelling-", "").replace("-tab", ""))).toEqual([
+      "target",
+      "features",
+      "params",
+      "split",
+      "train",
+      "export",
     ])
     expect(modellingConfigProps.at(-1)?.activePane).toBe("target")
+    expect(within(tablist).getByRole("tab", { name: /Parameters/ })).toBeInTheDocument()
 
     rendered.unmount()
     renderPanel({
@@ -817,11 +1117,64 @@ describe("NodePanel", () => {
           label: "ML",
           description: "",
           nodeType: "modelling",
-          config: { algorithm: "xgboost" },
+          config: { algorithm: "unregistered" },
         },
       }),
     })
     expect(screen.queryByRole("tablist", { name: "Modelling panes" })).toBeNull()
+  })
+
+  it.each([undefined, "params"] as const)("shows six GLM modelling panes and restores remembered %s", (rememberedPane) => {
+    useUIStore.setState({
+      modellingPanes: rememberedPane === undefined ? {} : { model_glm: rememberedPane },
+    })
+    const onUpdateNode = vi.fn(() => ({ ok: true as const }))
+    renderPanel({
+      node: makeNode({
+        id: "model_glm",
+        data: {
+          label: "GLM",
+          description: "",
+          nodeType: "modelling",
+          config: { algorithm: "glm", family: "poisson" },
+        },
+      }),
+      onUpdateNode,
+    })
+
+    const tablist = screen.getByRole("tablist", { name: "Modelling panes" })
+    expect(within(tablist).getAllByRole("tab").map((tab) => tab.id.replace("modelling-", "").replace("-tab", ""))).toEqual([
+      "target", "features", "params", "split", "train", "export",
+    ])
+    expect(within(tablist).getByRole("tab", { name: /Parameters/ })).toBeInTheDocument()
+    expect(within(tablist).getByRole("tab", { name: rememberedPane === "params" ? /Parameters/ : "Target" })).toHaveAttribute("aria-selected", "true")
+    expect(modellingConfigProps.at(-1)?.activePane).toBe(rememberedPane ?? "target")
+    expect(onUpdateNode).not.toHaveBeenCalled()
+  })
+
+  it("badges exactly the modelling panes the editor reports for this node", () => {
+    renderPanel({
+      node: makeNode({
+        id: "model_badges",
+        data: { label: "ML", description: "", nodeType: "modelling", config: { algorithm: "catboost" } },
+      }),
+    })
+    const tablist = screen.getByRole("tablist", { name: "Modelling panes" })
+    const report = modellingConfigProps.at(-1)?.onPaneIssuesChange as
+      (nodeId: string, panes: readonly string[]) => void
+
+    act(() => report("model_badges", ["params", "split"]))
+    expect(within(tablist).getByRole("tab", { name: "Parameters" })).toHaveAccessibleDescription("Parameters needs attention")
+    expect(within(tablist).getByRole("tab", { name: "Split" })).toHaveAccessibleDescription("Split needs attention")
+    expect(within(tablist).getByRole("tab", { name: "Target" })).not.toHaveAccessibleDescription()
+
+    // A report left behind by another node's editor never badges this one.
+    act(() => report("other_node", ["target"]))
+    expect(within(tablist).getByRole("tab", { name: "Target" })).not.toHaveAccessibleDescription()
+    expect(within(tablist).getByRole("tab", { name: "Split" })).not.toHaveAccessibleDescription()
+
+    act(() => report("model_badges", []))
+    expect(within(tablist).getByRole("tab", { name: "Parameters" })).not.toHaveAccessibleDescription()
   })
 
   it("remembers the active modelling pane by node", () => {
@@ -832,7 +1185,11 @@ describe("NodePanel", () => {
           label: "ML",
           description: "",
           nodeType: "modelling",
-          config: { algorithm: "glm", family: "poisson", all_factors: true },
+          config: {
+            algorithm: "glm",
+            family: "poisson",
+            terms: { age: { type: "linear" } },
+          },
         },
       }),
     })
@@ -841,39 +1198,6 @@ describe("NodePanel", () => {
 
     expect(useUIStore.getState().modellingPanes.model_1).toBe("features")
     expect(modellingConfigProps.at(-1)?.activePane).toBe("features")
-  })
-
-  it("keeps every setup tab plain regardless of configuration completeness", () => {
-    const cases = [
-      { algorithm: "catboost" },
-      { algorithm: "glm", family: "poisson" },
-      {
-        algorithm: "glm",
-        family: "poisson",
-        all_factors: true,
-        regularization: "elastic_net",
-      },
-    ]
-
-    cases.forEach((config, index) => {
-      const rendered = renderPanel({
-        node: makeNode({
-          id: `model_${index}`,
-          data: {
-            label: "ML",
-            description: "",
-            nodeType: "modelling",
-            config: { ...config },
-          },
-        }),
-      })
-      for (const pane of ["Target", "Features", "Params", "Split"]) {
-        expect(screen.getByRole("tab", { name: pane })).not.toHaveAccessibleDescription()
-      }
-      expect(screen.queryByText("Needs attention")).not.toBeInTheDocument()
-      expect(modellingConfigProps.at(-1)).not.toHaveProperty("objectiveIssue")
-      rendered.unmount()
-    })
   })
 
   it("marks Train while this node has an active job", () => {
@@ -914,6 +1238,111 @@ describe("NodePanel", () => {
     expect(screen.getByTestId("OptimiserConfig")).toBeInTheDocument()
   })
 
+  it("shows the same optimiser panes in both modes", () => {
+    useUIStore.setState({ optimiserPanes: { opt_panes: "factors" } })
+    const optimiserNode = (mode: string) => makeNode({
+      id: "opt_panes",
+      data: { label: "Opt", description: "", nodeType: "optimiser", config: { mode } },
+    })
+    const paneKeys = () => within(screen.getByRole("tablist", { name: "Optimiser panes" }))
+      .getAllByRole("tab")
+      .map((tab) => tab.id.replace("optimiser-", "").replace("-tab", ""))
+
+    const rendered = renderPanel({ node: optimiserNode("ratebook") })
+    // No output frame, so no Config/Columns strip above the panes.
+    expect(screen.queryByRole("button", { name: "columns" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "config" })).toBeNull()
+    expect(paneKeys()).toEqual(["data", "factors", "constraints", "solve", "export"])
+    expect(screen.getByRole("tab", { name: "Factors" })).toHaveAttribute("aria-selected", "true")
+    expect(optimiserConfigProps.at(-1)?.activePane).toBe("factors")
+
+    rendered.unmount()
+    renderPanel({ node: optimiserNode("online") })
+    // Factors holds the validation factors too, so online mode keeps it.
+    expect(paneKeys()).toEqual(["data", "factors", "constraints", "solve", "export"])
+    expect(screen.getByRole("tab", { name: "Factors" })).toHaveAttribute("aria-selected", "true")
+    expect(optimiserConfigProps.at(-1)?.activePane).toBe("factors")
+  })
+
+  it("remembers the active optimiser pane by node and marks Solve while a solve runs", () => {
+    renderPanel({
+      node: makeNode({
+        id: "opt_1",
+        data: { label: "Opt", description: "", nodeType: "optimiser", config: { mode: "online" } },
+      }),
+    })
+
+    fireEvent.click(screen.getByRole("tab", { name: "Constraints" }))
+    expect(useUIStore.getState().optimiserPanes.opt_1).toBe("constraints")
+    expect(optimiserConfigProps.at(-1)?.activePane).toBe("constraints")
+    expect(screen.getByRole("tab", { name: "Solve" })).not.toHaveAccessibleDescription()
+
+    act(() => {
+      useNodeResultsStore.setState({
+        solveJobs: {
+          opt_1: {
+            jobId: "solve_1",
+            nodeId: "opt_1",
+            nodeLabel: "Opt",
+            progress: null,
+            error: null,
+            constraints: {},
+            configHash: "hash",
+            source: "live",
+            structuralVersion: 0,
+          },
+        },
+      })
+    })
+    expect(screen.getByRole("tab", { name: "Solve" })).toHaveAccessibleDescription("Solve is running")
+    expect(screen.getByRole("tab", { name: "Constraints" })).toHaveAttribute("aria-selected", "true")
+  })
+
+  it("badges exactly the optimiser panes the editor reports for this node", () => {
+    renderPanel({
+      node: makeNode({
+        id: "opt_badges",
+        data: { label: "Opt", description: "", nodeType: "optimiser", config: { mode: "ratebook" } },
+      }),
+    })
+    const tablist = screen.getByRole("tablist", { name: "Optimiser panes" })
+    const report = optimiserConfigProps.at(-1)?.onPaneIssuesChange as
+      (nodeId: string, panes: readonly string[]) => void
+
+    act(() => report("opt_badges", ["data", "factors"]))
+    expect(within(tablist).getByRole("tab", { name: "Data" })).toHaveAccessibleDescription("Data needs attention")
+    expect(within(tablist).getByRole("tab", { name: "Factors" })).toHaveAccessibleDescription("Factors needs attention")
+    expect(within(tablist).getByRole("tab", { name: "Constraints" })).not.toHaveAccessibleDescription()
+
+    act(() => report("other_node", ["constraints"]))
+    expect(within(tablist).getByRole("tab", { name: "Constraints" })).not.toHaveAccessibleDescription()
+
+    act(() => report("opt_badges", []))
+    expect(within(tablist).getByRole("tab", { name: "Data" })).not.toHaveAccessibleDescription()
+  })
+
+  it("lets the optimiser editor point another node at a saved artifact", () => {
+    const onUpdateNode = vi.fn(() => ({ ok: true as const }))
+    const applyNode = makeNode({
+      id: "apply_1",
+      data: { label: "Apply", description: "", nodeType: "optimiserApply", config: { sourceType: "run", version_column: "v" } },
+    })
+    const optimiser = makeNode({
+      id: "opt_1",
+      data: { label: "Opt", description: "", nodeType: "optimiser", config: {} },
+    })
+    renderPanel({ node: optimiser, allNodes: [optimiser, applyNode], onUpdateNode })
+    const update = optimiserConfigProps.at(-1)?.onUpdateNodeConfig as
+      (nodeId: string, patch: Record<string, unknown>) => { ok: boolean }
+
+    expect(update("apply_1", { sourceType: "file", artifact_path: "output/q3.json" })).toEqual({ ok: true })
+    expect(onUpdateNode).toHaveBeenCalledWith("apply_1", expect.objectContaining({
+      label: "Apply",
+      config: { sourceType: "file", version_column: "v", artifact_path: "output/q3.json" },
+    }))
+    expect(update("missing", {})).toEqual({ ok: false, error: 'Cannot update missing node "missing".' })
+  })
+
   it("asks OptimiserConfig to defer fallback column fetches while selected preview is loading", () => {
     renderPanel({
       node: makeNode({
@@ -936,7 +1365,7 @@ describe("NodePanel", () => {
     expect(screen.getByTestId("OptimiserApplyEditor")).toBeInTheDocument()
   })
 
-  it("hides generic config controls but shows the refresh action for explore nodes", () => {
+  it("leaves preview refresh out of the Explore editor header", () => {
     const onRefreshPreview = vi.fn()
     renderPanel({
       node: makeNode({
@@ -947,13 +1376,8 @@ describe("NodePanel", () => {
 
     expect(screen.queryByRole("button", { name: /^config$/i })).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /^columns$/i })).not.toBeInTheDocument()
-    const refreshButton = screen.getByTitle("Refresh Explore outputs")
-    const closeButton = screen.getByTitle("Close")
-    expect(refreshButton.compareDocumentPosition(closeButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-
-    fireEvent.click(refreshButton)
-
-    expect(onRefreshPreview).toHaveBeenCalledOnce()
+    expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument()
+    expect(screen.getByTitle("Close")).toBeInTheDocument()
   })
 
   it("renders Explore code before analysis panes and switches between them", async () => {
@@ -990,7 +1414,7 @@ describe("NodePanel", () => {
       edges: [sourceEdge],
     })
 
-    const code = screen.getByRole("tab", { name: "Polars Code" })
+    const code = screen.getByRole("tab", { name: "Transform" })
     const overview = screen.getByRole("tab", { name: "Overview" })
     const pivots = screen.getByRole("tab", { name: "Pivots" })
     const charts = screen.getByRole("tab", { name: "Charts" })
@@ -1000,7 +1424,7 @@ describe("NodePanel", () => {
       within(screen.getByRole("tablist", { name: "Explore panes" }))
         .getAllByRole("tab")
         .map((tab) => tab.textContent),
-    ).toEqual(["Polars Code", "Overview", "Pivots", "Charts", "Export"])
+    ).toEqual(["Transform", "Overview", "Pivots", "Charts", "Export"])
     expect(screen.queryByRole("tab", { name: "Relationships" })).not.toBeInTheDocument()
 
     expect(code).toHaveAttribute("aria-selected", "true")
@@ -1050,18 +1474,39 @@ describe("NodePanel", () => {
     expect(fetchExplorePivotMembers).toHaveBeenCalledWith({
       graph: {
         nodes: [
-          { id: "source_1", type: "dataInput", data: sourceNode.data, position: { x: 0, y: 0 } },
-          { id: "explore_1", type: "explore", data: exploreNode.data, position: { x: 0, y: 0 } },
+          {
+            id: "source_1",
+            type: "dataInput",
+            data: {
+              label: "Claims Source",
+              description: "",
+              nodeType: "dataInput",
+              config: {},
+            },
+            position: { x: 0, y: 0 },
+          },
+          {
+            id: "explore_1",
+            type: "explore",
+            data: {
+              label: "Explore Claims",
+              description: "",
+              nodeType: "explore",
+              config: { code: "df = df.filter(pl.col('premium') > 0)" },
+            },
+            position: { x: 0, y: 0 },
+          },
         ],
         edges: [sourceEdge],
         submodels: undefined,
-        preamble: undefined,
+        preamble: "",
+        global_constants: [],
+        global_constants_error: null,
       },
       node_id: "explore_1",
       field: "premium",
       source: "live",
       search: "north",
-      streamingChunkSize: 500_000,
       signal,
     })
 
@@ -1124,66 +1569,37 @@ describe("NodePanel", () => {
     })
     const sourceEdge = { id: "e_source_explore", source: "source_1", target: "explore_1" }
 
+    const identity = dataIdentity(exploreNode, [sourceNode, exploreNode], [sourceEdge])
+
     renderPanel({ node: exploreNode, allNodes: [sourceNode, exploreNode], edges: [sourceEdge] })
     fireEvent.click(screen.getByRole("tab", { name: "Pivots" }))
 
     expect(explorePivotsConfigProps.at(-1)?.upstreamColumns).toEqual([
       { name: "upstream_premium", dtype: "Int64" },
     ])
-    const currentConfigHash = explorePivotsConfigProps.at(-1)?.currentConfigHash as string
-    const report: ExploreCacheReport = {
-      status: "ok",
-      node_id: "explore_1",
-      upstream_node_id: "source_1",
-      source: "live",
-      dataframe_cache_key: "explore_dataset:current",
-      row_count: 1,
-      column_count: 1,
-      generated_at: 1,
-      columns: [],
-      overview_summary: {
-        data_quality: {
-          issue_count: 0,
-          issues: [],
-          duplicate_row_count: 0,
-          duplicate_ratio: 0,
-        },
-        categorical_summary: [],
-      },
-    }
-
     act(() => {
-      useNodeResultsStore.setState({
-        exploreResults: {
-          explore_1: {
-            result: report,
-            jobId: "cache-status:explore_1",
-            configHash: currentConfigHash,
-            source: "live",
-            structuralVersion: 0,
-            nodeLabel: "Explore Claims",
-          },
-        },
-      })
+      seedSharedProfile("explore_1", { identity })
     })
 
-    // A current report's empty schema is authoritative over the connected
+    // A current profile's empty schema is authoritative over the connected
     // upstream fallback: Explore code can deliberately project no fields.
     expect(explorePivotsConfigProps.at(-1)?.upstreamColumns).toEqual([])
 
     act(() => {
-      useNodeResultsStore.setState({
-        exploreResults: {
-          explore_1: {
-            result: report,
-            jobId: "cache-status:explore_1",
-            configHash: "stale-graph-source-identity",
-            source: "live",
-            structuralVersion: 0,
-            nodeLabel: "Explore Claims",
-          },
-        },
-      })
+      // The point has moved to a newer generation than the profile describes,
+      // so the profile no longer says anything about the data this node reads.
+      seedSharedProfile("explore_1", { identity, staleProfile: true })
+    })
+
+    expect(explorePivotsConfigProps.at(-1)?.upstreamColumns).toEqual([
+      { name: "upstream_premium", dtype: "Int64" },
+    ])
+
+    act(() => {
+      // The profile of the point this node read under a different identity —
+      // another source, or before it was rewired — says nothing about the data
+      // it reads now, so the connected upstream fallback stands.
+      seedSharedProfile("explore_1", { identity: "another-identity" })
     })
 
     expect(explorePivotsConfigProps.at(-1)?.upstreamColumns).toEqual([
@@ -1256,7 +1672,7 @@ describe("NodePanel", () => {
     })
     renderPanel({ node: exploreNode })
 
-    // Default pane is "Polars Code"; switch to Overview.
+    // Default pane is "Transform"; switch to Overview.
     fireEvent.click(screen.getByRole("tab", { name: "Overview" }))
 
     expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true")
@@ -1287,7 +1703,7 @@ describe("NodePanel", () => {
       </GraphProvider>,
     )
 
-    expect(screen.getByRole("tab", { name: "Polars Code" })).toHaveAttribute("aria-selected", "true")
+    expect(screen.getByRole("tab", { name: "Transform" })).toHaveAttribute("aria-selected", "true")
 
     fireEvent.click(screen.getByRole("tab", { name: "Pivots" }))
     expect(screen.getByRole("tab", { name: "Pivots" })).toHaveAttribute("aria-selected", "true")
@@ -1386,6 +1802,21 @@ describe("NodePanel", () => {
         sourceLabel: "Claims Source",
       })
       expect(sources[2].frameUnresolved).not.toBe(true)
+
+      for (const [edgeId, frameName, sourceLabel] of [
+        ["edge_multi", "DriversRaw", "Quote API"],
+        ["edge_single", "vehicles", "Vehicle API"],
+        ["edge_ordinary", "Claims_Source", "Claims Source"],
+      ]) {
+        const chip = screen.getByTestId(`input-source-${edgeId}`)
+        expect(chip.textContent).toBe(frameName)
+        expect(chip).not.toHaveTextContent(sourceLabel)
+        expect(chip).toHaveAttribute("title", `from ${frameName}`)
+        expect(within(chip).getByRole("button", { name: `Remove connection from ${frameName}` }))
+          .toHaveAttribute("title", `Remove connection from ${frameName}`)
+      }
+      expect(screen.queryByText("Quote API")).not.toBeInTheDocument()
+      expect(screen.queryByText("Vehicle API")).not.toBeInTheDocument()
     })
 
     it("renders drilled submodel Input public port ids as input names", () => {
@@ -1401,7 +1832,7 @@ describe("NodePanel", () => {
           description: "",
           nodeType: "submodelPort",
           config: {},
-          instanceId: "instance_pricing",
+          instanceId: "pricing",
           definitionId: "pricing",
           portDirection: "input",
           ports: [
@@ -1448,6 +1879,18 @@ describe("NodePanel", () => {
       ])
       expect(screen.getByTestId("input-source-edge_quote")).toHaveTextContent("quote_info")
       expect(screen.getByTestId("input-source-edge_batch")).toHaveTextContent("nb_batch2")
+      for (const [edgeId, frameName, displayLabel] of [
+        ["edge_quote", "quote_info", "Quote info"],
+        ["edge_batch", "nb_batch2", "NB batch"],
+      ]) {
+        const chip = screen.getByTestId(`input-source-${edgeId}`)
+        expect(chip.textContent).toBe(frameName)
+        expect(chip).not.toHaveTextContent("INPUT")
+        expect(chip).not.toHaveTextContent(displayLabel)
+        expect(chip).toHaveAttribute("title", `from ${frameName}`)
+        expect(within(chip).getByRole("button", { name: `Remove connection from ${frameName}` }))
+          .toHaveAttribute("title", `Remove connection from ${frameName}`)
+      }
     })
 
     it("keeps a dangling apiInput handle verbatim and marks it unresolved", () => {
@@ -1724,63 +2167,105 @@ describe("NodePanel", () => {
       expect(props.onDeleteEdge).toHaveBeenNthCalledWith(2, "edge_drivers")
     })
 
-    it("derives a submodel-fed input name from the occurrence alias and public port id", () => {
+    it.each([
+      ["one output", ["output_1"]],
+      ["two outputs", ["output_1", "output_2"]],
+    ])("uses authoritative public output frames for a submodel-fed input with %s", (_case, frames) => {
       const target = makeNode({
         id: "target",
         data: { label: "Target", description: "", nodeType: "polars", config: {} },
       })
       const occurrence = makeNode({
-        id: "instance_pricing",
+        id: "inputs_occurrence",
         data: {
-          label: "Pricing Module",
+          label: "Inputs display",
           description: "",
           nodeType: "submodel",
-          config: { definitionId: "pricing", alias: "pricing" },
+          config: { definitionId: "child_definition", alias: "Inputs_alias" },
           _defaultInputName: null,
-          _sourceHandleInputNames: { "out__premium": "pricing__premium" },
+          _sourceHandleInputNames: Object.fromEntries(
+            frames.map((frame) => [`out__${frame}`, frame]),
+          ),
         },
       })
       const child = makeNode({
         id: "child_output",
         data: {
-          label: "Child Output",
+          label: "Internal child",
           description: "",
           nodeType: "polars",
           config: {},
         },
       })
 
-      renderPanel({
+      const edges = frames.map((frame) => ({
+        id: `edge_${frame}`,
+        source: occurrence.id,
+        target: target.id,
+        sourceHandle: `out__${frame}`,
+      }))
+      const { rerender, props } = renderPanel({
         node: target,
         allNodes: [occurrence, target],
-        edges: [
-          {
-            id: "edge_child",
-            source: occurrence.id,
-            target: target.id,
-            sourceHandle: "out__premium",
-          },
-        ],
+        edges,
         submodels: {
-          pricing: makeDefinition("pricing", [child], [], {
-            outputPorts: [
-              {
-                portId: "premium",
-                label: "Premium",
-                source: { nodeId: "child_output", handleId: null },
-              },
-            ],
+          child_definition: makeDefinition("child_definition", [child], [], {
+            outputPorts: frames.map((frame) => ({
+              name: frame,
+              source: { nodeId: "child_output", handleId: null },
+            })),
           }),
         },
       })
 
-      expect(latestTransformInputSources()).toEqual([
+      expect(latestTransformInputSources()).toEqual(frames.map((frame) =>
         expect.objectContaining({
-          edgeId: "edge_child",
-          name: "pricing__premium",
-          sourceLabel: "Pricing Module",
+          edgeId: `edge_${frame}`,
+          name: frame,
+          sourceLabel: "Inputs display",
         }),
-      ])
+      ))
+      for (const frame of frames) {
+        const chip = screen.getByTestId(`input-source-edge_${frame}`)
+        expect(chip.textContent).toBe(frame)
+        expect(chip).toHaveAttribute("title", `from ${frame}`)
+        expect(within(chip).getByRole("button", { name: `Remove connection from ${frame}` }))
+          .toHaveAttribute("title", `Remove connection from ${frame}`)
+      }
+
+      const renamedOccurrence = makeNode({
+        ...occurrence,
+        data: {
+          ...occurrence.data,
+          label: "Renamed display",
+          config: { definitionId: "child_definition", alias: "Renamed_alias" },
+        },
+      })
+      rerender(
+        <GraphProvider
+          allNodes={[renamedOccurrence, target]}
+          edges={edges}
+          submodels={{
+            child_definition: makeDefinition("child_definition", [child], [], {
+              outputPorts: frames.map((frame) => ({
+                name: frame,
+                source: { nodeId: "child_output", handleId: null },
+              })),
+            }),
+          }}
+        >
+          <NodePanel {...props} />
+        </GraphProvider>,
+      )
+
+      expect(latestTransformInputSources().map((source) => source.name)).toEqual(frames)
+      for (const frame of frames) {
+        const chip = screen.getByTestId(`input-source-edge_${frame}`)
+        expect(chip.textContent).toBe(frame)
+        expect(chip).toHaveAttribute("title", `from ${frame}`)
+        expect(within(chip).getByRole("button", { name: `Remove connection from ${frame}` }))
+          .toHaveAttribute("title", `Remove connection from ${frame}`)
+      }
     })
   })
 
@@ -1800,23 +2285,57 @@ describe("NodePanel", () => {
     expect(screen.queryByTitle("Refresh preview")).not.toBeInTheDocument()
   })
 
-  it("hides preview refresh and columns for submodel ports typed by React Flow", () => {
-    renderPanel({
-      node: {
-        id: "port_in__source",
-        type: "submodelPort",
-        data: {
-          label: "Source Port",
-          description: "",
-          config: {},
-          portDirection: "input",
-          portName: "Source Port",
-        },
-      } as unknown as SimpleNode,
+  it("routes drilled Input boundaries to their editor without preview or columns", () => {
+    const onDeleteSubmodelInputPort = vi.fn()
+    const node = makeNode({
+      id: "port_in__source",
+      type: "submodelPort",
+      data: {
+        label: "INPUT",
+        description: "",
+        nodeType: "submodelPort",
+        config: {},
+        instanceId: "pricing",
+        definitionId: "definition_pricing",
+        portDirection: "input",
+        ports: [{ id: "source", label: "Source", parentEdges: [] }],
+        externalNodeIds: [],
+      },
     })
+
+    renderPanel({ node, onDeleteSubmodelInputPort })
 
     expect(screen.queryByTitle("Refresh preview")).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /^columns$/i })).not.toBeInTheDocument()
+    expect(screen.getByTestId("SubmodelPortEditor")).toBeInTheDocument()
+    expect(submodelPortEditorProps.at(-1)).toMatchObject({
+      node,
+      onDeleteInputPort: onDeleteSubmodelInputPort,
+    })
+  })
+
+  it("does not expose the Input-boundary remove control while read-only", () => {
+    renderPanel({
+      readOnly: true,
+      onDeleteSubmodelInputPort: vi.fn(),
+      node: makeNode({
+        id: "port_in__source",
+        type: "submodelPort",
+        data: {
+          label: "INPUT",
+          description: "",
+          nodeType: "submodelPort",
+          config: {},
+          instanceId: "pricing",
+          definitionId: "definition_pricing",
+          portDirection: "input",
+          ports: [{ id: "source", label: "Source", parentEdges: [] }],
+          externalNodeIds: [],
+        },
+      }),
+    })
+
+    expect(submodelPortEditorProps.at(-1)?.onDeleteInputPort).toBeUndefined()
   })
 
   it("renders a fail-loud unknown-node-type banner with read-only diagnostic config", () => {
@@ -1834,10 +2353,11 @@ describe("NodePanel", () => {
     const banner = screen.getByRole("alert")
     expect(banner).toHaveTextContent("Unknown node type")
     expect(banner).toHaveTextContent("unknownType")
-    expect(screen.getByRole("link", { name: /node documentation/i })).toHaveAttribute(
-      "href",
-      "/docs/building-models/nodes/",
-    )
+    // The editor's server does not serve the docs: the link opens the published node reference.
+    const docs = screen.getByRole("link", { name: /node documentation/i })
+    expect(docs).toHaveAttribute("href", "https://pricingfrontier.github.io/haute/building-models/nodes/")
+    expect(docs).toHaveAttribute("target", "_blank")
+    expect(docs).toHaveAttribute("rel", "noopener noreferrer")
 
     const diagnostic = screen.getByTestId("unknown-node-config-diagnostic")
     expect(diagnostic.tagName).toBe("PRE")
@@ -1982,7 +2502,7 @@ describe("NodePanel", () => {
       data: { label: "premium", description: "", nodeType: "scenarioExpander", config: {} },
     })
     const submodelNode = makeNode({
-      id: "instance_model_stuff",
+      id: "model_stuff",
       data: {
         label: "model_stuff",
         description: "",
@@ -2003,7 +2523,7 @@ describe("NodePanel", () => {
       {
         id: "boundary-input",
         source: "sale_flag",
-        target: "instance_model_stuff",
+        target: "model_stuff",
         targetHandle: "in__competitor",
       },
       { id: "instance-input", source: "premium", target: "competitor_features_scenarios" },
@@ -2017,8 +2537,7 @@ describe("NodePanel", () => {
         model_stuff: makeDefinition("model_stuff", [originalNode], [], {
           inputPorts: [
             {
-              portId: "competitor",
-              label: "Competitor",
+              name: "competitor",
               targets: [{ nodeId: "competitor_features", handleId: null }],
             },
           ],
@@ -2893,5 +3412,150 @@ describe("NodePanel", () => {
         { name: "fallback_col", dtype: "Utf8" },
       ])
     })
+  })
+})
+
+describe("scoped editing in degraded documents", () => {
+  afterEach(cleanup)
+  beforeEach(() => {
+    useDocumentStatusStore.getState().reset()
+  })
+
+  const scopedNode = () => makeNode({
+    id: "scoped@1",
+    data: {
+      label: "Scoped",
+      description: "",
+      nodeType: "polars",
+      config: { code: "df = source" },
+      _loadAvailability: "blocked",
+      _loadBlockingPath: ["source_a", "Scoped"],
+      _scopedEditable: true,
+      _sourceFile: "main.py",
+      _recoveryId: "scoped@1",
+    },
+  })
+
+  it("mounts the normal editor with a scoped save for a blocked scoped_editable node", () => {
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+      load_status: "degraded",
+    }))
+    renderPanel({ scopedSave: vi.fn(async () => ({ ok: true as const })), node: scopedNode() })
+    expect(screen.queryByTestId("node-recovery-diagnostics")).not.toBeInTheDocument()
+    expect(screen.getByTestId("node-panel-editor")).toBeInTheDocument()
+    expect(screen.getByTestId("node-recovery-status")).toHaveTextContent(
+      "Blocked by an unavailable upstream node",
+    )
+    expect(screen.getByTestId("node-scoped-save")).toBeEnabled()
+  })
+
+  it("keeps the recovery inspector for a blocked node without scoped editing", () => {
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+      load_status: "degraded",
+    }))
+    const node = scopedNode()
+    ;(node.data as Record<string, unknown>)._scopedEditable = false
+    renderPanel({ node })
+    expect(screen.getByTestId("node-recovery-diagnostics")).toBeInTheDocument()
+  })
+
+  it("freezes the editor while a scoped save is in flight", async () => {
+    let release!: (value: { ok: boolean }) => void
+    const scopedSave = vi.fn(
+      () => new Promise<{ ok: boolean }>((resolve) => { release = resolve }),
+    )
+    renderPanel({ scopedSave, node: scopedNode() })
+    const editor = screen.getByTestId("node-panel-editor")
+    expect(editor).toHaveAttribute("aria-readonly", "false")
+    fireEvent.click(screen.getByTestId("node-scoped-save"))
+    expect(screen.getByTestId("node-scoped-save")).toBeDisabled()
+    expect(editor).toHaveAttribute("aria-readonly", "true")
+    await act(async () => {
+      release({ ok: true })
+    })
+    expect(screen.getByTestId("node-scoped-save")).toBeEnabled()
+    expect(editor).toHaveAttribute("aria-readonly", "false")
+  })
+
+  it("runs the scoped save and surfaces a failed save", async () => {
+    const scopedSave = vi.fn(async () => ({ ok: false as const, error: "stale revision" }))
+    renderPanel({ scopedSave, node: scopedNode() })
+    fireEvent.click(screen.getByTestId("node-scoped-save"))
+    expect(scopedSave).toHaveBeenCalledTimes(1)
+    expect(await screen.findByRole("alert")).toHaveTextContent("stale revision")
+  })
+
+  it("lists the document's completeness entries for the selected node", () => {
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+      load_status: "degraded",
+      completeness: [
+        { element_id: "scoped@1", path: "path", code: "required", message: "Format 'parquet' requires a non-empty 'path'." },
+        { element_id: "other@2", path: "path", code: "required", message: "Unrelated." },
+      ],
+    }))
+    renderPanel({ scopedSave: vi.fn(async () => ({ ok: true as const })), node: scopedNode() })
+    const status = screen.getByTestId("node-recovery-status")
+    expect(status).toHaveTextContent("Missing required values")
+    expect(status).toHaveTextContent("requires a non-empty 'path'")
+    expect(status).not.toHaveTextContent("Unrelated.")
+  })
+
+  it("shows what a recover could not fix, once, beside the document's own gaps", async () => {
+    const { useRecoverySummaryStore } = await import("../../stores/useRecoverySummaryStore")
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+      completeness: [
+        { element_id: "scoped@1", path: "path", code: "required", message: "Format 'parquet' requires a non-empty 'path'." },
+      ],
+    }))
+    const documentSourceFile = useDocumentStatusStore.getState().sourceFile
+    useRecoverySummaryStore.getState().reset()
+    useRecoverySummaryStore.getState().recordSummary({
+      sourceFile: documentSourceFile,
+      recoveryId: "scoped@1",
+      fieldChanges: [{ path: "/steps", outcome: "defaulted", reason: "Invalid value replaced." }],
+      completeness: [
+        { element_id: "scoped@1", path: "/", code: "incomplete_range", message: "Scenario range and stepCount are required." },
+        { element_id: "scoped@1", path: "path", code: "required", message: "Format 'parquet' requires a non-empty 'path'." },
+      ],
+      previousConfig: null,
+      changes: [{ path: "main.py", operation: "update", description: "Regenerate.", diff: "", diff_truncated: false }],
+    })
+    const node = scopedNode()
+    ;(node.data as Record<string, unknown>)._loadAvailability = "ready"
+    delete (node.data as Record<string, unknown>)._loadBlockingPath
+    renderPanel({ node })
+    const status = screen.getByTestId("node-recovery-status")
+    expect(status).toHaveTextContent("Still to complete:")
+    expect(status).toHaveTextContent("Scenario range and stepCount are required.")
+    expect(screen.getAllByText(/requires a non-empty 'path'/)).toHaveLength(1)
+  })
+
+  it("shows and dismisses the transient recovery summary", async () => {
+    const { useRecoverySummaryStore } = await import("../../stores/useRecoverySummaryStore")
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument())
+    const documentSourceFile = useDocumentStatusStore.getState().sourceFile
+    useRecoverySummaryStore.getState().reset()
+    useRecoverySummaryStore.getState().recordSummary({
+      sourceFile: documentSourceFile,
+      recoveryId: "scoped@1",
+      fieldChanges: [
+        { path: "/path", outcome: "retained", reason: "Valid under the current contract." },
+        { path: "/cacheMode", outcome: "removed", reason: "Retired field." },
+      ],
+      completeness: [],
+      previousConfig: { cacheMode: "snapshot" },
+      changes: [{ path: "main.py", operation: "update", description: "Regenerate.", diff: "-a / +b", diff_truncated: false }],
+    })
+    const node = scopedNode()
+    ;(node.data as Record<string, unknown>)._loadAvailability = "ready"
+    delete (node.data as Record<string, unknown>)._loadBlockingPath
+    renderPanel({ node })
+    const status = screen.getByTestId("node-recovery-status")
+    expect(status).toHaveTextContent("Recovered: 1 retained, 0 defaulted, 0 need input, 1 removed.")
+    expect(status).toHaveTextContent("Previous configuration")
+    expect(status).toHaveTextContent("Source diff")
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss recovery summary" }))
+    expect(Object.keys(useRecoverySummaryStore.getState().summaries)).toHaveLength(0)
+    expect(screen.queryByText(/Recovered: 1 retained/)).not.toBeInTheDocument()
   })
 })

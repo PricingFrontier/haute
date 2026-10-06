@@ -18,18 +18,18 @@ import { renderHook, act, cleanup } from "@testing-library/react"
 vi.mock("../../api/client.ts", () => ({
   getOptimiserStatus: vi.fn(),
   getTrainStatus: vi.fn(),
-  getExploreStatus: vi.fn(),
   getExplorePivotStatus: vi.fn(),
 }))
 
-import { getExplorePivotStatus, getExploreStatus, getOptimiserStatus, getTrainStatus } from "../../api/client.ts"
+import { getExplorePivotStatus, getOptimiserStatus, getTrainStatus } from "../../api/client.ts"
 import useNodeResultsStore from "../../stores/useNodeResultsStore.ts"
 import useToastStore from "../../stores/useToastStore.ts"
 import useBackgroundJobs from "../../hooks/useBackgroundJobs.ts"
-import { explorePivotResultKey, type ExplorePivotProgress, type ExploreProgress, type SolveProgress, type TrainProgress } from "../../stores/useNodeResultsStore.ts"
-import type { ExploreCacheReport, ExplorePivotResult } from "../../api/types.ts"
+import { explorePivotResultKey, type ExplorePivotProgress, type SolveProgress } from "../../stores/useNodeResultsStore.ts"
+import type { ExplorePivotResult, TrainStatusResponse } from "../../api/types.ts"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture.ts"
-import { makeTrainResult } from "../../test-utils/factories.ts"
+import { makeTrainResult, makeTrainStatus, makeOptimiserStatus, makeSolveResult } from "../../test-utils/factories.ts"
+import { ApiResponseValidationError } from "../../api/responseValidation"
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -41,25 +41,23 @@ function resetStores() {
     solveJobs: {},
     trainResults: {},
     trainJobs: {},
-    exploreResults: {},
-    exploreJobs: {},
     pivotResults: {},
     pivotJobs: {},
   })
 }
 
-function makeSolveProgress(overrides: Partial<SolveProgress> = {}): SolveProgress {
-  return {
+function makeSolveProgress(overrides: Partial<SolveProgress> = {}) {
+  return makeOptimiserStatus({
     status: "running",
     progress: 0.5,
     message: "Working...",
     elapsed_seconds: 5,
     ...overrides,
-  }
+  })
 }
 
-function makeTrainProgress(overrides: Partial<TrainProgress> = {}): TrainProgress {
-  return {
+function makeTrainProgress(overrides: Partial<TrainStatusResponse> = {}): TrainStatusResponse {
+  return makeTrainStatus({
     status: "running",
     progress: 0.5,
     message: "Training...",
@@ -68,40 +66,11 @@ function makeTrainProgress(overrides: Partial<TrainProgress> = {}): TrainProgres
     train_loss: { rmse: 0.1 },
     elapsed_seconds: 5,
     ...overrides,
-  }
-}
-
-function makeExploreReport(overrides: Partial<ExploreCacheReport> = {}): ExploreCacheReport {
-  return {
-    status: "ok",
-    node_id: "explore_1",
-    upstream_node_id: "source_1",
-    source: "pricing",
-    dataframe_cache_key: "explore_dataset:abc",
-    row_count: 123,
-    column_count: 4,
-    generated_at: 1710000000,
-    columns: [],
-    overview_summary: {
-      data_quality: { issue_count: 0, issues: [], duplicate_row_count: 0, duplicate_ratio: 0 },
-      categorical_summary: [],
-    },
-    ...overrides,
-  }
-}
-
-function makeExploreProgress(overrides: Partial<ExploreProgress> = {}): ExploreProgress {
-  return {
-    status: "running",
-    progress: 0.5,
-    message: "Exploring...",
-    result: null,
-    ...overrides,
-  }
+  })
 }
 
 function makePivotResult(overrides: Partial<ExplorePivotResult> = {}): ExplorePivotResult {
-  return { version: 1, node_id: "e1", pivot_id: "p1", source: "pricing", dataframe_cache_key: "cache", calculation_key: "calc", row_fields: [], column_fields: [], values: [], row_paths: [], column_paths: [], cells: [], warnings: [], generated_at: 1, execution_metrics: null, ...overrides }
+  return { version: 1, node_id: "e1", pivot_id: "p1", source: "pricing", data_version: "cache", calculation_key: "calc", row_fields: [], column_fields: [], values: [], row_paths: [], column_paths: [], cells: [], warnings: [], generated_at: 1, execution_metrics: null, ...overrides }
 }
 
 function makePivotProgress(overrides: Partial<ExplorePivotProgress> = {}): ExplorePivotProgress {
@@ -140,14 +109,14 @@ describe("useBackgroundJobs", () => {
   describe("solve job polling", () => {
     it("polls and completes a solve job when API returns completed status", async () => {
       const mockGetStatus = vi.mocked(getOptimiserStatus)
-      const solveResult = {
+      const solveResult = makeSolveResult({
         total_objective: 100,
         baseline_objective: 80,
         constraints: {},
         baseline_constraints: {},
         lambdas: {},
         converged: true,
-      }
+      })
 
       // First poll: still running
       mockGetStatus.mockResolvedValueOnce(
@@ -184,7 +153,7 @@ describe("useBackgroundJobs", () => {
       // Job should now be completed and moved to results
       const state = useNodeResultsStore.getState()
       expect(state.solveResults["n1"]).toBeDefined()
-      expect(state.solveResults["n1"].result.converged).toBe(true)
+      expect(state.solveResults["n1"].result?.converged).toBe(true)
       expect(state.solveJobs["n1"]).toBeUndefined()
     })
 
@@ -234,7 +203,7 @@ describe("useBackgroundJobs", () => {
       expect(useToastStore.getState().toasts).toContainEqual(
         expect.objectContaining({
           type: "error",
-          text: "Optimisation failed: Solve Node — Job 'sj-missing' not found",
+          text: "Optimisation failed: Solve Node - Job 'sj-missing' not found",
         }),
       )
 
@@ -301,8 +270,60 @@ describe("useBackgroundJobs", () => {
   // Train job polling
   // ────────────────────────────────────────────────────────────────
 
+  describe("invalid status payloads end the affected job", () => {
+    const cases = [
+      {
+        kind: "optimiser",
+        arrange: (failure: Error) => {
+          const mockGetStatus = vi.mocked(getOptimiserStatus)
+          mockGetStatus.mockResolvedValueOnce(makeSolveProgress())
+          mockGetStatus.mockRejectedValue(failure)
+          useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Solve", {}, "config", "live", 0)
+          return {
+            pollCount: () => mockGetStatus.mock.calls.length,
+            progressMessage: () => useNodeResultsStore.getState().solveJobs.n1?.progress?.message,
+            jobRemoved: () => useNodeResultsStore.getState().solveJobs.n1 === undefined,
+            resultError: () => useNodeResultsStore.getState().solveResults.n1?.error,
+          }
+        },
+      },
+      {
+        kind: "pivot",
+        arrange: (failure: Error) => {
+          const mockGetStatus = vi.mocked(getExplorePivotStatus)
+          mockGetStatus.mockResolvedValueOnce(makePivotProgress())
+          mockGetStatus.mockRejectedValue(failure)
+          useNodeResultsStore.getState().startExplorePivotJob("n1", "job-1", "n1", "p1", "Explore", "Pivot", "calculation", "live", 0)
+          return {
+            pollCount: () => mockGetStatus.mock.calls.length,
+            progressMessage: () => useNodeResultsStore.getState().pivotJobs.n1?.progress?.message,
+            jobRemoved: () => useNodeResultsStore.getState().pivotJobs.n1 === undefined,
+            resultError: () => useNodeResultsStore.getState().pivotResults.n1?.error,
+          }
+        },
+      },
+    ]
+
+    it.each(cases)("replaces stuck $kind polling with a response error and stops retrying", async ({ kind, arrange }) => {
+      const cause = new Error(`parse${kind}StatusResponse: invalid payload`)
+      const failure = new ApiResponseValidationError(`Could not read ${kind} status: ${cause.message}`, cause)
+      let observe!: ReturnType<typeof arrange>
+      act(() => { observe = arrange(failure) })
+      renderHook(() => useBackgroundJobs())
+
+      await advance(500)
+      expect(observe.progressMessage()).toBeDefined()
+      expect(observe.jobRemoved()).toBe(false)
+      await advance(1_000)
+      expect(observe.jobRemoved()).toBe(true)
+      expect(observe.resultError()).toBe(failure.message)
+      await advance(10_000)
+      expect(observe.pollCount()).toBe(2)
+    })
+  })
+
   describe("train job polling", () => {
-    it("polls and completes a train job when API returns completed status", async () => {
+    it("completes diagnostic progress with a missing categorical PDP level", async () => {
       const mockGetStatus = vi.mocked(getTrainStatus)
 
       const trainResult = makeTrainResult({
@@ -311,7 +332,15 @@ describe("useBackgroundJobs", () => {
         model_path: "/m.pkl",
         development_rows: 100,
         final_test_rows: 20,
+        pdp_data: [{
+          feature: "category",
+          type: "categorical",
+          grid: [{ value: null, avg_prediction: 1.2 }],
+        }],
       })
+      mockGetStatus.mockResolvedValueOnce(
+        makeTrainProgress({ message: "Computing partial dependence" }),
+      )
       mockGetStatus.mockResolvedValueOnce(
         makeTrainProgress({ status: "completed", progress: 1.0, result: trainResult }),
       )
@@ -323,11 +352,36 @@ describe("useBackgroundJobs", () => {
       renderHook(() => useBackgroundJobs())
 
       await advance(500)
+      expect(useNodeResultsStore.getState().trainJobs.t1?.progress?.message).toBe("Computing partial dependence")
+      await advance(1000)
 
       const state = useNodeResultsStore.getState()
       expect(state.trainResults["t1"]).toBeDefined()
       expect(state.trainResults["t1"].result.final_test_metrics.rmse).toBe(0.05)
+      expect(state.trainResults["t1"].result.pdp_data[0]?.grid[0]?.value).toBeNull()
       expect(state.trainJobs["t1"]).toBeUndefined()
+    })
+
+    it("replaces stuck diagnostic progress with a response error and stops retrying", async () => {
+      const mockGetStatus = vi.mocked(getTrainStatus)
+      const cause = new Error("parseTrainResponse: invalid pdp_data")
+      const failure = new ApiResponseValidationError(`Could not read training status: ${cause.message}`, cause)
+      mockGetStatus
+        .mockResolvedValueOnce(makeTrainProgress({ message: "Computing partial dependence" }))
+        .mockRejectedValue(failure)
+
+      act(() => {
+        useNodeResultsStore.getState().startTrainJob("t1", "tj-1", "Train Node", "th", "live", 0)
+      })
+      renderHook(() => useBackgroundJobs())
+
+      await advance(500)
+      expect(useNodeResultsStore.getState().trainJobs.t1?.progress?.message).toBe("Computing partial dependence")
+      await advance(1000)
+      expect(useNodeResultsStore.getState().trainJobs.t1).toBeUndefined()
+      expect(useNodeResultsStore.getState().trainResults.t1?.result.error).toBe(failure.message)
+      await advance(10_000)
+      expect(mockGetStatus).toHaveBeenCalledTimes(2)
     })
 
     it("publishes repeated running progress on the ramped train schedule", async () => {
@@ -352,6 +406,24 @@ describe("useBackgroundJobs", () => {
 
       await advance(2000)
       expect(useNodeResultsStore.getState().trainJobs["t1"]?.progress?.progress).toBe(0.3)
+    })
+
+    it("polls an advancing training about once a second while the optimiser keeps its backoff", async () => {
+      let iteration = 0
+      vi.mocked(getTrainStatus).mockImplementation(async () => makeTrainProgress({ iteration: ++iteration }))
+      let solved = 0
+      vi.mocked(getOptimiserStatus).mockImplementation(async () => makeSolveProgress({ progress: ++solved / 100 }))
+      act(() => {
+        useNodeResultsStore.getState().startTrainJob("t1", "tj-1", "Train Node", "th", "live", 0)
+        useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h", "live", 0)
+      })
+
+      renderHook(() => useBackgroundJobs())
+      await advance(10_000)
+
+      // Training polls at 0.5 s and then every second; the optimiser at 0.5, 1.5, 3.5 and 7.5 s.
+      expect(getTrainStatus).toHaveBeenCalledTimes(10)
+      expect(getOptimiserStatus).toHaveBeenCalledTimes(4)
     })
 
     it("treats a missing training job as terminal and stops polling", async () => {
@@ -380,7 +452,7 @@ describe("useBackgroundJobs", () => {
       expect(useToastStore.getState().toasts).toContainEqual(
         expect.objectContaining({
           type: "error",
-          text: "Training failed: Train Node — Job 'tj-missing' not found",
+          text: "Training failed: Train Node - Job 'tj-missing' not found",
         }),
       )
 
@@ -460,68 +532,6 @@ describe("useBackgroundJobs", () => {
   // Exponential backoff
   // ────────────────────────────────────────────────────────────────
 
-  describe("explore job polling", () => {
-    it("polls and completes an Explore job when API returns a cached report", async () => {
-      const mockGetStatus = vi.mocked(getExploreStatus)
-      const report = makeExploreReport({ row_count: 2000, column_count: 8 })
-      mockGetStatus.mockResolvedValueOnce(
-        makeExploreProgress({
-          status: "completed",
-          progress: 1,
-          message: "Explore analysis complete",
-          result: report,
-        }),
-      )
-
-      act(() => {
-        useNodeResultsStore.getState().startExploreJob("e1", "ej-1", "Explore Node", "eh", "pricing", 3)
-      })
-
-      renderHook(() => useBackgroundJobs())
-
-      await advance(500)
-
-      const state = useNodeResultsStore.getState()
-      expect(mockGetStatus).toHaveBeenCalledWith(
-        "ej-1",
-        { signal: expect.any(AbortSignal) },
-      )
-      expect(state.exploreJobs.e1).toBeUndefined()
-      expect(state.exploreResults.e1).toMatchObject({
-        jobId: "ej-1",
-        configHash: "eh",
-        source: "pricing",
-        structuralVersion: 3,
-        result: expect.objectContaining({ row_count: 2000, column_count: 8 }),
-      })
-    })
-
-    it("treats a missing Explore job as terminal and stops polling", async () => {
-      const mockGetStatus = vi.mocked(getExploreStatus)
-      mockGetStatus.mockRejectedValue({
-        name: "ApiError",
-        status: 404,
-        detail: "Job 'ej-missing' not found",
-        message: "HTTP 404",
-      })
-
-      act(() => {
-        useNodeResultsStore.getState().startExploreJob("e1", "ej-missing", "Explore Node", "eh", "pricing", 0)
-      })
-
-      renderHook(() => useBackgroundJobs())
-
-      await advance(500)
-
-      expect(mockGetStatus).toHaveBeenCalledTimes(1)
-      expect(useNodeResultsStore.getState().exploreJobs.e1).toBeUndefined()
-      expect(useNodeResultsStore.getState().exploreResults.e1?.error).toBe("Job 'ej-missing' not found")
-
-      await advance(20_000)
-      expect(mockGetStatus).toHaveBeenCalledTimes(1)
-    })
-  })
-
   describe("explore pivot job polling", () => {
     const startPivot = (nodeId: string, pivotId: string, jobId: string) => {
       const key = explorePivotResultKey(nodeId, pivotId)
@@ -570,14 +580,14 @@ describe("useBackgroundJobs", () => {
         return Promise.resolve(
           makeSolveProgress({
             status: "completed",
-            result: {
+            result: makeSolveResult({
               total_objective: 1,
               baseline_objective: 1,
               constraints: {},
               baseline_constraints: {},
               lambdas: {},
               converged: true,
-            },
+            }),
           }),
         )
       })
@@ -767,7 +777,7 @@ describe("useBackgroundJobs", () => {
       await advance(500)
 
       expect(useNodeResultsStore.getState().solveResults["n1"]?.error).toBe(
-        "Memory pressure reached 75% of the optimiser budget. RSS 1.7 KB of 2.9 KB limit.",
+        "Optimiser reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
       )
       expect(useNodeResultsStore.getState().solveResults["n1"]?.terminalStatus?.status).toBe("memory_limited")
       expect(useNodeResultsStore.getState().solveResults["n1"]?.terminalStatus?.execution_metrics).toBeDefined()
@@ -775,7 +785,7 @@ describe("useBackgroundJobs", () => {
         (toast) =>
           toast.type === "error" &&
           toast.text.includes(
-            "Memory pressure reached 75% of the optimiser budget. RSS 1.7 KB of 2.9 KB limit.",
+            "Optimiser reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
           ),
       )).toBe(true)
     })
@@ -808,7 +818,7 @@ describe("useBackgroundJobs", () => {
         (toast) =>
           toast.type === "error" &&
           toast.text.includes("Projection contract failed") &&
-          !toast.text.includes("Memory pressure reached"),
+          !toast.text.includes("of its memory allowance"),
       )).toBe(true)
     })
   })

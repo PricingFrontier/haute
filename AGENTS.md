@@ -17,73 +17,72 @@
   outside the sandbox. Do not ask the user to re-authenticate based only on the
   sandboxed result.
 
-# Model and delegation budget
+# Models and delegation
 
-This repository uses one high-capability decision-maker and two cheaper execution tiers.
+- Claude Code sessions run on Opus 5.5 for all work: judgment, implementation,
+  and any subagent. There are no cheaper worker tiers to route through.
+- Keep work in the main session. Spawn a subagent only for independent work
+  that saves meaningful wall-clock time, such as a broad read-only search. Do
+  not spawn one for a task a few direct tool calls can finish.
+- Give a subagent a self-contained prompt: exact scope, inputs, constraints,
+  expected output, and verification command. Subagents do not spawn further
+  agents, and never run more than two at once.
+- The main session inspects every subagent diff and its evidence itself, and
+  owns planning, test design, integration, and the completion decision.
+- Do not enable Fast mode for routine repository work. Use it only when the user
+  explicitly prioritises latency over cost.
 
-The root agent is expected to run on `gpt-5.6-sol` at `ultra`. Keep all work that requires judgment in the root thread, including:
+# Gemini grunt work through the Antigravity CLI
 
-- interpreting requirements and resolving ambiguity;
-- planning, decomposition, architecture, and API design;
-- root-cause analysis and debugging strategy;
-- test strategy, edge-case selection, and acceptance criteria;
-- security, correctness, and product-quality judgments;
-- reviewing diffs and subagent results;
-- integration decisions, final verification, and the completion decision.
-
-Subagents are bounded execution workers, not additional decision-makers.
-
-Use the project custom agent `luna_worker` for batches of clear, repeatable grunt work. Its definition in `.codex/agents/luna_worker.toml` pins `gpt-5.6-luna` at `low` reasoning and low verbosity. Suitable work includes multi-file inventories, related search batches, predefined command batches, log collection, deterministic transformations, and structured summaries. Invoke it by its custom agent name; do not override its model.
-
-Use `gpt-5.6-terra` when a bounded worker needs stronger reasoning or tool use, especially for narrowly specified test or code implementation. Every direct `spawn_agent` call for a Terra worker must explicitly set:
-
-- `model: "gpt-5.6-terra"`;
-- `reasoning_effort: "low"` by default;
-- `reasoning_effort: "medium"` only for a tightly specified implementation task that demonstrably needs more than low effort;
-- `fork_turns: "none"`, or the smallest positive recent-turn count that supplies essential context. Never use `fork_turns: "all"` for a worker.
-
-Give each worker a self-contained prompt with exact scope, inputs, constraints, expected output, and verification command. Workers must not spawn further agents.
-
-Agent creation has a fixed context cost. Do not spawn a worker for a task the root can finish with one or a few direct tool calls. Batch related deterministic operations into one Luna assignment, and spawn only when that batch removes a meaningful block of execution time. If there is no meaningful batch, keep the work in the root thread.
-
-Never allow a subagent to inherit the root model or reasoning effort. Do not use Sol, `high`, `xhigh`, `max`, or `ultra` for a subagent unless the user explicitly requests that exception. If `luna_worker` is unavailable or its Luna model cannot be verified, report that limitation and use an explicitly configured Terra/low worker; never claim that an inherited or unknown model is Luna. If the runtime cannot apply either worker configuration, keep the work in the root thread instead of spawning.
-
-Do not enable Fast mode for routine repository work. Use it only when the user explicitly prioritises latency over credit consumption.
-
-Delegate only independent, well-bounded work. Prefer Luna for:
-
-- multi-file repository inventories and batches of related read-only searches;
-- running predefined batches of tests, linters, type checks, formatters, or benchmarks;
-- collecting and compactly summarising logs or command output;
-- deterministic bulk or mechanical edits and transformations.
-
-Use Terra for implementing a narrow change after the root has supplied the design, test cases, and acceptance criteria. If Luna reports `NEEDS_ROOT_JUDGMENT`, the root resolves the judgment first and may then assign a still-bounded implementation remainder to Terra.
-
-Do not delegate planning, open-ended investigation, architecture, test design, ambiguous implementation, review, or final synthesis.
-
-Use the fewest workers that materially reduce wall-clock time. Prefer direct tool use for a quick check, batch related grunt work into one worker, never assign duplicate work, normally use one worker, and never exceed two concurrent subagents. Do not create mandatory developer/reviewer pairs or review teams. This policy supersedes older repository plans that prescribe agent pairs or review teams unless the current user explicitly re-enables them.
+When the user directs grunt work to Gemini, run it as bounded batches through
+the Antigravity CLI instead of a Codex or Claude worker:
+`agy -p "<prompt>" --model gemini-3.8-flash-high --effort high --mode plan
+--print-timeout 10m`, or the Gemini 3.8 variant the user names. Inventories,
+reference verification, and predefined command batches use read-only plan
+mode; an implementation assignment runs with `--mode accept-edits`, names the
+files it owns, and must preserve other contributors' changes. Each prompt is
+self-contained: exact files, expected output format, constraints, and the
+verification command. Workers do not spawn workers or decide architecture, test
+oracles, acceptance criteria, or completion. The root reviews the actual source,
+diffs, and execution evidence and spot-checks decisive claims itself. If Gemini
+is unavailable, report it; do not fall back to another model silently.
 
 # Fix and tweak workflow
 
-1. Establish a narrow scope and preserve unrelated user changes. The root inspects the relevant code and defines expected behaviour, risks, acceptance criteria, and a verification strategy before delegating or editing.
+1. Establish a narrow scope and preserve unrelated user changes. Inspect the relevant code and define expected behaviour, risks, acceptance criteria, and a verification strategy before editing.
 2. For a bug, reproduce it with the smallest failing regression test before implementing the fix. For new behaviour, add the smallest non-overlapping tests that prove the acceptance criteria. Cover boundaries, invalid input, state transitions, concurrency, and past regressions only when relevant; prefer extending an existing test module or parameterisation over creating a redundant test matrix.
-3. Keep small, clear fixes in the root thread. A Terra worker may implement already-specified tests or code. A Luna worker may perform a genuinely batched mechanical change whose exact transformation is already specified.
+3. Keep fixes in the main session; delegate only as described in "Models and delegation".
 4. Work in tight red-green-refactor loops. Run the new or failing test first, make the smallest coherent implementation, rerun the targeted test, then clean up without broadening scope.
-5. Inspect the actual diff and run the relevant targeted checks below. The root must not accept a worker summary in place of reviewing its changes and evidence.
-6. The root performs the final review for correctness, regressions, maintainability, consistency, and user experience. Work is complete only after the acceptance criteria are met and the relevant verification evidence is clean.
-
-For failures reported by GitHub CI, inspect the failing check and logs with `gh`, make the smallest targeted fix, and validate it by pushing and rerunning the GitHub workflow. Do not recreate or run the full CI or browser suite locally unless the user asks, or a targeted local reproduction is necessary to diagnose an unclear failure. Limit local verification to the affected test or static check; treat the GitHub pipeline as the authoritative full-suite environment.
+5. Inspect the actual diff and run the affected tests and checks below once the change is complete. Never accept a subagent summary in place of reviewing its changes and evidence.
+6. Before the PR, follow "Before a pull request" below. Work is complete only after the acceptance criteria are met, the review findings are resolved, and CI is green.
 
 # Targeted verification
 
-Run only the lowest sufficient level while iterating:
+Run only the affected tests locally:
 
-1. Run the single failing or newly added test.
-2. Run the affected test module or nearest related tests, plus checks for touched files.
-3. Run affected cross-stack contract, browser, concurrency, or integration tests only when the change crosses those boundaries.
+1. While fixing a bug or adding a test, run that single test.
+2. When the change is complete, run the affected test modules and the checks for
+   touched files once. Do not rerun them after every small edit, and do not widen
+   the run to neighbouring modules "to be safe".
+3. Run cross-stack contract, browser, concurrency, or integration tests only when
+   the change crosses those boundaries.
 
-CI remains the final full compatibility, mutation, performance, coverage, build,
-and browser gate.
+Never run the full backend (`uv run pytest tests`) or frontend (`npm --prefix frontend test`)
+suite locally unless the user asks for it. CI is the full compatibility, mutation,
+performance, coverage, build, and browser gate.
+
+# Before a pull request
+
+1. Run the affected tests and checks for the whole change (above).
+2. Have Codex review the whole branch diff once ("Code review with Codex" below).
+   Resolve or rebut each finding, rerun only the tests the fixes touch, and
+   resume the same review thread to confirm. Do not review each commit or
+   package separately.
+3. Open the PR, or push to the existing one, then watch its checks with `gh`
+   until they finish. On a failure, read the failing job's log, reproduce only
+   that test locally if the cause is unclear, fix it, and push again. Rerun an
+   environmental flake with `gh run rerun <id> --failed` instead of pushing a
+   change.
 
 Useful commands:
 
@@ -92,3 +91,97 @@ Useful commands:
 - Touched Python files: `uv run ruff check <files>` and `uv run ruff format --check <files>`
 - Affected backend typing: `uv run mypy src/haute/`
 - Frontend static checks: `npm --prefix frontend run typecheck` and `npm --prefix frontend run lint`
+
+# Code review with Codex
+
+Reviews use Codex, a different model family from the author, in a read-only
+sandbox: `gpt-6-astra` at `xhigh` effort. Keep review state (event log, thread id,
+review text) in a scratch directory outside the repository.
+
+- **Start:** `codex exec --json --sandbox read-only --skip-git-repo-check -c model=gpt-6-astra -c model_reasoning_effort=xhigh "<prompt>" < /dev/null > review.ndjson`.
+  The thread id is in the `thread.started` event; the review is the text of the
+  last `item.completed` event whose item type is `agent_message`.
+- **Resume after fixes:** `codex exec --sandbox read-only -c model=gpt-6-astra -c model_reasoning_effort=xhigh resume <thread-id> --json --skip-git-repo-check "<prompt>" < /dev/null`.
+  Say what changed and why any finding was rebutted, and ask Codex to state for
+  each prior finding whether it is addressed, flag new issues, and not re-flag
+  a finding rebutted with a reason.
+- **The prompt** names the diff (`git diff origin/main...HEAD` for a branch),
+  the intent or package entries, the specifications changed, and the
+  verification already run with its results. It asks for a review against the
+  checklist below, citing `file:line`, with a severity for each finding and one
+  final tag on its own line: `APPROVED`, `REQUEST_CHANGES`, or `NEEDS_REWORK`
+  (structural problems).
+
+Review priorities, in order: correctness (wrong results, data loss, silent
+failure); security and safety; conformance to the changed specifications, where
+drift between spec and code in either direction is a finding; test quality;
+practical concerns (performance on real inputs, messages a user can act on).
+Not priorities: documentation compliance for its own sake when the change
+updates the document, environment limitations, annotation style beyond what
+mypy and tsc require, theoretical edge cases real inputs do not produce, and
+repeating a finding already addressed or rebutted.
+
+Checklist:
+
+1. **Function:** the logic matches the requirements and specifications; error
+   scenarios and edge cases are handled.
+2. **Code quality:** typed (mypy-clean in `src/haute/`, tsc-clean in `frontend/`);
+   no duplication, and existing helpers are reused; no needless complexity;
+   clear names; comments explain constraints rather than narrate; no unused
+   imports; no oversized modules.
+3. **Architecture:** follows the patterns in the `specs/` component
+   specifications; the code and the specification deltas agree; concerns are
+   separated.
+4. **Haute design:** the `.py` file is canonical, with layout in the `.haute.json`
+   sidecar and pipelines runnable without the GUI; one parser, executor and
+   codegen path; the same pipeline in every context; Polars-native and lazy (no
+   premature `.collect()`, no pandas); fail loud, with no fallback or default
+   that masks an error.
+5. **Error handling:** deliberate propagation beats a wrong fallback; messages
+   are clear and actionable; no empty catches, broad excepts that hide real
+   errors, or error-shaped 200 responses; logging is neither noisy nor silent.
+6. **Security:** input is validated; no sensitive data is exposed; path
+   resolution and the write sandbox are respected; user-built pipelines cannot
+   inject SQL or expressions.
+7. **Performance:** resources are cleaned up; data structures fit the job;
+   nothing unnecessary runs in hot paths (executor, projection, lazy execution).
+8. **Tests, reviewed as code:** they assert observable behaviour rather than
+   wiring, and a test that would pass against a buggy implementation is a Major
+   finding; the specification's Testing scenarios and failure modes are covered;
+   behaviour touching authentication, deletion, persistence, the sandbox, or an
+   external request shape has a behavioural test; no coverage gaming (ignore
+   comments, exclusions, lowered gates), and a new skip or xfail is registered in
+   `tests/test_test_debt.py`; no tower of mocks where a real seam exists.
+
+Severity: **Critical** blocks a merge (security hole, data corruption or silently
+wrong results, breaking interface change, sandbox or auth bypass); **Major** must
+be fixed (wrong logic, significant slowdown, missing error handling or a silent
+failure path, build errors); **Minor** should be fixed (style, missing
+documentation, duplication, a missed edge case); **Suggestion** is optional.
+
+Approval gate: the requirements are implemented; no Critical or Major finding is
+open; the build passes; the affected tests pass; new logic has behavioural
+tests; and the affected specifications are updated, with
+`tests/test_docs_accuracy.py` passing.
+
+Handling a review: read the code at each cited `file:line`; fix the legitimate
+findings; rebut an incorrect one with the reason; weigh each finding's cost
+against its risk and push back on one that grows the scope without matching
+risk. Rerun only the tests the fixes touch, then resume the thread once. Bring
+`NEEDS_REWORK` to the user before making large changes.
+
+**Plan or specification review** uses the same command. Codex reviews the
+specification deltas (`git diff origin/main -- specs/`) together with the plan
+for correctness (fail loud, one execution engine, Polars lazy), whether a
+developer can build it from the low-level specifications without guessing,
+whether an engineer independent of the implementer could write the failing tests
+from the Testing scenarios, agreement between the high-level and low-level
+specifications, and practical risks. Findings are tagged P1 (blocks
+implementation) or P2, and the review ends with a tag.
+
+**A second opinion** on a design choice, a stuck bug, or a conclusion about to be
+presented also uses the same command. The prompt gives the question and your
+draft position and asks Codex to disagree where warranted, separating what it
+verified in the repository from what it inferred, and to end with a short bottom
+line. It is advisory: no tags, and nothing is gated on the answer. Don't use it
+for a question only the user can answer. When Codex disagrees, tell the user.

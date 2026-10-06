@@ -7,7 +7,7 @@ import {
   getPendingSaves,
 } from "../../api/client"
 import type { GitGraphResponse, GitLedgerSave, GitMilestoneEntry } from "../../api/types"
-import { gitErrorMessage } from "../../utils/gitError"
+import { apiErrorMessage } from "../../api/errors"
 import {
   readBranchHistory,
   readGraphCache,
@@ -213,7 +213,7 @@ export function useGitHistory({
       if (!ownsRequest()) return null
       addToast(
         "error",
-        `Failed to load version history: ${gitErrorMessage(error, "unknown error")}`,
+        `Failed to load version history: ${apiErrorMessage(error, "unknown error")}`,
       )
       return null
     } finally {
@@ -264,7 +264,7 @@ export function useGitHistory({
       if (!aliveRef.current) return
       addToast(
         "error",
-        `Failed to load the saves in this milestone: ${gitErrorMessage(error, "unknown error")}`,
+        `Failed to load the saves in this milestone: ${apiErrorMessage(error, "unknown error")}`,
       )
       applyAction({ type: "resolve-expansion", sha })
     }

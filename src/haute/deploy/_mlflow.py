@@ -4,21 +4,34 @@ from __future__ import annotations
 
 import importlib.resources
 import json
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from haute._logging import get_logger
-from haute._mlflow_utils import search_versions
+from haute._mlflow_utils import (
+    ensure_experiment,
+    mlflow_fluent_operation,
+    registry_uri_for_tracking,
+    search_versions,
+    set_tracking_uri_preserving_env,
+)
+from haute._polars_dtypes import rendered_dtype_mlflow_type_name
 from haute.deploy._config import ResolvedDeploy
-from haute.deploy._utils import build_manifest
+from haute.deploy._utils import build_manifest, model_source_line
 from haute.errors import DeployError
 
 logger = get_logger(component="deploy.mlflow")
 
 # Resolve the path to the models-from-code script shipped with the package
 _MODEL_CODE_PATH = str(importlib.resources.files("haute.deploy") / "_model_code.py")
+
+# One MLflow deploy at a time in this process: deploys share the pipeline's
+# ``.haute_build`` directory, and each picks the version it registered by
+# searching the registry after logging.
+_DEPLOY_LOCK = threading.Lock()
 
 if TYPE_CHECKING:
     from haute.deploy._config import DeployConfig
@@ -70,23 +83,40 @@ def deploy_to_mlflow(
 
     Returns:
         DeployResult with model URI, version, and endpoint URL.
-    """
 
+    The experiment, the run, the manifest artifact, the run's terminal status and
+    the version lookup go through a client bound to the MLflow destination; only
+    ``mlflow.pyfunc.log_model`` (with its registration) holds MLflow's
+    process-global state, inside :func:`mlflow_fluent_operation`. Deploys run one
+    at a time in the process, because they share the pipeline's build directory
+    and read their registered version back from the registry.
+    """
+    with _DEPLOY_LOCK:
+        return _deploy_to_mlflow(resolved, progress)
+
+
+def _deploy_to_mlflow(
+    resolved: ResolvedDeploy,
+    progress: Callable[[str], None] | None,
+) -> DeployResult:
     def _log(msg: str) -> None:
         if progress:
             progress(msg)
 
     import mlflow
+    from mlflow.tracking import MlflowClient
 
     config = resolved.config
     model_name = config.model_name
     logger.info("deploy_started", model_name=model_name, target="mlflow")
 
-    # Point MLflow at the Databricks workspace (uses DATABRICKS_RATING_HOST/TOKEN env vars)
+    # MLflow credentials first, before any request: the MLflow pair or a selected
+    # profile (never the data-access pair). The connectivity pre-check and the
+    # serving endpoint use the rating pair.
+    tracking_uri, registry_uri = _resolve_mlflow_databricks()
     _log("Connecting to Databricks MLflow...")
     _check_databricks_connectivity(_log)
-    mlflow.set_tracking_uri("databricks")
-    mlflow.set_registry_uri("databricks-uc")
+    client = MlflowClient(tracking_uri=tracking_uri, registry_uri=registry_uri)
 
     # Use Unity Catalog three-level namespace: catalog.schema.model_name
     uc_model_name = build_uc_model_name(config)
@@ -102,38 +132,40 @@ def deploy_to_mlflow(
         manifest_path = build_dir / "deploy_manifest.json"
         manifest_path.write_text(json.dumps(manifest, indent=2))
 
-        # 3. Build artifact dict for mlflow.pyfunc.log_model
-        artifacts: dict[str, str] = {
-            "deploy_manifest": str(manifest_path),
-        }
-        for artifact_name, artifact_path in resolved.artifacts.items():
-            artifacts[artifact_name] = str(artifact_path)
+        # 3. The model to log: code, artefacts, project modules, signature, environment
+        model_arguments = _pyfunc_model_arguments(resolved, manifest_path)
 
-        # 4. Build MLflow model signature
-        signature = _build_signature(resolved)
+        for node_id, source in resolved.model_sources.items():
+            _log(model_source_line(node_id, source))
 
-        # 5. Set experiment - append endpoint suffix for staging isolation
+        # 4. Set experiment - append endpoint suffix for staging isolation
         experiment_name = build_experiment_name(config)
         _log(f"Setting experiment: {experiment_name}")
-        mlflow.set_experiment(experiment_name)
+        experiment_id = ensure_experiment(client, tracking_uri, experiment_name)
 
-        # 6. Log the model
+        # 5. Log the model
         _log("Logging model to MLflow (this may take a minute)...")
-        with mlflow.start_run(run_name=f"deploy-{model_name}"):
-            mlflow.log_dict(manifest, "deploy_manifest.json")
-
-            mlflow.pyfunc.log_model(
-                name="model",
-                python_model=_MODEL_CODE_PATH,
-                artifacts=artifacts,
-                signature=signature,
-                conda_env=_conda_env(resolved),
-                registered_model_name=uc_model_name,
-            )
+        run_id = client.create_run(experiment_id, run_name=f"deploy-{model_name}").info.run_id
+        status = "FAILED"
+        try:
+            client.log_dict(run_id, manifest, "deploy_manifest.json")
+            # The one fluent call: pyfunc.log_model resolves the global tracking
+            # URI and the thread's active run.
+            with mlflow_fluent_operation():
+                set_tracking_uri_preserving_env(mlflow, tracking_uri)
+                mlflow.set_registry_uri(registry_uri)
+                with mlflow.start_run(run_id=run_id):
+                    mlflow.pyfunc.log_model(
+                        name="model",
+                        registered_model_name=uc_model_name,
+                        **model_arguments,
+                    )
+            status = "FINISHED"
+        finally:
+            client.set_terminated(run_id, status)
 
         _log(f"Model logged. Fetching registered version for {uc_model_name}...")
-        # 7. Get the registered model version
-        client = mlflow.tracking.MlflowClient()
+        # 6. Get the registered model version
         versions = search_versions(client, uc_model_name)
         if not versions:
             raise DeployError(
@@ -147,7 +179,7 @@ def deploy_to_mlflow(
 
         _log(f"Model URI: {model_uri}")
 
-        # 8. Create or update the serving endpoint
+        # 7. Create or update the serving endpoint
         _log(f"Creating/updating serving endpoint: {config.effective_endpoint_name}...")
         endpoint_url = _create_or_update_serving_endpoint(
             config=config,
@@ -191,13 +223,12 @@ def get_deploy_status(
     Returns:
         Dict with keys: model_name, latest_version, latest_stage, status.
     """
+    tracking_uri, registry_uri = _resolve_mlflow_databricks()
+
     import mlflow
 
-    mlflow.set_tracking_uri("databricks")
-    mlflow.set_registry_uri("databricks-uc")
-
     uc_model_name = f"{catalog}.{schema}.{model_name}"
-    client = mlflow.tracking.MlflowClient()
+    client = mlflow.tracking.MlflowClient(tracking_uri=tracking_uri, registry_uri=registry_uri)
     versions = search_versions(client, uc_model_name)
 
     if not versions:
@@ -217,46 +248,43 @@ def get_deploy_status(
     }
 
 
+def _pyfunc_model_arguments(resolved: ResolvedDeploy, manifest_path: Path) -> dict[str, Any]:
+    """The pyfunc model a deploy logs: code, artefacts, project modules, signature, env.
+
+    The bundled ``utility`` package is the model's only code path; MLflow copies
+    it under the model's ``code/`` directory and puts that on ``sys.path`` when
+    the model loads, so the served preamble imports the validated files.
+    """
+    artifacts: dict[str, str] = {"deploy_manifest": str(manifest_path)}
+    for artifact_name, artifact_path in resolved.artifacts.items():
+        artifacts[artifact_name] = str(artifact_path)
+    utility = resolved.project_modules.utility
+    return {
+        "python_model": _MODEL_CODE_PATH,
+        "artifacts": artifacts,
+        "code_paths": [str(utility)] if utility is not None else None,
+        "signature": _build_signature(resolved),
+        "conda_env": _conda_env(),
+    }
+
+
 def _build_signature(resolved: ResolvedDeploy) -> object:
     """Build an MLflow ModelSignature from resolved schemas."""
     from mlflow.models import ModelSignature
     from mlflow.types import ColSpec, DataType, Schema
 
-    dtype_map = {
-        "Int8": DataType.integer,
-        "Int16": DataType.integer,
-        "Int32": DataType.integer,
-        "Int64": DataType.long,
-        "UInt8": DataType.integer,
-        "UInt16": DataType.integer,
-        "UInt32": DataType.long,
-        "UInt64": DataType.long,
-        "Float32": DataType.float,
-        "Float64": DataType.double,
-        "String": DataType.string,
-        "Utf8": DataType.string,
-        "Categorical": DataType.string,
-        "Enum": DataType.string,
-        "Boolean": DataType.boolean,
-        "Date": DataType.datetime,
-        "Datetime": DataType.datetime,
-    }
-
     def _to_colspecs(schema: dict[str, str]) -> list[ColSpec]:
         specs = []
         for col_name, dtype_str in schema.items():
-            # Handle parameterized types like Datetime('us', 'UTC')
-            base_type = dtype_str.split("(")[0] if "(" in dtype_str else dtype_str
-            try:
-                mlflow_type = dtype_map[base_type]
-            except KeyError as exc:
+            mlflow_type = rendered_dtype_mlflow_type_name(dtype_str)
+            if mlflow_type is None:
                 raise DeployError(
                     f"Cannot build an MLflow signature for column {col_name!r}: "
                     f"unsupported Polars dtype {dtype_str!r}.",
                     column=col_name,
                     dtype=dtype_str,
-                ) from exc
-            specs.append(ColSpec(type=mlflow_type, name=col_name))
+                )
+            specs.append(ColSpec(type=DataType[mlflow_type], name=col_name))
         return specs
 
     input_schema = Schema(_to_colspecs(resolved.input_schema))  # type: ignore[arg-type]
@@ -264,22 +292,17 @@ def _build_signature(resolved: ResolvedDeploy) -> object:
     return ModelSignature(inputs=input_schema, outputs=output_schema)
 
 
-def _pip_requirements(resolved: ResolvedDeploy) -> list[str]:
-    """Build pip requirements for the deployed model."""
+def _pip_requirements() -> list[str]:
+    """Build pip requirements for the deployed model.
+
+    The pinned Haute brings its own model engines, so no node adds one.
+    """
     import haute
 
-    reqs = [
+    return [
         f"haute=={haute.__version__}",
-        "polars>=1.39.2",
+        "polars>=1.44.2",
     ]
-
-    # Check if catboost is used
-    for node in resolved.pruned_graph.nodes:
-        if node.data.config.get("fileType") == "catboost":
-            reqs.append("catboost>=1.2.8")
-            break
-
-    return reqs
 
 
 # Databricks Model Serving uses conda to build the container.
@@ -288,7 +311,7 @@ def _pip_requirements(resolved: ResolvedDeploy) -> list[str]:
 _SERVING_PYTHON_VERSION = "3.11.11"
 
 
-def _conda_env(resolved: ResolvedDeploy) -> dict:
+def _conda_env() -> dict:
     """Build a conda environment dict for Databricks Model Serving.
 
     Pins Python to a version available on Databricks' internal conda
@@ -300,7 +323,7 @@ def _conda_env(resolved: ResolvedDeploy) -> dict:
         "dependencies": [
             f"python={_SERVING_PYTHON_VERSION}",
             "pip",
-            {"pip": _pip_requirements(resolved)},
+            {"pip": _pip_requirements()},
         ],
         "name": "mlflow-env",
     }
@@ -372,6 +395,24 @@ def _create_or_update_serving_endpoint(
         )
 
     return f"{host}/serving-endpoints/{endpoint_name}/invocations"
+
+
+def _resolve_mlflow_databricks() -> tuple[str, str]:
+    """``(tracking_uri, registry_uri)`` for deploy's MLflow calls, or ``DeployError``.
+
+    Resolves the Databricks MLflow destination (which binds MLflow's credentials and
+    rejects ``MLFLOW_ENABLE_DB_SDK=true`` or a conflicting ``DATABRICKS_CONFIG_PROFILE``)
+    before any MLflow or HTTP request, so a misconfiguration fails fast with its
+    non-secret reason.
+    """
+    from haute.errors import MlflowConfigError
+    from haute.modelling._mlflow_settings import resolve_destination
+
+    try:
+        config = resolve_destination("databricks")
+    except MlflowConfigError as exc:
+        raise DeployError(f"Databricks MLflow is not ready for deploy: {exc}") from None
+    return config.tracking_uri, registry_uri_for_tracking(config.tracking_uri)
 
 
 def _check_databricks_connectivity(

@@ -1,0 +1,49 @@
+{
+  "catboost": {
+    "algorithm": "catboost",
+    "label": "CatBoost",
+    "suffixes": [
+      ".cbm"
+    ]
+  },
+  "ebm": {
+    "algorithm": "ebm",
+    "label": "EBM",
+    "suffixes": [
+      ".ebm"
+    ]
+  },
+  "lightgbm": {
+    "algorithm": "lightgbm",
+    "label": "LightGBM",
+    "suffixes": [
+      ".lgbm"
+    ]
+  },
+  "pyfunc": {
+    "algorithm": null,
+    "label": "MLflow pyfunc",
+    "suffixes": []
+  },
+  "rustystats": {
+    "algorithm": "glm",
+    "label": "RustyStats GLM",
+    "suffixes": [
+      ".rsglm"
+    ]
+  },
+  "tboost": {
+    "algorithm": "tboost",
+    "label": "t-boost",
+    "suffixes": [
+      ".tboost"
+    ]
+  },
+  "xgboost": {
+    "algorithm": "xgboost",
+    "label": "XGBoost",
+    "suffixes": [
+      ".ubj"
+    ]
+  }
+}

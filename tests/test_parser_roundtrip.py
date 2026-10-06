@@ -22,10 +22,11 @@ Skipped types (complex edge cases):
 from __future__ import annotations
 
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import hypothesis.strategies as st
+import pytest
 from hypothesis import HealthCheck, assume, given, settings
 
 from haute._config_io import collect_node_configs
@@ -142,7 +143,9 @@ def _valid_label() -> st.SearchStrategy[str]:
     """
     import keyword
 
-    _reserved = {"df", "pl", "pipeline", "haute"}
+    from haute._executable_names import BUILTIN_NAMES, RESERVED_NAMES
+
+    _reserved = {"df", *RESERVED_NAMES, *BUILTIN_NAMES}
     return (
         st.text(
             alphabet=st.sampled_from("abcdefghijklmnopqrstuvwxyz"),
@@ -282,17 +285,11 @@ def _banding_config() -> st.SearchStrategy[dict[str, Any]]:
             "factors": st.just(
                 [
                     {
-                        "banding": "continuous",
+                        "banding": "breakpoints",
                         "column": "age",
                         "outputColumn": "age_band",
                         "rules": [
-                            {
-                                "op1": ">",
-                                "val1": "25",
-                                "op2": "<=",
-                                "val2": "35",
-                                "assignment": "young",
-                            },
+                            {"boundary": "35", "label": "young"},
                         ],
                         "default": None,
                     }
@@ -373,6 +370,10 @@ def _pipeline_graph(draw: st.DrawFn) -> PipelineGraph:
         ntype = draw(st.sampled_from(downstream_types))
         config = draw(_CONFIG_STRATEGY[ntype])
         func_name = _sanitize_func_name(labels[i])
+        if ntype == NodeType.DATA_OUTPUT:
+            # Two Data Outputs may not write one destination.
+            stem = PurePosixPath(config["path"])
+            config = {**config, "path": str(stem.with_stem(f"{stem.stem}_{func_name}"))}
         nodes.append(
             GraphNode(
                 id=func_name,
@@ -562,22 +563,22 @@ def _assert_config_equivalence(
         )
 
     elif node_type == NodeType.MODEL_SCORE:
-        for key in ("sourceType", "task", "output_column"):
+        for key in ("sourceType", "task", "output_column", "mlflow_destination"):
             assert parsed.get(key) == orig.get(key), f"[{node_id}] modelScore {key} mismatch"
         _assert_code_roundtrip(node_id, orig, parsed, all_node_ids)
 
     elif node_type == NodeType.MODELLING:
-        for key in ("name", "target", "algorithm", "task"):
+        for key in ("name", "target", "algorithm", "task", "mlflow_destination"):
             if orig.get(key):
                 assert parsed.get(key) == orig.get(key), f"[{node_id}] modelling {key} mismatch"
 
     elif node_type == NodeType.OPTIMISER:
-        for key in ("mode", "objective"):
+        for key in ("mode", "objective", "mlflow_destination"):
             if orig.get(key):
                 assert parsed.get(key) == orig.get(key), f"[{node_id}] optimiser {key} mismatch"
 
     elif node_type == NodeType.OPTIMISER_APPLY:
-        for key in ("sourceType", "artifact_path", "version_column"):
+        for key in ("sourceType", "artifact_path", "version_column", "mlflow_destination"):
             if orig.get(key):
                 assert parsed.get(key) == orig.get(key), (
                     f"[{node_id}] optimiserApply {key} mismatch"
@@ -853,24 +854,12 @@ class TestEdgeCases:
                         config={
                             "factors": [
                                 {
-                                    "banding": "continuous",
+                                    "banding": "breakpoints",
                                     "column": "age",
                                     "outputColumn": "age_band",
                                     "rules": [
-                                        {
-                                            "op1": ">",
-                                            "val1": "18",
-                                            "op2": "<=",
-                                            "val2": "30",
-                                            "assignment": "young",
-                                        },
-                                        {
-                                            "op1": ">",
-                                            "val1": "30",
-                                            "op2": "<=",
-                                            "val2": "60",
-                                            "assignment": "middle",
-                                        },
+                                        {"boundary": "30", "label": "young"},
+                                        {"boundary": "60", "label": "middle"},
                                     ],
                                     "default": None,
                                 }
@@ -911,17 +900,11 @@ class TestEdgeCases:
                         config={
                             "factors": [
                                 {
-                                    "banding": "continuous",
+                                    "banding": "breakpoints",
                                     "column": "score",
                                     "outputColumn": "score_band",
                                     "rules": [
-                                        {
-                                            "op1": ">=",
-                                            "val1": "0",
-                                            "op2": "<",
-                                            "val2": "50",
-                                            "assignment": "low",
-                                        },
+                                        {"boundary": "50", "label": "low"},
                                     ],
                                     "default": "high",
                                 }
@@ -1051,18 +1034,10 @@ class TestEdgeCases:
                         config={
                             "factors": [
                                 {
-                                    "banding": "continuous",
+                                    "banding": "breakpoints",
                                     "column": "age",
                                     "outputColumn": "age_band",
-                                    "rules": [
-                                        {
-                                            "op1": ">",
-                                            "val1": "0",
-                                            "op2": "<=",
-                                            "val2": "99",
-                                            "assignment": "all",
-                                        }
-                                    ],
+                                    "rules": [{"boundary": "99", "label": "all"}],
                                     "default": None,
                                 }
                             ]
@@ -1531,6 +1506,7 @@ class TestExcludedTypeRoundTrips:
                             "output_column": "prediction",
                             "run_id": "abc123",
                             "artifact_path": "models/model.cbm",
+                            "mlflow_destination": "server",
                         },
                     ),
                 ),
@@ -1540,6 +1516,8 @@ class TestExcludedTypeRoundTrips:
         )
         parsed = _parse_roundtrip(graph, tmp_path)
         _assert_structural_equivalence(graph, parsed)
+        scorer = {n.id: n for n in parsed.nodes}["scorer"]
+        assert scorer.data.config.get("mlflow_destination") == "server"
 
     def test_model_score_with_post_code(self, tmp_path: Path) -> None:
         """modelScore post-processing code round-trips without scoring scaffold."""
@@ -1667,6 +1645,7 @@ class TestExcludedTypeRoundTrips:
                                 "metric": "gini",
                                 "search_space": {"depth": [4, 6, 8]},
                             },
+                            "mlflow_destination": "server",
                         },
                     ),
                 ),
@@ -1676,6 +1655,8 @@ class TestExcludedTypeRoundTrips:
         )
         parsed = _parse_roundtrip(graph, tmp_path)
         _assert_structural_equivalence(graph, parsed)
+        train = {n.id: n for n in parsed.nodes}["train"]
+        assert train.data.config.get("mlflow_destination") == "server"
 
     def test_optimiser(self, tmp_path: Path) -> None:
         """optimiser round-trips with minimal config."""
@@ -1690,6 +1671,7 @@ class TestExcludedTypeRoundTrips:
                         config={
                             "mode": "online",
                             "objective": "profit",
+                            "mlflow_destination": "server",
                         },
                     ),
                 ),
@@ -1699,6 +1681,8 @@ class TestExcludedTypeRoundTrips:
         )
         parsed = _parse_roundtrip(graph, tmp_path)
         _assert_structural_equivalence(graph, parsed)
+        opt = {n.id: n for n in parsed.nodes}["opt"]
+        assert opt.data.config.get("mlflow_destination") == "server"
 
     def test_optimiser_apply(self, tmp_path: Path) -> None:
         """optimiserApply round-trips."""
@@ -1714,6 +1698,7 @@ class TestExcludedTypeRoundTrips:
                             "sourceType": "file",
                             "artifact_path": "artifacts/opt.json",
                             "version_column": "__opt_v__",
+                            "mlflow_destination": "server",
                         },
                     ),
                 ),
@@ -1723,6 +1708,8 @@ class TestExcludedTypeRoundTrips:
         )
         parsed = _parse_roundtrip(graph, tmp_path)
         _assert_structural_equivalence(graph, parsed)
+        apply_node = {n.id: n for n in parsed.nodes}["apply"]
+        assert apply_node.data.config.get("mlflow_destination") == "server"
 
     def test_scenario_expander(self, tmp_path: Path) -> None:
         """scenarioExpander round-trips."""
@@ -1736,7 +1723,7 @@ class TestExcludedTypeRoundTrips:
                         nodeType=NodeType.SCENARIO_EXPANDER,
                         config={
                             "column_name": "discount",
-                            "steps": 5,
+                            "stepCount": 5,
                         },
                     ),
                 ),
@@ -1759,7 +1746,7 @@ class TestExcludedTypeRoundTrips:
                         nodeType=NodeType.SCENARIO_EXPANDER,
                         config={
                             "column_name": "discount",
-                            "steps": 5,
+                            "stepCount": 5,
                             "code": 'df = df.filter(pl.col("discount") >= 1.0)',
                         },
                     ),
@@ -1812,3 +1799,173 @@ class TestSanitizeFuncName:
 
     def test_sanitize_spaces_and_hyphens(self) -> None:
         assert _sanitize_func_name("my node-test") == "my_node_test"
+
+
+# ---------------------------------------------------------------------------
+# Global constants
+# ---------------------------------------------------------------------------
+
+_ALL_CONSTANT_KINDS: list[dict[str, Any]] = [
+    {"name": "inflation", "type": "float", "value": 1.05},
+    {"name": "loading", "type": "float", "by_source": {"live": 1.0, "nb_batch": 1.25}},
+    {"name": "max_age", "type": "integer", "value": 99},
+    {"name": "cohort", "type": "integer", "by_source": {"live": 1, "nb_batch": 2}},
+    {"name": "channel", "type": "text", "value": "web"},
+    {"name": "region", "type": "text", "by_source": {"live": "UK", "nb_batch": "EU"}},
+    {"name": "apply_cap", "type": "boolean", "value": True},
+    {"name": "is_batch", "type": "boolean", "by_source": {"live": False, "nb_batch": True}},
+    {"name": "effective", "type": "date", "value": "2026-11-01"},
+    {
+        "name": "as_at",
+        "type": "date",
+        "by_source": {"live": "2026-10-02", "nb_batch": "2026-06-30"},
+    },
+]
+
+
+def _constants_graph(*, with_submodel: bool) -> PipelineGraph:
+    """Two Polars nodes that read constants, optionally with a submodel that reads one too."""
+    nodes: list[dict[str, Any]] = [
+        {
+            "id": "quotes",
+            "data": {
+                "label": "quotes",
+                "nodeType": "polars",
+                "config": {"code": 'df = pl.LazyFrame({"age": [30, 70]})'},
+            },
+        },
+        {
+            "id": "rated",
+            "data": {
+                "label": "rated",
+                "nodeType": "polars",
+                "config": {
+                    "code": (
+                        "df = quotes.with_columns(\n"
+                        '    (pl.col("age") * global_constants.inflation).alias("loaded"),\n'
+                        '    pl.lit(f"{global_constants.region}").alias("region"),\n'
+                        ")"
+                    )
+                },
+            },
+        },
+    ]
+    payload: dict[str, Any] = {
+        "nodes": nodes,
+        "edges": [{"id": "e1", "source": "quotes", "target": "rated"}],
+        "global_constants": _ALL_CONSTANT_KINDS,
+    }
+    if with_submodel:
+        nodes.append(
+            {
+                "id": "instance_sm",
+                "type": "submodel",
+                "data": {
+                    "label": "sm_alias",
+                    "nodeType": "submodel",
+                    "config": {"definitionId": "definition_sm", "alias": "sm_alias"},
+                },
+            }
+        )
+        payload["submodels"] = {
+            "definition_sm": {
+                "definitionId": "definition_sm",
+                "file": "modules/sm.py",
+                "graph": {
+                    "pipeline_name": "sm",
+                    "nodes": [
+                        {
+                            "id": "capped",
+                            "data": {
+                                "label": "capped",
+                                "nodeType": "polars",
+                                "config": {
+                                    "code": (
+                                        'df = pl.LazyFrame({"cap": [global_constants.max_age]})'
+                                    )
+                                },
+                            },
+                        }
+                    ],
+                    "edges": [],
+                },
+                "inputPorts": [],
+                "outputPorts": [],
+            }
+        }
+    return PipelineGraph.model_validate(payload)
+
+
+def _write_project(files: dict[str, str], constants_json: str, base_dir: Path) -> Path:
+    for rel_path, code in files.items():
+        out = base_dir / rel_path
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(code, encoding="utf-8")
+    constants_path = base_dir / "config" / "global_constants.json"
+    constants_path.parent.mkdir(parents=True, exist_ok=True)
+    constants_path.write_text(constants_json, encoding="utf-8")
+    return base_dir / "main.py"
+
+
+class TestGlobalConstantsRoundTrip:
+    """A pipeline's constants survive codegen -> files -> parse -> codegen unchanged."""
+
+    @pytest.mark.parametrize("with_submodel", [False, True], ids=["pipeline", "with-submodel"])
+    def test_constants_of_every_kind_round_trip_byte_identically(
+        self,
+        tmp_path: Path,
+        with_submodel: bool,
+    ) -> None:
+        from haute._config_io import global_constants_json
+        from haute.codegen import graph_to_code_multi
+        from haute.parser import parse_pipeline_file
+
+        graph = _constants_graph(with_submodel=with_submodel)
+        files = graph_to_code_multi(graph, pipeline_name="main", source_file="main.py")
+        constants_json = global_constants_json(graph.global_constants)
+        main = _write_project(files, constants_json, tmp_path)
+
+        assert (
+            'pipeline = haute.Pipeline("main", global_constants="config/global_constants.json")\n'
+            "global_constants = pipeline.global_constants\n"
+        ) in files["main.py"]
+        if with_submodel:
+            assert "\nglobal_constants = submodel.global_constants\n" in files["modules/sm.py"]
+
+        parsed = parse_pipeline_file(main)
+
+        assert parsed.global_constants == graph.global_constants
+        assert parsed.global_constants_error is None
+        assert graph_to_code_multi(parsed, pipeline_name="main", source_file="main.py") == files
+        assert global_constants_json(parsed.global_constants) == constants_json
+
+    def test_a_pipeline_without_constants_names_no_file_and_binds_nothing(self) -> None:
+        from haute.codegen import graph_to_code_multi
+
+        graph = _constants_graph(with_submodel=True).model_copy(update={"global_constants": []})
+        files = graph_to_code_multi(graph, pipeline_name="main", source_file="main.py")
+
+        assert all("global_constants" not in line for line in files["main.py"].splitlines()[:8])
+        assert 'pipeline = haute.Pipeline("main")\n' in files["main.py"]
+        assert "global_constants = submodel" not in files["modules/sm.py"]
+
+    def test_a_declared_file_that_is_missing_is_a_load_error_that_keeps_its_lines(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from haute.codegen import graph_to_code_multi
+        from haute.parser import parse_pipeline_file
+
+        graph = _constants_graph(with_submodel=False)
+        files = graph_to_code_multi(graph, pipeline_name="main", source_file="main.py")
+        main = tmp_path / "main.py"
+        main.write_text(files["main.py"], encoding="utf-8")
+
+        parsed = parse_pipeline_file(main)
+
+        assert parsed.global_constants == []
+        assert parsed.global_constants_error is not None
+        assert "does not exist" in parsed.global_constants_error
+        assert "Global constants could not be loaded" in (parsed.warning or "")
+        regenerated = graph_to_code_multi(parsed, pipeline_name="main", source_file="main.py")
+        assert regenerated == files

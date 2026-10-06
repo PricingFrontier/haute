@@ -1,3 +1,5 @@
-export { default as CommittedTextField, CommittedTextArea } from "./CommittedTextField"
+export { default as CommittedTextField, CommittedTextArea, ValidatedTextField } from "./CommittedTextField"
 export { default as ConfigCheckbox } from "./ConfigCheckbox"
 export { default as EditorLabel } from "./EditorLabel"
+export { default as ConfigSection } from "./ConfigSection"
+export { default as SavedValueOption } from "./SavedValueOption"

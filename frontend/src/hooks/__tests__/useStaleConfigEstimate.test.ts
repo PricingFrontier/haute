@@ -19,6 +19,15 @@ afterEach(() => {
 })
 
 describe("useStaleConfigEstimate", () => {
+  it("preserves an actionable estimate failure detail", async () => {
+    const endpoint = vi.fn().mockRejectedValue(Object.assign(new Error("HTTP 422"), {
+      detail: "Evaluation preview failed: validation partition is empty",
+    }))
+    const { result } = renderHook(() => useStaleConfigEstimate<FakeEstimate>(
+      "node_1", configA, null, endpoint, { source: "live", structuralVersion: 1 },
+    ))
+    await waitFor(() => expect(result.current.error).toBe("Evaluation preview failed: validation partition is empty"))
+  })
   it("loads the estimate on mount and derives configHash and staleness", async () => {
     const endpoint = vi.fn().mockResolvedValue(sampleEstimate)
 
@@ -56,6 +65,33 @@ describe("useStaleConfigEstimate", () => {
 
     await waitFor(() => expect(result.current.loading).toBe(false))
     expect(result.current.isStale).toBe(false)
+  })
+
+  it("re-requests only when the declared estimate inputs change", async () => {
+    const endpoint = vi.fn().mockResolvedValue(sampleEstimate)
+    const context = { source: "source_a", structuralVersion: 1 }
+    const { result, rerender } = renderHook(
+      ({ config }) => useStaleConfigEstimate<FakeEstimate>(
+        "node_1",
+        config,
+        { configHash: hashConfig(configA), source: "source_a", structuralVersion: 1 },
+        endpoint,
+        context,
+        { estimateInputs: { algorithm: config.algorithm } },
+      ),
+      { initialProps: { config: configA as Record<string, unknown> } },
+    )
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(endpoint).toHaveBeenCalledTimes(1)
+
+    // A non-input edit marks the result stale but does not re-estimate.
+    rerender({ config: configB })
+    await act(async () => {})
+    expect(result.current.isStale).toBe(true)
+    expect(endpoint).toHaveBeenCalledTimes(1)
+
+    rerender({ config: { ...configB, algorithm: "glm" } })
+    await waitFor(() => expect(endpoint).toHaveBeenCalledTimes(2))
   })
 
   it("does not fetch when nodeId is empty", async () => {

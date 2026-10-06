@@ -8,9 +8,9 @@ are grouped here:
 
 1. **Structured API-input shredding** — a JSON/JSONL document (arbitrarily nested
    objects and arrays) or a supported XML document is normalised and "shredded"
-   into one or more flat, typed tables (Polars frames), using a valid parquet
-   cache as a fast path when present and otherwise parsing the source directly
-   for that execution.
+   into one or more flat, typed tables (Polars frames). Each table is a shared
+   input snapshot that canvas execution reads; generated standalone code parses
+   the source directly.
 2. **JSON output assembly** — flat frames plus output-path mappings can be
    structurally validated and are re-nested into one deterministic array-outer
    response document without cross-multiplying independent sibling arrays.
@@ -23,14 +23,16 @@ JSON-safe value encoder used whenever pipeline data crosses an HTTP boundary.
 
 In scope:
 
-- Shredding a JSON/JSONL/XML API input into per-table parquet caches, schema inference
-  from sample data, and the dual-layer (working/committed) cache lifecycle around it.
+- Shredding a JSON/JSONL/XML API input into per-table Parquet, schema inference
+  from sample data, and each emitting table's identity, freshness and build as a
+  shared input snapshot (the store itself is owned by the
+  [IO layer](../io-layer/high-level.md)).
 - The v2 apiInput schema codec: shape recognition, shared table/column path
   parsing, canonical path writing, structural validation, and filesystem-safe
   table labels.
-- The v2 OUTPUT mapping contract and document assembler, including same-level
-  cyclic-table cut planning, bag-natural joins, array-prefix nesting, and the
-  final response-document shape.
+- The v2 OUTPUT mapping contract and document assembler: one source frame per
+  array level, array-prefix nesting by relation keys, and the final
+  response-document shape.
 - Validating and executing `edgeJoin` node configuration (Polars join construction).
 - The shared array-outer JSON path grammar (acceptance, canonical form, parsing).
 - Converting arbitrary Python/pipeline values into JSON-safe payloads for API
@@ -38,14 +40,15 @@ In scope:
 
 Out of scope (owned elsewhere):
 
-- Graph-wide column projection planning (`projection.py`) and the executor's
+- Graph-wide column projection planning (`src/haute/projection.py`) and the executor's
   backward column-demand analysis belong to
   [execution-engine](../execution-engine/high-level.md). This component supplies
   the shared edge-join demand-narrowing rule that planner consumes.
 - Submodel definition, boundary rewiring, and expansion into an executable graph —
   see [submodels](../submodels/high-level.md).
-- The HTTP routes that drive JSON-cache build/status/delete
-  (`routes/json_cache.py`) — see [caching](../caching/high-level.md).
+- The HTTP routes that build, report and clear input snapshots
+  (`src/haute/routes/input_cache.py`) and the schema-inference route
+  (`src/haute/routes/json_cache.py`) — see [caching](../caching/high-level.md).
 
 ## Behaviour
 
@@ -57,45 +60,49 @@ column. Relational depth is defined purely by array (`[:]`) nesting — a 1-1 ne
 object never starts a new table, its scalar leaves fold into the enclosing table as
 dotted columns; only an array (of objects, or of scalars) starts a child table. A
 scalar array produces a one-column child table (`value`) with one row per element.
-Building the cache writes one parquet per emitting table plus a `meta.json`
-manifest; the manifest carries a content fingerprint of the schema and a signature
-of the source data file. Every table entry also records the size and SHA-256 of its
-derived parquet, so payload corruption is rejected before the footer-only schema
-probe can accept it. Caching is an optional performance prewarm: runtime first
-tries signed, readable, exact-schema `working/` then `committed/` parquets; when
-neither can serve, it applies the same parsed table specs, shredding, type checks,
-skip accounting, and conservation guards through private spill-backed lazy frames
-without creating or refreshing cache files. Execution may supply a proven per-port column demand: the
-loader still validates the complete v2 config and cache manifest, but opens only
-the requested port payloads, validates each loaded payload against its complete
-declared schema, and projects it to the requested columns. Cache payloads remain
-file-backed: runtime pins each requested artifact into a private process-owned
-snapshot, verifies its signature in bounded chunks, and gives Polars that stable
-path so Parquet projection can read only the selected column data. Haute never
-retains the complete compressed Parquet payload as a Python byte buffer. The
-snapshot normally uses a same-filesystem hard link (with a bounded streaming-copy
-fallback where links are unavailable), reuses a verified snapshot for repeated
-access to the same artifact generation, and is leased for the managed execution
-lifetime so an already-returned lazy plan survives a cache rebuild or clear.
-Independent mutable artifacts remain separate even when their current bytes are
-identical. A direct caller outside a managed execution retains its snapshot until
-process exit because Haute cannot observe the lifetime of every derived Polars
-plan. A cache miss shreds only the requested tables and columns. Calls without a
-proven demand retain the complete bundle. Schema inference can sniff a v2 config from a data file
+Each emitting table is one input snapshot in the shared store, identified by the
+resolved source file, that table's own specification (path, selected columns and
+their types) and a shred-semantics version — not by its label or its sibling
+tables, so editing one table leaves the others' generations current. A table
+generation records the source file's content signature, so a changed source makes
+every table of the node stale. A build shreds the source once and publishes every
+table it was asked for; tables already fresh are skipped, but the source is still
+parsed in full. Automatic preparation builds the missing and stale tables before an
+admitted execution reads them, and canvas execution reads only the published
+generations, projected to the columns it demands, never the raw source. Generated
+standalone code runs without a project store and shreds its source in-process
+through the same parsed table specs, type checks, skip accounting and conservation
+guards, into private spill-backed lazy frames.
+Schema inference can sniff a v2 config from a data file
 directly, sampling optionally, widening column types across every record seen and
-naming collision-free bare leaf keys as their own column names. Inferred table
+naming collision-free bare leaf keys as their own column names. Complete inference
+learns a structural filter from an initial 10,000 records and checks the remaining
+records in native code; differences still extend the schema or produce the same
+errors as the full inference walk. This optimization never omits the rest of the
+file or treats a sampled schema as complete. Parallel JSONL inference learns
+this initial prefix once and shares its structure across workers. Discovery on
+parallel JSONL ranges combines parsing and structural checking for
+known records; records outside the fast path retain the original parser and
+inference rules, including their errors. Results from complete scans are reused
+within the running process only when
+the source's strong file identity/change token and record-size limit still
+match. Concurrent requests share one inference, and callers receive independent
+schema values. Changed or unverifiable files require a new scan. Inferred table
 labels are readable identifiers derived from the source key names — the root
 table is `quote_info`, `$[:].proposer.claims[:]` becomes `claims`, and two levels
 sharing a key name qualify symmetrically (`a_items`/`b_items`) — never raw path
 strings, so an inferred schema is immediately valid under the label rule below
-and its labels read as the argument names they will become.
+and its labels read as the argument names they will become. A table added by
+hand in the editor is labelled the same way: the first is the root table
+`quote_info`, a later one takes its placeholder array key (`table_1` for
+`$[:].table_1[:]`), and a label already in use gets a numeric suffix (`_2`).
 
-Runtime fallback and persistent cache construction use the same aggregate
-byte/row-bounded Parquet row-group writer. JSON arrays are tokenised one top-level
-value at a time, JSONL is decoded one non-empty line at a time, and repeated XML
-record containers are parsed and released one direct child at a time. Returned
-LazyFrames scan leased runtime files; cache builds publish the corresponding staged
-files only after every writer and the manifest have completed.
+The standalone shred and table builds use the same aggregate byte/row-bounded
+Parquet row-group writer. JSON arrays are tokenised one top-level value at a time,
+JSONL is decoded one non-empty line at a time, and repeated XML record containers
+are parsed and released one direct child at a time. Standalone LazyFrames scan
+leased runtime files; a build publishes a table only after its whole shred has
+completed and the source is proven unchanged.
 
 The configured structured-input record limit is a hard bound, not merely a flush
 hint. A JSON root object, JSONL line, JSON array element, repeated XML child, or XML
@@ -104,13 +111,13 @@ document whose semantics make the complete root one logical record must fit with
 record fails with `ApiInputSchemaError` before it can make memory grow with the input
 file. Parser read-ahead is limited to one fixed-size chunk. Subject to that explicit
 single-record bound, peak Python memory is independent of source-file length and
-emitted-table row count for runtime loads and persistent cache builds alike.
+emitted-table row count for standalone loads and table builds alike.
 
-Cache publication and runtime storage are coordinated across server processes.
-Readers, builders, and promotion share an OS file lock per cache identity; a reader
-never sees the rename gap. Runtime snapshots and direct spills share a project-wide
-disk budget, process-owner metadata, orderly cleanup, and stale-owner recovery.
-Exhaustion fails loudly before serving an unverified or partial generation.
+Table generations are published, leased and retired by the shared input-snapshot
+store, which validates every part (digest, footer, schema) before a reader sees it
+and keeps a leased generation until its reader finishes. Standalone spills share a
+project-wide disk budget, process-owner metadata, orderly cleanup, and stale-owner
+recovery; exhaustion fails loudly before serving a partial spill.
 
 XML is converted to the same object/list/scalar record shape before inference or
 shredding. Element namespaces are removed from field names; attributes become
@@ -151,18 +158,16 @@ or at an ancestor boundary so an ancestor value can be distributed into child
 rows. The OUTPUT side consumes only active, complete mapping rows and requires
 the same single array-outer path grammar: `$[:]` at the root, dotted ASCII
 identifier keys, and `[:]` for array traversal. Its explicit structural
-validator rejects same-port duplicate or prefix-comparable destinations and a
-single source frame mapped to divergent emit prefixes. The runtime assembler invokes
+validator rejects same-port duplicate or prefix-comparable destinations, a
+single source frame mapped to divergent emit prefixes, and two source frames that
+emit at the same array level. The runtime assembler invokes
 that validator before frame collection, so dry-run, direct runtime, generated, and
 deployed execution share one acceptance boundary. Validation scales with the
 mapping set rather than repeatedly reparsing every pair of paths. Incomplete
 editor rows are inactive and ignored consistently.
-Assembly returns a top-level list of objects:
-sibling array branches are nested independently (never cross-multiplied),
-same-level frames use a deterministic cut plan and bag semantics, unmatched
-partials survive, and same-level joins retain deterministic source-row order
-(the sorted left source first, followed by unmatched rows from later sources).
-Null-valued/empty-collection object fields are pruned
+Assembly returns a top-level list of objects built by the algorithm below:
+sibling array branches are nested independently (never cross-multiplied), and
+the assembler joins nothing. Null-valued/empty-collection object fields are pruned
 from the rendered document (null or empty-list elements already inside arrays
 remain array elements). A relation key is checked only in frames that actually
 carry that key: a missing column in another mapping frame is absence, not a null.
@@ -179,6 +184,50 @@ declared string, while objects and arrays remain shape values and fail or count 
 shape mismatches. Inference rejects source keys outside the canonical ASCII
 identifier grammar (and the reserved `$value` sentinel) before returning a schema.
 
+**OUTPUT assembly.** This is the whole assembly algorithm; nothing outside this
+specification defines it.
+
+1. *Frames and fields.* Each active mapping row renames one column of one source
+   frame (its `source_port`) to one output path; a column mapped to several paths
+   appears once per path. A frame's *fields* are its output paths.
+2. *Levels.* A path's *array prefix* is the sequence of its `[:]` segments; the
+   root `$[:]` is the empty prefix. A frame *emits* at its deepest array prefix —
+   the structural validator has already required its prefixes to form one chain
+   — and carries its shallower paths as keys for nesting. The *levels* of the
+   document are every emitting prefix and all of its ancestors.
+3. *One frame per level.* At most one frame emits at a level (decided
+   24 September 2026). Two frames at one level are rejected by the structural
+   validator before any frame is collected, naming both frames; the assembler
+   never joins frames. Frames that describe the same objects are combined
+   upstream, where the join is an explicit, reviewable pipeline node.
+4. *Level objects.* An emitting level's objects are its frame's rows, grouped by
+   the level's *own* fields (the paths whose array prefix is that level) in
+   first-occurrence order; an object's identity is the tuple of its own leaf
+   values, container values canonicalised to hashable tuples. A level no frame
+   emits at is synthesised from the rows of the frames below it, grouped the same
+   way by the ancestor values those rows carry.
+5. *Nesting.* Assembly descends the level tree carrying a *scope* of relation
+   keys. Under each parent object, the parent level's own fields that the child's
+   subtree carries (the *relation keys* of that parent and child) join the scope
+   with that object's values, and the child level takes the rows whose values
+   equal the scope on every key in it. A level whose scope is empty takes every
+   row of its level. Sibling levels are assembled independently, so the
+   document costs the sum of the branch sizes, never their product.
+   Every frame taking part in a nesting carries all of its relation keys: the
+   frame emitting at the parent level, and every frame emitting at or below the
+   child. A frame without one could never be placed (its rows would match no
+   parent object, or its objects would take no child), so the structural
+   validator rejects it before any frame is collected, naming the frame, its
+   level and the missing key. No row is ever dropped for a missing key.
+6. *Nulls.* A present null in a relation key raises `OutputNestingKeyError`
+   naming the frame, path and key. Null object fields and empty arrays and
+   objects are then pruned from the document.
+7. *Limits.* A row-limited assembly reads the first rows of an emitting root
+   level and, for each deeper emitting level, only the rows whose relation keys
+   match its nearest collected ancestor level, so every returned top-level object
+   equals the unlimited assembly's object for the same root rows. A synthesised
+   root has no rows of its own to limit and is assembled in full.
+
 **Edge Join semantics.** The built-in `edgeJoin` accepts exactly the Polars
 strategies `inner`, `left`, `right`, `full`, `semi`, `anti`, and `cross`.
 `cross` rejects every key field. Every other strategy requires either a
@@ -188,8 +237,8 @@ with the paired form. The base and join frames are explicit roles, not inferred
 from edge order. Every persisted
 incoming edge carries its role as `targetHandle="base"` or `targetHandle="join"`;
 exactly one of each is required. Those handles are the sole role authority, so two different
-frame edges from one API Input are valid and no `baseInput`/`joinInput` config is stored. A
-handle-less or partially handled join is invalid, as is the removed config/decorator role form.
+frame edges from one API Input are valid. Roles come solely from `targetHandle`; no
+`baseInput`/`joinInput` config key exists. A handle-less or partially handled join is invalid.
 
 Every path in an input or output mapping is read against the array-outer JSON formalism and
 must start `$[:]`. The canonical form has one spelling per feature — `[:]` selects every row
@@ -209,88 +258,48 @@ object never changes cardinality. Treating every nesting level as a new table wo
 produce a table explosion with mostly 1-row joins; folding 1-1 objects into dotted
 columns keeps the shredded schema close to what a user actually wants to query.
 
-**Every dropped element is counted, never silently discarded.** Earlier JSON-input
-code resolved a shape mismatch (an array where an object was expected, mid-walk)
-by silently taking the first element and dropping the rest — a conservation
-violation that lost data with no trace. The shred now either resolves the shape
-cleanly or fails loud (a genuine structural mismatch, e.g. a dotted leaf crossing a
-non-empty array) or counts the loss so a build's summary can report exactly how
-many records/rows were dropped and why. The cache build additionally runs a
+**One frame per array level; joins belong in the pipeline.** Earlier releases
+joined frames that emitted at the same array level on the output paths they
+shared, which needed GYO α-acyclicity reduction, cyclic-core detection, recursive
+cut planning, full-outer bag joins and leftover partial objects, and hid a join the
+author never configured inside the OUTPUT node. With one frame per level every
+document is a tree walk, cycles cannot be expressed, and any join is an explicit
+Join node with its own keys and strategy.
+
+**Every dropped element is counted, never silently discarded.** Every array element resolves
+cleanly, fails loud (a genuine structural mismatch, e.g. a dotted leaf crossing a
+non-empty array), or is counted as a skip so a build can log exactly how many
+records/rows were dropped and why. Every shred additionally runs a
 conservation assertion at the root level — emitted-plus-skipped
 must equal records-read — and raises `RuntimeError` if it doesn't, treating an
 unaccounted discrepancy as a shred bug, not something to serve silently.
 
-**Cache freshness and integrity are proven by content hashes.** A build records the
-data file's size, mtime, and full SHA-256, plus each emitted parquet's size and full
-SHA-256 after writing it. Public validity compares the source's content identity and
-proves every candidate artifact: a readable footer does not prove its data pages are
-intact. The first observation of an artifact generation is pinned and completely
-hashed. Haute may retain that verified private snapshot in a process-local cache with
-strict entry and logical-byte bounds; a later operation may reuse it only when the
-visible artifact has the same strong native file identity and change revision and the
-private snapshot still exists. Revision movement, replacement, eviction, a fork, or
-native-revision unavailability forces a new pin and full hash, so visible corruption
-cannot be hidden by an older snapshot. The source SHA-256 may be reused across
-operations only while a strong, OS-native revision token proves that the same file
-generation is unchanged. A successful cache build stores the exact native revision
-that surrounded its full source hash beside that hash, with a digest binding those
-fields against accidental manifest drift. After a restart, Haute may seed its
-bounded process memo from working/committed metadata only when the current revision
-matches that persisted revision exactly and every matching candidate agrees on the
-signature. Old metadata, conflicting proofs, a revision change, or a platform or
-filesystem that cannot provide a strong token forces a complete source hash.
-After that complete hash, Haute may atomically upgrade a live legacy manifest with
-the new revision-bound proof only when the manifest's recorded size and SHA-256
-match the freshly observed source. A failed upgrade is logged and leaves serving on
-the already-safe full-hash path; it never turns a metadata write into a weaker
-validity decision.
-Runtime goes further to close the hash-then-reopen race: it atomically pins each requested
-artifact to a private file-backed snapshot, verifies size/SHA-256 from that exact
-snapshot in bounded chunks, and gives its stable path to Polars. A rewrite that
-preserves size and mtime, or a damaged data page beneath an unchanged footer, is
-therefore never served, while the complete payload is never retained in memory.
+**Table freshness is proven by content hashes.** A table records the source's
+shared content signature, the same proof a Data Input's snapshot records, so status
+checks, preparation, builds, runtime identity and later previews share one hash per
+unchanged file. Its reuse follows the one freshness guarantee the
+[caching](../caching/high-level.md) specification states: the file's native revision
+(identity, length, last-write value and change token), or where the platform has none a
+stat trusted only once the file has settled. A proof made under a native revision is
+recorded on disk, so a new server process reuses it while that revision holds rather than
+hashing a multi-gigabyte source again; without a native revision nothing is persisted and a
+new process hashes each source once. A changed token, an atomic replacement, or a file that keeps
+changing during hashing cannot reuse the proof. A build that observes a different
+signature after its shred publishes nothing.
 
-The private file snapshot also pins a returned LazyFrame (including derived plans)
-to the generation it selected, even if the visible cache generation is later
-rebuilt, mirrored, or explicitly cleared. Parquet decode and projection remain lazy,
-so collection reads only demanded column chunks. Same-filesystem hard links avoid
-duplicating current-generation disk blocks. A managed execution releases its lease
-when execution cleanup finishes; a bounded verification-cache pin may keep an idle
-snapshot available until LRU eviction, explicit cleanup, fork reset, or process exit.
-Active leases survive cache eviction. Replaced generations and the bounded-copy
-fallback occupy temporary disk while any such pin remains. For an unmanaged direct
-caller they remain until orderly process exit because arbitrary derived plans can
-outlive their original Python LazyFrame reference.
+**Table builds are staged, bounded, and never expose a partial table.** A build
+feeds emitted rows through the same aggregate-bounded row-group writer used by
+standalone spills into a private scratch directory; parallel JSONL workers use that
+writer for bounded parts, and each table is published straight from its parts in
+file order, because publication rewrites the table as the store's own part files
+anyway. Every table is published through the store's staged generation
+publication, so a reader sees a complete generation or none.
 
-Save-time promotion first requires a well-formed v2 mode/schema fingerprint, a
-recorded source signature that still matches the data file, and intact signed working
-artifacts. It then validates the staged metadata and artifact bytes again before
-publish. Both signed layers are verified before declaring a no-op, so invalid, stale,
-or concurrently changed working state cannot replace a healthy committed cache and
-damaged committed bytes are repaired from healthy working state.
-
-**Cache writes are fully staged, bounded, and same-cache builds cannot interleave.**
-A build feeds emitted rows through the same aggregate-bounded row-group writer used
-by runtime spills and writes every parquet and its manifest into a unique sibling
-staging directory before replacing the live directory. Parallel JSONL workers use
-that writer for bounded parts; the parent consumes one bounded row group at a time
-through the same writer when assembling the final artifacts. Replacement attempts
-to restore the prior directory if publication fails. Builds for different cache
-directories remain independent, and the same staged-replacement behavior governs
-both a new shred and working-to-committed promotion. Cache paths are rooted from
-the process working directory selected for the project; callers must not assume
-they are relative to the source file. The reader-visibility limitation of this
-replacement is documented in the low-level specification.
-
-Source signatures are memoised by canonical path in a bounded, single-flight process
-cache. A memory or persisted-metadata hit requires the same strong native file
-identity, length, last-write value, and change token that surrounded the original
-complete SHA-256 pass. This shares one content proof between cache construction,
-runtime cache identity, planning, loading, later previews, and fresh server processes
-without trusting size/mtime alone. A changed token, an atomic replacement, conflicting
-metadata, or a file that changes during hashing cannot reuse the proof; native-token
-failure disables reuse for that observation rather than weakening the freshness
-contract.
+**Each row is read by a reader built once per table.** Rows are read by one
+function per table, built from its column specs when the shred starts, that
+fetches each shared object on the columns' paths once per row. Its results and
+errors are those of resolving each column on its own, in declared order; the
+reader only avoids repeating that work, which dominates the cost of a large build.
 
 **Silent numeric/date coercion is rejected even though the underlying columnar
 library would allow it.** Polars will silently coerce a Python `bool` into a numeric
@@ -301,20 +310,21 @@ strict build and raises a specific, column-named error instead.
 
 ## Interactions
 
-- Owns the v2 apiInput type/path boundary; the shred, cache route, executor,
+- Owns the v2 apiInput type/path boundary; the shred, table snapshots, executor,
   and editor consume that one validation contract.
-- The eager executor and generated/deploy code consume the same runtime loader,
-  so both paths share identical cache-fast-path and direct-shred behaviour — see
-  [execution-engine](../execution-engine/high-level.md) and
-  [codegen](../codegen/high-level.md).
+- The eager executor and generated/deploy code consume the same runtime loader:
+  canvas execution reads the published table snapshots, generated standalone code
+  shreds in-process — see [execution-engine](../execution-engine/high-level.md)
+  and [codegen](../codegen/high-level.md).
 - Demand-scoped execution is an optional argument to that shared loader, not a
   second executor-only codec. Generated/deploy code that does not pass a demand
   continues to validate and return every emitting frame.
 - The execution engine's projection planner consumes the same edge-join
   demand-narrowing rule as runtime join construction —
   see [execution-engine](../execution-engine/high-level.md).
-- The JSON-cache build/status/delete HTTP routes owned by
-  [caching](../caching/high-level.md) drive this component's build and cache lifecycle.
+- Automatic input preparation and the input-cache routes owned by
+  [caching](../caching/high-level.md) and the [IO layer](../io-layer/high-level.md)
+  drive this component's table builds.
 - The shared path grammar is used by both the INPUT codec and
   this component's OUTPUT-mapping assembler, so both addressing directions stay
   single-sourced.
@@ -331,13 +341,13 @@ strict build and raises a specific, column-named error instead.
   mid-walk.
 - Every OUTPUT assembly entry point calls the structural validator before frame
   collection. Malformed syntax, duplicate/prefix conflicts, divergent per-frame
-  emit prefixes, and missing source ports/columns therefore fail loudly rather than
-  becoming ambiguous or empty output.
+  emit prefixes, two frames emitting at one array level, a frame taking part in a
+  nesting without one of its relation keys, and missing source ports/columns
+  therefore fail loudly rather than becoming ambiguous, partial or empty output.
 - Any active parent or child row whose *present* simple/composite relation key has a
   null component raises `OutputNestingKeyError(OutputMappingSchemaError)` with
-  `frame`, `output_path`, and `key`; the HTTP adapter maps it to 422. A frame that
-  does not carry that relation key is not participating and is not treated as a null
-  row. Null scalar payloads outside relation keys remain valid.
+  `frame`, `output_path`, and `key`; the HTTP adapter maps it to 422. Null scalar
+  payloads outside relation keys remain valid.
 - A source JSON key that would collide with the reserved scalar-array sentinel, or
   that contains the object-nesting separator character, is rejected loudly at
   inference time — there is no way to address it unambiguously as a column, so
@@ -345,21 +355,36 @@ strict build and raises a specific, column-named error instead.
   value.
 - A hand-edited config that mixes the scalar-array sentinel column with a real
   sibling column on the same table is rejected at shred time, not allowed to build a
-  cache whose rows would all silently vanish as shape mismatches.
+  table whose rows would all silently vanish as shape mismatches.
 - A value that doesn't fit its declared column type — including the silent-coercion
   shapes Polars would otherwise accept — fails the build with an error naming the
   offending column and declared type.
 - A root-level conservation violation (rows lost or duplicated without accounting)
-  aborts the build with `RuntimeError` rather than writing a cache with unaccounted
-  data loss.
+  aborts the build with `RuntimeError` rather than publishing a table with
+  unaccounted data loss.
+- If the underlying structured data file changes while its tables are being built,
+  the build aborts with `SourceChangedDuringCacheBuildError` (`RuntimeError`) and
+  publishes nothing.
+- Before Studio previews a ready pipeline using a structured Quote Input
+  (JSON/JSONL/NDJSON/XML), it checks the node's tables against the current
+  in-memory schema. Missing or stale tables are built before the preview executes,
+  with visible building progress; ready, fresh tables are reused. Build failures
+  stop the preview and surface their error; cancelling or superseding the preview
+  cannot launch a late preview or display stale progress.
 - At runtime, a v2 apiInput with no emit-true tables, or emit-true tables with no
   selected columns, raises `RuntimeError` with a message telling the user to tick
-  `emit` or select a column. A stale, missing, corrupt, or schema-mismatched cache
-  is not a runtime error: the loader tries the next layer, then shreds the raw
-  source directly. Raw-file decode, missing-file, and declared-type failures stay
-  loud and specific; the direct path never replaces them with a cache prompt.
+  `emit` or select a column. Canvas execution of a table with no published
+  generation raises `input_snapshot_missing` (automatic preparation normally
+  builds it first); it never falls back to shredding the source. The assistant's
+  plan verification is the one exception: it resolves such a table at the IO
+  layer's declared schema tier, from the table's declared column types, without
+  reading the source. In generated
+  standalone code, raw-file decode, missing-file, and declared-type failures stay
+  loud and specific.
+- A source that disappears after its tables were published keeps serving them,
+  reported as `source_unavailable`; a table without a generation then cannot run.
 - A demand naming a non-emitting/unknown port, an empty column set, or a column
-  outside that port's declared selected schema is rejected before cache access.
+  outside that port's declared selected schema is rejected before any read.
   Planner uncertainty is represented by a full-width demand, never by dropping an
   unproven column.
 - `edgeJoin` node misconfiguration (ambiguous/missing base or join role, unsupported

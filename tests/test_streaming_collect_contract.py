@@ -7,15 +7,17 @@ from pathlib import Path
 
 import pytest
 
+from tests._source_files import source_files
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
 BOUNDED_COLLECT_CALLERS = [
-    Path("src/haute/_execute_lazy.py"),
+    Path("src/haute/_graph_walker.py"),
     Path("src/haute/deploy/_scorer.py"),
     Path("src/haute/modelling/_training_job.py"),
     Path("src/haute/routes/_optimiser_service.py"),
-    Path("src/haute/routes/optimiser.py"),
+    Path("src/haute/routes/_optimiser_input.py"),
 ]
 
 DIRECT_STREAMING_COLLECT = re.compile(
@@ -36,7 +38,7 @@ def test_bounded_callers_route_streaming_collect_through_helper(relative_path: P
 def test_production_code_has_no_direct_streaming_collect_calls_outside_helper() -> None:
     """All production streaming collects route through the profiled helper."""
     offenders: list[str] = []
-    for path in (ROOT / "src" / "haute").rglob("*.py"):
+    for path in source_files(ROOT / "src" / "haute"):
         relative = path.relative_to(ROOT)
         if relative == Path("src/haute/_polars_utils.py"):
             continue

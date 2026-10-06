@@ -14,10 +14,12 @@ import useToastStore from "../../stores/useToastStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
+import useNodeDataStore from "../../stores/useNodeDataStore"
 import type { BackendNodeStatus } from "../../types/node"
 
 vi.mock("../../api/client", () => ({
   loadPipeline: vi.fn(),
+  previewInputs: vi.fn(async () => ({ input_node_ids: [] as string[] })),
   previewNode: vi.fn(),
   previewRecoveryNode: vi.fn(),
   savePipeline: vi.fn(),
@@ -58,7 +60,8 @@ vi.mock("../../utils/makePreviewData", () => ({
 
 import { loadPipeline, previewNode, savePipeline, ApiError } from "../../api/client"
 import { makeNode } from "../../test-utils/factories"
-import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
+import { NODE_TYPES } from "../../utils/nodeTypes"
+import { makeLoadedPipeline } from "../../testSupport/pipelineDocumentFixture"
 const mockLoad = vi.mocked(loadPipeline)
 const mockPreview = vi.mocked(previewNode)
 const mockSave = vi.mocked(savePipeline)
@@ -93,7 +96,7 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
   }
 }
 
-describe("usePipelineAPI — gap tests", () => {
+describe("usePipelineAPI - gap tests", () => {
   beforeEach(() => {
     vi.useRealTimers()
     useSettingsStore.setState({ rowLimit: 1000, activeSource: "live", sources: ["live"] })
@@ -128,7 +131,7 @@ describe("usePipelineAPI — gap tests", () => {
       // Catches: if the catch block doesn't distinguish ApiError from
       // AbortError, genuine server errors would be silently swallowed,
       // leaving the user staring at a loading spinner forever.
-      mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+      mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
 
       const apiErr = new (ApiError as unknown as new (msg: string) => Error)("Column 'x' not found")
       mockPreview.mockRejectedValue(apiErr)
@@ -154,7 +157,7 @@ describe("usePipelineAPI — gap tests", () => {
       // Catches: if AbortError is treated as a real error, every time the
       // user clicks a different node (which aborts the previous request),
       // they'd see a brief red error flash.
-      mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+      mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
 
       const abortErr = new DOMException("The operation was aborted.", "AbortError")
       mockPreview.mockRejectedValue(abortErr)
@@ -180,7 +183,7 @@ describe("usePipelineAPI — gap tests", () => {
     })
 
     it("does NOT show error preview when the backend supersedes an obsolete preview", async () => {
-      mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+      mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
 
       mockPreview.mockRejectedValue(
         new ApiError("HTTP 409", 409, "Preview request superseded by a newer request"),
@@ -211,7 +214,7 @@ describe("usePipelineAPI — gap tests", () => {
       // Catches: if handleSave had a guard preventing concurrent saves,
       // rapid Ctrl+S presses might silently skip the second save. The
       // current implementation does NOT deduplicate — both calls go through.
-      mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+      mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
 
       let saveCallCount = 0
       mockSave.mockImplementation(() => {
@@ -240,7 +243,7 @@ describe("usePipelineAPI — gap tests", () => {
       // Catches: if the failure path of the second save somehow cleared
       // lastSavedSnapshot, dirty derivation would incorrectly mark the
       // graph as unsaved even though the first save persisted the data.
-      mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+      mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
 
       let callIdx = 0
       mockSave.mockImplementation(() => {
@@ -285,7 +288,7 @@ describe("usePipelineAPI — gap tests", () => {
       // Catches: if the cache-first logic in fetchPreviewImmediate is broken,
       // every node click would hit the API even when data is fresh, causing
       // unnecessary loading spinners and server load.
-      mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+      mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
 
       const cachedData = {
         nodeId: "n1",
@@ -312,7 +315,13 @@ describe("usePipelineAPI — gap tests", () => {
       const structuralVersion = useGraphStore.getState().structuralVersion
       useNodeResultsStore.setState({
         previews: {
-          n1: { data: cachedData, structuralVersion, source: "live", rowLimit: 1000 },
+          n1: {
+            data: cachedData,
+            structuralVersion,
+            source: "live",
+            rowLimit: 1000,
+            nodeDataEpoch: useNodeDataStore.getState().epoch,
+          },
         },
         columnCache: {},
       })
@@ -336,7 +345,7 @@ describe("usePipelineAPI — gap tests", () => {
     })
 
     it("honours a custom preview debounce before starting the API request", async () => {
-      mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+      mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
       mockPreview.mockResolvedValue({
         node_id: "n1",
         status: "ok",
@@ -370,11 +379,61 @@ describe("usePipelineAPI — gap tests", () => {
       expect(mockPreview).toHaveBeenCalledTimes(1)
     })
 
+    it("waits 200 ms by default before starting the API request", async () => {
+      mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
+      mockPreview.mockResolvedValue({
+        node_id: "n1",
+        status: "ok",
+        columns: [],
+        preview: [],
+        row_count: 0,
+        column_count: 0,
+      })
+
+      const { result } = renderHook(() => usePipelineAPI(makeParams()))
+      await waitFor(() => expect(result.current.loading).toBe(false))
+
+      vi.useFakeTimers()
+      act(() => {
+        result.current.fetchPreview(makeNode("n1"))
+      })
+      act(() => {
+        vi.advanceTimersByTime(199)
+      })
+      expect(mockPreview).not.toHaveBeenCalled()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1)
+      })
+      expect(mockPreview).toHaveBeenCalledTimes(1)
+    })
+
+    it("drops a waiting preview when the next selection cannot be previewed", async () => {
+      mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
+
+      const { result } = renderHook(() => usePipelineAPI(makeParams()))
+      await waitFor(() => expect(result.current.loading).toBe(false))
+
+      vi.useFakeTimers()
+      act(() => {
+        result.current.fetchPreview(makeNode("n1"))
+      })
+      act(() => {
+        result.current.fetchPreview(makeNode("sub", NODE_TYPES.SUBMODEL))
+      })
+      expect(result.current.previewData).toBeNull()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000)
+      })
+      expect(mockPreview).not.toHaveBeenCalled()
+    })
+
     it("uses graph structuralVersion to decide preview freshness", async () => {
       // Catches: if fetchPreview stops checking structuralVersion, a fresh
       // structural graph change would be missed and the cached preview would
       // be treated as current.
-      mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+      mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
 
       const cachedData = {
         nodeId: "n1",
@@ -393,7 +452,15 @@ describe("usePipelineAPI — gap tests", () => {
       }
 
       useNodeResultsStore.setState({
-        previews: { n1: { data: cachedData, structuralVersion: 3, source: "live", rowLimit: 1000 } },
+        previews: {
+          n1: {
+            data: cachedData,
+            structuralVersion: 3,
+            source: "live",
+            rowLimit: 1000,
+            nodeDataEpoch: useNodeDataStore.getState().epoch,
+          },
+        },
         columnCache: {},
       })
       useGraphStore.setState({ structuralVersion: 4 })
@@ -425,7 +492,7 @@ describe("usePipelineAPI — gap tests", () => {
       // Catches: if the structuralVersion check is removed, the cache would
       // always be considered fresh, showing stale data after the user
       // modifies a node's config.
-      mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+      mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
       mockPreview.mockResolvedValue({
         node_id: "n1",
         status: "ok",
@@ -453,7 +520,15 @@ describe("usePipelineAPI — gap tests", () => {
 
       // Cache at version 0, but graph store is at version 5 (stale)
       useNodeResultsStore.setState({
-        previews: { n1: { data: cachedData, structuralVersion: 0, source: "live", rowLimit: 1000 } },
+        previews: {
+          n1: {
+            data: cachedData,
+            structuralVersion: 0,
+            source: "live",
+            rowLimit: 1000,
+            nodeDataEpoch: useNodeDataStore.getState().epoch,
+          },
+        },
         columnCache: {},
       })
       useGraphStore.setState({ structuralVersion: 5 })
@@ -475,7 +550,7 @@ describe("usePipelineAPI — gap tests", () => {
     })
 
     it("refetches when cached preview source differs from active source", async () => {
-      mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+      mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
       mockPreview.mockResolvedValue({
         node_id: "n1",
         status: "ok",
@@ -502,7 +577,15 @@ describe("usePipelineAPI — gap tests", () => {
       }
 
       useNodeResultsStore.setState({
-        previews: { n1: { data: cachedData, structuralVersion: 0, source: "backtest", rowLimit: 1000 } },
+        previews: {
+          n1: {
+            data: cachedData,
+            structuralVersion: 0,
+            source: "backtest",
+            rowLimit: 1000,
+            nodeDataEpoch: useNodeDataStore.getState().epoch,
+          },
+        },
         columnCache: {},
       })
 
@@ -519,7 +602,7 @@ describe("usePipelineAPI — gap tests", () => {
     })
 
     it("refetches when cached preview row limit differs from current row limit", async () => {
-      mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+      mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
       mockPreview.mockResolvedValue({
         node_id: "n1",
         status: "ok",
@@ -547,7 +630,15 @@ describe("usePipelineAPI — gap tests", () => {
 
       useSettingsStore.setState({ rowLimit: 250 })
       useNodeResultsStore.setState({
-        previews: { n1: { data: cachedData, structuralVersion: 0, source: "live", rowLimit: 1000 } },
+        previews: {
+          n1: {
+            data: cachedData,
+            structuralVersion: 0,
+            source: "live",
+            rowLimit: 1000,
+            nodeDataEpoch: useNodeDataStore.getState().epoch,
+          },
+        },
         columnCache: {},
       })
 
@@ -570,7 +661,7 @@ describe("usePipelineAPI — gap tests", () => {
       // version-gated: stale columns are never written into the changed
       // graph (no setNodes/cascade), and no cache entry is created for a
       // node that is absent from the live graph.
-      mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+      mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
       let resolvePreview!: (value: {
         node_id: string
         status: BackendNodeStatus
@@ -622,7 +713,7 @@ describe("usePipelineAPI — gap tests", () => {
 
   describe("fetchPreview abort on new request", () => {
     it("cancelPreview clears a pending debounced preview before the API request starts", async () => {
-      mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+      mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
       mockPreview.mockResolvedValue({
         node_id: "n1",
         status: "ok",
@@ -649,7 +740,7 @@ describe("usePipelineAPI — gap tests", () => {
       // Catches: without abort, the response from a slow first request
       // could overwrite the fresher second request's data, showing the
       // wrong node's preview.
-      mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+      mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
 
       const abortSignals: AbortSignal[] = []
       mockPreview.mockImplementation((args: { signal?: AbortSignal }) => {

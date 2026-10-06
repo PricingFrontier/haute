@@ -112,7 +112,7 @@ afterEach(() => {
 // Shared poll cadence
 // ═════════════════════════════════════════════════════════════════
 
-describe("useJobPolling — solve and train share poll cadence", () => {
+describe("useJobPolling - solve and train share poll cadence", () => {
   it("kicks off the first poll at ~500ms for both solve and train jobs", async () => {
     const solvePoll = vi.fn<(id: string) => Promise<SolveLikeStatus>>().mockResolvedValue({
       status: "running", message: "", progress: 0.1,
@@ -194,7 +194,7 @@ describe("useJobPolling — solve and train share poll cadence", () => {
 // Shared completion semantics
 // ═════════════════════════════════════════════════════════════════
 
-describe("useJobPolling — shared completion semantics", () => {
+describe("useJobPolling - shared completion semantics", () => {
   it("calls onComplete + success toast with the panel-specific label for both types", async () => {
     const solvePoll = vi.fn<(id: string) => Promise<SolveLikeStatus>>().mockResolvedValue({
       status: "completed", message: "", progress: 1, result: { converged: true },
@@ -285,11 +285,11 @@ describe("useJobPolling — shared completion semantics", () => {
     // Error toasts follow the same format: `${failLabel}: ${label} — ${msg}`
     expect(solveToast).toHaveBeenCalledWith(
       "error",
-      "Optimisation failed: Solve 1 — Infeasible",
+      "Optimisation failed: Solve 1 - Infeasible",
     )
     expect(trainToast).toHaveBeenCalledWith(
       "error",
-      "Training failed: Train 1 — Training diverged",
+      "Training failed: Train 1 - Training diverged",
     )
   })
 
@@ -299,7 +299,7 @@ describe("useJobPolling — shared completion semantics", () => {
 // Shared cleanup
 // ═════════════════════════════════════════════════════════════════
 
-describe("useJobPolling — shared cleanup on unmount", () => {
+describe("useJobPolling - shared cleanup on unmount", () => {
   it("stops polling both solve and train jobs when the consumer unmounts", async () => {
     const solvePoll = vi.fn<(id: string) => Promise<SolveLikeStatus>>().mockResolvedValue({
       status: "running", message: "", progress: 0.5,

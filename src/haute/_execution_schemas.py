@@ -40,6 +40,19 @@ class ExecutionStrategyReasonPayload(BaseModel):
     parent_node_id: str | None = None
 
 
+class ExecutionStrategyProjectionCausePayload(BaseModel):
+    """The furthest-downstream node that kept part of the plan full width."""
+
+    node_id: str
+    operator: str
+    kind: Literal["input", "node"]
+    reason_code: str
+    message: str = Field(max_length=512)
+    total_count: Annotated[StrictInt, Field(ge=1, le=MAX_JSON_SAFE_INTEGER)]
+    parent_node_id: str | None = None
+    operation: str | None = None
+
+
 class ExecutionStrategyProvenancePayload(BaseModel):
     column: str
     origin_kind: Literal[
@@ -182,13 +195,21 @@ class ExecutionStrategyDiagnosticPayload(BaseModel):
     """Strict V1 API DTO for one shared execution-planning decision."""
 
     schema_version: Literal[1]
-    status: Literal["projected", "admitted_eager", "boundary", "rejected", "not_planned"]
+    status: Literal[
+        "projected",
+        "admitted_eager",
+        "boundary",
+        "warned",
+        "rejected",
+        "not_planned",
+    ]
     strategy: Literal[
         "projected",
         "schema-all-except",
         "full-width-admitted-eager",
         "unprojected-streaming-boundary",
         "materialisation-boundary",
+        "full-width-conservative",
         "unsupported",
         "not-planned",
     ]
@@ -197,11 +218,11 @@ class ExecutionStrategyDiagnosticPayload(BaseModel):
         "lazy_sink",
         "training_prep",
         "optimiser_setup",
+        "optimiser_solve",
         "explore_analysis",
-        "auto_range",
         "deploy_live",
         "deploy_batch",
-        "chunked_map_reduce",
+        "node_snapshot",
     ]
     boundedness: Literal["bounded", "unbounded", "unknown"]
     reason_code: str
@@ -225,6 +246,7 @@ class ExecutionStrategyDiagnosticPayload(BaseModel):
     ) = None
     headroom_bytes: JsonSafeNonNegativeInt | None = None
     assumptions: list[str] = Field(default_factory=list)
+    projection_cause: ExecutionStrategyProjectionCausePayload | None = None
 
     @model_validator(mode="after")
     def _validate_strategy_contract(self) -> ExecutionStrategyDiagnosticPayload:
@@ -234,6 +256,7 @@ class ExecutionStrategyDiagnosticPayload(BaseModel):
             "full-width-admitted-eager": "admitted_eager",
             "unprojected-streaming-boundary": "boundary",
             "materialisation-boundary": "boundary",
+            "full-width-conservative": "warned",
             "unsupported": "rejected",
             "not-planned": "not_planned",
         }[self.strategy]
@@ -406,6 +429,70 @@ class ExecutionMemoryLimitErrorPayload(BaseModel):
     reason: str = ""
 
 
+class InputPreparationRecordPayload(BaseModel):
+    """One Data Input's automatic preparation record: digests and counts only."""
+
+    node_id: str
+    identity_digest: str
+    action: Literal["reused", "built", "refreshed"]
+    build_class: str
+    execution: Literal["in_process", "worker"]
+    memory_limit_bytes: int | None = None
+    elapsed_seconds: float = 0.0
+    row_count: int | None = None
+    size_bytes: int | None = None
+    generation_id: str | None = None
+    warning_code: str | None = None
+
+
+class SharedSnapshotSeedPayload(BaseModel):
+    """One node output an execution read from a shared snapshot generation."""
+
+    node_id: str
+    identity_digest: str
+    generation_id: str
+    columns: Literal["all"] | list[str]
+
+
+class SharedSnapshotCapturePayload(BaseModel):
+    """One full-data materialisation an execution wrote to shared snapshots.
+
+    ``published`` names the generation the execution continued from; otherwise
+    it continued from its own staged artifact and ``generation_id`` is null.
+    """
+
+    node_id: str
+    identity_digest: str
+    kind: Literal["structural", "materialising", "model_score", "consumed"]
+    outcome: Literal["published", "superseded"]
+    generation_id: str | None = None
+    columns: Literal["all"] | list[str]
+    write_strategy: (
+        Literal["chunked_join", "sliced", "input_sliced", "native", "prewritten"] | None
+    ) = None
+    write_parts: int | None = Field(default=None, ge=1)
+    write_chunk_rows: int | None = Field(default=None, ge=1)
+    write_staged_inputs: int | None = Field(default=None, ge=0)
+    write_input_slices: int | None = Field(default=None, ge=1)
+    write_native_reason: str | None = None
+    write_blocking_operator: str | None = None
+
+
+class SharedSnapshotCaptureSkipPayload(BaseModel):
+    """One candidate capture point skipped under cost gating."""
+
+    node_id: str
+    reason: Literal["cheap_segment", "slice_transparent_feeder"]
+
+
+class ExecutionWarningPayload(BaseModel):
+    """A non-fatal condition an execution continued past."""
+
+    code: str
+    node_id: str | None = None
+    reason: str | None = None
+
+
 class ExecutionMetricsPayload(BaseModel):
     schema_version: int = 1
     operation: str = ""
@@ -466,6 +553,20 @@ class ExecutionMetricsPayload(BaseModel):
     observed_peak_rss_bytes: int | None = Field(default=None, ge=0)
     observed_peak_rss_growth_bytes: int | None = Field(default=None, ge=0)
     cancellation_latency_ms: float | None = Field(default=None, ge=0)
+    input_preparation: list[InputPreparationRecordPayload] = Field(default_factory=list)
+    shared_snapshot_seeds: list[SharedSnapshotSeedPayload] = Field(default_factory=list)
+    shared_snapshot_captures: list[SharedSnapshotCapturePayload] = Field(default_factory=list)
+    shared_snapshot_capture_skips: list[SharedSnapshotCaptureSkipPayload] = Field(
+        default_factory=list
+    )
+    warnings: list[ExecutionWarningPayload] = Field(default_factory=list)
+    training_write_strategy: str | None = None
+    training_write_input_slices: int | None = Field(default=None, ge=1)
+    training_write_native_reason: str | None = None
+    training_write_blocking_operator: str | None = None
+    data_output_write_strategy: str | None = None
+    data_output_write_input_slices: int | None = Field(default=None, ge=1)
+    data_output_write_native_reason: str | None = None
 
     @model_validator(mode="after")
     def _validate_calibration_evidence(self) -> ExecutionMetricsPayload:

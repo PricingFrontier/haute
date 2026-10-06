@@ -3,6 +3,7 @@ import { Plus, Trash2, FileCode2, ChevronDown } from "lucide-react"
 import { CodeEditor } from "./editors/CodeEditor"
 import PanelShell from "./PanelShell"
 import useClickOutside from "../hooks/useClickOutside"
+import { useDebouncedCallback } from "../hooks/useDebouncedCallback"
 import useToastStore from "../stores/useToastStore"
 import {
   ApiError,
@@ -37,11 +38,24 @@ function parseSyntaxError(err: unknown): { error: string; error_line: number | n
 interface UtilityPanelProps {
   onClose: () => void
   onImportAdded: (importLine: string) => void
+  /** The pipeline's imports (its preamble), edited through the fixed Imports entry. */
+  preamble: string
+  onPreambleChange: (value: string) => void
 }
 
-export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelProps) {
+const IMPORTS_LABEL = "Imports"
+
+export default function UtilityPanel({
+  onClose,
+  onImportAdded,
+  preamble,
+  onPreambleChange,
+}: UtilityPanelProps) {
   const addToast = useToastStore((s) => s.addToast)
   const [files, setFiles] = useState<UtilityFile[]>([])
+  // The Imports entry is first in the list; it edits the preamble and never
+  // goes through the utility file routes.
+  const [importsSelected, setImportsSelected] = useState(false)
   const [activeModule, setActiveModule] = useState<string | null>(null)
   const [content, setContent] = useState("")
   const [errorLine, setErrorLine] = useState<number | null>(null)
@@ -51,12 +65,10 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
   useClickOutside(dropdownRef, () => setDropdownOpen(false), dropdownOpen)
   const [creating, setCreating] = useState(false)
   const [newName, setNewName] = useState("")
+  // A refused create, shown under the selector in every state; the typed
+  // name stays until a create succeeds.
+  const [createError, setCreateError] = useState<string | null>(null)
 
-  // Auto-save: debounce API calls so we don't fire on every keystroke
-  const saveTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
-  // The value awaiting the debounce window. Tracked so a file switch / unmount
-  // can FLUSH it (persist immediately) instead of discarding the last edit.
-  const pendingSaveRef = useRef<{ module: string; value: string } | null>(null)
   const inflightSaveRef = useRef<Promise<boolean> | null>(null)
   // A rejected draft remains dirty after its request settles. Keep that
   // failure separate from the in-flight queue so a later file switch cannot
@@ -111,39 +123,24 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
     return queued
   }, [persistSave])
 
+  // Auto-save: debounce API calls so we don't fire on every keystroke. A file
+  // switch or unmount FLUSHES the waiting edit (persists it now) instead of
+  // discarding it; the unmount flush is fire-and-forget, and persistSave's
+  // post-await guards skip state updates once unmounted.
+  const pendingSave = useDebouncedCallback(queueSave, 500, { onUnmount: "flush" })
   const autoSave = useCallback((module: string, value: string) => {
-    clearTimeout(saveTimer.current)
-    pendingSaveRef.current = { module, value }
-    saveTimer.current = setTimeout(() => {
-      pendingSaveRef.current = null
-      void queueSave(module, value)
-    }, 500)
-  }, [queueSave])
+    pendingSave.schedule([module, value])
+  }, [pendingSave])
 
   // Flush a pending debounced save synchronously (returns the persist promise so
   // callers can await it before switching file). No-op when nothing is pending.
   const flushSave = useCallback(async (): Promise<boolean> => {
-    const pending = pendingSaveRef.current
-    if (pending) {
-      clearTimeout(saveTimer.current)
-      pendingSaveRef.current = null
-      return queueSave(pending.module, pending.value)
-    }
+    const flushed = pendingSave.flush()
+    if (flushed) return flushed
     if (inflightSaveRef.current) return inflightSaveRef.current
     return failedSaveModuleRef.current === null
       || failedSaveModuleRef.current !== activeModuleRef.current
-  }, [queueSave])
-
-  // On unmount, flush any pending edit (fire-and-forget — cleanup can't await;
-  // persistSave's post-await guards skip state updates once unmounted).
-  useEffect(() => () => {
-    const pending = pendingSaveRef.current
-    clearTimeout(saveTimer.current)
-    if (pending) {
-      pendingSaveRef.current = null
-      void queueSave(pending.module, pending.value)
-    }
-  }, [queueSave])
+  }, [pendingSave])
 
   // Load file list.  The backend returns `{files: []}` for a missing
   // utility/ dir, so anything reaching this catch is a real failure
@@ -171,6 +168,7 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
       const res = await readUtilityFile(module)
       setContent(res.content)
       setActiveModule(module)
+      setImportsSelected(false)
       setErrorLine(null)
       setErrorMsg(null)
     } catch (err) {
@@ -180,21 +178,29 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
     }
   }, [addToast, flushSave])
 
+  const selectImports = useCallback(async () => {
+    if (!await flushSave()) return
+    setImportsSelected(true)
+    setErrorLine(null)
+    setErrorMsg(null)
+  }, [flushSave])
+
   // Auto-select first file
   useEffect(() => {
-    if (files.length > 0 && activeModule === null) {
+    if (!importsSelected && files.length > 0 && activeModule === null) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- auto-select on initial load
       loadFile(files[0].module)
     }
-  }, [files, activeModule, loadFile])
+  }, [files, activeModule, importsSelected, loadFile])
 
   const handleCreate = useCallback(async () => {
     const name = newName.trim().replace(/\.py$/, "")
     if (!name) return
-    setCreating(false)
-    setNewName("")
+    setCreateError(null)
     try {
       const res = await createUtilityFile({ name })
+      setCreating(false)
+      setNewName("")
       // Auto-add import to preamble
       if (res.import_line) {
         onImportAdded(res.import_line)
@@ -203,11 +209,7 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
       loadFile(res.module)
     } catch (err) {
       const syntaxErr = parseSyntaxError(err)
-      if (syntaxErr) {
-        setErrorMsg(syntaxErr.error)
-      } else {
-        setErrorMsg(err instanceof Error ? err.message : "Failed to create")
-      }
+      setCreateError(syntaxErr ? syntaxErr.error : err instanceof Error ? err.message : "Failed to create")
     }
   }, [newName, loadFiles, loadFile, onImportAdded])
 
@@ -215,8 +217,7 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
     if (!activeModule) return
     if (!confirm(`Delete ${activeModule}?`)) return
     // Discard any pending save — the file is being removed.
-    clearTimeout(saveTimer.current)
-    pendingSaveRef.current = null
+    pendingSave.cancel()
     try {
       await deleteUtilityFile(activeModule)
       if (failedSaveModuleRef.current === activeModule) {
@@ -230,7 +231,7 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
       addToast("error", `Failed to delete utility file "${activeModule}": ${detail}`)
       setErrorMsg("Failed to delete")
     }
-  }, [activeModule, loadFiles, addToast])
+  }, [activeModule, pendingSave, loadFiles, addToast])
 
   return (
     <PanelShell
@@ -246,8 +247,10 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
             <input
               autoFocus
               value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              onBlur={() => { setCreating(false); setNewName("") }}
+              aria-label="New utility module name"
+              aria-invalid={createError !== null}
+              onChange={(e) => { setNewName(e.target.value); setCreateError(null) }}
+              onBlur={() => { if (createError === null) { setCreating(false); setNewName("") } }}
               placeholder="module_name"
               className="flex-1 px-2 py-1 text-[12px] font-mono rounded focus:outline-none"
               style={{ background: 'var(--bg-input)', border: '1px solid var(--accent)', color: 'var(--text-primary)' }}
@@ -258,6 +261,7 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
           <>
             <div className="relative flex-1" ref={dropdownRef}>
               <button
+                data-testid="utility-file-selector"
                 onClick={() => setDropdownOpen((v) => !v)}
                 className="w-full flex items-center gap-1.5 px-2 py-1 text-[12px] font-mono rounded-md transition-colors"
                 style={{
@@ -267,15 +271,26 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
                 }}
               >
                 <span className="flex-1 text-left truncate">
-                  {activeModule ?? "No files"}
+                  {importsSelected ? IMPORTS_LABEL : activeModule ?? "No files"}
                 </span>
                 <ChevronDown size={11} style={{ color: 'var(--text-muted)', transition: 'transform 150ms', transform: dropdownOpen ? 'rotate(180deg)' : undefined }} />
               </button>
-              {dropdownOpen && files.length > 0 && (
+              {dropdownOpen && (
                 <div className="absolute top-full left-0 right-0 mt-1 rounded-lg shadow-2xl z-50 overflow-hidden" style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)' }}>
                   <div className="py-1">
+                    <button
+                      data-testid="utility-imports-entry"
+                      onClick={() => { setDropdownOpen(false); if (!importsSelected) void selectImports() }}
+                      className={`w-full flex items-center px-3 py-1.5 text-[12px] font-mono text-left transition-colors ${importsSelected ? "" : "hover:bg-[var(--bg-hover)]"}`}
+                      style={{
+                        color: importsSelected ? 'var(--accent)' : 'var(--text-secondary)',
+                        background: importsSelected ? 'var(--accent-soft)' : 'transparent',
+                      }}
+                    >
+                      {IMPORTS_LABEL}
+                    </button>
                     {files.map((f) => {
-                      const isActive = f.module === activeModule
+                      const isActive = !importsSelected && f.module === activeModule
                       return (
                         <button
                           key={f.module}
@@ -302,7 +317,7 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
             >
               <Plus size={14} />
             </button>
-            {activeModule && (
+            {activeModule && !importsSelected && (
               <button
                 onClick={handleDelete}
                 className="p-1.5 rounded-md transition-colors hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
@@ -316,12 +331,40 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
         )}
       </div>
 
+      {createError && (
+        <div
+          role="alert"
+          data-testid="utility-create-error"
+          className="px-3 py-1.5 text-[11px] shrink-0"
+          style={{ color: 'var(--danger)', borderBottom: '1px solid var(--border)' }}
+        >
+          {createError}
+        </div>
+      )}
+
       {/* Editor */}
       <div className="flex-1 min-h-0 overflow-y-auto">
-        {activeModule ? (
+        {importsSelected ? (
+          <div className="h-full flex flex-col" data-testid="utility-imports">
+            <div className="px-3 py-2 shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
+              <p className="text-[11px] font-mono" style={{ color: 'var(--text-muted)' }}>
+                <span style={{ color: "var(--text-accent-muted)" }}>import polars as pl</span> and <span style={{ color: "var(--text-accent-muted)" }}>import haute</span> are always included
+              </p>
+            </div>
+            <div className="flex-1 min-h-0">
+              <CodeEditor
+                key="imports"
+                defaultValue={preamble}
+                onChange={onPreambleChange}
+                placeholder={"from utility.features import *\nimport numpy as np\nfrom catboost import CatBoostRegressor"}
+              />
+            </div>
+          </div>
+        ) : activeModule ? (
           <div className="h-full flex flex-col">
             <div className="flex-1 min-h-0">
               <CodeEditor
+                key={activeModule}
                 defaultValue={content}
                 onChange={(val) => { setContent(val); setErrorLine(null); setErrorMsg(null); if (activeModule) autoSave(activeModule, val) }}
                 errorLine={errorLine}

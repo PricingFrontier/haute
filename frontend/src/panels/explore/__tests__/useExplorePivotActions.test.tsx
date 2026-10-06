@@ -1,11 +1,12 @@
-import { act, renderHook } from "@testing-library/react"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type {
   ExplorePivotResult,
   ExplorePivotRunResponse,
   ExplorePivotStatusResponse,
 } from "../../../api/types"
+import type { ExploreDataView } from "../exploreDataView"
 import useDocumentStatusStore from "../../../stores/useDocumentStatusStore"
 import useGraphStore from "../../../stores/useGraphStore"
 import useNodeResultsStore, {
@@ -19,6 +20,7 @@ import {
   type ExplorePivotConfig,
 } from "../pivotConfig"
 import useExplorePivotActions from "../useExplorePivotActions"
+import useAutoUpdateExplorePivots from "../useAutoUpdateExplorePivots"
 
 const mockRunExplorePivot = vi.fn()
 const mockCancelExplorePivot = vi.fn()
@@ -65,7 +67,7 @@ const result: ExplorePivotResult = {
   node_id: node.id,
   pivot_id: "claims",
   source: "pricing",
-  dataframe_cache_key: "explore:current",
+  data_version: "explore:current",
   calculation_key: "calculation",
   row_fields: ["region"],
   column_fields: [],
@@ -105,6 +107,8 @@ function startActiveJob(config: ExplorePivotConfig, jobId = "active-job") {
 }
 
 describe("useExplorePivotActions", () => {
+  afterEach(cleanup)
+
   beforeEach(() => {
     mockRunExplorePivot.mockReset()
     mockCancelExplorePivot.mockReset()
@@ -116,10 +120,61 @@ describe("useExplorePivotActions", () => {
     })
     useSettingsStore.setState({
       activeSource: "pricing",
-      streamingChunkSize: 250_000,
     })
     useGraphStore.setState({ structuralVersion: 0 })
     useDocumentStatusStore.getState().reset()
+  })
+
+  it.each([1, 2])("resumes automatic calculation after document adoption with %i mounted consumers", async (consumers) => {
+    let finishOld!: (response: ExplorePivotRunResponse) => void
+    const currentResult = { ...result, generated_at: 2 }
+    const completed = (value: ExplorePivotResult): ExplorePivotRunResponse => ({
+      status: "completed", job_id: null, cached: true, message: "Pivot cache hit",
+      result: value, failure: null,
+    })
+    mockRunExplorePivot
+      .mockReturnValueOnce(new Promise<ExplorePivotRunResponse>((resolve) => { finishOld = resolve }))
+      .mockResolvedValueOnce(completed(currentResult))
+    const config = pivot()
+    const pivots = [config]
+    const report = { data_version: result.data_version } as ExploreDataView
+    for (let consumer = 0; consumer < consumers; consumer += 1) {
+      renderHook(() => {
+        const actions = useExplorePivotActions({ node, allNodes: [node], edges: [] })
+        useAutoUpdateExplorePivots({ nodeId: node.id, pivots, report, ...actions })
+        return actions
+      })
+    }
+    expect(mockRunExplorePivot).toHaveBeenCalledTimes(1)
+
+    act(() => { useDocumentStatusStore.getState().setSourceRevision("adopted-document") })
+    await act(async () => { finishOld(completed(result)) })
+
+    await waitFor(() => expect(mockRunExplorePivot).toHaveBeenCalledTimes(2))
+    expect(useNodeResultsStore.getState().pivotResults[`${node.id}:claims`]?.result).toEqual(currentResult)
+    expect(useNodeResultsStore.getState().pivotStartClaims).toEqual({})
+  })
+
+  it("does not strand an automatic claim while the document cannot execute", async () => {
+    useDocumentStatusStore.setState({ loadStatus: "degraded" })
+    const config = pivot()
+    const pivots = [config]
+    const report = { data_version: result.data_version } as ExploreDataView
+    mockRunExplorePivot.mockResolvedValue({
+      status: "completed", job_id: null, cached: true, message: "Pivot cache hit",
+      result, failure: null,
+    })
+    renderHook(() => {
+      const actions = useExplorePivotActions({ node, allNodes: [node], edges: [] })
+      useAutoUpdateExplorePivots({ nodeId: node.id, pivots, report, ...actions })
+      return actions
+    })
+    expect(mockRunExplorePivot).not.toHaveBeenCalled()
+    expect(useNodeResultsStore.getState().pivotStartClaims).toEqual({})
+
+    act(() => { useDocumentStatusStore.getState().reset() })
+    await waitFor(() => expect(mockRunExplorePivot).toHaveBeenCalledTimes(1))
+    expect(useNodeResultsStore.getState().pivotResults[`${node.id}:claims`]?.result).toEqual(result)
   })
 
   it("does nothing for a pivot without values", async () => {
@@ -148,11 +203,40 @@ describe("useExplorePivotActions", () => {
     })
     const { result: hook } = renderActions()
 
-    await act(() => hook.current.updatePivot(pivot()))
+    const key = explorePivotResultKey(node.id, "claims")
+    const token = useNodeResultsStore.getState().claimExplorePivotAuto(
+      key, node.id, "df-1", pivotCalculationIdentity(pivot()),
+    )
+    await act(() => hook.current.updatePivot(pivot(), "df-1", token!))
 
     expect(mockRunExplorePivot).not.toHaveBeenCalled()
+    expect(useNodeResultsStore.getState().pivotStartClaims).toEqual({})
     expect(hook.current.submitting).toEqual({})
     expect(useNodeResultsStore.getState().pivotJobs).toEqual({})
+  })
+
+  it("sends a global constant edited after the hook mounted", async () => {
+    mockRunExplorePivot.mockResolvedValueOnce({
+      status: "started",
+      job_id: "constants-job",
+      cached: false,
+      message: "Started",
+      result: null,
+      failure: null,
+    })
+    const { result: hook } = renderActions()
+    act(() => {
+      useGraphStore.getState().setGlobalConstantsRaw([
+        { name: "rate", type: "float", split: false, value: "1.5", bySource: {} },
+      ])
+    })
+
+    await act(() => hook.current.updatePivot(pivot()))
+
+    expect(mockRunExplorePivot.mock.calls[0][0].graph.global_constants).toEqual([
+      { name: "rate", type: "float", value: 1.5 },
+    ])
+    act(() => useGraphStore.getState().setGlobalConstantsRaw([]))
   })
 
   it("uses the node id as the stored label when the Explore label is empty", async () => {
@@ -211,7 +295,7 @@ describe("useExplorePivotActions", () => {
     expect(hook.current.submitting).toEqual({})
     expect(job).toMatchObject({
       jobId: "pivot-job",
-      requestedDataframeCacheKey: "dataframe-current",
+      requestedDataVersion: "dataframe-current",
       progress: { status: "running", message: "Starting" },
     })
   })
@@ -433,7 +517,7 @@ describe("useExplorePivotActions", () => {
       expect(newerToken).not.toBeNull()
       expect(
         useNodeResultsStore.getState().pivotStartClaims[claimKey()],
-      ).toMatchObject({ dataframeCacheKey: "df-next", token: newerToken })
+      ).toMatchObject({ dataVersion: "df-next", token: newerToken })
     })
 
     it("releases the claim through the real failure path, allowing a retry", async () => {
@@ -552,7 +636,7 @@ describe("useExplorePivotActions", () => {
       const token2 = useNodeResultsStore
         .getState()
         .claimExplorePivotAuto(key, node.id, "df-new", identity())
-      const newResult = { ...result, dataframe_cache_key: "df-new" }
+      const newResult = { ...result, data_version: "df-new" }
       mockRunExplorePivot.mockResolvedValueOnce({
         status: "completed",
         job_id: "new-job",
@@ -600,10 +684,10 @@ describe("useExplorePivotActions", () => {
       expect(hook.current.submitting.claims).toBe(true)
       expect(
         useNodeResultsStore.getState().pivotResults[key]?.result
-          ?.dataframe_cache_key,
+          ?.data_version,
       ).toBe("df-new")
 
-      const nextResult = { ...result, dataframe_cache_key: "df-next" }
+      const nextResult = { ...result, data_version: "df-next" }
       await act(async () => {
         resolveNext({
           status: "completed",
@@ -618,7 +702,7 @@ describe("useExplorePivotActions", () => {
       expect(hook.current.submitting.claims).toBeUndefined()
       expect(
         useNodeResultsStore.getState().pivotResults[key]?.result
-          ?.dataframe_cache_key,
+          ?.data_version,
       ).toBe("df-next")
     })
 
@@ -648,7 +732,7 @@ describe("useExplorePivotActions", () => {
         .getState()
         .claimExplorePivotAuto(key, node.id, "df-new", identity())
       expect(token2).not.toBeNull()
-      const newResult = { ...result, dataframe_cache_key: "df-new" }
+      const newResult = { ...result, data_version: "df-new" }
       mockRunExplorePivot.mockResolvedValueOnce({
         status: "completed",
         job_id: "new-job",
@@ -660,7 +744,7 @@ describe("useExplorePivotActions", () => {
       await act(() => hook.current.updatePivot(pivot(), "df-new", token2!))
       expect(
         useNodeResultsStore.getState().pivotResults[key]?.result
-          ?.dataframe_cache_key,
+          ?.data_version,
       ).toBe("df-new")
 
       // The old response completes last: neither promoted nor stored.
@@ -677,7 +761,7 @@ describe("useExplorePivotActions", () => {
       })
       expect(
         useNodeResultsStore.getState().pivotResults[key]?.result
-          ?.dataframe_cache_key,
+          ?.data_version,
       ).toBe("df-new")
       expect(useNodeResultsStore.getState().pivotResults[key]?.jobId).toBe(
         "new-job",
@@ -712,7 +796,7 @@ describe("useExplorePivotActions", () => {
         )
       })
 
-      const retryResult = { ...result, dataframe_cache_key: "df-retry" }
+      const retryResult = { ...result, data_version: "df-retry" }
       mockRunExplorePivot.mockResolvedValueOnce({
         status: "completed",
         job_id: "retry-job",
@@ -729,7 +813,7 @@ describe("useExplorePivotActions", () => {
           job_id: "automatic-job",
           cached: true,
           message: "Completed",
-          result: { ...result, dataframe_cache_key: "df-auto" },
+          result: { ...result, data_version: "df-auto" },
           failure: null,
         })
         await automaticStart
@@ -737,7 +821,7 @@ describe("useExplorePivotActions", () => {
 
       expect(useNodeResultsStore.getState().pivotResults[key]).toMatchObject({
         jobId: "retry-job",
-        result: { dataframe_cache_key: "df-retry" },
+        result: { data_version: "df-retry" },
       })
       expect(useNodeResultsStore.getState().pivotJobs[key]).toBeUndefined()
     })

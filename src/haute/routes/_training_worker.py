@@ -23,6 +23,10 @@ from haute._execution_context import (
     current_rss_bytes,
 )
 from haute._logging import get_logger
+from haute._native_memory_limit import (
+    current_native_memory_backend,
+    memory_error_for_thread_start_failure,
+)
 from haute._worker_protocol import (
     WORKER_MAX_MESSAGE_LENGTH,
     WORKER_MAX_TRACEBACK_LENGTH,
@@ -37,6 +41,7 @@ from haute.errors import BoundedMemoryUnsupportedError, HauteValidationError
 from haute.routes._contract_errors import (
     PUBLIC_CONTRACT_ERROR_TYPES,
     contract_error_job_fields,
+    contract_error_terminal_reason,
 )
 from haute.routes._memory_messages import memory_limit_user_message
 from haute.routes._training_artifacts import (
@@ -123,7 +128,7 @@ def _friendly_error(
         if "nan" in msg.lower() or "inf" in msg.lower():
             return (
                 f"{operation_noun} failed: the data contains NaN or infinite "
-                "values. Add a polars node upstream to handle missing values "
+                "values. Add a Transform node upstream to handle missing values "
                 "(e.g. .fill_null() or .drop_nulls()) before training."
             )
         if "feature" in msg.lower() and "number" in msg.lower():
@@ -199,11 +204,77 @@ def _job_elapsed_seconds(job: Mapping[str, Any], fallback: float = 0.0) -> float
 
 def _bounded_loss_history(
     history: Iterable[dict[str, float]],
+    *,
+    best_iteration: int | None,
 ) -> tuple[list[dict[str, float]], bool]:
+    """Thin a fit's loss history to the limit, keeping its whole span.
+
+    Keeps the first and last rows, the best iteration's row (rows count from
+    one, ``best_iteration`` from zero) and an even stride between them.
+    """
     rows = list(history)
-    if len(rows) <= _max_train_loss_history():
+    limit = _max_train_loss_history()
+    if len(rows) <= limit:
         return rows, False
-    return rows[-_max_train_loss_history() :], True
+    kept = {0, len(rows) - 1}
+    if best_iteration is not None:
+        kept.update(
+            index for index, row in enumerate(rows) if row["iteration"] == best_iteration + 1
+        )
+    spare = limit - len(kept)
+    if spare > 0:
+        step = (len(rows) - 1) / (spare + 1)
+        kept.update(round(step * slot) for slot in range(1, spare + 1))
+    return [rows[index] for index in sorted(kept)][:limit], True
+
+
+def _append_live_loss_row(
+    history: list[dict[str, float]],
+    truncated: bool,
+    row: dict[str, float],
+    total: int,
+) -> tuple[list[dict[str, float]], bool]:
+    """Add a fit's newest loss row to the live history, keeping its span and extremes.
+
+    A row for the last row's round replaces it, as when a bagged fit reports
+    its furthest round again while slower bags catch up; a row for an earlier
+    round starts a new fit's history. Past the limit the history is compacted
+    to its first and newest rows, the rows holding each value's lowest and
+    highest so far, and the first row to reach each of the even buckets the
+    rest of the limit splits the fit's rounds into. Its rows therefore span
+    every round so far, and axes drawn from them never shrink during a fit.
+    Returns the history and whether it has dropped any row it was given.
+    """
+    if history and row["iteration"] == history[-1]["iteration"]:
+        return [*history[:-1], row], truncated
+    if history and row["iteration"] < history[-1]["iteration"]:
+        history, truncated = [], False
+    history = [*history, row]
+    limit = _max_train_loss_history()
+    if len(history) <= limit:
+        return history, truncated
+    keys = {key for entry in history for key in entry if key != "iteration"}
+    required = 2 + 2 * len(keys)
+    if limit < required:
+        raise RuntimeError(
+            f"HAUTE_TRAIN_LOSS_HISTORY_LIMIT is {limit}, but a live loss history needs at "
+            f"least {required} rows: its first and newest rows and the lowest and highest "
+            f"row of each of its {len(keys)} values."
+        )
+    kept = {0, len(history) - 1}
+    for key in keys:
+        values = {index: entry[key] for index, entry in enumerate(history) if key in entry}
+        kept.add(min(values, key=values.__getitem__))
+        kept.add(max(values, key=values.__getitem__))
+    rounds = max(total, int(row["iteration"]))
+    stride = max(1, math.ceil(rounds / max(limit - len(kept) - 1, 1)))
+    buckets: set[int] = set()
+    for index, entry in enumerate(history):
+        bucket = int(entry["iteration"]) // stride
+        if bucket not in buckets:
+            buckets.add(bucket)
+            kept.add(index)
+    return [history[index] for index in sorted(kept)], True
 
 
 def _worker_request_payload(request: WorkerRequest, *, expected_kind: str) -> dict[str, Any]:
@@ -306,6 +377,10 @@ def _known_training_worker_failure(
     bounded_memory_prefix: str,
     operation_noun: str = "Training",
 ) -> WorkerFailurePayload | None:
+    if current_native_memory_backend() is not None:
+        converted = memory_error_for_thread_start_failure(exc)
+        if isinstance(converted, MemoryError):
+            exc = converted
     if isinstance(exc, ExecutionCancelledError):
         # Match the preparation path's terminal message: the internal
         # operation/job-id wording of str(exc) is diagnostics, not a
@@ -334,7 +409,7 @@ def _known_training_worker_failure(
     if isinstance(exc, PUBLIC_CONTRACT_ERROR_TYPES):
         return _worker_failure_payload(
             exc,
-            terminal_reason="contract_error",
+            terminal_reason=contract_error_terminal_reason(exc),
             fields=contract_error_job_fields(exc),
             user_facing=True,
         )
@@ -384,6 +459,56 @@ def _with_worker_failure_metrics(
     )
 
 
+def _require_consistent_completed_response(response: TrainResponse) -> None:
+    """Check a completed response against its own evaluation and tuning.
+
+    The evaluation and tuning reports are validated where their artifacts are
+    produced and reloaded; this links them to the fields the job itself reports,
+    which no artifact records.
+    """
+    evaluation = response.evaluation
+    if evaluation is None:
+        raise ValueError("completed training requires evaluation")
+    if not response.diagnostic_metrics:
+        raise ValueError("completed training requires diagnostic_metrics")
+    if response.development_rows != evaluation.development_rows:
+        raise ValueError("development_rows must equal evaluation development_rows")
+    if response.final_test_rows != evaluation.final_test_rows:
+        raise ValueError("final_test_rows must equal evaluation final_test_rows")
+    if response.final_test_rows:
+        if response.diagnostic_metrics != response.final_test_metrics:
+            raise ValueError(
+                "diagnostic_metrics must equal final_test_metrics when a final test exists"
+            )
+        if response.diagnostics_set != "final_test":
+            raise ValueError(
+                "completed training diagnostics_set must be final_test when a test exists"
+            )
+    else:
+        if response.final_test_metrics:
+            raise ValueError("final_test_metrics must be empty without a final test")
+        expected_diagnostics = "development" if evaluation.refit_on_development else "validation"
+        if response.diagnostics_set != expected_diagnostics:
+            raise ValueError(
+                f"completed training diagnostics_set must be {expected_diagnostics} without a test"
+            )
+    tuning = response.tuning
+    if tuning is None:
+        expected_fits = evaluation.validation_fit_count + int(evaluation.refit_on_development)
+        if evaluation.fit_count != expected_fits:
+            if evaluation.refit_on_development:
+                raise ValueError("evaluation fit_count must equal validation_fit_count + final fit")
+            raise ValueError("evaluation fit_count must equal validation_fit_count without refit")
+        return
+    # A refitting family's study ends in the refit; a validation-fit family's
+    # (t-boost) in the reproduced winning holdout fit. Either is the one fit
+    # beyond the trials.
+    if evaluation.fit_count != tuning.total_fit_count:
+        raise ValueError("evaluation fit_count must equal tuning total_fit_count")
+    if tuning.evaluation_plan_sha256 != evaluation.plan_sha256:
+        raise ValueError("tuning evaluation plan digest must match evaluation")
+
+
 def _training_response_payload(
     train_result: Any,
     *,
@@ -394,12 +519,24 @@ def _training_response_payload(
 ) -> dict[str, Any]:
     loss_history, loss_history_truncated = _bounded_loss_history(
         train_result.loss_history,
+        best_iteration=train_result.best_iteration,
     )
-    diagnostics_set: Literal["development", "final_test"] = train_result.diagnostics_set
+    diagnostics_set: Literal["development", "validation", "final_test"] = (
+        train_result.diagnostics_set
+    )
     diagnostic_metrics = (
         train_result.final_test_metrics if diagnostics_set == "final_test" else train_result.metrics
     )
     evaluation_payload = EvaluationReportPayload.model_validate(evaluation)
+    validation_best: int | None = None
+    if train_result.validation_loss_history:
+        if len(evaluation_payload.selection_fits) != 1:
+            raise ValueError("a validation loss history needs exactly one selection fit")
+        validation_best = evaluation_payload.selection_fits[0].best_iteration
+    validation_loss_history, validation_loss_history_truncated = _bounded_loss_history(
+        train_result.validation_loss_history,
+        best_iteration=validation_best,
+    )
     tuning_payload = TuningReportPayload.model_validate(tuning) if tuning is not None else None
     response = TrainResponse(
         status="completed",
@@ -414,10 +551,17 @@ def _training_response_payload(
         features=train_result.features,
         cat_features=train_result.cat_features,
         best_iteration=train_result.best_iteration,
+        final_tree_count=train_result.final_tree_count,
+        fit_evidence=train_result.fit_evidence,
         loss_history=loss_history,
         loss_history_truncated=loss_history_truncated,
+        validation_loss_history=validation_loss_history,
+        validation_loss_history_truncated=validation_loss_history_truncated,
         double_lift=train_result.double_lift,
         shap_summary=train_result.shap_summary,
+        shap_beeswarm=train_result.shap_beeswarm,
+        shap_curves=train_result.shap_curves,
+        shap_link=train_result.shap_link,
         feature_importance_loss=train_result.feature_importance_loss,
         ave_per_feature=train_result.ave_per_feature,
         residuals_histogram=train_result.residuals_histogram,
@@ -429,11 +573,16 @@ def _training_response_payload(
         glm_coefficients=train_result.glm_coefficients,
         glm_relativities=train_result.glm_relativities,
         glm_fit_statistics=train_result.glm_fit_statistics,
-        glm_regularization_path=train_result.glm_regularization_path,
+        glm_inference=train_result.glm_inference,
+        glm_smooth_terms=train_result.glm_smooth_terms,
+        glm_regularization=train_result.glm_regularization,
+        ebm_terms=train_result.ebm_terms,
+        tboost_tables=train_result.tboost_tables,
         diagnostics_errors=train_result.diagnostics_errors,
         evaluation=evaluation_payload,
         tuning=tuning_payload,
     )
+    _require_consistent_completed_response(response)
     _assert_json_finite(response)
     return response.model_dump(mode="json", exclude_none=True)
 
@@ -479,6 +628,7 @@ def _run_training_process_job(
             iteration_number: int,
             total: int,
             metrics: dict[str, float],
+            history_row: dict[str, float] | None,
         ) -> None:
             execution_context.checkpoint(label="training_iteration")
             runtime.emit_progress(
@@ -489,6 +639,7 @@ def _run_training_process_job(
                     "iteration": iteration_number,
                     "total": total,
                     "metrics": metrics,
+                    "history": history_row,
                 },
             )
 
@@ -581,6 +732,7 @@ def _run_training_process_job(
         return WorkerResultManifest(
             metadata={
                 "response": response,
+                "training_identity_sha256": job.training_identity_sha256,
                 "execution_metrics": execution_context.metrics_payload(
                     status="completed",
                     terminal_reason="completed",
@@ -625,11 +777,8 @@ def _run_dispersion_process_job(
             raise HauteValidationError(f"Unknown dispersion parameter {param!r}")
 
         from haute.modelling import TrainingJob
-        from haute.modelling._rustystats import (
-            _build_interactions,
-            _resolve_glm_terms,
-            estimate_glm_dispersion,
-        )
+        from haute.modelling._glm_terms import validate_glm_model_columns
+        from haute.modelling._rustystats import estimate_glm_dispersion
 
         execution_context = _child_execution_context(
             request,
@@ -651,32 +800,23 @@ def _run_dispersion_process_job(
             )
 
         prepared = job._prepare_data(progress, execution_context=execution_context)
-        features = prepared.features
-        cat_features = prepared.cat_features
-        raw_terms = train_params.get("terms") or {}
-        if raw_terms:
-            term_names = set(raw_terms)
-            missing = term_names - set(features)
-            if missing:
-                raise HauteValidationError(
-                    "GLM terms reference columns not present in the training data: "
-                    f"{sorted(missing)}."
-                )
-            features = [feature for feature in features if feature in term_names]
-            cat_features = [feature for feature in cat_features if feature in term_names]
-
-        terms = _resolve_glm_terms(train_params, features, cat_features)
-        interactions = _build_interactions(
-            train_params.get("interactions", []) or [],
-            terms,
-        )
         target = str(job_kwargs["target"])
         weight = job_kwargs.get("weight") or None
         offset = job_kwargs.get("offset") or None
+        # The profile is taken on exactly the training design: every column a
+        # term, expression, or interaction factor reads (including a factor
+        # whose main effect an interaction materialises), plus the role columns
+        # the fit needs.
+        model_columns = validate_glm_model_columns(
+            train_params["terms"],
+            train_params.get("interactions") or [],
+            prepared.feature_dtypes,
+            role_columns=job._role_columns(),
+        )
         needed = list(
             dict.fromkeys(
                 [
-                    *terms,
+                    *model_columns,
                     target,
                     *([weight] if weight else []),
                     *([offset] if offset else []),
@@ -702,15 +842,11 @@ def _run_dispersion_process_job(
 
         estimate = estimate_glm_dispersion(
             data=frame,
-            terms=terms,
+            params=train_params,
             target=target,
-            family=str(train_params.get("family")),
             param=param,
-            link=train_params.get("link") or None,
-            intercept=bool(train_params.get("intercept", True)),
             weight=weight,
             offset=offset,
-            interactions=interactions or None,
             on_fit=on_fit,
         )
         return WorkerResultManifest(

@@ -5,15 +5,17 @@ import pytest
 from haute._api_input_schema import ApiInputSchemaError
 from haute._output_assembler import OutputNestingKeyError
 from haute.errors import (
-    ChunkMemoryRiskError,
     ContractMismatchError,
     ContractResolutionError,
     GroupByExecutionUnsupportedError,
+    InputPreparationError,
     LiveSwitchScenarioError,
+    NodeConfigError,
     PreambleError,
     RatingExtremaUndefinedError,
     RatingFactorDtypeContractError,
     RatingFactorMissingError,
+    SeedPlanExpiredError,
     TraceCorrelationUnsupportedError,
 )
 from haute.routes._contract_errors import (
@@ -23,6 +25,7 @@ from haute.routes._contract_errors import (
     contract_error_http_exception,
     contract_error_job_fields,
     contract_error_payload,
+    contract_error_terminal_reason,
 )
 
 
@@ -55,31 +58,13 @@ def _public_error_cases() -> list[tuple[BaseException, dict[str, object]]]:
             },
         ),
         (
-            ChunkMemoryRiskError(
-                "One estimated target row exceeds the configured chunk byte budget.",
-                target_node_id="output",
-                estimated_target_row_bytes=2_048,
-                target_chunk_bytes=1_024,
-            ),
-            {
-                "error_code": "chunk_memory_risk",
-                "message": ("One estimated target row exceeds the configured chunk byte budget."),
-                "target_node_id": "output",
-                "reason_code": "single_row_exceeds_budget",
-                "estimated_target_row_bytes": 2_048,
-                "estimated_minimum_chunk_bytes": 2_048,
-                "row_expansion_factor": 1,
-                "target_chunk_bytes": 1_024,
-            },
-        ),
-        (
             GroupByExecutionUnsupportedError(
                 "group-by needs a full materialisation boundary",
                 node_id="group",
                 operator="groupBy",
                 profile="training_prep",
-                reason_code="profile_requires_bounded_execution",
-                remediation="run under an admitted eager profile",
+                reason_code="materialisation_exceeds_headroom",
+                remediation="increase memory headroom or narrow the input",
                 estimated_peak_bytes=1_024,
                 headroom_bytes=512,
             ),
@@ -89,8 +74,8 @@ def _public_error_cases() -> list[tuple[BaseException, dict[str, object]]]:
                 "node_id": "group",
                 "operator": "groupBy",
                 "profile": "training_prep",
-                "reason_code": "profile_requires_bounded_execution",
-                "remediation": "run under an admitted eager profile",
+                "reason_code": "materialisation_exceeds_headroom",
+                "remediation": "increase memory headroom or narrow the input",
                 "estimated_peak_bytes": 1_024,
                 "headroom_bytes": 512,
             },
@@ -171,6 +156,14 @@ def _public_error_cases() -> list[tuple[BaseException, dict[str, object]]]:
             },
         ),
         (
+            NodeConfigError("stepCount is required", setting="stepCount"),
+            {
+                "error_code": "node_config_invalid",
+                "message": "stepCount is required",
+                "setting": "stepCount",
+            },
+        ),
+        (
             OutputNestingKeyError(
                 "nesting key is null",
                 frame="children",
@@ -208,6 +201,71 @@ def test_shared_contract_error_adapter_preserves_sync_and_background_payloads(
         "error_code": expected["error_code"],
         "http_status_code": 422,
     }
+
+
+def _input_preparation_error(reason_code: str) -> InputPreparationError:
+    return InputPreparationError(
+        "Preparing this Data Input's snapshot failed.",
+        node_id="input",
+        identity_digest="a" * 64,
+        build_class="bounded",
+        reason_code=reason_code,
+        remediation="Build the snapshot and try again.",
+    )
+
+
+def test_input_preparation_error_is_a_public_contract_error() -> None:
+    exc = _input_preparation_error("build_failed")
+    assert isinstance(exc, PUBLIC_CONTRACT_ERROR_TYPES)
+    payload = contract_error_payload(exc)
+    assert payload == {
+        "error_code": "input_preparation_failed",
+        "message": "Preparing this Data Input's snapshot failed.",
+        "node_id": "input",
+        "identity_digest": "a" * 64,
+        "build_class": "bounded",
+        "reason_code": "build_failed",
+        "remediation": "Build the snapshot and try again.",
+    }
+    assert contract_error_http_exception(exc).status_code == 422
+    assert contract_error_terminal_reason(exc) == CONTRACT_ERROR_TERMINAL_REASON
+    assert contract_error_job_fields(exc)["http_status_code"] == 422
+
+
+def test_a_memory_limited_preparation_records_the_memory_limited_terminal_state() -> None:
+    exc = _input_preparation_error("memory_limited")
+    # A synchronous route answers 507, matching the background job's status.
+    assert contract_error_http_exception(exc).status_code == 507
+    assert contract_error_terminal_reason(exc) == "memory_limited"
+    fields = contract_error_job_fields(exc)
+    assert fields["error_code"] == "memory_limit"
+    assert fields["http_status_code"] == 507
+    assert fields["error_detail"] == contract_error_payload(exc)
+
+
+def test_an_expired_seed_plan_is_a_conflict() -> None:
+    # The preview a trace explains moved underneath it: refresh, not correct.
+    exc = SeedPlanExpiredError(node_id="join")
+    assert isinstance(exc, PUBLIC_CONTRACT_ERROR_TYPES)
+    payload = contract_error_payload(exc)
+    assert payload == {
+        "error_code": "preview_seed_plan_expired",
+        "message": (
+            "The cached data this preview was computed from has changed; "
+            "refresh the preview and trace the row again."
+        ),
+        "node_id": "join",
+    }
+    http_exc = contract_error_http_exception(exc)
+    assert http_exc.status_code == 409
+    assert http_exc.detail == payload
+    assert contract_error_terminal_reason(exc) == CONTRACT_ERROR_TERMINAL_REASON
+    assert contract_error_job_fields(exc)["http_status_code"] == 409
+
+
+def test_input_preparation_error_rejects_an_unknown_reason_code() -> None:
+    with pytest.raises(ValueError, match="unknown input preparation reason code"):
+        _input_preparation_error("nope")
 
 
 def test_shared_contract_error_adapter_rejects_unversioned_errors() -> None:

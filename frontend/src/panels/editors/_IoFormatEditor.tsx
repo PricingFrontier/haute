@@ -12,6 +12,7 @@ import type {
   IoOutputCapability,
 } from "../../api/types"
 import { withAlpha } from "../../utils/color"
+import { isPlainObject } from "../../types/guards"
 import { INPUT_STYLE } from "./_shared"
 import type { OnUpdateConfig } from "./_shared"
 import PathPickerField from "./shared/PathPickerField"
@@ -26,6 +27,10 @@ const INPUT_COMMON_KEYS = new Set([
   "categorical_levels",
   "contract",
   "code",
+  // Post-load steps and the editor state the step machinery writes beside them.
+  "steps",
+  "_steps_error",
+  "_steps_discarded",
 ])
 
 const OUTPUT_COMMON_KEYS = new Set([
@@ -36,10 +41,6 @@ const OUTPUT_COMMON_KEYS = new Set([
   "categorical_levels",
   "contract",
 ])
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-}
 
 let nextArgumentRowId = 0
 
@@ -79,7 +80,7 @@ export function IoArgumentsEditor({
   onCommit: (next: Record<string, unknown>) => void
   inputStyle?: CSSProperties
 }) {
-  const args = useMemo(() => (isPlainRecord(value) ? value : {}), [value])
+  const args = useMemo(() => (isPlainObject(value) ? value : {}), [value])
   const argsJson = JSON.stringify(args)
   const [rows, setRows] = useState<ArgumentRow[]>(() => argumentRows(args))
   const lastSynced = useRef(argsJson)
@@ -400,7 +401,7 @@ export default function IoFormatEditor({
   }
   if (
     config.arguments !== undefined &&
-    !isPlainRecord(config.arguments)
+    !isPlainObject(config.arguments)
   ) {
     configErrors.push("Arguments must be an object.")
   }
@@ -571,10 +572,14 @@ export default function IoFormatEditor({
             <PathPickerField
               key={field.name}
               label={`${field.label}${field.required ? " *" : ""}`}
+              description={direction === "output" && group.name === "file"
+                ? "Filenames save in the project's outputs/ folder. Paths are relative to the project root. The selected format's extension is added if omitted."
+                : undefined}
               value={value}
               onSelect={(path) => updateField(field.name, path)}
               extensions={format && format.extensions.length > 0 ? format.extensions.join(",") : undefined}
               manualEntry={direction === "output"}
+              selectFolder={format?.input?.source_is_folder === true}
             />
           )
         }

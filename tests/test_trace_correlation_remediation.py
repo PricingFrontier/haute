@@ -307,11 +307,11 @@ def test_enrichment_completed_result_memo_reuses_sibling_concern(
     def parse_expression(_code, _column):
         return SimpleNamespace(expression_text="raw * 2", referenced_columns=[])
 
-    def evaluate_expression(_code, _column, _values, *, preamble_ns=None):
+    def evaluate_expression(_code, _column, _values, *, preamble_ns=None, row=None):
         nonlocal calls
-        del preamble_ns
+        del preamble_ns, row
         calls += 1
-        return SimpleNamespace(substituted_text="2 * 2", result_value=4)
+        return SimpleNamespace(substituted_text="2 * 2", result_value=4, not_computable_reason=None)
 
     monkeypatch.setattr(enrichment, "parse_expression", parse_expression)
     monkeypatch.setattr(enrichment, "evaluate_expression", evaluate_expression)

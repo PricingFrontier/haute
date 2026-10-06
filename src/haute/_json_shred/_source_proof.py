@@ -1,42 +1,52 @@
-"""Source-file content proofs: strong native revisions and SHA-256 signatures.
+"""Source freshness: one observation and one content signature for every file.
 
-A signature is the sole raw-file content proof consumed by cache identity and
-loading. Persisted proofs are reused only behind an exact native-revision
-match, and a fresh host rebinds a content-matching manifest after one full
-hash instead of hashing the source on every process start."""
+Every consumer that asks whether a local file changed asks here: Data Input
+and API Input snapshot freshness, runtime-input identity, preamble utility
+hashes, JSON schema inference, and the artifact caches built on
+:class:`haute._stat_gated_cache.StatGatedCache`.
+
+The guarantee: a proof or loaded value is reused only while the file's
+freshness token is unchanged. The token is the file's native revision
+(Windows volume, file id and USN; POSIX device, inode and ctime, with size and
+mtime), which every write moves. Where the platform has no native revision the
+token is the file's stat, trusted only for a file last modified at least
+:data:`SETTLE_SECONDS` before it was observed; a younger file is proved again
+on every use, because a same-size rewrite inside the filesystem's timestamp
+granularity keeps its size and mtime.
+"""
 
 from __future__ import annotations
 
 import ctypes
 import hashlib
+import json
 import os
 import stat as stat_module
-import threading
-import uuid
-from collections import OrderedDict
-from collections.abc import Mapping
+import time
+from collections.abc import Hashable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, cast
 
-import orjson
-
-from haute._json_shred import _publication
-from haute._json_shred._publication import _META_FILENAME
+from haute._file_ops import atomic_write_bytes
+from haute._hashing import HASH_ALGO, content_hash
 from haute._logging import get_logger
+from haute._lru_cache import LRUCache
 
-logger = get_logger(component="json_shred")
+if TYPE_CHECKING:
+    from haute._stat_gated_cache import StatGatedCache
 
-
-# ---------------------------------------------------------------------------
-# Data-file signature (W2 item 2.4) — validity must see data edits
-# ---------------------------------------------------------------------------
-
-
-_DATA_FILE_SIGNATURE_MEMO_MAX_ENTRIES = 256
+logger = get_logger(component="source_proof")
 
 
-_NATIVE_REVISION_SCHEMA_VERSION = 1
+SETTLE_SECONDS = 2.0
+"""Age below which a file without a native revision is never reused."""
+
+_UNAVAILABLE_WARNINGS_MAX_ENTRIES = 256
+
+
+class SourceChangedError(OSError, RuntimeError):
+    """A file kept changing while it was being proved or loaded."""
 
 
 _WINDOWS_EPOCH_OFFSET_100NS = 116_444_736_000_000_000
@@ -50,136 +60,6 @@ class _StrongFileRevision:
     size: int
     mtime_ns: int
     change_token: int
-
-
-def _native_revision_record(revision: _StrongFileRevision) -> dict[str, Any]:
-    """Return the strict JSON representation persisted beside a source hash."""
-
-    volume_or_device, file_id = revision.file_identity
-    if isinstance(file_id, bytes):
-        kind = "windows_usn_v1"
-        identity: list[int | str]  # pragma: no mutate
-        identity = [volume_or_device, file_id.hex()]
-    else:
-        kind = "posix_ctime_v1"
-        identity = [volume_or_device, file_id]
-    return {
-        "schema_version": _NATIVE_REVISION_SCHEMA_VERSION,
-        "kind": kind,
-        "file_identity": identity,
-        "size": revision.size,
-        "mtime_ns": revision.mtime_ns,
-        "change_token": revision.change_token,
-    }
-
-
-def _parse_native_revision_record(value: Any) -> _StrongFileRevision | None:  # pragma: no mutate
-    """Parse one persisted native revision, rejecting partial/weaker shapes."""
-
-    if not isinstance(value, dict) or set(value) != {
-        "schema_version",
-        "kind",
-        "file_identity",
-        "size",
-        "mtime_ns",
-        "change_token",
-    }:
-        return None
-    schema_version = value.get("schema_version")
-    if type(schema_version) is not int or schema_version != _NATIVE_REVISION_SCHEMA_VERSION:
-        return None
-    kind = value.get("kind")
-    identity = value.get("file_identity")
-    size = value.get("size")
-    mtime_ns = value.get("mtime_ns")
-    change_token = value.get("change_token")
-    if (
-        not isinstance(identity, list)
-        or len(identity) != 2
-        or type(identity[0]) is not int
-        or identity[0] < 0
-        or type(size) is not int
-        or size < 0
-        or type(mtime_ns) is not int
-        or type(change_token) is not int
-        or change_token <= 0
-    ):
-        return None
-    if kind == "posix_ctime_v1":
-        if type(identity[1]) is not int or identity[1] <= 0:
-            return None
-        file_identity: tuple[int, int | bytes]  # pragma: no mutate
-        file_identity = (identity[0], identity[1])
-    elif kind == "windows_usn_v1":
-        if not isinstance(identity[1], str) or len(identity[1]) != 32:
-            return None
-        try:
-            file_id = bytes.fromhex(identity[1])
-        except ValueError:
-            return None
-        if not any(file_id):
-            return None
-        file_identity = (identity[0], file_id)
-    else:
-        return None
-    return _StrongFileRevision(
-        file_identity=file_identity,
-        size=size,
-        mtime_ns=mtime_ns,
-        change_token=change_token,
-    )
-
-
-def _persisted_source_proof_digest(
-    *,  # pragma: no mutate
-    size: int,
-    mtime_ns: int,
-    sha256: str,
-    native_revision: _StrongFileRevision,
-) -> str:
-    """Bind a persisted source signature to its native revision."""
-
-    payload = {
-        "schema_version": _NATIVE_REVISION_SCHEMA_VERSION,
-        "size": size,
-        "mtime_ns": mtime_ns,
-        "sha256": sha256,
-        "native_revision": _native_revision_record(native_revision),
-    }
-    return hashlib.sha256(orjson.dumps(payload, option=orjson.OPT_SORT_KEYS)).hexdigest()
-
-
-@dataclass(frozen=True, slots=True)
-class _DataFileSignatureRecord:
-    """Immutable memo payload; callers receive a fresh mapping view."""
-
-    size: int
-    mtime_ns: int
-    sha256: str
-    native_revision: _StrongFileRevision | None  # pragma: no mutate
-
-    def as_dict(self) -> dict[str, Any]:
-        payload = {
-            "size": self.size,
-            "mtime_ns": self.mtime_ns,
-            "sha256": self.sha256,
-            "native_revision": (
-                None
-                if self.native_revision is None
-                else _native_revision_record(self.native_revision)
-            ),
-        }
-        payload["native_revision_proof_sha256"] = (
-            None
-            if self.native_revision is None
-            else _persisted_source_proof_digest(
-                size=self.size,
-                mtime_ns=self.mtime_ns,
-                sha256=self.sha256,
-                native_revision=self.native_revision,
-            )
-        )
-        return payload
 
 
 class _WindowsFileBasicInfo(ctypes.Structure):
@@ -374,437 +254,329 @@ def _strong_file_revision(path: Path) -> _StrongFileRevision | None:  # pragma: 
     return _posix_strong_file_revision(path)
 
 
-def _uncached_data_file_signature(data_path: Path) -> _DataFileSignatureRecord:
-    """Hash without retaining a proof when no strong revision is available."""
-    observed = data_path.stat()
-    before = (
-        observed.st_dev,
-        observed.st_ino,
-        observed.st_size,
-        observed.st_mtime_ns,
-        observed.st_ctime_ns,
-    )
-    digest = _hash_file(data_path)
-    final = data_path.stat()
-    after = (
-        final.st_dev,
-        final.st_ino,
-        final.st_size,
-        final.st_mtime_ns,
-        final.st_ctime_ns,
-    )
-    if before != after:
-        raise OSError(f"data file changed while its signature was computed: {data_path}")
-    return _DataFileSignatureRecord(
-        size=int(final.st_size),
-        mtime_ns=int(final.st_mtime_ns),
-        sha256=digest,
-        native_revision=None,
+@dataclass(frozen=True, slots=True)
+class Freshness:
+    """One observation of a file's freshness token."""
+
+    token: Hashable
+    reusable: bool
+
+
+def observe_freshness(path: Path) -> Freshness:
+    """Observe *path*'s freshness token and whether a proof under it may be reused.
+
+    Raises ``OSError`` (``FileNotFoundError`` for a missing file) when the file
+    cannot be observed.
+    """
+    revision = _strong_file_revision(path)
+    if revision is not None:
+        return Freshness(revision, reusable=True)
+    observed = path.stat()
+    _warn_revision_unavailable_once(path)
+    return Freshness(
+        (
+            "stat",
+            observed.st_dev,
+            observed.st_ino,
+            observed.st_size,
+            observed.st_mtime_ns,
+            observed.st_ctime_ns,
+        ),
+        reusable=time.time() - observed.st_mtime >= SETTLE_SECONDS,
     )
 
 
-def _revision_gated_data_file_signature(
-    data_path: Path,
-    revision: _StrongFileRevision,
-) -> _DataFileSignatureRecord:
-    """Hash one source generation and reject a moving native revision."""
-    digest = _hash_file(data_path)
-    if _strong_file_revision(data_path) != revision:
-        raise OSError(f"data file changed while its signature was computed: {data_path}")
-    return _DataFileSignatureRecord(
+def freshness_record(path: Path) -> dict[str, object]:
+    """The freshness token :func:`observe_freshness` reads for *path*, as JSON values.
+
+    A native file revision or a stat, never the file's content, so recording
+    and later re-observing it costs no hash. Raises like
+    :func:`observe_freshness`.
+    """
+    token = observe_freshness(path).token
+    if isinstance(token, _StrongFileRevision):
+        return _revision_record(token)
+    _kind, device, inode, size, mtime_ns, ctime_ns = cast(
+        tuple[str, int, int, int, int, int], token
+    )
+    return {
+        "kind": "stat",
+        "device": device,
+        "inode": inode,
+        "size": size,
+        "mtime_ns": mtime_ns,
+        "ctime_ns": ctime_ns,
+    }
+
+
+_UNAVAILABLE_WARNINGS: LRUCache[str, bool] = LRUCache(max_size=_UNAVAILABLE_WARNINGS_MAX_ENTRIES)
+
+
+def _warn_revision_unavailable_once(path: Path) -> None:
+    key = os.path.normcase(str(path))
+    if _UNAVAILABLE_WARNINGS.get(key):
+        return
+    _UNAVAILABLE_WARNINGS.put(key, True)
+    logger.warning(
+        "source_revision_unavailable",
+        path=str(path),
+        action="stat_gate_after_settle",
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class FileSignature:
+    """The complete-content proof of one file state."""
+
+    size: int
+    mtime_ns: int
+    digest: str
+
+    @property
+    def source_signature(self) -> str:
+        """The ``<algorithm>:<digest>:<size>`` string a snapshot records."""
+        return f"{HASH_ALGO}:{self.digest}:{self.size}"
+
+
+_SIGNATURES: StatGatedCache[str, FileSignature] | None = None
+
+
+def _signatures() -> StatGatedCache[str, FileSignature]:
+    # Built on first use: the gated cache observes freshness through this module.
+    global _SIGNATURES
+    if _SIGNATURES is None:
+        from haute._stat_gated_cache import StatGatedCache
+
+        _SIGNATURES = StatGatedCache[str, FileSignature](artifact_kind="Source file")
+    return _SIGNATURES
+
+
+def file_signature(path: Path) -> FileSignature:
+    """Return *path*'s content signature, hashed once per unchanged freshness token.
+
+    Raises ``OSError`` for a missing or unreadable file and
+    :class:`SourceChangedError` for one that keeps changing while it is hashed.
+    """
+    from haute._stat_gated_cache import artifact_cache_key
+
+    resolved = path.expanduser().resolve()
+    return _signatures().get_or_load(
+        artifact_cache_key(resolved),
+        str(resolved),
+        lambda: _signature(resolved),
+    )
+
+
+def _signature(path: Path) -> FileSignature:
+    """Prove *path*: from its durable record when that names the current revision.
+
+    Only a proof made under a native revision is recorded, and a record is
+    reused only while the file still has exactly that revision, so a new
+    process skips the complete read of an unchanged file. Without a native
+    revision the file is hashed and nothing is read or written.
+    """
+    revision = _strong_file_revision(path)
+    if revision is None:
+        observed = path.stat()
+        return FileSignature(
+            size=int(observed.st_size),
+            mtime_ns=int(observed.st_mtime_ns),
+            digest=_hash_file(path),
+        )
+    record_path = _proof_record_path(path)
+    recorded = _read_proof_record(record_path, path)
+    if recorded is not None and recorded[0] == revision:
+        return recorded[1]
+    signature = FileSignature(
         size=revision.size,
         mtime_ns=revision.mtime_ns,
-        sha256=digest,
-        native_revision=revision,
+        digest=_hash_file(path),
     )
+    # A proof is recorded only for the revision it was actually made under.
+    if _strong_file_revision(path) == revision:
+        _write_proof_record(record_path, path, revision, signature)
+    return signature
 
 
-def _persisted_data_file_signature(
-    data_path: Path,
-    revision: _StrongFileRevision,
-) -> _DataFileSignatureRecord | None:  # pragma: no mutate
-    """Load an agreeing cache-build proof for the exact current generation."""
+def clear_file_signatures() -> None:
+    """Forget every in-process proof (a test seam; an active flight is kept).
 
-    from haute._json_flatten import _json_cache_dir
+    Durable records are untouched, so a test clears the memo to stand in for a
+    new process.
+    """
+    _signatures().clear()
+    _UNAVAILABLE_WARNINGS.clear()
 
-    candidates: list[_DataFileSignatureRecord] = []
-    matching_record_invalid = False
-    matching_paths: list[str] = []
-    for layer in ("working", "committed"):
-        meta_path = _json_cache_dir(data_path, layer) / _META_FILENAME
-        try:
-            meta = orjson.loads(meta_path.read_bytes())
-        except (OSError, ValueError):
-            continue
-        if not isinstance(meta, dict) or meta.get("schema_mode") != "v2":
-            continue
-        recorded = meta.get("data_file")
-        if not isinstance(recorded, dict):
-            continue
-        persisted_revision = _parse_native_revision_record(recorded.get("native_revision"))
-        if persisted_revision != revision:
-            continue
-        matching_paths.append(str(meta_path))
-        parts = _content_signature_parts(recorded)
-        recorded_mtime_ns = recorded.get("mtime_ns")
-        proof_digest = recorded.get("native_revision_proof_sha256")
-        if (
-            parts is None
-            or type(recorded_mtime_ns) is not int
-            or parts[0] != revision.size
-            or recorded_mtime_ns != revision.mtime_ns
-            or not isinstance(proof_digest, str)
-            or proof_digest
-            != _persisted_source_proof_digest(
-                size=parts[0],
-                mtime_ns=recorded_mtime_ns,
-                sha256=parts[1],
-                native_revision=revision,
-            )
-        ):
-            matching_record_invalid = True
-            continue
-        candidates.append(
-            _DataFileSignatureRecord(
-                size=parts[0],
-                mtime_ns=recorded_mtime_ns,
-                sha256=parts[1],
-                native_revision=revision,
-            )
-        )
 
+# ---------------------------------------------------------- durable records
+
+_PROOF_RECORD_SCHEMA_VERSION = 1
+_PROOF_RECORD_KEYS = frozenset(
+    {"schema_version", "path", "revision", "hash_algo", "digest", "size", "mtime_ns"}
+)
+_REVISION_KEYS = frozenset({"kind", "file_identity", "size", "mtime_ns", "change_token"})
+_WINDOWS_REVISION_KIND = "windows_usn_v1"
+_POSIX_REVISION_KIND = "posix_ctime_v1"
+_DIGEST_LENGTH = 16
+_HEX_DIGITS = frozenset("0123456789abcdef")
+
+
+def _proof_record_root() -> Path:
+    """The project-local directory durable source proofs live in."""
+    from haute._sandbox import _get_project_root
+
+    return _get_project_root() / ".haute_cache" / "source_proofs"
+
+
+def _proof_record_path(path: Path) -> Path:
+    name = hashlib.sha256(os.path.normcase(str(path)).encode("utf-8")).hexdigest()
+    return _proof_record_root() / f"{name}.json"
+
+
+def _is_int(value: object) -> bool:
+    return type(value) is int
+
+
+def _is_lower_hex(value: object, length: int) -> bool:
+    return isinstance(value, str) and len(value) == length and set(value) <= _HEX_DIGITS
+
+
+def _revision_record(revision: _StrongFileRevision) -> dict[str, object]:
+    volume_or_device, file_id = revision.file_identity
+    if isinstance(file_id, bytes):
+        kind, identity = _WINDOWS_REVISION_KIND, [volume_or_device, file_id.hex()]
+    else:
+        kind, identity = _POSIX_REVISION_KIND, [volume_or_device, file_id]
+    return {
+        "kind": kind,
+        "file_identity": identity,
+        "size": revision.size,
+        "mtime_ns": revision.mtime_ns,
+        "change_token": revision.change_token,
+    }
+
+
+def _parse_revision(value: object) -> _StrongFileRevision | None:
+    if not isinstance(value, dict) or set(value) != _REVISION_KEYS:
+        return None
+    identity = value["file_identity"]
+    size, mtime_ns, change_token = value["size"], value["mtime_ns"], value["change_token"]
     if (
-        matching_record_invalid
-        or not candidates
-        or any(candidate != candidates[0] for candidate in candidates[1:])
+        not isinstance(identity, list)
+        or len(identity) != 2
+        or not _is_int(identity[0])
+        or identity[0] < 0
+        or not _is_int(size)
+        or size < 0
+        or not _is_int(mtime_ns)
+        or not _is_int(change_token)
+        or change_token <= 0
     ):
-        if matching_paths:
-            logger.warning(
-                "json_source_persisted_proof_rejected",
-                data_path=str(data_path),
-                matching_meta_paths=matching_paths,
-                reason=(
-                    "invalid_matching_signature"
-                    if matching_record_invalid
-                    else "conflicting_matching_signatures"
-                ),
-                action="full_source_hash",
-            )
         return None
-    if _strong_file_revision(data_path) != revision:
+    file_id: int | bytes
+    if value["kind"] == _WINDOWS_REVISION_KIND:
+        if not _is_lower_hex(identity[1], 32):
+            return None
+        file_id = bytes.fromhex(identity[1])
+        if not any(file_id):
+            return None
+    elif value["kind"] == _POSIX_REVISION_KIND:
+        if not _is_int(identity[1]) or identity[1] <= 0:
+            return None
+        file_id = identity[1]
+    else:
         return None
-    return candidates[0]  # pragma: no mutate - candidates are proven value-identical above
-
-
-def _rebind_persisted_source_proofs(
-    data_path: Path,
-    signature: _DataFileSignatureRecord,
-    revision: _StrongFileRevision,
-) -> None:
-    """Atomically bind content-matching manifests to one freshly hashed revision.
-
-    This is the fresh-host/first-observation path, not a version shim: a
-    manifest whose content signature matches but whose recorded native
-    revision differs (a cache built on another volume, or before this host
-    could observe a revision) is rebound so later processes here can reuse
-    the proof without re-hashing the whole source.
-    """
-
-    from haute._json_flatten import _json_cache_dir
-
-    source_parts = (signature.size, signature.sha256)
-    source_payload = signature.as_dict()
-    for layer in ("working", "committed"):
-        cache_dir = _json_cache_dir(data_path, layer)
-        meta_path = cache_dir / _META_FILENAME
-        with _publication._build_lock_for(cache_dir):
-            try:
-                meta = orjson.loads(meta_path.read_bytes())
-            except (OSError, ValueError):
-                continue
-            if not isinstance(meta, dict) or meta.get("schema_mode") != "v2":
-                continue
-            recorded = meta.get("data_file")
-            if (
-                not isinstance(recorded, dict)
-                or _content_signature_parts(recorded) != source_parts
-                or recorded == source_payload
-            ):
-                continue
-            # Do not publish a proof after the source generation that justified
-            # it has moved. The already-computed signature remains valid for the
-            # caller's observation, but a future process must hash again.
-            if _strong_file_revision(data_path) != revision:
-                return
-            upgraded_meta = {**meta, "data_file": source_payload}
-            temp_path = cache_dir / f".{_META_FILENAME}.{uuid.uuid4().hex}.tmp"
-            try:
-                temp_path.write_bytes(orjson.dumps(upgraded_meta))
-                os.replace(temp_path, meta_path)
-            except OSError as exc:
-                logger.warning(
-                    "json_source_persisted_proof_upgrade_failed",
-                    data_path=str(data_path),
-                    cache_dir=str(cache_dir),
-                    error=str(exc),
-                    action="retain_full_hash_result",
-                )
-            else:
-                logger.info(
-                    "json_source_persisted_proof_upgraded",
-                    data_path=str(data_path),
-                    cache_dir=str(cache_dir),
-                )
-            finally:
-                try:
-                    temp_path.unlink(missing_ok=True)
-                except OSError as exc:
-                    logger.warning(
-                        "json_source_persisted_proof_temp_cleanup_failed",
-                        data_path=str(data_path),
-                        cache_dir=str(cache_dir),
-                        temp_path=str(temp_path),
-                        error=str(exc),
-                    )
-
-
-class _DataFileSignatureLoadGate:
-    """Per-path single-flight state retained only within the cache bound."""
-
-    def __init__(self) -> None:
-        self.lock = threading.Lock()
-        self.participants = 0
-
-
-class _DataFileSignatureMemo:
-    """Bounded LRU of content hashes admitted by a strong file revision."""
-
-    def __init__(self, *, max_entries: int = _DATA_FILE_SIGNATURE_MEMO_MAX_ENTRIES) -> None:
-        if isinstance(max_entries, bool) or not isinstance(max_entries, int) or max_entries <= 0:
-            raise ValueError("max_entries must be a positive integer")
-        self._max_entries = max_entries
-        self._process_id = os.getpid()
-        self._lock = threading.Lock()
-        self._entries: OrderedDict[
-            str,
-            tuple[_StrongFileRevision, _DataFileSignatureRecord],
-        ] = OrderedDict()
-        self._load_gates: dict[str, _DataFileSignatureLoadGate] = {}
-        self._unavailable_warnings: OrderedDict[str, None] = OrderedDict()
-
-    def _ensure_current_process(self) -> None:
-        process_id = os.getpid()
-        if process_id == self._process_id:
-            return
-        # After fork there is one surviving thread. Replace, rather than
-        # acquire, inherited locks: another parent thread may have held them.
-        self._process_id = process_id
-        self._lock = threading.Lock()
-        self._entries = OrderedDict()
-        self._load_gates = {}
-        self._unavailable_warnings = OrderedDict()
-
-    def _warn_unavailable_once(self, key: str, path: Path) -> None:
-        with self._lock:
-            if key in self._unavailable_warnings:
-                self._unavailable_warnings.move_to_end(key)
-                return
-            self._unavailable_warnings[key] = None
-            while len(self._unavailable_warnings) > self._max_entries:
-                self._unavailable_warnings.popitem(last=False)
-        logger.warning(
-            "json_source_signature_revision_unavailable",
-            data_path=str(path),
-            action="full_source_hash_per_operation",
-        )
-
-    def get(
-        self,
-        data_path: Path,
-        *,  # pragma: no mutate
-        rebind_persisted_proofs: bool = True,
-    ) -> dict[str, Any]:
-        """Return a source signature, hashing once per unchanged generation."""
-        self._ensure_current_process()
-        resolved_path = data_path.expanduser().resolve()
-        key = os.path.normcase(str(resolved_path))
-        revision = _strong_file_revision(resolved_path)
-        if revision is None:
-            self._warn_unavailable_once(key, resolved_path)
-            return _uncached_data_file_signature(resolved_path).as_dict()
-
-        with self._lock:
-            entry = self._entries.get(key)
-            if entry is not None and entry[0] == revision:
-                self._entries.move_to_end(key)
-                return entry[1].as_dict()
-            load_gate = self._load_gates.setdefault(key, _DataFileSignatureLoadGate())
-            load_gate.participants += 1
-        try:
-            with load_gate.lock:
-                # A waiter must observe the revision again: the generation may
-                # have moved while another caller owned the flight.
-                current_revision = _strong_file_revision(resolved_path)
-                if current_revision is None:
-                    self._warn_unavailable_once(key, resolved_path)
-                    return _uncached_data_file_signature(resolved_path).as_dict()
-                with self._lock:
-                    entry = self._entries.get(key)
-                    if entry is not None and entry[0] == current_revision:
-                        self._entries.move_to_end(key)
-                        return entry[1].as_dict()
-
-                signature = _persisted_data_file_signature(resolved_path, current_revision)
-                if signature is None:
-                    signature = _revision_gated_data_file_signature(
-                        resolved_path,
-                        current_revision,
-                    )
-                    if rebind_persisted_proofs:
-                        _rebind_persisted_source_proofs(
-                            resolved_path,
-                            signature,
-                            current_revision,
-                        )
-                with self._lock:
-                    self._entries[key] = (current_revision, signature)
-                    self._entries.move_to_end(key)
-                    while len(self._entries) > self._max_entries:
-                        evicted_key, _ = self._entries.popitem(last=False)
-                        evicted_gate = self._load_gates.get(evicted_key)
-                        if evicted_gate is not None and evicted_gate.participants == 0:
-                            del self._load_gates[evicted_key]
-                return signature.as_dict()
-        finally:
-            with self._lock:
-                load_gate.participants -= 1
-                if (
-                    load_gate.participants == 0
-                    and self._load_gates.get(key) is load_gate
-                    and key not in self._entries
-                ):
-                    del self._load_gates[key]
-
-    def __len__(self) -> int:
-        self._ensure_current_process()
-        with self._lock:
-            return len(self._entries)
-
-    def clear(self) -> None:
-        """Drop retained proofs without invalidating an active single flight."""
-        self._ensure_current_process()
-        with self._lock:
-            self._entries.clear()
-            self._unavailable_warnings.clear()
-            self._load_gates = {
-                key: load_gate
-                for key, load_gate in self._load_gates.items()
-                if load_gate.participants
-            }
-
-
-_DATA_FILE_SIGNATURE_MEMO = _DataFileSignatureMemo()
-
-
-def _clear_data_file_signature_memo() -> None:
-    """Test seam for isolating process-wide source-signature proofs."""
-    _DATA_FILE_SIGNATURE_MEMO.clear()
-
-
-def _data_file_signature(
-    data_path: Path,
-    *,  # pragma: no mutate
-    rebind_persisted_proofs: bool = True,
-) -> dict[str, Any]:
-    """Return the size/mtime/SHA-256 identity recorded in cache metadata.
-
-    The complete content hash remains authoritative. It is reused from memory
-    or cache-build metadata only when an OS-native identity/change token proves
-    that the same file generation is unchanged; unsupported filesystems take
-    the conservative full-hash path. Raises ``OSError`` for an unreadable or
-    concurrently changing file.
-    """
-    return _DATA_FILE_SIGNATURE_MEMO.get(
-        data_path,
-        rebind_persisted_proofs=rebind_persisted_proofs,
+    return _StrongFileRevision(
+        file_identity=(identity[0], file_id),
+        size=size,
+        mtime_ns=mtime_ns,
+        change_token=change_token,
     )
+
+
+def _parse_proof_record(raw: bytes, path: Path) -> tuple[_StrongFileRevision, FileSignature] | None:
+    """The record's revision and signature, or ``None`` when it breaks the contract."""
+    try:
+        record = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(record, dict) or set(record) != _PROOF_RECORD_KEYS:
+        return None
+    revision = _parse_revision(record["revision"])
+    if (
+        revision is None
+        or not _is_int(record["schema_version"])
+        or record["schema_version"] != _PROOF_RECORD_SCHEMA_VERSION
+        or record["path"] != str(path)
+        or record["hash_algo"] != HASH_ALGO
+        or not _is_lower_hex(record["digest"], _DIGEST_LENGTH)
+        or not _is_int(record["size"])
+        or record["size"] != revision.size
+        or not _is_int(record["mtime_ns"])
+        or record["mtime_ns"] != revision.mtime_ns
+    ):
+        return None
+    return revision, FileSignature(
+        size=record["size"], mtime_ns=record["mtime_ns"], digest=record["digest"]
+    )
+
+
+def _read_proof_record(
+    record_path: Path, path: Path
+) -> tuple[_StrongFileRevision, FileSignature] | None:
+    try:
+        raw = record_path.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        _reject_proof_record(record_path, path, reason="unreadable", error=str(exc))
+        return None
+    parsed = _parse_proof_record(raw, path)
+    if parsed is None:
+        _reject_proof_record(record_path, path, reason="invalid")
+    return parsed
+
+
+def _reject_proof_record(record_path: Path, path: Path, **fields: str) -> None:
+    logger.warning(
+        "source_proof_record_rejected",
+        path=str(path),
+        record=str(record_path),
+        action="full_source_hash",
+        **fields,
+    )
+
+
+def _write_proof_record(
+    record_path: Path,
+    path: Path,
+    revision: _StrongFileRevision,
+    signature: FileSignature,
+) -> None:
+    from haute._cache import canonical_json
+
+    record = {
+        "schema_version": _PROOF_RECORD_SCHEMA_VERSION,
+        "path": str(path),
+        "revision": _revision_record(revision),
+        "hash_algo": HASH_ALGO,
+        "digest": signature.digest,
+        "size": signature.size,
+        "mtime_ns": signature.mtime_ns,
+    }
+    try:
+        record_path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_bytes(record_path, canonical_json(record).encode("utf-8"))
+    except OSError as exc:
+        # The fresh signature is correct either way; a missing record costs
+        # the next process one complete read of the file.
+        logger.warning(
+            "source_proof_record_write_failed",
+            path=str(path),
+            record=str(record_path),
+            error=str(exc),
+        )
 
 
 def _hash_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):  # pragma: no mutate
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def _file_content_signature(path: Path) -> dict[str, Any]:
-    """Return the size/SHA-256 identity recorded for a cache artifact."""
-    st = path.stat()
-    digest = _hash_file(path)
-    final_st = path.stat()
-    if (st.st_size, st.st_mtime_ns) != (final_st.st_size, final_st.st_mtime_ns):
-        raise OSError(f"file changed while its content signature was computed: {path}")
-    return {"size": final_st.st_size, "sha256": digest}
-
-
-def _content_signature_parts(recorded: Any) -> tuple[int, str] | None:  # pragma: no mutate
-    """Parse a strict size/SHA-256 record, rejecting bool sizes and bad hex."""
-    if not isinstance(recorded, dict):
-        return None
-    size = recorded.get("size")
-    digest = recorded.get("sha256")
-    if type(size) is not int or size < 0:  # bool is not a valid byte count
-        return None
-    if (
-        not isinstance(digest, str)
-        or len(digest) != 64
-        or any(ch not in "0123456789abcdef" for ch in digest)
-    ):
-        return None
-    return size, digest
-
-
-def _file_content_matches(recorded: Any, path: Path) -> bool:
-    """Return whether *path* exactly matches a strict size/SHA-256 record."""
-    parts = _content_signature_parts(recorded)
-    if parts is None:
-        return False
-    size, digest = parts
-    try:
-        if path.stat().st_size != size:
-            return False
-        return _hash_file(path) == digest
-    except OSError:
-        return False
-
-
-def _data_file_matches(
-    recorded: Any,
-    data_path: Path,
-    *,  # pragma: no mutate
-    data_file_signature: Mapping[str, Any] | None = None,  # pragma: no mutate
-) -> bool:
-    """True iff the data file on disk still matches the recorded signature.
-
-    Order of checks: missing/garbled signature → stale; stat failure → stale
-    (serving cached rows
-    for a deleted source would be silent wrongness); size mismatch → stale
-    (a cheap pre-reject); otherwise the recorded content hash is the sole
-    authority.
-
-    The recorded content hash is always compared with an observed content
-    proof, never replaced by an ``mtime_ns`` match. The proof may come from
-    the strong-revision memo above; a byte-changing rewrite that preserves
-    both ``size`` and ``mtime_ns`` changes that revision and forces a fresh
-    hash. The deploy-copy case (mtime moved, content identical) still
-    validates because the fresh hash matches.
-    """
-    if data_file_signature is None:
-        try:
-            data_file_signature = _data_file_signature(data_path)
-        except OSError:
-            return False
-    recorded_parts = _content_signature_parts(recorded)
-    observed_parts = _content_signature_parts(data_file_signature)
-    return recorded_parts is not None and recorded_parts == observed_parts
+    return content_hash(path)

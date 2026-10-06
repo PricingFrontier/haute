@@ -35,6 +35,7 @@ from unittest.mock import patch
 import polars as pl
 import pytest
 
+from tests._source_files import source_files
 from tests.conftest import write_data_input_config
 
 # ---------------------------------------------------------------------------
@@ -389,7 +390,7 @@ class TestNoManualInvalidation:
         assert src_root.is_dir(), f"src root not found at {src_root}"
 
         offenders: list[tuple[Path, int]] = []
-        for py in src_root.rglob("*.py"):
+        for py in source_files(src_root):
             tree = ast.parse(py.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):
@@ -548,14 +549,8 @@ class TestConcurrentReadsDoNotRace:
             if read_count == 1:
                 build_started.set()
                 assert allow_build_to_finish.wait(2)
-                return (
-                    'pipeline.submodel("modules/stale.py", definition_id="stale", '
-                    'instance_id="submodel__stale", alias="stale")\n'
-                )
-            return (
-                'pipeline.submodel("modules/fresh.py", definition_id="fresh", '
-                'instance_id="submodel__fresh", alias="fresh")\n'
-            )
+                return 'pipeline.submodel("modules/stale.py", "stale")\n'
+            return 'pipeline.submodel("modules/fresh.py", "fresh")\n'
 
         monkeypatch.setattr(helpers, "read_user_text", _slow_read)
 

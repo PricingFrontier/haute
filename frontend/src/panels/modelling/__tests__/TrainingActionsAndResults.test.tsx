@@ -16,6 +16,7 @@ function makeProps(overrides: Partial<TrainingActionsAndResultsProps> = {}): Tra
     ramEstimate: null,
     ramEstimateLoading: false,
     rowLimit: null,
+    nodeLabel: (nodeId: string) => `label of ${nodeId}`,
     onTrain: vi.fn(),
     onCancel: vi.fn(),
     ...overrides,
@@ -23,6 +24,51 @@ function makeProps(overrides: Partial<TrainingActionsAndResultsProps> = {}): Tra
 }
 
 describe("TrainingActionsAndResults", () => {
+  it("presents a join's row product as an unproven bound, never a verdict (MDL-01)", () => {
+    const open = vi.fn()
+    const nodeOpener = vi.fn((nodeId: string) => (nodeId === "competitor_join" ? open : null))
+    render(
+      <TrainingActionsAndResults
+        {...makeProps({
+          nodeLabel: (nodeId: string) => nodeId,
+          nodeOpener,
+          ramEstimate: makeTrainEstimate({
+            total_rows: 10_000_000_000,
+            safe_row_limit: 149_958_852,
+            bytes_per_row: 5_000,
+            available_mb: 71_065,
+            was_downsampled: false,
+            warning: null,
+            unbounded_join_node_ids: ["competitor_join"],
+          }),
+        })}
+      />,
+    )
+
+    const box = screen.getByRole("status")
+    expect(box).toHaveTextContent("Row count not proven")
+    expect(box).toHaveTextContent('Up to 10,000,000,000 rows: "competitor_join" has no key contract.')
+    expect(box).toHaveTextContent("Training row limit149,958,852")
+    expect(screen.queryByText("Will downsample")).toBeNull()
+    expect(screen.queryByText("Dataset fits in memory")).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: 'Open "competitor_join"' }))
+    expect(open).toHaveBeenCalledTimes(1)
+  })
+
+  it("shows a declared join's proven rows as fitting in memory", () => {
+    render(
+      <TrainingActionsAndResults
+        {...makeProps({
+          ramEstimate: makeTrainEstimate({ total_rows: 100_000, unbounded_join_node_ids: [] }),
+        })}
+      />,
+    )
+
+    expect(screen.getByText("Dataset fits in memory")).toBeInTheDocument()
+    expect(screen.getByText("100,000")).toBeInTheDocument()
+    expect(screen.queryByText("Row count not proven")).toBeNull()
+  })
+
   it("renders Train Model button", () => {
     render(<TrainingActionsAndResults {...makeProps()} />)
     expect(screen.getByText("Train Model")).toBeInTheDocument()
@@ -144,14 +190,34 @@ describe("TrainingActionsAndResults", () => {
     expect(screen.getByText("Out of memory")).toBeInTheDocument()
   })
 
+  it("shows the worker's traceback collapsed under Error details", () => {
+    const traceback = "Traceback (most recent call last):\n  ImportError: /opt/lib/_catboost.so"
+    render(<TrainingActionsAndResults {...makeProps({
+      trainResult: makeTrainResult({ status: "error", error: "Training failed with an unexpected internal error" }),
+      terminalTraceback: traceback,
+    })} />)
+
+    const details = screen.getByText("Error details").closest("details")
+    expect(details).not.toBeNull()
+    expect(details).not.toHaveAttribute("open")
+    expect(details?.querySelector("pre")?.textContent).toBe(traceback)
+  })
+
+  it("has no Error details without a traceback", () => {
+    render(<TrainingActionsAndResults {...makeProps({
+      trainResult: makeTrainResult({ status: "error", error: "Out of memory" }),
+    })} />)
+    expect(screen.queryByText("Error details")).toBeNull()
+  })
+
   it("shows structured terminal memory diagnostics when training failed", () => {
     render(<TrainingActionsAndResults {...makeProps({
       trainResult: makeTrainResult({ status: "error", error: "Out of memory" }),
       terminalMetrics: makeExecutionMetricsFixture({ profile: "training_prep", terminal_reason: "memory_limited" }),
     })} />)
 
-    expect(screen.getByText("Memory pressure reached 75% of the training budget.")).toBeInTheDocument()
-    expect(screen.getByText("RSS 1.7 KB of 2.9 KB limit")).toBeInTheDocument()
+    expect(screen.getByText("Training reached 75% of its memory allowance.")).toBeInTheDocument()
+    expect(screen.getByText("Memory used: 1.7 KB; limit: 2.9 KB")).toBeInTheDocument()
   })
 
   it("does not imply memory caused non-memory terminal training failures", () => {
@@ -168,8 +234,21 @@ describe("TrainingActionsAndResults", () => {
 
     expect(screen.getByText("Training failed")).toBeInTheDocument()
     expect(screen.getByText("Feature contract mismatch")).toBeInTheDocument()
-    expect(screen.queryByText("Memory pressure reached 75% of the training budget.")).not.toBeInTheDocument()
+    expect(screen.queryByText("Training reached 75% of its memory allowance.")).not.toBeInTheDocument()
     expect(screen.queryByText("Technical details")).not.toBeInTheDocument()
+  })
+
+  it("says it is waiting for the input snapshot, and holds Train and Re-train until it finishes", () => {
+    render(<TrainingActionsAndResults {...makeProps({
+      ramEstimateLoading: true,
+      estimateWaiting: true,
+      isStale: true,
+    })} />)
+
+    expect(screen.getByRole("status")).toHaveTextContent("Waiting for the input snapshot to finish")
+    expect(screen.queryByText("Estimating dataset size...")).toBeNull()
+    expect(screen.getByRole("button", { name: /Train Model/ })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Re-train" })).toBeDisabled()
   })
 
   it("shows RAM estimate loading state", () => {
@@ -213,6 +292,64 @@ describe("TrainingActionsAndResults", () => {
     render(<TrainingActionsAndResults {...makeProps({
       ramEstimateError: "Connection failed",
     })} />)
-    expect(screen.getByText(/RAM estimate unavailable/)).toBeInTheDocument()
+    expect(screen.getByText("Memory estimate failed")).toBeInTheDocument()
+    expect(screen.getByText("Connection failed")).toBeInTheDocument()
+    expect(screen.queryByText("Memory estimate unavailable")).toBeNull()
+    expect(screen.queryByText(/training will still work/)).toBeNull()
+  })
+
+  it("says which node's row count blocks an estimate instead of a memory verdict", () => {
+    render(<TrainingActionsAndResults {...makeProps({
+      rowLimit: 500,
+      ramEstimate: makeTrainEstimate({
+        total_rows: null,
+        safe_row_limit: 500,
+        estimated_mb: null,
+        training_mb: null,
+        bytes_per_row: null,
+        available_mb: 8192,
+        unavailable: { reason: "row_count_unprovable", blocking_node_id: "explode_items" },
+      }),
+    })} />)
+    const card = screen.getByRole("status")
+    expect(card).toHaveTextContent("Memory estimate unavailable")
+    expect(card).toHaveTextContent(
+      'The row count at "label of explode_items" can\'t be proven before it runs, so training memory can\'t be estimated.',
+    )
+    expect(card).toHaveTextContent("Available RAM8.0 GB")
+    expect(card).not.toHaveTextContent("Source rows")
+    expect(screen.queryByText("Dataset fits in memory")).toBeNull()
+    expect(screen.queryByText("Will downsample")).toBeNull()
+    expect(screen.queryByText("Est. training RAM")).toBeNull()
+    expect(screen.queryByText(/0 MB/)).toBeNull()
+  })
+
+  it("keeps the known row total when only the schema blocks an estimate", () => {
+    render(<TrainingActionsAndResults {...makeProps({
+      ramEstimate: makeTrainEstimate({
+        total_rows: 250000,
+        estimated_mb: null,
+        training_mb: null,
+        bytes_per_row: null,
+        available_mb: 8192,
+        unavailable: { reason: "schema_unresolvable", blocking_node_id: null },
+      }),
+    })} />)
+    const card = screen.getByRole("status")
+    expect(card).toHaveTextContent(
+      "The columns reaching this node can't be resolved before it runs, so training memory can't be estimated.",
+    )
+    expect(card).toHaveTextContent("Source rows250,000")
+    expect(screen.queryByText("Dataset fits in memory")).toBeNull()
+    expect(screen.queryByText("Est. training RAM")).toBeNull()
+  })
+
+  it("distinguishes an evaluation failure from an unavailable memory estimate", () => {
+    render(<TrainingActionsAndResults {...makeProps({
+      ramEstimateError: "Evaluation preview failed: validation partition is empty",
+    })} />)
+    expect(screen.getByText("Evaluation preview failed")).toBeInTheDocument()
+    expect(screen.getByText("validation partition is empty")).toBeInTheDocument()
+    expect(screen.queryByText("Memory estimate unavailable")).toBeNull()
   })
 })

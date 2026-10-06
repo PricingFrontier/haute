@@ -1,14 +1,13 @@
-"""Solve a synthetic ratebook and apply a versioned factor-table artifact."""
+"""Solve a synthetic ratebook and apply a versioned factor-table artifact.
 
-from pathlib import Path
-
-import polars as pl
+A ratebook solve takes its rating factors from a Banding node: the Banding
+node bands each policy's raw area into a region, and the optimiser names it
+as its rating factor source (`banding_source`). The optimiser has no output,
+so it is a terminal branch; Apply Optimisation reads the same banded frame
+and feeds the response.
+"""
 
 import haute
-from haute.graph_utils import (
-    apply_optimiser_apply_from_config,
-    resolve_data_input_from_config,
-)
 
 pipeline = haute.Pipeline(
     "ratebook_optimisation_apply",
@@ -17,36 +16,24 @@ pipeline = haute.Pipeline(
 
 
 @pipeline.data_input(config="config/scored.json")
-def scored() -> pl.LazyFrame:
-    return resolve_data_input_from_config(
-        "config/scored.json",
-        base_dir=Path(__file__).parent,
-    )
+def scored(): ...
 
 
-@pipeline.data_input(config="config/factors.json")
-def factors() -> pl.LazyFrame:
-    return resolve_data_input_from_config(
-        "config/factors.json",
-        base_dir=Path(__file__).parent,
-    )
+@pipeline.data_input(config="config/policies.json")
+def policies(): ...
+
+
+@pipeline.banding(config="config/banding/rating_factors.json")
+def rating_factors(policies): ...
 
 
 @pipeline.optimiser(config="config/optimiser.json")
-def optimise(scored: pl.LazyFrame, factors: pl.LazyFrame) -> pl.LazyFrame:
-    return scored
+def optimise(scored, rating_factors): ...
 
 
 @pipeline.optimiser_apply(config="config/apply.json")
-def applied(factors: pl.LazyFrame) -> pl.LazyFrame:
-    return apply_optimiser_apply_from_config(
-        factors,
-        config="config/apply.json",
-        base_dir=Path(__file__).parent,
-        source_names=["factors"],
-    )
+def applied(rating_factors): ...
 
 
 @pipeline.output(config="config/output.json")
-def response(applied: pl.LazyFrame) -> pl.LazyFrame:
-    return applied
+def response(applied): ...

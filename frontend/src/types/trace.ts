@@ -12,7 +12,41 @@ export interface TraceInputSource {
   expression_text?: string
   substituted_text?: string
   result_value?: unknown
+  not_computable_reason?: string | null
+  result_source?: string | null
   input_sources?: Record<string, TraceInputSource> | null
+}
+
+/** A node that computed a value a step read. */
+export interface TraceColumnSource {
+  node_id: string
+  column: string
+  /** The value the node's rule generated before its code rewrote the column,
+   * so the node's row holds a later value. */
+  before_code: boolean
+}
+
+/** A column a computed column read, and the nodes that computed the value read:
+ * none when the trace found none, several when it may have come from any. */
+export interface TraceColumnRead {
+  column: string
+  sources: TraceColumnSource[]
+}
+
+/** How a step computed one column the traced value depends on. */
+export interface TraceColumnDerivation {
+  column: string
+  /** The step's formula, evaluated on the traced row; null for a column a
+   * rule computed (a model, an optimiser) or a source loaded. */
+  expression_text: string | null
+  substituted_text: string | null
+  result_value: unknown
+  not_computable_reason: string | null
+  result_source: string | null
+  /** null when which inputs the column read could not be told apart. */
+  reads: TraceColumnRead[] | null
+  error: string | null
+  error_type: string | null
 }
 
 export interface TraceStep {
@@ -23,7 +57,14 @@ export interface TraceStep {
   input_values: Record<string, unknown>
   output_values: Record<string, unknown>
   topological_rank: number
+  /** In a column trace, whether the step is on the traced value's lineage:
+   * it computes or carries a column the value depends on. */
   column_relevant: boolean
+  /** In a column trace, the columns this step computes that the traced value
+   * depends on; empty for a step that only carries them. */
+  contributed_columns: string[]
+  /** How the step computed each contributed column, and what each read. */
+  derivations: TraceColumnDerivation[]
   expression?: {
     expression_text: string
     expression_type: string
@@ -32,6 +73,8 @@ export interface TraceStep {
   calculation?: {
     substituted_text: string
     result_value: unknown
+    not_computable_reason?: string | null
+    result_source?: string | null
     input_values: Record<string, unknown>
     taken_branch?: string | null
     taken_branch_index?: number | null
@@ -40,11 +83,19 @@ export interface TraceStep {
       target_column: string
       substituted_text?: string
       result_value?: unknown
+      not_computable_reason?: string | null
+      result_source?: string | null
     }> | null
     input_sources?: Record<string, TraceInputSource> | null
   } | null
   node_detail?: TraceNodeDetail | null
   row_lineage_type?: string | null
+  /** Set when this step's row was read from the shared snapshot generation
+   * the trace was seeded with, instead of computing the node. */
+  snapshot_generation_id?: string | null
+  /** Set when this step's row is one of several candidates identical in every
+   * column: how many there are. No physical row was chosen. */
+  identical_row_count?: number | null
 }
 
 export interface RatingStepFactorDetail {
@@ -116,6 +167,7 @@ export interface BandingNodeDetail {
 
 export interface ModelScoreIdentityDetail {
   source_type?: string
+  model_path?: string
   run_id?: string
   registered_model?: string
   version?: string
@@ -138,8 +190,8 @@ export interface ModelScoreContributionDetail {
 }
 
 export interface ModelScoreExplanationDetail {
-  type?: "catboost_shap" | "rustystats_glm_contributions" | string
-  method?: "catboost_shap" | "rustystats_glm_contributions" | string
+  type?: "catboost_shap" | "rustystats_glm_contributions" | "xgboost_contributions" | "lightgbm_contributions" | "ebm_terms" | "tboost_tables" | string
+  method?: "catboost_shap" | "rustystats_glm_contributions" | "xgboost_contributions" | "lightgbm_contributions" | "ebm_terms" | "tboost_tables" | string
   status?: "ok" | "error" | string
   output_space?: "prediction" | "raw_formula_val" | "linear_predictor" | string
   prediction_space?: string
@@ -215,6 +267,18 @@ export interface OptimiserApplyOnlineNodeDetail {
   baseline?: OptimiserApplyOnlineCandidateDetail | null
 }
 
+/** The combined-factor collar step: the product of factors clipped to the scored grid range. */
+export interface OptimiserApplyRatebookCollarDetail {
+  min: number
+  max: number
+  /** The product of the factors, before the collar. */
+  before: number
+  /** The deployed value, after the collar. */
+  after: number
+  /** True when the product lay outside the collar and was clipped. */
+  applied: boolean
+}
+
 export interface OptimiserApplyRatebookNodeDetail {
   detail_type: "optimiser_apply"
   mode: "ratebook"
@@ -223,6 +287,7 @@ export interface OptimiserApplyRatebookNodeDetail {
   output_value: unknown
   base_value: number
   factors: OptimiserApplyRatebookFactorDetail[]
+  collar: OptimiserApplyRatebookCollarDetail
   final_value: unknown
   message?: string
 }
@@ -299,6 +364,8 @@ export interface TraceCorrelationDiagnostic {
   ignored_columns: string[]
   matched_row_count?: number | null
   matched_row_indices: number[]
+  /** For a node not traced above a snapshot: the seeded node it lies above. */
+  seed_node_ids: string[]
   [metadata: string]: unknown
 }
 
@@ -327,7 +394,7 @@ export interface TraceResult {
   correlation_diagnostics: TraceCorrelationDiagnostic[]
   generated_at: string
   pipeline_source: string | null
-  execution_origin: "fresh_execution" | "preview_cache" | "trace_cache"
+  execution_origin: "fresh_execution" | "trace_cache"
 }
 
 export interface WaterfallError {

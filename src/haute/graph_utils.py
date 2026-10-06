@@ -11,13 +11,9 @@ Modules:
     _cache.py        — graph_fingerprint
     _io.py           — read_source, read_data_source, load_external_object
     _flatten.py      — flatten_graph
-    _execute_lazy.py — _execute_lazy
 """
 
 from haute._cache import graph_fingerprint as graph_fingerprint
-from haute._execute_lazy import EagerResult as EagerResult
-from haute._execute_lazy import _execute_eager_core as _execute_eager_core
-from haute._execute_lazy import _execute_lazy as _execute_lazy
 from haute._execute_lazy import (
     _prune_live_switch_edges as _prune_live_switch_edges,
 )

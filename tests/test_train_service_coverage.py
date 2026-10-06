@@ -10,7 +10,7 @@ training job stuck in the wrong state, so these assert on job-store state too.
 
 from __future__ import annotations
 
-import os
+import contextlib
 import threading
 import time
 from pathlib import Path
@@ -20,6 +20,7 @@ import polars as pl
 import pytest
 from fastapi import HTTPException
 
+from haute._chunked_writes import ChunkedWrite
 from haute._execution_context import (
     ExecutionCancellationToken,
     ExecutionContext,
@@ -36,7 +37,7 @@ from haute.errors import BoundedMemoryUnsupportedError, PreambleError
 from haute.projection import AllExcept
 from haute.routes._job_store import JobStore
 from haute.routes._train_service import TrainService
-from tests.conftest import make_edge, make_graph
+from tests.conftest import make_edge, make_graph, make_ram_estimate, make_ready_file_input_config
 from tests.test_training_worker_protocol import _inline_protocol_runner, _SuccessfulTrainingJob
 
 _TEST_WORKER_MEMORY_LIMIT_BYTES = 512 * 1024**2
@@ -64,7 +65,12 @@ def _training_execution_context() -> ExecutionContext:
 
 
 def _source_only_request(path: str = "x.parquet"):
-    """Build a TrainRequest whose graph is a single dataInput node."""
+    """Build a TrainRequest whose graph is a single dataInput node.
+
+    The preparation core reads the target node's config as the modelling
+    config; features are opt-in, so it ticks ``x1``, which every stub frame
+    here carries.
+    """
     from haute.schemas import TrainRequest
 
     graph = make_graph(
@@ -75,7 +81,7 @@ def _source_only_request(path: str = "x.parquet"):
                     "data": {
                         "label": "n",
                         "nodeType": "dataInput",
-                        "config": {"path": path},
+                        "config": {"path": path, "feature_columns": ["x1"]},
                     },
                 }
             ],
@@ -83,6 +89,32 @@ def _source_only_request(path: str = "x.parquet"):
         }
     )
     return TrainRequest(graph=graph, node_id="n")
+
+
+def _preparation_request(body, parquet_path, **overrides):
+    """Build the picklable preparation request the child core consumes."""
+    from haute.routes._training_preparation import TrainingPreparationRequest
+
+    return TrainingPreparationRequest(
+        graph=body.graph,
+        node_id=body.node_id,
+        job_id="job",
+        source=body.source,
+        parquet_path=str(parquet_path),
+        config={},
+        project_root=str(Path(parquet_path).parent),
+        **overrides,
+    )
+
+
+def _prepare(request, context: ExecutionContext | None = None):
+    """Run the preparation core in-process against a TRAINING_PREP context."""
+    from haute.routes._training_preparation import prepare_training_data
+
+    return prepare_training_data(
+        request,
+        execution_context=context if context is not None else _training_execution_context(),
+    )
 
 
 def _patch_execute_env():
@@ -103,7 +135,7 @@ def _patch_execute_env():
 
 class TestEstimateRamFailure:
     def test_estimate_failure_raises_http_422(self):
-        """When estimate_safe_training_rows raises, _estimate_ram fails loudly.
+        """When memory estimation raises, _estimate_ram fails loudly.
 
         nick-dev replaced the old swallow-and-fall-back-to-no-row-limit policy
         with a typed HTTP 422 so a broken memory probe surfaces to the API layer
@@ -118,7 +150,7 @@ class TestEstimateRamFailure:
         graph = make_graph({"nodes": [], "edges": []})
 
         with patch(
-            "haute._ram_estimate.estimate_safe_training_rows",
+            "haute.routes._training_lifecycle.estimate_training_memory",
             side_effect=RuntimeError("probe blew up"),
         ):
             with pytest.raises(HTTPException) as exc_info:
@@ -143,7 +175,7 @@ class TestEstimateRamFailure:
 
 class TestCheckGpuFallbackFailure:
     def test_vram_estimate_failure_is_swallowed(self):
-        """A VRAM-probe exception must not propagate; ram_warning is unchanged."""
+        """A VRAM-probe exception must not propagate; it becomes a job advisory."""
         from haute.routes._job_store import JobStore
 
         store = JobStore()
@@ -155,23 +187,22 @@ class TestCheckGpuFallbackFailure:
             "haute.routes._training_lifecycle._check_gpu_vram",
             side_effect=RuntimeError("nvml exploded"),
         ):
-            result = service._check_gpu_vram_before_launch(
+            service._check_gpu_vram_before_launch(
                 train_params,
                 row_limit=100,
                 total_source_rows=200,
                 probe_columns=5,
-                ram_warning="prior warning",
                 job_id=job_id,
             )
 
-        # Exception swallowed: original warning returned, task_type left on GPU,
-        # and the failed check is surfaced as a job advisory rather than silence.
-        assert result == "prior warning"
+        # Exception swallowed: task_type left on GPU, and the failed check is
+        # surfaced as a job advisory rather than silence. A RAM downsampling
+        # warning joins it only after the prepared input shows rows were removed.
         assert train_params["task_type"] == "GPU"
         job = store.require_job(job_id)
         assert job["status"] == "running"
         assert "could not be checked" in job["gpu_warning"]
-        assert job["warning"] == f"prior warning\n{job['gpu_warning']}"
+        assert job["warning"] == job["gpu_warning"]
 
     def test_non_gpu_task_returns_early(self):
         """Non-GPU task_type short-circuits without any VRAM probe."""
@@ -183,17 +214,16 @@ class TestCheckGpuFallbackFailure:
 
         train_params: dict[str, object] = {"task_type": "CPU"}
         with patch("haute.routes._training_lifecycle._check_gpu_vram") as mock_vram:
-            result = service._check_gpu_vram_before_launch(
+            service._check_gpu_vram_before_launch(
                 train_params,
                 row_limit=None,
                 total_source_rows=None,
                 probe_columns=0,
-                ram_warning=None,
                 job_id=job_id,
             )
 
-        assert result is None
         mock_vram.assert_not_called()
+        assert store.require_job(job_id).get("warning") is None
 
 
 # ---------------------------------------------------------------------------
@@ -201,15 +231,11 @@ class TestCheckGpuFallbackFailure:
 # ---------------------------------------------------------------------------
 
 
-class TestExecuteAndSinkMissingTarget:
-    def test_no_target_lf_raises_http_500_and_marks_error(self, tmp_path):
+class TestPreparationMissingTarget:
+    def test_no_target_lf_becomes_an_error_outcome(self, tmp_path):
         """If no LazyFrame arrives at the target node, fail with HTTP 500."""
-        from haute.routes._job_store import JobStore
-
-        store = JobStore()
-        service = TrainService(store)
-        job_id = store.create_job({"status": "running"})
         body = _source_only_request()
+        parquet_path = tmp_path / "prepared.parquet"
 
         def lazy_without_target(*args, **kwargs):
             # Returns the 4-tuple shape but with the target node absent.
@@ -218,7 +244,7 @@ class TestExecuteAndSinkMissingTarget:
         p1, p2, p3, p4, p5 = _patch_execute_env()
         with (
             patch(
-                "haute.routes._training_lifecycle.execute_lazy_graph",
+                "haute.routes._training_preparation.execute_lazy_graph",
                 side_effect=lazy_without_target,
             ),
             p1,
@@ -226,30 +252,27 @@ class TestExecuteAndSinkMissingTarget:
             p3,
             p4,
             p5,
-            pytest.raises(HTTPException) as exc_info,
         ):
-            service._execute_and_sink(body, preamble_ns=None, row_limit=None, job_id=job_id)
+            outcome = _prepare(_preparation_request(body, parquet_path))
 
-        assert exc_info.value.status_code == 500
-        job = store.require_job(job_id)
-        assert job["status"] == "error"
-        assert "Pipeline execution failed" in job["message"]
+        failure = outcome.failure
+        assert failure is not None
+        assert failure.http_status_code == 500
+        assert failure.terminal_reason == "error"
+        assert "Pipeline execution failed" in failure.message
+        assert not parquet_path.exists()
 
 
 # ---------------------------------------------------------------------------
-# _execute_and_sink — column projection path (lines 524-535)
+# prepare_training_data — column projection path
 # ---------------------------------------------------------------------------
 
 
-class TestExecuteAndSinkProjection:
-    def test_excluded_columns_dropped_before_sink(self, tmp_path):
-        """exclude + keep_columns should drop excluded non-keep columns."""
-        from haute.routes._job_store import JobStore
-
-        store = JobStore()
-        service = TrainService(store)
-        job_id = store.create_job({"status": "running"})
+class TestPreparationProjection:
+    def test_unselected_columns_dropped_before_sink(self, tmp_path):
+        """A tree model's sink keeps only keep_columns (selected features + roles)."""
         body = _source_only_request()
+        parquet_path = tmp_path / "prepared.parquet"
 
         lf = pl.LazyFrame(
             {
@@ -262,8 +285,18 @@ class TestExecuteAndSinkProjection:
 
         sunk_frames: list[object] = []
 
-        def fake_bounded_sink(frame, path, **kwargs):
+        def fake_write_file(
+            destination,
+            frame,
+            *,
+            recipe=None,
+            chunk_rows=None,
+            execution_context=None,
+            node_id=None,
+        ):
             sunk_frames.append(frame)
+            frame.collect().write_parquet(destination)
+            return ChunkedWrite(strategy="native", parts=(), chunks=1, staged_inputs=0)
 
         def lazy_returns_target(*args, **kwargs):
             return ({"n": lf}, [], {}, {})
@@ -271,10 +304,10 @@ class TestExecuteAndSinkProjection:
         p1, p2, p3, p4, p5 = _patch_execute_env()
         with (
             patch(
-                "haute.routes._training_lifecycle.execute_lazy_graph",
+                "haute.routes._training_preparation.execute_lazy_graph",
                 side_effect=lazy_returns_target,
             ),
-            patch("haute._polars_utils.bounded_sink", side_effect=fake_bounded_sink),
+            patch("haute._chunked_writes.write_file", side_effect=fake_write_file),
             patch("haute._polars_utils._malloc_trim"),
             p1,
             p2,
@@ -282,40 +315,44 @@ class TestExecuteAndSinkProjection:
             p4,
             p5,
         ):
-            tmp_parquet = service._execute_and_sink(
-                body,
-                preamble_ns=None,
-                row_limit=2,
-                job_id=job_id,
-                exclude=["drop_me", "keep_me"],
-                keep_columns=["y", "keep_me"],
+            outcome = _prepare(
+                _preparation_request(
+                    body,
+                    parquet_path,
+                    row_limit=2,
+                    project_to_keep_columns=True,
+                    keep_columns=["y", "keep_me", "x1"],
+                )
             )
 
-        assert Path(tmp_parquet).name.startswith("haute_train_")
+        assert outcome.failure is None
+        assert outcome.parquet_path == str(parquet_path)
         assert len(sunk_frames) == 1
         cols = sunk_frames[0].collect_schema().names()
-        # drop_me is excluded and not in keep_columns → dropped.
+        # drop_me is not in keep_columns → dropped; the kept columns survive.
         assert "drop_me" not in cols
-        # keep_me is excluded but protected → retained.
-        assert "keep_me" in cols
-        assert "y" in cols
-        # Cleanup the temp file the helper created.
-        Path(tmp_parquet).unlink(missing_ok=True)
+        assert set(cols) == {"y", "keep_me", "x1"}
 
-    def test_no_drop_when_nothing_excluded_matches(self, tmp_path):
-        """exclude listing only protected columns drops nothing."""
-        from haute.routes._job_store import JobStore
-
-        store = JobStore()
-        service = TrainService(store)
-        job_id = store.create_job({"status": "running"})
+    def test_no_drop_when_not_projecting(self, tmp_path):
+        """A GLM sink (project_to_keep_columns False) drops nothing."""
         body = _source_only_request()
+        parquet_path = tmp_path / "prepared.parquet"
 
         lf = pl.LazyFrame({"y": [1.0, 2.0], "x1": [0.1, 0.2]})
         sunk_frames: list[object] = []
 
-        def fake_bounded_sink(frame, path, **kwargs):
+        def fake_write_file(
+            destination,
+            frame,
+            *,
+            recipe=None,
+            chunk_rows=None,
+            execution_context=None,
+            node_id=None,
+        ):
             sunk_frames.append(frame)
+            frame.collect().write_parquet(destination)
+            return ChunkedWrite(strategy="native", parts=(), chunks=1, staged_inputs=0)
 
         def lazy_returns_target(*args, **kwargs):
             return ({"n": lf}, [], {}, {})
@@ -323,10 +360,10 @@ class TestExecuteAndSinkProjection:
         p1, p2, p3, p4, p5 = _patch_execute_env()
         with (
             patch(
-                "haute.routes._training_lifecycle.execute_lazy_graph",
+                "haute.routes._training_preparation.execute_lazy_graph",
                 side_effect=lazy_returns_target,
             ),
-            patch("haute._polars_utils.bounded_sink", side_effect=fake_bounded_sink),
+            patch("haute._chunked_writes.write_file", side_effect=fake_write_file),
             patch("haute._polars_utils._malloc_trim"),
             p1,
             p2,
@@ -334,18 +371,18 @@ class TestExecuteAndSinkProjection:
             p4,
             p5,
         ):
-            tmp_parquet = service._execute_and_sink(
-                body,
-                preamble_ns=None,
-                row_limit=None,
-                job_id=job_id,
-                exclude=["y"],
-                keep_columns=["y"],
+            outcome = _prepare(
+                _preparation_request(
+                    body,
+                    parquet_path,
+                    project_to_keep_columns=False,
+                    keep_columns=["y"],
+                )
             )
 
+        assert outcome.failure is None
         cols = sunk_frames[0].collect_schema().names()
         assert cols == ["y", "x1"]
-        Path(tmp_parquet).unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -362,17 +399,35 @@ MINIMAL_EVALUATION = {
 
 
 class TestStartGlmMergeAndKeepColumns:
-    def _glm_graph(self):
+    def _glm_graph(self, scratch):
+        """Data Input → GLM modelling graph backed by a real frame.
+
+        ``start`` gates GLM term columns against the modelling node's exact
+        unprojected input schema before any job exists, so the source must
+        carry every column the config names.  ``scratch`` is the
+        ``haute_scratch`` fixture: the same temp directory as ``tmp_path``,
+        declared as the project root so the absolute source path resolves.
+        """
+        data_path = scratch / "glm_merge.parquet"
+        pl.DataFrame(
+            {
+                "age": [30.0, 40.0, 50.0],
+                "loss": [1.0, 2.0, 3.0],
+                "exposure": [1.0, 1.0, 1.0],
+                "log_exp": [0.0, 0.0, 0.0],
+                "x1": [0.1, 0.2, 0.3],
+                "junk": ["a", "b", "c"],
+            }
+        ).write_parquet(data_path)
         config = {
             "target": "loss",
             "algorithm": "glm",
             "family": "poisson",
             "link": "log",
-            "all_factors": True,
+            "terms": {"age": {"type": "linear"}},
             "weight": "exposure",
             "offset": "log_exp",
             "feature_columns": ["x1"],
-            "exclude": ["junk", "x1"],
             "params": {"iterations": 3},
             "evaluation": MINIMAL_EVALUATION,
         }
@@ -384,7 +439,7 @@ class TestStartGlmMergeAndKeepColumns:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": {"path": "data.parquet"},
+                            "config": make_ready_file_input_config(data_path),
                         },
                     },
                     {
@@ -401,21 +456,28 @@ class TestStartGlmMergeAndKeepColumns:
         )
         return graph
 
-    def test_glm_keys_merged_and_offset_weight_kept(self):
+    def test_glm_keys_merged_and_offset_weight_kept(self, haute_scratch):
         """GLM top-level keys merge into train_params; weight+offset join keep_cols."""
         from haute.routes._job_store import JobStore
         from haute.schemas import TrainRequest
 
         store = JobStore()
         service = TrainService(store)
-        body = TrainRequest(graph=self._glm_graph(), node_id="train")
+        body = TrainRequest(graph=self._glm_graph(haute_scratch), node_id="train")
 
         captured: dict[str, object] = {}
 
         def fake_execute_and_sink(
-            _body, _preamble, _row_limit, _job_id, *, exclude, keep_columns, **kwargs
+            _body,
+            _preamble,
+            _row_limit,
+            _job_id,
+            *,
+            project_to_keep_columns,
+            keep_columns,
+            **kwargs,
         ):
-            captured["exclude"] = exclude
+            captured["project_to_keep_columns"] = project_to_keep_columns
             captured["keep_columns"] = keep_columns
             return "/tmp/fake_train.parquet"
 
@@ -428,7 +490,7 @@ class TestStartGlmMergeAndKeepColumns:
             patch.object(
                 service,
                 "_estimate_ram",
-                return_value=(None, None, 100, 3),
+                return_value=make_ram_estimate(),
             ),
             patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
             patch.object(service, "_execute_and_sink", side_effect=fake_execute_and_sink),
@@ -448,18 +510,20 @@ class TestStartGlmMergeAndKeepColumns:
         # Protected columns: target + weight + offset. nick-dev builds these from a
         # set (_training_required_metadata_columns), so membership — not order — is
         # the contract; assert order-independently.
+        # feature_columns is a CatBoost lever, so a GLM keeps only role columns.
         keep = captured["keep_columns"]
-        assert set(keep) == {"loss", "exposure", "log_exp", "x1"}
-        # The excluded column is forwarded as the exclude list.
-        assert captured["exclude"] == ["junk", "x1"]
+        assert set(keep) == {"loss", "exposure", "log_exp"}
+        # A GLM feature is in the model exactly when it has a term or is an
+        # interaction factor, so its sink never projects to the keep columns.
+        assert captured["project_to_keep_columns"] is False
 
-    def test_start_stamps_explicit_timeout_before_preparation(self):
+    def test_start_stamps_explicit_timeout_before_preparation(self, haute_scratch):
         from haute.routes._job_store import JobStore
         from haute.schemas import TrainRequest
 
         store = JobStore()
         service = TrainService(store)
-        graph = self._glm_graph()
+        graph = self._glm_graph(haute_scratch)
         for node in graph.nodes:
             if node.id == "train":
                 node.data.config["timeout"] = 17
@@ -483,18 +547,18 @@ class TestStartGlmMergeAndKeepColumns:
         assert observed["timeout"] == 17
         assert store.require_job(response.job_id)["status"] == "error"
 
-    def test_failure_during_execute_marks_background_job_error(self):
+    def test_failure_during_execute_marks_background_job_error(self, haute_scratch):
         """A preparation exception is persisted instead of escaping its thread."""
         from haute.routes._job_store import JobStore
         from haute.schemas import TrainRequest
 
         store = JobStore()
         service = TrainService(store)
-        body = TrainRequest(graph=self._glm_graph(), node_id="train")
+        body = TrainRequest(graph=self._glm_graph(haute_scratch), node_id="train")
 
         with (
             patch.object(service, "_compile_preamble", return_value=None),
-            patch.object(service, "_estimate_ram", return_value=(None, None, 100, 3)),
+            patch.object(service, "_estimate_ram", return_value=make_ram_estimate()),
             patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
             patch.object(
                 service,
@@ -522,24 +586,33 @@ class TestStartGlmMergeAndKeepColumns:
 # ---------------------------------------------------------------------------
 
 
-class TestExecuteAndSinkWithExecutionContext:
+class TestPreparationWithExecutionContext:
     def test_context_stages_sink_and_publishes_metrics(self, tmp_path):
-        """With a context, the sink runs inside a staged region and metrics are
-        published in the finally arm; the checkpoint_dir is also cleaned up."""
-        from haute.routes._job_store import JobStore
-
-        store = JobStore()
-        service = TrainService(store)
-        job_id = store.create_job({"status": "running"})
+        """The sink runs inside a staged region, the execution runs under a
+        seed plan with no checkpoint directory, and the outcome carries the
+        metrics payload the supervisor stores."""
         body = _source_only_request()
+        parquet_path = tmp_path / "prepared.parquet"
 
         lf = pl.LazyFrame({"y": [1.0, 2.0], "x1": [0.1, 0.2]})
         sunk_frames: list[object] = []
+        executions: list[dict[str, object]] = []
 
-        def fake_bounded_sink(frame, path, **kwargs):
+        def fake_write_file(
+            destination,
+            frame,
+            *,
+            recipe=None,
+            chunk_rows=None,
+            execution_context=None,
+            node_id=None,
+        ):
             sunk_frames.append(frame)
+            frame.collect().write_parquet(destination)
+            return ChunkedWrite(strategy="native", parts=(), chunks=1, staged_inputs=0)
 
         def lazy_returns_target(*args, **kwargs):
+            executions.append(kwargs)
             return ({"n": lf}, [], {}, {})
 
         context = _training_execution_context()
@@ -547,10 +620,10 @@ class TestExecuteAndSinkWithExecutionContext:
         p1, p2, p3, p4, p5 = _patch_execute_env()
         with (
             patch(
-                "haute.routes._training_lifecycle.execute_lazy_graph",
+                "haute.routes._training_preparation.execute_lazy_graph",
                 side_effect=lazy_returns_target,
             ),
-            patch("haute._polars_utils.bounded_sink", side_effect=fake_bounded_sink),
+            patch("haute._chunked_writes.write_file", side_effect=fake_write_file),
             patch("haute._polars_utils._malloc_trim"),
             p1,
             p2,
@@ -558,34 +631,27 @@ class TestExecuteAndSinkWithExecutionContext:
             p4,
             p5,
         ):
-            tmp_parquet = service._execute_and_sink(
-                body,
-                preamble_ns=None,
-                row_limit=None,
-                job_id=job_id,
-                execution_context=context,
-            )
+            outcome = _prepare(_preparation_request(body, parquet_path), context=context)
 
-        # The staged context branch (940-954) was taken: the frame was sunk and
-        # the before/after sink checkpoints recorded stage timings.
+        # The staged sink branch was taken: the frame was sunk and the
+        # before/after sink checkpoints recorded stage timings.
+        assert outcome.failure is None
         assert len(sunk_frames) == 1
-        # The finally arm (1014-1018) published execution metrics onto the job.
-        job = store.require_job(job_id)
-        assert "execution_metrics" in job
-        metrics = job["execution_metrics"]
+        # The metrics the parent persists on the job come from the child.
+        metrics = outcome.execution_metrics
+        assert metrics is not None
         assert "training_sink_write" in metrics["stage_elapsed_ms"]
-        Path(tmp_parquet).unlink(missing_ok=True)
+        assert len(executions) == 1
+        assert executions[0]["snapshot_plan"] is not None
+        assert executions[0]["prepare_inputs"] is False
+        assert "checkpoint_dir" not in executions[0]
 
     def test_all_except_demand_columns_required_and_missing_raises_422(self, tmp_path):
         """An AllExcept node demand contributes its required_columns to the
-        training-input contract; a missing one trips the 422 contract error and
-        flips the job to contract_error (903-904 + 908-922 + finally 1014-1018)."""
-        from haute.routes._job_store import JobStore
-
-        store = JobStore()
-        service = TrainService(store)
-        job_id = store.create_job({"status": "running"})
+        training-input contract; a missing one trips the 422 contract failure
+        and still returns the metrics payload."""
         body = _source_only_request()
+        parquet_path = tmp_path / "prepared.parquet"
 
         # Frame is missing the AllExcept-required "target_col".
         lf = pl.LazyFrame({"x1": [0.1, 0.2], "x2": [0.3, 0.4]})
@@ -604,7 +670,7 @@ class TestExecuteAndSinkWithExecutionContext:
         p1, p2, p3, p4, p5 = _patch_execute_env()
         with (
             patch(
-                "haute.routes._training_lifecycle.execute_lazy_graph",
+                "haute.routes._training_preparation.execute_lazy_graph",
                 side_effect=lazy_returns_target,
             ),
             patch("haute._polars_utils.bounded_sink"),
@@ -614,33 +680,26 @@ class TestExecuteAndSinkWithExecutionContext:
             p3,
             p4,
             p5,
-            pytest.raises(HTTPException) as exc_info,
         ):
-            service._execute_and_sink(
-                body,
-                preamble_ns=None,
-                row_limit=None,
-                job_id=job_id,
-                required_columns_by_node=demand,
-                execution_context=context,
+            outcome = _prepare(
+                _preparation_request(body, parquet_path, required_columns_by_node=demand),
+                context=context,
             )
 
-        assert exc_info.value.status_code == 422
-        assert "target_col" in str(exc_info.value.detail)
-        job = store.require_job(job_id)
-        assert job["status"] == "contract_error"
-        # Even on the contract-error raise, the finally arm published metrics.
-        assert "execution_metrics" in job
+        failure = outcome.failure
+        assert failure is not None
+        assert failure.http_status_code == 422
+        assert failure.terminal_reason == "contract_error"
+        assert "target_col" in str(failure.http_detail)
+        # Even on the contract-error arm, the child reports its metrics.
+        assert outcome.execution_metrics is not None
+        assert not parquet_path.exists()
 
     def test_iterable_demand_columns_required(self, tmp_path):
         """A plain-iterable (non-AllExcept) node demand also contributes its
-        columns to the contract (branch 905-906)."""
-        from haute.routes._job_store import JobStore
-
-        store = JobStore()
-        service = TrainService(store)
-        job_id = store.create_job({"status": "running"})
+        columns to the contract."""
         body = _source_only_request()
+        parquet_path = tmp_path / "prepared.parquet"
 
         lf = pl.LazyFrame({"x1": [0.1, 0.2]})
 
@@ -652,7 +711,7 @@ class TestExecuteAndSinkWithExecutionContext:
         p1, p2, p3, p4, p5 = _patch_execute_env()
         with (
             patch(
-                "haute.routes._training_lifecycle.execute_lazy_graph",
+                "haute.routes._training_preparation.execute_lazy_graph",
                 side_effect=lazy_returns_target,
             ),
             patch("haute._polars_utils.bounded_sink"),
@@ -662,38 +721,30 @@ class TestExecuteAndSinkWithExecutionContext:
             p3,
             p4,
             p5,
-            pytest.raises(HTTPException) as exc_info,
         ):
-            service._execute_and_sink(
-                body,
-                preamble_ns=None,
-                row_limit=None,
-                job_id=job_id,
-                required_columns_by_node=demand,
+            outcome = _prepare(
+                _preparation_request(body, parquet_path, required_columns_by_node=demand)
             )
 
-        assert exc_info.value.status_code == 422
-        assert "needed_col" in str(exc_info.value.detail)
-        assert store.require_job(job_id)["status"] == "contract_error"
+        failure = outcome.failure
+        assert failure is not None
+        assert failure.http_status_code == 422
+        assert failure.terminal_reason == "contract_error"
+        assert "needed_col" in str(failure.http_detail)
 
 
 # ---------------------------------------------------------------------------
-# _execute_and_sink — memory-limit + bounded-unsupported cleanup arms
-# (lines 966-979, 980-994).  multi-frame added these typed cleanup handlers;
-# each must unlink the temp parquet, transition the job, and re-raise the
-# right HTTP shape.
+# prepare_training_data — memory-limit + bounded-unsupported cleanup arms.
+# multi-frame added these typed cleanup handlers; each must remove the temp
+# parquet, classify the terminal reason, and carry the right HTTP shape.
 # ---------------------------------------------------------------------------
 
 
-class TestExecuteAndSinkCleanupArms:
-    def test_public_contract_error_unlinks_temp_and_preserves_payload(self):
-        from haute.routes._job_store import JobStore
-
-        store = JobStore()
-        service = TrainService(store)
-        job_id = store.create_job({"status": "running"})
+class TestPreparationCleanupArms:
+    def test_public_contract_error_removes_temp_and_preserves_payload(self, tmp_path):
         body = _source_only_request()
-        unlinked: list[str] = []
+        parquet_path = tmp_path / "prepared.parquet"
+        parquet_path.write_bytes(b"")
 
         def lazy_raises_contract_error(*args, **kwargs):
             raise PreambleError("invalid preamble", source_line=7)
@@ -701,90 +752,70 @@ class TestExecuteAndSinkCleanupArms:
         p1, p2, p3, p4, p5 = _patch_execute_env()
         with (
             patch(
-                "haute.routes._training_lifecycle.execute_lazy_graph",
+                "haute.routes._training_preparation.execute_lazy_graph",
                 side_effect=lazy_raises_contract_error,
-            ),
-            patch(
-                "haute.routes._training_lifecycle.os.unlink",
-                side_effect=lambda path: unlinked.append(path),
             ),
             p1,
             p2,
             p3,
             p4,
             p5,
-            pytest.raises(HTTPException) as exc_info,
         ):
-            service._execute_and_sink(body, preamble_ns=None, row_limit=None, job_id=job_id)
+            outcome = _prepare(_preparation_request(body, parquet_path))
 
-        assert exc_info.value.status_code == 422
-        assert exc_info.value.detail == {
+        failure = outcome.failure
+        assert failure is not None
+        assert failure.http_status_code == 422
+        assert failure.http_detail == {
             "error_code": "preamble_failed",
             "message": "invalid preamble",
             "source_line": 7,
         }
-        assert unlinked and unlinked[0].endswith(".parquet")
-        job = store.require_job(job_id)
-        assert job["status"] == "contract_error"
-        assert job["error_code"] == "preamble_failed"
+        assert not parquet_path.exists()
+        assert failure.terminal_reason == "contract_error"
+        assert failure.fields["error_code"] == "preamble_failed"
 
-    def test_memory_limit_unlinks_temp_and_raises_507(self, tmp_path):
-        """ExecutionMemoryLimitExceededError → temp parquet removed, job
-        memory_limited, HTTP 507 (lines 966-979)."""
-        from haute.routes._job_store import JobStore
-
-        store = JobStore()
-        service = TrainService(store)
-        job_id = store.create_job({"status": "running"})
+    def test_memory_limit_removes_temp_and_reports_507(self, tmp_path):
+        """ExecutionMemoryLimitExceededError → temp parquet removed, terminal
+        reason memory_limited, HTTP 507."""
         body = _source_only_request()
-
-        created_paths: list[str] = []
-        real_exists = os.path.exists
+        parquet_path = tmp_path / "prepared.parquet"
+        parquet_path.write_bytes(b"")
 
         def lazy_raises_memory(*args, **kwargs):
             raise ExecutionMemoryLimitExceededError(
                 "training_pipeline",
                 rss_bytes=20,
                 limit_bytes=10,
-                job_id=job_id,
+                job_id="job",
             )
 
         p1, p2, p3, p4, p5 = _patch_execute_env()
         with (
             patch(
-                "haute.routes._training_lifecycle.execute_lazy_graph",
+                "haute.routes._training_preparation.execute_lazy_graph",
                 side_effect=lazy_raises_memory,
-            ),
-            patch(
-                "haute.routes._training_lifecycle.os.unlink",
-                side_effect=lambda p: created_paths.append(p),
             ),
             p1,
             p2,
             p3,
             p4,
             p5,
-            pytest.raises(HTTPException) as exc_info,
         ):
-            service._execute_and_sink(body, preamble_ns=None, row_limit=None, job_id=job_id)
+            outcome = _prepare(_preparation_request(body, parquet_path))
 
-        assert exc_info.value.status_code == 507
-        # The freshly mkstemp'd temp parquet was unlinked on the way out.
-        assert created_paths and created_paths[0].endswith(".parquet")
-        assert real_exists  # sanity: os module still intact
-        assert store.require_job(job_id)["status"] == "memory_limited"
+        failure = outcome.failure
+        assert failure is not None
+        assert failure.http_status_code == 507
+        # The staged temp parquet was removed on the way out.
+        assert not parquet_path.exists()
+        assert failure.terminal_reason == "memory_limited"
 
-    def test_bounded_unsupported_unlinks_temp_and_raises_422(self, tmp_path):
-        """BoundedMemoryUnsupportedError → temp removed, job contract_error,
-        HTTP 422 (lines 980-994)."""
-        from haute.routes._job_store import JobStore
-
-        store = JobStore()
-        service = TrainService(store)
-        job_id = store.create_job({"status": "running"})
+    def test_bounded_unsupported_removes_temp_and_reports_422(self, tmp_path):
+        """BoundedMemoryUnsupportedError → temp removed, contract_error, 422."""
         body = _source_only_request()
-
-        unlinked: list[str] = []
+        parquet_path = tmp_path / "prepared.parquet"
+        parquet_path.write_bytes(b"")
 
         def lazy_raises_unsupported(*args, **kwargs):
             raise BoundedMemoryUnsupportedError("node X cannot stream")
@@ -792,160 +823,106 @@ class TestExecuteAndSinkCleanupArms:
         p1, p2, p3, p4, p5 = _patch_execute_env()
         with (
             patch(
-                "haute.routes._training_lifecycle.execute_lazy_graph",
+                "haute.routes._training_preparation.execute_lazy_graph",
                 side_effect=lazy_raises_unsupported,
-            ),
-            patch(
-                "haute.routes._training_lifecycle.os.unlink",
-                side_effect=lambda p: unlinked.append(p),
             ),
             p1,
             p2,
             p3,
             p4,
             p5,
-            pytest.raises(HTTPException) as exc_info,
         ):
-            service._execute_and_sink(body, preamble_ns=None, row_limit=None, job_id=job_id)
+            outcome = _prepare(_preparation_request(body, parquet_path))
 
-        assert exc_info.value.status_code == 422
-        assert "bounded streaming mode" in str(exc_info.value.detail)
-        assert unlinked and unlinked[0].endswith(".parquet")
-        job = store.require_job(job_id)
-        assert job["status"] == "contract_error"
+        failure = outcome.failure
+        assert failure is not None
+        assert failure.http_status_code == 422
+        assert "bounded streaming mode" in str(failure.http_detail)
+        assert not parquet_path.exists()
+        assert failure.terminal_reason == "contract_error"
 
 
 # ---------------------------------------------------------------------------
-# _execute_and_sink — cleanup arms when the temp parquet is already gone and
-# when the checkpoint dir never materialised. Each error handler guards the
-# unlink with ``if os.path.exists(tmp_parquet)``; the False arm (967->969,
-# 981->983, 996->998, 1000->1002) and the finally's checkpoint-dir-absent arm
-# (1019->1022) are only reachable when those paths don't exist.
+# prepare_training_data — cleanup arms when the temp parquet is already gone
+# and when the checkpoint dir never materialised. Removal is idempotent
+# (``Path.unlink(missing_ok=True)``), so an absent temp must still produce the
+# same typed failure without raising a filesystem error of its own.
 # ---------------------------------------------------------------------------
 
 
-class TestExecuteAndSinkCleanupAbsentPaths:
-    def _service_body(self):
-        from haute.routes._job_store import JobStore
+class TestPreparationCleanupAbsentPaths:
+    def _run_with_absent_paths(self, lazy_side_effect, tmp_path: Path):
+        """Run the preparation core with the temp parquet never created.
 
-        store = JobStore()
-        service = TrainService(store)
-        job_id = store.create_job({"status": "running"})
-        return store, service, job_id, _source_only_request()
-
-    def _run_with_absent_paths(self, service, body, job_id, lazy_side_effect, tmp_path: Path):
-        """Run _execute_and_sink with the temp parquet absent, exercising the
-        cleanup guards' skip-unlink arms.
-
-        The training temp parquet is deleted the instant mkstemp hands it back,
-        so the ``if Path(tmp_parquet).exists()`` guards are naturally False
-        without mocking pathlib globally. Only the ``haute_train_`` temp is
-        special-cased; the dataframe-cache machinery's own mkstemp temps are
-        delegated to the real implementation untouched. The dataframe-cache
-        request is irrelevant once execute_lazy_graph is mocked, so stub it to
-        prevent this test's mkdtemp patch from becoming the process-wide cache
-        root. os.path.exists stays globally False (as before) to keep the
-        remaining machinery off real filesystem I/O, and os.unlink is mocked
-        as the belt-and-braces assertion target."""
-        import tempfile as _tempfile
-
-        ckpt_missing = tmp_path / "haute_ckpt_absent"
-        real_mkstemp = _tempfile.mkstemp
-        real_unlink = os.unlink  # capture before the with-block mocks os.unlink
-        real_close = os.close
-
-        def _mkstemp_training_absent(*a, **k):
-            fd, path = real_mkstemp(*a, **k)
-            if k.get("prefix") == "haute_train_":
-                # Drop the training temp immediately so the cleanup guards see it
-                # as already gone. Windows cannot unlink an open mkstemp file,
-                # so close it first and return a harmless replacement descriptor
-                # for the caller's unconditional os.close.
-                real_close(fd)
-                real_unlink(path)
-                fd = os.open(os.devnull, os.O_RDONLY)
-            return fd, path
+        The child owns removal on every failure arm; with nothing at the path
+        the removal is a no-op and must not turn a typed failure into a
+        filesystem error.
+        """
+        body = _source_only_request()
+        parquet_path = tmp_path / "never_created.parquet"
 
         p1, p2, p3, p4, p5 = _patch_execute_env()
         with (
             patch(
-                "haute.routes._training_lifecycle.execute_lazy_graph",
+                "haute.routes._training_preparation.execute_lazy_graph",
                 side_effect=lazy_side_effect,
             ),
-            patch("haute.routes._training_lifecycle.os.path.exists", return_value=False),
-            patch.object(_tempfile, "mkstemp", side_effect=_mkstemp_training_absent),
-            patch.object(_tempfile, "mkdtemp", return_value=str(ckpt_missing)),
-            patch(
-                "haute.routes._training_lifecycle.build_dataframe_execution_cache_request",
-                return_value=MagicMock(),
-            ),
-            patch("haute.routes._training_lifecycle.os.unlink") as mock_unlink,
             p1,
             p2,
             p3,
             p4,
             p5,
-            pytest.raises(HTTPException) as exc_info,
         ):
-            service._execute_and_sink(body, preamble_ns=None, row_limit=None, job_id=job_id)
-        return exc_info, mock_unlink
+            outcome = _prepare(_preparation_request(body, parquet_path))
+        assert not parquet_path.exists()
+        return outcome
 
-    def test_memory_limit_skips_unlink_when_temp_absent(self, tmp_path: Path):
-        """ExecutionMemoryLimitExceededError with the temp already gone: the
-        unlink guard is False (967->969) and no unlink is attempted."""
-        store, service, job_id, body = self._service_body()
+    def test_memory_limit_when_temp_absent(self, tmp_path: Path):
+        """ExecutionMemoryLimitExceededError with the temp never created."""
 
         def lazy(*a, **k):
             raise ExecutionMemoryLimitExceededError(
-                "training_pipeline", rss_bytes=2, limit_bytes=1, job_id=job_id
+                "training_pipeline", rss_bytes=2, limit_bytes=1, job_id="job"
             )
 
-        exc_info, mock_unlink = self._run_with_absent_paths(service, body, job_id, lazy, tmp_path)
-        assert exc_info.value.status_code == 507
-        mock_unlink.assert_not_called()
-        assert store.require_job(job_id)["status"] == "memory_limited"
+        outcome = self._run_with_absent_paths(lazy, tmp_path)
+        assert outcome.failure is not None
+        assert outcome.failure.http_status_code == 507
+        assert outcome.failure.terminal_reason == "memory_limited"
 
-    def test_bounded_unsupported_skips_unlink_when_temp_absent(self, tmp_path: Path):
-        """BoundedMemoryUnsupportedError with the temp already gone (981->983)."""
-        store, service, job_id, body = self._service_body()
+    def test_bounded_unsupported_when_temp_absent(self, tmp_path: Path):
+        """BoundedMemoryUnsupportedError with the temp never created."""
 
         def lazy(*a, **k):
             raise BoundedMemoryUnsupportedError("cannot stream")
 
-        exc_info, mock_unlink = self._run_with_absent_paths(service, body, job_id, lazy, tmp_path)
-        assert exc_info.value.status_code == 422
-        mock_unlink.assert_not_called()
-        assert store.require_job(job_id)["status"] == "contract_error"
+        outcome = self._run_with_absent_paths(lazy, tmp_path)
+        assert outcome.failure is not None
+        assert outcome.failure.http_status_code == 422
+        assert outcome.failure.terminal_reason == "contract_error"
 
-    def test_http_reraise_skips_unlink_when_temp_absent(self, tmp_path: Path):
-        """A re-raised HTTPException with the temp gone (996->998). The missing
-        target node raises an HTTPException inside the try, which the HTTPException
-        handler re-raises after the (skipped) unlink guard."""
-        store, service, job_id, body = self._service_body()
+    def test_http_failure_when_temp_absent(self, tmp_path: Path):
+        """An HTTPException raised inside the body keeps its status code."""
 
-        # Returns the 4-tuple shape but without the target node, so the body
-        # raises HTTPException(422) for missing required columns... actually the
-        # missing-target path raises ValueError → caught by generic handler.
-        # To hit the HTTPException re-raise arm, raise an HTTPException directly.
         def lazy(*a, **k):
             raise HTTPException(status_code=418, detail="teapot")
 
-        exc_info, mock_unlink = self._run_with_absent_paths(service, body, job_id, lazy, tmp_path)
-        assert exc_info.value.status_code == 418
-        mock_unlink.assert_not_called()
+        outcome = self._run_with_absent_paths(lazy, tmp_path)
+        assert outcome.failure is not None
+        assert outcome.failure.http_status_code == 418
+        assert outcome.failure.terminal_reason == "contract_error"
 
-    def test_generic_failure_skips_unlink_when_temp_absent(self, tmp_path: Path):
-        """A generic Exception with the temp gone (1000->1002) plus the
-        checkpoint-dir-absent finally arm (1019->1022)."""
-        store, service, job_id, body = self._service_body()
+    def test_generic_failure_when_temp_absent(self, tmp_path: Path):
+        """A generic Exception with the temp gone, plus the checkpoint-dir-absent
+        cleanup arm."""
 
         def lazy(*a, **k):
             raise RuntimeError("kaboom")
 
-        exc_info, mock_unlink = self._run_with_absent_paths(service, body, job_id, lazy, tmp_path)
-        assert exc_info.value.status_code == 500
-        mock_unlink.assert_not_called()
-        assert store.require_job(job_id)["status"] == "error"
+        outcome = self._run_with_absent_paths(lazy, tmp_path)
+        assert outcome.failure is not None
+        assert outcome.failure.http_status_code == 500
+        assert outcome.failure.terminal_reason == "error"
 
 
 # ---------------------------------------------------------------------------
@@ -961,6 +938,7 @@ class TestStartExecutionContextLifecycle:
 
         config = {
             "target": "loss",
+            "feature_columns": ["age"],
             "algorithm": "catboost",
             "loss_function": "RMSE",
             "params": {"iterations": 2},
@@ -1020,7 +998,7 @@ class TestStartExecutionContextLifecycle:
 
         with (
             patch.object(service, "_compile_preamble", return_value=None),
-            patch.object(service, "_estimate_ram", return_value=(None, None, 100, 3)),
+            patch.object(service, "_estimate_ram", return_value=make_ram_estimate()),
             patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
             patch(
                 "haute.routes._training_lifecycle.create_admitted_execution_context",
@@ -1066,7 +1044,7 @@ class TestStartExecutionContextLifecycle:
 
         with (
             patch.object(service, "_compile_preamble", return_value=None),
-            patch.object(service, "_estimate_ram", return_value=(None, None, 100, 3)),
+            patch.object(service, "_estimate_ram", return_value=make_ram_estimate()),
             patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
             patch(
                 "haute.routes._training_lifecycle.create_admitted_execution_context",
@@ -1116,7 +1094,7 @@ class TestStartExecutionContextLifecycle:
 
 
 # ---------------------------------------------------------------------------
-# Pure helper functions: _string_list_config, _training_required_metadata_columns,
+# Pure helper functions: string_list_config, _training_required_metadata_columns,
 # _training_required_columns_by_node, _job_elapsed_seconds, _check_gpu_vram.
 # These are module-level and validate config-shape invariants; their error and
 # early-return arms (197, 202, 204, 219->229, 247, 348-349, 368, 384->390) are
@@ -1127,23 +1105,23 @@ class TestStartExecutionContextLifecycle:
 class TestStringListConfig:
     def test_non_list_value_raises(self):
         """A scalar where a list is expected is a config error (line 197)."""
-        from haute.routes._train_service import _string_list_config
+        from haute.modelling._train_config import string_list_config
 
         with pytest.raises(ValueError, match="must be a list of column names"):
-            _string_list_config({"id_columns": "not_a_list"}, "id_columns")
+            string_list_config({"id_columns": "not_a_list"}, "id_columns")
 
     def test_non_string_member_raises(self):
         """A non-string / empty member is rejected (line 202)."""
-        from haute.routes._train_service import _string_list_config
+        from haute.modelling._train_config import string_list_config
 
         with pytest.raises(ValueError, match="non-empty string column names"):
-            _string_list_config({"id_columns": ["ok", 123]}, "id_columns")
+            string_list_config({"id_columns": ["ok", 123]}, "id_columns")
 
     def test_duplicate_members_deduplicated(self):
         """Duplicates are skipped while order is preserved (line 204 continue)."""
-        from haute.routes._train_service import _string_list_config
+        from haute.modelling._train_config import string_list_config
 
-        out = _string_list_config({"id_columns": ["a", "b", "a", "c", "b"]}, "id_columns")
+        out = string_list_config({"id_columns": ["a", "b", "a", "c", "b"]}, "id_columns")
         assert out == ["a", "b", "c"]
 
 
@@ -1310,6 +1288,7 @@ class TestStartCategoricalLevelsMerge:
 
         config = {
             "target": "loss",
+            "feature_columns": ["region"],
             "algorithm": "catboost",
             "loss_function": "RMSE",
             "categorical_levels": {"region": ["north", "south"]},
@@ -1350,7 +1329,7 @@ class TestStartCategoricalLevelsMerge:
 
         with (
             patch.object(service, "_compile_preamble", return_value=None),
-            patch.object(service, "_estimate_ram", return_value=(None, None, 100, 3)),
+            patch.object(service, "_estimate_ram", return_value=make_ram_estimate()),
             patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
             patch.object(service, "_execute_and_sink", return_value="/tmp/fake.parquet"),
             patch.object(service, "_launch_background", side_effect=fake_launch),
@@ -1365,15 +1344,14 @@ class TestStartCategoricalLevelsMerge:
 
 
 # ---------------------------------------------------------------------------
-# _check_gpu_vram_before_launch — feasible GPU VRAM returns the prior warning
-# (the 768->794 short-circuit: vram_check.warning is falsy).
+# _check_gpu_vram_before_launch — feasible GPU VRAM records nothing
+# (the short-circuit: vram_check.warning is falsy).
 # ---------------------------------------------------------------------------
 
 
 class TestCheckGpuFallbackNoWarning:
-    def test_gpu_task_with_feasible_vram_returns_ram_warning(self):
-        """task_type=GPU but VRAM fits → no exception, ram_warning passed through
-        (branch 768->794)."""
+    def test_gpu_task_with_feasible_vram_records_no_warning(self):
+        """task_type=GPU but VRAM fits → no exception and no job warning."""
         from haute.routes._job_store import JobStore
         from haute.routes._train_service import _VramCheck
 
@@ -1386,17 +1364,17 @@ class TestCheckGpuFallbackNoWarning:
             "haute.routes._training_lifecycle._check_gpu_vram",
             return_value=_VramCheck(estimated_mb=10.0, available_mb=100.0, warning=None),
         ):
-            result = service._check_gpu_vram_before_launch(
+            service._check_gpu_vram_before_launch(
                 train_params,
                 row_limit=50,
                 total_source_rows=100,
                 probe_columns=4,
-                ram_warning="ram!",
                 job_id=job_id,
             )
 
-        assert result == "ram!"
-        assert store.require_job(job_id)["status"] == "running"
+        job = store.require_job(job_id)
+        assert job["status"] == "running"
+        assert job.get("warning") is None and job.get("gpu_warning") is None
 
     def test_gpu_task_with_unknown_vram_warns_and_proceeds(self):
         """Unknown VRAM attaches a job warning but does not refuse the launch."""
@@ -1418,19 +1396,17 @@ class TestCheckGpuFallbackNoWarning:
                 insufficient=False,
             ),
         ):
-            result = service._check_gpu_vram_before_launch(
+            service._check_gpu_vram_before_launch(
                 train_params,
                 row_limit=50,
                 total_source_rows=100,
                 probe_columns=4,
-                ram_warning="ram!",
                 job_id=job_id,
             )
 
-        assert result == "ram!"
         job = store.require_job(job_id)
         assert job["gpu_warning"] == advisory
-        assert job["warning"] == f"ram!\n{advisory}"
+        assert job["warning"] == advisory
 
 
 # ---------------------------------------------------------------------------
@@ -1442,6 +1418,7 @@ class TestCheckGpuFallbackNoWarning:
 def _launch_config():
     return {
         "target": "y",
+        "feature_columns": ["x"],
         "algorithm": "catboost",
         "loss_function": "RMSE",
         "params": {"iterations": 1},
@@ -1528,15 +1505,12 @@ class TestEvaluationPreviewFailures:
                 return_value=context,
             ),
             patch.object(TrainService, "_compile_preamble", return_value=None),
+            # These cases are about the data the execution returns, so the
+            # seed plan it runs under is not the subject here.
             patch.object(
                 _train_service,
-                "dataframe_graph_input_fingerprint",
-                return_value="fingerprint",
-            ),
-            patch.object(
-                _train_service,
-                "build_dataframe_execution_cache_request",
-                return_value=None,
+                "open_seed_plan",
+                return_value=contextlib.nullcontext(),
             ),
             patch.object(
                 _train_service,
@@ -1678,23 +1652,26 @@ class TestLaunchBackgroundWorker:
 
     def test_success_path_runs_progress_iteration_and_completes(self, tmp_path):
         """A TrainingJob whose run() invokes progress + on_iteration (past the
-        loss-history cap) drives the success closures and the truncation arm
-        (1075-1076); the job ends completed and the temp parquet is unlinked."""
+        loss-history cap) drives the success closures and the thinning arm;
+        the job ends completed and the temp parquet is unlinked."""
         from haute.routes import _training_lifecycle as _train_service
+        from haute.routes import _training_worker
 
         store, service, job_id = self._service_and_job()
         context = _training_execution_context()
         tmp_parquet = str(tmp_path / "train.parquet")
         Path(tmp_parquet).write_text("x", encoding="utf-8")
 
-        cap = _train_service._max_train_loss_history()
+        cap = _training_worker._max_train_loss_history()
 
         class FakeJob(_SuccessfulTrainingJob):
             def run(self, progress, on_iteration, **kwargs):
                 progress("working", 0.5)
-                # Push more iterations than the cap so 1075-1076 truncates.
+                # Push more iterations than the cap so the live history thins.
                 for i in range(cap + 3):
-                    on_iteration(i, cap + 3, {"loss": float(i)})
+                    on_iteration(
+                        i, cap + 3, {"RMSE": float(i)}, {"iteration": float(i), "train_RMSE": i}
+                    )
                 return super().run(progress, on_iteration, **kwargs)
 
         with (
@@ -1720,9 +1697,10 @@ class TestLaunchBackgroundWorker:
 
         job = store.require_job(job_id)
         assert job["status"] == "completed"
-        # The loss history was capped and flagged truncated.
-        assert job["train_loss_history_truncated"] is True
-        assert len(job["train_loss_history"]) == cap
+        # The base fake's run adds its own row last: iteration 1 again, so it is a
+        # new fit whose live history starts afresh, untruncated.
+        assert job["train_loss_history"] == [{"iteration": 1.0, "train_rmse": 0.5}]
+        assert job["train_loss_history_truncated"] is False
         # Temp parquet removed in the worker finally (1229->exit true side).
         assert not Path(tmp_parquet).exists()
 
@@ -1958,6 +1936,14 @@ class TestProtocolCallbackValidation:
         assert result is launched
         return store, job_id, captured
 
+    def test_fits_load_their_model_library_before_the_workers_cap(self, tmp_path: Path) -> None:
+        """Imported under an RLIMIT_AS cap, the library's code would spend the job's budget."""
+        _store, _job_id, training = self._capture_training_launch(tmp_path)
+        _store, _job_id, dispersion = self._capture_dispersion_launch(tmp_path)
+
+        assert training["config"].preload_modules == ("catboost",)
+        assert dispersion["config"].preload_modules == ("rustystats",)
+
     def test_training_progress_callback_rejects_malformed_events(self, tmp_path: Path) -> None:
         store, job_id, captured = self._capture_training_launch(tmp_path)
         on_progress = captured["on_progress"]
@@ -1975,7 +1961,31 @@ class TestProtocolCallbackValidation:
                         0.5,
                         "bad",
                         "iteration",
-                        {"iteration": True, "total": 1, "metrics": {}},
+                        {"iteration": True, "total": 1, "metrics": {}, "history": None},
+                    )
+                )
+            for history in (
+                {"iteration": 2.0, "train_loss": 0.5},
+                [1.0, 0.5],
+            ):
+                with pytest.raises(WorkerProtocolError, match="fields are malformed"):
+                    on_progress(
+                        WorkerProgressEvent(
+                            1,
+                            0.5,
+                            "bad history",
+                            "iteration",
+                            {"iteration": 1, "total": 2, "metrics": {}, "history": history},
+                        )
+                    )
+            with pytest.raises(WorkerProtocolError, match="fields are malformed"):
+                on_progress(
+                    WorkerProgressEvent(
+                        1,
+                        0.5,
+                        "no history",
+                        "iteration",
+                        {"iteration": 1, "total": 2, "metrics": {}},
                     )
                 )
             store.delete_job(job_id)
@@ -1986,9 +1996,49 @@ class TestProtocolCallbackValidation:
                         0.5,
                         "fit",
                         "iteration",
-                        {"iteration": 1, "total": 2, "metrics": {"loss": 0.5}},
+                        {"iteration": 1, "total": 2, "metrics": {"loss": 0.5}, "history": None},
                     )
                 )
+        finally:
+            on_finished()
+
+    def test_training_iteration_events_keep_the_rows_the_engine_built(self, tmp_path: Path) -> None:
+        store, job_id, captured = self._capture_training_launch(tmp_path)
+        on_progress = captured["on_progress"]
+        on_finished = captured["on_finished"]
+        assert callable(on_progress)
+        assert callable(on_finished)
+
+        try:
+            on_progress(
+                WorkerProgressEvent(
+                    1,
+                    0.5,
+                    "Iteration 1",
+                    "iteration",
+                    {
+                        "iteration": 1,
+                        "total": 2,
+                        "metrics": {"RMSE": 0.5, "validation_RMSE": 0.6},
+                        "history": {"iteration": 1.0, "train_RMSE": 0.5, "eval_RMSE": 0.6},
+                    },
+                )
+            )
+            # An iteration that adds no row (EBM, a GPU fit) updates only the readout.
+            on_progress(
+                WorkerProgressEvent(
+                    2,
+                    1.0,
+                    "Iteration 2",
+                    "iteration",
+                    {"iteration": 2, "total": 2, "metrics": {}, "history": None},
+                )
+            )
+            job = store.require_job(job_id)
+            assert job["train_loss_history"] == [
+                {"iteration": 1.0, "train_RMSE": 0.5, "eval_RMSE": 0.6}
+            ]
+            assert job["iteration"] == 2 and job["train_loss"] == {}
         finally:
             on_finished()
 
@@ -2392,3 +2442,199 @@ class TestProtocolLaunchCleanup:
         assert released == [True]
         assert not prepared.exists()
         service._supervisor.launch_protocol.assert_not_called()
+
+
+class TestTrainServiceLifecycles:
+    def test_a_training_job_can_be_started_again_after_a_failed_and_after_a_cancelled_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, training_artifact_root: Path
+    ) -> None:
+        from haute.routes._job_store import JobStore
+        from haute.routes._training_lifecycle import _TRAINING_JOB_TYPE
+        from haute.schemas import TrainRequest
+
+        store = JobStore()
+        output_dir = tmp_path / "outputs"
+        output_dir.mkdir()
+
+        cancel_job_id: str | None = None
+
+        def protocol_runner(function, request, **kwargs):
+            result = _inline_protocol_runner(function, request, **kwargs)
+            if request.request_id == cancel_job_id:
+                assert service.cancel(request.request_id)["status"] == "cancelled"
+            return result
+
+        service = TrainService(store, protocol_runner=protocol_runner)
+        launched = []
+        original_launch = service._supervisor.launch_protocol
+
+        def capture_launch(*args, **kwargs):
+            thread = original_launch(*args, **kwargs)
+            launched.append(thread)
+            return thread
+
+        monkeypatch.setattr(service._supervisor, "launch_protocol", capture_launch)
+
+        config = {
+            "name": "quoted",
+            "target": "y",
+            "feature_columns": ["x"],
+            "algorithm": "catboost",
+            "loss_function": "RMSE",
+            "params": {"iterations": 2},
+            "output_dir": str(output_dir),
+            "evaluation": MINIMAL_EVALUATION,
+        }
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "data": {
+                            "label": "source",
+                            "nodeType": "dataInput",
+                            "config": {"path": "data.parquet"},
+                        },
+                    },
+                    {
+                        "id": "quoted",
+                        "data": {
+                            "label": "quoted",
+                            "nodeType": "modelling",
+                            "config": config,
+                        },
+                    },
+                ],
+                "edges": [make_edge("source", "quoted").model_dump()],
+            }
+        )
+        body = TrainRequest(graph=graph, node_id="quoted")
+
+        def fake_execute_and_sink(_body, _preamble_ns, _row_limit, job_id, **kwargs):
+            prep_file = tmp_path / f"prep_{job_id}.parquet"
+            prep_file.write_bytes(b"prepared")
+            return str(prep_file)
+
+        monkeypatch.setattr(service, "_compile_preamble", lambda _graph: None)
+        monkeypatch.setattr(service, "_estimate_ram", lambda *a, **k: make_ram_estimate())
+        monkeypatch.setattr(service, "_check_gpu_vram_before_launch", lambda *a, **k: None)
+        monkeypatch.setattr(service, "_execute_and_sink", fake_execute_and_sink)
+
+        class FailingJob:
+            def __init__(self, **kwargs) -> None:
+                self.output_dir = Path(kwargs["output_dir"])
+
+            def run(self, *_args, **_kwargs):
+                raise RuntimeError("injected worker failure")
+
+        current_model_bytes = b"generation-1-model"
+
+        def published(job) -> Path:
+            handle = job["artifact_handles"]["training_artifacts"]
+            return Path(handle["directory"]) / "output"
+
+        def owned_directories() -> list[Path]:
+            return sorted(training_artifact_root.glob("train_*"))
+
+        class VersionedTrainingJob(_SuccessfulTrainingJob):
+            def run(self, progress, on_iteration, **kwargs):
+                result = super().run(progress, on_iteration, **kwargs)
+                # Stamp each generation's bytes into the job's model file so a
+                # later run is distinguishable; the path is re-derived from the
+                # fixture root, which also proves the worker stayed inside it.
+                staged = training_artifact_root / Path(result.model_path).relative_to(
+                    training_artifact_root
+                )
+                staged.write_bytes(current_model_bytes)
+                return result
+
+        def assert_registry_free(prior_job_id: str | None = None) -> None:
+            assert not store.has_job_with_status("running")
+            assert len(service._training_jobs._tokens_by_job_id) == 0
+            assert len(service._training_jobs._latest_by_key) == 0
+            if prior_job_id is not None:
+                assert service._training_jobs.cancel(prior_job_id) is False
+                assert not service._training_jobs.is_cancelled(prior_job_id)
+                assert service._training_jobs.cancellation_reason(prior_job_id) is None
+                assert service._training_jobs._tokens_by_job_id.get(prior_job_id) is None
+                assert (
+                    service._training_jobs._latest_by_key.get((_TRAINING_JOB_TYPE, prior_job_id))
+                    is None
+                )
+
+        # 1. Start a training job that FAILS in the worker
+        assert_registry_free()
+        with patch("haute.modelling.TrainingJob", FailingJob):
+            resp1 = service.start(body)
+            assert resp1.status == "started"
+            service._join_preparation(resp1.job_id)
+            launched[-1].join_and_raise(timeout=10)
+
+        job1 = store.require_job(resp1.job_id)
+        assert job1["status"] == "error"
+        assert job1["terminal_reason"] == "error"
+        assert "artifact_handles" not in job1
+        assert owned_directories() == []
+        assert not (tmp_path / f"prep_{resp1.job_id}.parquet").exists()
+
+        # 2. Start the SAME node's training again with a healthy worker
+        assert_registry_free(resp1.job_id)
+        current_model_bytes = b"generation-1-model"
+        with patch("haute.modelling.TrainingJob", VersionedTrainingJob):
+            resp2 = service.start(body)
+            assert resp2.status == "started"
+            assert resp2.job_id != resp1.job_id
+            service._join_preparation(resp2.job_id)
+            launched[-1].join_and_raise(timeout=10)
+
+        job2 = store.require_job(resp2.job_id)
+        assert job2["status"] == "completed"
+        job2_output = published(job2)
+        assert (job2_output / "quoted.cbm").read_bytes() == b"generation-1-model"
+        assert (job2_output / "quoted.feature_contract.json").is_file()
+        assert (job2_output / "quoted.evaluation-plan.json").is_file()
+        assert (job2_output / "quoted.evaluation-results.json").is_file()
+        assert (job2_output / "quoted.evaluation-report.json").is_file()
+        assert owned_directories() == [job2_output.parent]
+        assert not (tmp_path / f"prep_{resp2.job_id}.parquet").exists()
+
+        # 3. Start a third run and CANCEL it before publication
+        assert_registry_free(resp2.job_id)
+        current_model_bytes = b"generation-2-model"
+        with patch("haute.modelling.TrainingJob", VersionedTrainingJob):
+            resp3 = service.start(body)
+            assert resp3.status == "started"
+            assert resp3.job_id not in (resp1.job_id, resp2.job_id)
+            cancel_job_id = resp3.job_id
+            service._join_preparation(resp3.job_id)
+            launched[-1].join_and_raise(timeout=10)
+
+        job3 = store.require_job(resp3.job_id)
+        assert job3["status"] == "cancelled"
+        # The cancelled run leaves nothing; the completed run's artifacts are intact.
+        assert "artifact_handles" not in job3
+        assert (job2_output / "quoted.cbm").read_bytes() == b"generation-1-model"
+        assert owned_directories() == [job2_output.parent]
+        assert not (tmp_path / f"prep_{resp3.job_id}.parquet").exists()
+
+        # 4. Start a fourth run after the cancellation: completes, publishes new generation
+        assert_registry_free(resp3.job_id)
+        cancel_job_id = None
+        current_model_bytes = b"generation-2-model"
+        with patch("haute.modelling.TrainingJob", VersionedTrainingJob):
+            resp4 = service.start(body)
+            assert resp4.status == "started"
+            assert resp4.job_id not in (resp1.job_id, resp2.job_id, resp3.job_id)
+            service._join_preparation(resp4.job_id)
+            launched[-1].join_and_raise(timeout=10)
+
+        job4 = store.require_job(resp4.job_id)
+        assert job4["status"] == "completed"
+        # The new generation is published in its own directory and supersedes
+        # the earlier run of the same node, whose files are released.
+        assert (published(job4) / "quoted.cbm").read_bytes() == b"generation-2-model"
+        assert owned_directories() == [published(job4).parent]
+        assert "training_artifacts" not in store.require_job(resp2.job_id)["artifact_handles"]
+        assert not any(output_dir.iterdir()), "canvas training never writes the node's output_dir"
+        assert not (tmp_path / f"prep_{resp4.job_id}.parquet").exists()
+        assert_registry_free(resp4.job_id)

@@ -46,42 +46,123 @@ function makeTuningReport(overrides: Partial<TuningReport> = {}): TuningReport {
 }
 
 describe("SummaryTab", () => {
+  it("offers no export action or model path: those live in the Export pane", () => {
+    render(<SummaryTab result={makeTrainResult({ model_path: "/models/test.cbm" })} />)
+
+    expect(screen.queryByText("Experiment tracking")).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /log run to mlflow/i })).not.toBeInTheDocument()
+    expect(screen.queryByText("Model path")).not.toBeInTheDocument()
+    expect(screen.queryByText("/models/test.cbm")).not.toBeInTheDocument()
+  })
+
   it("renders canonical model and evaluation information", () => {
     const result = makeTrainResult({
-      model_path: "/models/test.cbm",
       development_rows: 8000,
       final_test_rows: 2000,
     })
 
-    render(<SummaryTab result={result} jobId="j1" mlflowBackend={null} config={{}} />)
+    render(<SummaryTab result={result} />)
 
-    expect(screen.getByText("/models/test.cbm")).toBeInTheDocument()
-    expect(screen.getAllByText("Development rows").length).toBeGreaterThan(0)
+    expect(screen.getAllByText("Training rows").length).toBeGreaterThan(0)
     expect(screen.getByText("8,000")).toBeInTheDocument()
-    expect(screen.getByText("Final test rows")).toBeInTheDocument()
+    expect(screen.getByText("Test rows")).toBeInTheDocument()
     expect(screen.getAllByText("2,000").length).toBeGreaterThan(0)
-    expect(screen.getAllByText("Single validation").length).toBeGreaterThan(0)
+    expect(screen.getAllByText("Holdout validation").length).toBeGreaterThan(0)
   })
 
-  it("shows final-test metrics before development diagnostics", () => {
+  it("labels a saved holdout fit as validation diagnostics", () => {
+    const base = makeTrainResult()
+    const result = makeTrainResult({
+      diagnostics_set: "validation",
+      diagnostic_metrics: { rmse: 0.12 },
+      final_test_rows: 0,
+      final_test_metrics: {},
+      evaluation: {
+        ...base.evaluation!,
+        fit_count: 1,
+        final_test_rows: 0,
+        refit_on_development: false,
+      },
+    })
+    render(<SummaryTab result={result} />)
+    expect(screen.getByRole("region", { name: "Validation diagnostics" })).toBeInTheDocument()
+    expect(screen.getAllByText("6,000").length).toBeGreaterThan(0)
+  })
+
+  it("shows test metrics before training diagnostics", () => {
     const result = makeTrainResult({
       final_test_metrics: { gini: 0.4567 },
       diagnostic_metrics: { rmse: 0.1234 },
       diagnostics_set: "development",
     })
 
-    render(<SummaryTab result={result} jobId="j1" mlflowBackend={null} config={{}} />)
+    render(<SummaryTab result={result} />)
 
-    const finalLabel = screen.getByText("Final-test metrics")
-    const diagnosticLabel = screen.getByText("Development diagnostics")
+    const finalMetrics = screen.getByRole("region", { name: "Test metrics" })
+    const diagnostics = screen.getByRole("region", { name: "Training diagnostics" })
+    const finalLabel = within(finalMetrics).getByText("Test metrics")
+    const diagnosticLabel = within(diagnostics).getByText("Training diagnostics")
     expect(finalLabel.compareDocumentPosition(diagnosticLabel)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     )
-    expect(screen.getByText("0.4567")).toBeInTheDocument()
-    expect(screen.getByText("0.1234")).toBeInTheDocument()
+    expect(within(finalMetrics).getByText("0.4567")).toBeInTheDocument()
+    expect(within(finalMetrics).queryByText("0.1234")).not.toBeInTheDocument()
+    expect(within(diagnostics).getByText("0.1234")).toBeInTheDocument()
+    expect(within(diagnostics).queryByText("0.4567")).not.toBeInTheDocument()
   })
 
-  it("does not imply final-test performance when none was reserved", () => {
+  it("leads with the validation metrics when a holdout-validated refit has in-sample diagnostics", () => {
+    const base = makeTrainResult()
+    const result = makeTrainResult({
+      diagnostics_set: "development",
+      diagnostic_metrics: { gini: 0.8963, rmse: 0.0586 },
+      final_test_rows: 0,
+      final_test_metrics: {},
+      evaluation: { ...base.evaluation!, final_test_rows: 0 },
+    })
+
+    render(<SummaryTab result={result} />)
+
+    // The metric cards come first, in reading order.
+    const headings = screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent)
+    expect(headings.slice(0, 2)).toEqual(["Validation, 2,000 rows", "Training diagnostics"])
+    const validation = screen.getByRole("region", { name: "Validation, 2,000 rows" })
+    expect(within(validation).getByText("0.4500")).toBeInTheDocument()
+    expect(within(validation).getByText("0.1200")).toBeInTheDocument()
+    expect(within(validation).queryByText("0.8963")).not.toBeInTheDocument()
+  })
+
+  it("names the fold count of cross-validated metrics that lead", () => {
+    const base = makeTrainResult()
+    const summary = (mean: number) => ({ mean, stddev: 0.01, min: mean, max: mean, fit_count: 5, validation_rows: 8000 })
+    const result = makeTrainResult({
+      diagnostics_set: "development",
+      final_test_rows: 0,
+      final_test_metrics: {},
+      evaluation: {
+        ...base.evaluation!,
+        validation_method: "cross_validation",
+        validation_fit_count: 5,
+        final_test_rows: 0,
+        selection_metrics: { gini: summary(0.41), rmse: summary(0.15) },
+      },
+    })
+
+    render(<SummaryTab result={result} />)
+
+    const validation = screen.getByRole("region", { name: "Validation (5-fold mean), 8,000 rows" })
+    expect(within(validation).getByText("0.4100")).toBeInTheDocument()
+  })
+
+  it("keeps test metrics first, and no validation card, when a test set was reserved", () => {
+    render(<SummaryTab result={makeTrainResult({ diagnostics_set: "final_test" })} />)
+
+    const headings = screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent)
+    expect(headings.slice(0, 2)).toEqual(["Test metrics", "Test diagnostics"])
+    expect(screen.queryByRole("region", { name: /^Validation/ })).toBeNull()
+  })
+
+  it("does not imply test performance when none was reserved", () => {
     const result = makeTrainResult({
       final_test_metrics: {},
       final_test_rows: 0,
@@ -89,10 +170,37 @@ describe("SummaryTab", () => {
       diagnostics_set: "development",
     })
 
-    render(<SummaryTab result={result} jobId="j1" mlflowBackend={null} config={{}} />)
+    render(<SummaryTab result={result} />)
 
-    expect(screen.queryByText("Final-test metrics")).not.toBeInTheDocument()
-    expect(screen.getByText("Development diagnostics")).toBeInTheDocument()
+    expect(screen.queryByText("Test metrics")).not.toBeInTheDocument()
+    expect(screen.getByText("Training diagnostics")).toBeInTheDocument()
+    expect(screen.queryByText("Test rows")).not.toBeInTheDocument()
+  })
+
+  it("keeps a zero-valued cross-validated penalty and its fold settings available", () => {
+    const result = makeTrainResult({
+      glm_regularization: {
+        penalty: "lasso",
+        mode: "cross_validation",
+        alpha: 0,
+        l1_ratio: 1,
+        n_nonzero: 0,
+        cv_folds: 5,
+        cv_selection: "1se",
+        cv_seed: 42,
+      },
+    })
+
+    render(<SummaryTab result={result} />)
+
+    const regularization = screen.getByRole("region", { name: "Regularization" })
+    expect(within(regularization).getByText("0.00000")).toBeInTheDocument()
+    expect(within(regularization).getByText("Non-zero coefficients")).toBeInTheDocument()
+    expect(within(regularization).getByText("0")).toBeInTheDocument()
+    expect(within(regularization).getByText("5-fold cross-validation")).toBeInTheDocument()
+    expect(within(regularization).getByText("One standard error")).toBeInTheDocument()
+    expect(within(regularization).getByText("42")).toBeInTheDocument()
+    expect(within(regularization).queryByText("L1 ratio")).not.toBeInTheDocument()
   })
 
   it("shows warning and optional diagnostic failures", () => {
@@ -107,7 +215,7 @@ describe("SummaryTab", () => {
       ],
     })
 
-    render(<SummaryTab result={result} jobId="j1" mlflowBackend={null} config={{}} />)
+    render(<SummaryTab result={result} />)
 
     expect(screen.getByText("Downsampled to 50k rows")).toBeInTheDocument()
     const notice = screen.getByRole("alert", { name: "Diagnostic issues" })
@@ -122,7 +230,7 @@ describe("SummaryTab", () => {
       glm_fit_statistics: { deviance: 1234.56 },
     })
 
-    render(<SummaryTab result={result} jobId="j1" mlflowBackend={null} config={{}} />)
+    render(<SummaryTab result={result} />)
 
     expect(screen.getByText("Best iteration")).toBeInTheDocument()
     expect(screen.getByText("750")).toBeInTheDocument()
@@ -168,7 +276,7 @@ describe("SummaryTab", () => {
       },
     })
 
-    render(<SummaryTab result={result} jobId="j1" mlflowBackend={null} config={{}} />)
+    render(<SummaryTab result={result} />)
 
     expect(screen.getAllByText("2-fold cross-validation").length).toBeGreaterThan(0)
     const aggregate = screen.getByRole("table", { name: "Selection aggregate metrics" })
@@ -189,9 +297,6 @@ describe("SummaryTab", () => {
     render(
       <SummaryTab
         result={result}
-        jobId="j1"
-        mlflowBackend={null}
-        config={{}}
         onUseBestParameters={onUseBestParameters}
         elapsedSeconds={12.5}
       />,

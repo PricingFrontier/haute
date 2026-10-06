@@ -102,6 +102,30 @@ class TestEviction:
         assert cache.get("b") is None
         assert cache.get("c") == 3
 
+    def test_peek_reads_without_promoting(self) -> None:
+        cache: LRUCache[str, int] = LRUCache(max_size=2)
+        cache.put("a", 1)
+        cache.put("b", 2)
+        assert cache.peek("a") == 1  # a read that is not a use
+        assert cache.peek("missing") is None
+        cache.put("c", 3)  # "a" is still least recently used
+        assert cache.get("a") is None
+        assert cache.get("b") == 2
+
+    def test_peek_treats_an_expired_entry_as_a_miss_and_leaves_it(self, monkeypatch) -> None:
+        import haute._lru_cache as _mod
+
+        now = 1000.0
+        monkeypatch.setattr(_mod._time, "monotonic", lambda: now)
+        cache: LRUCache[str, int] = LRUCache(max_size=2, ttl=5.0)
+        cache.put("a", 1)
+        now = 1006.0
+        monkeypatch.setattr(_mod._time, "monotonic", lambda: now)
+        assert cache.peek("a") is None
+        assert len(cache) == 1
+        assert cache.get("a") is None
+        assert len(cache) == 0
+
     def test_put_overwrite_promotes_entry(self) -> None:
         cache: LRUCache[str, int] = LRUCache(max_size=2)
         cache.put("a", 1)
@@ -395,6 +419,47 @@ class TestDunderMethods:
         assert len(cache) == 0
         assert cache.get("a") is None
         assert cache.get("b") is None
+
+    def test_iter_is_a_key_snapshot_least_recent_first(self) -> None:
+        cache: LRUCache[str, int] = LRUCache(max_size=4)
+        cache.put("a", 1)
+        cache.put("b", 2)
+        cache.get("a")
+        keys = iter(cache)
+        cache.put("c", 3)
+        assert list(keys) == ["b", "a"]
+        assert list(cache) == ["b", "a", "c"]
+
+    def test_pop_removes_and_returns_the_value(self) -> None:
+        cache: LRUCache[str, int] = LRUCache(max_size=4, max_bytes=100, size_of=lambda v: v)
+        cache.put("a", 7)
+        cache.pin("a")
+        assert cache.pop("a") == 7
+        assert "a" not in cache
+        assert cache.pop("a") is None
+        assert cache.stats()["bytes"] == 0
+        assert cache.stats()["pinned_entries"] == 0
+        cache.put("b", 1)
+        cache.put("c", 1)
+        cache.put("d", 1)
+        cache.put("e", 1)
+        cache.put("f", 1)
+        assert "b" not in cache  # the popped pin no longer protects a slot
+
+    def test_pop_of_an_expired_entry_removes_it_and_returns_none(self, monkeypatch) -> None:
+        import haute._lru_cache as _mod
+
+        now = 1000.0
+        monkeypatch.setattr(_mod._time, "monotonic", lambda: now)
+        cache: LRUCache[str, int] = LRUCache(max_size=4, ttl=5.0)
+        cache.put("k", 1)
+        cache.put("fresh", 2)
+        now = 1006.0
+        monkeypatch.setattr(_mod._time, "monotonic", lambda: now)
+        cache.put("fresh", 2)
+        assert cache.pop("k") is None
+        assert "k" not in cache
+        assert cache.pop("fresh") == 2
 
 
 # ---------------------------------------------------------------------------

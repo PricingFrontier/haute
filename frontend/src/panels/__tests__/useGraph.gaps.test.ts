@@ -21,7 +21,7 @@ import { GraphContext, useGraph, type GraphContextValue } from "../useGraph"
 
 afterEach(cleanup)
 
-describe("useGraph() — outside a provider (fail loud)", () => {
+describe("useGraph() - outside a provider (fail loud)", () => {
   it("throws a clear error naming GraphProvider when no provider is mounted", () => {
     // React logs the thrown error via console.error during render; silence it
     // so the test output stays clean — the assertion proves the throw.
@@ -36,7 +36,7 @@ describe("useGraph() — outside a provider (fail loud)", () => {
   })
 })
 
-describe("useGraph() — inside a provider", () => {
+describe("useGraph() - inside a provider", () => {
   it("returns the exact context value supplied by the nearest provider", () => {
     const value: GraphContextValue = {
       allNodes: [],

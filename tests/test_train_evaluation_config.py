@@ -24,6 +24,9 @@ TUNING = {
     },
 }
 
+# Tree-model features are opt-in: a tree config names the columns it trains on.
+FEATURE_COLUMNS = ["age", "region"]
+
 
 def test_builder_threads_only_canonical_evaluation_and_tuning() -> None:
     kwargs = build_training_job_kwargs(
@@ -31,6 +34,7 @@ def test_builder_threads_only_canonical_evaluation_and_tuning() -> None:
             "target": "y",
             "algorithm": "catboost",
             "loss_function": "RMSE",
+            "feature_columns": FEATURE_COLUMNS,
             "params": {"iterations": 100, "metadata": {"owner": "pricing"}},
             "metrics": ["gini", "rmse"],
             "evaluation": EVALUATION,
@@ -47,7 +51,7 @@ def test_builder_threads_only_canonical_evaluation_and_tuning() -> None:
 def test_builder_rejects_missing_evaluation_and_legacy_public_fields() -> None:
     with pytest.raises(TrainingConfigError, match="evaluation"):
         build_training_job_kwargs(
-            {"target": "y", "loss_function": "RMSE"},
+            {"target": "y", "loss_function": "RMSE", "feature_columns": FEATURE_COLUMNS},
             data="data.parquet",
         )
     for legacy in (
@@ -61,11 +65,16 @@ def test_builder_rejects_missing_evaluation_and_legacy_public_fields() -> None:
             }
         },
     ):
-        with pytest.raises(TrainingConfigError, match="legacy"):
+        (removed,) = legacy
+        with pytest.raises(
+            TrainingConfigError,
+            match=f"field '{removed}' was removed; use the versioned 'evaluation' object",
+        ):
             build_training_job_kwargs(
                 {
                     "target": "y",
                     "loss_function": "RMSE",
+                    "feature_columns": FEATURE_COLUMNS,
                     "evaluation": EVALUATION,
                     **legacy,
                 },
@@ -79,6 +88,7 @@ def test_builder_rejects_tuning_without_validation_before_job_creation() -> None
             {
                 "target": "y",
                 "loss_function": "RMSE",
+                "feature_columns": FEATURE_COLUMNS,
                 "metrics": ["gini", "rmse"],
                 "params": {"iterations": 100},
                 "evaluation": {
@@ -94,13 +104,13 @@ def test_builder_rejects_tuning_without_validation_before_job_creation() -> None
 
 
 def test_builder_rejects_tuning_for_glm() -> None:
-    with pytest.raises(TrainingConfigError, match="CatBoost"):
+    with pytest.raises(TrainingConfigError, match="GLM does not support parameter tuning"):
         build_training_job_kwargs(
             {
                 "target": "y",
                 "algorithm": "glm",
                 "family": "poisson",
-                "all_factors": True,
+                "terms": {"age": {"type": "linear"}},
                 "metrics": ["gini", "poisson_deviance"],
                 "evaluation": EVALUATION,
                 "tuning": TUNING,

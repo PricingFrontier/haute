@@ -106,7 +106,7 @@ export function buildComboChartOptions({
         valueFormatter: (value: unknown) =>
           typeof value === "number" && Number.isFinite(value)
             ? formatChartValue(value, numberFormat)
-            : "—",
+            : "-",
       },
       connectNulls: false,
     }

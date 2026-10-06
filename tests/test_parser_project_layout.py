@@ -37,33 +37,30 @@ submodel = haute.Submodel(
     definition_id="scoring",
     input_ports=[],
     output_ports=[],
+    pipeline_dir="..",
 )
 
 
 @submodel.polars
-def score(raw_rows: pl.LazyFrame) -> pl.LazyFrame:
-    return raw_rows.with_columns(pl.lit(1).alias("score"))
+def score() -> pl.LazyFrame:
+    return pl.LazyFrame({"x": [1]})
 """,
     )
     _write(
         tmp_path / "rating" / "main.py",
         f"""\
-import polars as pl
 import haute
 
 pipeline = haute.Pipeline("nested_paths")
 
 
 @pipeline.data_input(config="{source_config}")
-def raw_rows() -> pl.LazyFrame:
-    return pl.scan_parquet("data/sample.parquet")
+def raw_rows(): ...
 
 
 pipeline.submodel(
     "modules/scoring.py",
-    definition_id="scoring",
-    instance_id="submodel__scoring",
-    alias="scoring",
+    "scoring",
 )
 """,
     )
@@ -72,7 +69,7 @@ pipeline.submodel(
 
     node_ids = {node.id for node in graph.nodes}
     assert "raw_rows" in node_ids
-    assert "submodel__scoring" in node_ids
+    assert "scoring" in node_ids
     assert graph.submodels is not None
     assert graph.submodels["scoring"].file == "modules/scoring.py"
 
@@ -97,6 +94,7 @@ submodel = haute.Submodel(
     definition_id="root_scoring",
     input_ports=[],
     output_ports=[],
+    pipeline_dir="..",
 )
 
 
@@ -108,7 +106,6 @@ def root_score(raw_rows: pl.LazyFrame) -> pl.LazyFrame:
     _write(
         tmp_path / "rating" / "modules" / "scoring.py",
         """\
-import polars as pl
 import haute
 
 submodel = haute.Submodel(
@@ -116,12 +113,12 @@ submodel = haute.Submodel(
     definition_id="rating_scoring",
     input_ports=[],
     output_ports=[],
+    pipeline_dir="..",
 )
 
 
 @submodel.data_input(config="config/data_input/rating_source.json")
-def rating_score() -> pl.LazyFrame:
-    return pl.scan_parquet("rating-data.parquet")
+def rating_score(): ...
 """,
     )
     write_data_input_config(
@@ -137,9 +134,7 @@ import haute
 pipeline = haute.Pipeline("nested_paths")
 pipeline.submodel(
     "modules/scoring.py",
-    definition_id="rating_scoring",
-    instance_id="submodel__rating_scoring",
-    alias="rating_scoring",
+    "rating_scoring",
 )
 """,
     )
@@ -164,9 +159,7 @@ import haute
 pipeline = haute.Pipeline("main")
 pipeline.submodel(
     "../outside.py",
-    definition_id="outside",
-    instance_id="submodel__outside",
-    alias="outside",
+    "outside",
 )
 """,
     )
@@ -190,19 +183,11 @@ pipeline = haute.Pipeline("main")
 pipeline.submodel(
     "shared.py",
     definition_id="definition_one",
-    instance_id="submodel__one",
-    alias="one",
-)
-pipeline.submodel(
-    "shared.py",
-    definition_id="definition_two",
-    instance_id="submodel__two",
-    alias="two",
 )
 """,
     )
 
-    with pytest.raises(ParseError, match="conflicting definition ids"):
+    with pytest.raises(ParseError, match="definition_id= is not accepted"):
         parse_pipeline_file(pipeline_file)
 
 
@@ -229,15 +214,11 @@ import haute
 pipeline = haute.Pipeline("main")
 pipeline.submodel(
     "first.py",
-    definition_id="shared",
-    instance_id="submodel__first",
-    alias="first",
+    "first",
 )
 pipeline.submodel(
     "second.py",
-    definition_id="shared",
-    instance_id="submodel__second",
-    alias="second",
+    "second",
 )
 """,
     )

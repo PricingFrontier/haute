@@ -5,29 +5,42 @@
 | File | Responsibility |
 | --- | --- |
 | `frontend/src/panels/NodePanel.tsx` | Composes the selected-node panel and memoised per-edge `InputSource` list. Its recovery inspector, generic tab strip, schema-warning banner, and editor body are pure local view components; scoped UI transitions are delegated to `useNodePanelSession`, and editor routing to `NodeConfigEditor`. |
-| `frontend/src/panels/useNodePanelSession.ts` | The single module authority for scoped panel UI: a node-keyed reducer owns the active generic tab and dismissed schema-warning identity, while its label-keyed rename session owns pending/error/request-generation state. Keyed scope replacement exposes defaults in the replacement render; asynchronous rename completions apply only while the initiating label session remains mounted and current. |
-| `frontend/src/panels/NodeConfigEditor.tsx` | Pure editor router over node type and supplied graph/config callbacks; owns no node-switch lifecycle state. |
-| `frontend/src/components/PipelineRepairDialog.tsx` | [frontend-graph-canvas](../frontend-graph-canvas/low-level.md)-owned remove-only dry-run and confirmation UI invoked from the unavailable-node inspector. |
-| `frontend/src/panels/PreviewPanelTabs.tsx` | Generic ARIA tab strip owned by [frontend-preview-explore](../frontend-preview-explore/low-level.md) and used by the node panel for the five modelling panes and active-training indicator. |
+| `frontend/src/panels/useRecordedNodeColumns.ts` | The node's own columns for the Polars panes' code columns: `_availableColumns` while `_columnsSource` is the active source, kept (with one identity for equal content) through a cleared stash while the node's config differs only in `code`, `steps`, `_steps_error` or `_steps_discarded` (other values compared by identity); any other config change or a source switch drops the kept columns, and going back to that source or those settings does not restore them. |
+| `frontend/src/panels/useNodePanelSession.ts` | The single module authority for scoped panel UI: a node-keyed reducer owns the active generic tab and dismissed schema-warning identity, while its label-keyed rename session owns pending/error/request-generation state. Keyed scope replacement exposes defaults in the replacement render; asynchronous rename completions apply only while the initiating label session remains mounted and current. A label failing the shared name-shape check (`nodeNameIssue`) is refused inline without a request; a valid one is sent trimmed. |
+| `frontend/src/panels/NodeConfigEditor.tsx` | The one per-type editor dispatch: a pure router over node type and supplied graph/config callbacks that owns no node-switch lifecycle state. Its `readOnly` mode serves the comparison view: node types without a read-only editor (Explore, Edge Join, submodel port, unknown) render a plain config dump, and the Polars editor gets no replace-config callback, so its step/code switch stays disabled. |
+| `frontend/src/components/PipelineRepairDialog.tsx` | [frontend-graph-canvas](../frontend-graph-canvas/low-level.md)-owned confirmation UI for the remove, update, reset and recover actions, invoked from the unavailable-node inspector. |
+| `frontend/src/panels/PreviewPanelTabs.tsx` | Generic ARIA tab strip owned by [frontend-preview-explore](../frontend-preview-explore/low-level.md) and used by the node panel for algorithm-specific modelling panes and the active-training indicator. |
 | `frontend/src/panels/NodePalette.tsx` | Renders draggable node templates. |
 | `frontend/src/panels/LazyNodeEditors.tsx` | Central dynamic-import registry and loading boundaries for editor bodies. |
-| `frontend/src/panels/PanelShell.tsx`, `frontend/src/panels/PanelHeader.tsx` | Right-panel shell/header used by node, imports and utility authoring views. A shell with no stored width chooses 50% of the available space when it mounts and keeps that established width across unrelated rerenders and viewport changes; an explicit drag updates the shared stored width. |
-| `frontend/src/components/ReadOnlyNodeConfig.tsx`, `frontend/src/components/FramesTable.tsx`, `frontend/src/components/KeyPickerModal.tsx` | Inert configuration, API-frame rows and reusable API-input key picker. |
+| `frontend/src/panels/PanelShell.tsx`, `frontend/src/panels/PanelHeader.tsx` | Right-panel shell/header used by node, global-constants and utility authoring views. A shell with no stored width chooses 50% of the available space when it mounts and keeps that established width across unrelated rerenders and viewport changes; an explicit drag updates the shared stored width. |
+| `frontend/src/components/ReadOnlyNodeConfig.tsx`, `frontend/src/components/FramesTable.tsx`, `frontend/src/components/KeyPickerModal.tsx` | Inert configuration (`NodeConfigEditor` in read-only mode with no-op callbacks, empty graph context and default panes), API-frame rows and reusable API-input key picker. |
 | `frontend/src/panels/editors/index.ts` | Public editor exports. |
 | `frontend/src/panels/editors/_shared.tsx` | Shared editor types, styles, file browser (nullable directory size, numeric file-size rendering), schema preview and the input-source bar (chips keyed by edge id, showing each edge's input name — the code argument — with the source node named in the tooltip). |
-| `frontend/src/components/ColumnTable.tsx`, `frontend/src/components/CacheFetchButton.tsx` | Reusable column-selection table and API-input cache action/status control. |
+| `frontend/src/components/ColumnTable.tsx` | Reusable column-selection table. |
 | `frontend/src/utils/dataInputMode.ts` | Shared `dataInputIsDirect` derivation mirroring the backend's `data_input_is_direct`; drives the Data Input editor's cache surface and [frontend-graph-canvas](../frontend-graph-canvas/low-level.md)'s `ensureInputSnapshots` orchestration. |
-| `frontend/src/panels/editors/CodeEditor.tsx`, `frontend/src/panels/editors/CodeMirrorEditor.tsx`, `frontend/src/panels/editors/shared/PolarsCodePanel.tsx`, `frontend/src/panels/editors/shared/PathPickerField.tsx` | Code-editor wrappers, Polars-specific panel, and the shared selected-path picker. |
-| `frontend/src/panels/editors/ConstantEditor.tsx`, `frontend/src/panels/editors/TransformEditor.tsx`, `frontend/src/panels/editors/EdgeJoinEditor.tsx`, `frontend/src/panels/editors/LiveSwitchEditor.tsx`, `frontend/src/panels/editors/ScenarioExpanderEditor.tsx` | Editors for scalar, transform, join, conditional-switch and scenario nodes. `EdgeJoinEditor` exposes fixed canvas-derived base/join roles, atomic swap, the seven supported join modes, mutually exclusive same-name/asymmetric key forms, and advanced Polars options. |
-| `frontend/src/panels/editors/ExternalFileEditor.tsx`, `frontend/src/panels/editors/DataInputEditor.tsx`, `frontend/src/panels/editors/DataOutputEditor.tsx` | External-object, grouped tabular input, and grouped tabular output configuration. |
+| `frontend/src/panels/editors/CodeEditor.tsx`, `frontend/src/panels/editors/CodeMirrorEditor.tsx`, `frontend/src/panels/editors/shared/PolarsCodePanel.tsx`, `frontend/src/panels/editors/shared/SteppedCodePane.tsx`, `frontend/src/panels/editors/shared/PathPickerField.tsx` | Code-editor wrappers, Polars-specific panel, the shared stepped-code pane (step builder while `config.steps` is a list, otherwise the code box with the discard notice; takes the start mode and the eligible step input names), and the shared selected-path picker. |
+| `frontend/src/panels/editors/ConstantEditor.tsx`, `frontend/src/panels/editors/constantNames.ts`, `frontend/src/panels/editors/TransformEditor.tsx`, `frontend/src/panels/editors/EdgeJoinEditor.tsx`, `frontend/src/panels/editors/LiveSwitchEditor.tsx`, `frontend/src/panels/editors/ScenarioExpanderEditor.tsx` | Editors for scalar, transform, join, conditional-switch and scenario nodes. `ConstantEditor` edits each name through `ValidatedTextField`, refusing a name another row uses (`duplicateConstantNames`, in `constantNames.ts`, marks every row of a repeated name) and adding `nextConstantName`, the first free `constant_<n>`. `TransformEditor` is the `SteppedCodePane` in `input` mode with the transform's code hint and starter code. `EdgeJoinEditor` exposes fixed canvas-derived base/join roles, atomic swap, the seven supported join modes, mutually exclusive same-name/asymmetric key forms, and advanced Polars options. |
+| `frontend/src/panels/editors/polarsSteps/types.ts`, `frontend/src/panels/editors/polarsSteps/catalogue.ts`, `frontend/src/panels/editors/polarsSteps/summary.ts`, `frontend/src/panels/editors/polarsSteps/derivedColumns.ts` | Browser mirror of the low-code step schema (`readSteps`); the step catalogue (kinds, closed vocabularies mirrored from `haute._polars_steps` and held equal by `tests/test_polars_steps_catalogue.py`, default steps, the persisted-step shape check, `stepDisplayLabel`, variables in scope); `summaryParts`/`summarizeStep`, the card summaries as parts (column chips, coloured values, muted operator words, placeholders and prompts) and as plain text, printing values and formulas through `formula.ts`; and `columnsAtEachStep`/`columnsBeforeStep`, the start input's columns carried through every earlier step with each column's type where known and whether the list is complete (every column that can exist) and exact (nothing else); after a `free_code` step the list is the columns the free-code columns endpoint resolved for that step (`ColumnSource.freeCode`, keyed by step id): complete and exact in `input` mode, suggestions only in `frame` mode, and empty and incomplete while unresolved; `joinColumns` (Polars' join output names, pinned by the shared `__tests__/fixtures/joinOutputs.json` that `tests/test_polars_steps_catalogue.py` checks against Polars), `columnsReadBy`/`unknownColumnsOf` for a collapsed card's unknown names, and `columnChange` for its column-change note. |
+| `frontend/src/panels/editors/polarsSteps/stepSchema.ts`, `frontend/src/panels/editors/polarsSteps/stepIcons.ts`, `frontend/src/panels/editors/polarsSteps/codeHighlight.ts` | `StepSchemaContext`: what a step's column fields know about the data there (each name's type or `new`, whether a name exists when the columns are complete, the closest known name), provided once per form and overridden by fields that list something else; the icon of each step kind, shared by the `Add step` menu and the card header; and `highlightPython`, the generated-code panel's static highlighting with code mode's parser and colour tokens. |
+| `frontend/src/panels/editors/polarsSteps/completion.ts`, `frontend/src/panels/editors/polarsSteps/useCompletionList.ts` | `completionMatches`: the case-insensitive prefix matcher behind every column-name completion list in the step editor (given order kept, exact match and chips already present left out, capped at eight; every name for an empty prefix); and `useCompletionList`, the one keyboard and ARIA state machine shared by the column boxes and the formula box over `Completion` entries (value, label, note, mark): focus opens the list with nothing active, typing makes the first entry active unless the text is already an exact name, Up/Down move, Tab and Enter accept only an active entry (otherwise they are left to the box), Escape closes. |
+| `frontend/src/panels/editors/constantCompletion.ts` | Completion of global-constant names after `global_constants.` in code editors: `constantCompletions` (each valid constant with its type and its value for the active source, or `missing`) and `constantCompletionSource`; the CodeMirror editor adds it beside the column completion. |
+| `frontend/src/panels/editors/polarsSteps/useFittingConstants.ts` | `useFittingConstants(types)`, the valid constant names whose type a slot takes, from the graph store, and `ALL_CONSTANT_TYPES`. |
+| `frontend/src/panels/editors/polarsSteps/formula.ts` | Formula text for the step builder: `parseFormula` (tokens, Python precedence with right-associative `**`, brackets, unary minus, columns and backticked names, earlier variables, quoted text, `true`/`false`/`null`, `date('...')`, catalogue functions in any case with typed plain-value arguments, a global constant by its bare name or as `global_constants.<name>`, as an operand or argument (the form passes only the constants that share no column's name at the step, so a bare name is an earlier variable, then a column, then a constant, and a constant is printed bare where that reads back as it), the kept text spelling them as the catalogue does) into the nested expression schema with plain-English `FormulaError` messages carrying the position where reading stopped, `formulaText` back to text with brackets only where re-parsing needs them, or null for expressions text cannot express, and `callAtCaret`, the catalogue call and argument the caret is in. |
+| `frontend/src/panels/editors/polarsSteps/useRenderedSteps.ts` | Debounced, revision-tagged call to the step render endpoint with the surface's start mode, eligible input names and the global constants the steps read (so the render checks their Constant operands): stale responses are ignored, the last good code survives a pending render, and a successful render for the current revision reports its code to the caller at once. Only then, and only when the list has a free-code step, it asks the free-code columns endpoint (`resolveFreeCodeColumns`) for the same steps with the node id and the columns the editor knows (each input's, and the frame's in `frame` mode), under the same revision tag and abort signal, so the code never waits on a snippet; a list without free code clears the resolved columns without a request, and a failed columns request gives each free-code step the failure as its reason. The columns resolved after each free-code step (`freeCode`, by the id of the step the request carried at that index, columns or the reason they are unknown) stay in use, through pending and failed renders alike, for as long as the steps up to that free-code step, the known columns, the active source and the values of the constants the steps read are the ones that request carried (the columns request carries those constants, their load error and the source); the editor passes the resolved ones into the column model and shows a reason as a muted note on the collapsed free-code card. The node id comes from the node panel through a required node-id prop on the Transform and Explore code editors, the stepped-code pane and the step builder. |
+| `frontend/src/panels/editors/polarsSteps/PolarsStepsEditor.tsx`, `frontend/src/panels/editors/polarsSteps/StepCard.tsx`, `frontend/src/panels/editors/polarsSteps/AddStepMenu.tsx`, `frontend/src/panels/editors/polarsSteps/GeneratedCodePanel.tsx` | The step builder: start card (the input selector in `input` mode; none in `frame` mode), numbered accordion step cards (header with chevron, muted number, kind icon and label, the summary parts and column-change note under the label, three fixed action slots, Alt+arrow moves, notes for unknown columns and what a step needs, validation or execution badges), the key boundary that keeps the canvas's graph shortcuts out of the editor, focus moving into a new card's first field, the searchable grouped `Add step` popover (join and concat withheld while no input name is eligible), empty and zero-input states, the locked, highlighted, line-numbered generated-code panel (lines linked to cards both ways, fade after 400 ms of pending, stale code dimmed with a neutral note of what is unfinished, "Go to error" for a render or run failure on a step), and the confirmed one-way switch to code. The editor passes each input's columns (carried on `InputSource.columns` from the node panel) into the column model. |
+| `frontend/src/panels/editors/polarsSteps/fields.tsx`, `frontend/src/panels/editors/polarsSteps/forms.tsx` | Shared step-form controls (column combobox and chip list, whose drafts follow outside changes without remounting so focus survives a commit, marking a name the step does not have with the closest one offered; the completion list with visible active row, typed prefix and type notes; the per-field constrained operand control as one input with a kind marker, offering Constant when the slot takes constants and a fitting one exists (or the value already reads one) and listing only the fitting constants; `ArgumentField`, a typed function argument's plain editor or a constant of its type; membership literal list; condition rows whose fresh value follows the column's type, under a "Keep rows where" or "When" lead; `Field`/`FieldLabel` with sentence-case labels and notes, `Sentence`/`Words`, `MoreOptions`/`DisclosureButton`; `RowList`, `RowGroup`, `AddRow`, `RowRemove`, `DirectionSelect` and `QuantileField`, the one layout for every repeated row) and one form per step kind dispatched by `StepForm`, which provides the step's `StepSchemaContext`: sentence forms, the aggregation row and its self-naming, the join form's key pairs and per-input suggestions, and the formula box with function completion, argument tip, error position and unknown-name offers. |
+| `frontend/e2e/polars-steps.spec.ts` | Transform step builder browser journey: a new Transform asks for an input, connecting one seeds the start step, a Limit step added from the chooser re-renders the generated code, the preview runs it, Save writes the `config/polars/<name>.json` sidecar and the rendered body, and reopening restores the step cards. |
+| `frontend/src/panels/editors/ExternalFileEditor.tsx`, `frontend/src/panels/editors/DataInputEditor.tsx`, `frontend/src/panels/editors/DataOutputEditor.tsx` | External-object, grouped tabular input, and grouped tabular output configuration. Load File's **FILE TYPE** offers the loaders `src/haute/_io.py` has (Pickle, JSON, Joblib), and its path picker lists exactly their extensions (`.pkl`, `.pickle`, `.json`, `.joblib`); model files are scored through Model Scoring. |
+| `frontend/src/panels/editors/ExploreCodeEditor.tsx` | Explore's "Transform" pane: the shared stepped-code pane in `frame` mode with no eligible input names (codegen binds its single input as `df`). |
 | `frontend/src/stores/useOutputWriteStore.ts` | Per-node output-write request identity, pending/terminal lifecycle, and overwrite-confirmation state retained across editor remounts. |
-| `frontend/src/panels/editors/_IoFormatEditor.tsx`, `frontend/src/panels/editors/_ioFormats.ts`, `frontend/src/panels/editors/_DatabricksSelector.tsx`, `frontend/src/panels/editors/_InputSnapshotCacheButton.tsx` | Registry-driven IO arguments, mount-refetched capabilities with concurrent-request coalescing, dedicated Databricks browsing, and the shared-button input-snapshot lifecycle. |
-| `frontend/src/panels/editors/ApiInputEditor.tsx`, `frontend/src/panels/editors/apiInputSchema.ts`, `frontend/src/panels/editors/apiInputInherit.ts`, `frontend/src/panels/editors/FrameTableActions.tsx` | API-input frame/schema editing, JSON/JSONL/NDJSON/XML preview selection and cache action, persisted/inferred schema conversion, reconciliation and row actions. |
+| `frontend/src/panels/editors/_ioProvider.ts`, `frontend/src/panels/editors/_IoProviderPicker.tsx` | What the Data Input and Data Output editors share: the provider block (capability-load error, unknown stored provider, provider picker), the branch config a provider or format change starts from (common keys kept, required provider fields added, records starting empty on the input side), and provider-field readiness (a database needs exactly one of a connection or URI, plus its query or table). |
+| `frontend/src/panels/editors/_IoFormatEditor.tsx`, `frontend/src/panels/editors/_ioFormats.ts`, `frontend/src/panels/editors/_DatabricksSelector.tsx` | Registry-driven IO arguments, mount-refetched capabilities with concurrent-request coalescing, and dedicated Databricks browsing. |
+| `frontend/src/panels/editors/ApiInputEditor.tsx`, `frontend/src/panels/editors/apiInputSchema.ts`, `frontend/src/panels/editors/apiInputInherit.ts`, `frontend/src/panels/editors/FrameTableActions.tsx` | API-input frame/schema editing, JSON/JSONL/NDJSON/XML preview selection and the shared input-snapshot control for its tables, persisted/inferred schema conversion, reconciliation and row actions. |
 | `frontend/src/panels/editors/OutputEditor.tsx`, `frontend/src/panels/editors/outputMappingSchema.ts`, `frontend/src/panels/editors/outputPathTools.ts`, `frontend/src/panels/editors/jsonpath.ts`, `frontend/src/panels/editors/JsonPreview.tsx` | Output mappings, JSON-path validation/rewrites and preview. |
 | `frontend/src/panels/editors/ColumnsTab.tsx` | Generic column selection and rename configuration. |
 | `frontend/src/panels/editors/ExploreCodeEditor.tsx`, `frontend/src/panels/editors/ExploreOverviewConfig.tsx`, `frontend/src/panels/editors/ExplorePivotsConfig.tsx`, `frontend/src/panels/editors/ExploreChartsConfig.tsx` | Explore-code, overview-card, pivot-card, and chart-card configuration. The Pivots and Charts editors own their list/configure navigation; chart parsing and identity allocation are also shared with the visualisation pane. |
 | `frontend/src/panels/editors/explorePivots/placements.ts` | Pure pivot placement domain helpers shared by the pivot editor and its subviews: zone types and labels, placement add/remove/append transforms, sort-ordering normalisation, duplicate-field checks, and typed member identity. |
-| `frontend/src/panels/editors/explorePivots/FilterMemberPicker.tsx` | Filter-member picker subview: immediate initial load, debounced non-empty search, request aborting, and Explore-cache-identity gating of displayed members. |
+| `frontend/src/panels/editors/explorePivots/FilterMemberPicker.tsx` | Filter-member picker subview: immediate initial load, debounced non-empty search, request aborting, and data-identity gating of displayed members. |
 | `frontend/src/panels/editors/explorePivots/ZoneSection.tsx` | One drag-and-drop area-grid zone: placement chips, keyboard repositioning, aggregation selection, remove actions, and the nested filter-member picker. |
 | `frontend/src/panels/editors/explorePivots/PivotFieldWell.tsx`, `frontend/src/panels/editors/explorePivots/PivotFormulaSection.tsx`, `frontend/src/panels/editors/explorePivots/PivotFormattingSection.tsx` | Pivot field-authoring surface composed by the Pivots editor: field search, dtype-labelled available-fields list with per-zone Add actions, the four-zone `ZoneSection` grid, pointer/keyboard placement state, formula authoring, and the presentation-only decimal-place controls for displayed placements. Props include the pivot, `persistPivot`, upstream columns, filter-member loading, and the current config hash. |
 | `frontend/src/panels/editors/ExploreToggleCard.tsx` | Shared full-body Explore checkbox card used by Overview, Pivot, and Chart configuration, including enabled/disabled presentation and accessible label/description wiring. |
@@ -35,19 +48,23 @@
 | `frontend/src/panels/explore/chartConfig.ts` | [frontend-preview-explore](../frontend-preview-explore/low-level.md)-owned chart version-1 validation and identity helpers consumed by the chart editor. |
 | `frontend/src/panels/explore/pivotConfig.ts` | [frontend-preview-explore](../frontend-preview-explore/low-level.md)-owned pivot validation and identity helpers consumed by the pivot editor, including allocation of the first unused pivot id. |
 | `frontend/src/panels/editors/MlflowModelPicker.tsx`, `frontend/src/panels/editors/ModelScoreEditor.tsx`, `frontend/src/panels/editors/OptimiserApplyEditor.tsx`, `frontend/src/panels/editors/SubmodelEditor.tsx` | MLflow/model-score, optimiser-apply and submodel editors. |
-| `frontend/src/panels/editors/BandingEditor.tsx` | Composes banding mode, rules, histogram and generation controls. |
+| `frontend/src/panels/editors/BandingEditor.tsx` | Composes banding mode, rules, histogram and generation controls; its Output Column is a `ValidatedTextField` refusing a name `bandingOutputCollisions` (`bandingUtils.ts`, the backend's active-factor rule) reports for the edited factor, and the factor list lists that collision as an issue on both factors; and shows numbers only from the whole dataset its node's shared data point caches; until they are there its label says why (counting, caching, not cached or out of date with Refresh, or the failure) and no preview-derived count, total or histogram appears. |
+| `frontend/src/panels/editors/shared/useWholeDataAnswer.ts` | The one whole-dataset request hook for editors that otherwise work from preview rows: it asks only while the node's shared data point is current, 250 ms after the last change to the question, aborts the request it supersedes, publishes an answer only for the identity and document it was asked under, and reports the shared cache, whether the answer describes all rows, a sample, or a stale point, and `cacheRequired` when the server answers that the data is not cached for the question although the local point looks current. That answer also raises the node-data epoch, so every consumer reads its point again and this one's availability, and what its node's Refresh does, follow the server's. An editor may name the question's `subject`, the part its question-independent facts depend on: while a newer question with the same subject about the same current point is outstanding, the last answer stays published with `answerIsCurrent` false instead of the editor dropping back to the sample. |
+| `frontend/src/panels/editors/banding/useBandingStats.ts` | Asks `/api/banding/stats`, through `useWholeDataAnswer`, about the factor being edited; renaming the output column does not ask again. Its subject is the column, banding type and histogram size, so a rule edit keeps the last answer's total, values, histogram and range on screen while the new counts are asked; the editor then takes each categorical rule's count from the whole dataset's value counts (last rule naming a value wins, as execution remaps; a value missing from a truncated list is pending) and shows every other count it cannot settle yet as pending (`…`), never the sample's. It passes `cacheRequired` through, which the editor shows as needing a Refresh rather than as counting. |
 | `frontend/src/stores/useNodeResultsStore.ts`, `frontend/src/stores/useUIStore.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned active-job state and per-node pane memory consumed by node-panel modelling chrome. |
 | `frontend/src/utils/trainingObjective.ts` | Click-time training issue aggregation owned and consumed by [frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/low-level.md). |
-| `frontend/src/panels/editors/banding/index.ts`, `frontend/src/panels/editors/banding/bandingUtils.ts` | Banding public barrel and rule/level utility functions. |
+| `frontend/src/panels/editors/banding/index.ts`, `frontend/src/panels/editors/banding/bandingUtils.ts` | Banding public barrel and rule/level utility functions, including the date helpers that read a boundary's kind (number, date, date and time) as the backend's boundary parser does and turn dates and preview values into wall-clock day numbers (days since 1970-01-01, the unit of the banding statistics) for ordering and drawing (and preview values, for Generate's starting range), and the calendar-step generator and its read-back for Generate on a date column. |
 | `frontend/src/panels/editors/banding/BreakpointGrid.tsx`, `frontend/src/panels/editors/banding/BandingRulesGrid.tsx`, `frontend/src/panels/editors/banding/CategoricalValuePicker.tsx` | Numeric breakpoints, editable rules and categorical selection. |
-| `frontend/src/panels/editors/banding/BandingHistogram.tsx`, `frontend/src/panels/editors/banding/GenerateBandsDialog.tsx` | Histogram context and generated-band dialog. |
-| `frontend/src/panels/editors/RatingStepEditor.tsx` | Rating-table and combined-output orchestration. |
+| `frontend/src/panels/editors/banding/BandingHistogram.tsx`, `frontend/src/panels/editors/banding/GenerateBandsDialog.tsx` | Histogram context and generated-band dialog. The histogram draws in pixels on the shared `ResponsiveChart`/`ChartSvg` (frontend-modelling-optimiser-ui), edge to edge over exactly the binned data (no padding, so band boundaries read against the data's own ends), with compact end labels from `formatChartNumber`; a constant column is one centred bar. |
+| `frontend/src/panels/editors/RatingStepEditor.tsx` | Rating-table and combined-output orchestration, and whose levels its tables offer: the whole dataset when the node's shared data point is cached, the preview sample otherwise. Dataset levels are appended to what is already shown, the three-factor slice is held by level, and a table past `MAX_EDITABLE_TABLE_CELLS` is neither drawn nor rebuilt. |
+| `frontend/src/panels/editors/rating/useRatingLevels.ts` | Asks `/api/rating/levels`, through `useWholeDataAnswer`, about the raw factor columns the tables rate on (each once, in a stable order) and returns their levels by column. |
 | `frontend/src/panels/editors/rating/index.ts`, `frontend/src/panels/editors/rating/ratingTableUtils.ts`, `frontend/src/panels/editors/rating/cellStyles.ts` | Rating barrel, normalisation/levels/statistics/colours and cell styles. |
 | `frontend/src/panels/editors/rating/OneWayEditor.tsx`, `frontend/src/panels/editors/rating/TwoWayGrid.tsx`, `frontend/src/panels/editors/rating/ControlledNumberCell.tsx`, `frontend/src/panels/editors/rating/StatsFooter.tsx` | One-/two-way editing, commit-on-blur number input and table statistics. |
+| `frontend/src/panels/editors/shared/SearchableItemList.tsx`, `frontend/src/panels/editors/shared/useSearchableList.ts` | The searchable item list shared by Rating Step's tables and Banding's factors. `useSearchableList` owns the search text and the All/Issues filter, matches each item's name and extra search terms case-insensitively, and moves the selection to the first visible item when the selected one is filtered out, while an item that had issues when it was selected stays listed under the Issues filter after an edit fixes them, until another item is selected or a filter is chosen (even the current one); `SearchableItemList` renders the search box, filter, Add button and a scrollable group of rows (health dot, name, badges, and a bin remove control shown only when the editor passes `onRemove`), with Up/Down moving the selection and, when the editor passes `onMove`, drag-and-drop and Alt+Up/Down reordering. Each editor supplies its own labels, so Rating keeps "Rating tables" / "Search rating tables" and Banding uses "Banding columns" / "Search banding columns". |
 | `frontend/src/panels/editors/shared/tableClipboard.ts` | Clipboard parsing/writing and TSV/CSV download helpers shared by editable grids. |
 | `frontend/src/utils/buildGraph.ts` | Cross-component dependency owned by [frontend-graph-canvas](../frontend-graph-canvas/low-level.md); Data Output consumes the canonical graph payload and request-identity projection. |
 | `frontend/src/utils/configField.ts`, `frontend/src/utils/banding.ts` | Typed config readers and Banding classification owned by [frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/low-level.md) and consumed by node editors. |
-| `frontend/src/components/form/index.ts`, `frontend/src/components/form/CommittedTextField.tsx`, `frontend/src/components/form/ConfigCheckbox.tsx`, `frontend/src/components/form/EditorLabel.tsx` | Form barrel, committed text/area drafts, config checkboxes, and accessible editor labels owned by [frontend-shared](../frontend-shared/low-level.md). |
+| `frontend/src/components/form/index.ts`, `frontend/src/components/form/CommittedTextField.tsx`, `frontend/src/components/form/ConfigCheckbox.tsx`, `frontend/src/components/form/EditorLabel.tsx`, `frontend/src/components/form/ConfigSection.tsx` | Form barrel, committed text/area drafts, config checkboxes, accessible editor labels, and the open heading-and-fields section layout shared by configuration panes, owned by [frontend-shared](../frontend-shared/low-level.md). |
 
 ## Key types and data structures
 
@@ -64,14 +81,13 @@
   carries one identity: `name` is the input's single name — chip text, code argument, and the
   key persisted contracts use (the live-switch `input_scenario_map`, the instance
   `inputMapping`) — derived per edge by `edgeInputName` (an API-input edge's frame label
-  verbatim; a submodel `out__` edge's child sanitised label; else the sanitised source-node
+  verbatim; a submodel `out__` edge's input name is the sanitised public output port name, resolved by the backend identity endpoint; else the sanitised source-node
   label). `sourceLabel` is provenance metadata used only to explain an unresolved source;
   resolved tooltips, removal titles, and selectors identify the edge by `name`, never by the
   source-node label or id;
   `edgeId` is the stable chip key and removal target; `frameUnresolved` marks an API-input edge
   whose frame could not be resolved, rendering the chip in its warning state. `name` is
-  required, so every fixture constructing an `InputSource` fails to compile until it declares
-  one — the former `varName`/`displayLabel` pair no longer exists.
+  required on every `InputSource`.
   `OnReplaceConfig` accepts a complete next config and returns the same commit result; provider
   switches use it to remove inactive branch keys in one undoable mutation.
 - API schemas have separate persisted read/write and inferred/reconciled representations in
@@ -126,11 +142,73 @@
    user changes, normalise only at their documented conversion/update boundary, then invoke the
    panel callback. Rating factor changes filter `factorDtypes` atomically with `factors` and
    `entries`; removing a factor removes its descriptor, while new descriptors are never invented.
-   Clipboard/drag/dialog operations remain local until that callback.
+   Clipboard/drag/dialog operations remain local until that callback. `BandingRulesGrid` renders
+   categorical rules (value and label cells; numeric breakpoints are `BreakpointGrid`'s) and derives
+   stable local keys for legacy rules without `_id` when it opens or rerenders, but this view-only
+   work never calls `onUpdateFactor`; generated keys enter persisted rules only with a subsequent
+   user edit, paste, or delete operation. Generated keys are remembered per rule record, so a
+   parent that recreates the rules array without an edit keeps row identity and the user's focus.
 5. Format, file, catalog and MLflow controls issue their own API calls. I/O capabilities are
    fetched for each later editor mount, while consumers mounting during one pending fetch share
    that request. Request state is local to the editor; the editor never assumes an out-of-order response still describes a
    changed node unless its own effect/request guards accept it.
+   `ModelScoreEditor` and `OptimiserApplyEditor` (for their MLflow source
+   types) mount the shared `MlflowDestinationSelector`
+   ([frontend-shared](../frontend-shared/low-level.md)), `OptimiserApplyEditor`
+   above its source picker and `ModelScoreEditor` directly below its **MODEL
+   SOURCE** toggle, bound to the node's `mlflow_destination` (absent = the local
+   folder; Local folder is stored by removing the key); there is
+   no status badge. Choosing a different destination clears the picked run
+   or model (`run_id`, `run_name`, `experiment_id`, `experiment_name`,
+   `artifact_path`, `registered_model`, `version` reset to `"latest"`, `alias`
+   removed, and for optimiser apply `optimiser_mode`) in the same config update and shows
+   an inline note that identifiers are not portable across backends until
+   the next pick. `ModelScoreEditor` shows no description under its source
+   toggle; the button labels name the sources. The shared pickers render honest
+   empty states instead of bare dropdowns: no registered models → "haute logs
+   training runs; your promotion process registers them"; an experiment with
+   no matching finished runs → "no finished runs with a model artifact in
+   this experiment yet". Discovery-error details arrive pre-categorised
+   from the server and are shown verbatim. `ModelScoreEditor` reads the task a
+   training run recorded (`recordedModelTask` in `utils/mlflowModelMetadata.ts`:
+   the `task` param when it is `regression` or `classification`) from the
+   selected run, or from the loaded version the stored version choice resolves
+   to (`resolveLoadedVersion`: an alias is the version whose `aliases` include it,
+   `latest` is the newest version). `RegisteredModelPicker`'s Version select
+   lists `latest`, then each loaded alias as `@<alias> → v<version>`, then the
+   versions (a stored alias not among the loaded ones still shows as
+   `@<alias>`); choosing an alias writes `{alias, version: undefined}` and
+   choosing a version or `latest` writes `{version, alias: undefined}`
+   (`registeredSelectionUpdate`), and choosing another model resets
+   `version` to `latest` and removes `alias`. Picking a run,
+   or a version through `RegisteredModelPicker`'s `onVersionSelected`, writes
+   that task in the same config update. While the selection has a recorded
+   task, Task renders read-only ("Task recorded by the training run.") and a
+   stored task that differs shows an alert naming both with a "Use <task>"
+   button that writes the recorded one; a model without a recorded task (or
+   whose run or versions are not loaded) keeps the explicit Task select.
+   **MODEL SOURCE** offers **Experiment Run**, **Registered Model** and **Model
+   file**. **Model file** hides the destination selector (a file source never
+   reads MLflow) and shows a `PathPickerField` whose browser lists only the
+   registered model-file suffixes (`modelFileSuffixes` from the generated
+   `modelFamilies.json`); choosing a file commits `{sourceType: "file",
+   model_path}`. While a path is set, the editor calls `GET /api/model-file`
+   (`inspectModelFile`) and shows the family, features, offset (column and
+   link, or "none") and the contract the file scores under, or the server's
+   refusal verbatim. A response for a path the node no longer holds is
+   discarded. A recorded task from that inspection renders Task read-only
+   ("Task recorded with the model.") with the same mismatch alert as a run.
+   MLflow discovery state is scoped to the node's effective destination:
+   `useMlflowBrowser({destination})` passes the node's value (`""` = the local folder) to
+   every experiments/runs/models/versions request, so the pickers list only
+   that backend's content. A change of the effective destination — the node's
+   value or the resolved destination string of
+   the effective entry — clears all experiment/run/model/version arrays,
+   errors, loading state and fetch guards in an already mounted editor.
+   Responses from the previous destination are discarded, including an
+   A-to-B-to-A switch. The next focus fetches the new destination. Train-pane
+   experiment suggestions reuse this same lifecycle rather than keeping a
+   second destination cache.
 6. `EdgeJoinEditor` derives its two role displays exclusively from canonical `base`/`join`
    incoming handles. Role text and its truncation tooltip are
    resolved with the shared `edgeInputName` helper, including API-input frame handles and submodel
@@ -155,45 +233,41 @@ only concurrent pending requests coalesce. Test seam:
 the module's only state. `_IoFormatEditor` renders one
 selected group/direction, while dedicated provider sections cover file,
 database, lakehouse, Databricks, and inline fields. `OnReplaceConfig` constructs
-and commits one fresh active branch for a provider change. Data Input provider
-choices are an accent-coloured `radiogroup` of toggle buttons in backend
-capability order; an unknown or not-yet-selected provider leaves every toggle
-inactive while retaining the explicit configuration error for unknown values.
-The editor derives its cache surface from the config through the shared
-`dataInputIsDirect` predicate (`frontend/src/utils/dataInputMode.ts`), which
-mirrors the backend's `data_input_is_direct`: a file-backed Parquet scan
-renders no cache control; every other branch renders the shared
-Cache-as-Parquet control. The capability payload still reports each format's
+and commits one fresh active branch for a provider change. Data Input and Data
+Output share the same provider layout: an accent-coloured `radiogroup` of toggle
+buttons above the format and provider fields, in backend capability order and
+filtered to the supported direction. An unknown or not-yet-selected provider
+leaves every toggle inactive while retaining the explicit configuration error
+for unknown values.
+The input editor renders no cache control. The shared `dataInputIsDirect`
+predicate (`frontend/src/utils/dataInputMode.ts`) mirrors the backend's
+`data_input_is_direct` for snapshot preparation: a file-backed Parquet scan
+needs no snapshot. The capability payload still reports each format's
 derived `cache_mode` for contract completeness. No cache-mode field is
 authored or stored, and a leftover `cacheMode` key is never migrated by the
 editor — the backend rejects it as an inactive field. A mode selector is rendered only when the capability advertises more
 than one mode; an explicitly stored `scan` does not make a one-option selector
 visible.
 
-`DataInputEditor` keeps provider/cache controls in Config while NodePanel hosts
-its Polars code in the shared Polars tab. It uses `useSchemaFetch` only when the
+`DataInputEditor` keeps provider controls in Config while NodePanel hosts
+its Polars code in the shared Transform tab. It uses `useSchemaFetch` only when the
 selected capability requires a bounded schema, merging detected dtypes into
 `arguments.schema` without discarding other arguments. `DataOutputEditor` has
 no code panel. Its per-node Zustand entry carries request id, semantic request
 identity, phase, and structured result/error; request-id checks reject late
 results. Test seam: `resetOutputWriteStoreForTests()` clears every per-node
-write entry and the request-id counter. Destination preview comes from `/api/pipeline/output-destination`,
-and write identity is projected from the semantic flattened graph, output
+write entry and the request-id counter. Destination preview comes from `/api/pipeline/output-destination`.
+The File provider labels its destination **Filename or path**, with help explaining
+that bare filenames go under the project root's `outputs/` folder and explicit paths
+are project-relative. The resolved destination remains visible before writing.
+Write identity is projected from the semantic flattened graph, output
 node, execution source, and streaming settings. A 409 becomes
 `confirm_overwrite`; only that action retries with `overwrite=true`.
 
-Every snapshot-backed provider renders `InputSnapshotCacheButton`, which adapts
-the same `CacheFetchButton` presentation and Cache-as-Parquet labels used by
-Quote Input to the input-cache API. Missing snapshots offer `Cache as Parquet`
-and a not-cached hint, while ready snapshots offer `Refresh Cache` with
-generation statistics and a clear action. Direct Parquet renders no cache
-control; a stored `read`-mode Parquet input is snapshot-backed and renders
-the cache control like any other snapshot input. Snapshot build classification is execution metadata and is not shown
-as technical diagnostic copy in the editor. Builds use `lazy_sink`, except admitted-eager formats use
-`preview_eager`, and refresh a ready snapshot. The adapter polls jobs to a
-terminal result, allows the active button action to cancel the current job,
-and keeps stale readiness reactive so `Source changed since cache — Refresh to
-update.` remains visible. Required source fields gate all build actions.
+Neither the Data Input nor the API Input editor has a cache control of its own.
+Execution prepares a snapshot-backed input's snapshot before it runs
+(`prepare_input_snapshots`), and the store's contents are listed and cleared in
+Pipeline settings.
 
 **Shared path picker.** `PathPickerField` supplies Preview Data, external
 model-file, and registry-defined path fields with one interaction contract:
@@ -205,15 +279,30 @@ is the API preview contract. While expanded, the picker remains the sole
 selected-path summary; its embedded `FileBrowser` does not repeat the path.
 Registry-defined input paths are browser-only, matching Preview Data. Output
 destinations may additionally enable committed manual entry because their
-target file need not exist yet.
+target file need not exist yet. A format whose input capability reports
+`source_is_folder` (Delta Lake, whose table is a folder) adds a **Use this
+folder** action to the browser's header once it has opened a folder below the
+project root; it selects that folder as the path.
 
-**Shared Polars tab.** Known non-instance Data Input, External File, Scenario
-Expander, Rating Step, and Model Score nodes expose `Config`, `Polars`, then
+**Shared Transform tab.** Known non-instance Data Input, External File, Scenario
+Expander, Rating Step, and Model Score nodes expose `Config`, `Transform`, then
 (when applicable) `Columns` tabs. Their supplementary code is rendered only in
 the shared `PolarsCodePanel`; Config retains only the node-specific settings,
 and switching nodes returns to Config. The panel retains the node's code, error
-line, input sources and upstream columns, while its hint is node-specific React
-content so code-formatted variable names remain semantic.
+line, input sources, upstream columns and recorded node columns, while its hint is
+node-specific React content so code-formatted variable names remain semantic.
+
+**Code columns.** `NodePanel` passes `useRecordedNodeColumns` (the node's own
+recorded columns) as `nodeColumns` to the Transform tab's `SteppedCodePane` and, through
+`NodeConfigEditor`, to `TransformEditor` and `ExploreCodeEditor`, which forward it to
+the same pane. `SteppedCodePane` merges `upstreamColumns` and then `nodeColumns` by
+name, the first occurrence (and so the input's type) winning, and hands the one list
+to `PolarsCodePanel` as `codeColumns`, the names `CodeMirrorEditor` completes inside a
+string literal, and to `PolarsStepsEditor` as `frameColumns`, a frame-mode list's
+start suggestions (still incomplete, so frame mode flags no unknown names). The pane
+memoises the list on its two inputs, and the node panel keeps each input's identity
+while its content is unchanged, so a refreshed preview that records the same columns
+does not reconfigure the code box's completion.
 
 An ordinary Polars transform whose `code` field is absent derives one advisory,
 editor-local starter line from the canonical `InputSource` order:
@@ -243,8 +332,8 @@ column caches. The pane communicates selection through checkbox state and the
 selected-count summary; it does not expose the internal `.select()` operation.
 
 **Banding/Rating classification and canonical formats.** `utils/banding.ts`
-classifies only plain objects with recognised continuous, categorical, or
-breakpoint modes. Recognised non-blank outputs contribute ordered valid levels
+classifies only plain objects with recognised categorical or breakpoint
+modes. Recognised non-blank outputs contribute ordered valid levels
 or a named zero-level issue; invalid containers and unknown modes invent
 nothing. `RatingStepEditor` uses the complete configured-output set so a broken
 configured factor cannot be repopulated from stale raw/saved levels. Rating
@@ -264,7 +353,8 @@ the checkbox button, so either action leaves `enabled` unchanged.
 **Explore chart-card workflow.** `parseExploreCharts` mirrors the backend chart trust boundary:
 every card must be complete version 1 (versionless cards are rejected, never migrated), all
 known nested fields are
-validated, and unknown simple-literal fields are retained. `Add Chart` writes the first unused
+validated, and an unknown field is rejected (the generated validator forbids additional
+properties). `Add Chart` writes the first unused
 `chart_N`, first unused `Chart N` name, `enabled: true`, `pivot_id: null`, `kind: "combo"`, empty
 encodings/overrides, Rows category defaults, automatic primary/secondary axes, and bottom legend.
 The card label is its persisted name. Its labelled toggle-card body updates only enabled;
@@ -423,10 +513,11 @@ full names, short aliases, and Decimal. Numeric Values expose all seven operatio
 non-numeric Values (including Binary and Duration) expose count, distinct count, min, and max;
 nested List/Array/Struct and Object Values expose count only. The filter-member picker loads its
 initial list immediately, debounces non-empty searches by 250 ms, and aborts obsolete requests.
-A displayed member list is keyed to the node's current Explore cache identity hash (the same
-graph/source gate the Explore preview applies) as well as the field/search pair, so when the
-graph or source changes the previous dataset's members stop being rendered (and selectable)
-immediately rather than lingering until the replacement response lands. Display-only pivot and
+A displayed member list is keyed to the node's current data-identity hash
+(`buildNodeDataCacheIdentity` over the node's upstream lineage and data-affecting config, plus
+the active source) as well as the field/search pair, so when the graph or source changes the
+previous dataset's members stop being rendered (and selectable) immediately rather than lingering
+until the replacement response lands. Display-only pivot and
 chart edits do not change that identity, so selecting a member neither hides the remaining
 choices nor triggers a redundant member reload.
 Column and Row placements persist `number_format: "general" | "number" | "percent" |
@@ -441,7 +532,7 @@ trio and nullable scale split are required on every version-1 placement that own
 cards are rejected rather than defaulted or migrated. Row sort defaults to ascending and Value
 sort/scale default to none.
 `options.sort_by` persists the selected Row/Value placement id or null for default ascending Row
-labels. Older v1 cards derive it from their sole active Value sort, otherwise null. Placement cards
+labels; an absent `sort_by` resolves to the sole active Value sort, else null. Placement cards
 render none of these controls. The Configure subview omits the redundant `Configure <pivot name>`
 page heading and begins with its committed Pivot name control. The standalone Sorting, Formatting, and Conditional Formatting
 titles preserve heading semantics while their text uses the shared `EditorLabel` contract:
@@ -519,8 +610,9 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
   filtered/merged before persistence without making existing user rows disappear.
 - Rating table normalisation supports missing/malformed entries by producing the editable table
   contract; two-way grids keep their cartesian factor coordinates aligned with their entry values.
-  It preserves canonical row order and valid `factorDtypes` metadata instead of dropping either
-  during a view-only open/save cycle.
+  It preserves canonical row order, valid `factorDtypes` metadata and `onMissing` instead of
+  dropping any of them during a view-only open/save cycle, and leaves an absent or null
+  `defaultValue` as it is rather than filling one in.
 - `frontend/src/panels/editors/shared/tableClipboard.ts` parses tab/newline data before applying
   it, while the rating/banding grids validate their target coordinates and numeric values.
 - Path tools preserve/rewrite only recognised path prefixes. JSON path validation and
@@ -541,18 +633,25 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
   occurs. Name-referencing config can never half-apply or overwrite an existing key.
 - An ordinary source-label rename derives the old and new `edgeInputName` for every outgoing
   edge and uses the same duplicate preflight and atomic mapping migration as an API-frame rename.
-  Sanitisation-only no-ops do not rewrite mappings. The same transaction rewrites scalar
+  Sanitisation-only no-ops do not rewrite mappings. Either rename leaves a coded ordinary polars
+  transform's `config.code` and parameter names untouched: the transaction records the
+  logical-name binding `inputMapping[<old input name>] = <new input name>` on every such
+  consumer (unless an existing entry already follows that edge), drops identity entries and an
+  emptied mapping, and rejects — before any mutation — a rename whose logical input names would
+  collide on a target, with the same inline error the edge-name preflight uses. Codegen then
+  emits the parameters under their logical names with `inputMapping=` on the decorator, and the
+  executor binds them, so preview rows before and after the rename, and after save and reload,
+  are identical. Uncoded transforms and other node kinds keep their edge-derived names. The same transaction rewrites scalar
   exact-input selectors on downstream Optimiser (`data_input`, `banding_source`) and Optimiser
   Apply (`ratebook_input`) nodes when their selected edge is renamed.
 - `edgeInputName` resolves an editor-only edge sourced by a drilled submodel's composite Input by
-  matching the edge's opaque `sourceHandle` to the existing `SubmodelBoundaryPort.id`, then
-  sanitising that port's `label`. A missing handle, non-Input boundary, or unknown row is an
-  invariant violation and throws rather than falling back to the composite node's literal
-  `INPUT` label.
+  matching the edge's opaque `sourceHandle` to the existing `SubmodelBoundaryPort.id` (which
+  equals the public port name), then sanitising that port's `id`. A missing handle, non-Input
+  boundary, or unknown row is an invariant violation and throws rather than falling back to the
+  composite node's literal `INPUT` label.
 - `edgeInputName` treats only API-input sources' handles as frame names; a submodel
-  `out__`-prefixed source handle resolves to the referenced child node's sanitised label (via
-  the graph context's `submodels`) — the same name the flattened code binds — and every other
-  node type derives the sanitised source label.
+  `out__` edge's input name is the sanitised public output port name, resolved by the backend identity endpoint; and every other
+  node type derives the sanitised source label. Renaming an occurrence renames its alias (the node id follows at Save, when the reparse re-keys it to the name, so `node.id == data.label == config.alias` holds in every parsed document), validates identifier syntax (refusing with `Occurrence names must be identifiers; use "<functionName>".`) and uniqueness among parent nodes (refusing with `"<name>" is already used by another node.`), and leaves downstream public port names unchanged.
 - The API-input editor rejects a frame label that fails backend invariant B4 (not an ASCII
   identifier, or a Python hard keyword) at commit time with the same inline validation used
   for blank/duplicate labels (`apiInputLabelIssue` — the exact ASCII mirror) — the label is
@@ -562,11 +661,24 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
   `<unresolved>` marker with `frameUnresolved`; a named stale handle is retained verbatim. Neither
   state aliases the source's sole emitted table.
 - `frontend/src/panels/editors/OutputEditor.tsx`'s per-frame block label is the edge's input
-  name via the same shared helper, and the persisted `source_port` key (`framePortId`) now
+  name via the same shared helper, and the persisted `source_port` key (`framePortId`)
   *equals* that name by construction — the frame label for API-input edges, the sanitised
   source label otherwise — so display and persisted identity cannot diverge. An unresolvable
   API-input edge renders the block header in the explicit unresolved state (parent label
   retained as identifying text plus a visible warning marker), never a normal-looking fallback.
+- The Output editor mirrors the backend's one-frame-per-array-level rule
+  ([JSON shredding](../json-shredding/high-level.md)): over the active rows (enabled, with a
+  column and a grammatical path) a frame emits at the deepest array prefix of its paths, and
+  when two frames emit at the same level a danger banner names the frames and the level and
+  says to join them upstream (for example with a Join node) or map one of them to a different
+  level. A frame whose array prefixes do not form one chain is left to its own error. Like the
+  per-frame path-conflict warning, the banner never blocks an edit; the backend validator is
+  the authority.
+- The API Input label, table-path and column name/path fields and the Output mapping path
+  field are the shared `ValidatedTextField`
+  ([frontend shared](../frontend-shared/low-level.md)): the API Input fields pass the
+  `OnUpdateConfig` result so a refused commit keeps its draft and shows `commitError`, and the
+  Output path passes its per-frame conflict warning.
 - Edge Join roles are never config values: they come exclusively from the incoming edges'
   `targetHandle="base"` / `targetHandle="join"` values and can only be exchanged by the atomic
   swap action. Creating, connecting, swapping, splitting, or deleting role edges does not write
@@ -579,20 +691,37 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
   marked with `aria-invalid` and a danger border, including the active mode's required empty
   control or controls when a non-cross join has no keys.
 
-(The former NOTE here — two frames of one API input sharing one sanitised `varName`, leaving
-`input_scenario_map` unable to distinguish them — is resolved by the input-identity
-convergence: scenario-map keys are now the frame-derived input names, and the backend's
-matching in `executor.py`, `projection.py`, and the deploy pruner consumes the same
-`edge_input_name` derivation.)
-
 ## Error handling
 
 Editor-local API failures are rendered as their respective lookup/action error state. Invalid
 input is marked by the control or rejected at its parse/normalisation point. Unknown node types,
 broken instance configuration and unrecognised IO options are surfaced visibly by panel/editor
-diagnostics; no generic editor fabricates a replacement config.
+diagnostics; no generic editor fabricates a replacement config. The unknown-node-type banner
+links to the published node reference, which opens in a new tab; the editor's server does not
+serve the documentation.
 
 ## Testing
+
+- `frontend/src/panels/editors/polarsSteps/__tests__/PolarsStepsEditor.test.tsx` — quick-add seeds the start input, a chosen start input is written when there are several, the grouped menu adds a step and the rendered code is written into the config, one card opens at a time through the disclosure with Escape collapsing, move, delete and drag rewrite the list (the open card following its step), a render error badges its card without moving the user and "Go to error" opens it, source errors read "Start from", execution lines map to steps, the switch waits for a successful render and confirms (in the zero-input state too), a malformed persisted step renders as an invalid card that can be deleted, and a zero-input node switches to empty code. Its frame-mode cases: no start card and no selector, the render request carries `start: "frame"` and the eligible names, an added step is Step 1 and is written without a source step, the first card can be moved and opened by "Go to error", a persisted `source` step is an invalid card, `Add step` withholds join and concat while keeping group by, pivot and unpivot, and the switch on an empty list writes empty code. Its experience cases: with the real canvas shortcut handler mounted and a step card's select focused, Delete, Backspace, Ctrl+A, Ctrl+C (the clipboard unchanged, no toast), Ctrl+V (a populated clipboard, no paste) and Ctrl+G (two nodes selected, no dialog or toast) leave the graph alone while Ctrl+S and Ctrl+Z still act; focus moves into a new card's first field (Add column's name, with the formula box showing its example) and Alt+arrows move a card keeping its focus; stale code dimmed with a neutral note naming the unfinished step and the card's "Needs" line, a failed render request marking no card, and a successful render clearing both; a run failure on a step's lines badging that card with the message's first line and "Go to error"; collapsed cards naming unknown columns, also after a reorder; summary parts with column-change notes, none where the columns are not exactly known; the free-code columns request carrying the node id and the inputs' known columns, a free-code card noting the column its resolved columns add, a later card flagging a name outside them and offering the new column, and an unresolved free-code card saying why; three action slots on every card, the summary in the label's column and the number as muted text; card and code lines linked both ways, multi-line ranges tinted whole, and the code highlighted; the card's text tokens reaching 4.5:1 on its surface; and the code fading only after 400 ms of pending.
+- `frontend/src/panels/editors/polarsSteps/__tests__/AddStepMenu.test.tsx` — the search box takes focus, arrow keys move between it and the kinds and wrap, Escape closes and returns focus to the button, Close closes without adding, a chosen kind is handed back, search matches label, description and Polars call (not SAS or Excel names) and Enter adds the first match leaving focus to the new step, the foot shows the focused kind's description and Polars call, withheld kinds stay withheld while filtering, and a disabled button stays closed.
+- `frontend/src/panels/editors/polarsSteps/__tests__/fields.test.tsx` — column completion matching, keyboard and mouse completion in the column box and chip list, and focus staying in the box through a completion and a commit; Tab on an empty box taking nothing, Enter taking the active match, an exact name kept, type notes and the tinted active row; unknown names marked on chips and pickers with the closest name offered, and not judged while the columns are incomplete; a fresh condition's value following its column's type and an edited value left alone; and the single value control with its kind marker.
+- `frontend/src/panels/editors/polarsSteps/__tests__/forms.test.tsx` — every step form only produces schema-valid payloads: variable, membership (including switching an empty list to numbers and adding one), string-operator, function-argument, cast, rename, sort, unique, concat, fill-null, group-by, join, pivot and unpivot forms; formula text editing, completion, focus retention and the error note clearing on revert; the structured fallback for a formula holding a window; and the if-then, window and text-join expression editors. Its experience cases: function completion arriving as a call with the caret inside, the argument tip, function names in any case, a column sharing a function's name, a fully typed name kept, and an unknown column offered and rewritten; the aggregation row's reading order, self-naming, count descriptions, a new row's column and its disclosure opening for a saved filter; the join's right-key suggestions, key pairing, kind descriptions, More options, an unknown right key, and the one-input hint; sentence order for limit, rename and sort, the When/Keep leads with all or any, sentence-case labels; and the Add column default.
+- `frontend/src/panels/editors/polarsSteps/__tests__/useRenderedSteps.test.ts` — empty, debounced, failed, transport-failed (a list-level error keeping the last code), out-of-order and pending render states; the render request carrying no columns, and the code reported before a free-code columns request that has not answered; no columns request for a list without free code; a failed columns request as each free-code step's reason; the node id and the eligible inputs' known columns sent to the columns endpoint (the frame's only in `frame` mode); and a free-code step's resolved columns keyed by its id, kept while a later step is pending or unfinished and retired once the free code changes.
+- `frontend/e2e/polars-steps.spec.ts` — the browser journey: a new Transform asks for an input, connecting one seeds the start step, Limit and multiline Free code steps added from the chooser re-render the generated code, a following Limit step consumes the custom frame, the preview includes its new column, Save writes the `config/polars/<name>.json` sidecar and the rendered body, and reopening restores the step cards and editable snippet. Its further journeys seed a Data Input, a Rating Step, a Scenario Expander and an External File in step mode, each adding a Limit step, previewing its rows, saving and reopening. Its code-columns journey gives the fixture Rating Step a table entry, opens its Transform tab's code box once the node's preview has recorded `browser_relativity`, types `pl.col("browser_r` pausing past the commit debounce on every key (each pause clears the node's recorded columns), and sees `browser_relativity` offered. The Data Input one: its Transform tab shows the step builder without a start card or input selector, the chooser withholds join while keeping group by, a Limit step renders `df = df.head(2)` and the preview shows exactly the first two sample rows, Save writes `steps` into `config/data_input/<name>.json` (no `code`) and the rendering after the load scaffold in the module, and reopening restores the card.
+- `frontend/src/panels/editors/polarsSteps/__tests__/derivedColumns.test.ts` — column derivation through each step kind; suggestions from the start input only; column types following the start input, casts, renames and replacements; completeness and exactness; join output columns equal to the shared Polars fixture; column-change notes; unknown names, a join's right keys included; and the columns after a free-code step: none until resolved, the resolved ones (new columns marked as made, complete and exact in a Transform, so a following card is offered them and a name outside them is unknown) and, on a frame surface, suggestions only.
+- `frontend/src/panels/editors/polarsSteps/__tests__/formula.test.ts` — formula parsing and printing round trips, plain-English errors with the position where reading stopped, function names read in any case and spelled as the catalogue does, and `callAtCaret`.
+- `frontend/src/panels/editors/polarsSteps/__tests__/stepProblem.test.ts` — every malformed persisted step shape (top-level and nested) is reported as a problem, and summaries, column and variable suggestions never throw around it.
+- `frontend/src/__tests__/editors/TransformEditor.test.tsx` — step mode is selected when `config.steps` is a list, code mode shows the discard notice, and the code box completes the inputs' columns and then the columns the node's code creates.
+- `frontend/src/__tests__/editors/ExploreCodeEditor.test.tsx` — the Transform pane completes the input's columns and then the columns the node's code creates.
+- `frontend/src/panels/__tests__/useRecordedNodeColumns.test.ts` — the columns a node's last preview recorded under the active source are returned, another source's (or an untagged stash) are not, and nothing is returned before a preview; they are kept through code and steps edits that clear the stash, dropped by any other setting change and by a source switch (before and after the stale stash is invalidated) and not restored by changing the setting back or switching back, replaced when a refreshed preview records different columns, and keep one identity for equal content.
+- `frontend/src/panels/editors/shared/__tests__/SteppedCodePane.test.tsx` — the pane renders the step builder for a `steps` list in either start mode (passing the start mode, the node id and the eligible names through), the code box otherwise, and the discard notice above the code box; the code box completes the input columns and then the node's own (only the node's own when it has no inputs), a frame-mode list starts from the same columns with each duplicate keeping its input type, and the list keeps its identity while an edit leaves both column lists alone.
+- `frontend/src/panels/__tests__/NodePanel.test.tsx` — every Transform tab mounts the stepped pane in `frame` mode with the replace-config and run-error props and the surface's hint: the eligible input names are the connected edge names for an External File and empty for a Data Input, Scenario Expander, Rating Step and Model Score, while the input chips show the connected inputs regardless. A Model Score's Transform tab receives the node's recorded columns, kept through a code edit that clears the stash and dropped by a change to another setting, and the Transform and Explore code editors receive a node's recorded columns.
+- `frontend/src/panels/editors/__tests__/DataInputEditor.test.tsx` — changing the provider or the format keeps a `steps` list (empty and populated, including the Databricks provider) exactly as it keeps `code`; neither `steps` nor the editor-state keys `_steps_error`/`_steps_discarded` are reported as unexpected configuration keys by the shared IO format editor or the Databricks branch (both allowlists know them), while a genuinely unknown key still is.
+- `frontend/src/utils/__tests__/polarsStepInputs.test.ts` and `frontend/src/utils/__tests__/graphSnapshot.test.ts` — the surface table and `stepInputNames` (edge names for a transform, none for a Data Input, an error for a type outside the table), and a stepped Data Input's materialised `code`/`_steps_error` excluded from the dirty fingerprint like a transform's.
+- `frontend/src/panels/editors/shared/__tests__/PolarsCodePanel.test.tsx` — the Polars
+  code editor retains its code hint and `return df` footer without displaying a
+  trust statement. The execution trust boundary remains documented in
+  [sandbox-security](../sandbox-security/high-level.md).
 
 React/Vitest tests cover editor interaction under `frontend/src/__tests__/editors/`,
 `frontend/src/panels/editors/__tests__/`, `frontend/src/panels/editors/banding/__tests__/`,
@@ -620,11 +749,14 @@ state, including danger styling and field-level invalid-key borders.
 
 The input-identity work is pinned by `frontend/src/panels/__tests__/NodePanel.test.tsx`
 (`name` derivation for API-frame edges — sole frame included — ordinary sources, and submodel
-`out__` edges resolving to child labels; the `frameUnresolved` warning chip for a
+`out__` edges whose input name is the sanitised public output port name, resolved by the backend identity endpoint; the `frameUnresolved` warning chip for a
 zero-eligible-frame API source; the unresolved→resolved transition under an unchanged name
 string clearing the warning; signature-driven refresh on a frame rename; two frames from one
 API input rendering two distinct, independently removable chips whose names equal the
-generated argument names), by LiveSwitch cases (two frames from one API input render two rows
+generated argument names; exact chip text, tooltip and removal-control names remain
+public frame names after occurrence alias/display-label changes with one or two outputs),
+and by `frontend/src/panels/editors/polarsSteps/__tests__/PolarsStepsEditor.test.tsx` (start-input options, persisted selections, and render
+request input names stay frame-named after source identity changes), by LiveSwitch cases (two frames from one API input render two rows
 with two distinct names and two independent `input_scenario_map` keys; a frame rename migrates
 its map key atomically with the edge rebind; a zero-eligible-frame API `InputSource` renders
 the row's unresolved warning marker/tooltip), by the ApiInputEditor identifier-validation
@@ -633,12 +765,11 @@ collision preflight rejection surfaced inline via the `OnUpdateConfig` result wi
 asserted unchanged), by the editor suites
 that render `InputSourcesBar` (`ModelScoreEditor`, `OptimiserApplyEditor`,
 `ScenarioExpanderEditor`, `BandingEditor`, and the hover suite), by the OutputEditor suite's
-name-equals-`framePortId` and unresolved-block-header cases, and by
+name-equals-`framePortId`, unresolved-block-header and same-array-level banner cases, and by
 `frontend/src/utils/__tests__/apiInputPorts.test.ts` for the shared `edgeInputName`
-derivation. Because `InputSource.name` replaces the former `varName`/`displayLabel` pair,
-every suite constructing `InputSource` fixtures (Transform, RatingStep, LiveSwitch,
+derivation. Every suite constructing `InputSource` fixtures (Transform, RatingStep, LiveSwitch,
 ScenarioExpander, ModelScore, OptimiserApply, Banding, ExternalFile, ExploreCode, and the
-hover suite) migrates its fixtures — a compile-time-loud migration, not a runtime fallback.
+hover suite) supplies the required `InputSource.name` property.
 
 Optimiser and Optimiser Apply selector tests additionally pin that option text and persisted
 values are the exact per-edge names, including two frames from one API Input; source node ids and
@@ -670,10 +801,9 @@ The initial Banding-to-Rating configuration-shape matrix is:
 
 | Variant | Owning component | Representative fixture/contract | Smallest proving tier | Browser escalation |
 |---|---|---|---|---|
-| Continuous Banding | `frontend-node-editors` | `frontend/src/panels/editors/banding/__tests__/BandingRulesGrid.test.tsx::makeFactor` plus continuous render/edit/copy cases | Component | None; behaviour is local to one grid. |
-| Categorical Banding | `frontend-node-editors` | The same factory with categorical rules and value/match-count cases | Component | Included only as one factor in the mixed journey. |
+| Categorical Banding | `frontend-node-editors` | `frontend/src/panels/editors/banding/__tests__/BandingRulesGrid.test.tsx::makeFactor` with categorical rules and value/match-count cases | Component | Included only as one factor in the mixed journey. |
 | Breakpoint Banding | `frontend-node-editors` | `frontend/src/panels/editors/banding/__tests__/BreakpointGrid.test.tsx` boundary/label/order fixtures and `frontend/src/__tests__/editors/BandingEditor.test.tsx` mode cases | Component | Included only as one factor in the mixed journey. |
-| Mixed three-factor Banding→Rating | `frontend-node-editors` | Generated `browser_mixed_banding.json` and `browser_rating.json` from `run_frontend_e2e_server.py` | Browser | Authoritative cross-editor Cartesian rebuild, edit, save, and reload journey. |
+| Mixed three-factor Banding→Rating | `frontend-node-editors` | Generated `browser_mixed_banding.json` and `browser_rating.json` from `scripts/run_frontend_e2e_server.py` | Browser | Authoritative cross-editor Cartesian rebuild, edit, save, and reload journey. |
 | Zero-level configured factor | `frontend-modelling-optimiser-ui` | `frontend/src/__tests__/utils/banding.test.ts` zero-level classifier plus `frontend/src/__tests__/editors/RatingStepEditor.test.tsx` warning/no-stale-level case | Unit + component | None; a deterministic warning contract needs no browser duplication. |
 | Malformed or partial draft | `frontend-modelling-optimiser-ui` | `frontend/src/__tests__/utils/banding.test.ts` malformed-default, blank-output, and partial-rule cases | Unit | None; invalid drafts are classification inputs, not a persistence journey. |
 | Mixed Rating outputs | `frontend-node-editors` | `frontend/src/__tests__/editors/RatingStepEditor.test.tsx` multi-table `combinedOutputs` selection/duplicate/output cases | Component | None until a cross-node persisted failure is found. |
@@ -702,15 +832,17 @@ cover new/edit/save/reload shapes; there are no migration-specific fixtures.
 The behaviour and non-goals are defined by
 [the modelling/optimiser UI contract](../frontend-modelling-optimiser-ui/high-level.md#modelling-config-panes).
 
-`frontend/src/panels/NodePanel.tsx` renders a five-pane modelling strip (Target, Features, Params,
-Split, Train) with the shared preview tab control and per-node UI-store selection memory. It is
+`frontend/src/panels/NodePanel.tsx` renders a modelling strip with Target, Features, Split, Train,
+and Export; CatBoost additionally has Params between Features and Split. It uses the shared
+preview tab control and per-node UI-store selection memory. A remembered GLM Params selection
+resolves to Target for both the selected tab and editor body, without changing model config. It is
 shown only when the modelling node has a supported
 `catboost` or `glm` algorithm; an unset algorithm leaves the gateway as the only editor content.
 A non-empty unsupported value also suppresses the strip and is handed to the modelling editor's
 explicit diagnostic rather than treated as CatBoost.
 
 `NodePanel` reads the remembered pane and selects only the Boolean presence of
-`trainJobs[node.id]`. Its tab descriptors leave Target/Features/Params/Split as plain labels and
+`trainJobs[node.id]`. Its tab descriptors leave Target/Features/Params/Split/Export as plain labels and
 add only the active indicator on Train. Configuration completeness is deliberately not derived or
 displayed by the node panel; `ModellingConfig` owns click-time validation beneath its Train
 button. There is no child-to-parent registration or effect, so node changes cannot flash a
@@ -718,11 +850,28 @@ previous node's state and progress-only updates do not rerender the panel chrome
 panel keeps the shared `id`/`aria-labelledby` relationship.
 
 `frontend/src/panels/__tests__/NodePanel.test.tsx` proves unset/supported/unsupported-algorithm
-strip gating, all five routes, same-node memory, independent memory for two nodes, plain setup-tab
+strip gating, algorithm-specific routes, retired GLM Params selection, same-node memory,
+independent memory for two nodes, plain setup-tab
 labels, active-indicator routing, and no stale active state after a node change. The generic
 indicator and keyboard
 contract is owned by
 [frontend-preview-explore](../frontend-preview-explore/low-level.md#modelling-config-panes).
+
+## Optimiser config panes
+
+The behaviour is defined by
+[the modelling/optimiser UI contract](../frontend-modelling-optimiser-ui/high-level.md#optimiser-config-panes).
+
+`frontend/src/panels/NodePanel.tsx` renders an optimiser strip for every non-instance optimiser
+node from `OPTIMISER_PANES`: Data, Factors, Constraints, Solve and Export, in both modes.
+It uses the same shared tab control, remembers the pane per node in the UI store, and opens Data
+when none is remembered, for both the tab and the editor body. Its descriptors add
+the active indicator on Solve, from the Boolean presence of `solveJobs[node.id]`, and a compact
+warning indicator on each pane `OptimiserConfig` reports through `onPaneIssuesChange` as holding a
+blocking Solve issue; a report from another node's editor never badges this one. It also passes
+`onUpdateNodeConfig`, which writes config keys onto another node under the panel's read-only
+guards, for the Export pane's Use in Apply node. `NodePanel.test.tsx` proves strip gating,
+mode-dependent Factors, per-node memory, the issue indicators and the active-solve indicator.
 
 ## Recovery-only node surfaces
 
@@ -734,10 +883,14 @@ include that value.
 
 `frontend/src/panels/NodePanel.tsx` subscribes to the central document diagnostics and, after all
 hooks have executed, branches to a recovery inspector whenever the selected node's load
-availability is not `ready`. It never instantiates a normal node editor for that element. For a
-document-wide recovery read-only state, a ready node renders a static JSON configuration inspector
-instead of mounting the normal editor tree; this prevents editor effects as well as user events
-from starting preview/train/cache/schema/publication actions behind the App-level capability fence.
+availability is `unavailable`. A `blocked` node whose server-derived `scoped_editable` flag is
+true mounts its normal editor with its blocking path and diagnostics reported in a banner above
+it; a blocked node without that flag keeps the recovery inspector. For a document-wide recovery
+read-only state, a ready `scoped_editable` node also mounts its normal editor together with the
+node-scoped save affordance and the document's completeness entries for that node; a ready node
+without the flag renders the static JSON configuration inspector instead of the normal editor
+tree, which prevents editor effects as well as user events from starting
+preview/train/cache/schema/publication actions behind the App-level capability fence.
 Created read-only submodel instances retain the normal inert editor presentation, and all read-only
 update handlers reject calls.
 
@@ -747,16 +900,37 @@ update handlers reject calls.
 node when `useDocumentStatusStore.capabilities.can_repair` is true. It passes
 the node's `_recoveryId` and server-supplied `_sourceFile` to the document-level
 repair flow; it never derives or submits source spans.
+Known unavailable ordinary nodes offer `Recover settings` as the primary action
+and `Reset node` as the destructive alternative. Submodels, instances, unknown
+types and blocked nodes cannot reset or recover. `PipelineRepairTarget.action` chooses the dialog
+transport and confirmation labels. Reset explicitly warns that settings/custom
+code are replaced and configuration may be needed; recover explains that valid
+settings and code are retained, that a function body the node never runs is replaced
+and listed in the summary, and that remaining gaps surface as completeness. The
+palette and reset service share `src/haute/node_defaults.json`. Healthy-node
+panel headers carry no recovery affordance.
 
-The confirmation dialog requests a strict dry-run plan, displays each touched
-artifact and bounded unified diff, and distinguishes retained config from an
-explicitly requested config deletion. Toggling config deletion invalidates the
-old confirmation and requests a fresh plan. Apply submits the unchanged plan
-identity/hash and disables duplicate confirmation while in flight. Expected
+The confirmation dialog states the action and, for a removal, offers the
+explicit choice to delete the config file the node references, if any (kept by
+default). It shows no client-derived path: the server resolves the authored
+reference.
+Apply submits the document revision and target identity and disables duplicate
+confirmation while in flight. Expected
 409/422 detail is rendered in the dialog with focus retained; success closes
 the panel only after App has atomically adopted the returned editor document.
 
-Component tests pin unavailable-only visibility, capability gating, dry-run
-before apply, touched-file/diff presentation, default config retention,
-replanning for explicit config deletion, stale-plan errors, duplicate-submit
-suppression, and successful document adoption. There is no migration UI.
+Component tests pin unavailable-only visibility, capability gating, one apply
+per confirmation, default config retention and the explicit deletion choice,
+stale-revision errors, duplicate-submit suppression, and successful document
+adoption. There is no migration UI.
+# Analysis request identity (PR #227 corrective contract)
+
+Banding statistics and Rating Step levels belong to the complete analysis request:
+node id, active source, current input data version, and canonical factor/rules/bins
+or requested columns. A changed question immediately stops presenting its previous
+answer, error or loading state as current, even during the debounce interval and
+when the input data version is unchanged. Superseded requests are aborted when
+their effect is cleaned up, not when the next debounce expires. Success, failure
+and completion callbacks may update only their own request's state, and continue
+to respect the document execution fence. Equivalent canonical column sets or
+changes to a factor's output name alone do not require a new statistics request.

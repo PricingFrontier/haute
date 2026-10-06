@@ -6,13 +6,13 @@
 | --- | --- |
 | `frontend/src/panels/GitPanel.tsx` | The Git side-panel view and user-action boundary: pending-save and milestone rows, graph-rail wiring, context menus, fork dialog, and row sub-components. Branch-history request identity and hydration are delegated to `useGitHistory`. |
 | `frontend/src/panels/git/useGitHistory.ts` | The single state authority for branch-scoped Git history: cache hydration, stale-while-revalidate fetching, request generations, nonce consumption, row selection, expansion, and branch replacement. It exposes a render-ready snapshot and event callbacks without render-time ref mutation or effect-driven synchronous state resets. |
-| `frontend/src/panels/gitPanelCache.ts` | Module-level session caches (`branchHistory`, `milestoneSaves`, whole-forest `graphCache`) with LRU eviction, feeding the Git panel's stale-while-revalidate hydration and unchanged-payload short-circuit. |
+| `frontend/src/panels/gitPanelCache.ts` | Module-level session caches (`branchHistory`, `milestoneSaves`, whole-forest `graphCache`) with LRU eviction, feeding `useGitHistory`'s stale-while-revalidate hydration and unchanged-payload short-circuit. |
 | `frontend/src/panels/gitgraph/layout.ts` | Pure layout: `computeGitGraphLayout` turns a `GitGraphResponse` + the panel's row list into a `RailModel` (lanes, dots, curves, magnifiers, spawn stubs); `computeRailRuns` consolidates per-row cells into whole-length vertical line segments. No DOM, no fetch. |
 | `frontend/src/panels/gitgraph/GraphCell.tsx` | Rendering: `GraphRailCell` (per-row SVG cell), `GraphRailOverlay` (the measured whole-box overlay of consolidated runs), `GraphRailHeader` (top departing-branch chip strip), `Magnifier`. Pure presentation over `frontend/src/panels/gitgraph/layout.ts` types. |
 | `frontend/src/stores/useGitStore.ts` | Zustand store: working-branch readiness + retry error, shared branch-list state/action, modal routing (`GitModalMode`), peek/comparison/move targets, and the refresh-triggering nonces (`historyNonce`, `commitNonce`, `branchesExpandNonce`). |
 | `frontend/src/stores/gitBranchLoader.ts` | Lazily loaded branch-list request coordinator. It publishes results into `useGitStore` while delegating the in-flight/queued-refresh bookkeeping to `singleFlight.ts`, keeping branch-only client code out of the initial editor bundle. |
 | `frontend/src/stores/singleFlight.ts` | Shared resettable single-flight utility: request joining, the trailing-refresh queue (exactly one follow-up per active request, generation-anchored), and the stalled-request watchdog. Consumed by `useGitStore.ts` (working-branch status) and `gitBranchLoader.ts` (branch list). Test seam: both stores' `reset…ForTests` exports delegate to its `reset()`. |
-| `frontend/src/components/BranchIndicator.tsx` | Toolbar entry point: explicit repository/readiness/error labels with Retry, plus a ready branch-name button that opens the panel on the current branch. |
+| `frontend/src/components/BranchIndicator.tsx` | Toolbar entry point: explicit repository/readiness/error labels with Retry, plus a ready branch-name button that opens the panel on the current branch. Truncated errors use the shared `Tooltip` to expose the full diagnostic on error hover or Retry focus; its function child places `aria-describedby` on Retry. |
 | `frontend/src/components/BranchManager.tsx` | Branch list/create/switch/archive/delete/restore, embedded in the Git panel; owns its own confirm dialogs and row context menu. |
 | `frontend/src/components/GitNavigationConfirm.tsx` | Shared clean/dirty navigation confirmation used by branch-manager and graph-lane switches plus Create & Move; dirty mode offers Cancel, Discard, and Save first. |
 | `frontend/src/components/CommitBreadcrumb.tsx` | `CommitBreadcrumb` (version-relative label for a comparison canvas) and `ComparisonDelta` (historic↔current commit-count chip). |
@@ -21,14 +21,12 @@
 | `frontend/src/components/WorkingBranchModal.tsx` | Startup / save-gate branch-selection modal, with an inline git-identity sub-form. |
 | `frontend/src/components/RemotePushControl.tsx` | Remote dropdown, ahead/behind + ledger-divergence display, explicit push (including empty-remote default-bootstrap tooltip/toast and the pending-save integrity confirm), catch-up, the non-fast-forward `PushRejectedModal`, `AheadBehind`/`LedgerStatus`/`RejectedLeg` sub-components. |
 | `frontend/src/components/DivergenceModal.tsx` | Recorded-branch-vs-HEAD divergence recovery modal (go home / stay here / open branch manager). |
+| `frontend/src/components/ModalForm.tsx` | The form blocks the working-branch, divergence and save-time identity modals share inside `ModalShell`: the heading with its line of context, the modal text input, the git identity fields (name, email, global-config checkbox) and the cancel/submit row. |
 | `frontend/src/utils/vcHistory.ts` | Records switch/archive/restore/delete as undoable entries on `useGraphStore`'s VC history stacks; each entry's undo/redo leg re-syncs git status + the panel's history nonce. |
-| `frontend/src/utils/gitError.ts` | Formats Git UI failures by preferring a human-readable string `ApiError.detail`, then `Error.message`, then a stable fallback; serialized structured details are left to their dedicated parsers rather than rendered as raw JSON. |
 
 ## Key types and data structures
 
-**`GitModalMode`** (`useGitStore.ts`) — `"select" | "divergence" | "milestone"`; which of
-the three gating modals (`WorkingBranchModal`/`DivergenceModal`/`MilestoneCommitModal`) is
-open. `null` means none.
+**`GitModalMode`** (`frontend/src/stores/useGitStore.ts`) — `"select" | "divergence" | "milestone" | "storage" | "upstream" | "identity"`; which gating modal is open (`null` means none). The first three drive `WorkingBranchModal`, `DivergenceModal`, and `MilestoneCommitModal`; `"storage"`, `"upstream"`, and `"identity"` are routed by the hosted-project-storage surface (`StorageBindModal`, `UpstreamSyncModal`, and `IdentityPromptModal`).
 
 **`GitComparison`** — `{ sha: string; label: string }`. Dual-purpose: `comparison` (the
 read-only side-by-side target) and `moveTarget` (the pending move, gated by
@@ -66,9 +64,9 @@ list. Notable invariants:
   queued refresh (or a reset) neither publishes state nor clobbers a newer request's
   slot. Test seam: `resetGitBranchLoaderForTests()` clears the coordinator's
   in-flight/queued promises.
-- `historyNonce` and `commitNonce` both trigger `GitPanel.refresh()` but only `commitNonce`
+- `historyNonce` and `commitNonce` both trigger `useGitHistory.refresh()` but only `commitNonce`
   additionally selects the newly-committed milestone, and only when the panel is not
-  peeking (`peekingRef.current` false at the time the refresh resolves).
+  peeking (`!peeking` at the time the refresh resolves).
 - `closeModal` always clears `pendingAction` — a dismissed modal must never leave a queued
   action to fire on a later, unrelated confirmation.
 
@@ -77,7 +75,7 @@ Test seam: `resetGitStoreForTests()` is the family reset — one awaited call re
 required-fields object, so a new field cannot silently survive a reset) and clears the two
 single-flight seams above.
 
-**`RowDescriptor`** (`gitgraph/layout.ts`) — `{ kind: "pending-save" | "milestone" | "save"
+**`RowDescriptor`** (`frontend/src/panels/gitgraph/layout.ts`) — `{ kind: "pending-save" | "milestone" | "save"
 | "placeholder"; sha; expanded?; milestoneSha? }`. Mirrors `GitPanel`'s render order
 exactly (`GitPanel.railRowData`): pending saves first, then milestones newest-first, each
 followed by its expanded saves or one placeholder row. Rows are keyed `${kind}:${sha}` —
@@ -89,7 +87,7 @@ a placeholder shares its milestone's sha, which is why the key includes `kind`.
 treats such a model as "no rail" (`rail === null`) even though `computeGitGraphLayout`
 itself returned a non-null object.
 
-**`RailCell`** union (`gitgraph/layout.ts:220-229`) — the nine per-row drawable primitives:
+**`RailCell`** union (`frontend/src/panels/gitgraph/layout.ts`) — the nine per-row drawable primitives:
 `dot` (milestone), `hollow-dot` (pending save), `save-dot` (expanded save on the sub-rail),
 `pass` (lane continuing with no node), `transition` (spine changing lanes at a fork-point
 row), `fold-in`/`fold-out` (the siding's merge into / departure from a milestone dot),
@@ -102,12 +100,12 @@ row), `fold-in`/`fold-out` (the siding's merge into / departure from a milestone
 (`RailRowGeom`). Drawn once per run by `GraphRailOverlay` so dash phase is continuous
 across every row and 1px box border the run crosses.
 
-**`BranchHistoryEntry`** (`gitPanelCache.ts`) — one branch's last-seen `{milestones,
+**`BranchHistoryEntry`** (`frontend/src/panels/gitPanelCache.ts`) — one branch's last-seen `{milestones,
 milestonesJson, pending, pendingJson}`. The `*Json` fields
 are `JSON.stringify` serializations kept alongside the parsed data specifically to drive
-`GitPanel`'s unchanged-payload short-circuit without re-serializing on every compare.
+`useGitHistory`'s unchanged-payload short-circuit without re-serializing on every compare.
 
-**`SpawnChipBranch`** (`GitPanel.tsx`) — `{ name; is_archived; colorIndex? }`, the minimal
+**`SpawnChipBranch`** (`frontend/src/panels/GitPanel.tsx`) — `{ name; is_archived; colorIndex? }`, the minimal
 graph-derived shape used for in-row spawn chips.
 
 ## Control flow
@@ -247,20 +245,23 @@ or a failed push.
 
 - **A save must never move the selection; a commit must, but only on the user's own
   branch.** Enforced by keeping `historyNonce`/`commitNonce` as separate nonces and gating
-  the commit-effect's selection on `!peekingRef.current` read at resolution time (via a
-  ref, not the reactive `peeking` value, so the effect doesn't need `peeking` in its
-  dependency array and re-fire spuriously on every peek change).
-- **Expansion state is not cleared by a refresh.** `refresh()` explicitly does not touch
-  `expanded` — only the peek-change effect does (`setExpanded({})`) — because clearing it
-  on every auto-refresh would collapse a milestone the user just opened.
-- **Byte-identical revalidation is invisible.** The `applied` ref's serializations mean an
-  unchanged background refresh produces zero `setState` calls for milestones/pending/forks,
-  preserving array identity through to the rail's memos — this is what makes the rail
-  layout and the two-pass overlay measurement not re-fire on a no-op poll.
+  the commit-effect's selection on `!peeking` evaluated when the refresh resolves
+  (`[applyAction, commitNonce, peeking, refresh]`).
+- **Expansion state is not cleared by a refresh.** `refresh()` never dispatches an
+  expansion action — clearing it on every refresh would collapse a milestone the user just
+  opened — and `expanded` returns to `{}` only because replacing the keyed branch scope
+  re-runs `initialState()`.
+- **Byte-identical revalidation is invisible.** The `useGitHistory` reducer's `rows` action
+  compares `milestonesJson` and `pendingJson` against the prior state; an unchanged background
+  refresh reuses the existing array identities and returns `state` unchanged, producing zero
+  state updates for milestones and pending saves. This preserves array identity through to
+  the rail's memos and ensures rail layout and overlay measurement do not re-fire on a
+  no-op refresh.
 - **Stale-refresh generation guard.** A slower in-flight refresh resolving after a faster,
   newer one must not overwrite the newer result, and must not clear `loading` out from
-  under it — both branches of the `generation !== refreshGeneration.current` check exist
-  for this (see `panels/__tests__/GitPanel.staleRefresh.test.tsx`).
+  under it — `useGitHistory` guards completion, error handling, and the `finally` block with
+  an `ownsRequest()` check over `generationRef` and `aliveRef` (see
+  `frontend/src/panels/__tests__/GitPanel.staleRefresh.test.tsx`).
 - **Peek's in-flight mislabel window.** Immediately after `setViewBranch` fires, `graph`
   and `milestones` may still reflect the previous branch for one round trip; the rail
   withholds itself (`rowsBranch` check) rather than draw a rail for the wrong branch's rows.
@@ -322,19 +323,22 @@ or a failed push.
   and status behaviour are owned by [server-api](../server-api/low-level.md). Handlers narrow on
   `err instanceof ApiError && err.status === 409` to distinguish the two structured
   rejection bodies (`GitMilestoneFork`, `GitPushRejection`) from all other errors.
-  Generic Git failures pass through `gitErrorMessage`, which prefers a human-readable
-  backend-authored `ApiError.detail`, then an ordinary `Error.message`, then the stable
-  fallback `"Git operation failed"`. A detail string that decodes to a structured JSON
-  value is not human-readable here and therefore falls through to `Error.message`.
-- `parseGitMilestoneFork` / `parseGitPushRejection` (`frontend/src/types/guards.ts`) return
-  `null` only before their status discriminator matches. Once a body declares
-  `would_fork` / `rejected_diverged`, malformed required fields throw and each call site
-  converts that parser failure into a plain error toast instead of crashing the modal.
-- `parseGitPushResponse` treats `default_branch` and `bootstrapped_default` as required and
-  type-checks both. A malformed success body rejects through the normal request promise and
+  Generic Git failures pass through the shared `apiErrorMessage`
+  ([frontend shared](../frontend-shared/low-level.md)) with a call-site fallback: a structured
+  detail's `message` (both 409 bodies carry a leg-naming one), else a string detail, else an
+  ordinary `Error.message`, else the fallback. A structured 409 body that is neither rejection
+  is reported by its status, never printed as raw JSON.
+- `parseGitMilestoneFork` / `parseGitPushRejection` (`frontend/src/api/client.ts`, async
+  because they load the lazy generated git validators) resolve `null` only before their
+  status discriminator matches. Once a body declares `would_fork` / `rejected_diverged`, the
+  generated `GitMilestoneFork` / `GitPushRejection` validator checks it, a malformed body
+  rejects, and each call site converts that failure into a plain error toast instead of
+  crashing the modal.
+- The generated `GitPushResponse` validator requires `default_branch` and
+  `bootstrapped_default` and type-checks both. A malformed success body rejects through the normal request promise and
   reaches `RemotePushControl`'s error toast; the UI must not infer a bootstrap from
   `pushed_refs` or silently substitute `main`.
-- `GitPanel.refresh()`'s catch only toasts and returns `null` when its own generation is
+- `useGitHistory.refresh()`'s catch only toasts and returns `null` when its own generation is
   still current — a superseded refresh's rejection is swallowed entirely (the newer
   refresh owns error reporting for that logical operation).
 - The graph fetch inside `refresh()` uses a `.then(onFulfilled, onRejected)` pair whose
@@ -423,7 +427,8 @@ Library component/unit tests (no e2e for this surface).
   which mutations reload the page and which don't, keyed on `switched`/`is_current`, plus
   the dirty-canvas guard on current-branch archive and delete before those reload paths.
 - **`frontend/src/components/__tests__/BranchIndicator.test.tsx`** — checking and retryable-error
-  states, no-repository/unset/detached/invalid/divergent/ready rendering, the branch-name
+  states, full error tooltip on hover and Retry focus with an accessible description,
+  no-repository/unset/detached/invalid/divergent/ready rendering, the branch-name
   click's panel/store side effects, and that the ready state stays branch-only — carrying no
   save SHA, including while a comparison is open.
 - **`frontend/src/components/__tests__/CommitBreadcrumb.test.tsx`** — root/milestone collapse-to-anchor
@@ -474,6 +479,9 @@ Library component/unit tests (no e2e for this surface).
 - **`frontend/src/components/__tests__/DivergenceModal.gaps.test.tsx`** — error-toast surfacing on a
   rejected `setWorkingBranch` (both `Error` and non-`Error`), the busy/"Working…" disabled
   state, double-submit guarding, and null-status placeholder rendering.
+- **`frontend/src/components/__tests__/ModalForm.test.tsx`** — the shared heading, the identity
+  fields (change callbacks under the caller's test ids, email type, autofocus, the global-config
+  checkbox) and the cancel/submit row (cancel, busy label on a disabled submit).
 
 Known coverage gaps: none flagged in the suites' own comments; the layout test file's
 breadth (60+ cases) suggests `computeGitGraphLayout`/`computeRailRuns` are the

@@ -22,6 +22,7 @@ import math
 import polars as pl
 import pytest
 
+from haute._native_memory_limit import native_memory_backend_scope
 from haute._trace_enrichment import _effective_node_code
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.trace import (
@@ -34,6 +35,20 @@ from tests.conftest import make_graph as _g
 from tests.conftest import make_ready_file_input_config
 from tests.conftest import make_source_node as _source_node
 from tests.conftest import make_transform_node as _transform_node
+
+
+@pytest.fixture(autouse=True)
+def _hard_capped_native_memory():
+    """Run each trace test under a declared native memory cap.
+
+    Production trace and preview run inside a hard-capped isolated worker
+    (``routes.pipeline._execute_trace_worker``). Declaring the backend here
+    lets an unmeasured materialisation boundary (a user cross join) run warned
+    exactly as it does there, instead of being rejected in-process.
+    """
+    with native_memory_backend_scope("rlimit"):
+        yield
+
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
@@ -81,6 +96,53 @@ def test_effective_node_code_is_the_single_instance_resolution_rule(
     }
 
     assert _effective_node_code(config, node_map) == expected
+
+
+def test_an_input_a_node_computed_without_its_code_keeps_the_value_it_produced() -> None:
+    """A model whose transform code assigns other columns still predicted its own.
+
+    A formula downstream reads the prediction; its input source carries the
+    predicted value rather than a "not computed" from looking for a formula the
+    model's code never wrote.
+    """
+    from haute._trace_enrichment import _build_input_sources
+    from haute.trace import SchemaDiff
+
+    def diff(added: list[str]) -> SchemaDiff:
+        return SchemaDiff(
+            columns_added=added, columns_removed=[], columns_modified=[], columns_passed=[]
+        )
+
+    model = TraceStep(
+        node_id="scoring",
+        node_name="scoring",
+        node_type="modelScore",
+        schema_diff=diff(["prediction", "ratio"]),
+        input_values={"premium": 250.0},
+        output_values={"premium": 250.0, "prediction": 252.2, "ratio": 250.0 / 252.2},
+    )
+    reader = TraceStep(
+        node_id="reader",
+        node_name="reader",
+        node_type="polars",
+        schema_diff=diff(["margin"]),
+        input_values={"premium": 250.0, "prediction": 252.2},
+        output_values={"premium": 250.0, "prediction": 252.2, "margin": -2.2},
+    )
+    node_map = {
+        "scoring": _transform_node(
+            "scoring",
+            'df = df.with_columns((pl.col("premium") / pl.col("prediction")).alias("ratio"))',
+        ),
+    }
+
+    sources = _build_input_sources(["prediction"], reader, [model, reader], node_map, None)
+
+    assert sources["prediction"] == {
+        "node_id": "scoring",
+        "node_name": "scoring",
+        "result_value": 252.2,
+    }
 
 
 # ===========================================================================
@@ -696,8 +758,8 @@ class TestRatingStepEdgeCases:
 # ===========================================================================
 
 
-class TestBandingContinuous:
-    """Continuous banding using Polars when/then patterns."""
+class TestPolarsRangeBanding:
+    """Range banding written as Polars when/then chains in a transform node."""
 
     def test_middle_band(self, tmp_path):
         """Value falls in a middle band."""
@@ -2382,8 +2444,6 @@ class TestEnrichRowLineageType:
         from haute._trace_enrichment import detect_row_lineage_type
 
         result = detect_row_lineage_type(
-            input_row_count=10,
-            output_row_count=10,
             node_type="polars",
             operation_type="with_columns",
         )
@@ -2395,8 +2455,6 @@ class TestEnrichRowLineageType:
         from haute._trace_enrichment import detect_row_lineage_type
 
         result = detect_row_lineage_type(
-            input_row_count=0,
-            output_row_count=10,
             node_type="dataInput",
             operation_type="load",
         )
@@ -2408,8 +2466,6 @@ class TestEnrichRowLineageType:
         from haute._trace_enrichment import detect_row_lineage_type
 
         result = detect_row_lineage_type(
-            input_row_count=10,
-            output_row_count=5,
             node_type="polars",
             operation_type="filter",
         )
@@ -2421,8 +2477,6 @@ class TestEnrichRowLineageType:
         from haute._trace_enrichment import detect_row_lineage_type
 
         result = detect_row_lineage_type(
-            input_row_count=10,
-            output_row_count=3,
             node_type="polars",
             operation_type="group_by",
         )
@@ -2434,8 +2488,6 @@ class TestEnrichRowLineageType:
         from haute._trace_enrichment import detect_row_lineage_type
 
         result = detect_row_lineage_type(
-            input_row_count=10,
-            output_row_count=10,
             node_type="polars",
             operation_type="join",
         )
@@ -2447,8 +2499,6 @@ class TestEnrichRowLineageType:
         from haute._trace_enrichment import detect_row_lineage_type
 
         result = detect_row_lineage_type(
-            input_row_count=5,
-            output_row_count=15,
             node_type="polars",
             operation_type="cross_join",
         )
@@ -2460,8 +2510,6 @@ class TestEnrichRowLineageType:
         from haute._trace_enrichment import detect_row_lineage_type
 
         result = detect_row_lineage_type(
-            input_row_count=10,
-            output_row_count=10,
             node_type="polars",
             operation_type="sort",
         )
@@ -2473,118 +2521,115 @@ class TestEnrichRowLineageType:
 # ===========================================================================
 
 
-class TestMatchContinuousRule:
-    """Tests for _match_continuous_rule with all operator combinations."""
+class TestMatchIntervalRule:
+    """Tests for _match_interval_rule with every interval operator."""
 
     def test_less_than_true(self):
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
-        assert _match_continuous_rule(5, {"op1": "<", "val1": 10}) is True
+        assert _match_interval_rule(5, {"op1": "<", "val1": 10}) is True
 
     def test_less_than_false(self):
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
-        assert _match_continuous_rule(10, {"op1": "<", "val1": 10}) is False
+        assert _match_interval_rule(10, {"op1": "<", "val1": 10}) is False
 
     def test_less_than_equal_true(self):
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
-        assert _match_continuous_rule(10, {"op1": "<=", "val1": 10}) is True
+        assert _match_interval_rule(10, {"op1": "<=", "val1": 10}) is True
 
     def test_less_than_equal_false(self):
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
-        assert _match_continuous_rule(11, {"op1": "<=", "val1": 10}) is False
+        assert _match_interval_rule(11, {"op1": "<=", "val1": 10}) is False
 
     def test_greater_than_true(self):
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
-        assert _match_continuous_rule(15, {"op1": ">", "val1": 10}) is True
+        assert _match_interval_rule(15, {"op1": ">", "val1": 10}) is True
 
     def test_greater_than_false(self):
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
-        assert _match_continuous_rule(10, {"op1": ">", "val1": 10}) is False
+        assert _match_interval_rule(10, {"op1": ">", "val1": 10}) is False
 
     def test_greater_than_equal_true(self):
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
-        assert _match_continuous_rule(10, {"op1": ">=", "val1": 10}) is True
+        assert _match_interval_rule(10, {"op1": ">=", "val1": 10}) is True
 
     def test_greater_than_equal_false(self):
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
-        assert _match_continuous_rule(9, {"op1": ">=", "val1": 10}) is False
+        assert _match_interval_rule(9, {"op1": ">=", "val1": 10}) is False
 
-    def test_equal_single_eq(self):
-        from haute._trace_enrichment import _match_continuous_rule
+    @pytest.mark.parametrize("op", ["=", "=="])
+    def test_equality_is_not_an_interval_operator(self, op):
+        from haute._trace_enrichment import _match_interval_rule
 
-        assert _match_continuous_rule(10, {"op1": "=", "val1": 10}) is True
-
-    def test_equal_double_eq(self):
-        from haute._trace_enrichment import _match_continuous_rule
-
-        assert _match_continuous_rule(10, {"op1": "==", "val1": 10}) is True
+        with pytest.raises(ValueError, match="unsupported operator"):
+            _match_interval_rule(10, {"op1": op, "val1": 10})
 
     def test_not_equal_is_rejected(self):
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
         with pytest.raises(ValueError, match="unsupported operator"):
-            _match_continuous_rule(5, {"op1": "!=", "val1": 10})
+            _match_interval_rule(5, {"op1": "!=", "val1": 10})
 
     def test_not_equal_diamond_is_rejected(self):
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
         with pytest.raises(ValueError, match="unsupported operator"):
-            _match_continuous_rule(5, {"op1": "<>", "val1": 10})
+            _match_interval_rule(5, {"op1": "<>", "val1": 10})
 
     def test_two_conditions_range(self):
         """Test a range rule: val >= 10 AND val < 20."""
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
         rule = {"op1": ">=", "val1": 10, "op2": "<", "val2": 20}
-        assert _match_continuous_rule(10, rule) is True
-        assert _match_continuous_rule(15, rule) is True
-        assert _match_continuous_rule(20, rule) is False
-        assert _match_continuous_rule(9, rule) is False
+        assert _match_interval_rule(10, rule) is True
+        assert _match_interval_rule(15, rule) is True
+        assert _match_interval_rule(20, rule) is False
+        assert _match_interval_rule(9, rule) is False
 
     def test_none_input_returns_false(self):
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
-        assert _match_continuous_rule(None, {"op1": "<", "val1": 10}) is False
+        assert _match_interval_rule(None, {"op1": "<", "val1": 10}) is False
 
     def test_non_numeric_input_returns_false(self):
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
-        assert _match_continuous_rule("abc", {"op1": "<", "val1": 10}) is False
+        assert _match_interval_rule("abc", {"op1": "<", "val1": 10}) is False
 
     def test_empty_rule_is_not_usable(self):
         """A rule without a usable comparison cannot receive trace credit."""
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
-        assert _match_continuous_rule(5, {}) is False
+        assert _match_interval_rule(5, {}) is False
 
     def test_missing_value_leaves_rule_unusable(self):
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
-        assert _match_continuous_rule(5, {"op1": "<", "val1": ""}) is False
+        assert _match_interval_rule(5, {"op1": "<", "val1": ""}) is False
 
     def test_non_numeric_threshold_is_rejected(self):
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
         with pytest.raises(ValueError, match="non-numeric threshold"):
-            _match_continuous_rule(5, {"op1": "<", "val1": "abc"})
+            _match_interval_rule(5, {"op1": "<", "val1": "abc"})
 
     def test_unknown_operator_is_rejected(self):
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
         with pytest.raises(ValueError, match="unsupported operator"):
-            _match_continuous_rule(5, {"op1": "??", "val1": 10})
+            _match_interval_rule(5, {"op1": "??", "val1": 10})
 
     def test_string_numeric_input(self):
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
-        assert _match_continuous_rule("5", {"op1": "<", "val1": 10}) is True
+        assert _match_interval_rule("5", {"op1": "<", "val1": 10}) is True
 
 
 class TestEnrichBandingRealConfig:
@@ -2671,8 +2716,8 @@ class TestEnrichBandingRealConfig:
         assert result["is_default"] is True
         assert result["rule_index"] == -1
 
-    def test_continuous_banding_match(self):
-        """Continuous banding matches a range rule."""
+    def test_left_closed_breakpoint_banding_match(self):
+        """A left-closed breakpoint factor reports its [lower, upper) interval."""
         from haute._trace_enrichment import enrich_banding
 
         config = {
@@ -2680,17 +2725,18 @@ class TestEnrichBandingRealConfig:
                 {
                     "column": "age",
                     "outputColumn": "age_band",
-                    "banding": "continuous",
+                    "banding": "breakpoints",
                     "rules": [
-                        {"op1": "<", "val1": 25, "assignment": "young"},
-                        {"op1": ">=", "val1": 25, "op2": "<", "val2": 65, "assignment": "adult"},
-                        {"op1": ">=", "val1": 65, "assignment": "senior"},
+                        {"boundary": "25", "label": "young"},
+                        {"boundary": "65", "label": "adult"},
+                        {"boundary": "", "label": "senior"},
                     ],
+                    "rightClosed": False,
                     "default": "unknown",
                 }
             ]
         }
-        input_row = {"age": 35}
+        input_row = {"age": 25}
         output_row = {"age_band": "adult"}
 
         result = enrich_banding(config, input_row, output_row)
@@ -2698,7 +2744,9 @@ class TestEnrichBandingRealConfig:
         assert result["input_column"] == "age"
         assert result["output_column"] == "age_band"
         assert result["lower_bound"] == 25.0
+        assert result["lower_inclusive"] is True
         assert result["upper_bound"] == 65.0
+        assert result["upper_inclusive"] is False
         assert result["rule_index"] == 1
         assert result["is_default"] is False
 
@@ -2732,6 +2780,31 @@ class TestEnrichBandingRealConfig:
         assert result["lower_inclusive"] is False
         assert result["upper_bound"] == 65.0
         assert result["upper_inclusive"] is True
+
+    def test_a_date_band_is_credited_by_calendar_day_in_the_values_zone(self):
+        """A date band compares a traced time-zoned value by its own calendar day."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        from haute._trace_enrichment import enrich_banding
+
+        config = {
+            "factors": [
+                {
+                    "column": "start",
+                    "outputColumn": "start_band",
+                    "banding": "breakpoints",
+                    "rules": {"2024-06-30": "June", "": "July+"},
+                }
+            ]
+        }
+        # 00:30 on 1 July in London is still 30 June in UTC.
+        start = datetime(2024, 7, 1, 0, 30, tzinfo=ZoneInfo("Europe/London"))
+
+        result = enrich_banding(config, {"start": start}, {"start_band": "July+"})
+
+        assert result["matched_band"] == "July+"
+        assert result["status"] == "matched"
 
     def test_compact_categorical_banding_trace_matches_rule(self):
         """Trace enrichment accepts the compact sidecar rule map."""
@@ -2788,8 +2861,8 @@ class TestEnrichBandingRealConfig:
                 {
                     "column": "age",
                     "outputColumn": "age_band",
-                    "banding": "continuous",
-                    "rules": [{"op1": "<", "val1": 25, "assignment": "young"}],
+                    "banding": "breakpoints",
+                    "rules": [{"boundary": "25", "label": "young"}],
                 },
                 {
                     "column": "region",
@@ -2821,8 +2894,8 @@ class TestEnrichBandingRealConfig:
                 {
                     "column": "age",
                     "outputColumn": "age_band",
-                    "banding": "continuous",
-                    "rules": [{"op1": "<", "val1": 25, "assignment": "young"}],
+                    "banding": "breakpoints",
+                    "rules": [{"boundary": "25", "label": "young"}],
                 },
                 {
                     "column": "region",
@@ -2845,8 +2918,8 @@ class TestEnrichBandingRealConfig:
         assert "output_column" not in result
         assert "matched_band" not in result
 
-    def test_continuous_banding_no_match_uses_default(self):
-        """Continuous banding falls to default when no rule matches."""
+    def test_breakpoint_banding_no_match_uses_default(self):
+        """Breakpoint banding falls to default when no band holds the value."""
         from haute._trace_enrichment import enrich_banding
 
         config = {
@@ -2854,9 +2927,9 @@ class TestEnrichBandingRealConfig:
                 {
                     "column": "score",
                     "outputColumn": "score_band",
-                    "banding": "continuous",
+                    "banding": "breakpoints",
                     "rules": [
-                        {"op1": "<", "val1": 0, "assignment": "negative"},
+                        {"boundary": "0", "label": "negative"},
                     ],
                     "default": "other",
                 }
@@ -2878,8 +2951,8 @@ class TestEnrichBandingRealConfig:
                 {
                     "column": "age",
                     "outputColumn": "age_band",
-                    "banding": "continuous",
-                    "rules": [{"op1": "<", "val1": 25, "assignment": "young"}],
+                    "banding": "breakpoints",
+                    "rules": [{"boundary": "25", "label": "young"}],
                     "default": None,
                 },
                 {
@@ -2900,8 +2973,8 @@ class TestEnrichBandingRealConfig:
         assert result["matched_band"] == "young"
         assert result["input_value"] == 20
 
-    def test_continuous_banding_none_input(self):
-        """Continuous banding with None input value does not match any rule."""
+    def test_breakpoint_banding_none_input(self):
+        """Breakpoint banding with None input value does not match any band."""
         from haute._trace_enrichment import enrich_banding
 
         config = {
@@ -2909,8 +2982,8 @@ class TestEnrichBandingRealConfig:
                 {
                     "column": "age",
                     "outputColumn": "age_band",
-                    "banding": "continuous",
-                    "rules": [{"op1": "<", "val1": 25, "assignment": "young"}],
+                    "banding": "breakpoints",
+                    "rules": [{"boundary": "25", "label": "young"}],
                     "default": "unknown",
                 }
             ]
@@ -3592,10 +3665,6 @@ class TestEnrichModelScoreRealConfig:
             "haute._model_explainability.explain_model_score_from_config",
             fake_explain,
         )
-        monkeypatch.setattr(
-            "haute._model_explainability._config_requests_supported_explanation",
-            lambda config: True,
-        )
 
         config = {
             "output_column": "pred",
@@ -3628,7 +3697,7 @@ class TestEnrichScenarioExpansionRealConfig:
             "step_column": "step_idx",
             "min_value": 0,
             "max_value": 100,
-            "steps": 5,
+            "stepCount": 5,
         }
         input_row = {"id": 1}
         output_row = {"id": 1, "scenario": "high", "step_idx": 3}
@@ -3709,13 +3778,13 @@ class TestDetectRowLineageTypeExtended:
     def test_api_input_created(self):
         from haute._trace_enrichment import detect_row_lineage_type
 
-        result = detect_row_lineage_type(node_type="apiInput", output_row_count=5)
+        result = detect_row_lineage_type(node_type="apiInput")
         assert result == "created"
 
     def test_live_switch_selected(self):
         from haute._trace_enrichment import detect_row_lineage_type
 
-        result = detect_row_lineage_type(node_type="liveSwitch", output_row_count=5)
+        result = detect_row_lineage_type(node_type="liveSwitch")
         assert result == "selected"
 
     def test_groupby_operation(self):
@@ -3743,65 +3812,25 @@ class TestDetectRowLineageTypeExtended:
 
         assert detect_row_lineage_type(operation_type="scenario_expand") == "expanded"
 
-    def test_fallback_created_from_zero(self):
-        """Zero input rows + positive output rows = created (fallback)."""
+    def test_unclassified_operation_is_passthrough(self):
+        """Labels never infer cardinality from limited or row-scoped frame heights."""
         from haute._trace_enrichment import detect_row_lineage_type
 
-        result = detect_row_lineage_type(
-            input_row_count=0,
-            output_row_count=5,
-            node_type="custom",
-            operation_type="custom_op",
-        )
-        assert result == "created"
-
-    def test_fallback_filtered_from_counts(self):
-        """Output < input = filtered (fallback)."""
-        from haute._trace_enrichment import detect_row_lineage_type
-
-        result = detect_row_lineage_type(
-            input_row_count=10,
-            output_row_count=3,
-            node_type="custom",
-            operation_type="custom_op",
-        )
-        assert result == "filtered"
-
-    def test_fallback_expanded_from_counts(self):
-        """Output > input = expanded (fallback)."""
-        from haute._trace_enrichment import detect_row_lineage_type
-
-        result = detect_row_lineage_type(
-            input_row_count=5,
-            output_row_count=15,
-            node_type="custom",
-            operation_type="custom_op",
-        )
-        assert result == "expanded"
-
-    def test_fallback_passthrough_equal_counts(self):
-        """Output == input = passthrough (fallback)."""
-        from haute._trace_enrichment import detect_row_lineage_type
-
-        result = detect_row_lineage_type(
-            input_row_count=10,
-            output_row_count=10,
-            node_type="custom",
-            operation_type="custom_op",
-        )
+        result = detect_row_lineage_type(node_type="custom", operation_type="custom_op")
         assert result == "passthrough"
 
-    def test_none_input_row_count_fallback(self):
-        """None input_row_count defaults to 0."""
+    @pytest.mark.parametrize(
+        ("node_type", "expected"),
+        [
+            ("constant", "created"),
+            ("scenarioExpander", "expanded"),
+            ("optimiserApply", "aggregated"),
+        ],
+    )
+    def test_config_driven_node_types_are_classified_by_type(self, node_type, expected):
         from haute._trace_enrichment import detect_row_lineage_type
 
-        result = detect_row_lineage_type(
-            input_row_count=None,
-            output_row_count=5,
-            node_type="custom",
-            operation_type="custom_op",
-        )
-        assert result == "created"
+        assert detect_row_lineage_type(node_type=node_type) == expected
 
     def test_no_args_passthrough(self):
         """No arguments defaults to passthrough."""
@@ -3809,14 +3838,8 @@ class TestDetectRowLineageTypeExtended:
 
         assert detect_row_lineage_type() == "passthrough"
 
-    def test_detect_row_lineage_type_zero_rows(self):
-        """input_row_count=0 and output_row_count=0 should return passthrough."""
+    def test_with_columns_is_passthrough(self):
         from haute._trace_enrichment import detect_row_lineage_type
 
-        result = detect_row_lineage_type(
-            input_row_count=0,
-            output_row_count=0,
-            node_type="polars",
-            operation_type="with_columns",
-        )
+        result = detect_row_lineage_type(node_type="polars", operation_type="with_columns")
         assert result == "passthrough"

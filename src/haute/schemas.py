@@ -7,8 +7,10 @@ with API-friendly aliases so that FastAPI endpoint signatures stay clean.
 
 from __future__ import annotations
 
+import itertools
 import keyword
 import math
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Annotated, Any, Literal, cast
 
@@ -19,6 +21,9 @@ from pydantic import (
     Field,
     RootModel,
     StrictBool,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
     field_validator,
     model_validator,
 )
@@ -45,6 +50,12 @@ from haute._execution_schemas import (
     NodeExecutionStatus,  # noqa: F401
     _validate_diagnostic_collection,
 )
+from haute._pipeline_settings import (
+    MAX_SIZE_GB,
+    MAX_STREAMING_CHUNK_SIZE,
+    MAX_TIME_LIMIT_MINUTES,
+)
+from haute._types import GlobalConstant as GlobalConstant  # noqa: F401
 from haute._types import GraphEdge as GraphEdge  # noqa: F401
 from haute._types import GraphNode as GraphNode  # noqa: F401
 from haute._types import NodeData as GraphNodeData  # noqa: F401
@@ -52,16 +63,36 @@ from haute._types import NodeType
 from haute._types import PipelineGraph as Graph  # noqa: F401
 
 
-def _reject_bool_chunk_size(value: object) -> object:
+def _reject_bool(value: object) -> object:
     if isinstance(value, bool):
-        raise ValueError("streaming_chunk_size must not be a bool")
+        raise ValueError("must be a number, not true or false")
     return value
 
 
+# Each Field before its validator, so the bounds reach the JSON schema as
+# minimum/maximum; the bool check still runs first. The bounds are the
+# pipeline settings file's own (``haute._pipeline_settings``), and so is the
+# strictness: a numeric string, or a fraction for chunk rows, is refused rather
+# than converted.
 StreamingChunkSize = Annotated[
-    int | None,
-    BeforeValidator(_reject_bool_chunk_size),
-    Field(ge=1, le=10_000_000),
+    int,
+    Field(ge=1, le=MAX_STREAMING_CHUNK_SIZE, strict=True),
+    BeforeValidator(_reject_bool),
+]
+PositiveGigabytes = Annotated[
+    float,
+    Field(gt=0, le=MAX_SIZE_GB, allow_inf_nan=False, strict=True),
+    BeforeValidator(_reject_bool),
+]
+Gigabytes = Annotated[
+    float,
+    Field(ge=0, le=MAX_SIZE_GB, allow_inf_nan=False, strict=True),
+    BeforeValidator(_reject_bool),
+]
+TimeLimitMinutes = Annotated[
+    float,
+    Field(gt=0, le=MAX_TIME_LIMIT_MINUTES, allow_inf_nan=False, strict=True),
+    BeforeValidator(_reject_bool),
 ]
 
 RevisionToken = Annotated[str, Field(min_length=1, pattern=r"^\S+$")]
@@ -153,27 +184,274 @@ class AssistantStatusResponse(BaseModel):
 
 
 class AssistantSessionRequest(BaseModel):
-    pipeline: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
+    # The project-relative source file of the pipeline document the canvas
+    # shows. The session is bound to it; the server never picks a pipeline.
+    source_file: str = Field(min_length=1)
     # A previously issued session id the client wants to resume. Resume is an
     # offer: unknown/pruned ids or a different pipeline yield a fresh session.
     session_id: str | None = None
 
 
-class AssistantTranscriptEntry(BaseModel):
-    """One rehydratable transcript item from a resumed session's history."""
+AssistantTurnOutcomeKind = Literal[
+    "applied", "answered", "needs_input", "blocked", "committed_unverified", "incomplete"
+]
+_OUTCOME_KINDS_WITH_DETAIL = frozenset(
+    {"needs_input", "blocked", "committed_unverified", "incomplete"}
+)
 
-    kind: Literal["user", "assistant", "tool"]
+
+class AssistantTurnOutcome(BaseModel):
+    """How a completed assistant turn ended, and what it saved.
+
+    ``detail`` is the model's question (``needs_input``), the sanitized blocker
+    (``blocked``), the verification error of a save that committed
+    (``committed_unverified``) or the controller's reason the model stopped
+    with a dry-run unfinished (``incomplete``); ``applied`` and ``answered``
+    carry none. ``changes`` are the ids of the change records the turn saved,
+    in order, whatever the kind says about finishing the request: ``applied``
+    saved at least one and ``answered`` none, while any other kind may follow
+    saved changes.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: AssistantTurnOutcomeKind
+    detail: str | None
+    changes: list[str]
+
+    @model_validator(mode="after")
+    def _detail_matches_kind(self) -> AssistantTurnOutcome:
+        if self.kind in _OUTCOME_KINDS_WITH_DETAIL:
+            if self.detail is None or not self.detail.strip():
+                raise ValueError(f"a {self.kind} outcome requires a non-empty detail")
+        elif self.detail is not None:
+            raise ValueError(f"a {self.kind} outcome carries no detail")
+        if self.kind == "applied" and not self.changes:
+            raise ValueError("an applied outcome names the changes it saved")
+        if self.kind == "answered" and self.changes:
+            raise ValueError("an answered outcome saved no change")
+        return self
+
+
+#: The longest plan summary or assumption a dry-run accepts, in characters: room
+#: for one or two sentences. The receipt is presentation, never authority.
+ASSISTANT_RECEIPT_TEXT_LIMIT = 400
+#: The most assumptions one dry-run records.
+ASSISTANT_MAX_ASSUMPTIONS = 5
+
+
+class AssistantChangeEdge(BaseModel):
+    """One edge a saved plan added or removed, by its endpoint node ids."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source: str
+    target: str
+
+
+class AssistantChangeNode(BaseModel):
+    """One node chip on a change card: which node, its palette type and what happened.
+
+    ``fields`` names the configuration fields the plan changed in plain words,
+    never their values; ``steps`` lists a stepped node's step kinds after the
+    change (``None`` for a node without a step list) and ``steps_changed`` how
+    many steps the plan inserted, replaced, removed or rewired.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str
+    type: str
+    change: Literal["added", "changed", "removed", "renamed"]
+    renamed_from: str | None = None
+    fields: list[str] = []
+    steps: list[str] | None = None
+    steps_changed: int = Field(default=0, ge=0)
+
+
+class AssistantGraphChanges(BaseModel):
+    """A plan's node chips and edges, each list bounded; ``truncated`` when cut.
+
+    An empty list and a false flag are the defaults, which the compact tool
+    results the model reads leave out.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    nodes: list[AssistantChangeNode]
+    edges_added: list[AssistantChangeEdge] = []
+    edges_removed: list[AssistantChangeEdge] = []
+    preamble_changed: bool = False
+    truncated: bool = False
+
+
+#: The most data-check findings one change card lists.
+ASSISTANT_MAX_DATA_FINDINGS = 20
+
+
+class AssistantDataFinding(BaseModel):
+    """One data-check finding on a change card, worded from its counts and names.
+
+    ``text`` says what was measured in plain words ("All 1,204 rows fell into
+    the default band of age_band."): counts, shares, node, column and port
+    names, never a row value, a configuration value or an error's own text.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    severity: Literal["advisory", "informational"]
+    node: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+
+
+class AssistantChangeDataCheck(BaseModel):
+    """The data check of the dry-run whose plan a change saved, as its card shows it.
+
+    ``visibility`` compares the check's binding with the graph the apply
+    saved: ``current``; ``earlier_inputs`` when an input or a cached model it
+    read has changed since; ``other_scenario`` when the graph runs another
+    scenario, which keeps no findings, only the ``scenario`` they described.
+    A check bound to another graph is not carried at all. ``not_checked`` is
+    one line saying why the check, or some of the changed nodes, did not run.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    visibility: Literal["current", "earlier_inputs", "other_scenario"]
+    outcome: Literal["checked", "not_run"]
+    scenario: str = Field(min_length=1)
+    findings: list[AssistantDataFinding] = Field(max_length=ASSISTANT_MAX_DATA_FINDINGS)
+    findings_omitted: int = Field(ge=0)
+    not_checked: str | None
+
+
+class AssistantChangeRecord(BaseModel):
+    """The value-free change card of one saved plan.
+
+    ``id`` is the hash of the plan it saved; a plan applies once, so it names
+    this change. ``summary`` and ``assumptions`` are the model's own words from
+    the plan's dry-run; everything else is built from what was saved.
+    ``data_check`` is the plan's data check, or ``None`` when no check was
+    attempted or its findings describe another graph.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str = Field(min_length=1)
+    # Bounded where the model writes it (the dry-run receipt), not here: a
+    # persisted record redacts it, which can lengthen it.
+    summary: str = Field(min_length=1)
+    assumptions: list[str] = Field(default=[], max_length=ASSISTANT_MAX_ASSUMPTIONS)
+    changes: AssistantGraphChanges
+    warnings: list[str] = []
+    git_sha: str | None
+    parent_sha: str | None
+    # The editor document revision the save produced: Undo is allowed only while
+    # the pipeline is still at it.
+    revision: str = Field(min_length=1)
+    # A record saved before data checks existed has none.
+    data_check: AssistantChangeDataCheck | None = None
+
+
+#: The most items one build plan holds.
+ASSISTANT_MAX_BUILD_PLAN_ITEMS = 12
+#: The longest build-plan item title, in characters.
+ASSISTANT_BUILD_PLAN_TITLE_LIMIT = 80
+#: A build-plan item id: lower-case letters, digits and underscores, starting with a letter.
+ASSISTANT_BUILD_PLAN_ID_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
+
+
+class AssistantBuildPlanChange(BaseModel):
+    """One saved change recorded against a build-plan item, by its change card's id."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str = Field(min_length=1)
+    # The analyst undid the change; it stays listed, as its card stays in the chat.
+    undone: bool
+
+
+class AssistantBuildPlanItem(BaseModel):
+    """One stage of a build plan: the changes saved against it and whether it is complete.
+
+    The changes are Haute's record of the applies the model attributed to the
+    item; completion is the model's claim, which Haute accepts only while the
+    item has a change that is not undone.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str = Field(pattern=ASSISTANT_BUILD_PLAN_ID_PATTERN)
+    # Bounded where the model writes it (the tool schema), not here: a persisted
+    # plan redacts it, which can lengthen it.
+    title: str = Field(min_length=1)
+    complete: bool
+    changes: list[AssistantBuildPlanChange]
+
+    @model_validator(mode="after")
+    def _complete_has_a_live_change(self) -> AssistantBuildPlanItem:
+        if self.complete and all(change.undone for change in self.changes):
+            raise ValueError(
+                f"build plan item {self.id!r} is complete without a saved change that is not undone"
+            )
+        return self
+
+
+class AssistantBuildPlan(BaseModel):
+    """The stages a multi-stage request is built in, in order, as the chat's checklist."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    items: list[AssistantBuildPlanItem] = Field(
+        min_length=1, max_length=ASSISTANT_MAX_BUILD_PLAN_ITEMS
+    )
+
+    @model_validator(mode="after")
+    def _unique_item_ids(self) -> AssistantBuildPlan:
+        ids = [item.id for item in self.items]
+        if len(set(ids)) != len(ids):
+            raise ValueError("build plan item ids must be unique")
+        return self
+
+
+class AssistantTranscriptEntry(BaseModel):
+    """One rehydratable transcript item from a resumed session's history.
+
+    An ``outcome`` entry closes a completed turn with its stored outcome, a
+    ``change`` entry carries an apply's change record and an ``undo`` entry the
+    record of a change the analyst undid; only those kinds carry those fields.
+    """
+
+    kind: Literal["user", "assistant", "tool", "outcome", "change", "undo"]
     text: str = ""
     name: str = ""
+    # A tool entry's plain-words activity title.
+    title: str = ""
     summary: str = ""
     is_error: bool = False
+    outcome: AssistantTurnOutcome | None = None
+    change: AssistantChangeRecord | None = None
+
+    @model_validator(mode="after")
+    def _payload_only_on_its_entries(self) -> AssistantTranscriptEntry:
+        if (self.kind == "outcome") != (self.outcome is not None):
+            raise ValueError("exactly the outcome entry carries an outcome")
+        if (self.kind in {"change", "undo"}) != (self.change is not None):
+            raise ValueError("exactly the change and undo entries carry a change record")
+        return self
 
 
 class AssistantSessionResponse(BaseModel):
     session_id: str
+    # The canonical project-relative source file the session is bound to.
+    source_file: str
     # Non-empty only when the requested session was resumed: the stored turns
     # mapped to transcript entries for the panel to rehydrate.
     history: list[AssistantTranscriptEntry] = []
+    # The session's build plan for the checklist; None until the model sets one.
+    build_plan: AssistantBuildPlan | None
 
 
 class AssistantSessionSummary(BaseModel):
@@ -189,7 +467,46 @@ class AssistantSessionSummary(BaseModel):
 
 
 class AssistantSessionListResponse(BaseModel):
+    # The canonical project-relative source file the listed sessions are bound to.
+    source_file: str
     sessions: list[AssistantSessionSummary] = []
+
+
+class AssistantMessageContext(BaseModel):
+    """What the canvas adds to one message: its selection and an opt-in preview error."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Top-level node ids of the saved pipeline, in selection order.
+    selected_node_ids: list[str] = Field(max_length=20)
+    # The node whose schema-resolution error the turn context reports.
+    preview_error_node_id: str | None = None
+
+    @model_validator(mode="after")
+    def _unique_selection(self) -> AssistantMessageContext:
+        if len(set(self.selected_node_ids)) != len(self.selected_node_ids):
+            raise ValueError("selected_node_ids must not repeat a node")
+        return self
+
+
+class AssistantUndoRequest(BaseModel):
+    """Undo one change card: save the version before that change."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    # The change card's id, the hash of the plan that saved it.
+    change_id: str = Field(min_length=1)
+    # The canvas document's source file; one other than the session's is refused.
+    source_file: str = Field(min_length=1)
+
+
+class AssistantUndoResponse(BaseModel):
+    change_id: str
+    # The commit the undo's save made, or None when it was not captured in Git.
+    git_sha: str | None
+    # The session's build plan after the undo marked the change undone; None without one.
+    build_plan: AssistantBuildPlan | None
 
 
 class AssistantMessageRequest(BaseModel):
@@ -197,6 +514,9 @@ class AssistantMessageRequest(BaseModel):
 
     session_id: str
     message: str
+    # The canvas document's source file; one other than the session's is refused.
+    source_file: str = Field(min_length=1)
+    context: AssistantMessageContext | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -214,31 +534,58 @@ class AssistantTextDeltaEvent(BaseModel):
     text: str
 
 
+class AssistantThinkingEvent(BaseModel):
+    """The model is thinking: a status for the panel, carrying none of the thinking."""
+
+    type: Literal["thinking"] = "thinking"
+
+
 class AssistantToolStartedEvent(BaseModel):
     type: Literal["tool_started"] = "tool_started"
     id: str
     name: str
+    # The activity row's plain-words title, written beside the tool.
+    title: str
     # Compact rendering of the call's arguments for the chat activity row.
     summary: str = ""
+
+
+class AssistantToolProgressEvent(BaseModel):
+    """A running tool moved to a new stage: its activity row's title until it finishes."""
+
+    type: Literal["tool_progress"] = "tool_progress"
+    id: str
+    title: str
 
 
 class AssistantToolFinishedEvent(BaseModel):
     type: Literal["tool_finished"] = "tool_finished"
     id: str
     name: str
+    title: str
     is_error: bool
     # Compact rendering of the result (or the error message) for the row.
     summary: str = ""
 
 
-class AssistantGraphUpdatedEvent(BaseModel):
-    type: Literal["graph_updated"] = "graph_updated"
-    fingerprint: str
+class AssistantChangeAppliedEvent(BaseModel):
+    """A plan was saved: the change card built from what was saved."""
+
+    type: Literal["change_applied"] = "change_applied"
+    change: AssistantChangeRecord
+
+
+class AssistantBuildPlanUpdatedEvent(BaseModel):
+    """A tool call changed the session's build plan: the whole plan as it now stands."""
+
+    type: Literal["build_plan_updated"] = "build_plan_updated"
+    build_plan: AssistantBuildPlan
 
 
 class AssistantCompletedEvent(BaseModel):
     type: Literal["completed"] = "completed"
     usage: AssistantUsage
+    outcome: AssistantTurnOutcome
 
 
 class AssistantFailedEvent(BaseModel):
@@ -252,9 +599,12 @@ class AssistantCancelledEvent(BaseModel):
 
 AssistantStreamEvent = Annotated[
     AssistantTextDeltaEvent
+    | AssistantThinkingEvent
     | AssistantToolStartedEvent
+    | AssistantToolProgressEvent
     | AssistantToolFinishedEvent
-    | AssistantGraphUpdatedEvent
+    | AssistantChangeAppliedEvent
+    | AssistantBuildPlanUpdatedEvent
     | AssistantCompletedEvent
     | AssistantFailedEvent
     | AssistantCancelledEvent,
@@ -304,6 +654,22 @@ class PipelineRecoveryDiagnostic(BaseModel):
     )
 
 
+class PipelineNodeCompleteness(BaseModel):
+    """A required value missing from an otherwise loadable node's config.
+
+    Completeness is not a load failure: entries never mark a node
+    unavailable, never degrade the document, and never appear in
+    ``diagnostics``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    element_id: str = Field(min_length=1)
+    path: str = Field(min_length=1)
+    code: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_]*$")
+    message: str = Field(min_length=1, max_length=1024)
+
+
 class PipelineDocumentCapabilities(BaseModel):
     """Server-derived admission fence for one loaded editor document."""
 
@@ -350,6 +716,9 @@ class RecoveryPipelineNode(BaseModel):
     source_span: RecoverySourceSpan | None = None
     diagnostic_ids: list[str] = Field(default_factory=list)
     blocking_path: list[str] = Field(default_factory=list)
+    # Server-derived: this loadable node's settings/code may be saved in
+    # isolation while the whole document remains fenced.
+    scoped_editable: bool = False
 
     @field_validator("display_position")
     @classmethod
@@ -423,19 +792,52 @@ class RecoverySubmodelDefinition(BaseModel):
     diagnostic_ids: list[str] = Field(default_factory=list)
     graph: RecoveryGraphSnapshot
     input_ports: list[dict[str, Any]] = Field(default_factory=list)
-    input_port_input_names: dict[str, str]
     output_ports: list[dict[str, Any]] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def _input_identity_coverage(self) -> RecoverySubmodelDefinition:
-        port_ids = [port.get("portId") for port in self.input_ports]
-        if any(not isinstance(port_id, str) or not port_id for port_id in port_ids):
-            raise ValueError("Recovery submodel input ports require non-empty portId values.")
-        if set(self.input_port_input_names) != set(port_ids):
-            raise ValueError("input_port_input_names must exactly cover input_ports.")
-        if any(not value for value in self.input_port_input_names.values()):
-            raise ValueError("input_port_input_names values must be non-empty.")
+    def _validate_port_names(self) -> RecoverySubmodelDefinition:
+        for port in (*self.input_ports, *self.output_ports):
+            name = port.get("name") if isinstance(port, Mapping) else getattr(port, "name", None)
+            if not isinstance(name, str) or not name or name != name.strip():
+                raise ValueError("Recovery submodel ports require a non-empty unpadded name.")
         return self
+
+
+class PipelineNameViolationParty(BaseModel):
+    """A node taking part in a name violation; ``submodel`` is its definition, if any."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str = Field(min_length=1)
+    label: str
+    submodel: str | None = None
+
+
+class PipelineNameViolation(BaseModel):
+    """One name violation (codegen's naming rule, or support code's), with its message.
+
+    A support-code violation that involves no node (two helpers binding one
+    name, a statement the inventory cannot read) has no parties, and an
+    unreadable statement has no name.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal[
+        "duplicate",
+        "reserved",
+        "builtin",
+        "reserved_input",
+        "support_collision",
+        "support_input",
+        "support_conflict",
+        "support_reserved",
+        "support_unsupported",
+        "output_destination",
+    ]
+    name: str
+    message: str = Field(min_length=1)
+    parties: list[PipelineNameViolationParty]
 
 
 class PipelineEditorDocument(BaseModel):
@@ -450,6 +852,8 @@ class PipelineEditorDocument(BaseModel):
     pipeline_description: str | None = None
     preamble: str | None = None
     preserved_blocks: list[str] = Field(default_factory=list)
+    global_constants: list[GlobalConstant] = Field(default_factory=list)
+    global_constants_error: str | None = None
     source_file: str = ""
     source_revision: RevisionToken | None = None
     source_text: str = ""
@@ -463,6 +867,11 @@ class PipelineEditorDocument(BaseModel):
     submodels: dict[str, RecoverySubmodelDefinition] | None = None
     diagnostics: list[PipelineRecoveryDiagnostic] = Field(default_factory=list)
     diagnostics_omitted: int = Field(default=0, ge=0)
+    completeness: list[PipelineNodeCompleteness] = Field(default_factory=list)
+    completeness_omitted: int = Field(default=0, ge=0)
+    # The file's executable-name violations. While any remain the document is
+    # editable but cannot be saved, executed or previewed.
+    name_violations: list[PipelineNameViolation] = Field(default_factory=list)
     capabilities: PipelineDocumentCapabilities
 
 
@@ -474,7 +883,10 @@ class EditorIdentityRequestNode(BaseModel):
     node_id: str = Field(min_length=1, max_length=512)
     label: str = Field(min_length=1, max_length=2048)
     node_type: NodeType
-    submodel_alias: str | None = Field(default=None, min_length=1, max_length=512)
+    alias: Annotated[str, Field(min_length=1, max_length=512)] | None = Field(default=None)
+    # The submodel definition the node belongs to in the naming context, or
+    # ``None`` for the pipeline itself. Ids are unique only within one graph.
+    submodel: Annotated[str, Field(min_length=1, max_length=512)] | None = None
     source_handles: list[Annotated[str, Field(min_length=1, max_length=512)]] = Field(
         default_factory=list,
         max_length=1024,
@@ -490,23 +902,21 @@ class EditorIdentityRequestNode(BaseModel):
     @model_validator(mode="after")
     def _identity_inputs_match_node_type(self) -> EditorIdentityRequestNode:
         if self.node_type == NodeType.SUBMODEL:
-            if self.submodel_alias is None:
-                raise ValueError("submodel_alias is required for submodel nodes.")
-            if any(
-                not handle.startswith("out__") or len(handle) == len("out__")
-                for handle in self.source_handles
-            ):
-                raise ValueError("submodel source handles must use out__<port_id>.")
-            return self
-        if self.submodel_alias is not None:
-            raise ValueError("submodel_alias is only valid for submodel nodes.")
+            for handle in self.source_handles:
+                port_name = handle[len("out__") :] if handle.startswith("out__") else ""
+                if not port_name or not port_name.isascii() or not port_name.isidentifier():
+                    raise ValueError("submodel source handles must use out__<name>.")
+        if self.node_type == NodeType.SUBMODEL_PORT:
+            for handle in self.source_handles:
+                if not handle or not handle.isascii() or not handle.isidentifier():
+                    raise ValueError("submodelPort source handles must be ASCII identifiers.")
         if self.node_type == NodeType.API_INPUT and any(
             not handle.isascii() or not handle.isidentifier() or keyword.iskeyword(handle)
             for handle in self.source_handles
         ):
             raise ValueError("apiInput source handles must be non-keyword ASCII identifiers.")
         if (
-            self.node_type not in {NodeType.API_INPUT, NodeType.SUBMODEL_PORT}
+            self.node_type not in {NodeType.API_INPUT, NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}
             and self.source_handles
         ):
             raise ValueError("source_handles are not valid for this node type.")
@@ -517,6 +927,20 @@ class EditorIdentitiesRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     nodes: list[EditorIdentityRequestNode] = Field(min_length=0, max_length=10_000)
+    # The editor document's naming context, in the representation save
+    # receives. The request's nodes are applied to it by id (added when
+    # absent), each is checked against the naming rule, and the response
+    # carries the document's remaining name violations.
+    graph: Graph | None = None
+    # Give each request node, in order, the first free name instead of
+    # reporting a collision. Requires ``graph``.
+    allocate: bool = False
+
+    @model_validator(mode="after")
+    def _allocation_needs_context(self) -> EditorIdentitiesRequest:
+        if self.allocate and self.graph is None:
+            raise ValueError("allocate requires the document's naming context (graph).")
+        return self
 
     @field_validator("nodes")
     @classmethod
@@ -532,6 +956,11 @@ class EditorIdentityResponseNode(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     node_id: Annotated[str, Field(min_length=1)]
+    # The node's resolved name: its own, or the one allocation gave it.
+    label: Annotated[str, Field(min_length=1)]
+    alias: Annotated[str, Field(min_length=1)] | None
+    # Why the naming rule refuses the node's name (never with ``allocate``).
+    collision: str | None
     function_name: Annotated[str, Field(min_length=1)]
     config_reference: Annotated[str, Field(min_length=1)] | None
     default_input_name: Annotated[str, Field(min_length=1)] | None
@@ -545,6 +974,7 @@ class EditorIdentitiesResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     identities: list[EditorIdentityResponseNode]
+    violations: list[PipelineNameViolation] | None = None
 
     @field_validator("identities")
     @classmethod
@@ -565,7 +995,7 @@ RecoveryGraphSnapshot.model_rebuild()
 
 
 class PipelineRepairRemoveRequest(BaseModel):
-    """Server-identified remove-only repair request shared by dry-run/apply."""
+    """One confirmed remove-node repair, applied against the revision it names."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -576,14 +1006,28 @@ class PipelineRepairRemoveRequest(BaseModel):
     delete_config: StrictBool = False
 
 
-class PipelineRepairDryRunRequest(PipelineRepairRemoveRequest):
-    """Read-only remove-node planning request."""
+class PipelineRepairRecoverRequest(BaseModel):
+    """Server-owned reset or settings recovery, without replacement bytes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_file: str = Field(min_length=1)
+    source_revision: RevisionToken
+    target_source_file: str = Field(min_length=1)
+    target_recovery_id: str = Field(min_length=1)
+    action: Literal["reset", "recover"]
 
 
-class PipelineRepairApplyRequest(PipelineRepairRemoveRequest):
-    """Confirmed remove-only plan; replacement bytes never cross the API."""
+class PipelineNodeSaveRequest(BaseModel):
+    """Node-scoped settings/code save for one `scoped_editable` node."""
 
-    plan_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    model_config = ConfigDict(extra="forbid")
+
+    source_file: str = Field(min_length=1)
+    source_revision: RevisionToken
+    target_source_file: str = Field(min_length=1)
+    target_recovery_id: str = Field(min_length=1)
+    config: dict[str, Any]
 
 
 class PipelineRepairChange(BaseModel):
@@ -598,23 +1042,34 @@ class PipelineRepairChange(BaseModel):
     diff_truncated: bool
 
 
-class PipelineRepairPlanResponse(BaseModel):
-    """Read-only remove-node plan presented for explicit confirmation."""
+class PipelineRepairFieldChange(BaseModel):
+    """One engine decision about a recovered field, for optional display."""
 
     model_config = ConfigDict(extra="forbid")
 
-    repair_kind: Literal["remove_unavailable_node"] = "remove_unavailable_node"
+    path: str = ""
+    outcome: Literal["retained", "defaulted", "needs_input", "needs_review", "removed", "blocked"]
+    reason: str = Field(min_length=1, max_length=1024)
+
+
+class PipelineRepairPlanResponse(BaseModel):
+    """A server-computed repair plan; the apply routes build it under the save lock."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    repair_kind: Literal["remove_unavailable_node", "reset_node", "recover_node"] = (
+        "remove_unavailable_node"
+    )
     source_file: str = Field(min_length=1)
     source_revision: RevisionToken
     target_source_file: str = Field(min_length=1)
     target_recovery_id: str = Field(min_length=1)
     target_authored_id: str = Field(min_length=1)
     delete_config: bool
-    plan_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     changes: list[PipelineRepairChange] = Field(min_length=1)
-    retained_artifacts: list[str] = Field(default_factory=list)
-    warnings: list[str] = Field(default_factory=list)
-    predicted_load_status: Literal["ready", "degraded"]
+    field_changes: list[PipelineRepairFieldChange] = Field(default_factory=list)
+    completeness: list[PipelineNodeCompleteness] = Field(default_factory=list)
+    previous_config: dict[str, Any] | None = None
 
 
 class PipelineRepairApplyResponse(BaseModel):
@@ -622,10 +1077,15 @@ class PipelineRepairApplyResponse(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    repair_kind: Literal["remove_unavailable_node"] = "remove_unavailable_node"
-    plan_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    repair_kind: Literal["remove_unavailable_node", "reset_node", "recover_node"] = (
+        "remove_unavailable_node"
+    )
     applied_artifacts: list[str] = Field(min_length=1)
+    changes: list[PipelineRepairChange] = Field(min_length=1)
     document: PipelineEditorDocument
+    field_changes: list[PipelineRepairFieldChange] = Field(default_factory=list)
+    completeness: list[PipelineNodeCompleteness] = Field(default_factory=list)
+    previous_config: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -642,6 +1102,12 @@ class SavePipelineRequest(BaseModel):
     source_file: str = ""
     sources: list[str] = Field(default_factory=lambda: ["live"])
     active_source: str = "live"
+    base_revision: RevisionToken | None = Field(
+        description=(
+            "The source_revision the client loaded; null only when creating a file "
+            "that does not exist yet."
+        ),
+    )
 
 
 class SavePipelineResponse(BaseModel):
@@ -704,16 +1170,108 @@ class NodeResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class PolarsStepsRenderRequest(BaseModel):
+    """Render a low-code Transform step list to Polars code."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    steps: list[dict[str, Any]]
+    input_names: list[str] = Field(default_factory=list)
+    #: Where ``df`` comes from: ``input`` for a Transform (the first step
+    #: chooses an input), ``frame`` for a surface whose ``df`` is already bound.
+    start: Literal["input", "frame"]
+    #: The pipeline's constants; given, each Constant operand is checked against them.
+    global_constants: list[GlobalConstant] | None = None
+
+
+class PolarsStepsRenderResponse(BaseModel):
+    """Either the rendered code with per-step line ranges or the failing step.
+
+    A step validation failure is data (``ok`` false with ``step_index`` and
+    ``message``), never a transport error, so a half-built step list renders
+    as an editor message rather than a failed request.
+    """
+
+    ok: bool
+    code: str = ""
+    step_lines: list[list[int]] = Field(default_factory=list)
+    step_index: int | None = None
+    message: str = ""
+
+
+class PolarsFreeCodeColumnsRequest(BaseModel):
+    """Resolve the columns after each free-code step of a node's step list."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: The node the steps belong to: one resolution runs per node, a newer
+    #: request stopping an older one.
+    node_id: str = Field(min_length=1)
+    steps: list[dict[str, Any]]
+    input_names: list[str]
+    start: Literal["input", "frame"]
+    #: The columns the editor knows for each input, as a preview reported them.
+    input_columns: dict[str, list[ColumnInfo]]
+    #: The columns the editor knows for a frame-mode surface's ``df``.
+    frame_columns: list[ColumnInfo]
+    #: The pipeline's global constants and the source the code reads them for.
+    global_constants: list[GlobalConstant] = Field(default_factory=list)
+    global_constants_error: str | None = None
+    source: str = "live"
+
+    @model_validator(mode="after")
+    def _frame_columns_need_a_frame(self) -> PolarsFreeCodeColumnsRequest:
+        if self.start == "input" and self.frame_columns:
+            raise ValueError("frame_columns describe a frame-mode surface's df; send none here.")
+        stray = sorted(set(self.input_columns) - set(self.input_names))
+        if stray:
+            raise ValueError(f"input_columns name inputs outside input_names: {stray!r}.")
+        return self
+
+
+class FreeCodeColumns(BaseModel):
+    """The columns of ``df`` after one free-code step, or why they are unknown."""
+
+    step_index: int
+    columns: list[ColumnInfo] | None
+    message: str
+
+
+class PolarsFreeCodeColumnsResponse(BaseModel):
+    """One entry per free-code step, in step order."""
+
+    free_code_columns: list[FreeCodeColumns]
+
+
+PREVIEW_REQUEST_ID_PATTERN = r"^[A-Za-z0-9-]{1,64}$"
+
+
 class PreviewNodeRequest(BaseModel):
     graph: Graph
     node_id: str
     row_limit: int = Field(default=100, ge=1, le=10000)
     source: str = "live"
     requested_preview_columns: list[str] | None = Field(default=None, min_length=1)
-    streaming_chunk_size: StreamingChunkSize = None
     # Frame label selected for a multi-frame target. Single-frame targets
     # ignore it. It is part of the preview cache identity.
     port_label: str | None = None
+    # Chosen by the client so it can poll this request's step progress. Not part
+    # of any cache or supersession identity.
+    request_id: str | None = Field(default=None, pattern=PREVIEW_REQUEST_ID_PATTERN)
+
+
+class PreviewProgressResponse(BaseModel):
+    """A running preview's step progress (``GET /api/pipeline/preview/progress/{id}``).
+
+    ``preparing`` until its execution plan is known; then ``running`` with the
+    planned heavy steps completed of the total, and the step now running.
+    """
+
+    request_id: str
+    phase: Literal["preparing", "running"]
+    done: int | None = None
+    total: int | None = None
+    label: str | None = None
 
 
 class RecoveryPreviewRequest(BaseModel):
@@ -727,8 +1285,8 @@ class RecoveryPreviewRequest(BaseModel):
     row_limit: int = Field(default=100, ge=1, le=10000)
     source: str = "live"
     requested_preview_columns: list[str] | None = Field(default=None, min_length=1)
-    streaming_chunk_size: StreamingChunkSize = None
     port_label: str | None = None
+    request_id: str | None = Field(default=None, pattern=PREVIEW_REQUEST_ID_PATTERN)
 
 
 class NodeTimingInfo(BaseModel):
@@ -741,6 +1299,34 @@ class NodeMemoryInfo(BaseModel):
     node_id: str
     label: str
     memory_bytes: int
+
+
+class PreviewSeedPlanEntry(BaseModel):
+    """One snapshot generation a preview's collected rows were computed from.
+
+    ``seeded``: read instead of computing the node. ``captured``: computed by
+    this preview, published, and read by everything below it. ``columns`` is
+    the generation's column set, ``None`` for all columns; ``port_label`` is
+    always ``None``, since only node outputs are seeded or captured.
+    """
+
+    node_id: str
+    port_label: None = None
+    node_label: str
+    identity_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    generation_id: str = Field(min_length=1)
+    columns: list[str] | None
+    created_at: str
+    kind: Literal["seeded", "captured"]
+
+    @field_validator("created_at")
+    @classmethod
+    def _created_at_must_be_utc(cls, value: str) -> str:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        utc_offset = parsed.utcoffset()
+        if utc_offset is None or utc_offset.total_seconds() != 0:
+            raise ValueError("created_at must include a UTC offset")
+        return value
 
 
 class PreviewNodeResponse(NodeResult):
@@ -766,11 +1352,39 @@ class PreviewNodeResponse(NodeResult):
     node_frame_columns: dict[str, dict[str, list[ColumnInfo]]] = Field(default_factory=dict)
     node_schema_warnings: dict[str, list[SchemaWarning]] = Field(default_factory=dict)
     execution_metrics: ExecutionMetricsPayload | None = None
+    # Every snapshot generation the collected rows were computed from, in
+    # topological order; empty when the preview read no snapshot.
+    seed_plan: list[PreviewSeedPlanEntry] = Field(default_factory=list)
+
+
+class PreviewInputsRequest(BaseModel):
+    """Which inputs a preview would read, so the browser prepares only those."""
+
+    graph: Graph
+    node_id: str
+    source: str = "live"
+    requested_preview_columns: list[str] | None = Field(default=None, min_length=1)
+    port_label: str | None = None
+
+
+class PreviewInputsResponse(BaseModel):
+    """Snapshot-backed Data Inputs and structured API Inputs, in execution order."""
+
+    input_node_ids: list[str]
 
 
 # ---------------------------------------------------------------------------
 # /api/pipeline/trace
 # ---------------------------------------------------------------------------
+
+
+class TraceSeedPlanEntry(BaseModel):
+    """One generation the preview a trace explains was computed from."""
+
+    node_id: str
+    port_label: None = None
+    identity_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    generation_id: str = Field(min_length=1)
 
 
 class TraceRequest(BaseModel):
@@ -781,7 +1395,9 @@ class TraceRequest(BaseModel):
     row_limit: int = Field(default=100, ge=1, le=10000)
     source: str = "live"
     row_values: dict[str, Any] | None = None
-    streaming_chunk_size: StreamingChunkSize = None
+    # The ``seed_plan`` of the preview this trace explains: the trace reads
+    # exactly those generations and nothing else, even if snapshots now exist.
+    seed_plan: list[TraceSeedPlanEntry]
 
 
 class SchemaDiffResponse(BaseModel):
@@ -789,6 +1405,36 @@ class SchemaDiffResponse(BaseModel):
     columns_removed: list[str] = Field(default_factory=list)
     columns_modified: list[str] = Field(default_factory=list)
     columns_passed: list[str] = Field(default_factory=list)
+
+
+class TraceColumnSourceResponse(BaseModel):
+    node_id: str
+    column: str
+    # The value a node's rule generated before its code rewrote the column.
+    before_code: bool
+
+
+class TraceColumnReadResponse(BaseModel):
+    column: str
+    # The nodes that computed the value read: none when the walk found none,
+    # several when it may have come from any of them.
+    sources: list[TraceColumnSourceResponse]
+
+
+class TraceColumnDerivationResponse(BaseModel):
+    column: str
+    # The step's formula for the column, evaluated on the traced row; null for
+    # a column a rule computed or a source loaded.
+    expression_text: str | None
+    substituted_text: str | None
+    result_value: Any
+    not_computable_reason: str | None
+    result_source: str | None
+    # null when which inputs the column read could not be told apart.
+    reads: list[TraceColumnReadResponse] | None
+    # Set when evaluating the formula failed; the value is still the row's.
+    error: str | None
+    error_type: str | None
 
 
 class TraceStepResponse(BaseModel):
@@ -800,10 +1446,21 @@ class TraceStepResponse(BaseModel):
     output_values: dict[str, Any] = Field(default_factory=dict)
     topological_rank: int = Field(ge=0)
     column_relevant: bool = True
+    # In a column trace, the columns this step computes that the traced value
+    # depends on; empty for a step that only carries them.
+    contributed_columns: list[str]
+    # How the step computed each contributed column, and what it read.
+    derivations: list[TraceColumnDerivationResponse]
     expression: dict[str, Any] | None = None
     calculation: dict[str, Any] | None = None
     node_detail: dict[str, Any] | None = None
     row_lineage_type: str | None = None
+    # Set when this step's row comes from a shared snapshot generation the
+    # trace was seeded with, rather than from computing the node.
+    snapshot_generation_id: str | None = None
+    # Set when this step's row is one of several candidates identical in every
+    # column: how many there are. No physical row was chosen.
+    identical_row_count: int | None = Field(default=None, ge=2)
 
 
 class TraceOmissionResponse(BaseModel):
@@ -829,6 +1486,8 @@ class TraceCorrelationDiagnosticResponse(BaseModel):
     ignored_columns: list[str] = Field(default_factory=list)
     matched_row_count: int | None = None
     matched_row_indices: list[int] = Field(default_factory=list)
+    # For a node not traced above a snapshot: the seeded node it lies above.
+    seed_node_ids: list[str] = Field(default_factory=list)
 
 
 class TraceWaterfallEntryResponse(BaseModel):
@@ -861,7 +1520,7 @@ class TraceResultResponse(BaseModel):
     correlation_diagnostics: list[TraceCorrelationDiagnosticResponse]
     generated_at: str
     pipeline_source: str | None = None
-    execution_origin: Literal["fresh_execution", "preview_cache", "trace_cache"]
+    execution_origin: Literal["fresh_execution", "trace_cache"]
 
     @field_validator("generated_at")
     @classmethod
@@ -898,6 +1557,50 @@ class TraceResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# /api/pipeline-settings
+# ---------------------------------------------------------------------------
+
+
+class PipelineSettingsValues(BaseModel):
+    """The project's pipeline settings: each key's value, ``null`` where it is automatic.
+
+    The PATCH body: only the keys present change, and ``null`` restores
+    automatic. The file ``.haute/pipeline-settings.json`` holds the same keys.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    chunk_rows: StreamingChunkSize | None = None
+    caching: StrictBool | None = None
+    cache_size_gb: PositiveGigabytes | None = None
+    preview_memory_gb: PositiveGigabytes | None = None
+    kept_free_gb: Gigabytes | None = None
+    pipeline_time_limit_minutes: TimeLimitMinutes | None = None
+    modelling_time_limit_minutes: TimeLimitMinutes | None = None
+    optimisation_time_limit_minutes: TimeLimitMinutes | None = None
+
+
+class PipelineSettingsAutomatic(BaseModel):
+    """Each pipeline setting's automatic figure now; ``null`` time limit is no limit."""
+
+    chunk_rows: int
+    caching: bool
+    cache_size_gb: float
+    preview_memory_gb: float
+    kept_free_gb: float
+    pipeline_time_limit_minutes: float
+    modelling_time_limit_minutes: float
+    optimisation_time_limit_minutes: float | None
+
+
+class PipelineSettingsResponse(BaseModel):
+    settings: PipelineSettingsValues
+    automatic: PipelineSettingsAutomatic
+    path: str
+    """The settings file, relative to the project root."""
+
+
+# ---------------------------------------------------------------------------
 # /api/pipeline/write-output
 # ---------------------------------------------------------------------------
 
@@ -917,7 +1620,6 @@ class WriteOutputRequest(BaseModel):
     graph: Graph
     node_id: str
     source: str = "live"
-    streaming_chunk_size: StreamingChunkSize = None
     overwrite: StrictBool = False
 
 
@@ -940,21 +1642,38 @@ class _StrictInputCacheModel(BaseModel):
 
 
 class InputCacheSourceRequest(_StrictInputCacheModel):
+    """One input node's source: a Data Input's config, or a structured API Input's.
+
+    A structured API Input (JSON, JSONL, NDJSON, XML with a v2 ``tables``
+    schema) is one snapshot per emitting table; its requests act on every
+    table of the node together.
+    """
+
     schema_version: Literal[1] = 1
+    node_type: Literal["dataInput", "apiInput"] = "dataInput"
     config: dict[str, Any]
 
 
 class InputCacheBuildRequest(InputCacheSourceRequest):
+    """Start or join a snapshot build; the server chooses how it is built."""
+
     refresh: bool = False
-    profile: Literal["preview_eager", "lazy_sink"] = "lazy_sink"
 
 
 class InputCacheBuildResponse(_StrictInputCacheModel):
     schema_version: Literal[1] = 1
     job_id: str
     identity_digest: str
-    status: Literal["running"]
+    # ``blocked``: *job_id* is a build this request may not join (a build being
+    # cancelled, or an ordinary build for a forced request); wait for it to end
+    # without owning it, then ask again.
+    status: Literal["running", "blocked"]
     joined: bool
+    # Whether the build *job_id* names re-reads the source (``refresh``).
+    forced: bool
+    # How the server builds it: ``bounded`` streams in a lazy sink,
+    # ``admitted_eager`` reads eagerly inside a hard-capped worker.
+    build_class: Literal["bounded", "admitted_eager"]
 
 
 class InputCacheProgress(_StrictInputCacheModel):
@@ -975,12 +1694,31 @@ class InputCacheGenerationPayload(_StrictInputCacheModel):
     build_class: Literal["bounded", "admitted_eager", "unsupported"]
 
 
+class InputCacheTableStatus(_StrictInputCacheModel):
+    """One emitting table of a structured API Input and its own snapshot."""
+
+    label: str
+    identity_digest: str
+    state: Literal["missing", "building", "ready", "corrupt", "failed"]
+    freshness: Literal["fresh", "stale", "unknown"]
+    generation: InputCacheGenerationPayload | None = None
+
+
 class InputCacheSnapshotStatusResponse(_StrictInputCacheModel):
+    """A Data Input's snapshot, or a structured API Input's tables together.
+
+    For an API Input, ``identity_digest`` names the node's set of tables,
+    ``state`` and ``freshness`` summarise them (ready only when every table
+    is), ``generation`` is ``None``, and ``tables`` lists each one; a Data
+    Input has no ``tables``.
+    """
+
     schema_version: Literal[1] = 1
     identity_digest: str
     state: Literal["missing", "building", "ready", "corrupt", "failed"]
     freshness: Literal["fresh", "stale", "unknown"]
     generation: InputCacheGenerationPayload | None = None
+    tables: list[InputCacheTableStatus] | None = None
 
 
 class InputCacheJobStatusResponse(_StrictInputCacheModel):
@@ -1010,6 +1748,37 @@ class InputCacheCancelResponse(_StrictInputCacheModel):
 
 
 ExploreColumnKind = Literal["Numeric", "Text", "Temporal", "Boolean", "Nested", "Other"]
+
+
+class ExploreHistogramBin(BaseModel):
+    # Integer columns report exact integer boundaries; a float would round
+    # large identifiers together.
+    start: int | float
+    end: int | float
+    count: int
+
+
+class ExploreHistogram(BaseModel):
+    """Equal-width bins over a numeric column's finite values.
+
+    ``ok``: ``bins`` holds up to ``HISTOGRAM_BIN_COUNT`` equal-width bins
+    spanning the finite minimum to maximum, each ``[start, end)`` except the
+    last, which includes its end. Integer columns have integer boundaries and,
+    when their range is narrower than the bin count, one bin per value.
+    ``constant``: every finite value is equal, so there is one bin with
+    ``start == end``. ``empty``: no finite values. ``skipped``: the column is
+    past the profile's histogram column limit (``column_limit``; nothing was
+    computed) or an integer column with values beyond 2**53 - 1
+    (``integer_precision``), whose boundaries a browser would round together.
+    Null, NaN and infinite values never enter a bin; ``non_finite_count``
+    counts the NaN and infinite ones.
+    """
+
+    status: Literal["ok", "constant", "empty", "skipped"]
+    bins: list[ExploreHistogramBin]
+    finite_count: int | None
+    non_finite_count: int | None
+    skipped_reason: Literal["column_limit", "integer_precision"] | None = None
 
 
 class ExploreColumnStat(BaseModel):
@@ -1051,6 +1820,8 @@ class ExploreColumnStat(BaseModel):
     text_mean_length: float | None = None
     text_max_length: int | None = None
     temporal_span: str | None = None
+    # None for non-numeric columns.
+    histogram: ExploreHistogram | None = None
 
 
 class ExploreDistinctValueCount(BaseModel):
@@ -1084,56 +1855,240 @@ class ExploreOverviewSummary(BaseModel):
     categorical_summary: list[ExploreCategoricalColumnProfile] = Field(default_factory=list)
 
 
-class ExploreCacheReport(BaseModel):
-    """Result of materialising an Explore node's upstream dataset.
-
-    Lightweight by design: the full frame lives in DataFrameExecutionCache
-    (parquet on disk). This payload tells the UI what was cached and how to
-    identify the cache entry.
-    """
-
-    status: Literal["ok"] = "ok"
-    node_id: str
-    upstream_node_id: str
-    source: str = "live"
-    dataframe_cache_key: str
-    row_count: int = 0
-    column_count: int = 0
-    columns: list[ExploreColumnStat] = Field(default_factory=list)
-    overview_summary: ExploreOverviewSummary = Field(default_factory=ExploreOverviewSummary)
-    generated_at: float = 0.0
-    execution_metrics: ExecutionMetricsPayload | None = None
+NodeDataPointKind = Literal["data_input", "api_input_table", "node_output"]
+NodeDataPointState = Literal["current", "stale", "partial", "missing", "building", "corrupt"]
+NodeDataColumns = list[str] | Literal["all"]
 
 
-class ExploreRunRequest(BaseModel):
+class NodeDataRequest(BaseModel):
+    """Name a consumer node; the service resolves the data point it reads."""
+
     graph: Graph
     node_id: str
     source: str = "live"
-    streaming_chunk_size: StreamingChunkSize = None
+
+
+class NodeDataRunRequest(NodeDataRequest):
     refresh: bool = False
 
 
-class ExploreRunResponse(BaseModel):
-    status: Literal["started", "running", "completed"]
+class NodeDataPointRef(BaseModel):
+    producer_node_id: str
+    port_label: str | None = None
+
+
+class NodeDataGeneration(BaseModel):
+    """The node-output generation a slot currently holds for the consumer's signature."""
+
+    generation_id: str
+    columns: NodeDataColumns
+    row_count: int
+    column_count: int
+    size_bytes: int
+    retention: Literal["pinned", "automatic"]
+    fresh: bool
+    created_at: float
+
+
+class NodeDataJob(BaseModel):
+    job_id: str
+    progress: float = 0.0
+    message: str = ""
+
+
+class NodeDataPointResponse(BaseModel):
+    consumer_node_id: str
+    point: NodeDataPointRef
+    slot_key: str
+    kind: NodeDataPointKind
+    state: NodeDataPointState
+    demand: NodeDataColumns
+    data_version: str | None = None
+    row_count: int | None = None
+    size_bytes: int | None = None
+    retention: Literal["pinned", "automatic"] | None = None
+    generation: NodeDataGeneration | None = None
+    job: NodeDataJob | None = None
+    reads_directly: bool = False
+    build_endpoint: str | None = None
+    clear_endpoint: str | None = None
+
+
+class NodeDataRunResponse(BaseModel):
+    status: Literal["started", "joined", "completed", "delegated"]
     job_id: str | None = None
     cached: bool = False
     message: str = ""
-    result: ExploreCacheReport | None = None
+    point: NodeDataPointResponse
 
 
-class ExploreStatusResponse(BaseModel):
+class NodeDataProfile(BaseModel):
+    """Per-column statistics and overview summary of one data version of a point."""
+
+    row_count: int
+    column_count: int
+    columns: list[ExploreColumnStat] = Field(default_factory=list)
+    overview_summary: ExploreOverviewSummary = Field(default_factory=ExploreOverviewSummary)
+    data_version: str
+    generated_at: float
+
+
+class NodeDataProfileResponse(BaseModel):
+    status: Literal["completed", "started", "joined", "cache_required"]
+    job_id: str | None = None
+    message: str = ""
+    result: NodeDataProfile | None = None
+    point: NodeDataPointResponse
+
+
+class NodeDataStatusResponse(BaseModel):
     status: JobStatus
     progress: float = 0.0
     message: str = ""
-    result: ExploreCacheReport | None = None
     terminal_reason: str | None = None
+    error: str | None = None
+    error_code: str | None = None
+    error_detail: ExecutionMemoryLimitErrorPayload | dict[str, Any] | str | None = None
     execution_metrics: ExecutionMetricsPayload | None = None
+    generation_id: str | None = None
+    outcome: Literal["published", "superseded"] | None = None
+    profile: NodeDataProfile | None = None
 
 
-class ExploreCacheSnapshotResponse(BaseModel):
-    state: Literal["missing", "current", "stale"]
-    message: str
-    result: ExploreCacheReport | None = None
+class NodeDataClearResponse(BaseModel):
+    status: Literal["cleared", "delegated"]
+    point: NodeDataPointResponse
+
+
+# ---------------------------------------------------------------------------
+# /api/cache
+# ---------------------------------------------------------------------------
+
+
+class CacheNodesRequest(BaseModel):
+    """The graph whose nodes to report on, and the source they are read for."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    graph: Graph
+    source: str = "live"
+
+
+class CacheNodeEntry(BaseModel):
+    """One node of the graph: what it reads now, and what it holds on disk.
+
+    ``state`` and ``row_count`` describe the generation the node would read
+    for its own column demand; ``generations`` and ``size_bytes`` are what the
+    store holds for that node and source across every signature, which is what
+    the node actually holds on disk.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str
+    kind: NodeDataPointKind | None = None
+    state: NodeDataPointState | None = None
+    reads_directly: bool = False
+    # The node this one reads from, when that is another node. Its cache is
+    # reported on *its* row, so this node's size stays empty rather than
+    # repeating a figure that would then sum to more than the store holds.
+    reads_from: str | None = None
+    # Other nodes resolving to the same input snapshot — two Data Inputs with
+    # one configuration, or one submodel instantiated twice. Every sharer names
+    # the others, and exactly one of them carries the bytes: the one with a
+    # size. One identity, one set of bytes, whichever row you read first.
+    shares_snapshot_with: list[str] = Field(default_factory=list)
+    row_count: int | None = None
+    generations: int = Field(default=0, ge=0)
+    size_bytes: int = Field(default=0, ge=0)
+    newest_created_at: float | None = None
+    #: How long the newest generation took to cache; absent when the store
+    #: holds a generation published before that was recorded.
+    build_seconds: float | None = None
+    #: The store identities this row is responsible for, and therefore what
+    #: clearing this row clears. Empty when the row carries nothing.
+    identity_digests: list[str] = Field(default_factory=list)
+    retention: Literal["pinned", "automatic"] | None = None
+    # Why this node has no point at all — unwired Banding, say. Never an
+    # internal error: an unreportable node is a row, not a failed request.
+    unavailable_reason: str | None = None
+
+
+class CacheOwnerEntry(BaseModel):
+    """Cached data not attributed to any node of the graph as it stands.
+
+    A node that was deleted or renamed, a node's data for another source, or
+    an input snapshot whose Data Input no longer reads it. Each still occupies
+    the budget, so each is named.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    bucket: Literal["node_output", "input"]
+    label: str
+    node_id: str | None = None
+    source: str | None = None
+    generations: int = Field(ge=0)
+    row_count: int | None = None
+    size_bytes: int = Field(ge=0)
+    newest_created_at: float | None = None
+    build_seconds: float | None = None
+    identity_digests: list[str] = Field(default_factory=list)
+
+
+class CacheClearRequest(BaseModel):
+    """The identities to clear, as a report's row reported them."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    digests: list[str] = Field(min_length=1)
+
+
+class CacheClearResponse(BaseModel):
+    """What the clear actually removed, which is never assumed from the request.
+
+    A digest the store does not hold is reported as not cleared rather than
+    failing the request: a row acted on from a report a moment out of date is
+    an ordinary race, not an error.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    cleared: list[str]
+    freed_bytes: int = Field(ge=0)
+
+
+class CacheUsageResponse(BaseModel):
+    """The snapshot store's size, and its automatic captures against their budget.
+
+    Only node-output captures no pin protects count toward the budget; input
+    snapshots and explicit builds are kept until the user clears them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    total_bytes: int = Field(ge=0)
+    automatic_bytes: int = Field(ge=0)
+    automatic_budget_bytes: int = Field(ge=0)
+
+
+class CacheNodesResponse(BaseModel):
+    """Every node of the graph, and everything else the store holds."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    source: str
+    nodes: list[CacheNodeEntry]
+    other: list[CacheOwnerEntry]
+    unattributed_generations: int = Field(ge=0)
+    unattributed_bytes: int = Field(ge=0)
+    # Identities whose provider marker does not classify. Admission charges
+    # each to BOTH budgets, so this is what explains a usage report that
+    # exceeds the sum of the entries above.
+    unmarked_identities: int = Field(ge=0)
 
 
 ExplorePivotMemberKind = Literal[
@@ -1194,7 +2149,7 @@ class ExplorePivotResult(BaseModel):
     node_id: str
     pivot_id: str
     source: str = "live"
-    dataframe_cache_key: str
+    data_version: str
     calculation_key: str
     row_fields: list[str] = Field(default_factory=list)
     column_fields: list[str] = Field(default_factory=list)
@@ -1212,7 +2167,6 @@ class ExplorePivotRunRequest(BaseModel):
     node_id: str
     pivot: dict[str, Any]
     source: str = "live"
-    streaming_chunk_size: StreamingChunkSize = None
 
 
 class ExplorePivotRunResponse(BaseModel):
@@ -1234,13 +2188,173 @@ class ExplorePivotStatusResponse(BaseModel):
     execution_metrics: ExecutionMetricsPayload | None = None
 
 
+# ---------------------------------------------------------------------------
+# /api/banding
+# ---------------------------------------------------------------------------
+
+
+class BandingStatsRequest(BaseModel):
+    """Statistics for one banding factor over the whole dataset its node reads.
+
+    The factor is the one in the editor rather than the one in the saved graph,
+    so counts follow what the user is editing; the node only says which data
+    point to read.
+    """
+
+    graph: Graph
+    node_id: str
+    factor: dict[str, Any]
+    source: str = "live"
+    histogram_bins: int = Field(default=40, ge=1, le=200)
+    value_limit: int = Field(default=500, ge=1, le=10_000)
+
+
+class BandingHistogramBin(BaseModel):
+    """One `[lower, upper)` interval of a numeric distribution, the last closed."""
+
+    lower: float
+    upper: float
+    count: int = Field(ge=0)
+
+
+class BandingValueCount(BaseModel):
+    """One categorical value, as the text execution matches it by."""
+
+    value: str
+    count: int = Field(ge=0)
+
+
+class BandingStatsResponse(BaseModel):
+    """Whole-dataset statistics for one factor, or why there are none."""
+
+    status: Literal["ok", "cache_required"]
+    point: NodeDataPointResponse
+    data_version: str | None = None
+    total_rows: int = 0
+    null_count: int = 0
+    # Numeric modes only: values no bin can hold, and the extent of those it can.
+    non_finite_count: int | None = None
+    minimum: float | None = None
+    maximum: float | None = None
+    bins: list[BandingHistogramBin] = Field(default_factory=list)
+    # Categorical mode only.
+    values: list[BandingValueCount] = Field(default_factory=list)
+    distinct_count: int | None = None
+    other_count: int | None = None
+    # Both modes, when the factor has rules: counts aligned to the user's rules.
+    rule_counts: list[int] = Field(default_factory=list)
+    unmatched_count: int | None = None
+
+
+# ---------------------------------------------------------------------------
+# /api/rating
+# ---------------------------------------------------------------------------
+
+
+class RatingLevelsRequest(BaseModel):
+    """The levels of raw rating factor columns over the whole dataset.
+
+    The node says which data point to read; the columns are the ones the editor
+    needs levels for, which is the factors its tables actually rate on rather
+    than every column that could be one.
+    """
+
+    graph: Graph
+    node_id: str
+    # Each column is one pass over the data, so the request is bounded; the
+    # editor asks for the factors in use, which is far fewer than this.
+    columns: list[str] = Field(min_length=1, max_length=100)
+    source: str = "live"
+    value_limit: int = Field(default=1000, ge=1, le=10_000)
+
+
+class RatingLevelValue(BaseModel):
+    """One level, keyed the way the rating lookup keys it."""
+
+    value: str
+    count: int = Field(ge=0)
+
+
+class RatingLevelColumn(BaseModel):
+    """What one column offers as rating levels.
+
+    `distinct_count` counts the levels that could be chosen — neither missing
+    nor blank — so it is the number `values` would hold without the cap.
+    """
+
+    column: str
+    values: list[RatingLevelValue] = Field(default_factory=list)
+    distinct_count: int = 0
+    null_count: int = 0
+
+
+class RatingLevelsResponse(BaseModel):
+    """Whole-dataset levels for the columns asked about, or why there are none."""
+
+    status: Literal["ok", "cache_required"]
+    point: NodeDataPointResponse
+    data_version: str | None = None
+    total_rows: int = 0
+    columns: list[RatingLevelColumn] = Field(default_factory=list)
+
+
+EXPLORE_RELATIONSHIP_FEATURE_LIMIT = 50
+EXPLORE_KEY_COLUMN_LIMIT = 8
+
+
+class ExploreRelationshipsRequest(NodeDataRequest):
+    """Target relationships and a key check over the data point an Explore node reads."""
+
+    target: str | None = None
+    weight: str | None = None
+    features: list[str] = Field(default_factory=list, max_length=EXPLORE_RELATIONSHIP_FEATURE_LIMIT)
+    key_columns: list[str] = Field(default_factory=list, max_length=EXPLORE_KEY_COLUMN_LIMIT)
+    level_limit: int = Field(default=12, ge=2, le=50)
+
+
+class ExploreRelationshipLevel(BaseModel):
+    label: str
+    kind: Literal["value", "bin", "missing", "other"]
+    rows: int
+    weight: float
+    target_mean: float | None
+
+
+class ExploreRelationship(BaseModel):
+    feature: str
+    kind: Literal["numeric", "categorical"]
+    strength: float
+    levels: list[ExploreRelationshipLevel]
+    levels_truncated: bool
+
+
+class ExploreKeyCheck(BaseModel):
+    columns: list[str]
+    rows: int
+    distinct_keys: int
+    duplicate_rows: int
+    null_key_rows: int
+    unique: bool
+
+
+class ExploreRelationshipsResponse(BaseModel):
+    status: Literal["ok", "cache_required"]
+    point: NodeDataPointResponse
+    data_version: str | None = None
+    total_rows: int = 0
+    target: str | None = None
+    weight: str | None = None
+    used_rows: int = 0
+    relationships: list[ExploreRelationship] = Field(default_factory=list)
+    key_check: ExploreKeyCheck | None = None
+
+
 class ExplorePivotMembersRequest(BaseModel):
     graph: Graph
     node_id: str
     field: str
     source: str = "live"
     search: str | None = None
-    streaming_chunk_size: StreamingChunkSize = None
 
 
 class ExplorePivotMembersResponse(BaseModel):
@@ -1258,7 +2372,7 @@ class ExplorePivotMembersResponse(BaseModel):
 class FileItem(BaseModel):
     name: str
     path: str
-    type: str
+    type: Literal["file", "directory"]
     size: int | None = None
 
 
@@ -1279,6 +2393,20 @@ class SchemaResponse(BaseModel):
     row_count_estimated: bool = False
     column_count: int
     preview: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ModelFileInspectionResponse(BaseModel):
+    """What a project model file scores as (``GET /api/model-file``)."""
+
+    model_path: str
+    flavor: str
+    label: str
+    task: Literal["regression", "classification"] | None
+    features: list[str]
+    categorical_features: list[str]
+    offset_column: str | None
+    offset_link: Literal["log", "identity"] | None
+    contract_path: str | None
 
 
 class ReadJsonRequest(BaseModel):
@@ -1352,34 +2480,8 @@ class TableListResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# /api/json-cache/*
+# /api/json-cache/infer
 # ---------------------------------------------------------------------------
-
-
-class JsonCacheBuildRequest(BaseModel):
-    """Request body for ``POST /api/json-cache/{build,status}``.
-
-    Dispatch precedence in the route:
-      1. ``volatile_schema is not None`` — use the in-memory v2 schema
-         (the ApiInputEditor's React state, sent verbatim). This is the
-         "user has unsaved edits open" path; mirrors the dual-cache
-         model at the schema plane (handover working principle 4).
-      2. Otherwise — read ``config_path`` from disk and use that.
-      3. If both are absent, the route returns 422 (no schema source).
-
-    ``volatile_schema`` carries the same shape as the on-disk config
-    (``{tables: [...], path: ..., ...}``). Note ``is not None`` — an
-    empty ``{}`` is distinct from ``None``: ``{}`` means "user provided
-    a malformed payload", which surfaces as a 422 from
-    ``validate_v2_schema``; ``None`` means "use disk".
-    """
-
-    path: str
-    config_path: str | None = None
-    # `Any` (not `dict`) so malformed shapes from the frontend reach
-    # `validate_v2_schema` and surface as our structured 422 rather
-    # than as Pydantic's default 422.
-    volatile_schema: Any = None
 
 
 class JsonCacheInferRequest(BaseModel):
@@ -1407,46 +2509,6 @@ class JsonCacheInferResponse(BaseModel):
     """
 
     tables: list[dict[str, Any]]
-
-
-class JsonCacheBuildResponse(BaseModel):
-    path: str
-    data_path: str
-    row_count: int
-    column_count: int
-    columns: dict[str, str]
-    size_bytes: int
-    cached_at: float
-    cache_seconds: float
-    # W2 item 2.7 — zero silent record loss. ``skipped_records`` counts
-    # top-level inputs that weren't JSON objects (e.g. a JSONL line holding
-    # a bare number); ``skipped_rows`` counts, per frame label, array
-    # elements whose shape mismatched that table (mixed arrays). Both are
-    # zero/empty for clean data.
-    skipped_records: int = 0
-    skipped_rows: dict[str, int] = Field(default_factory=dict)
-
-
-class JsonCacheProgressResponse(BaseModel):
-    active: bool
-    rows: int = 0
-    elapsed: float = 0.0
-    phase: str = ""
-
-
-class JsonCacheStatusResponse(BaseModel):
-    cached: bool
-    path: str | None = None
-    data_path: str = ""
-    row_count: int = 0
-    column_count: int = 0
-    columns: dict[str, str] = Field(default_factory=dict)
-    size_bytes: int = 0
-    cached_at: float = 0
-    # Mirrors JsonCacheBuildResponse (W2 item 2.7): the skip counts the
-    # build recorded into meta.json, echoed on status polls.
-    skipped_records: int = 0
-    skipped_rows: dict[str, int] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -1522,7 +2584,12 @@ class CreateSubmodelResponse(BaseModel):
 
 
 class DissolveSubmodelRequest(BaseModel):
-    instance_id: str
+    """Request to dissolve a submodel occurrence back into parent nodes."""
+
+    # instance_id is the occurrence's node id, which is its name.
+    instance_id: str = Field(
+        description="The occurrence's node id, which is its name.",
+    )
 
     @field_validator("instance_id")
     @classmethod
@@ -1567,10 +2634,9 @@ class TrainRequest(BaseModel):
     graph: Graph
     node_id: str
     source: str = "live"
-    streaming_chunk_size: StreamingChunkSize = None
 
 
-TrainingFeatureSelectionMode = Literal["explicit", "all_except", "glm_terms"]
+TrainingFeatureSelectionMode = Literal["explicit", "glm_terms"]
 TrainingFeatureExclusionReason = Literal[
     "target",
     "weight",
@@ -1578,7 +2644,6 @@ TrainingFeatureExclusionReason = Literal[
     "fold",
     "identifier",
     "evaluation",
-    "configured_exclusion",
     "not_selected",
     "not_in_formula",
 ]
@@ -1740,12 +2805,6 @@ class EvaluationMetricSummaryPayload(_StrictPublicTrainingPayload):
     def _validate_finite(cls, value: Any) -> float:
         return _finite_number(value, field="evaluation summary value")
 
-    @model_validator(mode="after")
-    def _validate_range(self) -> EvaluationMetricSummaryPayload:
-        if self.min > self.max:
-            raise ValueError("evaluation metric min must not exceed max")
-        return self
-
 
 class EvaluationSummaryPayload(_StrictPublicTrainingPayload):
     development_rows: int = Field(strict=True, ge=1)
@@ -1758,11 +2817,16 @@ class EvaluationSummaryPayload(_StrictPublicTrainingPayload):
 
 
 class EvaluationReportPayload(_StrictPublicTrainingPayload):
+    """The evaluation run as published; its invariants are checked where the
+    plan, results and report artifacts are produced and reloaded
+    (``haute.modelling._evaluation``), not here."""
+
     schema_version: Literal[1]
     strategy: Literal["random", "group", "temporal"]
     validation_method: Literal["none", "single", "cross_validation"]
     validation_fit_count: int = Field(strict=True, ge=0, le=10)
     fit_count: int = Field(strict=True, ge=1, le=201)
+    refit_on_development: bool = Field(default=True, strict=True)
     development_rows: int = Field(strict=True, ge=1)
     final_test_rows: int = Field(strict=True, ge=0)
     selection_fits: list[EvaluationFitPayload] = Field(max_length=10)
@@ -1773,101 +2837,6 @@ class EvaluationReportPayload(_StrictPublicTrainingPayload):
     results_path: str = Field(min_length=1)
     report_path: str = Field(min_length=1)
     summary: EvaluationSummaryPayload
-
-    @model_validator(mode="after")
-    def _validate_report(self) -> EvaluationReportPayload:
-        expected_validation_count = (
-            0
-            if self.validation_method == "none"
-            else 1
-            if self.validation_method == "single"
-            else self.validation_fit_count
-        )
-        if self.validation_fit_count != expected_validation_count:
-            raise ValueError("validation_fit_count is inconsistent with validation_method")
-        if self.validation_method == "cross_validation" and not (
-            2 <= self.validation_fit_count <= 10
-        ):
-            raise ValueError("cross-validation requires 2 to 10 selection fits")
-        if len(self.selection_fits) != self.validation_fit_count:
-            raise ValueError("validation_fit_count must equal the number of selection_fits")
-        if [fit.fit_index for fit in self.selection_fits] != list(range(self.validation_fit_count)):
-            raise ValueError("selection fit indices must be contiguous and ascending")
-        if self.summary.development_rows != self.development_rows:
-            raise ValueError("summary development_rows must equal report development_rows")
-        if self.summary.test_rows != self.final_test_rows:
-            raise ValueError("summary test_rows must equal report final_test_rows")
-        if self.summary.validation_fit_count != self.validation_fit_count:
-            raise ValueError("summary validation_fit_count must equal report validation_fit_count")
-        strategy_counts = {
-            "group": (
-                self.summary.development_group_count,
-                self.summary.test_group_count,
-            ),
-            "temporal": (
-                self.summary.development_date_count,
-                self.summary.test_date_count,
-            ),
-        }
-        active_counts = strategy_counts.get(self.strategy)
-        all_counts = (
-            self.summary.development_group_count,
-            self.summary.test_group_count,
-            self.summary.development_date_count,
-            self.summary.test_date_count,
-        )
-        if active_counts is None:
-            if any(value is not None for value in all_counts):
-                raise ValueError("random evaluation summary must not contain group/date counts")
-        else:
-            if any(value is None for value in active_counts):
-                raise ValueError(f"{self.strategy} evaluation summary requires its strategy counts")
-            inactive_counts = all_counts[2:] if self.strategy == "group" else all_counts[:2]
-            if any(value is not None for value in inactive_counts):
-                raise ValueError(
-                    f"{self.strategy} evaluation summary has incompatible strategy counts"
-                )
-            if bool(self.final_test_rows) != bool(active_counts[1]):
-                raise ValueError("evaluation summary test count disagrees with final_test_rows")
-        metric_names = set(self.selection_metrics)
-        if self.validation_fit_count == 0:
-            if metric_names:
-                raise ValueError("selection_metrics must be empty without validation")
-            return self
-        if not metric_names:
-            raise ValueError("selection_metrics are required when validation is enabled")
-        if any(set(fit.metrics) != metric_names for fit in self.selection_fits):
-            raise ValueError("selection fit metric names must exactly match selection_metrics")
-        total_rows = sum(fit.validation_rows for fit in self.selection_fits)
-        for name, summary in self.selection_metrics.items():
-            if summary.fit_count != self.validation_fit_count:
-                raise ValueError(f"{name} fit_count must equal validation_fit_count")
-            if summary.validation_rows != total_rows:
-                raise ValueError(f"{name} validation_rows must equal selection fit row total")
-            values = [fit.metrics[name] for fit in self.selection_fits]
-            weights = [fit.validation_rows for fit in self.selection_fits]
-            mean = (
-                sum(value * weight for value, weight in zip(values, weights, strict=True))
-                / total_rows
-            )
-            variance = (
-                sum(
-                    weight * (value - mean) ** 2
-                    for value, weight in zip(values, weights, strict=True)
-                )
-                / total_rows
-            )
-            for field, expected in {
-                "mean": mean,
-                "stddev": math.sqrt(variance),
-                "min": min(values),
-                "max": max(values),
-            }.items():
-                if not math.isclose(
-                    getattr(summary, field), expected, rel_tol=1e-12, abs_tol=1e-12
-                ):
-                    raise ValueError(f"{name} {field} does not match the persisted selection fits")
-        return self
 
 
 class TuningTrialPayload(_StrictPublicTrainingPayload):
@@ -1898,6 +2867,10 @@ class TuningTrialPayload(_StrictPublicTrainingPayload):
 
 
 class TuningReportPayload(_StrictPublicTrainingPayload):
+    """The tuning study as published; its invariants are checked where the
+    plan, trials and report artifacts are produced and reloaded
+    (``haute.modelling._tuning``), not here."""
+
     schema_version: Literal[1]
     plan_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     trials_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -1910,7 +2883,8 @@ class TuningReportPayload(_StrictPublicTrainingPayload):
     improvement: float = Field(ge=0)
     best_sampled_params: dict[str, Any]
     final_params: dict[str, Any]
-    final_tree_count: int = Field(strict=True, ge=1)
+    #: Absent for a fixed-budget family (EBM), whose refit reuses the winning budget.
+    final_tree_count: int | None = Field(default=None, strict=True, ge=1)
     trial_count: int = Field(strict=True, ge=5, le=50)
     trial_fit_count: int = Field(strict=True, ge=5, le=200)
     total_fit_count: int = Field(strict=True, ge=6, le=201)
@@ -1929,144 +2903,132 @@ class TuningReportPayload(_StrictPublicTrainingPayload):
     def _validate_params(cls, value: Any, info: Any) -> dict[str, Any]:
         return _finite_json_object(value, field=info.field_name)
 
-    @model_validator(mode="after")
-    def _validate_report(self) -> TuningReportPayload:
-        from haute.modelling._tuning import metric_direction
 
-        try:
-            expected_direction = metric_direction(self.metric)
-        except ValueError as exc:
-            raise ValueError(f"tuning metric direction is unsupported: {exc}") from exc
-        if self.direction != expected_direction:
-            raise ValueError(
-                f"tuning metric direction must be {expected_direction} for {self.metric!r}"
-            )
-        if len(self.trials) != self.trial_count:
-            raise ValueError("trial_count must equal the number of trials")
-        if [trial.trial_index for trial in self.trials] != list(range(self.trial_count)):
-            raise ValueError("trial indices must be contiguous and ascending")
-        baseline = self.trials[0]
-        if baseline.label != "baseline" or baseline.sampled_params:
-            raise ValueError("trial 0 must be the baseline with empty sampled_params")
-        if any(trial.label != "sampled" or not trial.sampled_params for trial in self.trials[1:]):
-            raise ValueError("trials after baseline must contain sampled parameters")
-        for trial in self.trials:
-            expected_resolved = dict(baseline.resolved_params)
-            expected_resolved.update(trial.sampled_params)
-            if trial.resolved_params != expected_resolved:
-                raise ValueError(
-                    "trial resolved parameters must equal baseline plus sampled parameters"
-                )
-        if any(
-            set(trial.aggregate_metrics) != set(baseline.aggregate_metrics) for trial in self.trials
-        ):
-            raise ValueError("trial aggregate metric names must exactly match")
-        fit_count = len(baseline.fits)
-        if any(
-            len(trial.fits) != fit_count
-            or [fit.fit_index for fit in trial.fits] != list(range(fit_count))
-            for trial in self.trials
-        ):
-            raise ValueError("each tuning trial must use the same contiguous evaluation fits")
-        aggregate_metric_names = set(baseline.aggregate_metrics)
-        for trial in self.trials:
-            if any(set(fit.metrics) != aggregate_metric_names for fit in trial.fits):
-                raise ValueError("tuning trial fit metric names must match aggregate metrics")
-            total_validation_rows = sum(fit.validation_rows for fit in trial.fits)
-            for name, aggregate in trial.aggregate_metrics.items():
-                weighted_mean = (
-                    sum(fit.metrics[name] * fit.validation_rows for fit in trial.fits)
-                    / total_validation_rows
-                )
-                if not math.isclose(
-                    aggregate,
-                    weighted_mean,
-                    rel_tol=1e-12,
-                    abs_tol=1e-12,
-                ):
-                    raise ValueError(
-                        f"trial aggregate metric {name!r} does not match its validation fits"
-                    )
-        if self.metric not in baseline.aggregate_metrics:
-            raise ValueError("tuning metric must be present in aggregate_metrics")
-        if any(
-            not math.isclose(
-                trial.aggregate_metrics[self.metric], trial.objective, rel_tol=1e-12, abs_tol=1e-12
-            )
-            for trial in self.trials
-        ):
-            raise ValueError("trial objective must equal its aggregate metric")
-        if not math.isclose(
-            self.baseline_objective, baseline.objective, rel_tol=1e-12, abs_tol=1e-12
-        ):
-            raise ValueError("baseline_objective must equal the baseline objective")
-        winner = (
-            max(self.trials, key=lambda trial: (trial.objective, -trial.trial_index))
-            if self.direction == "maximize"
-            else min(self.trials, key=lambda trial: (trial.objective, trial.trial_index))
-        )
-        if self.winner_trial_index != winner.trial_index or not math.isclose(
-            self.winner_objective, winner.objective, rel_tol=1e-12, abs_tol=1e-12
-        ):
-            raise ValueError("winner must be selected deterministically from trial objectives")
-        if self.best_sampled_params != winner.sampled_params:
-            raise ValueError(
-                "best sampled parameters must equal the winning trial sampled parameters"
-            )
-        iteration_ceiling = winner.resolved_params.get("iterations", 1000)
-        if (
-            isinstance(iteration_ceiling, bool)
-            or not isinstance(iteration_ceiling, int)
-            or iteration_ceiling <= 0
-            or any(fit.best_iteration is None for fit in winner.fits)
-        ):
-            raise ValueError(
-                "winning trial must retain a positive iteration ceiling and "
-                "best_iteration for every fit"
-            )
-        weighted_tree_counts = sorted(
-            (
-                fit.best_iteration + 1,
-                fit.validation_rows,
-            )
-            for fit in winner.fits
-            if fit.best_iteration is not None
-        )
-        threshold = sum(rows for _, rows in weighted_tree_counts) / 2
-        selected_tree_count = next(
-            tree_count
-            for index, (tree_count, _) in enumerate(weighted_tree_counts)
-            if sum(rows for _, rows in weighted_tree_counts[: index + 1]) >= threshold
-        )
-        expected_tree_count = min(selected_tree_count, iteration_ceiling)
-        expected_final_params = dict(winner.resolved_params)
-        for key in (
-            "early_stopping_rounds",
-            "od_pval",
-            "od_type",
-            "od_wait",
-            "use_best_model",
-        ):
-            expected_final_params.pop(key, None)
-        expected_final_params["iterations"] = expected_tree_count
-        if (
-            self.final_tree_count != expected_tree_count
-            or self.final_params != expected_final_params
-        ):
-            raise ValueError(
-                "final parameter projection must be derived from the winning validation fits"
-            )
-        expected_improvement = (
-            winner.objective - baseline.objective
-            if self.direction == "maximize"
-            else baseline.objective - winner.objective
-        )
-        if not math.isclose(self.improvement, expected_improvement, rel_tol=1e-12, abs_tol=1e-12):
-            raise ValueError("improvement must equal winner versus baseline")
-        if self.trial_fit_count != sum(len(trial.fits) for trial in self.trials):
-            raise ValueError("trial_fit_count must equal all trial fits")
-        if self.total_fit_count != self.trial_fit_count + 1:
-            raise ValueError("total_fit_count must equal trial_fit_count + final fit")
+class GpuFamilyStatus(BaseModel):
+    """Whether one family can train on a GPU in this server process."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    available: bool
+    detail: str
+    device: str | None = None
+
+
+class ModellingGpuStatusResponse(BaseModel):
+    """GPU training capability per GPU-capable family (XGBoost CUDA)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    xgboost: GpuFamilyStatus
+
+
+class FitEvidencePayload(BaseModel):
+    """The final fit's thread allotment, round ceiling, fitted rounds, and stop reason."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    threads: int = Field(strict=True, ge=1)
+    rounds_configured: int | None = Field(default=None, strict=True, ge=1)
+    rounds_fitted: int | None = Field(default=None, strict=True, ge=0)
+    stopping_reason: Literal["none", "validation", "native_exhaustion"] | None = None
+    #: EBM's native best_iteration_: term updates per boosting stage, never rounds.
+    term_update_steps: list[Annotated[int, Field(ge=0)]] | None = None
+    #: The device a GPU fit actually trained on (``cuda:0``).
+    device: str | None = Field(default=None, min_length=1)
+
+
+class TrainShapBeeswarmFeature(BaseModel):
+    """One feature's beeswarm row: each plotted row's SHAP value, feature value and rank."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    feature: str
+    kind: Literal["numeric", "categorical"]
+    #: Link-scale SHAP values, one per plotted row.
+    shap_values: list[float]
+    #: Each row's feature value: a number for a numeric feature, the level for a
+    #: categorical one, null when missing.
+    values: list[float | str | None]
+    #: Each value's rank among the plotted rows, 0 (lowest) to 1 (highest); null for a
+    #: categorical feature, a missing value, or a feature with one distinct value.
+    value_ranks: list[Annotated[float, Field(ge=0, le=1)] | None]
+
+    @model_validator(mode="after")
+    def _validate_rows(self) -> TrainShapBeeswarmFeature:
+        if not len(self.shap_values) == len(self.values) == len(self.value_ranks):
+            raise ValueError("shap_values, values and value_ranks need one item per plotted row")
+        if self.kind == "categorical":
+            if any(value is not None and not isinstance(value, str) for value in self.values):
+                raise ValueError("a categorical feature's values must be levels (text) or null")
+            if any(rank is not None for rank in self.value_ranks):
+                raise ValueError("a categorical feature's value ranks must be null")
+        elif any(isinstance(value, str) for value in self.values):
+            raise ValueError("a numeric feature's values must be numbers or null")
+        return self
+
+
+class TrainShapCurvePoint(BaseModel):
+    """One group of a SHAP curve: a numeric band or value, a level, or the missing rows."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # The training worker sends its response without null fields
+    # (``exclude_none``), so a null must be what an absent field means.
+    #: A numeric band's mean feature value or a categorical level; null for the
+    #: rows whose value is missing.
+    value: float | str | None = None
+    #: A numeric band's lowest and highest feature value; null for a level and
+    #: for the missing rows.
+    low: float | None = None
+    high: float | None = None
+    rows: int = Field(strict=True, ge=1)
+    mean_shap: float
+    p10_shap: float
+    p90_shap: float
+
+    @model_validator(mode="after")
+    def _validate_percentiles(self) -> TrainShapCurvePoint:
+        if self.p10_shap > self.p90_shap:
+            raise ValueError("p10_shap must not exceed p90_shap")
+        return self
+
+
+class TrainShapCurveFeature(BaseModel):
+    """One feature's SHAP curve: SHAP statistics per value band or level."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    feature: str
+    kind: Literal["numeric", "categorical"]
+    points: list[TrainShapCurvePoint] = Field(min_length=1)
+    #: Levels past the most frequent ones, not in ``points`` (0 for a numeric feature).
+    levels_omitted: int = Field(strict=True, ge=0)
+
+    @model_validator(mode="after")
+    def _validate_points(self) -> TrainShapCurveFeature:
+        missing = [index for index, point in enumerate(self.points) if point.value is None]
+        if len(missing) > 1:
+            raise ValueError("a SHAP curve has at most one missing-value point")
+        if self.kind == "categorical":
+            for point in self.points:
+                if point.value is not None and not isinstance(point.value, str):
+                    raise ValueError("a categorical curve's points must be levels (text) or null")
+                if point.low is not None or point.high is not None:
+                    raise ValueError("a categorical curve's points have no low or high")
+            return self
+        if self.levels_omitted:
+            raise ValueError("a numeric curve omits no levels")
+        if missing and missing[0] != len(self.points) - 1:
+            raise ValueError("a numeric curve's missing-value point comes last")
+        for point in self.points:
+            if point.value is None:
+                if point.low is not None or point.high is not None:
+                    raise ValueError("the missing-value point has no low or high")
+                continue
+            if isinstance(point.value, str) or point.low is None or point.high is None:
+                raise ValueError("a numeric curve's bands need a numeric value, low and high")
+            if not point.low <= point.value <= point.high:
+                raise ValueError("a numeric band's value must lie between its low and high")
         return self
 
 
@@ -2081,15 +3043,23 @@ class TrainResponse(BaseModel):
     model_path: str = ""
     development_rows: int = Field(default=0, strict=True, ge=0)
     final_test_rows: int = Field(default=0, strict=True, ge=0)
-    diagnostics_set: Literal["development", "final_test"] = "development"
+    diagnostics_set: Literal["development", "validation", "final_test"] = "development"
     features: list[str] = Field(default_factory=list)
     cat_features: list[str] = Field(default_factory=list)
     error: str | None = None
     best_iteration: int | None = None
+    final_tree_count: int | None = Field(default=None, strict=True, ge=1)
+    fit_evidence: FitEvidencePayload | None = None
     loss_history: list[dict[str, float]] = Field(default_factory=list)
     loss_history_truncated: bool = False
+    validation_loss_history: list[dict[str, float]] = Field(default_factory=list)
+    validation_loss_history_truncated: bool = False
     double_lift: list[dict[str, Any]] = Field(default_factory=list)
     shap_summary: list[dict[str, Any]] = Field(default_factory=list)
+    shap_beeswarm: list[TrainShapBeeswarmFeature] = Field(default_factory=list)
+    shap_curves: list[TrainShapCurveFeature] = Field(default_factory=list)
+    #: The link scale SHAP values add up on; null when the result has no SHAP views.
+    shap_link: Literal["identity", "log", "logit"] | None = None
     feature_importance_loss: list[dict[str, Any]] = Field(default_factory=list)
     ave_per_feature: list[dict[str, Any]] = Field(default_factory=list)
     residuals_histogram: list[dict[str, Any]] = Field(default_factory=list)
@@ -2101,7 +3071,11 @@ class TrainResponse(BaseModel):
     glm_coefficients: list[dict[str, Any]] = Field(default_factory=list)
     glm_relativities: list[dict[str, Any]] = Field(default_factory=list)
     glm_fit_statistics: dict[str, float] = Field(default_factory=dict)
-    glm_regularization_path: dict[str, Any] | None = None
+    glm_inference: dict[str, Any] | None = None
+    glm_smooth_terms: list[dict[str, Any]] = Field(default_factory=list)
+    glm_regularization: dict[str, Any] | None = None
+    ebm_terms: list[dict[str, Any]] = Field(default_factory=list)
+    tboost_tables: dict[str, Any] | None = None
     diagnostics_errors: list[dict[str, str]] = Field(default_factory=list)
     warning: str | None = None
     total_source_rows: int | None = None
@@ -2126,44 +3100,45 @@ class TrainResponse(BaseModel):
         return _strict_finite_metric_mapping(value, field=info.field_name)
 
     @model_validator(mode="after")
-    def _validate_evaluation_status(self) -> TrainResponse:
-        if self.status != "completed":
-            if self.evaluation is not None or self.tuning is not None:
-                raise ValueError("evaluation and tuning are present only for completed training")
-            return self
-        if self.evaluation is None:
-            raise ValueError("completed training requires evaluation")
-        if not self.diagnostic_metrics:
-            raise ValueError("completed training requires diagnostic_metrics")
-        if self.development_rows != self.evaluation.development_rows:
-            raise ValueError("development_rows must equal evaluation development_rows")
-        if self.final_test_rows != self.evaluation.final_test_rows:
-            raise ValueError("final_test_rows must equal evaluation final_test_rows")
-        if self.final_test_rows:
-            if self.diagnostic_metrics != self.final_test_metrics:
-                raise ValueError(
-                    "diagnostic_metrics must equal final_test_metrics when a final test exists"
-                )
-            if self.diagnostics_set != "final_test":
-                raise ValueError(
-                    "completed training diagnostics_set must be final_test when a test exists"
-                )
-        else:
-            if self.final_test_metrics:
-                raise ValueError("final_test_metrics must be empty without a final test")
-            if self.diagnostics_set != "development":
-                raise ValueError(
-                    "completed training diagnostics_set must be development without a test"
-                )
-        if self.tuning is None:
-            if self.evaluation.fit_count != self.evaluation.validation_fit_count + 1:
-                raise ValueError("evaluation fit_count must equal validation_fit_count + final fit")
-        else:
-            if self.evaluation.fit_count != self.tuning.total_fit_count:
-                raise ValueError("evaluation fit_count must equal tuning total_fit_count")
-            if self.tuning.evaluation_plan_sha256 != self.evaluation.plan_sha256:
-                raise ValueError("tuning evaluation plan digest must match evaluation")
+    def _validate_shap_link(self) -> TrainResponse:
+        if bool(self.shap_curves) != (self.shap_link is not None):
+            raise ValueError("shap_link names the scale exactly when shap_curves exist")
         return self
+
+
+class MlflowExportReceipt(BaseModel):
+    """A completed log of a training job to MLflow."""
+
+    operation_id: str
+    destination: Literal["", "databricks", "server", "local"]
+    backend: str
+    experiment_name: str
+    run_id: str
+    run_url: str | None = None
+    tracking_uri: str = ""
+    logged_at: str
+
+    @field_validator("tracking_uri", "run_url")
+    @classmethod
+    def redact_tracking_credentials(cls, value: str | None) -> str | None:
+        from haute.modelling._mlflow_settings import redact_uri
+
+        return redact_uri(value) if value is not None else None
+
+
+class ModelFileExportReceipt(BaseModel):
+    """A completed save of a training job's model to a project file."""
+
+    path: str
+    feature_contract_path: str
+    saved_at: str
+
+
+class TrainExportReceipts(BaseModel):
+    """Where a completed training result has been exported, oldest first."""
+
+    mlflow: list[MlflowExportReceipt] = Field(default_factory=list)
+    model_files: list[ModelFileExportReceipt] = Field(default_factory=list)
 
 
 class TrainStatusResponse(BaseModel):
@@ -2184,6 +3159,9 @@ class TrainStatusResponse(BaseModel):
     error_code: str | None = None
     http_status_code: int | None = None
     error_detail: Any | None = None
+    # The isolated worker's formatted traceback when it raised: the "job's error
+    # details" a curated failure message points to. Diagnostic text, not a contract.
+    worker_remote_traceback: str | None = None
     phase: (
         Literal[
             "planning",
@@ -2202,6 +3180,7 @@ class TrainStatusResponse(BaseModel):
     completed_fits: int | None = Field(default=None, strict=True, ge=0)
     total_fits: int | None = Field(default=None, strict=True, ge=1, le=201)
     best_objective: float | None = None
+    export_receipts: TrainExportReceipts = Field(default_factory=TrainExportReceipts)
 
     @field_validator("best_objective", mode="before")
     @classmethod
@@ -2376,23 +3355,68 @@ class EvaluationPreviewPayload(BaseModel):
         return self
 
 
+class TrainEstimateUnavailable(BaseModel):
+    """Why a training estimate cannot size its input: one reason from a closed set."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: Literal["row_count_unprovable", "schema_unresolvable"]
+    blocking_node_id: str | None
+
+    @model_validator(mode="after")
+    def _blocking_node_matches_reason(self) -> TrainEstimateUnavailable:
+        if self.reason == "row_count_unprovable":
+            if not self.blocking_node_id:
+                raise ValueError("row_count_unprovable names the blocking node")
+        elif self.blocking_node_id is not None:
+            raise ValueError("schema_unresolvable names no blocking node")
+        return self
+
+
 class TrainEstimateResponse(BaseModel):
-    total_rows: int | None = None
+    total_rows: int | None
     safe_row_limit: int | None = None
-    estimated_mb: float = 0.0
-    training_mb: float = 0.0
-    available_mb: float = 0.0
-    bytes_per_row: float = 0.0
+    estimated_mb: float | None
+    training_mb: float | None
+    available_mb: float
+    bytes_per_row: float | None
     was_downsampled: bool = False
     warning: str | None = None
     # GPU VRAM estimation
     gpu_vram_estimated_mb: float | None = None
     gpu_vram_available_mb: float | None = None
     gpu_warning: str | None = None
+    unavailable: TrainEstimateUnavailable | None
+    """Set, with the memory figures null, when the estimate cannot size its input."""
+    unbounded_join_node_ids: list[str]
+    """Joins without a key contract that make ``total_rows`` a worst case, in graph order."""
     evaluation_preview: EvaluationPreviewPayload | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
     )
+
+    @model_validator(mode="after")
+    def _figures_match_availability(self) -> TrainEstimateResponse:
+        figures = (self.estimated_mb, self.training_mb, self.bytes_per_row)
+        if self.unbounded_join_node_ids and (self.was_downsampled or self.warning is not None):
+            raise ValueError("a worst-case row bound has no downsampling verdict or warning")
+        if self.unavailable is None:
+            if self.total_rows is None or any(value is None for value in figures):
+                raise ValueError("an available estimate requires a row total and memory figures")
+            return self
+        if any(value is not None for value in figures):
+            raise ValueError("an unavailable estimate has no memory figures")
+        if self.was_downsampled or self.warning is not None:
+            raise ValueError("an unavailable estimate has no downsampling verdict or warning")
+        if (
+            self.gpu_vram_estimated_mb is not None
+            or self.gpu_vram_available_mb is not None
+            or self.gpu_warning is not None
+        ):
+            raise ValueError("an unavailable estimate has no GPU VRAM check")
+        if (self.total_rows is None) != (self.unavailable.reason == "row_count_unprovable"):
+            raise ValueError("only a row_count_unprovable estimate lacks a row total")
+        return self
 
 
 class DispersionEstimateRequest(BaseModel):
@@ -2425,6 +3449,7 @@ class DispersionEstimateStatusResponse(BaseModel):
     n_fits: int | None = None
     error: str | None = None
     terminal_reason: str | None = None
+    worker_remote_traceback: str | None = None
 
 
 class ExportScriptRequest(BaseModel):
@@ -2441,7 +3466,34 @@ class ExportScriptResponse(BaseModel):
 class LogExperimentRequest(BaseModel):
     job_id: str
     experiment_name: str | None = None
-    model_name: str | None = None
+    destination: Literal["", "databricks", "server", "local"] = ""
+    # One user action. A retry with the same ID returns the recorded outcome
+    # instead of creating a second run.
+    operation_id: str | None = Field(
+        default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$"
+    )
+
+
+class ModelSaveDestinationRequest(BaseModel):
+    output_path: str = Field(min_length=1)
+    algorithm: Literal["catboost", "glm", "xgboost", "lightgbm", "ebm", "tboost"]
+
+
+class ModelSaveDestinationResponse(BaseModel):
+    path: str
+    suffix_mismatch: bool
+
+
+class SaveModelRequest(BaseModel):
+    job_id: str
+    output_path: str = Field(min_length=1)
+    overwrite: bool = False
+
+
+class SaveModelResponse(BaseModel):
+    status: Literal["ok"]
+    path: str
+    feature_contract_path: str
 
 
 class MlflowLogResponse(BaseModel):
@@ -2460,18 +3512,17 @@ class MlflowLogResponse(BaseModel):
     tracking_uri: str = ""
     error: str | None = None
 
+    @field_validator("tracking_uri", "run_url")
+    @classmethod
+    def redact_tracking_credentials(cls, value: str | None) -> str | None:
+        from haute.modelling._mlflow_settings import redact_uri
+
+        return redact_uri(value) if value is not None else None
+
 
 class LogExperimentResponse(MlflowLogResponse):
-    pass
-
-
-class MlflowCheckResponse(BaseModel):
-    mlflow_installed: bool
-    mlflow_importable: bool
-    tracking_configured: bool
-    backend: str = ""
-    databricks_host: str = ""
-    detail: str = ""
+    operation_id: str | None = None
+    logged_at: str | None = None
 
 
 class ModelCacheClearResponse(BaseModel):
@@ -2480,8 +3531,63 @@ class ModelCacheClearResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# /api/mlflow/* (discovery for Model Score node)
+# /api/mlflow/* (discovery for Model Score node + connection surface)
 # ---------------------------------------------------------------------------
+
+
+MlflowDestinationKey = Literal["databricks", "server", "local"]
+MlflowProbeCategory = Literal[
+    "",
+    "authentication",
+    "permission",
+    "missing_resource",
+    "connectivity",
+    "configuration",
+    "unknown",
+]
+
+
+class MlflowDestinationEntry(BaseModel):
+    key: MlflowDestinationKey
+    configured: bool
+    destination: str = ""
+    config_source: Literal["", "toml", "env", "default"] = ""
+    detail: str = ""
+    probed: bool = False
+    ok: bool = False
+    category: MlflowProbeCategory = ""
+
+
+class MlflowDestinationsResponse(BaseModel):
+    mlflow_installed: bool
+    mlflow_importable: bool
+    destinations: list[MlflowDestinationEntry] = Field(default_factory=list)
+    detail: str = ""
+
+
+class MlflowSettingsResponse(BaseModel):
+    section_present: bool
+    tracking_uri: str = ""
+    folder: str = ""
+    resolved_folder: str = ""
+    detail: str = ""
+
+
+class MlflowSettingsUpdateRequest(BaseModel):
+    tracking_uri: str = ""
+    folder: str = ""
+
+
+class MlflowTestConnectionRequest(BaseModel):
+    destination: str = ""
+    tracking_uri: str | None = None
+    folder: str | None = None
+
+
+class MlflowTestConnectionResponse(BaseModel):
+    ok: bool
+    category: MlflowProbeCategory = ""
+    detail: str = ""
 
 
 class MlflowExperimentSummary(BaseModel):
@@ -2517,6 +3623,24 @@ class MlflowModelVersionSummary(BaseModel):
     creation_timestamp: int | None = None
     description: str = ""
     params: dict[str, str] = Field(default_factory=dict)
+    # Registered model aliases that currently target this version.
+    aliases: list[str] = Field(default_factory=list)
+
+
+class MlflowExperimentList(RootModel[list[MlflowExperimentSummary]]):
+    """``GET /api/mlflow/experiments``."""
+
+
+class MlflowRunList(RootModel[list[MlflowRunSummary]]):
+    """``GET /api/mlflow/runs``."""
+
+
+class MlflowModelList(RootModel[list[MlflowModelSummary]]):
+    """``GET /api/mlflow/models``."""
+
+
+class MlflowModelVersionList(RootModel[list[MlflowModelVersionSummary]]):
+    """``GET /api/mlflow/model-versions``."""
 
 
 # ---------------------------------------------------------------------------
@@ -2527,7 +3651,6 @@ class MlflowModelVersionSummary(BaseModel):
 class OptimiserSolveRequest(BaseModel):
     graph: Graph
     node_id: str
-    streaming_chunk_size: StreamingChunkSize = None
 
 
 class OptimiserSolveResponse(BaseModel):
@@ -2550,7 +3673,6 @@ class OptimiserEstimateRequest(BaseModel):
     graph: Graph
     node_id: str
     source: str = "live"
-    streaming_chunk_size: StreamingChunkSize = None
 
 
 class OptimiserEstimateResponse(BaseModel):
@@ -2573,7 +3695,6 @@ class OptimiserEstimateResponse(BaseModel):
 class OptimiserFrontierAutoRangeRequest(BaseModel):
     graph: Graph
     node_id: str
-    streaming_chunk_size: StreamingChunkSize = None
 
 
 class OptimiserFrontierRange(BaseModel):
@@ -2585,7 +3706,6 @@ class OptimiserFrontierAutoRangeResponse(BaseModel):
     status: str = "ok"
     ranges: dict[str, OptimiserFrontierRange] = Field(default_factory=dict)
     method: str = "scenario_envelope"
-    warning: str | None = None
 
 
 class OptimiserFrontierAutoRangeStartResponse(BaseModel):
@@ -2611,7 +3731,6 @@ class OptimiserFrontierRequest(BaseModel):
     job_id: str
     threshold_ranges: dict[str, list[float]] = Field(default_factory=dict)
     n_points_per_dim: int = Field(default=5, ge=1, le=100)
-    streaming_chunk_size: StreamingChunkSize = None
 
     @field_validator("threshold_ranges", mode="after")
     @classmethod
@@ -2632,14 +3751,53 @@ class OptimiserFrontierRequest(BaseModel):
 
 class OptimiserFrontierResponse(BaseModel):
     status: str
-    points: list[dict[str, Any]] = Field(default_factory=list)
+    points: list[OptimiserFrontierPoint] = Field(default_factory=list)
+    """price-contour's frontier rows, typed (``OptimiserFrontierPoint``), in sweep order."""
+    point_summaries: list[OptimiserFrontierPointSummary] = Field(default_factory=list)
+    """The server's summary of each returned point, in point order."""
     n_points: int = 0
     points_returned: int = 0
     constraint_names: list[str] = Field(default_factory=list)
+    """Every configured constraint, swept or not, in configured order."""
+    swept_axes: list[str] = Field(default_factory=list)
+    """The constraints the sweep varied (a subset of ``constraint_names``)."""
     points_limit: int | None = None
     points_truncated: bool = False
+    frontier_generation: int | None = Field(default=None, ge=0)
+    """The solve job's frontier generation this frontier belongs to: ``0`` for the
+    solve-time frontier, incremented by every recompute. Every computed frontier
+    carries it; only the ``status == "started"`` handle has none."""
     job_id: str | None = None
     """Pollable frontier job handle when ``status == "started"``."""
+
+    @model_validator(mode="after")
+    def _generation_iff_computed(self) -> OptimiserFrontierResponse:
+        started = self.status == "started"
+        if started and self.frontier_generation is not None:
+            raise ValueError("A started frontier handle has no frontier_generation")
+        if not started and self.frontier_generation is None:
+            raise ValueError("A computed frontier requires frontier_generation")
+        return self
+
+    @model_validator(mode="after")
+    def _points_cover_the_constraints(self) -> OptimiserFrontierResponse:
+        """Every point and summary names exactly ``constraint_names``."""
+        names = self.constraint_names
+        unknown_axes = [name for name in self.swept_axes if name not in names]
+        if unknown_axes:
+            raise ValueError(f"swept_axes {unknown_axes} are not in constraint_names {names}")
+        if len({point.mode for point in self.points}) > 1:
+            raise ValueError("Frontier points must all be of one mode")
+        if self.status != "started" and len(self.point_summaries) != len(self.points):
+            raise ValueError(
+                f"A computed frontier needs one summary per point: {len(self.point_summaries)} "
+                f"summaries for {len(self.points)} points"
+            )
+        for index, point in enumerate(self.points):
+            _require_constraint_names(point.totals, names, field=f"points[{index}]")
+        for index, summary in enumerate(self.point_summaries):
+            _require_constraint_names(summary.constraints, names, field=f"point_summaries[{index}]")
+        return self
 
 
 class OptimiserFrontierStatusResponse(BaseModel):
@@ -2655,6 +3813,158 @@ class OptimiserFrontierStatusResponse(BaseModel):
     execution_metrics: ExecutionMetricsPayload | None = None
 
 
+def _require_constraint_names(keys: Mapping[str, Any], names: list[str], *, field: str) -> None:
+    """Fail unless *keys* are exactly the constraint *names*."""
+    if set(keys) != set(names):
+        missing = [name for name in names if name not in keys]
+        unexpected = [name for name in keys if name not in names]
+        raise ValueError(
+            f"{field} does not hold exactly the constraint names {names}: "
+            f"missing {missing}, unexpected {unexpected}"
+        )
+
+
+def _require_same_constraint_names(maps: Mapping[str, Mapping[str, Any]]) -> None:
+    """Fail unless every constraint-keyed map in *maps* holds the same names."""
+    fields = list(maps)
+    names = list(maps[fields[0]])
+    for field in fields[1:]:
+        _require_constraint_names(maps[field], names, field=f"{field} (vs {fields[0]})")
+
+
+# A frontier row's values, typed: strict so a malformed library row can never
+# be coerced or pass NaN/Infinity through to a client.
+_STRICT_ROW = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+
+
+class _OptimiserFrontierPointBase(BaseModel):
+    """The columns every price-contour frontier row has, per-constraint ones as maps.
+
+    ``thresholds`` (``threshold_<c>``, the user's units: a fraction for a pct
+    constraint), ``bounds`` (``bound_<c>``, the absolute bound), ``totals``
+    (``total_<c>``) and ``lambdas`` (``lambda_<c>``) each hold every configured
+    constraint, swept or not.
+    """
+
+    model_config = _STRICT_ROW
+
+    total_objective: float
+    thresholds: dict[str, float]
+    bounds: dict[str, float]
+    totals: dict[str, float]
+    lambdas: dict[str, float]
+    iterations: int = Field(ge=0)
+    converged: bool
+
+    @model_validator(mode="after")
+    def _maps_share_constraint_names(self) -> _OptimiserFrontierPointBase:
+        _require_same_constraint_names(
+            {
+                "totals": self.totals,
+                "thresholds": self.thresholds,
+                "bounds": self.bounds,
+                "lambdas": self.lambdas,
+            }
+        )
+        return self
+
+
+class OptimiserOnlineFrontierPoint(_OptimiserFrontierPointBase):
+    """An online frontier row (``frontier_points_schema("online", ...)``)."""
+
+    mode: Literal["online"]
+    solver_path: Literal["bisection", "subgradient"]
+    non_convergence_reason: (
+        Literal["above_envelope", "bracket_exhausted", "iteration_budget_exhausted"] | None
+    )
+    sv_mean: float
+    sv_std: float
+    sv_min: float
+    sv_p5: float
+    sv_p25: float
+    sv_median: float
+    sv_p75: float
+    sv_p95: float
+    sv_max: float
+    sv_pct_increase: float
+    sv_pct_decrease: float
+
+
+class OptimiserRatebookFrontierPoint(_OptimiserFrontierPointBase):
+    """A ratebook frontier row (``frontier_points_schema("ratebook", ...)``).
+
+    ``iterations`` is the point's coordinate-descent pass count.
+    """
+
+    mode: Literal["ratebook"]
+    clamp_rate: float
+    n_quotes_clamped_low: int = Field(ge=0)
+    n_quotes_clamped_high: int = Field(ge=0)
+
+
+OptimiserFrontierPoint = OptimiserOnlineFrontierPoint | OptimiserRatebookFrontierPoint
+
+
+class OptimiserFactorTableRow(BaseModel):
+    """One level of a solved ratebook factor table.
+
+    The wire keys are the solver's (``__factor_group__``), which the saved
+    artifact and every apply path read, so the row always serialises by alias.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid", strict=True, allow_inf_nan=False, serialize_by_alias=True
+    )
+
+    level: str = Field(alias="__factor_group__")
+    """The canonical, apply-joinable level key."""
+    optimal_scenario_value: float
+    """The level's solved rate."""
+    quote_count: int = Field(ge=0)
+    """How many solve quotes fall in the level."""
+
+
+class OptimiserDiagnosticError(BaseModel):
+    """A result diagnostic that could not be produced, and why."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    diagnostic: Literal["adjustments", "adjustment_weight", "frontier", "segment_weight"]
+    error_type: str
+    message: str
+
+
+class OptimiserSolverSettings(BaseModel):
+    """The solver settings a solve ran with, the solver defaults applied."""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    max_iter: int
+    tolerance: float
+    # Ratebook only.
+    max_cd_iterations: int | None = Field(default=None, exclude_if=lambda value: value is None)
+    cd_tolerance: float | None = Field(default=None, exclude_if=lambda value: value is None)
+    # Only when the solve swept a constraint.
+    frontier_steps: int | None = Field(default=None, exclude_if=lambda value: value is None)
+    frontier_ranges: dict[str, Any] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+
+
+class OptimiserInputSummary(BaseModel):
+    """What a solve ran on: the job's input provenance and its solver settings."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str
+    data_source: str
+    """The batch scenario the pipeline executed against."""
+    source_file: str | None
+    """The pipeline file, when the graph came from one."""
+    graph_fingerprint: str
+    solver_settings: OptimiserSolverSettings
+
+
 class OptimiserHistoryEntry(BaseModel):
     iteration: int
     total_objective: float
@@ -2664,46 +3974,462 @@ class OptimiserHistoryEntry(BaseModel):
     total_constraints: dict[str, float] = Field(default_factory=dict)
 
 
-class OptimiserScenarioValueStats(BaseModel):
-    mean: float
-    std: float
-    min: float
-    max: float
+class OptimiserRatebookCdTraceRecord(BaseModel):
+    """One inner grouped solve of a ratebook coordinate descent (price-contour's
+    ``PerFactorRecord``): the totals and λ after updating ``factor`` in pass
+    ``cd_iteration``, on the search's working multiplier."""
+
+    model_config = _STRICT_ROW
+
+    cd_iteration: int = Field(ge=1)
+    """The 1-based coordinate-descent pass."""
+    factor: str
+    factor_index: int = Field(ge=0)
+    total_objective: float
+    total_constraints: dict[str, float]
+    lambdas: dict[str, float]
+
+    @model_validator(mode="after")
+    def _maps_share_constraint_names(self) -> OptimiserRatebookCdTraceRecord:
+        _require_same_constraint_names(
+            {"total_constraints": self.total_constraints, "lambdas": self.lambdas}
+        )
+        return self
+
+
+class OptimiserRatebookCdTrace(BaseModel):
+    """A ratebook solve's coordinate-descent trace, in (CD pass, factor) order.
+
+    Holds the last ``HAUTE_OPTIMISER_CD_TRACE_LIMIT`` records; ``truncated``
+    says earlier ones were dropped.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    records: list[OptimiserRatebookCdTraceRecord] = Field(min_length=1)
+    truncated: bool
+
+    def constraint_names(self) -> list[str]:
+        """The constraint names every record holds (the first record's)."""
+        names = list(self.records[0].total_constraints)
+        for index, record in enumerate(self.records[1:], start=1):
+            _require_constraint_names(
+                record.total_constraints, names, field=f"ratebook_cd_trace record {index}"
+            )
+        return names
+
+
+class OptimiserAdjustmentBar(BaseModel):
+    """One step of the scenario grid in an adjustment report, chosen or not."""
+
+    model_config = _STRICT_ROW
+
+    optimal_step: int = Field(ge=0)
+    scenario_value: float
+    quotes: int = Field(ge=0)
+    # Per computed weighting other than quote count, the Float64 sum at this step.
+    weights: dict[str, float]
+
+
+class OptimiserAdjustmentQuantiles(BaseModel):
+    """Inverted-CDF (lower) quantiles of the chosen scenario values: always grid values."""
+
+    model_config = _STRICT_ROW
+
     p5: float
     p25: float
     p50: float
     p75: float
     p95: float
-    pct_increase: float
-    pct_decrease: float
 
 
-class OptimiserScenarioValueHistogram(BaseModel):
-    counts: list[int] = Field(default_factory=list)
-    edges: list[float] = Field(default_factory=list)
+class OptimiserAdjustmentWeighting(BaseModel):
+    """The summary figures of the chosen scenario values under one weighting.
+
+    ``key`` is ``"quotes"`` (each quote weighs 1) or the choice-frame column
+    that weighs them (``optimal_objective``, ``optimal_<constraint>``),
+    evaluated at the chosen scenario.
+    """
+
+    model_config = _STRICT_ROW
+
+    key: str
+    label: str
+    total: float = Field(gt=0)
+    mean: float
+    quantiles: OptimiserAdjustmentQuantiles
+    share_up: float = Field(ge=0, le=1)
+    share_down: float = Field(ge=0, le=1)
+    # ``None`` exactly when the grid has no 1.0 step: not a category, never 0.
+    share_unadjusted: float | None = Field(ge=0, le=1)
+    share_at_min: float = Field(ge=0, le=1)
+    share_at_max: float = Field(ge=0, le=1)
+
+
+class OptimiserAdjustmentReport(BaseModel):
+    """The distribution of one target's chosen scenario values against the 1.0 base price.
+
+    One bar per step of the solve's scenario grid (steps nobody chose included)
+    and, per computed weighting (quote count first), the summary figures. A
+    refused weighting (a negative value or a zero total) is named in
+    ``diagnostics_errors`` and appears nowhere else.
+
+    ``deployed_factor_differs`` is, for a ratebook target, how many quotes'
+    deployed factor (the unsnapped product of the rates, collared to the
+    scenario range) differs from the grid step the solver evaluated; ``None``
+    for an online target, whose deployed scenario is the chosen step.
+    """
+
+    model_config = _STRICT_ROW
+
+    n_quotes: int = Field(gt=0)
+    has_unadjusted: bool
+    bars: list[OptimiserAdjustmentBar] = Field(min_length=1)
+    weightings: list[OptimiserAdjustmentWeighting] = Field(min_length=1)
+    diagnostics_errors: list[OptimiserDiagnosticError]
+    deployed_factor_differs: int | None = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _bars_and_weightings_agree(self) -> OptimiserAdjustmentReport:
+        steps = [bar.optimal_step for bar in self.bars]
+        if steps != list(range(len(steps))):
+            raise ValueError(f"adjustment bars must list steps 0..n-1 in order, got {steps}")
+        values = [bar.scenario_value for bar in self.bars]
+        if any(later <= earlier for earlier, later in itertools.pairwise(values)):
+            raise ValueError(f"adjustment bar values must be strictly increasing, got {values}")
+        if self.has_unadjusted != (1.0 in values):
+            raise ValueError("has_unadjusted must say whether the grid has a 1.0 step")
+        if sum(bar.quotes for bar in self.bars) != self.n_quotes:
+            raise ValueError("adjustment bars must count every quote exactly once")
+        keys = [weighting.key for weighting in self.weightings]
+        if keys[0] != "quotes" or len(set(keys)) != len(keys):
+            raise ValueError(f"weightings must start with 'quotes' and be unique, got {keys}")
+        for bar in self.bars:
+            if set(bar.weights) != set(keys[1:]):
+                raise ValueError(
+                    f"bar {bar.optimal_step} weights {sorted(bar.weights)} must be the computed "
+                    f"weightings {keys[1:]}"
+                )
+        for weighting in self.weightings:
+            if (weighting.share_unadjusted is None) == self.has_unadjusted:
+                raise ValueError(
+                    f"weighting {weighting.key!r}: share_unadjusted is null exactly when the "
+                    "grid has no 1.0 step"
+                )
+        differs = self.deployed_factor_differs
+        if differs is not None and differs > self.n_quotes:
+            raise ValueError(
+                f"deployed_factor_differs ({self.deployed_factor_differs}) cannot exceed "
+                f"n_quotes ({self.n_quotes})"
+            )
+        return self
+
+
+class OptimiserSegmentKey(BaseModel):
+    """One key a result can be broken down by (OPT-V11), and whether it can be.
+
+    ``source`` is an analysis column or a ratebook rating factor (named as the
+    Rates tab names it); ``binning`` says whether its levels are quantile bins
+    or distinct values. The cardinality gate decides ``available``;
+    ``unavailable_reason`` says why not, and is ``None`` exactly when it is.
+    """
+
+    model_config = _STRICT_ROW
+
+    key: str = Field(min_length=1)
+    source: Literal["analysis", "factor"]
+    binning: Literal["numeric", "categorical"]
+    available: bool
+    unavailable_reason: str | None
+
+    @model_validator(mode="after")
+    def _reason_exactly_when_unavailable(self) -> OptimiserSegmentKey:
+        if (self.unavailable_reason is None) != self.available:
+            raise ValueError(
+                f"segment key {self.key!r}: unavailable_reason is set exactly when it is "
+                "unavailable"
+            )
+        return self
+
+
+class OptimiserSegmentFigures(BaseModel):
+    """A level's chosen scenario values against the 1.0 base price, under one weighting."""
+
+    model_config = _STRICT_ROW
+
+    mean_scenario_value: float
+    share_up: float = Field(ge=0, le=1)
+    share_down: float = Field(ge=0, le=1)
+    # At the scenario grid's first or last step.
+    share_at_edge: float = Field(ge=0, le=1)
+
+
+class OptimiserSegmentRow(BaseModel):
+    """One level of a segment breakdown.
+
+    ``weighted`` is ``None`` when the weighting was refused for the target, or
+    when this level's weight totals 0 (a diagnostics entry names it); the quote
+    count and the unweighted figures always remain.
+    """
+
+    model_config = _STRICT_ROW
+
+    label: str
+    kind: Literal["bin", "value", "other", "missing"]
+    # A bin's bounds: ``[lower, upper)``, the last bin ``[lower, upper]``.
+    lower: float | None
+    upper: float | None
+    # How many distinct values the Other level merges: every level beyond the top
+    # 15, so one when there are exactly 16.
+    merged_levels: int | None = Field(ge=1)
+    quotes: int = Field(gt=0)
+    weight_total: float | None = Field(ge=0)
+    unweighted: OptimiserSegmentFigures
+    weighted: OptimiserSegmentFigures | None
+    # A ratebook target's count of quotes whose deployed factor differs from the
+    # evaluated step; ``None`` online.
+    deployed_factor_differs: int | None = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _fields_of_its_kind(self) -> OptimiserSegmentRow:
+        if (self.lower is not None and self.upper is not None) != (self.kind == "bin"):
+            raise ValueError(f"segment level {self.label!r}: only a bin has bounds")
+        if (self.merged_levels is not None) != (self.kind == "other"):
+            raise ValueError(f"segment level {self.label!r}: only Other merges levels")
+        if self.weight_total is None and self.weighted is not None:
+            raise ValueError(f"segment level {self.label!r}: weighted figures need a weight")
+        return self
+
+
+class OptimiserSegmentsRequest(BaseModel):
+    job_id: str
+    # ``None`` is the as-solved result; an integer, that frontier point.
+    point_index: int | None = Field(default=None, ge=0)
+    key: str = Field(min_length=1)
+    # ``"quotes"`` or a choice-frame value column at the chosen scenario.
+    weight: str = "quotes"
+
+
+class OptimiserSegmentsResponse(BaseModel):
+    """The chosen scenario values of one target, per level of one key (OPT-V11)."""
+
+    model_config = _STRICT_ROW
+
+    key: str
+    source: Literal["analysis", "factor"]
+    binning: Literal["numeric", "categorical"]
+    weight: str
+    weight_label: str
+    point_index: int | None = Field(ge=0)
+    # The frontier generation the point index refers to.
+    frontier_generation: int = Field(ge=0)
+    n_quotes: int = Field(gt=0)
+    # Bins, or the distinct non-missing values before truncation to the top 15.
+    n_levels: int = Field(ge=0)
+    mean_scenario_value: float
+    # ``None`` when the weighting was refused.
+    weighted_mean_scenario_value: float | None
+    rows: list[OptimiserSegmentRow] = Field(min_length=1)
+    diagnostics_errors: list[OptimiserDiagnosticError]
+
+    @model_validator(mode="after")
+    def _levels_count_every_quote(self) -> OptimiserSegmentsResponse:
+        if sum(row.quotes for row in self.rows) != self.n_quotes:
+            raise ValueError("segment levels must count every quote exactly once")
+        return self
+
+
+class OptimiserSegmentIndexStatistic(BaseModel):
+    """What ranks the segment keys, named for the browser's header."""
+
+    model_config = _STRICT_ROW
+
+    label: str
+    description: str
+
+
+class OptimiserSegmentIndexKey(OptimiserSegmentKey):
+    """A segment key with its ranking statistic (``None`` when it is unavailable)."""
+
+    spread: float | None = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _spread_exactly_when_available(self) -> OptimiserSegmentIndexKey:
+        if (self.spread is None) == self.available:
+            raise ValueError(f"segment key {self.key!r}: spread is set exactly when available")
+        return self
+
+
+class OptimiserSegmentIndexResponse(BaseModel):
+    """The keys of one target ranked by their adjustment spread (OPT-V11)."""
+
+    model_config = _STRICT_ROW
+
+    point_index: int | None = Field(ge=0)
+    frontier_generation: int = Field(ge=0)
+    statistic: OptimiserSegmentIndexStatistic
+    keys: list[OptimiserSegmentIndexKey]
+
+
+class OptimiserEffectiveBound(BaseModel):
+    """The absolute bound a result was solved at for one constraint.
+
+    ``bound`` is price-contour's (``constraint_bounds`` or a frontier row's
+    ``bound_<name>``); for a ``min_pct``/``max_pct`` constraint it is the
+    fraction times the constraint's baseline total, never the fraction.
+    """
+
+    kind: Literal["min", "max"]
+    bound: float
+
+
+class OptimiserFrontierPointSummary(BaseModel):
+    """Every result field of one frontier point that differs from its solve.
+
+    ``None`` means the point has no such field: applying the summary to the
+    solve's result removes it.
+    """
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    total_objective: float
+    constraints: dict[str, float]
+    effective_bounds: dict[str, OptimiserEffectiveBound]
+    lambdas: dict[str, float]
+    converged: bool
+    iterations: int | None
+    cd_iterations: int | None
+    clamp_rate: float | None
+    history: list[OptimiserHistoryEntry] | None
+    ratebook_cd_trace: OptimiserRatebookCdTrace | None
+    # Always ``None``: a point's report is loaded on request (frontier select
+    # with ``include_adjustments``), so applying the summary removes the solve's.
+    adjustments: None
+    factor_tables: dict[str, list[OptimiserFactorTableRow]] | None
+    warning: str | None
+    frontier_error: str | None
+    diagnostics_errors: list[OptimiserDiagnosticError]
+    """Always empty: a point's figures come from its own frontier row."""
+
+    @model_validator(mode="after")
+    def _maps_share_constraint_names(self) -> OptimiserFrontierPointSummary:
+        _require_same_constraint_names(
+            {
+                "constraints": self.constraints,
+                "effective_bounds": self.effective_bounds,
+                "lambdas": self.lambdas,
+            }
+        )
+        return self
+
+
+def _require_convergence_record_of_its_mode(
+    mode: str,
+    history: list[OptimiserHistoryEntry] | None,
+    trace: OptimiserRatebookCdTrace | None,
+    constraint_names: list[str],
+) -> None:
+    """Fail unless only an online result has history and only a ratebook result a
+    CD trace, whose records hold exactly the result's constraint names."""
+    if history is not None and mode != "online":
+        raise ValueError(f"history is online-only; a {mode} result has none")
+    if trace is None:
+        return
+    if mode != "ratebook":
+        raise ValueError(f"ratebook_cd_trace is ratebook-only; a {mode} result has none")
+    _require_constraint_names(
+        dict.fromkeys(trace.constraint_names()), constraint_names, field="ratebook_cd_trace"
+    )
+
+
+class OptimiserCombinedFactorBounds(BaseModel):
+    """The scenario range a ratebook solve scored: the deployed factor's collar.
+
+    ``min``/``max`` are the solved grid's first and last scenario values
+    (Float32 widened). Every apply clips the combined ratebook factor to them.
+    """
+
+    min: float
+    max: float
+
+
+class OptimiserScenarioGridStep(BaseModel):
+    """One step of the solve's scenario grid: its index and the value the solver scored."""
+
+    model_config = _STRICT_ROW
+
+    optimal_step: int = Field(ge=0)
+    scenario_value: float
 
 
 class OptimiserSolveResult(BaseModel):
-    mode: str | None = None
+    mode: Literal["online", "ratebook"]
     total_objective: float
     baseline_objective: float
     constraints: dict[str, float] = Field(default_factory=dict)
     baseline_constraints: dict[str, float] = Field(default_factory=dict)
+    # Every configured constraint's absolute bound this result was solved at.
+    effective_bounds: dict[str, OptimiserEffectiveBound]
     lambdas: dict[str, float] = Field(default_factory=dict)
     converged: bool
     iterations: int | None = None
     n_quotes: int | None = None
     n_steps: int | None = None
     cd_iterations: int | None = None
-    factor_tables: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    factor_tables: dict[str, list[OptimiserFactorTableRow]] = Field(default_factory=dict)
+    # Online only: every online solve records its per-iteration history.
     history: list[OptimiserHistoryEntry] | None = None
+    # Ratebook only: the live solve's coordinate-descent trace.
+    ratebook_cd_trace: OptimiserRatebookCdTrace | None = None
     warning: str | None = None
-    scenario_value_stats: OptimiserScenarioValueStats | None = None
-    scenario_value_histogram: OptimiserScenarioValueHistogram | None = None
+    # The as-solved adjustment report (OPT-V10): online only until OPT-V09C; ``None``
+    # for a selected frontier point, whose report is loaded on request.
+    adjustments: OptimiserAdjustmentReport | None = None
     clamp_rate: float | None = None
+    # Ratebook only; ``None`` for online solves.
+    combined_factor_bounds: OptimiserCombinedFactorBounds | None = None
     frontier: OptimiserFrontierResponse | None = None
     frontier_error: str | None = None
     selected_frontier_point: int | None = None
+    # The job's frontier generation (0 until a recompute); see OptimiserFrontierResponse.
+    frontier_generation: int = Field(ge=0)
+    # What the solve ran on: the job's input provenance and solver settings.
+    input_summary: OptimiserInputSummary
+    # Diagnostics that could not be produced (the frontier's failure among them).
+    diagnostics_errors: list[OptimiserDiagnosticError]
+    # The solver input's complete grid, recorded at setup: the only source for
+    # which adjustments were possible (OPT-V09A).
+    scenario_grid: list[OptimiserScenarioGridStep] = Field(min_length=1)
+    # What the result can be broken down by (OPT-V11): its analysis columns and,
+    # for ratebook, its rating factors, each with the cardinality gate's verdict.
+    segment_keys: list[OptimiserSegmentKey]
+
+    @model_validator(mode="after")
+    def _scenario_grid_is_complete_and_ordered(self) -> OptimiserSolveResult:
+        steps = [step.optimal_step for step in self.scenario_grid]
+        if steps != list(range(len(steps))):
+            raise ValueError(f"scenario_grid must list steps 0..n-1 in order, got {steps}")
+        values = [step.scenario_value for step in self.scenario_grid]
+        if any(later <= earlier for earlier, later in itertools.pairwise(values)):
+            raise ValueError(f"scenario_grid values must be strictly increasing, got {values}")
+        if self.n_steps is not None and self.n_steps != len(steps):
+            raise ValueError(f"n_steps is {self.n_steps} but scenario_grid has {len(steps)} steps")
+        return self
+
+    @model_validator(mode="after")
+    def _maps_share_constraint_names(self) -> OptimiserSolveResult:
+        _require_same_constraint_names(
+            {
+                "constraints": self.constraints,
+                "baseline_constraints": self.baseline_constraints,
+                "effective_bounds": self.effective_bounds,
+                "lambdas": self.lambdas,
+            }
+        )
+        _require_convergence_record_of_its_mode(
+            self.mode, self.history, self.ratebook_cd_trace, list(self.constraints)
+        )
+        return self
 
 
 class OptimiserStatusResponse(BaseModel):
@@ -2717,68 +4443,184 @@ class OptimiserStatusResponse(BaseModel):
     execution_metrics: ExecutionMetricsPayload | None = None
 
 
+APPLY_PREVIEW_ROW_LIMIT = 100
+"""The most rows one Quotes page (``POST /apply``) returns."""
+
+OptimiserQuoteEqualityValue = StrictStr | StrictInt | StrictFloat | StrictBool | None
+
+
+class OptimiserQuoteFilters(BaseModel):
+    """The Quotes explorer's filters (OPT-V12), combined with AND; each is optional."""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    # An inclusive range of the chosen scenario value, compared in Float64.
+    scenario_value_min: float | None = None
+    scenario_value_max: float | None = None
+    # Quotes at the first or last step of the recorded scenario grid.
+    at_range_edge: bool = False
+    # ``{analysis column: value}``; ``None`` matches a missing value.
+    analysis_equals: dict[str, OptimiserQuoteEqualityValue] = Field(default_factory=dict)
+    # Ratebook only: the deployed factor differs from the evaluated step.
+    deployed_factor_differs: bool = False
+
+
 class OptimiserApplyRequest(BaseModel):
+    """One page of the target's chosen scenarios (the Quotes explorer, OPT-V12)."""
+
+    model_config = ConfigDict(extra="forbid")
+
     job_id: str
     point_index: int | None = Field(default=None, ge=0)
+    # ``None`` keeps the apply frame's quote order; ties always break by quote id.
+    sort_by: str | None = Field(default=None, min_length=1)
+    descending: bool = False
+    quote_id_prefix: str | None = Field(default=None, min_length=1)
+    filters: OptimiserQuoteFilters = Field(default_factory=OptimiserQuoteFilters)
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=APPLY_PREVIEW_ROW_LIMIT, ge=1, le=APPLY_PREVIEW_ROW_LIMIT)
+
+
+class OptimiserQuoteColumn(BaseModel):
+    """One column of a Quotes page and its role (OPT-V12)."""
+
+    model_config = _STRICT_ROW
+
+    name: str
+    role: Literal["id", "scenario", "objective", "constraint", "factor", "flag", "analysis"]
+    # Whether ``sort_by`` accepts it.
+    sortable: bool
+    # Whether ``filters.analysis_equals`` accepts it.
+    filterable: bool
 
 
 class OptimiserApplyResponse(BaseModel):
+    """One Quotes page: the target's totals, typed columns, rows and counts."""
+
     status: str
-    total_objective: float = 0.0
-    constraints: dict[str, float] = Field(default_factory=dict)
-    from_artifact: bool = False
-    preview: list[dict[str, Any]] = Field(default_factory=list)
-    row_count: int = 0
-    preview_row_count: int = 0
-    preview_row_limit: int | None = None
-    preview_truncated: bool = False
+    total_objective: float
+    constraints: dict[str, float]
+    from_artifact: bool
+    columns: list[OptimiserQuoteColumn]
+    preview: list[dict[str, Any]]
+    # The target's quotes, and those matching the search and filters.
+    row_count: int = Field(ge=0)
+    matched_row_count: int = Field(ge=0)
+    offset: int = Field(ge=0)
+    preview_row_count: int = Field(ge=0)
+    preview_row_limit: int = Field(ge=1, le=APPLY_PREVIEW_ROW_LIMIT)
+    # The frontier generation the page was answered for, so a client can refuse
+    # a page from a frontier recomputed after its request.
+    frontier_generation: int = Field(ge=0)
     error: str | None = None
+
+    @model_validator(mode="after")
+    def _page_agrees_with_its_counts(self) -> OptimiserApplyResponse:
+        if self.matched_row_count > self.row_count:
+            raise ValueError(
+                f"matched_row_count {self.matched_row_count} exceeds row_count {self.row_count}"
+            )
+        if self.preview_row_count != len(self.preview):
+            raise ValueError(
+                f"preview_row_count {self.preview_row_count} but {len(self.preview)} rows"
+            )
+        if self.preview_row_count > self.preview_row_limit:
+            raise ValueError(
+                f"{self.preview_row_count} rows exceed the page limit {self.preview_row_limit}"
+            )
+        names = [column.name for column in self.columns]
+        for row in self.preview:
+            if list(row) != names:
+                raise ValueError(f"a Quotes row has keys {list(row)}, expected {names}")
+        return self
 
 
 class OptimiserFrontierSelectRequest(BaseModel):
     job_id: str
     point_index: int | None = Field(..., ge=0)
     include_ratebook_tables: bool = False
+    # Also answer the point's adjustment report (OPT-V10), materialising its choices.
+    include_adjustments: bool = False
 
 
 class OptimiserFrontierSelectResponse(BaseModel):
     status: str
     point_index: int | None = None
-    total_objective: float = 0.0
-    constraints: dict[str, float] = Field(default_factory=dict)
-    baseline_objective: float = 0.0
-    baseline_constraints: dict[str, float] = Field(default_factory=dict)
-    lambdas: dict[str, float] = Field(default_factory=dict)
-    converged: bool = True
+    total_objective: float
+    constraints: dict[str, float]
+    baseline_objective: float
+    baseline_constraints: dict[str, float]
+    # The selected point's (or, with no point, the solve's) absolute bounds.
+    effective_bounds: dict[str, OptimiserEffectiveBound]
+    lambdas: dict[str, float]
+    converged: bool
     iterations: int | None = None
     cd_iterations: int | None = None
-    factor_tables: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    factor_tables: dict[str, list[OptimiserFactorTableRow]] = Field(default_factory=dict)
     history: list[OptimiserHistoryEntry] | None = None
+    ratebook_cd_trace: OptimiserRatebookCdTrace | None = None
     warning: str | None = None
-    scenario_value_stats: OptimiserScenarioValueStats | None = None
-    scenario_value_histogram: OptimiserScenarioValueHistogram | None = None
+    # Without a point, the as-solved report; with one, its report when
+    # ``include_adjustments`` was requested, else ``None``.
+    adjustments: OptimiserAdjustmentReport | None = None
     clamp_rate: float | None = None
+    # Ratebook only: the solve's collar, shared by every frontier point.
+    combined_factor_bounds: OptimiserCombinedFactorBounds | None = None
+    # The frontier generation the point index refers to.
+    frontier_generation: int = Field(ge=0)
+    # The selected point's (always empty) or, with no point, the solve's.
+    diagnostics_errors: list[OptimiserDiagnosticError]
     error: str | None = None
+
+    @model_validator(mode="after")
+    def _maps_share_constraint_names(self) -> OptimiserFrontierSelectResponse:
+        _require_same_constraint_names(
+            {
+                "constraints": self.constraints,
+                "baseline_constraints": self.baseline_constraints,
+                "effective_bounds": self.effective_bounds,
+                "lambdas": self.lambdas,
+            }
+        )
+        if self.ratebook_cd_trace is not None:
+            _require_constraint_names(
+                dict.fromkeys(self.ratebook_cd_trace.constraint_names()),
+                list(self.constraints),
+                field="ratebook_cd_trace",
+            )
+        return self
 
 
 class OptimiserSaveRequest(BaseModel):
     job_id: str
+    # Relative to the project root; an absolute path must stay inside it.
     output_path: str
     version: str = ""  # optional user-specified version label; auto-generated if empty
+    # ``None`` publishes the job's own solve; a number publishes that frontier point.
     point_index: int | None = Field(default=None, ge=0)
+    # An existing file is replaced only when this is true; otherwise the save is a 409.
+    overwrite: bool = False
+    # Whether the node configuration changed since the solve; recorded as ``stale_at_publish``.
+    stale: bool = False
 
 
 class OptimiserSaveResponse(BaseModel):
     status: str
     path: str | None = None
+    # The written file relative to the project root, POSIX separators: an Optimiser
+    # Apply node's ``artifact_path``.
+    apply_path: str
     message: str = ""
 
 
 class OptimiserMlflowLogRequest(BaseModel):
     job_id: str
+    # ``None`` logs the job's own solve; a number logs that frontier point.
     point_index: int | None = Field(default=None, ge=0)
     experiment_name: str | None = None
-    model_name: str | None = None
+    destination: Literal["", "databricks", "server", "local"] = ""
+    # Whether the node configuration changed since the solve; recorded as ``stale_at_publish``.
+    stale: bool = False
 
 
 class OptimiserMlflowLogResponse(MlflowLogResponse):
@@ -3338,6 +5180,7 @@ class IoInputCapability(_StrictIoCapabilitiesModel):
     cache_mode: Literal["direct", "snapshot"]
     direct_bounded: bool
     needs_schema_when_bounded: bool
+    source_is_folder: bool
     snapshot_build: Literal["bounded", "admitted_eager", "unsupported"]
     cached_read: bool
 
@@ -3382,3 +5225,12 @@ class IoCapabilityGroup(_StrictIoCapabilitiesModel):
 class IoCapabilitiesResponse(_StrictIoCapabilitiesModel):
     schema_version: Literal[1]
     groups: list[IoCapabilityGroup]
+
+
+# These models name a model defined further down this file, so pydantic leaves
+# them unbuilt until first use. That lazy build is not thread-safe: two request
+# threads completing it at once can leave the class without a validator. Build
+# them at import instead.
+OptimiserFrontierResponse.model_rebuild()
+OptimiserFrontierStatusResponse.model_rebuild()
+GitMilestoneFork.model_rebuild()

@@ -32,7 +32,7 @@ import useSettingsStore from "../../stores/useSettingsStore.ts"
 // ── Utility imports ──────────────────────────────────────────────
 import { computeNextNodeId, normalizeEdges } from "../../utils/graphHelpers.ts"
 import { buildGraph } from "../../utils/buildGraph.ts"
-import { makeNode, makeEdge, makeSimpleNode, makeSimpleEdge, makeTrainResult } from "../../test-utils/factories.ts"
+import { makeNode, makeEdge, makeSimpleNode, makeSimpleEdge, makeTrainResult, makeSolveResult } from "../../test-utils/factories.ts"
 import { makePreviewData } from "../../utils/makePreviewData.ts"
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -51,7 +51,7 @@ function resetStores() {
   useUIStore.setState({
     paletteOpen: true,
     utilityOpen: false,
-    importsOpen: false,
+    constantsOpen: false,
     gitOpen: false,
     shortcutsOpen: false,
     submodelDialog: null,
@@ -133,14 +133,14 @@ describe("1. API returns unexpected shapes", () => {
       const store = useNodeResultsStore.getState()
       store.startSolveJob("n1", "j1", "Node", {}, "h", "live", 0)
       // Simulate server returning only partial result
-      const minimalResult = {
+      const minimalResult = makeSolveResult({
         total_objective: 0,
         baseline_objective: 0,
         constraints: {},
         baseline_constraints: {},
         lambdas: {},
         converged: false,
-      }
+      })
       expect(() => store.completeSolveJob("n1", minimalResult)).not.toThrow()
       expect(useNodeResultsStore.getState().solveResults["n1"]).toBeDefined()
     })
@@ -532,7 +532,9 @@ describe("6. Empty graph", () => {
       nodes: [],
       edges: [],
       submodels: undefined,
-      preamble: undefined,
+      preamble: "",
+      global_constants: [],
+      global_constants_error: null,
     })
   })
 
@@ -685,7 +687,7 @@ describe("8. Self-referencing edge", () => {
 // ══════════════════════════════════════════════════════════════════
 
 describe("9. Orphan edges", () => {
-  it("normalizeEdges does not validate node existence — passes through orphan edges", () => {
+  it("normalizeEdges does not validate node existence - passes through orphan edges", () => {
     const orphanEdges = [
       makeEdge("nonexistent_1", "nonexistent_2", { id: "orphan1" }),
       makeEdge("real_node", "ghost_node", { id: "orphan2" }),

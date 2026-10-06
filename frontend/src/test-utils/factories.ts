@@ -154,7 +154,6 @@ export function makeConfig(
     weight: "",
     task: "regression",
     metrics: ["gini", "rmse"],
-    exclude: [],
     evaluation: {
       schema_version: 1,
       strategy: "random",
@@ -198,11 +197,18 @@ export function makeTrainResult(
     features: ["age", "income", "region"],
     cat_features: ["region"],
     error: null,
+    final_tree_count: null,
+    fit_evidence: null,
     best_iteration: null,
     loss_history: [],
     loss_history_truncated: false,
+    validation_loss_history: [],
+    validation_loss_history_truncated: false,
     double_lift: [],
     shap_summary: [],
+    shap_beeswarm: [],
+    shap_curves: [],
+    shap_link: null,
     feature_importance_loss: [],
     ave_per_feature: [],
     residuals_histogram: [],
@@ -216,7 +222,11 @@ export function makeTrainResult(
     glm_coefficients: [],
     glm_relativities: [],
     glm_fit_statistics: {},
-    glm_regularization_path: null,
+    glm_inference: null,
+    glm_smooth_terms: [],
+    glm_regularization: null,
+    ebm_terms: [],
+    tboost_tables: null,
     diagnostics_errors: [],
     feature_selection: null,
     evaluation: {
@@ -225,6 +235,7 @@ export function makeTrainResult(
       validation_method: "single",
       validation_fit_count: 1,
       fit_count: 2,
+      refit_on_development: true,
       development_rows: 8000,
       final_test_rows: 2000,
       selection_fits: [
@@ -278,7 +289,17 @@ export function makeTrainResult(
 // makeTrainEstimate — RAM estimate fixture
 // ---------------------------------------------------------------------------
 
-import type { TrainEstimate } from "../api/types"
+import type {
+  FrontierResponse,
+  FrontierSelectResponse,
+  GitWorkingBranchResponse,
+  OptimiserHistoryEntry,
+  OptimiserInputSummary,
+  OptimiserSolveResult,
+  OptimiserStatusResponse,
+  TrainEstimate,
+  TrainStatusResponse,
+} from "../api/types"
 
 /**
  * Create a `TrainEstimate` with sensible defaults.
@@ -300,7 +321,197 @@ export function makeTrainEstimate(
     gpu_vram_estimated_mb: null,
     gpu_vram_available_mb: null,
     gpu_warning: null,
+    unavailable: null,
+    unbounded_join_node_ids: [],
     evaluation_preview: null,
+    ...overrides,
+  }
+}
+
+/** A complete git readiness payload with the backend model's defaults. */
+export function makeGitWorkingBranch(
+  overrides: Partial<GitWorkingBranchResponse> = {},
+): GitWorkingBranchResponse {
+  return {
+    working_branch: null,
+    storage: "unsupported",
+    storage_remote: null,
+    storage_forked_from: null,
+    sync: null,
+    storage_bind: null,
+    state: "unset",
+    errors: [],
+    current_branch: "",
+    head_sha: null,
+    last_save_sha: null,
+    eligible_branches: [],
+    identity_set: true,
+    user_name: null,
+    user_email: null,
+    ...overrides,
+  }
+}
+
+/** A complete training status payload with the backend model's defaults. */
+export function makeTrainStatus(
+  overrides: Partial<TrainStatusResponse> = {},
+): TrainStatusResponse {
+  return {
+    status: "running",
+    progress: 0,
+    message: "",
+    iteration: 0,
+    total_iterations: 0,
+    train_loss: {},
+    train_loss_history: [],
+    train_loss_history_truncated: false,
+    elapsed_seconds: 0,
+    result: null,
+    warning: null,
+    terminal_reason: null,
+    execution_metrics: null,
+    feature_selection: null,
+    error_code: null,
+    http_status_code: null,
+    error_detail: null,
+    worker_remote_traceback: null,
+    phase: null,
+    trial_index: null,
+    trial_count: null,
+    fold_index: null,
+    fold_count: null,
+    completed_fits: null,
+    total_fits: null,
+    best_objective: null,
+    export_receipts: { mlflow: [], model_files: [] },
+    ...overrides,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Optimiser payloads: every field the server sends, with the backend models'
+// defaults, so a test states only what it is about.
+// ---------------------------------------------------------------------------
+
+export function makeInputSummary(overrides: Partial<OptimiserInputSummary> = {}): OptimiserInputSummary {
+  return {
+    node_id: "optimiser_1",
+    data_source: "batch",
+    source_file: "main.py",
+    graph_fingerprint: "3f9a1c",
+    solver_settings: { max_iter: 50, tolerance: 1e-6 },
+    ...overrides,
+  }
+}
+
+export function makeSolveResult(overrides: Partial<OptimiserSolveResult> = {}): OptimiserSolveResult {
+  return {
+    mode: "online",
+    total_objective: 0,
+    baseline_objective: 0,
+    constraints: {},
+    baseline_constraints: {},
+    effective_bounds: {},
+    lambdas: {},
+    converged: true,
+    iterations: null,
+    n_quotes: null,
+    n_steps: null,
+    cd_iterations: null,
+    factor_tables: {},
+    history: null,
+    ratebook_cd_trace: null,
+    warning: null,
+    adjustments: null,
+    clamp_rate: null,
+    combined_factor_bounds: null,
+    frontier: null,
+    frontier_error: null,
+    selected_frontier_point: null,
+    frontier_generation: 0,
+    input_summary: makeInputSummary(),
+    diagnostics_errors: [],
+    scenario_grid: [
+      { optimal_step: 0, scenario_value: 0.9 },
+      { optimal_step: 1, scenario_value: 1.0 },
+      { optimal_step: 2, scenario_value: 1.1 },
+    ],
+    segment_keys: [],
+    ...overrides,
+  }
+}
+
+export function makeOptimiserStatus(
+  overrides: Partial<OptimiserStatusResponse> = {},
+): OptimiserStatusResponse {
+  return {
+    status: "running",
+    progress: 0,
+    message: "",
+    elapsed_seconds: 0,
+    result: null,
+    frontier: null,
+    terminal_reason: null,
+    execution_metrics: null,
+    ...overrides,
+  }
+}
+
+export function makeFrontier(overrides: Partial<FrontierResponse> = {}): FrontierResponse {
+  return {
+    status: "ok",
+    points: [],
+    point_summaries: [],
+    n_points: 0,
+    points_returned: 0,
+    constraint_names: [],
+    swept_axes: [],
+    points_limit: null,
+    points_truncated: false,
+    frontier_generation: 0,
+    job_id: null,
+    ...overrides,
+  }
+}
+
+export function makeHistoryEntry(
+  overrides: Partial<OptimiserHistoryEntry> & Pick<OptimiserHistoryEntry, "iteration">,
+): OptimiserHistoryEntry {
+  return {
+    total_objective: 0,
+    max_lambda_change: 0,
+    all_constraints_satisfied: null,
+    lambdas: {},
+    total_constraints: {},
+    ...overrides,
+  }
+}
+
+export function makeFrontierSelect(
+  overrides: Partial<FrontierSelectResponse> = {},
+): FrontierSelectResponse {
+  return {
+    status: "ok",
+    point_index: null,
+    total_objective: 0,
+    constraints: {},
+    baseline_objective: 0,
+    baseline_constraints: {},
+    effective_bounds: {},
+    lambdas: {},
+    converged: true,
+    iterations: null,
+    cd_iterations: null,
+    factor_tables: {},
+    history: null,
+    ratebook_cd_trace: null,
+    warning: null,
+    adjustments: null,
+    clamp_rate: null,
+    combined_factor_bounds: null,
+    frontier_generation: 0,
+    diagnostics_errors: [],
+    error: null,
     ...overrides,
   }
 }

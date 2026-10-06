@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import getpass
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -10,6 +11,15 @@ from haute._logging import get_logger
 from haute.deploy._config import ResolvedDeploy
 
 logger = get_logger(component="deploy.utils")
+
+
+def artifact_basename(raw_path: str) -> str:
+    """The file name a configured path names, on every platform.
+
+    A path saved on Windows may use backslashes; splitting on both separators
+    gives the bundler and the deployed scorer one artifact key for it.
+    """
+    return re.split(r"[\\/]", raw_path)[-1]
 
 
 def get_user() -> str:
@@ -28,6 +38,15 @@ def get_haute_version() -> str:
         return version("haute")
     except PackageNotFoundError:
         return "0.0.0-dev"
+
+
+def model_source_line(node_id: str, source: dict[str, Any]) -> str:
+    """One deploy-output line naming the registered model version a node bundles."""
+    alias = f" @{source['alias']}" if source.get("alias") else ""
+    return (
+        f"Model {node_id}: {source['registered_model']}{alias} -> version "
+        f"{source['version']} (run {source['run_id']})"
+    )
 
 
 def build_manifest(resolved: ResolvedDeploy) -> dict[str, Any]:
@@ -50,8 +69,10 @@ def build_manifest(resolved: ResolvedDeploy) -> dict[str, Any]:
         "output_fields": config.output_fields,
         "input_schema": resolved.input_schema,
         "output_schema": resolved.output_schema,
+        "execution_policy": resolved.execution_policy,
         "artifacts": {name: path.as_posix() for name, path in resolved.artifacts.items()},
         "snapshot_provenance": resolved.snapshot_provenance,
+        "model_sources": resolved.model_sources,
         "pruned_graph": resolved.pruned_graph.model_dump(),
         "nodes_deployed": len(resolved.pruned_graph.nodes),
         "nodes_skipped": len(resolved.removed_node_ids),

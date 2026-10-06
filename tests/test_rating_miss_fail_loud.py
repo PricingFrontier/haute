@@ -35,6 +35,7 @@ import polars as pl
 import pytest
 import structlog.testing
 
+from haute._polars_utils import streaming_collect
 from haute._rating import (
     RatingTableMissError,
     _apply_rating_table,
@@ -98,12 +99,12 @@ class TestMissFailsLoudByDefault:
         """The 3a.3 repro: a renamed band label must not price at base rate."""
         out = apply_rating_step_from_config(_renamed_band_frame(), _age_region_config())
         with pytest.raises(RatingTableMissError):
-            out.collect()
+            streaming_collect(out)
 
     def test_error_names_table_keys_and_row_count(self) -> None:
         out = apply_rating_step_from_config(_renamed_band_frame(), _age_region_config())
         with pytest.raises(RatingTableMissError) as excinfo:
-            out.collect()
+            streaming_collect(out)
         message = str(excinfo.value)
         assert "age_factor" in message
         assert "26-39" in message
@@ -116,12 +117,12 @@ class TestMissFailsLoudByDefault:
         node = _rating_node("r1", _age_region_config())
         _, fn, _ = _build_node_fn(node)
         with pytest.raises(RatingTableMissError):
-            fn(_renamed_band_frame()).collect()
+            streaming_collect(fn(_renamed_band_frame()))
 
     def test_raises_in_streaming_engine(self) -> None:
         out = apply_rating_step_from_config(_renamed_band_frame(), _age_region_config())
         with pytest.raises(RatingTableMissError):
-            out.collect(engine="streaming")
+            streaming_collect(out)
 
     def test_uncombined_single_table_miss_also_raises(self) -> None:
         """A miss is a config/data bug regardless of combine usage."""
@@ -137,7 +138,7 @@ class TestMissFailsLoudByDefault:
         }
         lf = pl.DataFrame({"band": ["A", "B"]}).lazy()
         with pytest.raises(RatingTableMissError, match="'out'"):
-            apply_rating_step_from_config(lf, config).collect()
+            streaming_collect(apply_rating_step_from_config(lf, config))
 
     def test_add_operation_miss_raises(self) -> None:
         config = _age_region_config()
@@ -145,7 +146,7 @@ class TestMissFailsLoudByDefault:
             {"outputColumn": "total", "operation": "add", "baseValue": 100.0}
         ]
         with pytest.raises(RatingTableMissError):
-            apply_rating_step_from_config(_renamed_band_frame(), config).collect()
+            streaming_collect(apply_rating_step_from_config(_renamed_band_frame(), config))
 
     def test_missing_keys_capped_in_message(self) -> None:
         entries = [{"k": f"present_{i}", "value": 1.0} for i in range(3)]
@@ -157,7 +158,7 @@ class TestMissFailsLoudByDefault:
         frame_keys = [f"absent_{i:02d}" for i in range(25)]
         lf = pl.DataFrame({"k": frame_keys}).lazy()
         with pytest.raises(RatingTableMissError) as excinfo:
-            apply_rating_step_from_config(lf, config).collect()
+            streaming_collect(apply_rating_step_from_config(lf, config))
         message = str(excinfo.value)
         assert "25 of 25 row" in message
         assert "showing 10 of 25 distinct" in message
@@ -179,7 +180,7 @@ class TestMissFailsLoudByDefault:
         }
         lf = pl.DataFrame({"region": ["North"], "tier": ["silver"]}).lazy()
         with pytest.raises(RatingTableMissError) as excinfo:
-            apply_rating_step_from_config(lf, config).collect()
+            streaming_collect(apply_rating_step_from_config(lf, config))
         message = str(excinfo.value)
         assert "North" in message
         assert "silver" in message
@@ -199,7 +200,7 @@ class TestMissFailsLoudByDefault:
         }
         lf = pl.DataFrame({"band": ["B"]}).lazy()
         with pytest.raises(RatingTableMissError, match=re.escape("'N/A'")):
-            apply_rating_step_from_config(lf, config).collect()
+            streaming_collect(apply_rating_step_from_config(lf, config))
 
     def test_table_without_name_is_identified_by_output_column(self) -> None:
         config = {
@@ -213,7 +214,7 @@ class TestMissFailsLoudByDefault:
         }
         lf = pl.DataFrame({"band": ["B"]}).lazy()
         with pytest.raises(RatingTableMissError, match="vehicle_factor"):
-            apply_rating_step_from_config(lf, config).collect()
+            streaming_collect(apply_rating_step_from_config(lf, config))
 
     def test_error_is_importable_from_graph_utils(self) -> None:
         import haute.graph_utils
@@ -234,7 +235,7 @@ class TestMissFailsLoudByDefault:
         }
         lf = pl.DataFrame({"band": ["A", None]}).lazy()
         with pytest.raises(RatingTableMissError):
-            apply_rating_step_from_config(lf, config).collect()
+            streaming_collect(apply_rating_step_from_config(lf, config))
 
 
 # ---------------------------------------------------------------------------
@@ -351,7 +352,7 @@ class TestOptInNeutral:
     def test_explicit_error_value_is_accepted(self) -> None:
         config = _age_region_config(onMissing="error")
         with pytest.raises(RatingTableMissError):
-            apply_rating_step_from_config(_renamed_band_frame(), config).collect()
+            streaming_collect(apply_rating_step_from_config(_renamed_band_frame(), config))
 
     def test_on_missing_round_trips_through_sidecar(self) -> None:
         """The opt-in key must survive canonical normalisation and JSON round-trip."""
@@ -380,7 +381,7 @@ class TestApplyRatingTableMissGuard:
         }
         lf = pl.DataFrame({"k": ["a", "b"]}).lazy()
         with pytest.raises(RatingTableMissError, match="'out'"):
-            _apply_rating_table(lf, table).collect()
+            streaming_collect(_apply_rating_table(lf, table))
 
     def test_direct_call_neutral_keeps_null(self) -> None:
         table = {

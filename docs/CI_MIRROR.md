@@ -13,7 +13,8 @@ naming what genuinely cannot be mirrored.
 
 The existing `scripts/preflight.sh` already mirrors most of the backend split
 (`backend-static` + the coverage-authority pair, on the reference
-interpreter), plus `frontend` and `init-smoke` wholesale. This procedure
+interpreter), plus the two frontend jobs (`frontend-static`, `frontend-tests`)
+and `init-smoke` wholesale. This procedure
 covers the remaining `ci.yml` jobs (`dependency-floors`, `backend-compat`,
 the non-blocking `backend-314-probe`, `perf`, both optional-deps smokes,
 `package-smoke`, `platform-smoke`, `mutation-config-smoke`, `browser-e2e`)
@@ -22,7 +23,7 @@ residual deficiencies explicitly.
 
 ## CI gate inventory
 
-Source of truth: `.github/workflows/`. Six workflow files. A check only
+Source of truth: `.github/workflows/`. A check only
 matters for a PR if it runs on `pull_request: branches: [main]`.
 
 | Workflow | Job | Trigger | PR-gating? | What it runs |
@@ -31,9 +32,9 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
 | `ci.yml` | `init-smoke` (×3: ubuntu, windows, macos) | push+PR | **Yes** | `uv run --no-project python scripts/init_smoke.py` — wheel build (frontend included) → fresh venv, fresh resolve → `haute init` in an empty dir → headless `haute serve` → session-cookie bootstrap → authed `/api/files` → clean shutdown |
 | `ci.yml` | `dependency-floors` | push+PR | **Yes** | `uv lock --resolution lowest-direct` (py3.11) → `uv sync --frozen --group dev` → core test subset run at the re-resolved floor lockfile — proves the published floor specifiers actually install and pass |
 | `ci.yml` | `backend-static` | push+PR | **Yes** | `uv sync --group dev --locked` (py3.12) → ruff lint + ruff format-check + mypy + `HAUTE_BUILD_FRONTEND=1 uv build` |
-| `ci.yml` | `backend-coverage-shard` (×2 shards) | push+PR | **Yes** | full suite split 2-way via `pytest-split` (py3.12), coverage collected per-shard (`--cov-fail-under=0`), uploaded as an artifact |
-| `ci.yml` | `backend-coverage-gate` | push+PR | **Yes** | needs `backend-coverage-shard` → `coverage combine` the two shards → `coverage report --fail-under=90` → per-file critical floors → 100% changed statement/branch coverage for the configured execution-critical surface |
-| `ci.yml` | `backend-compat` (×2: py3.11, py3.13) | push+PR | **Yes** | full suite, no coverage collected |
+| `ci.yml` | `backend-coverage-shard` (×4 shards) | push+PR | **Yes** | full suite (py3.12) split 4-way by test module (`--shard=K/4`, `tests/_ci_shards.py`, balanced by `scripts/test_file_durations.json`), coverage collected per shard (`--cov-fail-under=0`) and uploaded with a JUnit report (xunit1) |
+| `ci.yml` | `backend-coverage-gate` | push+PR | **Yes** | needs `backend-coverage-shard` → `coverage combine` the four shards → `coverage report --fail-under=90` → per-file critical floors → 100% changed statement/branch coverage for the safety-critical modules, with other changed files reported in the job summary |
+| `ci.yml` | `backend-compat` (×6: py3.11 and py3.13, 3 shards each) | push+PR | **Yes** | full suite split 3-way by test module (`--shard=K/3`), no coverage collected |
 | `ci.yml` | `backend-314-probe` | push+PR | **No** (`continue-on-error: true`; advisory only) | py3.14 forward-looking probe: `uv sync` (expected to fail until catboost ships cp314 wheels) → full suite if sync succeeds |
 | `ci.yml` | `perf` | push+PR | **Yes** | `uv run python scripts/run_perf_suite.py --output-dir .cache/perf` |
 | `ci.yml` | `optional-deps-smoke` | push+PR | **Yes** | core install (`uv sync --locked --no-group dev` + `uv pip install pytest pytest-asyncio httpx`) → `pytest tests/test_optional_dependency_matrix.py -q` |
@@ -41,14 +42,16 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
 | `ci.yml` | `package-smoke` | push+PR | **Yes** | `HAUTE_BUILD_FRONTEND=1 uv build --sdist --wheel` → install wheel into fresh venv → `package_smoke_check.py` + `haute --help`; repeat for sdist |
 | `ci.yml` | `platform-smoke` (×2: windows-latest, macos-latest) | push+PR | **Yes** | `pytest tests/test_path_resolution.py tests/test_pipeline_runtime_path_validation.py tests/test_test_debt.py tests/test_file_ops.py tests/test_write_sandbox_guard.py tests/test_data_io_roundtrips.py -q` |
 | `ci.yml` | `mutation-config-smoke` | push+PR | **Yes** | `uv run python scripts/run_mutation_suite.py --dry-run --output-dir .mutation-plan --run-id ci` |
-| `ci.yml` | `frontend` | push+PR | **Yes** | `npm ci` → `bash scripts/preflight.sh --frontend-only` |
-| `ci.yml` | `browser-e2e` | push+PR | **Yes** | `npm ci` → `playwright install --with-deps chromium firefox` → `npm run test:e2e` |
+| `ci.yml` | `frontend-static` | push+PR | **Yes** | `npm ci` → `npm run check:contracts`, `typecheck`, `lint`, `build`, `check:bundle`, `test:benchmark:pr` as separate steps (each runs even after another fails; the bundle budget only after a successful build) |
+| `ci.yml` | `frontend-tests` | push+PR | **Yes** | `npm ci` → `npm run test:coverage` (Vitest with coverage thresholds, then the critical-coverage check) |
+| `ci.yml` | `browser-e2e` (×2 shards) | push+PR | **Yes** | `npm ci` → `playwright install --with-deps chromium firefox` → `npm run test:e2e -- --shard=K/2` |
 | `mutation.yml` | `plan` → `shard` (matrix) → `mutation` (gate) | PR **iff** `src/haute/**/*.py`, `tests/**/*.py`, `mutation/**`, `scripts/run_mutation_suite.py`, or the workflow changed | **Conditional** | `plan` selects targets and builds the shared Cosmic Ray session; matrix `shard` jobs execute disjoint mutant subsets in parallel; `mutation` merges shard results and checks survival thresholds — equivalent to one bounded run (`run_mutation_suite.py --changed-files-from <difflist>`) |
 | `docs.yml` | `build`+`deploy` | push to main **iff** `docs/**` or `mkdocs.yml` changed (NOT on PR) | **Post-merge** | `uv run mkdocs build --strict` → deploy to GitHub Pages |
 | `performance.yml` | `python-perf` + `frontend-performance` | `workflow_dispatch` + weekly cron (Mon 03:17 UTC) | **No** | perf lanes; not a PR gate (see Deficiencies) |
 | `dependencies.yml` | `unlocked-resolve` | `workflow_dispatch` + weekly cron (Mon 04:41 UTC only — keyed on that expression, so the daily advisory cron does not trigger it) | **No** | fresh unlocked-resolve smoke: builds the wheel, resolves latest-within-caps deps (incl. `databricks` extra) with no lockfile, runs `init_smoke.py` + the core test subset against it; not a PR gate — opens/updates a `dependency-watch` issue on failure |
 | `dependencies.yml` | `locked-advisory-audit` | daily cron (06:29 UTC) + weekly cron + `workflow_dispatch` + push/PR **iff** a lock or policy path changed (`pyproject.toml`, `uv.lock`, `frontend/package{,-lock}.json`, `scripts/check_dependency_audit.py`, `security/accepted-risks.toml`, the workflow) | **Yes on PR** | audits the *locked* dependency set against live advisory feeds (`pip-audit` pinned at 2.10.1; `npm audit` in `frontend/`). Every Python advisory blocks; only `high`/`critical` block for npm. Exit 1 = an advisory with no accepted risk, exit 2 = the policy file itself is wrong. Escape hatch is a reviewed entry in `security/accepted-risks.toml`, which is itself checked: an acceptance matching no live finding fails the audit, so the register cannot go stale. Opens/updates a `dependency-watch` issue on any non-PR failure. **Not a pure function of the tree** — it reads live data, so an unchanged lockfile can pass one day and block the next |
 | `frontend-shuffle.yml` | `frontend-shuffle` | `workflow_dispatch` + nightly cron (02:07 UTC) | **No** | frontend vitest suite under `--sequence.shuffle` to catch within-file test-order dependence; not a PR gate (ruled non-required 2026-07-15) — opens/updates a `shuffle-watch` issue on failure |
+| `release.yml` | `check` → `build` → `publish` → `verify` → `github-release` | `workflow_dispatch` on `main` only (optional dry run) | **No** (a release, not a gate) | refuses unless `main`'s push CI passed for the commit and `[project] version` is `X.Y.Z`, not on PyPI, newer than every release and untagged (`scripts/check_release_version.py`) → `HAUTE_BUILD_FRONTEND=1 uv build --sdist --wheel` → wheel and sdist install smoke → PyPI trusted publishing (`pypi` environment, `main` only; files PyPI already has are skipped) → wait until PyPI serves exactly the built files (`scripts/verify_pypi_release.py`) → tag `vX.Y.Z` and GitHub release |
 
 ## Local mirror — gate by gate
 
@@ -61,15 +64,21 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
    format-check, mypy, pytest collect, pytest + 90% global coverage +
    `scripts/check_critical_coverage.py` + `scripts/check_changed_coverage.py`,
    and `HAUTE_BUILD_FRONTEND=1 uv build`,
-   all in one local pass. **Gap vs CI:** CI splits this across three parallel
-   jobs (static gates + build on py3.12; two coverage shards; a gate job that
+   all in one local pass. **Gap vs CI:** CI splits this across parallel jobs
+   (static gates + build on py3.12; four coverage shards; a gate job that
    combines them and enforces 90%) rather than one job, and separately runs
-   `backend-compat` (full suite, **no** coverage) on py3.11 and py3.13, plus a
-   non-blocking `backend-314-probe`. Preflight itself still runs one
-   interpreter (the `.venv`). See "Multi-Python matrix" below.
-2. **`frontend`** → `bash scripts/preflight.sh --frontend-only` — runs
+   `backend-compat` (full suite, **no** coverage) on py3.11 and py3.13 in
+   three shards each, plus a non-blocking `backend-314-probe`. The shards
+   together run exactly the unsharded suite, so one local run covers all of
+   them; to reproduce a single CI shard, pass its `--shard`, e.g.
+   `uv run pytest tests/ -q -n 4 --shard=2/4` (add
+   `-m "not perf and not meta"` for a `backend-compat` shard, whose count is 3).
+   Preflight itself still runs one interpreter (the `.venv`). See
+   "Multi-Python matrix" below.
+2. **`frontend-static` + `frontend-tests`** → `bash scripts/preflight.sh --frontend-only` —
+   runs the same npm scripts in one pass: `npm run check:contracts`,
    `npm run typecheck`, `npm run lint`, `npm run build`, `npm run check:bundle`,
-   `npm run test:coverage`.
+   `npm run test:benchmark:pr`, `npm run test:coverage`.
 3. **`init-smoke`** → `bash scripts/preflight.sh --init-smoke` (Windows:
    `preflight.ps1 -InitSmoke`) — the exact script the CI job runs
    (`scripts/init_smoke.py`). Local runs mirror the **macOS leg**; the
@@ -143,7 +152,7 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
    pinned `polars==X` whose `polars-runtime-32==X` got yanked). Running this
    locally catches that before the push. **This is the single highest-value
    addition.** Arch caveat: locally this resolves **macOS-arm64** wheels; CI
-   resolves **linux-x86-64**. catboost / rustystats / polars / price-contour
+   resolves **linux-x86-64**. catboost / xgboost-cpu / lightgbm / rustystats / polars / price-contour
    ship per-arch wheels, so this lane catches a version yank that hits *both*
    arches but NOT a missing/yanked *linux-only* wheel for a pinned version.
    Docker (linux container) is the only local way to close that — see
@@ -158,6 +167,8 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
    `uv run python scripts/run_mutation_suite.py --dry-run --output-dir .mutation-plan --run-id ci`.
 12. **`browser-e2e`** →
    `cd frontend && ./node_modules/.bin/playwright install chromium firefox && CI=1 npm run test:e2e`.
+   CI runs this as two shards (`npm run test:e2e -- --shard=K/2`); one
+   unsharded local run covers both.
    **`CI=1` matters**: `frontend/playwright.config.ts` branches on it — with
    `CI`, retries are 2 (vs 0 locally) and `reuseExistingServer` flips, so a
    local zero-retry run can red on a flake where CI's 2-retry run would pass
@@ -220,7 +231,7 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
    (path handling, subprocess/resource limits, native wheels).
 3. **Linux wheel availability (the arch-specific slice of `package-smoke`).**
    Distinct from #2: `package-smoke`'s fresh-resolve installs per-arch binary
-   wheels (catboost, rustystats, polars, price-contour). Locally it resolves
+   wheels (catboost, xgboost-cpu, lightgbm, rustystats, polars, price-contour). Locally it resolves
    **macOS-arm64** wheels, so it proves *macOS* installability of the pins, not
    *linux-x86-64* installability. A pinned version whose linux wheel is missing
    or yanked but whose macOS wheel is present passes local package-smoke and
@@ -356,7 +367,7 @@ Fast-failing order (cheapest/most-likely-to-fail first). Stop at the first
 failure, fix, restart from the top of the affected block.
 
 ```bash
-# --- A. Static + unit gates, default interpreter (ci.yml backend-static + backend-coverage-shard/gate + frontend + canary) ---
+# --- A. Static + unit gates, default interpreter (ci.yml backend-static + backend-coverage-shard/gate + frontend-static/frontend-tests + canary) ---
 # (Node must be on PATH: preflight's `uv build` shells into npm via hatch_build.py.)
 bash scripts/preflight.sh --backend-only      # ruff, ruff-format, mypy, pytest+cov(90%)+critical-cov, uv build
 bash scripts/preflight.sh --frontend-only     # tsc, eslint, vite build, bundle budget, vitest+cov

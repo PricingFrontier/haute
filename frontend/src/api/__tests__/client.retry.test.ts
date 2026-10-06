@@ -26,24 +26,32 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import {
   ApiError,
   loadPipeline,
-  checkMlflow,
+  getMlflowDestinations,
   listUtilityFiles,
   savePipeline,
   commitMilestone,
-  deleteJsonCache,
+  cancelInputCacheJob,
 } from "../client"
 
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
 
-function jsonResponse(body: unknown, status = 200) {
+function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}) {
   return Promise.resolve({
     ok: status >= 200 && status < 300,
     status,
     statusText: status === 200 ? "OK" : "Error",
+    headers: new Headers(headers),
     json: () => Promise.resolve(body),
   })
+}
+
+const DOCUMENT_FINGERPRINT = "doc-fp"
+
+/** A pipeline load response: the document plus the fingerprint header the server names. */
+function pipelineResponse(body: unknown) {
+  return jsonResponse(body, 200, { "x-haute-document-fingerprint": DOCUMENT_FINGERPRINT })
 }
 
 function errorResponse(status: number, body?: unknown) {
@@ -57,13 +65,24 @@ function errorResponse(status: number, body?: unknown) {
   })
 }
 
-function mlflowCheckResponse(available: boolean) {
+function mlflowDestinationsResponse(available: boolean) {
   return {
     mlflow_installed: available,
     mlflow_importable: available,
-    tracking_configured: available,
-    backend: "",
-    databricks_host: "",
+    destinations: available
+      ? [
+        {
+          key: "local",
+          configured: true,
+          destination: "mlruns",
+          config_source: "default",
+          detail: "",
+          probed: false,
+          ok: false,
+          category: "",
+        },
+      ]
+      : [],
     detail: "",
   }
 }
@@ -171,11 +190,11 @@ describe("retry: idempotent GET on network error", () => {
       mockFetch
         .mockRejectedValueOnce(new TypeError("Failed to fetch"))
         .mockRejectedValueOnce(new TypeError("Failed to fetch"))
-        .mockReturnValueOnce(jsonResponse(payload))
+        .mockReturnValueOnce(pipelineResponse(payload))
 
       const result = await loadPipeline()
 
-      expect(result).toEqual(payload)
+      expect(result).toEqual({ document: payload, documentFingerprint: DOCUMENT_FINGERPRINT })
       expect(mockFetch).toHaveBeenCalledTimes(3)
     } finally {
       stub.restore()
@@ -185,7 +204,7 @@ describe("retry: idempotent GET on network error", () => {
   it("succeeds on the first attempt when fetch succeeds immediately", async () => {
     const stub = stubBackoffTimers()
     try {
-      mockFetch.mockReturnValueOnce(jsonResponse({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-test" }))
+      mockFetch.mockReturnValueOnce(pipelineResponse({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-test" }))
       await loadPipeline()
       // No backoff sleeps should have been scheduled.
       expect(stub.capturedDelays).toHaveLength(0)
@@ -206,16 +225,25 @@ describe("retry: idempotent GET on 5xx", () => {
     try {
       mockFetch
         .mockReturnValueOnce(errorResponse(503, { detail: "Service unavailable" }))
-        .mockReturnValueOnce(jsonResponse(mlflowCheckResponse(true)))
+        .mockReturnValueOnce(jsonResponse(mlflowDestinationsResponse(true)))
 
-      const result = await checkMlflow()
+      const result = await getMlflowDestinations(false)
 
       expect(result).toEqual({
         mlflow_installed: true,
         mlflow_importable: true,
-        tracking_configured: true,
-        backend: "",
-        databricks_host: "",
+        destinations: [
+          {
+            key: "local",
+            configured: true,
+            destination: "mlruns",
+            config_source: "default",
+            detail: "",
+            probed: false,
+            ok: false,
+            category: "",
+          },
+        ],
         detail: "",
       })
       expect(mockFetch).toHaveBeenCalledTimes(2)
@@ -229,16 +257,14 @@ describe("retry: idempotent GET on 5xx", () => {
     try {
       mockFetch
         .mockReturnValueOnce(errorResponse(500, { detail: "boom" }))
-        .mockReturnValueOnce(jsonResponse(mlflowCheckResponse(false)))
+        .mockReturnValueOnce(jsonResponse(mlflowDestinationsResponse(false)))
 
-      const result = await checkMlflow()
+      const result = await getMlflowDestinations(false)
 
       expect(result).toEqual({
         mlflow_installed: false,
         mlflow_importable: false,
-        tracking_configured: false,
-        backend: "",
-        databricks_host: "",
+        destinations: [],
         detail: "",
       })
       expect(mockFetch).toHaveBeenCalledTimes(2)
@@ -275,7 +301,7 @@ describe("no retry: 4xx client errors", () => {
     try {
       mockFetch.mockReturnValueOnce(errorResponse(400, { detail: "bad input" }))
 
-      await expect(checkMlflow()).rejects.toBeInstanceOf(ApiError)
+      await expect(getMlflowDestinations(false)).rejects.toBeInstanceOf(ApiError)
 
       expect(mockFetch).toHaveBeenCalledTimes(1)
       expect(stub.capturedDelays).toHaveLength(0)
@@ -289,7 +315,7 @@ describe("no retry: 4xx client errors", () => {
     try {
       mockFetch.mockReturnValueOnce(errorResponse(401, { detail: "auth" }))
 
-      await expect(checkMlflow()).rejects.toBeInstanceOf(ApiError)
+      await expect(getMlflowDestinations(false)).rejects.toBeInstanceOf(ApiError)
 
       expect(mockFetch).toHaveBeenCalledTimes(1)
     } finally {
@@ -315,7 +341,7 @@ describe("no retry: 4xx client errors", () => {
     try {
       mockFetch.mockReturnValueOnce(errorResponse(422, { detail: "validation" }))
 
-      await expect(checkMlflow()).rejects.toBeInstanceOf(ApiError)
+      await expect(getMlflowDestinations(false)).rejects.toBeInstanceOf(ApiError)
 
       expect(mockFetch).toHaveBeenCalledTimes(1)
     } finally {
@@ -334,7 +360,7 @@ describe("retry: max attempts cap", () => {
     try {
       mockFetch.mockRejectedValue(new TypeError("Failed to fetch"))
 
-      await expect(checkMlflow()).rejects.toBeInstanceOf(TypeError)
+      await expect(getMlflowDestinations(false)).rejects.toBeInstanceOf(TypeError)
 
       // 1 initial attempt + 3 retries
       expect(mockFetch).toHaveBeenCalledTimes(4)
@@ -348,7 +374,7 @@ describe("retry: max attempts cap", () => {
     try {
       mockFetch.mockReturnValue(errorResponse(503, { detail: "down" }))
 
-      await expect(checkMlflow()).rejects.toBeInstanceOf(ApiError)
+      await expect(getMlflowDestinations(false)).rejects.toBeInstanceOf(ApiError)
 
       expect(mockFetch).toHaveBeenCalledTimes(4)
     } finally {
@@ -362,7 +388,7 @@ describe("retry: max attempts cap", () => {
       mockFetch.mockReturnValue(errorResponse(503, { detail: "still down" }))
 
       try {
-        await checkMlflow()
+        await getMlflowDestinations(false)
         throw new Error("should have rejected")
       } catch (err) {
         expect(err).toBeInstanceOf(ApiError)
@@ -389,11 +415,14 @@ describe("retry: caller supplied policy", () => {
         .mockRejectedValueOnce(new TypeError("cold start"))
         .mockRejectedValueOnce(new TypeError("cold start"))
         .mockRejectedValueOnce(new TypeError("cold start"))
-        .mockReturnValueOnce(jsonResponse({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-test" }))
+        .mockReturnValueOnce(pipelineResponse({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-test" }))
 
       const result = await loadPipeline({ retry: { maxRetries: 5, baseDelayMs: 25 } })
 
-      expect(result).toEqual({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-test" })
+      expect(result).toEqual({
+        document: { nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-test" },
+        documentFingerprint: DOCUMENT_FINGERPRINT,
+      })
       expect(mockFetch).toHaveBeenCalledTimes(6)
       expect(stub.capturedDelays).toHaveLength(5)
     } finally {
@@ -406,7 +435,7 @@ describe("retry: caller supplied policy", () => {
     try {
       mockFetch.mockRejectedValue(new TypeError("still starting"))
 
-      await expect(checkMlflow()).rejects.toBeInstanceOf(TypeError)
+      await expect(getMlflowDestinations(false)).rejects.toBeInstanceOf(TypeError)
 
       expect(mockFetch).toHaveBeenCalledTimes(4)
       expect(stub.capturedDelays).toHaveLength(3)
@@ -428,6 +457,7 @@ describe("retry: caller supplied policy", () => {
             graph: dummyGraph,
             preamble: "",
             source_file: "pipe.py",
+            base_revision: null,
             preserved_blocks: [],
           },
           // @ts-expect-error retry policies are deliberately not exposed on
@@ -479,9 +509,9 @@ describe("retry: exponential backoff with jitter", () => {
       mockFetch
         .mockRejectedValueOnce(new TypeError("boom"))
         .mockRejectedValueOnce(new TypeError("boom"))
-        .mockReturnValueOnce(jsonResponse(mlflowCheckResponse(true)))
+        .mockReturnValueOnce(jsonResponse(mlflowDestinationsResponse(true)))
 
-      await checkMlflow()
+      await getMlflowDestinations(false)
 
       // One backoff sleep per retry; two retries ⇒ two sleeps.
       expect(stub.capturedDelays).toHaveLength(2)
@@ -500,12 +530,12 @@ describe("retry: exponential backoff with jitter", () => {
       mockFetch = vi.fn()
         .mockRejectedValueOnce(new TypeError("boom"))
         .mockRejectedValueOnce(new TypeError("boom"))
-        .mockReturnValueOnce(jsonResponse(mlflowCheckResponse(true)))
+        .mockReturnValueOnce(jsonResponse(mlflowDestinationsResponse(true)))
       globalThis.fetch = mockFetch as unknown as typeof fetch
 
       const stub = stubBackoffTimers()
       try {
-        await checkMlflow()
+        await getMlflowDestinations(false)
         expect(stub.capturedDelays).toHaveLength(2)
         firstDelays.push(stub.capturedDelays[0])
         secondDelays.push(stub.capturedDelays[1])
@@ -525,7 +555,7 @@ describe("retry: exponential backoff with jitter", () => {
     try {
       mockFetch.mockRejectedValue(new TypeError("boom"))
 
-      await expect(checkMlflow()).rejects.toBeInstanceOf(TypeError)
+      await expect(getMlflowDestinations(false)).rejects.toBeInstanceOf(TypeError)
 
       // All backoff delays must be finite and < 1s (3 retries × exponential
       // base ~100ms with jitter should fit comfortably below this).
@@ -546,12 +576,12 @@ describe("retry: exponential backoff with jitter", () => {
     for (let i = 0; i < trials; i++) {
       mockFetch = vi.fn()
         .mockRejectedValueOnce(new TypeError("boom"))
-        .mockReturnValueOnce(jsonResponse(mlflowCheckResponse(true)))
+        .mockReturnValueOnce(jsonResponse(mlflowDestinationsResponse(true)))
       globalThis.fetch = mockFetch as unknown as typeof fetch
 
       const stub = stubBackoffTimers()
       try {
-        await checkMlflow()
+        await getMlflowDestinations(false)
         firstDelays.push(stub.capturedDelays[0])
       } finally {
         stub.restore()
@@ -581,7 +611,7 @@ describe("retry: total backoff budget", () => {
 
       const stub = stubBackoffTimers()
       try {
-        await expect(checkMlflow()).rejects.toBeInstanceOf(TypeError)
+        await expect(getMlflowDestinations(false)).rejects.toBeInstanceOf(TypeError)
         const total = stub.capturedDelays.reduce((a, b) => a + b, 0)
         totals.push(total)
       } finally {
@@ -617,6 +647,7 @@ describe("no retry: non-idempotent POST (default)", () => {
           graph: dummyGraph,
           preamble: "",
           source_file: "pipe.py",
+          base_revision: null,
           preserved_blocks: [],
         }),
       ).rejects.toBeInstanceOf(TypeError)
@@ -682,15 +713,20 @@ describe("retry: preserves request headers and body", () => {
     try {
       mockFetch
         .mockRejectedValueOnce(new TypeError("boom"))
-        .mockReturnValueOnce(jsonResponse({ cached: false, data_path: "file.json" }))
+        .mockReturnValueOnce(jsonResponse({
+          schema_version: 1,
+          job_id: "job-1",
+          cancellation_requested: true,
+          status: "running",
+        }))
 
-      await deleteJsonCache("file.json")
+      await cancelInputCacheJob("job-1")
 
       expect(mockFetch).toHaveBeenCalledTimes(2)
       const [url1, opts1] = mockFetch.mock.calls[0]
       const [url2, opts2] = mockFetch.mock.calls[1]
       expect(url1).toBe(url2)
-      expect(url1).toBe("/api/json-cache?path=file.json")
+      expect(url1).toBe("/api/input-cache/jobs/job-1")
       expect(opts1.method).toBe("DELETE")
       expect(opts2.method).toBe("DELETE")
     } finally {
@@ -744,7 +780,7 @@ describe("retry: preserves request headers and body", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("retry: caller-supplied AbortSignal", () => {
-  it("cancels during backoff — no further fetch attempts after abort", async () => {
+  it("cancels during backoff - no further fetch attempts after abort", async () => {
     // Pause backoff timers so we can trigger abort DURING the sleep between
     // retry attempts, before the next fetch is issued.
     const paused = pauseBackoffTimers()

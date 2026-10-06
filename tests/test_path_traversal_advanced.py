@@ -21,6 +21,8 @@ from pathlib import Path
 
 import pytest
 
+from haute.errors import InvalidPathError, PathOutsideProjectError
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -234,18 +236,17 @@ class TestSymlinkTraversal:
     root that points to /etc or /home can bypass is_relative_to checks
     IF the check is done BEFORE resolve() (checking the unresolved path).
 
-    validate_safe_path and validate_project_path both resolve() first,
+    contained_path and validate_project_path both resolve() first,
     which is correct.  These tests confirm that behavior.
 
     Production failure: a symlink at project/data -> /etc allows reading
     /etc/passwd via the path "data/passwd".
     """
 
-    def test_validate_safe_path_blocks_symlink_escape(self, tmp_path: Path):
+    def test_contained_path_blocks_symlink_escape(self, tmp_path: Path):
         """A symlink inside base pointing outside must be rejected."""
-        from fastapi import HTTPException
 
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
         outside = tmp_path / "outside_secrets"
         outside.mkdir()
@@ -255,9 +256,8 @@ class TestSymlinkTraversal:
         project.mkdir()
         (project / "data").symlink_to(outside)
 
-        with pytest.raises(HTTPException) as exc_info:
-            validate_safe_path(project, "data/credentials.json")
-        assert exc_info.value.status_code == 403
+        with pytest.raises(PathOutsideProjectError):
+            contained_path(project, "data/credentials.json")
 
     def test_validate_project_path_blocks_symlink_escape(self, tmp_path: Path):
         """validate_project_path in _sandbox.py should also block symlinks."""
@@ -272,14 +272,13 @@ class TestSymlinkTraversal:
         (project / "link").symlink_to(outside)
 
         set_project_root(project)
-        with pytest.raises(ValueError, match="outside"):
+        with pytest.raises(PathOutsideProjectError, match="outside"):
             validate_project_path(project / "link" / "secret.txt")
 
     def test_nested_symlink_chain_blocked(self, tmp_path: Path):
         """A chain of symlinks (a -> b -> outside) should still be blocked."""
-        from fastapi import HTTPException
 
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
         outside = tmp_path / "outside"
         outside.mkdir()
@@ -292,15 +291,13 @@ class TestSymlinkTraversal:
         (project / "b").symlink_to(outside)
         (project / "a").symlink_to(project / "b")
 
-        with pytest.raises(HTTPException) as exc_info:
-            validate_safe_path(project, "a/secret")
-        assert exc_info.value.status_code == 403
+        with pytest.raises(PathOutsideProjectError):
+            contained_path(project, "a/secret")
 
     def test_symlink_to_parent_directory_blocked(self, tmp_path: Path):
         """project/escape -> project/.. (parent) allows reading anything."""
-        from fastapi import HTTPException
 
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
         project = tmp_path / "project"
         project.mkdir()
@@ -308,9 +305,8 @@ class TestSymlinkTraversal:
 
         (tmp_path / "secret.txt").write_text("confidential")
 
-        with pytest.raises(HTTPException) as exc_info:
-            validate_safe_path(project, "escape/secret.txt")
-        assert exc_info.value.status_code == 403
+        with pytest.raises(PathOutsideProjectError):
+            contained_path(project, "escape/secret.txt")
 
     def test_load_node_config_blocks_symlinks_outside_project(self, tmp_path: Path):
         """FIX: load_node_config now validates resolved paths, so symlinks
@@ -346,39 +342,33 @@ class TestWindowsMixedSeparatorTraversal:
     path validation on Windows servers.
     """
 
-    def test_validate_safe_path_blocks_backslash_traversal(self, tmp_path: Path):
+    def test_contained_path_blocks_backslash_traversal(self, tmp_path: Path):
         """..\\..\\etc\\passwd must be blocked on all platforms.
 
         On Unix, backslashes are literal filename characters (harmless).
         On Windows, they are path separators and enable traversal.
         """
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
         if sys.platform == "win32":
-            from fastapi import HTTPException
-
-            with pytest.raises(HTTPException) as exc_info:
-                validate_safe_path(tmp_path, "..\\..\\Windows\\System32\\config\\SAM")
-            assert exc_info.value.status_code == 403
+            with pytest.raises(PathOutsideProjectError):
+                contained_path(tmp_path, "..\\..\\Windows\\System32\\config\\SAM")
         else:
             # On Unix, backslash is a literal character in filenames.
             # The path stays inside tmp_path (it's just an odd filename).
-            result = validate_safe_path(tmp_path, "..\\..\\etc\\passwd")
+            result = contained_path(tmp_path, "..\\..\\etc\\passwd")
             assert result.is_relative_to(tmp_path)
 
     def test_mixed_separators_blocked_on_windows(self, tmp_path: Path):
         """Mixing / and \\ should not confuse the validator."""
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
         if sys.platform == "win32":
-            from fastapi import HTTPException
-
-            with pytest.raises(HTTPException) as exc_info:
-                validate_safe_path(tmp_path, "sub/..\\..\\..\\Windows\\win.ini")
-            assert exc_info.value.status_code == 403
+            with pytest.raises(PathOutsideProjectError):
+                contained_path(tmp_path, "sub/..\\..\\..\\Windows\\win.ini")
         else:
             # On Unix this is a literal filename with backslashes
-            result = validate_safe_path(tmp_path, "sub/..\\..\\..\\etc\\passwd")
+            result = contained_path(tmp_path, "sub/..\\..\\..\\etc\\passwd")
             assert result.is_relative_to(tmp_path)
 
     def test_config_path_for_node_backslash_in_name(self, tmp_path: Path):
@@ -399,13 +389,11 @@ class TestWindowsMixedSeparatorTraversal:
 
         Production failure: reading files from network shares.
         """
-        from fastapi import HTTPException
 
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
-        with pytest.raises(HTTPException) as exc_info:
-            validate_safe_path(tmp_path, "\\\\evil-server\\share\\secret.json")
-        assert exc_info.value.status_code == 403
+        with pytest.raises(PathOutsideProjectError):
+            contained_path(tmp_path, "\\\\evil-server\\share\\secret.json")
 
 
 # =========================================================================
@@ -442,13 +430,13 @@ class TestNullByteInjection:
                 id="load_node_config",
             ),
             pytest.param(
-                "validate_safe_path",
+                "contained_path",
                 lambda tmp_path: {
                     "args": (tmp_path, "file\x00.txt"),
                     "kwargs": {},
                     "setup": lambda tp: None,
                 },
-                id="validate_safe_path",
+                id="contained_path",
             ),
             pytest.param(
                 "validate_project_path",
@@ -486,8 +474,6 @@ class TestNullByteInjection:
     )
     def test_null_byte_rejected(self, tmp_path: Path, func_name: str, call_args_factory):
         """Null bytes in paths must raise a validation error, never succeed."""
-        from fastapi import HTTPException
-
         call_spec = call_args_factory(tmp_path)
         if call_spec["setup"]:
             call_spec["setup"](tmp_path)
@@ -497,10 +483,8 @@ class TestNullByteInjection:
             "load_node_config": lambda: (
                 __import__("haute._config_io", fromlist=["load_node_config"]).load_node_config
             ),
-            "validate_safe_path": lambda: (
-                __import__(
-                    "haute.routes._helpers", fromlist=["validate_safe_path"]
-                ).validate_safe_path
+            "contained_path": lambda: (
+                __import__("haute._sandbox", fromlist=["contained_path"]).contained_path
             ),
             "validate_project_path": lambda: (
                 __import__(
@@ -518,7 +502,7 @@ class TestNullByteInjection:
         }
         func = func_map[func_name]()
 
-        with pytest.raises((ValueError, OSError, HTTPException)):
+        with pytest.raises((ValueError, OSError, InvalidPathError)):
             func(*call_spec["args"], **call_spec["kwargs"])
 
 
@@ -574,19 +558,15 @@ class TestVeryLongPaths:
                 id="load_node_config",
             ),
             pytest.param(
-                "validate_safe_path handles very long path",
-                lambda: (
-                    __import__(
-                        "haute.routes._helpers", fromlist=["validate_safe_path"]
-                    ).validate_safe_path
-                ),
+                "contained_path handles very long path",
+                lambda: __import__("haute._sandbox", fromlist=["contained_path"]).contained_path,
                 lambda tp: {
                     "args": (tp, "sub/" * 500 + "file.txt"),
                     "kwargs": {},
                     "check": lambda result: result.is_relative_to(tp),
                 },
                 False,
-                id="validate_safe_path",
+                id="contained_path",
             ),
             pytest.param(
                 "validate_project_path handles very long path",
@@ -726,7 +706,7 @@ class TestValidateProjectPathEdgeCases:
             result = validate_project_path("")
             # If it succeeds, the resolved cwd must be inside project root
             assert result.is_relative_to(tmp_path)
-        except ValueError:
+        except PathOutsideProjectError:
             # cwd is outside project root -- that's acceptable
             pass
 
@@ -738,7 +718,7 @@ class TestValidateProjectPathEdgeCases:
         try:
             result = validate_project_path(".")
             assert result.exists() or True  # May not exist but should resolve
-        except ValueError:
+        except PathOutsideProjectError:
             pass  # cwd outside project root
 
     def test_tilde_not_expanded(self, tmp_path: Path):
@@ -752,7 +732,7 @@ class TestValidateProjectPathEdgeCases:
             result = validate_project_path("~/secret")
             # If it resolves, it must be inside project root
             assert result.is_relative_to(tmp_path)
-        except ValueError:
+        except PathOutsideProjectError:
             pass  # Outside project root -- correct behavior
 
     def test_unicode_normalization_attack(self, tmp_path: Path):

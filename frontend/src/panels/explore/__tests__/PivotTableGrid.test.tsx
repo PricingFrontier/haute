@@ -48,7 +48,7 @@ function result(rowCount = 2): ExplorePivotResult {
     node_id: "explore",
     pivot_id: "p1",
     source: "pricing",
-    dataframe_cache_key: "cache",
+    data_version: "cache",
     calculation_key: "calculation",
     row_fields: ["region"],
     column_fields: ["year"],
@@ -95,7 +95,7 @@ describe("PivotTableGrid", () => {
     ).toBeInTheDocument()
     expect(screen.getAllByText("Paid claims").length).toBeGreaterThan(0)
     expect(screen.getAllByText("Grand total").length).toBeGreaterThan(0)
-    expect(screen.getAllByText("\u2014").length).toBeGreaterThan(0)
+    expect(screen.getAllByText("-").length).toBeGreaterThan(0)
   })
 
   it("renders post-aggregation formulas after ordinary Values", () => {

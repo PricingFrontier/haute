@@ -6,9 +6,8 @@ Covers remediation items:
   objective, constraint, and scenario columns as a named contract error
   before any grid construction or solver work happens. Grid construction
   keeps its own loud rejection as a second line of defence (pinned here).
-- 3b.4 [M]: a single-quote solve must complete with sane distribution
-  diagnostics instead of crashing in ``_compute_scenario_value_stats``
-  after the solver already succeeded (``std()`` of one element is null).
+- 3b.4 [M]: a single-quote solve must complete with a sane adjustment
+  report (one quote, one chosen step) after the solver already succeeded.
 - 3b.8 share: the multi-quote solve and the single-quote lifecycle run the
   real ``price_contour`` solver end-to-end and pin the real result shape
   consumed by ``_optimiser_service``.
@@ -16,9 +15,10 @@ Covers remediation items:
 
 from __future__ import annotations
 
+import contextlib
 import json
-import math
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -30,12 +30,11 @@ from haute.errors import GroupByExecutionUnsupportedError
 from haute.routes._job_store import JobStore
 from haute.routes._optimiser_service import (
     OptimiserSolveService,
-    SolveContext,
-    _compute_scenario_value_stats,
     _memory_limit_message,
     _normalise_memory_limit_payload,
     _optional_positive_int,
 )
+from haute.routes._optimiser_solver import SolveContext
 from haute.schemas import OptimiserFrontierAutoRangeRequest, OptimiserSolveRequest
 from tests.conftest import (
     make_edge,
@@ -44,20 +43,6 @@ from tests.conftest import (
 )
 
 _TERMINAL_STATUSES = {"completed", "error", "contract_error", "cancelled", "memory_limited"}
-
-_SCENARIO_STAT_KEYS = {
-    "mean",
-    "std",
-    "min",
-    "max",
-    "p5",
-    "p25",
-    "p50",
-    "p75",
-    "p95",
-    "pct_increase",
-    "pct_decrease",
-}
 
 
 @pytest.fixture()
@@ -391,14 +376,14 @@ def _group_by_contract_error() -> GroupByExecutionUnsupportedError:
         node_id="opt",
         operator="groupBy",
         profile="optimiser_setup",
-        reason_code="profile_requires_bounded_execution",
-        remediation="use an admitted eager profile",
+        reason_code="materialisation_exceeds_headroom",
+        remediation="increase memory headroom or narrow the input",
         estimated_peak_bytes=1_024,
         headroom_bytes=512,
     )
 
 
-def test_execute_pipeline_adapts_public_contract_errors(tmp_path) -> None:
+def test_execute_pipeline_adapts_public_contract_errors() -> None:
     store = JobStore()
     service = OptimiserSolveService(store)
     job_id = store.create_job({"status": "running"})
@@ -408,10 +393,9 @@ def test_execute_pipeline_adapts_public_contract_errors(tmp_path) -> None:
             "node_id": "opt",
         }
     )
-    checkpoint_dir = tmp_path / "checkpoints"
-    checkpoint_dir.mkdir()
 
     with (
+        contextlib.ExitStack() as resources,
         patch(
             "haute.routes._optimiser_service.execute_lazy_graph",
             side_effect=_group_by_contract_error(),
@@ -421,7 +405,7 @@ def test_execute_pipeline_adapts_public_contract_errors(tmp_path) -> None:
         patch("haute.executor._resolve_batch_scenario", return_value="batch"),
     ):
         with pytest.raises(HTTPException) as exc_info:
-            service._execute_pipeline(body, job_id, checkpoint_dir)
+            service._execute_pipeline(body, job_id, resources)
 
     assert exc_info.value.status_code == 422
     assert exc_info.value.detail["error_code"] == "group_by_execution_unsupported"
@@ -434,7 +418,7 @@ def test_build_grid_adapts_public_contract_errors() -> None:
     job_id = store.create_job({"status": "running"})
 
     with patch(
-        "haute.routes._optimiser_service.bounded_sink",
+        "haute.routes._optimiser_input.bounded_sink",
         side_effect=_group_by_contract_error(),
     ):
         with pytest.raises(HTTPException) as exc_info:
@@ -463,8 +447,7 @@ def test_frontier_auto_range_adapts_public_contract_errors(tmp_path) -> None:
     store = JobStore()
     service = OptimiserSolveService(store)
     job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
-    prepared = service._prepare_frontier_auto_range(body)
-    prepared["streaming_plan"] = None
+    _node, prepared = service._prepare_frontier_auto_range(body)
 
     with (
         patch.object(service, "_execute_pipeline", side_effect=_group_by_contract_error()),
@@ -521,10 +504,10 @@ def test_memory_limit_helpers_cover_unstructured_and_absent_values() -> None:
 
 
 def test_memory_limit_message_prefers_the_curated_http_payload_wording() -> None:
-    """_memory_limit_http_exception stamps the shared curated message; the
+    """The shared memory-limit mapping stamps the curated Auto-range message; the
     job's terminal message must reuse it rather than the generic fallback."""
     from haute._execution_context import ExecutionMemoryLimitExceededError
-    from haute.routes._optimiser_service import _memory_limit_http_exception
+    from haute.routes._contract_errors import memory_limit_http_exception
 
     exc = ExecutionMemoryLimitExceededError(
         "frontier_auto_range",
@@ -533,7 +516,7 @@ def test_memory_limit_message_prefers_the_curated_http_payload_wording() -> None
         reason="process_rss_limit_exceeded",
         rss_limit_bytes=1024,
     )
-    detail = _memory_limit_http_exception(exc).detail
+    detail = memory_limit_http_exception(exc, operation_noun="Auto-range").detail
     assert isinstance(detail, dict)
     message = _memory_limit_message(_normalise_memory_limit_payload(detail))
     assert message == detail["message"]
@@ -545,26 +528,6 @@ def test_memory_limit_message_prefers_the_curated_http_payload_wording() -> None
 # ---------------------------------------------------------------------------
 # 3b.4 [M] — single-quote solve must not crash after solving
 # ---------------------------------------------------------------------------
-
-
-def test_compute_scenario_value_stats_single_row_has_zero_spread() -> None:
-    """``std()`` of one element is null in polars; the stats builder must
-    report the true zero spread of a complete one-quote result set instead
-    of crashing on ``float(None)``."""
-    df = pl.DataFrame({"optimal_scenario_value": pl.Series([1.1], dtype=pl.Float64)})
-    stats, histogram = _compute_scenario_value_stats(SimpleNamespace(dataframe=df))
-
-    assert stats is not None
-    assert set(stats) == _SCENARIO_STAT_KEYS
-    assert stats["std"] == 0.0
-    assert stats["mean"] == pytest.approx(1.1)
-    assert stats["min"] == stats["max"] == pytest.approx(1.1)
-    assert stats["p5"] == stats["p50"] == stats["p95"] == pytest.approx(1.1)
-    assert stats["pct_increase"] == 1.0
-    assert stats["pct_decrease"] == 0.0
-    assert histogram is not None
-    assert sum(histogram["counts"]) == 1
-    assert all(math.isfinite(edge) for edge in histogram["edges"])
 
 
 @pytest.mark.usefixtures("_widen_sandbox_root")
@@ -599,21 +562,18 @@ def test_single_quote_solve_lifecycle_real_solver(client, tmp_path, clean_job_st
     assert result["constraints"]["volume"] == pytest.approx(1.0)
     assert result["lambdas"]["volume"] == pytest.approx(0.0)
 
-    stats = result["scenario_value_stats"]
-    assert stats is not None
-    assert stats["std"] == 0.0
-    assert stats["mean"] == pytest.approx(1.0)
-    assert stats["min"] == stats["max"] == pytest.approx(1.0)
-    assert stats["p5"] == stats["p50"] == stats["p95"] == pytest.approx(1.0)
-    assert stats["pct_increase"] == 0.0
-    assert stats["pct_decrease"] == 0.0
-    histogram = result["scenario_value_histogram"]
-    assert sum(histogram["counts"]) == 1
+    report = result["adjustments"]
+    assert report["n_quotes"] == 1
+    assert [bar["quotes"] for bar in report["bars"]] == [0, 1, 0]
+    quotes = report["weightings"][0]
+    assert quotes["mean"] == pytest.approx(1.0)
+    assert set(quotes["quantiles"].values()) == {1.0}
+    assert (quotes["share_up"], quotes["share_down"], quotes["share_unadjusted"]) == (0, 0, 1)
 
     # Results stay retrievable on a repeat poll.
     second = client.get(f"/api/optimiser/solve/status/{job_id}")
     assert second.status_code == 200
-    assert second.json()["result"]["scenario_value_stats"]["std"] == 0.0
+    assert second.json()["result"]["adjustments"] == report
 
     # Save path.
     out_path = tmp_path / "artifact.json"
@@ -637,7 +597,7 @@ def test_single_quote_solve_lifecycle_real_solver(client, tmp_path, clean_job_st
     preview = pl.DataFrame(applied["preview"])
     assert preview.height == 1
     assert preview["quote_id"].to_list() == ["q1"]
-    assert preview["optimal_step"].to_list() == [1]
+    # Quotes pages identify the chosen scenario by its value (step 1 of the grid).
     assert preview["optimal_scenario_value"].to_list() == pytest.approx([1.0])
 
 
@@ -686,28 +646,24 @@ def test_multi_quote_real_solve_pins_result_shape(client, tmp_path, clean_job_st
     assert result["constraints"] == {"volume": pytest.approx(3.0)}
     assert result["baseline_constraints"] == {"volume": pytest.approx(3.0)}
     assert set(result["lambdas"]) == {"volume"}
-    assert result["history"] is None
+    # Every online solve records its history (Q5), one entry per iteration.
+    assert len(result["history"]) == result["iterations"]
+    assert result["ratebook_cd_trace"] is None
 
-    stats = result["scenario_value_stats"]
-    assert set(stats) == _SCENARIO_STAT_KEYS
-    assert stats["mean"] == pytest.approx(1.0, rel=1e-6)
-    # Sample std (ddof=1) of [1.0, 1.2, 0.8].
-    assert stats["std"] == pytest.approx(0.2, rel=1e-5)
-    assert stats["min"] == pytest.approx(0.8, rel=1e-6)
-    assert stats["max"] == pytest.approx(1.2, rel=1e-6)
-    assert stats["p50"] == pytest.approx(1.0, rel=1e-6)
-    assert stats["pct_increase"] == pytest.approx(1 / 3)
-    assert stats["pct_decrease"] == pytest.approx(1 / 3)
-
-    histogram = result["scenario_value_histogram"]
-    assert len(histogram["counts"]) == 20
-    assert len(histogram["edges"]) == 21
-    assert sum(histogram["counts"]) == 3
+    report = result["adjustments"]
+    # One quote at each of 0.8, 1.0 and 1.2.
+    assert [bar["quotes"] for bar in report["bars"]] == [1, 1, 1]
+    quotes = report["weightings"][0]
+    assert quotes["mean"] == pytest.approx(1.0, rel=1e-6)
+    assert quotes["quantiles"]["p50"] == 1.0
+    assert quotes["share_up"] == pytest.approx(1 / 3)
+    assert quotes["share_down"] == pytest.approx(1 / 3)
+    assert quotes["share_unadjusted"] == pytest.approx(1 / 3)
 
 
 def test_online_solver_value_error_is_wrapped_as_solver_execution_error() -> None:
     """A price-contour ValueError is an algorithm failure, not a data error."""
-    from haute.routes._optimiser_service import (
+    from haute.routes._optimiser_solver import (
         _OptimiserSolverExecutionError,
         _solve_online,
         solver_worker_context,
@@ -732,3 +688,188 @@ def test_online_solver_value_error_is_wrapped_as_solver_execution_error() -> Non
             quote_grid=SimpleNamespace(),
             config={"objective": "expected_income", "constraints": {}},
         )
+
+
+def test_grid_reuses_plain_projected_parquet_without_removing_it(tmp_path, monkeypatch) -> None:
+    import price_contour
+
+    from haute.routes import _optimiser_service as service_module
+    from haute.routes._job_store import JobStore
+
+    path = tmp_path / "prepared.parquet"
+    pl.DataFrame(
+        {
+            "quote_id": [1, 2],
+            "scenario_index": [0, 0],
+            "scenario_value": [1.0, 1.0],
+            "income": [10.0, 20.0],
+            "unused": [3, 4],
+        }
+    ).write_parquet(path)
+    frame = pl.scan_parquet(path).select("quote_id", "scenario_index", "scenario_value", "income")
+    store = JobStore()
+    job = store.create_job({"status": "running"})
+    service = service_module.OptimiserSolveService(store)
+    observed = []
+    grid = SimpleNamespace(scenario_values=[1.0])
+    monkeypatch.setattr(
+        "haute.routes._optimiser_input.bounded_sink",
+        lambda *_a, **_k: pytest.fail("rewrote borrowed input"),
+    )
+    monkeypatch.setattr(
+        price_contour,
+        "build_grid_from_parquet_chunked",
+        lambda path, *_a, **_k: observed.append(Path(path)) or grid,
+    )
+    assert service._build_grid(frame, [], {"objective": "income"}, "opt", job).grid is grid
+    assert observed == [path]
+    assert path.exists()
+
+
+@pytest.mark.parametrize("allowance, accepted", [(32 * 1024**2, False), (128 * 1024**2, True)])
+def test_grid_admission_precedes_library_and_keeps_borrowed_input(
+    tmp_path, monkeypatch, allowance, accepted
+):
+    import price_contour
+
+    from haute._execution_admission import ExecutionAdmissionError
+    from haute._execution_context import ExecutionContext, ExecutionProfile
+
+    path = tmp_path / "prepared.parquet"
+    pl.DataFrame(
+        {
+            "quote_id": [1, 2],
+            "scenario_index": [0, 0],
+            "scenario_value": [1.0, 1.0],
+            "income": [10.0, 20.0],
+        }
+    ).write_parquet(path)
+    store = JobStore()
+    job = store.create_job({"status": "running"})
+    service = OptimiserSolveService(store)
+    called = []
+    monkeypatch.setattr(
+        price_contour,
+        "build_grid_from_parquet_chunked",
+        lambda *_a, **_k: called.append(True) or SimpleNamespace(scenario_values=[1.0]),
+    )
+    context = ExecutionContext(
+        operation="grid_test",
+        profile=ExecutionProfile.OPTIMISER_SETUP,
+        memory_limit_bytes=allowance,
+        memory_baseline_bytes=100,
+        memory_sampler=lambda: 100,
+    )
+    if accepted:
+        assert service._build_grid(
+            pl.scan_parquet(path),
+            [],
+            {"objective": "income"},
+            "opt",
+            job,
+            execution_context=context,
+        ).grid.scenario_values == [1.0]
+        assert called == [True]
+    else:
+        with pytest.raises(ExecutionAdmissionError, match="resident optimiser grid"):
+            service._build_grid(
+                pl.scan_parquet(path),
+                [],
+                {"objective": "income"},
+                "opt",
+                job,
+                execution_context=context,
+            )
+        assert called == []
+    assert path.is_file()
+
+
+@pytest.mark.parametrize("change", ["filter", "slice", "derived", "row_index", "multipart"])
+def test_grid_borrows_only_unmodified_single_parquet(tmp_path, change):
+    from haute.routes._optimiser_input import _projected_parquet_input_path
+
+    path = tmp_path / "part.parquet"
+    pl.DataFrame({"a": [1, 2], "b": [3, 4]}).write_parquet(path)
+    frame = pl.scan_parquet(path)
+    if change == "filter":
+        frame = frame.filter(pl.col("a") == 1)
+    elif change == "slice":
+        frame = frame.head(1)
+    elif change == "derived":
+        frame = frame.with_columns((pl.col("a") + 1).alias("a"))
+    elif change == "row_index":
+        frame = pl.scan_parquet(path, row_index_name="idx")
+    else:
+        frame = pl.scan_parquet([path, path])
+    assert _projected_parquet_input_path(frame) is None
+
+
+def test_setup_steps_raise_typed_failures_without_touching_a_job_store() -> None:
+    """The extracted setup steps carry what the job records; the service records it."""
+    from haute.routes._optimiser_input import (
+        OptimiserSetupError,
+        grid_construction_failures,
+        validate_and_project,
+    )
+
+    frame = _two_quote_frame().lazy().drop("expected_income")
+    with pytest.raises(OptimiserSetupError) as missing:
+        validate_and_project(frame, _solver_config())
+    assert missing.value.status_code == 400
+    assert missing.value.reason == "contract_error"
+    assert missing.value.fields == {
+        "http_status_code": 400,
+        "error_detail": missing.value.detail,
+    }
+    assert "expected_income" in str(missing.value.detail)
+
+    with pytest.raises(OptimiserSetupError) as contract:
+        with grid_construction_failures("opt"):
+            raise _group_by_contract_error()
+    assert contract.value.status_code == 422
+    assert contract.value.fields["error_code"] == "group_by_execution_unsupported"
+
+    store = JobStore()
+    service = OptimiserSolveService(store)
+    job_id = store.create_job({"status": "running"})
+    with pytest.raises(HTTPException) as answered:
+        service._validate_and_project(frame, _solver_config(), job_id)
+    assert answered.value.status_code == 400
+    job = store.require_job(job_id)
+    assert job["status"] == "contract_error"
+    assert job["http_status_code"] == 400
+    assert job["error_detail"] == missing.value.detail
+
+
+@pytest.mark.parametrize("reserved", ["objective", "step", "scenario_value"])
+def test_constraint_names_that_collide_with_library_outputs_are_rejected(reserved: str) -> None:
+    config = {
+        "objective": "income",
+        "constraints": {"volume": {"min": 1.0}, reserved: {"max": 2.0}},
+    }
+
+    with pytest.raises(HTTPException) as caught:
+        OptimiserSolveService._validate_config(config)
+
+    assert caught.value.status_code == 400
+    assert f"Constraint name(s) ['{reserved}'] are reserved" in caught.value.detail
+    assert "Rename the constraint" in caught.value.detail
+
+
+def test_every_reserved_constraint_name_is_listed_together() -> None:
+    config = {
+        "objective": "income",
+        "constraints": {"step": {"max": 1.0}, "objective": {"min": 0.0}},
+    }
+
+    with pytest.raises(HTTPException) as caught:
+        OptimiserSolveService._validate_config(config)
+
+    assert "['objective', 'step'] are reserved" in caught.value.detail
+
+
+@pytest.mark.parametrize("allowed", ["objective_share", "steps", "volume"])
+def test_constraint_names_near_the_reserved_ones_are_accepted(allowed: str) -> None:
+    config = {"objective": "income", "constraints": {allowed: {"min": 1.0}}}
+
+    assert OptimiserSolveService._validate_config(config) == "online"

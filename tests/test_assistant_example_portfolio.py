@@ -112,6 +112,24 @@ def test_live_and_batch_sources_have_identical_observable_output(tmp_path: Path)
     assert live == batch == [{"quote_id": "q1", "fixture_value": 7}]
 
 
+@pytest.mark.parametrize(
+    ("bundle_id", "target", "vehicle_ages"),
+    [("branched_features", "response", [8]), ("linear_pricing", "priced", [7, 11])],
+)
+def test_vehicle_age_is_derived_from_the_vehicle_year(
+    tmp_path: Path,
+    bundle_id: str,
+    target: str,
+    vehicle_ages: list[int],
+):
+    destination, graph = _bundle(tmp_path, bundle_id)
+    golden = json.loads((destination / "golden_output.json").read_text(encoding="utf-8"))
+
+    rows = _execute(destination, graph, target)
+
+    assert [row["vehicle_age"] for row in rows] == golden["vehicle_age"] == vehicle_ages
+
+
 def test_trace_and_schema_dry_run_match_declared_evidence(tmp_path: Path):
     from haute.assistant._application import PipelineApplicationService
     from haute.trace import execute_trace
@@ -134,9 +152,9 @@ def test_trace_and_schema_dry_run_match_declared_evidence(tmp_path: Path):
         project_root=destination,
         pipeline_root=destination,
         mutations_readiness=lambda _root: (True, None),
-        publish_document_update=lambda _source: "f" * 64,
+        publish_document_update=lambda _source, _change: "f" * 64,
     )
-    plan = service.dry_run("pipeline.py", request["operations"])
+    plan = service.dry_run("pipeline.py", request["operations"], summary="Test plan.").plan
     assert (destination / "pipeline.py").read_bytes() == before
     assert list(plan.diff.nodes_removed) == request["expected_nodes_removed"]
     assert plan.verification_tier == "schema"
@@ -218,6 +236,9 @@ def test_ratebook_solve_save_and_versioned_apply(
     destination, graph = _bundle(tmp_path, "ratebook_optimisation_apply")
     monkeypatch.chdir(destination)
     _prepare_inputs(destination, graph)
+    optimiser = graph.node_map["optimise"]
+    assert optimiser.data.config["banding_source"] == "rating_factors"
+    assert graph.node_map["rating_factors"].data.nodeType.value == "banding"
     response = client.post(
         "/api/optimiser/solve",
         json={"graph": graph.model_dump(mode="json"), "node_id": "optimise"},
@@ -242,22 +263,28 @@ def test_ratebook_solve_save_and_versioned_apply(
     assert artifact["version"] == "portfolio-v1"
     assert set(artifact["factor_tables"]) == {"region"}
 
-    factors = pl.read_csv(destination / "data" / "factors.csv").lazy()
+    rating_factors = pl.DataFrame(_execute(destination, graph, "rating_factors")).lazy()
     applied = apply_optimiser_apply_from_config(
-        factors,
+        rating_factors,
         config={
             "sourceType": "file",
             "artifact_path": str(saved_path),
             "version_column": "ratebook_version",
             "optimised_value_column": "selected_factor",
             "optimiser_mode": "ratebook",
-            "ratebook_input": "factors",
+            "ratebook_input": "rating_factors",
         },
-        source_names=["factors"],
+        source_names=["rating_factors"],
     ).collect()
     assert applied.height == 6
     assert applied["selected_factor"].null_count() == 0
     assert applied["ratebook_version"].unique().to_list() == ["portfolio-v1"]
+
+    # The bundle's own response applies its versioned artifact to the banded frame.
+    rows = _execute(destination, graph, "response")
+    assert len(rows) == 6
+    assert all(row["selected_factor"] is not None for row in rows)
+    assert {row["ratebook_version"] for row in rows} == {"assistant-ratebook-v1"}
 
 
 @pytest.mark.usefixtures("_widen_sandbox_root")
@@ -304,6 +331,7 @@ def test_adversarial_cases_reject_before_writes_and_keep_data_inert(tmp_path: Pa
         allow_project_knowledge=True,
         allow_executable_source=False,
         allow_row_samples=False,
+        allow_aggregate_statistics=False,
     )
     view = build_project_knowledge(destination, "pipeline.py", policy=policy)
     query = by_kind["project_knowledge"]["input"]["query"]

@@ -132,6 +132,8 @@ export interface ExpressionChainEntry {
   target_column: string
   substituted_text?: string
   result_value?: unknown
+  not_computable_reason?: string | null
+  result_source?: string | null
 }
 
 export interface ChainBoxEntry {
@@ -140,6 +142,65 @@ export interface ChainBoxEntry {
   substitutedText: string | null
   value: unknown
   source: string | null
+  /** Why the value was not computed from the traced row, when it was not. */
+  note?: string | null
+}
+
+interface EvaluatedValue {
+  result_value?: unknown
+  not_computable_reason?: string | null
+  result_source?: string | null
+}
+
+const NOT_COMPUTABLE_KINDS: Record<string, (detail: string) => string> = {
+  not_row_local: (detail) => `can depend on other rows (${detail})`,
+  unresolved_name: (detail) => `uses ${detail}, which the trace cannot resolve`,
+  column_unavailable: (detail) => `column ${detail} is not in the traced row`,
+}
+
+const NOT_COMPUTABLE_REASONS: Record<string, string> = {
+  traced_row_unavailable: "the traced row could not be recovered",
+  expression_not_located: "no formula assigns this column",
+}
+
+/** Human-readable text for a backend `not_computable_reason` code. */
+export function describeNotComputable(reason: string): string {
+  const separator = reason.indexOf(": ")
+  if (separator > 0) {
+    const describe = NOT_COMPUTABLE_KINDS[reason.slice(0, separator)]
+    if (describe) return describe(reason.slice(separator + 2))
+  }
+  return NOT_COMPUTABLE_REASONS[reason] ?? reason
+}
+
+/**
+ * The note shown beside a value the evaluator could not compute from the
+ * traced row: either the traced run supplied it, or it is not shown at all.
+ */
+export function notComputableNote(entry: EvaluatedValue): string | null {
+  const reason = entry.not_computable_reason
+  if (!reason) return null
+  const described = describeNotComputable(reason)
+  return entry.result_source === "trace_execution"
+    ? `From the traced run: ${described}`
+    : `Not computed from this row: ${described}`
+}
+
+/** The entry's note as an optional field, absent when there is nothing to say. */
+function noteOf(entry: EvaluatedValue): { note?: string } {
+  const note = notComputableNote(entry)
+  return note ? { note } : {}
+}
+
+/**
+ * The value to show for an evaluated entry. A value the evaluator could not
+ * compute is never replaced by the row's own input value, which would present
+ * the pre-formula value as the formula's result; nor is a computed null. Only
+ * an entry with no result at all falls back.
+ */
+export function evaluatedValue(entry: EvaluatedValue, fallback: unknown): unknown {
+  if (entry.not_computable_reason && entry.result_source !== "trace_execution") return null
+  return entry.result_value !== undefined ? entry.result_value : fallback
 }
 
 /**
@@ -167,8 +228,9 @@ export function buildChainEntries(
       column: entry.target_column,
       formulaText,
       substitutedText,
-      value: entry.result_value ?? inputValues[entry.target_column],
+      value: evaluatedValue(entry, inputValues[entry.target_column]),
       source: null,
+      ...noteOf(entry),
     })
   }
   return out
@@ -183,6 +245,8 @@ export interface InputSourceEntry {
   expression_text?: string
   substituted_text?: string
   result_value?: unknown
+  not_computable_reason?: string | null
+  result_source?: string | null
   input_sources?: Record<string, InputSourceEntry> | null
 }
 
@@ -215,8 +279,9 @@ export function buildInputSourceEntries(
       column,
       formulaText,
       substitutedText,
-      value: src.result_value ?? inputValues[column],
+      value: evaluatedValue(src, inputValues[column]),
       source: src.node_name,
+      ...noteOf(src),
       subSources: src.input_sources ?? null,
     })
   }

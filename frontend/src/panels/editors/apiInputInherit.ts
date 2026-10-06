@@ -268,7 +268,7 @@ export function validateColumnPathAgainstFrame(
   }
   return prefixOrEqual
     ? null
-    : "this path points deeper than, or sideways from, this frame — only this frame's level or an ancestor of it can be added here"
+    : "this path points deeper than, or sideways from, this frame - only this frame's level or an ancestor of it can be added here"
 }
 
 /**

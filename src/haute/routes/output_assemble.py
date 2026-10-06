@@ -21,15 +21,14 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from haute._env import float_env
 from haute._execution_admission import (
-    ExecutionAdmissionError,
     IsolatedExecutionBudget,
     create_admitted_execution_context,
     create_isolated_execution_context,
     isolated_execution_budget,
 )
 from haute._execution_context import ExecutionProfile
+from haute._flatten import flatten_executable_graph
 from haute._interactive_workers import (
     InteractiveWorkerCrashedError,
     InteractiveWorkerMemoryLimitError,
@@ -40,22 +39,21 @@ from haute._interactive_workers import (
 )
 from haute._logging import get_logger
 from haute._output_assembler import OutputMappingSchemaError, validate_v2_output_mapping
+from haute._pipeline_settings import project_pipeline_settings
 from haute._worker_isolation import resolve_worker_memory_enforcement
 from haute.errors import ConfigError, ContractMismatchError
 from haute.executor import execute_graph
-from haute.graph_utils import NodeType, flatten_graph
+from haute.graph_utils import NodeType
 from haute.routes._contract_errors import (
     PUBLIC_CONTRACT_ERROR_TYPES,
     contract_error_http_exception,
 )
-from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.routes._timeouts import (
     BlockingWorkTimeoutError,
     run_blocking_with_response_timeout,
 )
 from haute.routes.pipeline import (
     _interactive_affinity_key,
-    _memory_limit_http_exception,
     _raise_interactive_remote_http_error,
     _raise_interactive_worker_crash_http_error,
     _validate_runtime_input_paths,
@@ -67,10 +65,9 @@ logger = get_logger(component="server.output_assemble")
 router = APIRouter(prefix="/api/output-assemble", tags=["output-assemble"])
 
 
-# Timeout (seconds) — resolved per request so env overrides set after
-# import take effect.
 def _dry_run_timeout() -> float:
-    return float_env("HAUTE_OUTPUT_DRY_RUN_TIMEOUT", 120.0)
+    """The pipeline time limit in seconds, read from the pipeline settings per request."""
+    return project_pipeline_settings().pipeline_time_limit_seconds
 
 
 class OutputAssembleDryRunRequest(BaseModel):
@@ -139,7 +136,7 @@ async def output_assemble_dry_run(
     except OutputMappingSchemaError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    graph = flatten_graph(body.graph)
+    graph = flatten_executable_graph(body.graph)
     if not graph.nodes:
         raise HTTPException(status_code=400, detail="Empty graph")
     node = graph.node_map.get(body.node_id)
@@ -223,13 +220,6 @@ async def output_assemble_dry_run(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except (ConfigError, ContractMismatchError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except ExecutionAdmissionError as exc:
-        raise _memory_limit_http_exception(exc) from None
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("output_assemble_dry_run failed")
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
 
     else:
         node_result = results.get(body.node_id)

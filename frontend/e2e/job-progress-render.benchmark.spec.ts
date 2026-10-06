@@ -420,6 +420,10 @@ async function installOptimiserBenchmarkRoutes(page: Page): Promise<{
           message: `Benchmark progress #${tick}.`,
           elapsed_seconds: tick * 0.5,
           result: buildBroadRunningSolveResult(tick),
+          // The status contract requires these keys; a running solve has none yet.
+          frontier: null,
+          terminal_reason: null,
+          execution_metrics: null,
         }),
       })
       return
@@ -442,9 +446,15 @@ async function installOptimiserBenchmarkRoutes(page: Page): Promise<{
 }
 
 function buildBroadRunningSolveResult(tick: number): Record<string, unknown> {
+  // Every key the OptimiserSolveResult contract requires, as a running online solve reports it.
   return {
-    status: "running",
     mode: "online",
+    clamp_rate: null,
+    factor_tables: {},
+    frontier: null,
+    frontier_error: null,
+    adjustments: null,
+    selected_frontier_point: null,
     total_objective: 1_000 + tick,
     baseline_objective: 900,
     constraints: { volume: 0.9 + tick / 1_000 },
@@ -456,19 +466,6 @@ function buildBroadRunningSolveResult(tick: number): Record<string, unknown> {
     n_steps: 20,
     cd_iterations: tick,
     warning: null,
-    scenario_value_stats: {
-      mean: 1,
-      std: 0.1,
-      min: 0.8,
-      max: 1.2,
-      p5: 0.85,
-      p25: 0.95,
-      p50: 1,
-      p75: 1.05,
-      p95: 1.15,
-      pct_increase: 0.4,
-      pct_decrease: 0.35,
-    },
     history: Array.from({ length: 24 }, (_, index) => ({
       iteration: tick * 100 + index,
       total_objective: 1_000 + tick + index,
@@ -538,6 +535,7 @@ test.describe("job progress render benchmark", () => {
     const optimiserNode = page.getByLabel("Optimisation node: browser_optimiser")
     await expect(optimiserNode).toBeVisible()
     await optimiserNode.click()
+    await page.getByRole("tab", { name: "Solve", exact: true }).click()
 
     await expect(page.getByRole("button", { name: "Optimise", exact: true })).toBeEnabled()
     await page.getByRole("button", { name: "Optimise", exact: true }).click()

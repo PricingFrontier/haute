@@ -19,10 +19,11 @@ import MilestoneCommitModal from "../MilestoneCommitModal"
 import useGitStore from "../../stores/useGitStore"
 import useToastStore from "../../stores/useToastStore"
 import { ApiError } from "../../api/client"
+import { makeGitWorkingBranch } from "../../test-utils/factories"
 
-const WORKING_BRANCH = {
+const WORKING_BRANCH = makeGitWorkingBranch({
   working_branch: "dev",
-  state: "ready" as const,
+  state: "ready",
   errors: [],
   current_branch: "dev-save",
   last_save_sha: "abc1234",
@@ -30,7 +31,7 @@ const WORKING_BRANCH = {
   identity_set: true,
   user_name: "U",
   user_email: "u@x.y",
-}
+})
 
 describe("MilestoneCommitModal", () => {
   beforeEach(() => {
@@ -114,7 +115,7 @@ describe("MilestoneCommitModal", () => {
 
     await waitFor(() => expect(screen.getByTestId("milestone-fork-confirm")).toBeInTheDocument())
     expect(screen.getByTestId("milestone-fork-confirm")).toHaveTextContent("fork")
-    expect(onConfirmed).not.toHaveBeenCalled() // not committed yet — it's a warning
+    expect(onConfirmed).not.toHaveBeenCalled() // not committed yet - it's a warning
 
     fireEvent.click(screen.getByTestId("milestone-fork-anyway"))
     await waitFor(() =>
@@ -138,6 +139,25 @@ describe("MilestoneCommitModal", () => {
       expect(useToastStore.getState().toasts.some(
         (toast) => toast.type === "error" && toast.text.includes("Could not commit:"),
       )).toBe(true)
+    })
+    expect(screen.queryByTestId("milestone-fork-confirm")).not.toBeInTheDocument()
+  })
+
+  it("names the status, not the raw body, for a 409 it cannot read", async () => {
+    const unknown = { detail: { status: "something_else", oops: true } }
+    mockCommit.mockRejectedValueOnce(
+      new ApiError("HTTP 409", 409, JSON.stringify(unknown), unknown),
+    )
+    render(<MilestoneCommitModal onConfirmed={vi.fn()} onClose={vi.fn()} />)
+    fireEvent.change(screen.getByTestId("milestone-message"), {
+      target: { value: "My milestone" },
+    })
+    fireEvent.click(screen.getByTestId("milestone-confirm"))
+
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts.map((toast) => toast.text)).toContain(
+        "Could not commit: HTTP 409",
+      )
     })
     expect(screen.queryByTestId("milestone-fork-confirm")).not.toBeInTheDocument()
   })

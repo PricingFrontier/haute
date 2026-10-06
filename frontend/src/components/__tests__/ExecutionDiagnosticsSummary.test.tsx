@@ -3,11 +3,12 @@ import { afterEach, describe, expect, it } from "vitest"
 import ExecutionDiagnosticsSummary from "../ExecutionDiagnosticsSummary"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
 
-function strategyMetrics(status: "projected" | "boundary" | "admitted_eager" | "rejected" | "not_planned") {
+function strategyMetrics(status: "projected" | "boundary" | "admitted_eager" | "warned" | "rejected" | "not_planned") {
   const strategyByStatus = {
     projected: "projected",
     boundary: "materialisation-boundary",
     admitted_eager: "full-width-admitted-eager",
+    warned: "full-width-conservative",
     rejected: "unsupported",
     not_planned: "not-planned",
   } as const
@@ -56,10 +57,32 @@ describe("ExecutionDiagnosticsSummary", () => {
     expect(screen.getByText(/Remediation Use a bounded aggregation/)).toBeInTheDocument()
   })
 
+  it("renders a warned strategy with its reserved-envelope details", () => {
+    render(<ExecutionDiagnosticsSummary metrics={strategyMetrics("warned")} />)
+
+    expect(screen.getByText("Execution ran without a memory estimate at 'aggregate' (group_by)")).toBeInTheDocument()
+    expect(screen.getByLabelText("Execution strategy technical details")).toBeInTheDocument()
+    expect(screen.getByText(/Reserved envelope/)).toBeInTheDocument()
+    expect(screen.getByText(/Remediation Use a bounded aggregation/)).toBeInTheDocument()
+  })
+
+  it("prefers the memory-pressure diagnostic over a warned strategy", () => {
+    const metrics = strategyMetrics("warned")
+    render(
+      <ExecutionDiagnosticsSummary
+        metrics={{ ...metrics, memory_pressure_events: makeExecutionMetricsFixture().memory_pressure_events }}
+      />,
+    )
+
+    expect(screen.getByText("Preview reached 75% of its memory allowance.")).toBeInTheDocument()
+    expect(screen.getByLabelText("Technical details")).toBeInTheDocument()
+    expect(screen.queryByLabelText("Execution strategy technical details")).not.toBeInTheDocument()
+  })
+
   it("renders memory pressure for running execution metrics", () => {
     render(<ExecutionDiagnosticsSummary metrics={makeExecutionMetricsFixture()} />)
 
-    expect(screen.getByText("Memory pressure reached 75% of the preview budget.")).toBeInTheDocument()
+    expect(screen.getByText("Preview reached 75% of its memory allowance.")).toBeInTheDocument()
     expect(screen.getByText("Technical details")).toBeInTheDocument()
   })
 
@@ -72,7 +95,7 @@ describe("ExecutionDiagnosticsSummary", () => {
       />,
     )
 
-    expect(screen.getByText("Memory pressure reached 75% of the preview budget.")).toBeInTheDocument()
+    expect(screen.getByText("Preview reached 75% of its memory allowance.")).toBeInTheDocument()
   })
 
   it.each(["contract_error", "timed_out", "cancelled", "superseded", "error"] as const)(
@@ -86,7 +109,7 @@ describe("ExecutionDiagnosticsSummary", () => {
         />,
       )
 
-      expect(screen.queryByText("Memory pressure reached 75% of the preview budget.")).not.toBeInTheDocument()
+      expect(screen.queryByText("Preview reached 75% of its memory allowance.")).not.toBeInTheDocument()
       expect(screen.queryByText("Technical details")).not.toBeInTheDocument()
     },
   )

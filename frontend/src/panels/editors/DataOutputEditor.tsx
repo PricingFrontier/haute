@@ -4,20 +4,22 @@ import {
   writeOutput,
   ApiError,
 } from "../../api/client"
+import { apiErrorMessage } from "../../api/errors"
 import type {
   IoCapabilityGroup,
   IoFormatCapability,
   OutputDestinationResponse,
 } from "../../api/types"
-import { EditorLabel } from "../../components/form"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useOutputWriteStore from "../../stores/useOutputWriteStore"
 import { buildGraph, graphForRequestIdentity } from "../../utils/buildGraph"
 import { useGraph } from "../useGraph"
 import IoFormatEditor from "./_IoFormatEditor"
+import { ioBranchConfig, ioProviderFieldsReady } from "./_ioProvider"
+import IoProviderPicker from "./_IoProviderPicker"
 import { useIoCapabilities } from "./_ioFormats"
-import { INPUT_STYLE } from "./_shared"
 import type { OnReplaceConfig, OnUpdateConfig } from "./_shared"
+import { isPlainObject } from "../../types/guards"
 
 const OUTPUT_COMMON_KEYS = [
   "instanceOf",
@@ -28,70 +30,20 @@ const OUTPUT_COMMON_KEYS = [
   "contract",
 ] as const
 
-function retainedCommonConfig(
-  config: Record<string, unknown>,
-): Record<string, unknown> {
-  return Object.fromEntries(
-    OUTPUT_COMMON_KEYS.flatMap((key) =>
-      config[key] === undefined ? [] : [[key, config[key]]],
-    ),
-  )
-}
-
-function selectedOutputFormat(
-  group: IoCapabilityGroup,
-  requested?: IoFormatCapability,
-): IoFormatCapability | undefined {
-  if (requested?.output) return requested
-  return group.formats.find((format) => format.output !== null)
-}
-
 function outputBranchConfig(
   config: Record<string, unknown>,
   group: IoCapabilityGroup,
   requestedFormat?: IoFormatCapability,
   preserveProviderFields = false,
 ): Record<string, unknown> {
-  const format = selectedOutputFormat(group, requestedFormat)
-  const capability = format?.output
-  const fields = Object.fromEntries(
-    group.output_fields.flatMap((field) => {
-      if (preserveProviderFields && config[field.name] !== undefined) {
-        return [[field.name, config[field.name]]]
-      }
-      return field.required ? [[field.name, ""]] : []
-    }),
-  )
-  return {
-    ...retainedCommonConfig(config),
-    outputType: group.name,
-    ...(format ? { format: format.name } : {}),
-    ...(capability?.modes[0] ? { mode: capability.modes[0] } : {}),
-    arguments: {},
-    ...fields,
-  }
-}
-
-function hasNonEmptyString(value: unknown): boolean {
-  return typeof value === "string" && value.trim().length > 0
-}
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-}
-
-function providerFieldsReady(
-  group: IoCapabilityGroup,
-  config: Record<string, unknown>,
-): boolean {
-  if (group.name === "database") {
-    const hasConnection = hasNonEmptyString(config.connection)
-    const hasUri = hasNonEmptyString(config.uri)
-    return hasConnection !== hasUri && hasNonEmptyString(config.table)
-  }
-  return group.output_fields
-    .filter((field) => field.required)
-    .every((field) => hasNonEmptyString(config[field.name]))
+  return ioBranchConfig({
+    direction: "output",
+    config,
+    group,
+    commonKeys: OUTPUT_COMMON_KEYS,
+    requestedFormat,
+    preserveProviderFields,
+  })
 }
 
 function outputConfigReady(
@@ -109,12 +61,12 @@ function outputConfigReady(
   ) {
     return false
   }
-  if (capability.modes.length === 0 || !providerFieldsReady(group, config)) {
+  if (capability.modes.length === 0 || !ioProviderFieldsReady("output", group, config)) {
     return false
   }
   if (
     config.arguments !== undefined &&
-    !isPlainRecord(config.arguments)
+    !isPlainObject(config.arguments)
   ) {
     return false
   }
@@ -147,9 +99,6 @@ export default function DataOutputEditor({
 }) {
   const { capabilities, error } = useIoCapabilities()
   const { allNodes, edges, submodels, preamble } = useGraph()
-  const streamingChunkSize = useSettingsStore(
-    (state) => state.streamingChunkSize,
-  )
   const activeSource = useSettingsStore((state) => state.activeSource)
   const writeState = useOutputWriteStore((state) => state.writes[nodeId])
   const beginWrite = useOutputWriteStore((state) => state.begin)
@@ -168,7 +117,9 @@ export default function DataOutputEditor({
   const ready =
     group !== undefined && outputConfigReady(group, format, config)
   const graph = useMemo(() => {
-    const built = buildGraph(allNodes, edges, submodels, preamble)
+    // buildGraph reads the preamble from the store; listing it renews this callback.
+    void preamble
+    const built = buildGraph(allNodes, edges, submodels)
     return {
       ...built,
       nodes: built.nodes.map((node) =>
@@ -191,9 +142,8 @@ export default function DataOutputEditor({
         nodeId,
         config,
         source: activeSource,
-        streamingChunkSize,
       }),
-    [activeSource, config, graph, nodeId, streamingChunkSize],
+    [activeSource, config, graph, nodeId],
   )
   const isWriting = writeState?.phase === "writing"
   const visibleState =
@@ -249,12 +199,7 @@ export default function DataOutputEditor({
       },
       (caught: unknown) => {
         if (controller.signal.aborted) return
-        const message =
-          caught instanceof ApiError && caught.detail
-            ? caught.detail
-            : caught instanceof Error
-              ? caught.message
-              : "Could not resolve output destination."
+        const message = apiErrorMessage(caught, "Could not resolve output destination.")
         setDestinationState({ identity, error: message })
       },
     )
@@ -272,7 +217,6 @@ export default function DataOutputEditor({
         graph,
         nodeId,
         source: activeSource,
-        streamingChunkSize,
         overwrite,
       })
       completeWrite(nodeId, requestId, requestIdentity, {
@@ -280,12 +224,7 @@ export default function DataOutputEditor({
         result: response,
       })
     } catch (caught) {
-      const message =
-        caught instanceof ApiError && caught.detail
-          ? caught.detail
-          : caught instanceof Error
-            ? caught.message
-            : "Output write failed."
+      const message = apiErrorMessage(caught, "Output write failed.")
       completeWrite(nodeId, requestId, requestIdentity, {
         phase: caught instanceof ApiError && caught.status === 409 ? "confirm_overwrite" : "error",
         message,
@@ -295,48 +234,16 @@ export default function DataOutputEditor({
 
   return (
     <div className="px-4 py-3 space-y-3">
-      {error && (
-        <p style={{ color: "var(--danger-text)" }}>
-          Could not load IO capabilities: {error}
-        </p>
-      )}
-
-      {config.outputType !== undefined && !group && capabilities && (
-        <section
-          aria-label="Configuration errors"
-          className="rounded-lg p-2 text-[11px]"
-          style={{
-            background: "var(--danger-soft)",
-            border: "1px solid var(--danger-border)",
-            color: "var(--danger-text)",
-          }}
-        >
-          Unknown Data Output provider {JSON.stringify(config.outputType)}.
-        </section>
-      )}
-
-      <div>
-        <EditorLabel>Provider</EditorLabel>
-        <select
-          aria-label="Provider"
-          value={group?.name ?? ""}
-          onChange={(event) => {
-            const next = groups.find(
-              (candidate) => candidate.name === event.target.value,
-            )
-            if (next) onReplaceConfig(outputBranchConfig(config, next))
-          }}
-          className="mt-1 w-full px-2.5 py-1.5 text-xs rounded-lg"
-          style={INPUT_STYLE}
-        >
-          <option value="">Select a provider...</option>
-          {groups.map((candidate) => (
-            <option key={candidate.name} value={candidate.name}>
-              {candidate.label}
-            </option>
-          ))}
-        </select>
-      </div>
+      <IoProviderPicker
+        direction="output"
+        config={config}
+        groups={groups}
+        group={group}
+        capabilitiesLoaded={capabilities !== null}
+        error={error}
+        accentColor={accentColor}
+        onSelect={(next) => onReplaceConfig(outputBranchConfig(config, next))}
+      />
 
       {group && (
         <IoFormatEditor

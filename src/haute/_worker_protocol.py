@@ -7,6 +7,7 @@ parent and child.  The parent remains responsible for artifact publication.
 from __future__ import annotations
 
 import hashlib
+import importlib
 import math
 import multiprocessing as mp
 import pickle
@@ -20,6 +21,15 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Literal, cast
 
+from haute._cpu_performance import configure_process_high_qos
+from haute._native_memory_limit import (
+    NativeMemoryLease,
+    NativeMemoryLimitUnsupportedError,
+    cleanup_private_cgroups_for_pid,
+    memory_error_for_thread_start_failure,
+    native_memory_backend_scope,
+)
+from haute._parent_watch import exit_with_parent
 from haute._worker_isolation import (
     IsolatedWorkerConfig,
     IsolatedWorkerCrashedError,
@@ -30,13 +40,13 @@ from haute._worker_isolation import (
     IsolatedWorkerStoppedError,
     IsolatedWorkerTimeoutError,
     WorkerTerminalReason,
-    _apply_address_space_limit,
     _create_worker_rss_watchdog,
     _run_cleanup_callbacks,
     _terminate_process,
-    address_space_caps_supported,
     create_worker_queue,
     process_memory_caps_supported,
+    start_process_with_environment,
+    start_worker_queue_feeder,
 )
 
 SCHEMA_VERSION = 1
@@ -350,6 +360,9 @@ def run_worker_protocol(
             request,
             str(root),
             worker_config.memory_limit_bytes,
+            worker_config.require_memory_limit,
+            worker_config.address_space_allowance_bytes,
+            worker_config.preload_modules,
         ),
     )
     primary_error: BaseException | None = None
@@ -364,7 +377,7 @@ def run_worker_protocol(
     )
     try:
         try:
-            process.start()
+            start_process_with_environment(process, {})
         except Exception as exc:  # pragma: no cover - multiprocessing dependent
             raise IsolatedWorkerStartError(f"Failed to start isolated worker: {exc}") from exc
         rss_watchdog = _create_worker_rss_watchdog(
@@ -456,6 +469,15 @@ def run_worker_protocol(
             result_queue.join_thread()
         except Exception:
             pass
+        try:
+            pid = getattr(process, "pid", None)
+            if pid is not None and not process.is_alive():
+                cleanup_private_cgroups_for_pid(pid)
+        except BaseException as exc:
+            if primary_error is None:
+                primary_error = exc
+            else:
+                primary_error.add_note(f"native memory resource cleanup failed: {exc}")
     cleanup_error = _run_cleanup_callbacks(worker_config.cleanup_callbacks)
     if primary_error is not None:
         if cleanup_error is not None:
@@ -533,19 +555,45 @@ def _protocol_entrypoint(
     request: WorkerRequest,
     artifact_root: str,
     memory_limit_bytes: int | None,
+    require_memory_limit: bool = False,
+    address_space_allowance_bytes: int = 0,
+    preload_modules: tuple[str, ...] = (),
 ) -> None:
+    from haute._polars_utils import apply_spawned_streaming_chunk_size
+
+    exit_with_parent()
+    apply_spawned_streaming_chunk_size()
     runtime = WorkerRuntime(progress_queue, artifact_root)
+    lease = NativeMemoryLease()
+    applied = False
     try:
-        if memory_limit_bytes is not None and address_space_caps_supported():
-            _apply_address_space_limit(memory_limit_bytes)
-        result = function(runtime, request)
+        configure_process_high_qos()
+        start_worker_queue_feeder(result_queue)
+        start_worker_queue_feeder(progress_queue)
+        # Imported under an RLIMIT_AS cap, a model library's code and data would
+        # spend the job's budget, and a short one fails the import itself.
+        for module in preload_modules:
+            try:
+                importlib.import_module(module)
+            except Exception as preload_error:
+                result_queue.put(("error", _preload_failure_payload(module, preload_error)))
+                return
+        if memory_limit_bytes is not None:
+            applied = lease.apply(
+                memory_limit_bytes,
+                required=require_memory_limit,
+                address_space_allowance_bytes=address_space_allowance_bytes,
+            )
+        with native_memory_backend_scope(lease.backend if applied else None, lease):
+            result = function(runtime, request)
         if isinstance(result, WorkerFailurePayload):
             result_queue.put(("error", result))
             return
         if not isinstance(result, WorkerResultManifest):
             raise WorkerProtocolError("worker function must return WorkerResultManifest")
         result_queue.put(("ok", result))
-    except BaseException as exc:
+    except BaseException as raised:
+        exc = memory_error_for_thread_start_failure(raised) if applied else raised
         result_queue.put(
             (
                 "error",
@@ -562,6 +610,30 @@ def _protocol_entrypoint(
         )
     finally:
         runtime.close()
+
+
+def _preload_failure_payload(module: str, exc: Exception) -> WorkerFailurePayload:
+    """A preload that failed, in curated wording the job can show as its message.
+
+    The module name is Haute's own; the library's message, which can carry internal
+    paths, stays in the diagnostic ``error`` field and the traceback.
+    """
+    message = (
+        f"Haute could not load {module} ({type(exc).__name__}). "
+        "The full error is recorded in the job's error details."
+    )
+    return WorkerFailurePayload(
+        terminal_reason="error",
+        error_type=type(exc).__name__,
+        message=message,
+        traceback="".join(traceback.format_exception(type(exc), exc, exc.__traceback__))[
+            :WORKER_MAX_TRACEBACK_LENGTH
+        ],
+        fields={
+            "error": str(exc)[:WORKER_MAX_MESSAGE_LENGTH] or type(exc).__name__,
+            WORKER_USER_MESSAGE_FIELD: message,
+        },
+    )
 
 
 def _drain_progress(
@@ -767,6 +839,9 @@ def _sha256_file(path: Path) -> str:
 def _terminal_reason_for_exception(exc: BaseException) -> str:
     if isinstance(exc, IsolatedWorkerError):
         return exc.terminal_reason
+    if isinstance(exc, NativeMemoryLimitUnsupportedError):
+        # The same outcome as a parent-side IsolatedWorkerMemoryLimitUnsupportedError.
+        return "contract_error"
     if isinstance(exc, MemoryError):
         return "memory_limited"
     return "error"

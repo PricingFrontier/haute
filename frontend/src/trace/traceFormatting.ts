@@ -24,7 +24,7 @@ export function formatResultValue(v: unknown, precision?: number): string {
 export function formatResultValueFull(v: unknown): string {
   const special = formatJsonSpecialValue(v)
   if (special !== null) return special
-  if (v === null || v === undefined) return "—"
+  if (v === null || v === undefined) return "-"
   if (typeof v === "number") return String(v)
   if (typeof v === "string") return v
   if (typeof v === "object") {

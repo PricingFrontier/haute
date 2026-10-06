@@ -3,12 +3,15 @@ import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import {
   ApiError,
   ApiTimeoutError,
+  getPreviewProgress,
   HAUTE_SESSION_EXPIRED_EVENT,
   bootstrapHauteSession,
   checkHauteSession,
   isHauteSessionExpiredError,
   loadPipeline,
   previewNode,
+  estimateOptimiserSolve,
+  previewInputs,
   previewRecoveryNode,
   savePipeline,
   traceCell,
@@ -26,7 +29,9 @@ import {
   createSubmodel,
   dissolveSubmodel,
   loadSubmodel,
-  checkMlflow,
+  getMlflowDestinations,
+  getExperiments,
+  getRuns,
   getTrainStatus,
   cancelTrain,
   estimateTrainingRam,
@@ -58,12 +63,12 @@ import {
   createUtilityFile,
   updateUtilityFile,
   deleteUtilityFile,
-  buildJsonCache,
-  getJsonCacheProgress,
-  getJsonCacheStatus,
-  deleteJsonCache,
-  dryRunRemoveUnavailableNode,
   applyRemoveUnavailableNode,
+  getPipelineSettings,
+  patchPipelineSettings,
+  getMlflowSettings,
+  putMlflowSettings,
+  testMlflowConnection,
 } from "../client"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
@@ -74,13 +79,21 @@ import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFi
 
 let mockFetch: ReturnType<typeof vi.fn>
 
-function jsonResponse(body: unknown, status = 200) {
+function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}) {
   return Promise.resolve({
     ok: status >= 200 && status < 300,
     status,
     statusText: status === 200 ? "OK" : "Error",
+    headers: new Headers(headers),
     json: () => Promise.resolve(body),
   })
+}
+
+const DOCUMENT_FINGERPRINT = "doc-fp"
+
+/** A pipeline load response: the document plus the fingerprint header the server names. */
+function pipelineResponse(body: unknown) {
+  return jsonResponse(body, 200, { "x-haute-document-fingerprint": DOCUMENT_FINGERPRINT })
 }
 
 function errorResponse(status: number, body?: unknown) {
@@ -188,8 +201,13 @@ function makeTrainResponse(overrides: Record<string, unknown> = {}) {
     best_iteration: null,
     loss_history: [],
     loss_history_truncated: false,
+    validation_loss_history: [],
+    validation_loss_history_truncated: false,
     double_lift: [],
     shap_summary: [],
+    shap_beeswarm: [],
+    shap_curves: [],
+    shap_link: null,
     feature_importance_loss: [],
     ave_per_feature: [],
     residuals_histogram: [],
@@ -203,9 +221,15 @@ function makeTrainResponse(overrides: Record<string, unknown> = {}) {
     glm_coefficients: [],
     glm_relativities: [],
     glm_fit_statistics: {},
-    glm_regularization_path: null,
+    glm_inference: null,
+    glm_smooth_terms: [],
+    glm_regularization: null,
+    ebm_terms: [],
+    tboost_tables: null,
     diagnostics_errors: [],
     feature_selection: null,
+    final_tree_count: null,
+    fit_evidence: null,
     ...overrides,
   }
 }
@@ -218,9 +242,27 @@ function makeTrainStatusResponse(overrides: Record<string, unknown> = {}) {
     iteration: 1,
     total_iterations: 10,
     train_loss: {},
+    train_loss_history: [],
+    train_loss_history_truncated: false,
     elapsed_seconds: 1,
     result: null,
     warning: null,
+    terminal_reason: null,
+    execution_metrics: null,
+    feature_selection: null,
+    error_code: null,
+    http_status_code: null,
+    error_detail: null,
+    worker_remote_traceback: null,
+    phase: null,
+    trial_index: null,
+    trial_count: null,
+    fold_index: null,
+    fold_count: null,
+    completed_fits: null,
+    total_fits: null,
+    best_objective: null,
+    export_receipts: { mlflow: [], model_files: [] },
     ...overrides,
   }
 }
@@ -261,7 +303,7 @@ function makeSubmodelGraphResponse(overrides: Record<string, unknown> = {}) {
 function makeDissolveSubmodelResponse(overrides: Record<string, unknown> = {}) {
   return {
     status: "ok",
-    instance_id: "instance_pricing",
+    instance_id: "pricing",
     definition_id: "definition_pricing",
     source_revision: "revision-dissolve",
     graph: {
@@ -283,11 +325,12 @@ function makeTrainEstimateResponse(overrides: Record<string, unknown> = {}) {
     available_mb: 512,
     bytes_per_row: 256,
     was_downsampled: false,
+    unbounded_join_node_ids: [],
     warning: null,
     gpu_vram_estimated_mb: null,
     gpu_vram_available_mb: null,
     gpu_warning: null,
-    evaluation_preview: null,
+    unavailable: null,
     ...overrides,
   }
 }
@@ -313,33 +356,15 @@ function makeWorkingBranchResponse(overrides: Record<string, unknown> = {}) {
     user_name: "Test User",
     user_email: "test@example.com",
     head_sha: "abc1234def5678",
+    storage: "unsupported",
+    storage_remote: null,
+    storage_forked_from: null,
+    sync: null,
+    storage_bind: null,
     ...overrides,
   }
 }
 
-function makeJsonCacheBuildResponse(overrides: Record<string, unknown> = {}) {
-  return {
-    path: "/data/input.json",
-    data_path: "/data/input.parquet",
-    row_count: 10,
-    column_count: 2,
-    columns: { x: "Int64" },
-    size_bytes: 128,
-    cached_at: 123,
-    cache_seconds: 0.5,
-    ...overrides,
-  }
-}
-
-function makeJsonCacheProgressResponse(overrides: Record<string, unknown> = {}) {
-  return {
-    active: true,
-    rows: 10,
-    elapsed: 0.5,
-    phase: "scan",
-    ...overrides,
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Setup / Teardown
@@ -353,12 +378,12 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 // ═══════════════════════════════════════════════════════════════════════════
-// request() core function — tested through loadPipeline (a thin GET wrapper)
+// request() core function — tested through loadPipeline (a GET wrapper that also reads the fingerprint header)
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("request() core via loadPipeline", () => {
   it("makes a GET request to the correct URL", async () => {
-    mockFetch.mockReturnValue(jsonResponse({
+    mockFetch.mockReturnValue(pipelineResponse({
       nodes: [], edges: [], preserved_blocks: [], source_revision: null,
     }))
     await loadPipeline()
@@ -368,7 +393,7 @@ describe("request() core via loadPipeline", () => {
   })
 
   it("uses browser-managed same-origin credentials", async () => {
-    mockFetch.mockReturnValue(jsonResponse({
+    mockFetch.mockReturnValue(pipelineResponse({
       nodes: [], edges: [], preserved_blocks: [], source_revision: null,
     }))
 
@@ -435,6 +460,20 @@ describe("request() core via loadPipeline", () => {
     expect(mockFetch).toHaveBeenCalledTimes(3)
   })
 
+  it("does not ask again once a session is established", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ ok: true }))
+
+    await bootstrapHauteSession(true)
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+
+    // The cookie is already held. Callers guard themselves with a bootstrap,
+    // so asking again would put a round trip in front of every one of them.
+    await bootstrapHauteSession()
+    await bootstrapHauteSession()
+
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+  })
+
   it("returns parsed JSON on success", async () => {
     const data = {
       nodes: [{ id: "1" }],
@@ -442,9 +481,17 @@ describe("request() core via loadPipeline", () => {
       preserved_blocks: [],
       source_revision: null,
     }
-    mockFetch.mockReturnValue(jsonResponse(data))
+    mockFetch.mockReturnValue(pipelineResponse(data))
     const result = await loadPipeline()
-    expect(result).toEqual(data)
+    expect(result).toEqual({ document: data, documentFingerprint: DOCUMENT_FINGERPRINT })
+  })
+
+  it("rejects a pipeline load that names no document fingerprint, without retrying", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ nodes: [], edges: [] }))
+    await expect(loadPipeline()).rejects.toThrow(
+      "loadPipeline: response has no x-haute-document-fingerprint header",
+    )
+    expect(mockFetch).toHaveBeenCalledTimes(1)
   })
 
   it("returns an unknown-node-shaped payload unchanged for recovery ingestion", async () => {
@@ -457,8 +504,11 @@ describe("request() core via loadPipeline", () => {
       }],
       edges: [],
     }
-    mockFetch.mockReturnValue(jsonResponse(data))
-    await expect(loadPipeline()).resolves.toEqual(data)
+    mockFetch.mockReturnValue(pipelineResponse(data))
+    await expect(loadPipeline()).resolves.toEqual({
+      document: data,
+      documentFingerprint: DOCUMENT_FINGERPRINT,
+    })
   })
 
   it("throws ApiError with status and detail on 4xx response", async () => {
@@ -480,7 +530,7 @@ describe("request() core via loadPipeline", () => {
       detail: "Missing or invalid Haute session token",
     }))
 
-    await expect(checkMlflow()).rejects.toThrow(ApiError)
+    await expect(getMlflowDestinations(false)).rejects.toThrow(ApiError)
 
     expect(listener).toHaveBeenCalledTimes(1)
     const event = listener.mock.calls[0][0] as CustomEvent<{ reason: string }>
@@ -510,11 +560,152 @@ describe("request() core via loadPipeline", () => {
     await expect(loadPipeline()).rejects.toThrow(ApiError)
   })
 
+  const pipelineSettingsBody = {
+    path: ".haute/pipeline-settings.json",
+    settings: {
+      chunk_rows: null,
+      caching: false,
+      cache_size_gb: null,
+      preview_memory_gb: 8,
+      kept_free_gb: null,
+      pipeline_time_limit_minutes: null,
+      modelling_time_limit_minutes: null,
+      optimisation_time_limit_minutes: null,
+    },
+    automatic: {
+      chunk_rows: 500_000,
+      caching: true,
+      cache_size_gb: 20,
+      preview_memory_gb: 10.3,
+      kept_free_gb: 2,
+      pipeline_time_limit_minutes: 30,
+      modelling_time_limit_minutes: 60,
+      optimisation_time_limit_minutes: null,
+    },
+  }
+
+  it("getPipelineSettings issues a GET and parses the response", async () => {
+    mockFetch.mockReturnValue(jsonResponse(pipelineSettingsBody))
+
+    const result = await getPipelineSettings()
+
+    const [url, init] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/pipeline-settings")
+    expect(init?.method ?? "GET").toBe("GET")
+    expect(result.settings.preview_memory_gb).toBe(8)
+    expect(result.automatic.optimisation_time_limit_minutes).toBeNull()
+  })
+
+  it("getPipelineSettings rejects a malformed response", async () => {
+    mockFetch.mockReturnValue(
+      jsonResponse({
+        ...pipelineSettingsBody,
+        settings: { ...pipelineSettingsBody.settings, caching: "no" },
+      }),
+    )
+    await expect(getPipelineSettings()).rejects.toThrow(
+      /PipelineSettingsResponse: invalid contract at \/settings\/caching/,
+    )
+    mockFetch.mockReturnValue(jsonResponse({ settings: pipelineSettingsBody.settings }))
+    await expect(getPipelineSettings()).rejects.toThrow(/PipelineSettingsResponse: invalid contract/)
+  })
+
+  it("patchPipelineSettings sends only the changed keys and parses the response", async () => {
+    mockFetch.mockReturnValue(jsonResponse(pipelineSettingsBody))
+
+    const result = await patchPipelineSettings({ preview_memory_gb: 8, chunk_rows: null })
+
+    const [url, init] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/pipeline-settings")
+    expect(init.method).toBe("PATCH")
+    expect(JSON.parse(init.body as string)).toEqual({ preview_memory_gb: 8, chunk_rows: null })
+    expect(result.settings.caching).toBe(false)
+  })
+
+  it("putMlflowSettings issues a PUT with the JSON payload and parses the response", async () => {
+    const settingsBody = {
+      section_present: true,
+      tracking_uri: "http://localhost:5000",
+      folder: "team-runs",
+      resolved_folder: "C:/proj/team-runs",
+      detail: "",
+    }
+    mockFetch.mockReturnValue(jsonResponse(settingsBody))
+
+    const result = await putMlflowSettings({
+      tracking_uri: "http://localhost:5000",
+      folder: "team-runs",
+    })
+
+    const [url, init] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/mlflow/settings")
+    expect(init.method).toBe("PUT")
+    expect(JSON.parse(init.body as string)).toEqual({
+      tracking_uri: "http://localhost:5000",
+      folder: "team-runs",
+    })
+    expect(result.resolved_folder).toBe("C:/proj/team-runs")
+  })
+
+  it("getMlflowSettings issues a GET and parses the response", async () => {
+    mockFetch.mockReturnValue(jsonResponse({
+      section_present: false,
+      tracking_uri: "",
+      folder: "",
+      resolved_folder: "C:/proj/mlruns",
+      detail: "",
+    }))
+
+    const result = await getMlflowSettings()
+
+    const [url, init] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/mlflow/settings")
+    expect(init?.method ?? "GET").toBe("GET")
+    expect(result.resolved_folder).toBe("C:/proj/mlruns")
+  })
+
+  it("testMlflowConnection POSTs the candidate payload and parses the result", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ ok: true, category: "", detail: "" }))
+
+    const result = await testMlflowConnection({
+      destination: "server",
+      tracking_uri: "http://localhost:6000",
+    })
+
+    const [url, init] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/mlflow/test-connection")
+    expect(init.method).toBe("POST")
+    expect(JSON.parse(init.body as string)).toEqual({
+      destination: "server",
+      tracking_uri: "http://localhost:6000",
+    })
+    expect(result.ok).toBe(true)
+  })
+
+  it("getExperiments scopes discovery to the requested destination", async () => {
+    mockFetch.mockReturnValue(jsonResponse([{ experiment_id: "1", name: "pricing" }]))
+
+    await getExperiments("local")
+
+    const [url] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/mlflow/experiments?destination=local")
+  })
+
+  it("getRuns omits the destination param for the local folder", async () => {
+    mockFetch.mockReturnValue(jsonResponse([]))
+
+    await getRuns("1", "optimiser", "")
+
+    const [url] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/mlflow/runs?experiment_id=1&artifact_filter=optimiser")
+    expect(url).not.toContain("destination")
+  })
+
   it("uses statusText as detail when response body is not JSON", async () => {
     mockFetch.mockReturnValue(errorResponse(503))
     try {
-      // Use checkMlflow as it doesn't catch errors like loadPipeline
-      await checkMlflow()
+      // Use getMlflowDestinations as it doesn't catch errors like loadPipeline
+      await getMlflowDestinations(false)
     } catch (err) {
       expect(err).toBeInstanceOf(ApiError)
       expect((err as ApiError).detail).toBe("Error")
@@ -523,11 +714,11 @@ describe("request() core via loadPipeline", () => {
 
   it("handles network error (fetch throws)", async () => {
     mockFetch.mockRejectedValue(new TypeError("Failed to fetch"))
-    await expect(checkMlflow()).rejects.toThrow("Failed to fetch")
+    await expect(getMlflowDestinations(false)).rejects.toThrow("Failed to fetch")
   })
 
   it("passes AbortController signal to fetch", async () => {
-    mockFetch.mockReturnValue(jsonResponse({
+    mockFetch.mockReturnValue(pipelineResponse({
       nodes: [], edges: [], preserved_blocks: [], source_revision: null,
     }))
     await loadPipeline()
@@ -575,6 +766,24 @@ describe("endpoint contracts", () => {
     })
   })
 
+  it("previewNode sends the caller's request id so it can poll its progress", async () => {
+    await previewNode({ graph: { nodes: [], edges: [] }, nodeId: "n1", rowLimit: 5, requestId: "req-1" })
+
+    const [, init] = mockFetch.mock.calls.find(([url]) => url === "/api/pipeline/preview")!
+    expect(JSON.parse(init.body as string).request_id).toBe("req-1")
+  })
+
+  it("getPreviewProgress reads a running request and treats 404 as nothing to show", async () => {
+    mockFetch.mockReturnValueOnce(jsonResponse({ request_id: "req-1", phase: "running", done: 1, total: 2, label: "Caching join" }))
+    await expect(getPreviewProgress("req-1")).resolves.toEqual({
+      request_id: "req-1", phase: "running", done: 1, total: 2, label: "Caching join",
+    })
+    expect(mockFetch.mock.calls.at(-1)?.[0]).toBe("/api/pipeline/preview/progress/req-1")
+
+    mockFetch.mockReturnValueOnce(jsonResponse({ detail: "No preview in progress with this id." }, 404))
+    await expect(getPreviewProgress("req-1")).resolves.toBeNull()
+  })
+
   it("previewNode posts to /api/pipeline/preview with correct body", async () => {
     await previewNode({ graph: dummyGraph, nodeId: "node1", rowLimit: 50, source: "live" })
     const [url, opts] = mockFetch.mock.calls[0]
@@ -596,7 +805,6 @@ describe("endpoint contracts", () => {
       source: "staging",
       requestedPreviewColumns: ["premium"],
       portLabel: "rated",
-      streamingChunkSize: 25,
       timeout: 2_000,
     })
     await previewRecoveryNode({
@@ -617,7 +825,6 @@ describe("endpoint contracts", () => {
       source: "staging",
       requested_preview_columns: ["premium"],
       port_label: "rated",
-      streaming_chunk_size: 25,
     })
     expect(JSON.parse(mockFetch.mock.calls[1][1].body)).toEqual({
       source_file: "rating/main.py",
@@ -635,6 +842,7 @@ describe("endpoint contracts", () => {
       graph: dummyGraph,
       preamble: "",
       source_file: "pipe.py",
+      base_revision: "rev-1",
       preserved_blocks: [],
     }
     await savePipeline(payload)
@@ -644,12 +852,13 @@ describe("endpoint contracts", () => {
     const body = JSON.parse(opts.body)
     expect(body.name).toBe("test")
     expect(body.source_file).toBe("pipe.py")
+    expect(body.base_revision).toBe("rev-1")
   })
 
   it("sends source-preservation concurrency metadata for pipeline and submodel writes", async () => {
     await savePipeline({
       name: "test", description: "desc", graph: dummyGraph, preamble: "",
-      source_file: "pipe.py", preserved_blocks: ["import polars as pl"],
+      source_file: "pipe.py", base_revision: "rev-1", preserved_blocks: ["import polars as pl"],
     })
     await createSubmodel({
       name: "pricing", node_ids: ["n1"], graph: dummyGraph, preamble: "",
@@ -662,7 +871,7 @@ describe("endpoint contracts", () => {
     })
 
     expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toMatchObject({
-      preserved_blocks: ["import polars as pl"],
+      base_revision: "rev-1", preserved_blocks: ["import polars as pl"],
     })
     expect(JSON.parse(String(mockFetch.mock.calls[1][1]?.body))).toMatchObject({
       base_revision: "rev-1", preserved_blocks: ["import polars as pl"],
@@ -679,13 +888,20 @@ describe("endpoint contracts", () => {
   })
 
   it("traceCell posts to /api/pipeline/trace with correct body", async () => {
-    await traceCell({ graph: dummyGraph, row_index: 0, target_node_id: "n1" })
+    const seedPlan = [{
+      node_id: "join",
+      port_label: null,
+      identity_digest: "a".repeat(64),
+      generation_id: "generation-1",
+    }]
+    await traceCell({ graph: dummyGraph, row_index: 0, target_node_id: "n1", seed_plan: seedPlan })
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/pipeline/trace")
     expect(opts.method).toBe("POST")
     const body = JSON.parse(opts.body)
     expect(body.row_index).toBe(0)
     expect(body.target_node_id).toBe("n1")
+    expect(body.seed_plan).toEqual(seedPlan)
   })
 
   it("resolveOutputDestination posts to the backend path authority", async () => {
@@ -722,6 +938,15 @@ describe("endpoint contracts", () => {
     expect(url).toBe("/api/schema?path=data%2Ftest%20file.csv")
   })
 
+  it("fetchSchema sends a Data Input's reader settings", async () => {
+    await fetchSchema("claims.csv", undefined, { format: "csv", arguments: { separator: ";" } })
+    const [url] = mockFetch.mock.calls[0]
+    const params = new URL(url, "http://localhost").searchParams
+    expect(params.get("path")).toBe("claims.csv")
+    expect(params.get("format")).toBe("csv")
+    expect(JSON.parse(params.get("arguments") ?? "")).toEqual({ separator: ";" })
+  })
+
   it("trainModel posts to /api/modelling/train with default source", async () => {
     await trainModel({ graph: dummyGraph, node_id: "model1" })
     const [url, opts] = mockFetch.mock.calls[0]
@@ -740,6 +965,7 @@ describe("endpoint contracts", () => {
   })
 
   it("listFiles GETs /api/files with dir and optional extensions", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ dir: "data", items: [] }))
     await listFiles("data", ".csv,.parquet")
     const [url] = mockFetch.mock.calls[0]
     expect(url).toContain("/api/files?")
@@ -850,7 +1076,7 @@ describe("git endpoints", () => {
           ledger: { status: "behind", ahead: 0, behind: 1 },
         },
         // A remote with no leg detail has null legs.
-        { name: "backup", url: null },
+        { name: "backup", url: null, working: null, ledger: null },
       ],
       working_branch: "dev",
     }
@@ -1012,17 +1238,7 @@ describe("git remote catch-up + history endpoints", () => {
   })
 
   it("getWorkingBranch GETs /api/git/working-branch and parses the readiness signal", async () => {
-    const data = {
-      working_branch: "dev",
-      state: "ready",
-      errors: [],
-      current_branch: "dev-save",
-      last_save_sha: "abc1234",
-      eligible_branches: ["dev"],
-      identity_set: true,
-      user_name: "U",
-      user_email: "u@x.y",
-    }
+    const data = makeWorkingBranchResponse({ last_save_sha: "abc1234", user_name: "U", user_email: "u@x.y" })
     mockFetch.mockReturnValue(jsonResponse(data))
     const result = await getWorkingBranch()
     expect(mockFetch.mock.calls[0][0]).toBe("/api/git/working-branch")
@@ -1093,17 +1309,19 @@ describe("git remote catch-up + history endpoints", () => {
     expect(result.set_aside_as).toBe("dev-2026-06-21")
   })
 
-  it("getCommitPipeline GETs /api/git/show/{sha} and parses the graph", async () => {
+  it("getCommitPipeline GETs /api/git/show/{sha} for the source file and parses the graph", async () => {
     mockFetch.mockReturnValue(jsonResponse(dummyGraph))
-    const result = await getCommitPipeline("abc123")
-    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/show/abc123")
+    const result = await getCommitPipeline("abc123", "pipelines/rating.py")
+    expect(mockFetch.mock.calls[0][0]).toBe(
+      "/api/git/show/abc123?source_file=pipelines%2Frating.py",
+    )
     expect(result.nodes).toHaveLength(1)
   })
 
   it("getCommitPipeline URL-encodes the sha path segment", async () => {
     mockFetch.mockReturnValue(jsonResponse(dummyGraph))
-    await getCommitPipeline("weird/ sha")
-    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/show/weird%2F%20sha")
+    await getCommitPipeline("weird/ sha", "rating.py")
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/show/weird%2F%20sha?source_file=rating.py")
   })
 
   it("getCommitContext GETs /api/git/commit-context/{sha} without a base", async () => {
@@ -1112,12 +1330,15 @@ describe("git remote catch-up + history endpoints", () => {
       short_sha: "aaaaaaaa",
       message: "Milestone 1",
       timestamp: "2026-06-21T00:00:00Z",
+      is_root: false,
       is_milestone: true,
       version_label: "1.0",
       nearest_milestone: {
         sha: "a".repeat(40),
         short_sha: "aaaaaaaa",
         message: "Milestone 1",
+        version_label: "1.0",
+        is_root: false,
       },
       distance: 0,
       delta_from_base: null,
@@ -1135,10 +1356,15 @@ describe("git remote catch-up + history endpoints", () => {
       short_sha: "bbbbbbbb",
       message: "save",
       timestamp: "2026-06-21T00:00:00Z",
+      is_root: false,
+      is_milestone: false,
+      version_label: null,
       nearest_milestone: {
         sha: "a".repeat(40),
         short_sha: "aaaaaaaa",
         message: "Milestone 1",
+        version_label: null,
+        is_root: false,
       },
       distance: 3,
       delta_from_base: 2,
@@ -1259,72 +1485,6 @@ describe("utility endpoints", () => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════════
-// JSON cache endpoints
-// ═══════════════════════════════════════════════════════════════════════════
-
-describe("json cache endpoints", () => {
-  beforeEach(() => {
-    mockFetch.mockReturnValue(jsonResponse({}))
-  })
-
-  it("buildJsonCache POSTs to /api/json-cache/build with 1800s timeout", async () => {
-    const data = makeJsonCacheBuildResponse()
-    mockFetch.mockReturnValue(jsonResponse(data))
-    const result = await buildJsonCache({ path: "/data/input.json" })
-    const [url, opts] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/json-cache/build")
-    expect(opts.method).toBe("POST")
-    expect(JSON.parse(opts.body)).toEqual({ path: "/data/input.json" })
-    expect(result).toEqual({
-      ...data,
-      skipped_records: 0,
-      skipped_rows: {},
-    })
-  })
-
-  it("buildJsonCache allows timeout override", async () => {
-    mockFetch.mockReturnValue(jsonResponse(makeJsonCacheBuildResponse()))
-    await buildJsonCache({ path: "x.json" }, { timeout: 5000 })
-    expect(mockFetch).toHaveBeenCalledTimes(1)
-  })
-
-  it("getJsonCacheProgress GETs /api/json-cache/progress with encoded path", async () => {
-    const data = makeJsonCacheProgressResponse()
-    mockFetch.mockReturnValue(jsonResponse(data))
-    const result = await getJsonCacheProgress("my file.json")
-    const [url] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/json-cache/progress?path=my%20file.json")
-    expect(result).toEqual(data)
-  })
-
-  it("getJsonCacheStatus GETs /api/json-cache/status with encoded path", async () => {
-    const data = {
-      cached: true,
-      skipped_records: 2,
-      skipped_rows: { drivers: 3 },
-    }
-    mockFetch.mockReturnValue(jsonResponse(data))
-    const result = await getJsonCacheStatus("data/file.json")
-    const [url] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/json-cache/status?path=data%2Ffile.json")
-    expect(result.cached).toBe(true)
-    expect(result.data_path).toBe("")
-    expect(result.skipped_records).toBe(2)
-    expect(result.skipped_rows).toEqual({ drivers: 3 })
-  })
-
-  it("deleteJsonCache DELETEs /api/json-cache with encoded path", async () => {
-    const data = { cached: false, data_path: "file.json" }
-    mockFetch.mockReturnValue(jsonResponse(data))
-    const result = await deleteJsonCache("file.json")
-    const [url, opts] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/json-cache?path=file.json")
-    expect(opts.method).toBe("DELETE")
-    expect(result).toEqual(data)
-  })
-})
-
-// ═══════════════════════════════════════════════════════════════════════════
 // request() edge cases
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1415,6 +1575,19 @@ describe("request() edge cases", () => {
     }
   })
 
+  it("says how long a timeout waited, in seconds when the wait is whole seconds", () => {
+    // This message reaches the user verbatim, so a two-minute wait must not
+    // read "120000 ms" and a one-second wait must not read "1 seconds".
+    const message = (timeoutMs: number) =>
+      new ApiTimeoutError("/api/pipeline/preview", timeoutMs).message
+
+    expect(message(120_000)).toBe("Request timed out after 120 seconds.")
+    expect(message(1000)).toBe("Request timed out after 1 second.")
+    // Not a whole number of seconds, and under a second: reported as given.
+    expect(message(1500)).toBe("Request timed out after 1500 ms.")
+    expect(message(500)).toBe("Request timed out after 500 ms.")
+  })
+
   it("surfaces client-side request timeouts as ApiTimeoutError, not AbortError", async () => {
     vi.useFakeTimers()
     try {
@@ -1441,6 +1614,49 @@ describe("request() edge cases", () => {
         timeoutMs: 5,
         url: "/api/pipeline/preview",
       })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("sets no browser deadline on calls the server bounds by the pipeline time limit", async () => {
+    vi.useFakeTimers()
+    try {
+      mockFetch.mockImplementation((_url: string, options?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          const signal = options?.signal as AbortSignal | undefined
+          signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("Aborted", "AbortError")),
+            { once: true },
+          )
+        }),
+      )
+      const controller = new AbortController()
+      const signal = controller.signal
+      const calls = [
+        previewNode({ graph: dummyGraph, nodeId: "node1", rowLimit: 50, signal }),
+        previewInputs({ graph: dummyGraph, nodeId: "node1", signal }),
+        traceCell({ graph: dummyGraph, row_index: 0, target_node_id: "node1", seed_plan: [], signal }),
+        writeOutput({ graph: dummyGraph, nodeId: "out", signal }),
+        estimateOptimiserSolve({ graph: dummyGraph, node_id: "opt", signal }),
+      ]
+      const settled = calls.map(() => false)
+      calls.forEach((call, index) => {
+        call.then(
+          () => { settled[index] = true },
+          () => { settled[index] = true },
+        )
+      })
+
+      // An hour passes: the server's limit, not the browser, ends these.
+      await vi.advanceTimersByTimeAsync(60 * 60 * 1000)
+      expect(settled).toEqual(calls.map(() => false))
+
+      controller.abort()
+      for (const call of calls) {
+        await expect(call).rejects.toMatchObject({ name: "AbortError" })
+      }
     } finally {
       vi.useRealTimers()
     }
@@ -1516,14 +1732,13 @@ describe("request() edge cases", () => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════════
-// streaming_chunk_size plumbed through pipeline / modelling / optimiser
-// endpoints. Each function takes the chunk size and must emit it on the
-// request body so the backend can size its streaming buffers. Asserting
-// per-endpoint catches future regressions where the param is added to the
-// signature but dropped from the body (or vice versa).
+// No request carries streaming_chunk_size: it is a single server-owned
+// setting (the pipeline settings' chunk rows), never part of a per-request
+// payload. Regression coverage for pipeline / modelling / optimiser
+// endpoints that used to accept it.
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe("streaming_chunk_size in request bodies", () => {
+describe("no request carries streaming_chunk_size", () => {
   beforeEach(() => {
     mockFetch.mockImplementation((url: string) => {
       if (url === "/api/pipeline/preview") return jsonResponse(makePreviewResponse())
@@ -1536,55 +1751,60 @@ describe("streaming_chunk_size in request bodies", () => {
     })
   })
 
-  it("previewNode body includes streaming_chunk_size when supplied", async () => {
-    await previewNode({ graph: dummyGraph, nodeId: "node1", rowLimit: 50, source: "live", streamingChunkSize: 42 })
-    const [, opts] = mockFetch.mock.calls[0]
-    expect(JSON.parse(opts.body).streaming_chunk_size).toBe(42)
-  })
-
-  it("previewNode body omits streaming_chunk_size when not supplied", async () => {
+  it("previewNode body omits streaming_chunk_size", async () => {
     await previewNode({ graph: dummyGraph, nodeId: "node1", rowLimit: 50, source: "live" })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
   })
 
-  it("traceCell body includes streaming_chunk_size when supplied", async () => {
-    await traceCell({
-      graph: dummyGraph,
-      row_index: 0,
-      target_node_id: "n1",
-      streamingChunkSize: 42,
-    })
-    const [, opts] = mockFetch.mock.calls[0]
-    expect(JSON.parse(opts.body).streaming_chunk_size).toBe(42)
-  })
-
-  it("traceCell body omits streaming_chunk_size when not supplied", async () => {
-    await traceCell({ graph: dummyGraph, row_index: 0, target_node_id: "n1" })
+  it("traceCell body omits streaming_chunk_size", async () => {
+    await traceCell({ graph: dummyGraph, row_index: 0, target_node_id: "n1", seed_plan: [] })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
   })
 
-  it("writeOutput body includes streaming_chunk_size when supplied", async () => {
-    mockFetch.mockReturnValue(jsonResponse({ status: "ok" }))
-    await writeOutput({ graph: dummyGraph, nodeId: "sink1", source: "live", streamingChunkSize: 42 })
-    const [, opts] = mockFetch.mock.calls[0]
-    expect(JSON.parse(opts.body).streaming_chunk_size).toBe(42)
-  })
-
-  it("writeOutput body omits streaming_chunk_size when not supplied", async () => {
+  it("writeOutput body omits streaming_chunk_size", async () => {
     mockFetch.mockReturnValue(jsonResponse({ status: "ok" }))
     await writeOutput({ graph: dummyGraph, nodeId: "sink1", source: "live" })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
   })
 
+  it("trainModel body omits streaming_chunk_size", async () => {
+    await trainModel({ graph: dummyGraph, node_id: "model1" })
+    const [, opts] = mockFetch.mock.calls[0]
+    expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
+  })
+
+  it("solveOptimiser body omits streaming_chunk_size", async () => {
+    await solveOptimiser({ graph: dummyGraph, node_id: "opt1" })
+    const [, opts] = mockFetch.mock.calls[0]
+    expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
+  })
+
+  it("estimateOptimiserSolve body omits streaming_chunk_size", async () => {
+    const { estimateOptimiserSolve } = await import("../client")
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("optimiser_estimate_response")))
+    await estimateOptimiserSolve({ graph: dummyGraph, node_id: "opt1" })
+    const [, opts] = mockFetch.mock.calls[0]
+    expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
+  })
+
+  it("startOptimiserFrontierAutoRange body omits streaming_chunk_size", async () => {
+    const { startOptimiserFrontierAutoRange } = await import("../client")
+    mockFetch.mockReturnValue(jsonResponse({ status: "started", job_id: "range-job-1", error: null }))
+    await startOptimiserFrontierAutoRange({ graph: dummyGraph, node_id: "opt1" })
+    const [, opts] = mockFetch.mock.calls[0]
+    expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
+  })
+
   it("uses the exact input-cache V1 paths, methods, and request bodies", async () => {
     const source = { schema_version: 1 as const, config: { path: "data.csv" } }
-    mockFetch.mockReturnValueOnce(jsonResponse({ schema_version: 1, job_id: "job / 1", identity_digest: "digest", status: "running", joined: false }))
-    await buildInputCache({ ...source, refresh: true, profile: "preview_eager" })
+    mockFetch.mockReturnValueOnce(jsonResponse({ schema_version: 1, job_id: "job / 1", identity_digest: "digest", status: "running", joined: false, forced: false, build_class: "admitted_eager" }))
+    const started = await buildInputCache({ ...source, refresh: true })
+    expect(started.build_class).toBe("admitted_eager")
     expect(mockFetch.mock.calls[0][0]).toBe("/api/input-cache/build")
-    expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toEqual({ ...source, refresh: true, profile: "preview_eager" })
+    expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toEqual({ ...source, refresh: true })
 
     mockFetch.mockReturnValueOnce(jsonResponse({ schema_version: 1, job_id: "job / 1", identity_digest: "digest", status: "running", terminal_reason: null, message: "", refresh: false, build_class: "bounded", progress: { phase: "queued", rows: 0, batches: 0, bytes: 0, elapsed_seconds: 0 }, snapshot: null, error_code: null }))
     await getInputCacheJob("job / 1")
@@ -1606,80 +1826,51 @@ describe("streaming_chunk_size in request bodies", () => {
     expect(JSON.parse(mockFetch.mock.calls[4][1].body)).toEqual(source)
   })
 
-  it("trainModel body includes streaming_chunk_size when supplied", async () => {
-    await trainModel({ graph: dummyGraph, node_id: "model1", streamingChunkSize: 42 })
-    const [, opts] = mockFetch.mock.calls[0]
-    expect(JSON.parse(opts.body).streaming_chunk_size).toBe(42)
+  it("reads the snapshot store's size with a GET and rejects a malformed reply", async () => {
+    const { fetchCacheUsage } = await import("../client")
+    const usage = { schema_version: 1, total_bytes: 2048, automatic_bytes: 1024, automatic_budget_bytes: 4096 }
+    mockFetch.mockReturnValueOnce(jsonResponse(usage))
+    await expect(fetchCacheUsage()).resolves.toEqual(usage)
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/cache/usage")
+    expect(mockFetch.mock.calls[0][1]?.method ?? "GET").toBe("GET")
+
+    mockFetch.mockReturnValueOnce(jsonResponse({ ...usage, automatic_bytes: -1 }))
+    await expect(fetchCacheUsage()).rejects.toThrow("automatic_bytes")
   })
 
-  it("trainModel body omits streaming_chunk_size when not supplied", async () => {
-    await trainModel({ graph: dummyGraph, node_id: "model1" })
-    const [, opts] = mockFetch.mock.calls[0]
-    expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
+  it("sends the exact scoped node-save body and parses the authoritative document", async () => {
+    const { saveNodeScoped } = await import("../client")
+    mockFetch.mockReturnValueOnce(jsonResponse(makePipelineEditorDocument()))
+    const document = await saveNodeScoped({
+      sourceFile: "main.py",
+      sourceRevision: "rev-1",
+      targetSourceFile: "main.py",
+      targetRecoveryId: "node@10",
+      config: { path: "data/quotes.parquet" },
+    })
+    expect(mockFetch.mock.calls.at(-1)?.[0]).toBe("/api/pipeline/node/save")
+    expect(JSON.parse(mockFetch.mock.calls.at(-1)?.[1].body)).toEqual({
+      source_file: "main.py",
+      source_revision: "rev-1",
+      target_source_file: "main.py",
+      target_recovery_id: "node@10",
+      config: { path: "data/quotes.parquet" },
+    })
+    expect(document.document_kind).toBe("haute.pipeline_editor_document")
   })
 
-  it("solveOptimiser body includes streaming_chunk_size when supplied", async () => {
-    await solveOptimiser({ graph: dummyGraph, node_id: "opt1", streamingChunkSize: 42 })
-    const [, opts] = mockFetch.mock.calls[0]
-    expect(JSON.parse(opts.body).streaming_chunk_size).toBe(42)
-  })
-
-  it("solveOptimiser body omits streaming_chunk_size when not supplied", async () => {
-    await solveOptimiser({ graph: dummyGraph, node_id: "opt1" })
-    const [, opts] = mockFetch.mock.calls[0]
-    expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
-  })
-
-  it("estimateOptimiserSolve body includes streaming_chunk_size when supplied", async () => {
-    const { estimateOptimiserSolve } = await import("../client")
-    await estimateOptimiserSolve({ graph: dummyGraph, node_id: "opt1", streamingChunkSize: 42 })
-    const [, opts] = mockFetch.mock.calls[0]
-    expect(JSON.parse(opts.body).streaming_chunk_size).toBe(42)
-  })
-
-  it("estimateOptimiserSolve body omits streaming_chunk_size when not supplied", async () => {
-    const { estimateOptimiserSolve } = await import("../client")
-    await estimateOptimiserSolve({ graph: dummyGraph, node_id: "opt1" })
-    const [, opts] = mockFetch.mock.calls[0]
-    expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
-  })
-
-  it("startOptimiserFrontierAutoRange body includes streaming_chunk_size when supplied", async () => {
-    const { startOptimiserFrontierAutoRange } = await import("../client")
-    mockFetch.mockReturnValue(jsonResponse({ status: "started", job_id: "range-job-1", error: null }))
-    await startOptimiserFrontierAutoRange({ graph: dummyGraph, node_id: "opt1", streamingChunkSize: 42 })
-    const [url, opts] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/optimiser/frontier/auto-range/start")
-    expect(JSON.parse(opts.body).streaming_chunk_size).toBe(42)
-  })
-
-  it("startOptimiserFrontierAutoRange body omits streaming_chunk_size when not supplied", async () => {
-    const { startOptimiserFrontierAutoRange } = await import("../client")
-    mockFetch.mockReturnValue(jsonResponse({ status: "started", job_id: "range-job-1", error: null }))
-    await startOptimiserFrontierAutoRange({ graph: dummyGraph, node_id: "opt1" })
-    const [, opts] = mockFetch.mock.calls[0]
-    expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
-  })
-
-  it("sends exact remove-repair request bodies and parses authoritative responses", async () => {
-    const planHash = "a".repeat(64)
+  it("sends the exact remove-repair request body and parses the authoritative response", async () => {
     const request = { sourceFile: "main.py", sourceRevision: "rev-1", targetSourceFile: "main.py", targetRecoveryId: "broken@10", deleteConfig: false }
     mockFetch.mockReturnValueOnce(jsonResponse({
-      repair_kind: "remove_unavailable_node", source_file: "main.py", source_revision: "rev-1",
-      target_source_file: "main.py", target_recovery_id: "broken@10", target_authored_id: "broken",
-      delete_config: false, plan_hash: planHash,
+      repair_kind: "remove_unavailable_node", applied_artifacts: ["main.py"],
       changes: [{ path: "main.py", operation: "update", description: "Remove broken.", diff: "-broken", diff_truncated: false }],
-      retained_artifacts: [], warnings: [], predicted_load_status: "ready",
+      document: makePipelineEditorDocument(), field_changes: [], completeness: [], previous_config: null,
     }))
-    await dryRunRemoveUnavailableNode(request)
-    expect(mockFetch.mock.calls.at(-1)?.[0]).toBe("/api/pipeline/repair/remove/dry-run")
+    const response = await applyRemoveUnavailableNode(request)
+    expect(mockFetch.mock.calls.at(-1)?.[0]).toBe("/api/pipeline/repair/remove/apply")
     expect(JSON.parse(mockFetch.mock.calls.at(-1)?.[1].body)).toEqual({
       source_file: "main.py", source_revision: "rev-1", target_source_file: "main.py", target_recovery_id: "broken@10", delete_config: false,
     })
-    mockFetch.mockReturnValueOnce(jsonResponse({ repair_kind: "remove_unavailable_node", plan_hash: planHash, applied_artifacts: ["main.py"], document: makePipelineEditorDocument() }))
-    await applyRemoveUnavailableNode({ ...request, planHash })
-    expect(JSON.parse(mockFetch.mock.calls.at(-1)?.[1].body)).toEqual({
-      source_file: "main.py", source_revision: "rev-1", target_source_file: "main.py", target_recovery_id: "broken@10", delete_config: false, plan_hash: planHash,
-    })
+    expect(response.changes[0].path).toBe("main.py")
   })
 })

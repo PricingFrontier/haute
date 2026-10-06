@@ -1,8 +1,8 @@
-"""Lightweight config validation for pipeline node types.
+"""Config validation for pipeline node types.
 
-Warns on unrecognized config keys so typos and stale keys surface early
-instead of being silently ignored.  Returns the unexpected keys so callers
-can choose whether to warn, fail, or report them in tests.
+Each node type declares its config keys through its ``TypedDict``. A key it
+does not declare is refused wherever a config is parsed, saved or written, so
+a typo or stale key fails loudly instead of being silently dropped.
 """
 
 from __future__ import annotations
@@ -10,8 +10,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, Literal, overload
 
-from haute._logging import get_logger
 from haute._types import (
+    COLUMN_CONFIG_KEYS,
     DATA_INPUT_CONFIG_TYPES,
     DATA_OUTPUT_CONFIG_TYPES,
     ApiInputConfig,
@@ -33,8 +33,6 @@ from haute._types import (
     TransformConfig,
 )
 from haute.errors import ConfigError
-
-logger = get_logger(component="config_validation")
 
 # ---------------------------------------------------------------------------
 # Valid-key registry
@@ -69,12 +67,9 @@ _UNIVERSAL_KEYS: frozenset[str] = frozenset(
     {
         "instanceOf",
         "inputMapping",
-        "selected_columns",
-        "column_renames",
-        "categorical_levels",
         "contract",
     }
-)
+) | frozenset(COLUMN_CONFIG_KEYS)
 
 
 def _valid_keys_for(node_type: NodeType) -> frozenset[str] | None:
@@ -101,9 +96,16 @@ VALID_KEYS: dict[NodeType, frozenset[str]] = {
 }
 
 
-_REMOVED_CONFIG_KEYS: dict[NodeType, frozenset[str]] = {
+_REMOVED_INPUT_IDENTITY_KEYS: dict[NodeType, frozenset[str]] = {
     NodeType.EDGE_JOIN: frozenset({"baseInput", "joinInput"}),
     NodeType.OPTIMISER: frozenset({"scored_input", "factors_input"}),
+}
+_REMOVED_REGISTRY_KEYS: dict[NodeType, frozenset[str]] = {
+    NodeType.MODELLING: frozenset({"model_name"}),
+    NodeType.OPTIMISER: frozenset({"model_name"}),
+}
+_REMOVED_FEATURE_SELECTION_KEYS: dict[NodeType, frozenset[str]] = {
+    NodeType.MODELLING: frozenset({"exclude"}),
 }
 
 
@@ -111,20 +113,37 @@ def reject_removed_config_keys(
     node_type: NodeType | str,
     config: dict[str, Any],
 ) -> None:
-    """Reject retired input-identity fields instead of silently migrating them."""
+    """Reject retired config fields instead of silently migrating or ignoring them."""
     nt = NodeType(node_type) if not isinstance(node_type, NodeType) else node_type
-    removed = sorted(_REMOVED_CONFIG_KEYS.get(nt, frozenset()).intersection(config))
-    if not removed:
-        return
-
-    if nt == NodeType.EDGE_JOIN:
-        guidance = "use incoming target ports 'base' and 'join'"
-    else:
-        guidance = "use data_input and banding_source with exact connected input names"
-    raise ConfigError(
-        f"{nt.value} config contains removed input identity fields; {guidance}.",
-        removed_config_keys=removed,
+    removed_identity = sorted(
+        _REMOVED_INPUT_IDENTITY_KEYS.get(nt, frozenset()).intersection(config)
     )
+    if removed_identity:
+        if nt == NodeType.EDGE_JOIN:
+            guidance = "use incoming target ports 'base' and 'join'"
+        else:
+            guidance = "use data_input and banding_source with exact connected input names"
+        raise ConfigError(
+            f"{nt.value} config contains removed input identity fields; {guidance}.",
+            removed_config_keys=removed_identity,
+        )
+    removed_registry = sorted(_REMOVED_REGISTRY_KEYS.get(nt, frozenset()).intersection(config))
+    if removed_registry:
+        raise ConfigError(
+            f"{nt.value} config contains the removed model_name field. Haute no longer "
+            "registers models: remove the field and register or promote runs outside haute.",
+            removed_config_keys=removed_registry,
+        )
+    removed_selection = sorted(
+        _REMOVED_FEATURE_SELECTION_KEYS.get(nt, frozenset()).intersection(config)
+    )
+    if removed_selection:
+        raise ConfigError(
+            f"{nt.value} config contains the removed exclude field. Features are opt-in: "
+            "list the columns to train on in feature_columns (tick them on the Features "
+            "pane) and remove exclude.",
+            removed_config_keys=removed_selection,
+        )
 
 
 @overload
@@ -267,6 +286,13 @@ def validate_optimiser_input_selectors(
             node_label=node_label,
             field_name="banding_source",
         )
+        validate_exact_input_selector(
+            config.get("analysis_input"),
+            source_names,
+            required=False,
+            node_label=node_label,
+            field_name="analysis_input",
+        )
         return data_input
 
     if nt is NodeType.OPTIMISER_APPLY:
@@ -289,58 +315,196 @@ def validate_optimiser_input_selectors(
 # ---------------------------------------------------------------------------
 
 
-def warn_unrecognized_config_keys(
-    node_type: NodeType | str,
-    config: dict[str, Any],
-    *,
-    node_label: str = "",
-) -> list[str]:
-    """Log warnings for config keys not recognised by *node_type*.
+CODE_CONFIG_KEYS: frozenset[str] = frozenset({"code"})
+"""Config keys whose value lives in the node's ``.py`` body, never in its sidecar."""
 
-    Returns the list of unrecognised key names (handy for testing).
-    Never raises.
+
+def unrecognized_config_keys(node_type: NodeType, config: Mapping[str, Any]) -> list[str]:
+    """Return, sorted, the top-level config keys *node_type* does not declare.
+
+    ``_``-prefixed editor state and the body code are not config keys. A node
+    type without a ``TypedDict`` (``SUBMODEL_PORT``) declares nothing to check.
     """
-    try:
-        nt = NodeType(node_type) if not isinstance(node_type, NodeType) else node_type
-    except ValueError:
-        # Unknown node type string -- nothing to validate against.
-        return []
-
-    valid = VALID_KEYS.get(nt)
+    valid = VALID_KEYS.get(node_type)
     if valid is None:
         return []
+    return sorted(
+        key
+        for key in config
+        if not key.startswith("_") and key not in CODE_CONFIG_KEYS and key not in valid
+    )
 
-    bad = sorted(k for k in config if k not in valid and not k.startswith("_"))
-    if bad:
-        label = node_label or nt.value
-        logger.warning(
-            "unrecognized_config_keys",
-            node_type=nt.value,
-            node_label=label,
-            keys=bad,
+
+def reject_unrecognized_config_keys(
+    node_type: NodeType,
+    config: Mapping[str, Any],
+    *,
+    node_label: str,
+) -> None:
+    """Refuse a config that carries keys its node type does not declare.
+
+    Dropping such a key would lose persisted work without the user seeing it.
+
+    Raises:
+        ConfigError: naming the node, its type and every undeclared key.
+    """
+    unrecognized = unrecognized_config_keys(node_type, config)
+    if unrecognized:
+        keys = ", ".join(repr(key) for key in unrecognized)
+        raise ConfigError(
+            f"Node {node_label!r} has {node_type.value} config keys the node type does "
+            f"not declare: {keys}. Remove them from its config, or declare them in the "
+            "node type's config.",
+            unrecognized_config_keys=unrecognized,
         )
-    return bad
 
 
-def validate_node_config(node_type: NodeType | str, config: dict[str, Any]) -> dict[str, Any]:
+MAX_ANALYSIS_COLUMNS = 12
+"""The most analysis columns an optimiser keeps for result breakdowns (OPT-V09A)."""
+RESERVED_ANALYSIS_COLUMN_PREFIX = "__haute_"
+
+
+def validate_optimiser_analysis_config(config: Mapping[str, Any]) -> None:
+    """The optimiser's analysis-column shape rules, shared by save and solve start.
+
+    ``analysis_input`` is an optional input name; ``analysis_columns`` an optional
+    list of at most ``MAX_ANALYSIS_COLUMNS`` distinct, non-empty column names,
+    none of them the configured quote-id column or a reserved ``__haute_`` name.
+    Whether the input is connected and has the columns is checked where the
+    graph and the data are known.
+    """
+    analysis_input = config.get("analysis_input")
+    if analysis_input is not None and not isinstance(analysis_input, str):
+        raise ConfigError(
+            "Optimiser analysis_input must be an input name.",
+            analysis_input=type(analysis_input).__name__,
+        )
+    columns = config.get("analysis_columns")
+    if columns is None:
+        return
+    if not isinstance(columns, list):
+        raise ConfigError(
+            "Optimiser analysis_columns must be a list of column names.",
+            analysis_columns=type(columns).__name__,
+        )
+    if len(columns) > MAX_ANALYSIS_COLUMNS:
+        raise ConfigError(
+            f"Optimiser analysis_columns can hold at most {MAX_ANALYSIS_COLUMNS} columns; "
+            f"{len(columns)} are configured. Remove some to keep the breakdowns bounded.",
+            analysis_column_count=len(columns),
+        )
+    if any(not isinstance(column, str) or not column for column in columns):
+        raise ConfigError("Optimiser analysis_columns must be non-empty column names.")
+    duplicates = sorted({column for column in columns if columns.count(column) > 1})
+    if duplicates:
+        raise ConfigError(
+            f"Optimiser analysis_columns lists a duplicate column: {duplicates}.",
+            duplicate_analysis_columns=duplicates,
+        )
+    quote_id = str(config.get("quote_id") or "quote_id")
+    if quote_id in columns:
+        raise ConfigError(
+            f"Optimiser analysis_columns cannot include the quote-id column {quote_id!r}: "
+            "the analysis table is keyed by it already."
+        )
+    reserved = sorted(
+        column for column in columns if column.startswith(RESERVED_ANALYSIS_COLUMN_PREFIX)
+    )
+    if reserved:
+        raise ConfigError(
+            f"Optimiser analysis_columns {reserved} use the reserved "
+            f"{RESERVED_ANALYSIS_COLUMN_PREFIX!r} prefix. Rename the columns upstream.",
+            reserved_analysis_columns=reserved,
+        )
+
+
+_MLFLOW_DESTINATION_NODE_TYPES = frozenset(
+    {
+        NodeType.MODELLING,
+        NodeType.OPTIMISER,
+        NodeType.MODEL_SCORE,
+        NodeType.OPTIMISER_APPLY,
+    }
+)
+
+
+def validate_mlflow_destination(node_type: NodeType, config: Mapping[str, Any]) -> None:
+    """A node names a remote MLflow destination, or has none and uses the local folder."""
+    value = config.get("mlflow_destination", "")
+    if value in ("", None):
+        return
+    if not isinstance(value, str) or value not in ("databricks", "server"):
+        raise ConfigError(
+            f"{node_type.value} config has an invalid mlflow_destination; expected databricks "
+            "or server. Remove the field to use the local MLflow folder.",
+            mlflow_destination=value if isinstance(value, str) else type(value).__name__,
+        )
+
+
+def validate_registered_model_alias(node_type: NodeType, config: Mapping[str, Any]) -> None:
+    """A registered source names a version or an alias, never both."""
+    alias = config.get("alias")
+    if alias in (None, ""):
+        return
+    if not isinstance(alias, str) or not alias.strip() or alias != alias.strip():
+        raise ConfigError(
+            f"{node_type.value} config has an invalid alias; expected a registered model "
+            "alias name such as champion.",
+            alias=alias if isinstance(alias, str) else type(alias).__name__,
+        )
+    if config.get("version") not in (None, ""):
+        raise ConfigError(
+            f"{node_type.value} config names both a version and an alias; choose one. "
+            "Remove version to follow the alias, or remove alias to pin the version.",
+            alias=alias,
+            version=config.get("version"),
+        )
+
+
+def validate_node_config(
+    node_type: NodeType | str, config: dict[str, Any], *, require_complete: bool = True
+) -> dict[str, Any]:
     """Strictly validate configs whose runtime contract is discriminated.
 
     Data Input/Output provider branches control which keys and capabilities
-    are legal. Banding's discriminant controls its rule schema. Invalid
-    configured branches must not be silently persisted and ignored.
+    are legal. Banding's discriminant controls its rule schema. A Scenario
+    Expander's grid size is required with no incomplete form. A Modelling
+    node's configured values must be trainable, though it may be unfinished.
+    Invalid configured branches must not be silently persisted and ignored.
+    ``require_complete=False`` tolerates absent/empty required Data
+    Input/Output locators (declared-incomplete forms); structural rules and
+    every other node type stay strict.
     """
     nt = NodeType(node_type) if not isinstance(node_type, NodeType) else node_type
     reject_removed_config_keys(nt, config)
+    if nt in _MLFLOW_DESTINATION_NODE_TYPES:
+        validate_mlflow_destination(nt, config)
+    if nt in (NodeType.MODEL_SCORE, NodeType.OPTIMISER_APPLY):
+        validate_registered_model_alias(nt, config)
+    if nt == NodeType.OPTIMISER:
+        validate_optimiser_analysis_config(config)
+    if nt == NodeType.MODELLING:
+        from haute.modelling._train_config import validate_modelling_config_values
+
+        # Malformed values only: an unfinished node (a new node is ``{}``) saves,
+        # and its completeness is checked when training starts.
+        validate_modelling_config_values(config)
     if nt == NodeType.DATA_INPUT:
         from haute._polars_io_registry import validate_data_input_config
 
-        return validate_data_input_config(config)
+        return validate_data_input_config(config, require_complete=require_complete)
     if nt == NodeType.DATA_OUTPUT:
         from haute._polars_io_registry import validate_data_output_config
 
-        return validate_data_output_config(config)
+        return validate_data_output_config(config, require_complete=require_complete)
     if nt == NodeType.BANDING:
         from haute._rating import validate_banding_config
 
         validate_banding_config(config)
+    if nt == NodeType.SCENARIO_EXPANDER:
+        from haute._node_apply import scenario_step_count
+
+        # The grid size has no incomplete form: a new node carries an
+        # explicit count, so its absence is a defect the builder would reject.
+        scenario_step_count(config)
     return dict(config)

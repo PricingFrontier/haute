@@ -222,7 +222,7 @@ Consumers (own their route-specific job semantics on top of this component):
 - [server-api input cache](../server-api/high-level.md) — owns the `input_cache`
   store/lifecycle/registry and a `SingleFlightCoordinator` per source-identity digest;
   joins an active same-identity build and repairs stale ownership before starting.
-- [pipeline, json-cache, and output-assemble routes](../server-api/high-level.md)
+- [pipeline, input-cache, and output-assemble routes](../server-api/high-level.md)
   — use admitted killable workers for heavy execution; bounded I/O-only helpers may still use
   `_timeouts.py`. Explore uses the job store with a parent supervisor and isolated child.
 
@@ -269,7 +269,8 @@ Depended on:
   exception, timeout, memory limit, contract violation) is caught by
   `IsolatedJobSupervisor` and turned into a terminal transition with diagnostic
   fields (`worker_error_class`, `worker_error_type`/`worker_remote_traceback` for
-  remote exceptions, `worker_exitcode` for crashes, `error_code` for memory limits).
+  remote exceptions, `worker_exitcode` for crashes, `error_code` for memory limits,
+  `worker_diagnostic_notes` for exception `__notes__` when present).
   A child that curated a user-facing failure message marks it on the payload's
   `user_message` field, and the supervisor uses that curated wording as the job's
   terminal message; failures without one keep the typed wrapper text. When the

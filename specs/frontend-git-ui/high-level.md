@@ -65,11 +65,13 @@ Out of scope (owned by neighbouring components):
 **Toolbar indicator.** While the first readiness request is in flight it shows a quiet
 checking state. A transport/server failure produces a visible "Git unavailable" state with
 the backend detail and a Retry action; it is not confused with a project that has no
-repository. Successful responses render distinct labels and remediation for no repository,
-unset working branch, invalid state, attached divergence, and detached HEAD (including its
-short SHA). A ready state shows the working branch name alone; clicking it opens the panel
-on the current branch. The indicator carries no save SHA — the commit code belongs to the
-history panel, which shows it in context.
+repository. When the compact toolbar truncates the detail, the complete diagnostic remains
+available in a tooltip on hover over the error or keyboard focus on Retry, and describes
+the Retry button for assistive technology. Successful responses render distinct labels and
+remediation for no repository, unset working branch, invalid state, attached divergence,
+and detached HEAD (including its short SHA). A ready state shows the working branch name
+alone; clicking it opens the panel on the current branch. The indicator carries no save
+SHA — the commit code belongs to the history panel, which shows it in context.
 
 **Panel — save history.** The panel shows, top to bottom: the remote push control, the
 branch manager, an optional "peeking another branch" banner, out-of-version (pending)
@@ -257,10 +259,12 @@ are not the user's data, and **mutations**, which always surface an error.
   from transport/server failure. The latter records a visible, retryable error while
   retaining any previous successful status; Retry is always a user action. Pipeline Save
   remains available without a repository, while Git Commit remains unavailable.
-- **History reads** (`getMilestones`, `getPendingSaves`, `getWorkingBranches`) on the
+- **History reads** (`getMilestones`, `getPendingSaves`) on the
   panel's main `refresh()` path show an error toast on failure — this is the user's saved
   work, so a failure is not silent — but a *superseded* refresh's failure is dropped
-  without a toast (the newer refresh owns reporting).
+  without a toast (the newer refresh owns reporting). Shared branch-list loads
+  (`loadBranches()`, calling `getWorkingBranches`) record failure in `branchesError`
+  rather than toasting on the history path.
 - **Graph topology fetch** is explicitly best-effort: it is caught separately from the
   row-data fetch, never toasts on failure, and a failed refetch keeps the last-good graph
   rather than nulling it (nulling would flip the whole list between rail and no-rail
@@ -278,9 +282,10 @@ are not the user's data, and **mutations**, which always surface an error.
 - **Push inspection/validation failures** use that mutation path: authentication, timeout,
   non-empty-missing-default, or unrelated-history refusal shows the push error toast, does
   not show the bootstrap success toast, and is never retried automatically.
-- **Structured 409 bodies** (fork warning, push rejection) are parsed defensively
-  (`parseGitMilestoneFork`, `parseGitPushRejection`); an unparseable body falls through to
-  the generic error-toast path rather than throwing.
+- **Structured 409 bodies** (fork warning, push rejection) are read defensively
+  (`parseGitMilestoneFork`, `parseGitPushRejection`, checked by the generated git
+  contract); an unparseable body falls through to the generic error-toast path rather than
+  throwing.
 - Nothing in this component retries automatically; every recovery (catch-up, branch-away,
   retry a switch) is a distinct user-initiated action.
 

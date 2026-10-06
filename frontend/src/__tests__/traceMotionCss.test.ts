@@ -43,4 +43,25 @@ describe("graph visual effect CSS", () => {
       /\.react-flow__handle\.edge-join-output-handle\.edge-join-handle--suppress-hover::after\s*\{[^}]*left:\s*calc\(50% \+ 12px\);[^}]*width:\s*28px;[^}]*height:\s*28px;[^}]*\}/,
     )
   })
+
+  it("permanently draws the pale-accent inside half of each connector's hover circle", () => {
+    expect(CSS).toMatch(
+      /\.react-flow__handle:hover,\s*\.react-flow__handle\.output-origin-handle::before,\s*\.react-flow__handle\.input-origin-handle::before\s*\{[^}]*width:\s*10px !important;[^}]*height:\s*10px !important;[^}]*box-sizing:\s*border-box;[^}]*border:\s*2px solid var\(--bg-elevated\) !important;[^}]*border-radius:\s*50%;[^}]*\}/,
+    )
+    expect(CSS).toMatch(
+      /\.react-flow__handle\.output-origin-handle::before,\s*\.react-flow__handle\.input-origin-handle::before\s*\{[^}]*left:\s*50%;[^}]*transform:\s*translate\(-50%, -50%\);[^}]*background:\s*color-mix\(in srgb, currentColor 70%, var\(--text-primary\)\);[^}]*pointer-events:\s*none;[^}]*\}/,
+    )
+    expect(CSS).toMatch(
+      /\.react-flow__handle\.output-origin-handle::before\s*\{[^}]*clip-path:\s*inset\(0 50% 0 0\);[^}]*\}/,
+    )
+    expect(CSS).toMatch(
+      /\.react-flow__handle\.input-origin-handle::before\s*\{[^}]*clip-path:\s*inset\(0 0 0 50%\);[^}]*\}/,
+    )
+    expect(CSS).toMatch(
+      /\.react-flow__handle\.output-origin-handle:hover,\s*\.react-flow__handle\.input-origin-handle:hover\s*\{[^}]*width:\s*2px !important;[^}]*height:\s*2px !important;[^}]*background:\s*transparent !important;[^}]*border:\s*none !important;[^}]*\}/,
+    )
+    expect(CSS).toMatch(
+      /\.react-flow__handle\.output-origin-handle:hover::before,\s*\.react-flow__handle\.input-origin-handle:hover::before\s*\{[^}]*clip-path:\s*inset\(0\);[^}]*background:\s*currentColor;[^}]*\}/,
+    )
+  })
 })

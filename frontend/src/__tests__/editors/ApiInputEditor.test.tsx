@@ -2,7 +2,7 @@
  * Render tests for ApiInputEditor.
  *
  * Tests: API banner, preview data label, FileBrowser with extensions filter,
- * cache button visibility, JsonCacheButton states
+ * cache button visibility, input-cache snapshot states
  * (initial, after build, error on failure).
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
@@ -45,22 +45,12 @@ vi.mock("../../panels/editors/_shared", async () => {
   }
 })
 
-const mockBuildJsonCache = vi.fn()
-const mockGetJsonCacheStatus = vi.fn()
-const mockGetJsonCacheStatusForSchema = vi.fn()
-const mockGetJsonCacheProgress = vi.fn()
-const mockDeleteJsonCache = vi.fn()
 const mockInferJsonCacheSchema = vi.fn()
 const mockFetchSchemaForPath = vi.fn()
 const schemaFetchState = vi.hoisted(() => ({ error: null as string | null }))
 
 vi.mock("../../api/client", () => ({
   fetchDatabricksSchema: vi.fn(),
-  buildJsonCache: (...args: unknown[]) => mockBuildJsonCache(...args),
-  getJsonCacheProgress: (...args: unknown[]) => mockGetJsonCacheProgress(...args),
-  getJsonCacheStatus: (...args: unknown[]) => mockGetJsonCacheStatus(...args),
-  getJsonCacheStatusForSchema: (...args: unknown[]) => mockGetJsonCacheStatusForSchema(...args),
-  deleteJsonCache: (...args: unknown[]) => mockDeleteJsonCache(...args),
   inferJsonCacheSchema: (...args: unknown[]) => mockInferJsonCacheSchema(...args),
   ApiError: class ApiError extends Error {
     status: number
@@ -82,11 +72,6 @@ vi.mock("../../hooks/useSchemaFetch", () => ({
 }))
 
 beforeEach(() => {
-  mockBuildJsonCache.mockReset()
-  mockGetJsonCacheStatus.mockReset().mockResolvedValue({ cached: false })
-  mockGetJsonCacheStatusForSchema.mockReset().mockResolvedValue({ cached: false })
-  mockGetJsonCacheProgress.mockReset().mockResolvedValue({ active: false })
-  mockDeleteJsonCache.mockReset()
   mockInferJsonCacheSchema.mockReset()
   mockFetchSchemaForPath.mockReset()
   schemaFetchState.error = null
@@ -102,21 +87,6 @@ const DEFAULT_PROPS = {
   onUpdate: successfulOnUpdateSpy(),
   accentColor: "#10b981",
   reservedFrameLabels: RESERVED_FRAME_LABELS,
-}
-
-const CACHEABLE_TABLE = {
-  path: "$[:]",
-  label: "policies",
-  emit: true,
-  columns: [
-    {
-      name: "policy_id",
-      path: "$[:].policy_id",
-      type: "int",
-      status: "Confirmed",
-      selected: true,
-    },
-  ],
 }
 
 describe("ApiInputEditor", () => {
@@ -143,353 +113,6 @@ describe("ApiInputEditor", () => {
   })
 
 
-  it("cache button shown for .json files", () => {
-    render(<ApiInputEditor {...DEFAULT_PROPS} config={{ path: "data/input.json" }} />)
-    expect(screen.getByText("Cache as Parquet")).toBeTruthy()
-  })
-
-  it("cache button shown for .jsonl files", () => {
-    render(<ApiInputEditor {...DEFAULT_PROPS} config={{ path: "data/input.jsonl" }} />)
-    expect(screen.getByText("Cache as Parquet")).toBeTruthy()
-  })
-
-  it("cache button shown for .xml files", () => {
-    render(<ApiInputEditor {...DEFAULT_PROPS} config={{ path: "data/input.xml" }} />)
-    expect(screen.getByText("Cache as Parquet")).toBeTruthy()
-  })
-
-  it("cache button shown for .ndjson files", () => {
-    render(<ApiInputEditor {...DEFAULT_PROPS} config={{ path: "data/input.NDJSON" }} />)
-    expect(screen.getByText("Cache as Parquet")).toBeTruthy()
-  })
-
-  it("cache button hidden for non-json files", () => {
-    render(<ApiInputEditor {...DEFAULT_PROPS} config={{ path: "data/input.parquet" }} />)
-    expect(screen.queryByText("Cache as Parquet")).toBeNull()
-  })
-
-  it("cache button hidden when no path is set", () => {
-    render(<ApiInputEditor {...DEFAULT_PROPS} config={{}} />)
-    expect(screen.queryByText("Cache as Parquet")).toBeNull()
-  })
-
-  it("cache button is disabled when no emitted table has a selected column", () => {
-    render(
-      <ApiInputEditor
-        {...DEFAULT_PROPS}
-        config={{
-          path: "data/input.json",
-          tables: [
-            {
-              path: "$[:]",
-              label: "policies",
-              emit: true,
-              columns: [
-                {
-                  name: "policy_id",
-                  path: "$[:].policy_id",
-                  type: "int",
-                  status: "Confirmed",
-                  selected: false,
-                },
-              ],
-            },
-            {
-              path: "$[:].drivers[:]",
-              label: "drivers",
-              emit: false,
-              columns: [
-                {
-                  name: "driver_id",
-                  path: "$[:].drivers[:].driver_id",
-                  type: "int",
-                  status: "Confirmed",
-                  selected: true,
-                },
-              ],
-            },
-          ],
-        }}
-      />,
-    )
-
-    const button = screen.getByRole("button", { name: "Cache as Parquet" })
-    expect(button).toBeDisabled()
-    expect(button).toHaveAttribute(
-      "title",
-      "Select at least one column in an emitted table before caching.",
-    )
-    fireEvent.click(button)
-    expect(mockBuildJsonCache).not.toHaveBeenCalled()
-  })
-
-  it("JsonCacheButton: shows 'Cache as Parquet' initially when not cached", async () => {
-    mockGetJsonCacheStatus.mockResolvedValue({ cached: false })
-
-    render(<ApiInputEditor {...DEFAULT_PROPS} config={{ path: "data/input.json" }} />)
-
-    await waitFor(() => {
-      expect(screen.getByText("Cache as Parquet")).toBeTruthy()
-    })
-  })
-
-  it("JsonCacheButton: shows cache info after successful build", async () => {
-    mockGetJsonCacheStatus.mockResolvedValue({ cached: false })
-    mockBuildJsonCache.mockResolvedValue({
-      cached: true,
-      data_path: "data/input.json",
-      row_count: 100,
-      column_count: 5,
-      size_bytes: 2048,
-      cached_at: 0,
-    })
-
-    // Need at least one runtime-emitting table (emit + selected column).
-    render(
-      <ApiInputEditor
-        {...DEFAULT_PROPS}
-        config={{
-          path: "data/input.json",
-          tables: [CACHEABLE_TABLE],
-        }}
-      />,
-    )
-
-    // Click the cache button
-    await act(async () => {
-      fireEvent.click(screen.getByText("Cache as Parquet").closest("button")!)
-    })
-
-    await waitFor(() => {
-      // After successful build, should show "Refresh Cache" instead
-      expect(screen.getByText("Refresh Cache")).toBeTruthy()
-    })
-
-    // Should show cache stats
-    await waitFor(() => {
-      expect(screen.getByText("100 rows")).toBeTruthy()
-      expect(screen.getByText("5 cols")).toBeTruthy()
-    })
-  })
-
-  it("JsonCacheButton: sends config_path in status and build requests when provided", async () => {
-    // v2 dispatch on the backend reads the on-disk config file; the editor
-    // passes config_path so the cache button can name it. The previous
-    // flatten_schema-inline path is gone — the backend reads the v2 schema
-    // from the file at config_path.
-    mockGetJsonCacheStatusForSchema.mockResolvedValue({ cached: false })
-    mockBuildJsonCache.mockResolvedValue({
-      cached: true,
-      data_path: "data/input.json",
-      row_count: 1,
-      column_count: 1,
-      size_bytes: 1024,
-      cached_at: 0,
-    })
-
-    render(
-      <ApiInputEditor
-        {...DEFAULT_PROPS}
-        config={{
-          path: "data/input.json",
-          tables: [CACHEABLE_TABLE],
-        }}
-        configPath="rating/config/quote_input/api_input.json"
-      />,
-    )
-
-    await waitFor(() => {
-      expect(mockGetJsonCacheStatusForSchema).toHaveBeenCalledWith(
-        expect.objectContaining({
-          path: "data/input.json",
-          config_path: "rating/config/quote_input/api_input.json",
-        }),
-      )
-    })
-    expect(mockGetJsonCacheStatus).not.toHaveBeenCalled()
-
-    await act(async () => {
-      fireEvent.click(screen.getByText("Cache as Parquet").closest("button")!)
-    })
-
-    await waitFor(() => {
-      // After v1 removal: cache POST now also carries `volatile_schema`
-      // — the editor's in-memory v2. Use objectContaining so the test
-      // doesn't pin the full shape of writeV2's output.
-      expect(mockBuildJsonCache).toHaveBeenCalledWith(
-        expect.objectContaining({
-          path: "data/input.json",
-          config_path: "rating/config/quote_input/api_input.json",
-        }),
-      )
-      const payload = mockBuildJsonCache.mock.calls[0][0] as Record<string, unknown>
-      expect(payload).toHaveProperty("volatile_schema")
-    })
-  })
-
-  it("JsonCacheButton: refetches cache status when the live schema changes", async () => {
-    mockGetJsonCacheStatusForSchema
-      .mockResolvedValueOnce({
-        cached: true,
-        data_path: "data/input.json",
-        row_count: 10,
-        column_count: 2,
-        size_bytes: 2048,
-        cached_at: 1,
-      })
-      .mockResolvedValue({ cached: false })
-    mockBuildJsonCache.mockResolvedValue({
-      cached: true,
-      data_path: "data/input.json",
-      row_count: 10,
-      column_count: 2,
-      size_bytes: 2048,
-      cached_at: 2,
-    })
-
-    const baseTable = {
-      path: "$[:]",
-      label: "policies",
-      emit: true,
-      columns: [
-        {
-          name: "policy_id",
-          path: "$[:].policy_id",
-          type: "int",
-          status: "Confirmed",
-          selected: true,
-        },
-        {
-          name: "premium",
-          path: "$[:].premium",
-          type: "float",
-          status: "Confirmed",
-          selected: true,
-        },
-      ],
-    }
-    const view = render(
-      <ApiInputEditor
-        {...DEFAULT_PROPS}
-        config={{ path: "data/input.json", tables: [baseTable] }}
-        configPath="rating/config/quote_input/api_input.json"
-      />,
-    )
-
-    await waitFor(() => {
-      expect(screen.getByText("Refresh Cache")).toBeTruthy()
-    })
-    expect(mockGetJsonCacheStatusForSchema).toHaveBeenCalledTimes(1)
-
-    // A fresh object with the same schema value is not a new cache resource.
-    view.rerender(
-      <ApiInputEditor
-        {...DEFAULT_PROPS}
-        config={{
-          path: "data/input.json",
-          tables: [
-            {
-              ...baseTable,
-              columns: baseTable.columns.map((column) => ({ ...column })),
-            },
-          ],
-        }}
-        configPath="rating/config/quote_input/api_input.json"
-      />,
-    )
-    await act(async () => {
-      await Promise.resolve()
-    })
-    expect(mockGetJsonCacheStatusForSchema).toHaveBeenCalledTimes(1)
-    expect(screen.getByText("Refresh Cache")).toBeTruthy()
-
-    view.rerender(
-      <ApiInputEditor
-        {...DEFAULT_PROPS}
-        config={{
-          path: "data/input.json",
-          tables: [
-            {
-              ...baseTable,
-              columns: baseTable.columns.map((column, index) => ({
-                ...column,
-                selected: index === 0 ? false : column.selected,
-              })),
-            },
-          ],
-        }}
-        configPath="rating/config/quote_input/api_input.json"
-      />,
-    )
-
-    await waitFor(() => {
-      expect(mockGetJsonCacheStatusForSchema).toHaveBeenCalledTimes(2)
-      expect(screen.getByText("Cache as Parquet")).toBeTruthy()
-      expect(screen.getByText(/Runs directly from JSON.*faster repeat runs/)).toBeTruthy()
-      expect(screen.queryByText("10 rows")).toBeNull()
-    })
-    expect(mockGetJsonCacheStatusForSchema).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        volatile_schema: expect.objectContaining({
-          tables: [
-            expect.objectContaining({
-              columns: [
-                expect.objectContaining({ name: "policy_id", selected: false }),
-                expect.objectContaining({ name: "premium", selected: true }),
-              ],
-            }),
-          ],
-        }),
-      }),
-    )
-
-    await act(async () => {
-      fireEvent.click(screen.getByText("Cache as Parquet").closest("button")!)
-    })
-    const buildPayload = mockBuildJsonCache.mock.calls[0][0] as Record<string, unknown>
-    expect(buildPayload).toEqual(expect.objectContaining({
-      path: "data/input.json",
-      config_path: "rating/config/quote_input/api_input.json",
-      volatile_schema: expect.any(Object),
-    }))
-    expect(buildPayload).not.toHaveProperty("resourceKey")
-    expect(buildPayload.path).not.toContain("volatile_schema")
-  })
-
-  it("JsonCacheButton: shows error on failure", async () => {
-    mockGetJsonCacheStatus.mockResolvedValue({ cached: false })
-    mockBuildJsonCache.mockRejectedValue(new Error("Failed to build cache"))
-
-    // Give the cache action a runtime-emitting table so the error path fires.
-    render(
-      <ApiInputEditor
-        {...DEFAULT_PROPS}
-        config={{
-          path: "data/input.json",
-          tables: [CACHEABLE_TABLE],
-        }}
-      />,
-    )
-
-    await act(async () => {
-      fireEvent.click(screen.getByText("Cache as Parquet").closest("button")!)
-    })
-
-    await waitFor(() => {
-      expect(screen.getByText("Failed to build cache")).toBeTruthy()
-    })
-  })
-
-  it("JsonCacheButton: explains that caching is an optional speed-up", async () => {
-    mockGetJsonCacheStatus.mockResolvedValue({ cached: false })
-
-    render(<ApiInputEditor {...DEFAULT_PROPS} config={{ path: "data/input.json" }} />)
-
-    await waitFor(() => {
-      expect(screen.getByText(/Runs directly from JSON.*faster repeat runs/)).toBeTruthy()
-    })
-  })
-
   it("renders Preview Data label", () => {
     render(<ApiInputEditor {...DEFAULT_PROPS} />)
     expect(screen.getByText("Preview Data")).toBeTruthy()
@@ -512,6 +135,16 @@ describe("ApiInputEditor", () => {
     )
     expect(screen.getByTestId("api-input-tables")).toBeTruthy()
     expect(screen.getByText(/No tables yet/)).toBeTruthy()
+  })
+
+  it("keeps the decorative salt-names help icon hidden from assistive technology", () => {
+    render(
+      <ApiInputEditor
+        {...DEFAULT_PROPS}
+        config={{ path: "data/input.json", tables: [] }}
+      />,
+    )
+    expect(screen.getByTestId("api-input-salt-help")).toHaveAttribute("aria-hidden", "true")
   })
 
   it("suppresses the raw source SchemaPreview for a v2 config (per-frame tables are the schema view)", () => {
@@ -548,9 +181,32 @@ describe("ApiInputEditor", () => {
     fireEvent.click(screen.getByTestId("api-input-add-table-btn"))
     expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({
       tables: expect.arrayContaining([
-        expect.objectContaining({ path: "$[:]", emit: true }),
+        expect.objectContaining({ path: "$[:]", label: "quote_info", emit: true }),
       ]),
     }))
+  })
+
+  it("Add Table labels a nested table by its key, unique among the existing labels", () => {
+    const onUpdate = successfulOnUpdateSpy()
+    render(
+      <ApiInputEditor
+        {...DEFAULT_PROPS}
+        onUpdate={onUpdate}
+        config={{
+          path: "data/input.json",
+          tables: [
+            { path: "$[:]", label: "quote_info", emit: true, columns: [] },
+            { path: "$[:].claims[:]", label: "Table_2", emit: false, columns: [] },
+          ],
+        }}
+      />,
+    )
+    fireEvent.click(screen.getByTestId("api-input-add-table-btn"))
+    const update = onUpdate.mock.calls.at(-1)?.[0] as { tables: Array<{ path: string; label: string }> }
+    const tables = update.tables
+    expect(tables.at(-1)).toEqual(
+      expect.objectContaining({ path: "$[:].table_2[:]", label: "table_2_2" }),
+    )
   })
 
   it("ticking a table's emit toggle pushes the change back", () => {
@@ -892,7 +548,7 @@ function typeSequence(values: string[]) {
   }
 }
 
-describe("ApiInputEditor — W1.5 path inputs (focus retention, commit discipline)", () => {
+describe("ApiInputEditor - W1.5 path inputs (focus retention, commit discipline)", () => {
   it("table path input keeps focus and accumulates keystrokes without remounting", () => {
     const onUpdateSpy = vi.fn()
     render(<StatefulHarness initialConfig={ONE_TABLE_ONE_COL} onUpdateSpy={onUpdateSpy} />)
@@ -1097,7 +753,7 @@ const TWO_EMIT_TABLES = {
   ],
 }
 
-describe("ApiInputEditor — W1.3 port-label commits are atomic", () => {
+describe("ApiInputEditor - W1.3 port-label commits are atomic", () => {
   it("typing in a label input does not commit per keystroke; blur commits exactly once with the final value", () => {
     const onUpdateSpy = vi.fn()
     render(<StatefulHarness initialConfig={TWO_EMIT_TABLES} onUpdateSpy={onUpdateSpy} />)
@@ -1155,7 +811,7 @@ describe("ApiInputEditor — W1.3 port-label commits are atomic", () => {
   })
 })
 
-describe("ApiInputEditor — W1.4 label validation (blank / duplicate / sanitised collision)", () => {
+describe("ApiInputEditor - W1.4 label validation (blank / duplicate / sanitised collision)", () => {
   it("a blanked label shows validation on blur and commits NOTHING (no port_<idx> ever reaches config)", () => {
     const onUpdateSpy = vi.fn()
     render(<StatefulHarness initialConfig={TWO_EMIT_TABLES} onUpdateSpy={onUpdateSpy} />)
@@ -1284,7 +940,7 @@ describe("ApiInputEditor — W1.4 label validation (blank / duplicate / sanitise
   })
 })
 
-describe("ApiInputEditor — blank paths are refused, never silently destructive", () => {
+describe("ApiInputEditor - blank paths are refused, never silently destructive", () => {
   // Folded W1.5 follow-up: PathInput committed "" on a deliberate
   // clear+blur, and `readV2` then silently dropped the whole table (or
   // column) from config. Invalid editor state must surface as
@@ -1375,7 +1031,7 @@ const TWO_COLS_AND_SECOND_TABLE = {
   ],
 }
 
-describe("ApiInputEditor — W1.9 column-name validation (blank / duplicate)", () => {
+describe("ApiInputEditor - W1.9 column-name validation (blank / duplicate)", () => {
   it("backspacing a name to empty never deletes the column: commit refused, row survives, error shown", () => {
     const onUpdateSpy = vi.fn()
     render(<StatefulHarness initialConfig={ONE_TABLE_ONE_COL} onUpdateSpy={onUpdateSpy} />)
@@ -1487,7 +1143,7 @@ describe("ApiInputEditor — W1.9 column-name validation (blank / duplicate)", (
 // persisted config can still contain one. These tests pin that every
 // persisted entry remains visible with inline validation and is never
 // silently dropped during the 1:1 JSON↔UI render pass.
-describe("ApiInputEditor — disk-arriving blank entries surface (render-gate)", () => {
+describe("ApiInputEditor - disk-arriving blank entries surface (render-gate)", () => {
   it("a blank-NAME column from disk renders its row with a visible name error", () => {
     const config = {
       tables: [
@@ -1587,7 +1243,7 @@ describe("ApiInputEditor — disk-arriving blank entries surface (render-gate)",
 // persistence (toEqual) assertion itself rather than an incidental
 // element-not-found. (Toggling a *column* checkbox would vanish pre-fix
 // when the blank row above it is dropped and the indices collapse.)
-describe("ApiInputEditor — blank entry is not lost when an unrelated field is edited", () => {
+describe("ApiInputEditor - blank entry is not lost when an unrelated field is edited", () => {
   it("a blank-NAME column survives an unrelated edit (persisted config, exact shape)", () => {
     const config = {
       tables: [

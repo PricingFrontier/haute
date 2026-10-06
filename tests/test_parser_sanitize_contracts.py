@@ -45,6 +45,7 @@ import pytest
 
 from haute._ast_helpers import _extract_function_bodies
 from haute._graph_utils import _sanitize_func_name
+from tests._source_files import source_files
 
 # ---------------------------------------------------------------------------
 # #123 — _sanitize_func_name non-ASCII preservation
@@ -357,7 +358,7 @@ class TestEveryProductionCallerPassesTree:
 
     def _iter_source_files(self) -> list[Path]:
         src_dir = Path(__file__).resolve().parent.parent / "src" / "haute"
-        return sorted(src_dir.rglob("*.py"))
+        return source_files(src_dir)
 
     def _find_calls(self, filepath: Path) -> list[ast.Call]:
         source = filepath.read_text(encoding="utf-8")

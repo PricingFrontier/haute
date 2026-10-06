@@ -42,11 +42,12 @@ import os
 import re
 import subprocess
 import sys
-from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any
 
 import pytest
+
+from tests._source_files import source_files
 
 # ---------------------------------------------------------------------------
 # Locate the repo root + key files once — every test class reuses these.
@@ -77,14 +78,6 @@ _HEAVYWEIGHT_IMPORT_DENYLIST = (
     "sklearn",
     "torch",
 )
-_STATIC_SCAN_SKIP_DIRS = {
-    "__pycache__",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-}
-
-
 # ===========================================================================
 # #101 — Conditional imports in handlers (src/haute/routes/pipeline.py)
 # ===========================================================================
@@ -114,57 +107,6 @@ def _imports_inside(func: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.AS
         for child in ast.walk(func)
         if isinstance(child, (ast.Import, ast.ImportFrom)) and child is not func
     ]
-
-
-def _iter_python_sources(root: Path) -> list[Path]:
-    """Return stable Python source files under *root* for static hygiene scans."""
-    sources: list[Path] = []
-    for dirpath, dirnames, filenames in os.walk(root, onerror=_raise_static_scan_error):
-        dirnames[:] = sorted(
-            dirname for dirname in dirnames if dirname not in _STATIC_SCAN_SKIP_DIRS
-        )
-        sources.extend(
-            Path(dirpath) / filename for filename in sorted(filenames) if filename.endswith(".py")
-        )
-    return sources
-
-
-def _raise_static_scan_error(error: OSError) -> NoReturn:
-    raise error
-
-
-def test_static_source_iterator_skips_runtime_cache_dirs(tmp_path: Path) -> None:
-    package = tmp_path / "pkg"
-    cache = package / "__pycache__"
-    cache.mkdir(parents=True)
-    module = package / "module.py"
-    module.write_text("value = 1\n", encoding="utf-8")
-    (cache / "generated.py").write_text("raise AssertionError\n", encoding="utf-8")
-
-    assert _iter_python_sources(package) == [module]
-
-
-def test_static_source_iterator_fails_loudly_on_non_cache_scan_errors(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    expected = FileNotFoundError("missing production directory")
-
-    def fake_walk(
-        _root: Path,
-        *,
-        onerror: Callable[[OSError], object] | None = None,
-    ) -> Iterator[tuple[str, list[str], list[str]]]:
-        assert onerror is not None
-        onerror(expected)
-        yield from ()
-
-    monkeypatch.setattr(os, "walk", fake_walk)
-
-    with pytest.raises(FileNotFoundError, match="missing production directory") as exc_info:
-        _iter_python_sources(tmp_path)
-
-    assert exc_info.value is expected
 
 
 class TestPipelineImportsHoisted:
@@ -286,14 +228,16 @@ class TestPipelineImportableCold:
         finally:
             _restore_haute_modules(snapshot)
 
+    @pytest.mark.perf
     def test_cold_import_within_latency_budget(self) -> None:
         """Measured cold-import latency for ``haute.routes.pipeline``.
 
         The budget is tight enough to catch accidentally-hoisted heavyweight
-        dependencies.  Measure in a clean child interpreter with coverage
-        auto-start disabled: the coverage tracer otherwise makes this a
-        shared-runner load test instead of an import-graph tripwire.  The
-        deterministic companion below still names known heavyweight imports.
+        dependencies.  Run it in the dedicated performance lane and measure in
+        a clean child interpreter with coverage auto-start disabled: coverage
+        workers or their tracer otherwise turn it into a shared-runner load test
+        instead of an import-graph tripwire.  The deterministic companion below
+        still names known heavyweight imports in the regular test lanes.
         """
         probe = (
             "import importlib, time\n"
@@ -782,7 +726,7 @@ class TestNoDirectJobStoreInstantiation:
         # Every .py file under src/haute/routes/ except _job_store.py
         offenders: list[tuple[str, int, str]] = []
 
-        for py_file in _iter_python_sources(_ROUTES_DIR):
+        for py_file in source_files(_ROUTES_DIR):
             if py_file.name == "_job_store.py":
                 continue  # factory + class definition live here; allowed.
             if py_file.name == "__init__.py":
@@ -836,7 +780,7 @@ class TestJobStoreStateOwnership:
 
     def test_routes_do_not_access_job_store_backing_state_or_lock(self) -> None:
         offenders: list[tuple[str, int, str]] = []
-        for py_file in _iter_python_sources(_ROUTES_DIR):
+        for py_file in source_files(_ROUTES_DIR):
             if py_file == _JOB_STORE_PY:
                 continue
             relative = py_file.relative_to(_REPO_ROOT).as_posix()
@@ -872,38 +816,66 @@ class TestNoNewPrivateEngineImports:
         "haute._execute_lazy": None,
         "haute.projection": None,
         "haute.graph_utils": {
-            "_execute_lazy",
             "_prune_live_switch_edges",
         },
     }
+    # Modules whose every name is private to the engine: routes and deploy
+    # reach them only through the execution facade.
+    _ENGINE_ONLY_MODULES = frozenset({"haute._graph_walker"})
+
+    @classmethod
+    def _private_engine_imports(cls, source: str, rel_path: str) -> list[tuple[str, str, str, int]]:
+        found: list[tuple[str, str, str, int]] = []
+        for node in ast.walk(ast.parse(source)):
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            engine_only = node.module in cls._ENGINE_ONLY_MODULES
+            if not engine_only and node.module not in cls._PRIVATE_ENGINE_IMPORTS_BY_MODULE:
+                continue
+            tracked_imports = cls._PRIVATE_ENGINE_IMPORTS_BY_MODULE.get(node.module or "")
+            for alias in node.names:
+                if not engine_only:
+                    if not alias.name.startswith("_"):
+                        continue
+                    if tracked_imports is not None and alias.name not in tracked_imports:
+                        continue
+                found.append((rel_path, node.module or "", alias.name, node.lineno))
+        return found
+
+    def test_engine_only_modules_are_refused_whatever_the_name(self) -> None:
+        source = "\n".join(
+            [
+                "from haute._graph_walker import CollectPolicy, walk_graph",
+                "from haute._execute_lazy import _build_funcs",
+                "from haute.execution import execute_lazy_graph",
+            ]
+        )
+
+        found = self._private_engine_imports(source, "src/haute/routes/example.py")
+
+        assert [(module, name) for _path, module, name, _line in found] == [
+            ("haute._graph_walker", "CollectPolicy"),
+            ("haute._graph_walker", "walk_graph"),
+            ("haute._execute_lazy", "_build_funcs"),
+        ]
 
     def test_no_new_private_execution_helper_imports_in_routes_or_deploy(self) -> None:
         offenders: list[tuple[str, str, str, int]] = []
         seen_private_imports: set[tuple[str, str, str]] = set()
 
         for root in (_ROUTES_DIR, _DEPLOY_DIR):
-            for py_file in _iter_python_sources(root):
+            for py_file in source_files(root):
                 if py_file.name == "__init__.py":
                     continue
-                tree = ast.parse(py_file.read_text(encoding="utf-8"))
                 rel_path = str(py_file.relative_to(_REPO_ROOT)).replace("\\", "/")
-
-                for node in ast.walk(tree):
-                    if not isinstance(node, ast.ImportFrom):
+                for path, module, name, line in self._private_engine_imports(
+                    py_file.read_text(encoding="utf-8"), rel_path
+                ):
+                    key = (path, module, name)
+                    seen_private_imports.add(key)
+                    if key in self._PRIVATE_ENGINE_IMPORT_ALLOWLIST:
                         continue
-                    if node.module not in self._PRIVATE_ENGINE_IMPORTS_BY_MODULE:
-                        continue
-                    tracked_imports = self._PRIVATE_ENGINE_IMPORTS_BY_MODULE[node.module]
-                    for alias in node.names:
-                        if not alias.name.startswith("_"):
-                            continue
-                        if tracked_imports is not None and alias.name not in tracked_imports:
-                            continue
-                        private_import = (rel_path, node.module, alias.name)
-                        seen_private_imports.add(private_import)
-                        if private_import in self._PRIVATE_ENGINE_IMPORT_ALLOWLIST:
-                            continue
-                        offenders.append((*private_import, node.lineno))
+                    offenders.append((*key, line))
 
         assert offenders == [], (
             "New private execution-helper imports found in routes/deploy. "
@@ -922,13 +894,11 @@ class TestNoNewPrivateEngineImports:
 class TestExecutionBoundaryGuardrails:
     """Static guardrails for the shared execution/projection architecture."""
 
-    def test_execute_lazy_call_sites_make_execution_context_decision(self) -> None:
+    def test_graph_walk_call_sites_make_execution_context_decision(self) -> None:
         offenders: list[tuple[str, int, str]] = []
 
-        for py_file in _iter_python_sources(_REPO_ROOT / "src" / "haute"):
+        for py_file in source_files(_REPO_ROOT / "src" / "haute"):
             rel_path = str(py_file.relative_to(_REPO_ROOT)).replace("\\", "/")
-            if rel_path == "src/haute/_execute_lazy.py":
-                continue
             tree = ast.parse(py_file.read_text(encoding="utf-8"))
 
             for node in ast.walk(tree):
@@ -940,21 +910,22 @@ class TestExecutionBoundaryGuardrails:
                     call_name = func.id
                 elif isinstance(func, ast.Attribute):
                     call_name = func.attr
-                if call_name != "_execute_lazy":
+                if call_name != "walk_graph":
                     continue
                 if any(keyword.arg == "execution_context" for keyword in node.keywords):
                     continue
                 offenders.append((rel_path, node.lineno, ast.unparse(node)))
 
         assert offenders == [], (
-            "Every production _execute_lazy call site must explicitly pass "
+            "Every production walk_graph call site must explicitly pass "
             "execution_context=... (including None only if the caller has made "
             f"that decision deliberately). Offenders: {offenders}"
         )
 
     def test_ratebook_factor_column_contract_is_owned_by_projection_planner(self) -> None:
+        # The ratebook factor extraction step lives with the other setup steps.
         optimiser_service = ast.parse(
-            (_ROUTES_DIR / "_optimiser_service.py").read_text(encoding="utf-8")
+            (_ROUTES_DIR / "_optimiser_input.py").read_text(encoding="utf-8")
         )
 
         local_helpers = [
@@ -992,7 +963,7 @@ class TestExecutionBoundaryGuardrails:
     def test_polars_streaming_chunk_size_is_only_mutated_in_shared_helper(self) -> None:
         offenders: list[tuple[str, int, str]] = []
 
-        for py_file in _iter_python_sources(_REPO_ROOT / "src" / "haute"):
+        for py_file in source_files(_REPO_ROOT / "src" / "haute"):
             rel_path = str(py_file.relative_to(_REPO_ROOT)).replace("\\", "/")
             if rel_path == "src/haute/_polars_utils.py":
                 continue
@@ -1007,14 +978,14 @@ class TestExecutionBoundaryGuardrails:
 
         assert offenders == [], (
             "Polars streaming chunk size is process-global. Production code must "
-            "mutate it only through haute._polars_utils.temporary_streaming_chunk_size. "
+            "mutate it only through haute._polars_utils.set_streaming_chunk_size. "
             f"Offenders: {offenders}"
         )
 
     def test_status_responses_do_not_default_to_unknown_status(self) -> None:
         offenders: list[tuple[str, int, str]] = []
 
-        for py_file in _iter_python_sources(_ROUTES_DIR):
+        for py_file in source_files(_ROUTES_DIR):
             tree = ast.parse(py_file.read_text(encoding="utf-8"))
             rel_path = str(py_file.relative_to(_REPO_ROOT)).replace("\\", "/")
             for node in ast.walk(tree):

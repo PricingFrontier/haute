@@ -22,6 +22,8 @@ def test_pipeline_document_update_payload_declares_complete_wire_contract() -> N
         "document_fingerprint",
         "source_file",
     }
+    # Only an assistant apply or undo tags its update with where it came from.
+    assert PipelineDocumentUpdatePayload.__optional_keys__ == {"origin"}
 
 
 def test_unsubscribe_is_idempotent() -> None:

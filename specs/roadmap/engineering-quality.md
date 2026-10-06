@@ -1,0 +1,236 @@
+# Engineering quality roadmap
+
+## Scope
+
+Repository hygiene, the test corpus and its CI runtime, documentation checks,
+the coverage gates and the dependency advisory gate. Current behaviour is
+specified in
+[the engineering-quality specification](../engineering-quality/high-level.md).
+`ENGQ-R01` and `ENGQ-R05` come from the
+[23 September 2026 codebase review](codebase-review-2026-09-23.md). The
+`ENGQ-CI` packages come from the 30 September 2026 CI duration study: per-test
+timings from diagnostic PR #279 (run 36769548458) and the sharded lanes of
+PR #280.
+
+## Priorities
+
+| Package | State | Priority | Outcome |
+|---|---|---:|---|
+| ENGQ-CI03 | Planned | P2 | The 21 model-training, export and scoring test modules take at most half their recorded coverage-lane time, with no assertion weakened and no training code newly uncovered. |
+| ENGQ-CI04 | Planned | P2 | Three tests that failed only under another xdist scheduler or a higher worker count pass regardless of their neighbours and runner load. |
+| ENGQ-CI05 | Planned | P3 | The compatibility shards are balanced by durations measured without coverage. |
+| ENGQ-R01 | Planned | P3 | Production code that nothing calls, or only tests call, is removed. |
+| ENGQ-R05 | Planned | P3 | Tests are organised by component and behaviour, not by coverage campaign. |
+
+## Planned improvements
+
+`ENGQ-CI03` is the largest further cut in CI time and
+`ENGQ-CI04` removes known causes of flaky runs; both are independent of the
+other packages. `ENGQ-CI05` is balance tuning for the compatibility shards.
+`ENGQ-R01` is an independent clean-up, cheapest after the larger refactors
+have deleted what they replace. `ENGQ-R05` reorganises the suite under the
+coverage rule the [engineering-quality specification](../engineering-quality/high-level.md)
+states.
+
+### ENGQ-CI03 — Make the model-training tests cheaper
+**Why:** The CI study's per-test timings put most of the backend suite's
+cost in a few tests. The slowest 1% (221 tests) take 52% of test time, and
+the tests that take a second or more (772 of 22,196) take 79%. The largest
+group is model training, export and scoring. The 21 modules listed under
+Evidence (the cohort) took:
+- 1,878 s of the study's 3,728 s compatibility lane (50%);
+- 1,128.1 s of 3,113.5 s (36%) in the coverage lane, as recorded in
+  `scripts/test_file_durations.json` at `02f2d0ed2`, from PR #280's run
+  36778804735.
+
+`tests/test_model_family_acceptance.py` is the largest of them. Its CatBoost
+lifecycle test took 59 s, and a profile of it shows repeated real native
+fits, with 36% of its samples in CatBoost's training, plus evaluation
+metrics and SHAP. The backend lanes' pytest time tripled between August and
+September while the test count grew by 49%. Every lane pays for it: the four
+coverage shards and the six compatibility shards.
+
+**Plan:** Measure each cohort test from the coverage shards' JUnit reports,
+starting with the most expensive module. Then:
+- Where a test needs a trained model rather than exercising training, share
+  one fitted model through a module- or session-scoped fixture.
+- Where the asserted property does not depend on data size or fit count,
+  shrink the frame and the number of fits.
+- Keep one end-to-end training path per model family.
+
+No assertion is removed or weakened. The mutation targets in
+`mutation/targets.json` do not cover training, so coverage and seeded faults
+stand in for them, as the acceptance below states. Refresh the durations file
+in the same change.
+
+**Acceptance:** The measure is the cohort's summed coverage-lane time in a
+durations file refreshed from one green coverage-lane run. It is at most
+half the 1,128.1 s baseline. In addition:
+- The coverage gate's `--show-missing` report shows no statement or branch
+  newly missed, compared with the baseline run. This covers
+  `src/haute/modelling/` and the training routes: `src/haute/routes/_train_service.py`,
+  `src/haute/routes/_training_artifacts.py`,
+  `src/haute/routes/_training_evaluation.py`,
+  `src/haute/routes/_training_lifecycle.py`,
+  `src/haute/routes/_training_preparation.py` and
+  `src/haute/routes/_training_worker.py`.
+- For each module converted to a shared fitted model, one deliberately
+  broken training step that its tests caught before is still caught.
+
+**Dependencies:** None. `ENGQ-R05` moves some of the same modules
+(`tests/test_algorithms_coverage.py`); whichever lands second rebases onto the
+other and keeps the cohort's measure comparable.
+
+**Evidence:**
+`tests/test_model_family_acceptance.py::test_native_training_lifecycle_keeps_the_last_good_model`;
+`tests/test_modelling.py`; `tests/test_ebm_family.py`;
+`tests/test_algorithms_coverage.py`; `tests/test_xgboost_family.py`;
+`tests/test_lightgbm_family.py`; `tests/test_modelling_train_score_contract.py`;
+`tests/test_training_evaluation.py`; `tests/test_training_seeding.py`;
+`tests/test_modelling_export.py`; `tests/test_glm_integration.py`;
+`tests/test_modelling_routes.py`; `tests/test_model_family_review_fixes.py`;
+`tests/test_offset_scoring.py`; `tests/test_training_temp_cleanup.py`;
+`tests/test_train_param_routing.py`;
+`tests/test_binary_classification_contract.py`;
+`tests/test_rustystats_algorithm.py`; `tests/test_target_task_gate.py`;
+`tests/test_mlflow_log_button_roundtrip.py`;
+`tests/test_training_contract_per_model.py`;
+`scripts/test_file_durations.json`; `mutation/targets.json`.
+
+### ENGQ-CI04 — Remove order and load dependence from three tests
+**Why:** The CI study ran the backend suite under other xdist schedulers and
+worker counts. Three tests failed for reasons outside the code they test:
+- `test_openapi_and_installed_package_versions_match_pyproject` read version
+  `0.0.0-dev` instead of the `pyproject.toml` version when `--dist loadfile`
+  changed which tests shared its worker. Another test leaks package-version
+  state.
+- `test_concurrent_training_workers_publish_each_capture_once` was refused by
+  memory admission (`ExecutionAdmissionError` for `training_prep`) at six and
+  eight workers.
+- `test_serve_fails_loudly_when_port_is_bound` failed at eight workers.
+
+Each is a hidden dependency between tests, or a race that a busier runner or
+a different shard layout can expose.
+
+**Plan:** Reproduce each test under the condition that exposed it:
+`--dist loadfile` for the first, `-n 8` for the other two. Find the leaked
+state or the race, and fix it with a regression test that fails first. Fix
+the product code when the race is real.
+
+**Acceptance:** In a diagnostic CI run of the full suite under
+`--dist loadfile` and at `-n 8`, all three tests pass. Any product race found
+has its own regression test.
+
+**Dependencies:** None.
+
+**Evidence:**
+`tests/test_infrastructure_contracts.py::TestApiRouteContracts::test_openapi_and_installed_package_versions_match_pyproject`;
+`tests/test_training_seeding.py::test_concurrent_training_workers_publish_each_capture_once`;
+`tests/test_cli_fail_loudly.py::TestServePortConflictDetection::test_serve_fails_loudly_when_port_is_bound`.
+
+### ENGQ-CI05 — Balance the compatibility shards on their own durations
+**Why:** One durations table, measured on the coverage lane, balances every
+sharded lane (`tests/_ci_shards.py`). Coverage tracing slows some modules far
+more than others. In the CI study, these modules ran longer under coverage:
+
+| Module | Slowdown under coverage |
+|---|---:|
+| `tests/test_chunk_whitelist_proofs.py` | 1.65× |
+| `tests/test_test_debt.py` | 2.2× |
+| `tests/test_repository_hygiene.py` | 2.6× |
+
+The compatibility shards run without coverage, so a shard holding those
+modules finishes early. On PR #280's second run, the 3.13 shards took 4.0, 6.1
+and 6.4 minutes, and the 3.11 shards 4.0, 6.0 and 5.7.
+
+**Plan:** Have the compatibility shards upload JUnit reports as the coverage
+shards do. Extend `scripts/test_file_durations.json` to one table per lane,
+let the shard option name the table, and refresh both tables with
+`scripts/refresh_test_durations.py`. The partition rule and its tests are
+unchanged.
+
+**Acceptance:** On two consecutive CI runs, each compatibility interpreter's
+slowest shard is within 15% of its fastest. `tests/test_ci_shards.py` covers
+table selection and a missing table.
+
+**Dependencies:** None.
+
+**Evidence:** `tests/_ci_shards.py`; `scripts/test_file_durations.json`;
+`scripts/refresh_test_durations.py`; `.github/workflows/ci.yml`.
+
+### ENGQ-R01 — Remove unreferenced and test-only production code
+**Why:** Several production functions have no caller at all:
+`ensure_execution_context`, `_rating_table_materialises`, `_callable_owner`,
+and the git guard `_assert_not_protected` (the guard is enforced through
+`_is_protected` instead). Others are called only by tests: `_compute_schema_hash`, `validate_submodel_instances`,
+`remove_config_file`, `find_config_by_func_name`, the `_ram_estimate` helpers
+`_parquet_metadata`, `_resolve_edge_join_column_names` and
+`_resolve_target_column_names`, `wrap_path_case_audit`, and the registry's
+`get_exec` and `get_codegen`. Twenty-five `*_for_tests`, `_reset_*` and `_clear_*` hooks live
+in production modules, and `routes/_train_service.py` is a compatibility
+facade that re-exports private names mainly for tests. In the frontend, knip
+reports 8 unused files (including the banding and rating editor barrels), the
+whole `panels/editors/index.ts` barrel of 22 editors (consumers use the lazy
+editors), 33 unused exports, 91 unused exported types and an unlisted
+`@lezer/highlight` dependency. The API client's `checkHauteSession` has no
+production caller left.
+
+**Plan:** Delete the unreferenced code. For test-only functions, either move
+the tests to the production entry point the function was meant to serve or
+delete both. Replace the test hooks with fixtures that reset state from
+outside, and remove the training facade by moving its importers to the
+owning modules. Add knip, or an equivalent, to the frontend lint so dead
+exports stay visible.
+
+**Acceptance:** vulture at the agreed confidence and knip report no
+unreferenced production code beyond a reviewed allowlist; the training facade
+is gone; tests import the owning modules.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_execution_context.py::ensure_execution_context`;
+`src/haute/_rating.py::_rating_table_materialises`;
+`src/haute/_polars_io_registry.py::_callable_owner`;
+`src/haute/_git_core.py::_assert_not_protected`;
+`src/haute/_model_scorer.py::_compute_schema_hash`;
+`src/haute/_submodel_instances.py::validate_submodel_instances`;
+`src/haute/_config_io.py::remove_config_file`;
+`src/haute/_config_io.py::find_config_by_func_name`;
+`src/haute/_ram_estimate.py::_parquet_metadata`;
+`src/haute/_ram_estimate.py::_resolve_edge_join_column_names`;
+`src/haute/_ram_estimate.py::_resolve_target_column_names`;
+`src/haute/_path_case_audit.py::wrap_path_case_audit`;
+`src/haute/_registry.py::get_exec`; `src/haute/routes/_train_service.py`;
+`frontend/src/panels/editors/index.ts`;
+`frontend/src/panels/editors/banding/index.ts`;
+`frontend/src/panels/editors/rating/index.ts`;
+`frontend/src/api/client.ts::checkHauteSession`.
+
+### ENGQ-R05 — Organise tests by behaviour
+**Why:** Backend tests total 421,000 lines, 2.3 times the source they test;
+`test_optimiser_routes.py` alone is 16,581 lines. About 20,000 lines sit in
+files named after coverage campaigns or fix waves rather than behaviour:
+`test_expression_parser_coverage.py`, `test_train_service_coverage.py`,
+`test_algorithms_coverage.py`, `test_json_cache_coverage_uplift.py`,
+`test_coverage_gaps.py`, `test_dry_fixes.py`,
+`test_expression_parser_w3_fixes.py`, `test_trace_w4_fixes.py` and eight
+more `*_coverage` modules. A developer cannot find the tests for a behaviour
+by name, and a full serial run takes about forty minutes.
+
+**Plan:** Merge campaign-named modules into the component and behaviour
+modules that own what they test, removing duplicates found on the way, and
+split the largest modules by behaviour. Record the target structure in the
+engineering-quality specification.
+
+**Acceptance:** No test module is named after a coverage campaign or fix
+wave; no module exceeds an agreed size; coverage of the safety-critical
+modules is unchanged; suite runtime is recorded before and after.
+
+**Dependencies:** None.
+
+**Evidence:** `tests/test_optimiser_routes.py`;
+`tests/test_expression_parser_coverage.py`;
+`tests/test_train_service_coverage.py`; `tests/test_algorithms_coverage.py`;
+`tests/test_json_cache_coverage_uplift.py`; `tests/test_coverage_gaps.py`;
+`tests/test_dry_fixes.py`; `tests/test_expression_parser_w3_fixes.py`;
+`tests/test_trace_w4_fixes.py`.

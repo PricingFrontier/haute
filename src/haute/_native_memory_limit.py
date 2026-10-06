@@ -12,7 +12,8 @@ import importlib
 import os
 import re
 import sys
-from collections.abc import Iterator
+import threading
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from ctypes import wintypes
@@ -20,11 +21,87 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 
+from haute._process_memory import current_process_private_bytes, current_process_virtual_bytes
+
 NativeMemoryBackend = Literal["cgroup", "rlimit", "windows_job"]
 _CURRENT_NATIVE_MEMORY_BACKEND: ContextVar[NativeMemoryBackend | None] = ContextVar(
     "haute_current_native_memory_backend",
     default=None,
 )
+_CURRENT_NATIVE_MEMORY_LEASE: ContextVar[NativeMemoryLease | None] = ContextVar(
+    "haute_current_native_memory_lease",
+    default=None,
+)
+
+
+# A model library starts its own thread pool during a fit. Measured on a 32-CPU
+# Linux host, a small CatBoost fit reserves 5.3 GB and a RustyStats fit 2.1 GB of
+# address space while their resident growth stays under 20 MB.
+# What a model library reserves during a fit above its preloaded baseline, measured
+# (specs/execution-engine/low-level.md): a fixed part for runtime state it sets up on
+# first use, and a part per online CPU for its threads' stacks and allocator arenas.
+# CatBoost, the largest, needed 2.8 GiB on 4 CPUs and 4.9 GiB on 16.
+_MODEL_LIBRARY_ADDRESS_SPACE_BASE = 2560 * 1024 * 1024
+_MODEL_THREAD_ADDRESS_SPACE_PER_CPU = 192 * 1024 * 1024
+_THREAD_START_FAILURE_MARKERS = ("can't start new thread", "could not spawn threads")
+_polars_thread_pools_started = False
+_polars_thread_pools_lock = threading.Lock()
+
+
+def model_thread_address_space_allowance() -> int:
+    """Address space a training fit's cap allows for what its model library reserves.
+
+    Counted on online CPUs, not the process's affinity: the allocator and CatBoost
+    size their reservations from the online count.
+    """
+    return _MODEL_LIBRARY_ADDRESS_SPACE_BASE + (
+        (os.cpu_count() or 1) * _MODEL_THREAD_ADDRESS_SPACE_PER_CPU
+    )
+
+
+def memory_error_for_thread_start_failure(exc: BaseException) -> BaseException:
+    """A thread that could not start under an active cap, as the memory failure it is."""
+    if isinstance(exc, KeyboardInterrupt | SystemExit | MemoryError):
+        return exc
+    message = str(exc)
+    if not any(marker in message for marker in _THREAD_START_FAILURE_MARKERS):
+        return exc
+    converted = MemoryError(
+        f"A thread could not start within the worker's memory limit ({message})."
+    )
+    converted.__cause__ = exc
+    return converted
+
+
+def _run_polars_pool_queries() -> None:
+    import polars as pl
+
+    # One query per engine: the streaming engine runs its own threads beside the
+    # in-memory pool, and a thread's allocator arena appears on its first allocation.
+    for engine in ("streaming", "in-memory"):
+        (
+            pl.DataFrame({"a": range(200_000)})
+            .lazy()
+            .group_by(pl.col("a") % 97)
+            .agg(pl.len())
+            .sort("a")
+            .collect(engine=engine)
+        )
+
+
+def _start_polars_thread_pools() -> None:
+    """Start every Polars pool thread, and its allocator arena, once per process.
+
+    ``RLIMIT_AS`` counts reserved address space. Started after the cap, the pools'
+    stacks and arenas (gigabytes on a many-core host) would spend the job's budget
+    on memory it never touches.
+    """
+    global _polars_thread_pools_started
+    with _polars_thread_pools_lock:
+        if _polars_thread_pools_started:
+            return
+        _run_polars_pool_queries()
+        _polars_thread_pools_started = True
 
 
 def current_native_memory_backend() -> NativeMemoryBackend | None:
@@ -32,17 +109,35 @@ def current_native_memory_backend() -> NativeMemoryBackend | None:
     return _CURRENT_NATIVE_MEMORY_BACKEND.get()
 
 
+def native_headroom_bytes() -> int | None:
+    """What the current worker call's native cap still allows: its ceiling minus the charge.
+
+    ``None`` outside a capped worker call, or when the backend gives no reading.
+    """
+    lease = _CURRENT_NATIVE_MEMORY_LEASE.get()
+    if lease is None or lease.backend is None:
+        return None
+    ceiling = lease.limit_state().ceiling_bytes
+    charge = lease.current_charge_bytes()
+    if ceiling is None or charge is None:
+        return None
+    return max(0, ceiling - charge)
+
+
 @contextmanager
 def native_memory_backend_scope(
     backend: NativeMemoryBackend | None,
+    lease: NativeMemoryLease | None = None,
 ) -> Iterator[None]:
-    """Expose one lease backend only while its worker call remains active."""
+    """Expose one lease (and its backend) only while its worker call remains active."""
     if backend not in {None, "cgroup", "rlimit", "windows_job"}:
         raise ValueError(f"unknown native memory backend: {backend!r}")
     token = _CURRENT_NATIVE_MEMORY_BACKEND.set(backend)
+    lease_token = _CURRENT_NATIVE_MEMORY_LEASE.set(lease if backend is not None else None)
     try:
         yield
     finally:
+        _CURRENT_NATIVE_MEMORY_LEASE.reset(lease_token)
         _CURRENT_NATIVE_MEMORY_BACKEND.reset(token)
 
 
@@ -140,16 +235,10 @@ def _native_baseline_bytes() -> int:
 
 
 def _linux_virtual_bytes() -> int:
-    try:
-        pages = int(Path("/proc/self/statm").read_text(encoding="ascii").split()[0])
-        sysconf = getattr(os, "sysconf", None)
-        if not callable(sysconf):
-            raise OSError("os.sysconf is unavailable")
-        return pages * int(sysconf("SC_PAGE_SIZE"))
-    except (OSError, TypeError, ValueError, IndexError) as exc:
-        raise NativeMemoryLimitUnsupportedError(
-            "cannot measure Linux virtual address space"
-        ) from exc
+    value = current_process_virtual_bytes()
+    if value is None:
+        raise NativeMemoryLimitUnsupportedError("cannot measure Linux virtual address space")
+    return value
 
 
 def _linux_cgroup_current(path: Path) -> int:
@@ -196,6 +285,51 @@ def cleanup_private_cgroups_for_pid(pid: int) -> None:
             ) from exc
 
 
+def cgroup_oom_events(path: Path) -> int | None:
+    """The ``oom`` count in a cgroup's ``memory.events.local``: its own limit's refusals."""
+    try:
+        lines = (path / "memory.events.local").read_text(encoding="ascii").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        name, _, value = line.partition(" ")
+        if name == "oom":
+            try:
+                return int(value)
+            except ValueError:
+                return None
+    return None
+
+
+def private_cgroup_oom_events_for_pid(pid: int) -> int | None:
+    """The ``oom`` count of a (dead or live) child's private cgroup, read before cleanup."""
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        parent = _current_cgroup_path()
+    except NativeMemoryLimitUnsupportedError:
+        return None
+    try:
+        candidates = list(parent.iterdir())
+    except OSError:
+        return None
+    for candidate in candidates:
+        if _validated_private_cgroup(parent, candidate, pid=pid):
+            return cgroup_oom_events(candidate)
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class NativeLimitState:
+    """What one cap installation set: the backend, its baseline and its ceiling."""
+
+    backend: NativeMemoryBackend | None
+    baseline_bytes: int | None
+    ceiling_bytes: int | None
+    # The private cgroup's ``oom`` count when the cap was installed (cgroup only).
+    oom_events: int | None = None
+
+
 @dataclass(slots=True)
 class NativeMemoryLease:
     """A child-owned cap which is applied for each user request and reset after it."""
@@ -205,22 +339,62 @@ class NativeMemoryLease:
     _cgroup: Path | None = None
     _cgroup_parent: Path | None = None
     _job: Any = None
+    _baseline_bytes: int | None = None
+    _ceiling_bytes: int | None = None
 
     @property
     def backend(self) -> NativeMemoryBackend | None:
         """The installed hard-cap mechanism, if this lease has one."""
         return self._backend
 
-    def apply(self, growth_bytes: int, *, required: bool) -> bool:
+    @property
+    def windows_job(self) -> Any:
+        """The Job Object handle this lease caps (Windows), for limit notifications."""
+        return self._job
+
+    def limit_state(self) -> NativeLimitState:
+        """The cap the last ``apply`` installed; no backend when none is installed."""
+        if self._backend is None:
+            return NativeLimitState(backend=None, baseline_bytes=None, ceiling_bytes=None)
+        oom_events = (
+            cgroup_oom_events(self._cgroup)
+            if self._backend == "cgroup" and self._cgroup is not None
+            else None
+        )
+        return NativeLimitState(
+            backend=self._backend,
+            baseline_bytes=self._baseline_bytes,
+            ceiling_bytes=self._ceiling_bytes,
+            oom_events=oom_events,
+        )
+
+    def apply(
+        self,
+        growth_bytes: int,
+        *,
+        required: bool,
+        address_space_allowance_bytes: int = 0,
+    ) -> bool:
+        """Install a cap of ``growth_bytes`` above the current usage.
+
+        ``address_space_allowance_bytes`` widens only an ``RLIMIT_AS`` ceiling, for
+        reservations a job's libraries make but do not touch.
+        """
         if growth_bytes <= 0:
             raise ValueError("memory growth limit must be positive")
+        if address_space_allowance_bytes < 0:
+            raise ValueError("address-space allowance must not be negative")
+        # Evidence from an earlier request must never survive into this one:
+        # a failed best-effort attempt after a successful request would
+        # otherwise advertise a cap that is not installed.
+        self._backend = None
         try:
             if sys.platform == "win32":
                 self._apply_windows(growth_bytes)
             elif sys.platform.startswith("linux"):
-                self._apply_linux(growth_bytes)
+                self._apply_linux(growth_bytes, address_space_allowance_bytes)
             else:
-                self._apply_rlimit(growth_bytes)
+                self._apply_rlimit(growth_bytes, address_space_allowance_bytes)
             return True
         except NativeMemoryLimitCleanupError:
             raise
@@ -234,6 +408,19 @@ class NativeMemoryLease:
                     f"native memory limit setup failed: {exc}"
                 ) from exc
             return False
+
+    def current_charge_bytes(self) -> int | None:
+        """What the installed backend charges now; ``None`` without a cap or a reading."""
+        try:
+            if self._backend == "cgroup" and self._cgroup is not None:
+                return _linux_cgroup_current(self._cgroup)
+            if self._backend == "windows_job":
+                return _windows_private_usage()
+            if self._backend == "rlimit":
+                return _native_baseline_bytes()
+        except (OSError, ValueError, NativeMemoryLimitUnsupportedError):
+            return None
+        return None
 
     def restore(self) -> None:
         """Clear a request limit while retaining process-lifetime resources."""
@@ -249,6 +436,8 @@ class NativeMemoryLease:
             (self._cgroup / "memory.max").write_text("max\n", encoding="ascii")
         elif self._backend == "windows_job":
             self._set_windows_limit(None)
+        # The cap is gone, so the lease no longer holds hard-cap evidence.
+        self._backend = None
 
     def close(self) -> None:
         if self._cgroup is not None:
@@ -263,18 +452,18 @@ class NativeMemoryLease:
             self._cgroup_parent = None
         if self._job is not None:
             handle, self._job = self._job, None
-            kernel32, _psapi = _windows_apis()
+            kernel32 = _windows_apis()
             if not kernel32.CloseHandle(handle):
                 raise _windows_error()
 
-    def _apply_linux(self, growth_bytes: int) -> None:
+    def _apply_linux(self, growth_bytes: int, address_space_allowance_bytes: int = 0) -> None:
         if self._cgroup is None:
             try:
                 self._cgroup, self._cgroup_parent = _create_private_cgroup()
             except NativeMemoryLimitCleanupError:
                 raise
             except NativeMemoryLimitUnsupportedError:
-                self._apply_rlimit(growth_bytes)
+                self._apply_rlimit(growth_bytes, address_space_allowance_bytes)
                 return
         try:
             self._backend = "cgroup"
@@ -283,6 +472,8 @@ class NativeMemoryLease:
             (self._cgroup / "memory.max").write_text(
                 f"{current + growth_bytes}\n", encoding="ascii"
             )
+            self._baseline_bytes = current
+            self._ceiling_bytes = current + growth_bytes
         except (OSError, ValueError):
             path, parent = self._cgroup, self._cgroup_parent
             assert path is not None and parent is not None
@@ -291,21 +482,26 @@ class NativeMemoryLease:
             self._cgroup_parent = None
             self._backend = None
             try:
-                self._apply_rlimit(growth_bytes)
+                self._apply_rlimit(growth_bytes, address_space_allowance_bytes)
             except NativeMemoryLimitUnsupportedError as fallback_error:
                 raise NativeMemoryLimitUnsupportedError(
                     "cgroup memory limit programming failed and RLIMIT_AS is unavailable"
                 ) from fallback_error
 
-    def _apply_rlimit(self, growth_bytes: int) -> None:
+    def _apply_rlimit(self, growth_bytes: int, address_space_allowance_bytes: int = 0) -> None:
         resource_api = _resource_api()
         if resource_api is None or sys.platform == "darwin":
             raise NativeMemoryLimitUnsupportedError("native address-space limits are unavailable")
-        soft, hard = resource_api.getrlimit(resource_api.RLIMIT_AS)
         if self._rlimit_original is None:
-            self._rlimit_original = (soft, hard)
+            self._rlimit_original = resource_api.getrlimit(resource_api.RLIMIT_AS)
+        # Clamp against the limits this process inherited, never the previous
+        # request's soft limit: a lease that is re-applied without a restore in
+        # between (a dedicated worker) must be able to raise its ceiling again.
+        soft, hard = self._rlimit_original
         infinity = resource_api.RLIM_INFINITY
-        ceiling = _native_baseline_bytes() + growth_bytes
+        _start_polars_thread_pools()
+        baseline = _native_baseline_bytes()
+        ceiling = baseline + growth_bytes + address_space_allowance_bytes
         if hard != infinity:
             ceiling = min(ceiling, int(hard))
         if soft != infinity:
@@ -316,6 +512,8 @@ class NativeMemoryLease:
         # never increase the inherited hard ceiling.
         resource_api.setrlimit(resource_api.RLIMIT_AS, (ceiling, hard))
         self._backend = "rlimit"
+        self._baseline_bytes = baseline
+        self._ceiling_bytes = ceiling
         # The hard limit is deliberately retained verbatim.  A finite
         # inherited soft limit is never widened by a request lease.
 
@@ -327,14 +525,17 @@ class NativeMemoryLease:
         if self._job is None:
             self._job = _create_windows_job()
             atexit.register(self.close)
-        self._set_windows_limit(_windows_private_usage() + growth_bytes)
+        baseline = _windows_private_usage()
+        self._set_windows_limit(baseline + growth_bytes)
         self._backend = "windows_job"
+        self._baseline_bytes = baseline
+        self._ceiling_bytes = baseline + growth_bytes
 
     def _set_windows_limit(self, limit: int | None) -> None:
         info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
         info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_JOB_MEMORY if limit else 0
         info.JobMemoryLimit = 0 if limit is None else limit
-        kernel32, _psapi = _windows_apis()
+        kernel32 = _windows_apis()
         if not kernel32.SetInformationJobObject(
             self._job, 9, ctypes.byref(info), ctypes.sizeof(info)
         ):
@@ -421,29 +622,83 @@ class _JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):  # noqa: N801
     ]
 
 
-class _PROCESS_MEMORY_COUNTERS_EX(ctypes.Structure):  # noqa: N801
+JOB_OBJECT_MSG_JOB_MEMORY_LIMIT = 10
+_JOB_OBJECT_ASSOCIATE_COMPLETION_PORT_INFORMATION = 7
+_INFINITE = 0xFFFFFFFF
+
+
+class _JOBOBJECT_ASSOCIATE_COMPLETION_PORT(ctypes.Structure):  # noqa: N801
     _fields_ = [
-        ("cb", ctypes.c_uint32),
-        ("PageFaultCount", ctypes.c_uint32),
-        ("PeakWorkingSetSize", ctypes.c_size_t),
-        ("WorkingSetSize", ctypes.c_size_t),
-        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
-        ("QuotaPagedPoolUsage", ctypes.c_size_t),
-        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
-        ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
-        ("PagefileUsage", ctypes.c_size_t),
-        ("PeakPagefileUsage", ctypes.c_size_t),
-        ("PrivateUsage", ctypes.c_size_t),
+        ("CompletionKey", ctypes.c_void_p),
+        ("CompletionPort", wintypes.HANDLE),
     ]
 
 
-def _windows_apis() -> tuple[Any, Any]:
+def watch_windows_job_messages(job: Any, on_message: Callable[[int], None]) -> threading.Thread:
+    """Deliver every message the kernel posts for *job* to *on_message*, on a daemon thread.
+
+    A Job Object posts ``JOB_OBJECT_MSG_JOB_MEMORY_LIMIT`` when an allocation
+    by one of its processes would exceed the job-wide memory limit: the limit's
+    own record that it refused memory. Delivery is asynchronous and not
+    guaranteed before a process that could not allocate aborts.
+    """
+    kernel32 = _windows_apis()
+    kernel32.CreateIoCompletionPort.argtypes = (
+        wintypes.HANDLE,
+        wintypes.HANDLE,
+        ctypes.c_size_t,
+        wintypes.DWORD,
+    )
+    kernel32.CreateIoCompletionPort.restype = wintypes.HANDLE
+    kernel32.GetQueuedCompletionStatus.argtypes = (
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.DWORD),
+        ctypes.POINTER(ctypes.c_size_t),
+        ctypes.POINTER(ctypes.c_void_p),
+        wintypes.DWORD,
+    )
+    kernel32.GetQueuedCompletionStatus.restype = wintypes.BOOL
+    port = kernel32.CreateIoCompletionPort(wintypes.HANDLE(-1), None, 0, 1)
+    if not port:
+        raise _windows_error()
+    association = _JOBOBJECT_ASSOCIATE_COMPLETION_PORT(None, port)
+    if not kernel32.SetInformationJobObject(
+        job,
+        _JOB_OBJECT_ASSOCIATE_COMPLETION_PORT_INFORMATION,
+        ctypes.byref(association),
+        ctypes.sizeof(association),
+    ):
+        error = _windows_error()
+        kernel32.CloseHandle(port)
+        raise error
+
+    def _deliver() -> None:
+        while True:
+            # For job notifications the byte count carries the message id.
+            message = wintypes.DWORD()
+            key = ctypes.c_size_t()
+            overlapped = ctypes.c_void_p()
+            if not kernel32.GetQueuedCompletionStatus(
+                port,
+                ctypes.byref(message),
+                ctypes.byref(key),
+                ctypes.byref(overlapped),
+                _INFINITE,
+            ):
+                return
+            on_message(int(message.value))
+
+    thread = threading.Thread(target=_deliver, name="haute-job-memory-watcher", daemon=True)
+    thread.start()
+    return thread
+
+
+def _windows_apis() -> Any:
     """Return Win32 APIs with pointer-width-safe ctypes declarations."""
     windll_factory = getattr(ctypes, "WinDLL", None)
     if windll_factory is None:
         raise NativeMemoryLimitUnsupportedError("Win32 APIs are unavailable")
     kernel32 = windll_factory("kernel32", use_last_error=True)
-    psapi = windll_factory("psapi", use_last_error=True)
     kernel32.CreateJobObjectW.argtypes = (wintypes.LPVOID, wintypes.LPCWSTR)
     kernel32.CreateJobObjectW.restype = wintypes.HANDLE
     kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
@@ -459,24 +714,14 @@ def _windows_apis() -> tuple[Any, Any]:
     kernel32.CloseHandle.restype = wintypes.BOOL
     kernel32.GetCurrentProcess.argtypes = ()
     kernel32.GetCurrentProcess.restype = wintypes.HANDLE
-    psapi.GetProcessMemoryInfo.argtypes = (
-        wintypes.HANDLE,
-        ctypes.POINTER(_PROCESS_MEMORY_COUNTERS_EX),
-        wintypes.DWORD,
-    )
-    psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
-    return kernel32, psapi
+    return kernel32
 
 
 def _windows_private_usage() -> int:
-    counters = _PROCESS_MEMORY_COUNTERS_EX()
-    counters.cb = ctypes.sizeof(counters)
-    kernel32, psapi = _windows_apis()
-    if not psapi.GetProcessMemoryInfo(
-        kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb
-    ):
-        raise _windows_error()
-    return int(counters.PrivateUsage)
+    value = current_process_private_bytes()
+    if value is None:
+        raise NativeMemoryLimitUnsupportedError("cannot measure Windows private memory")
+    return value
 
 
 def _windows_error() -> OSError:
@@ -490,7 +735,7 @@ def _windows_error_code() -> int:
 
 
 def _create_windows_job() -> Any:
-    kernel32, _psapi = _windows_apis()
+    kernel32 = _windows_apis()
     handle = kernel32.CreateJobObjectW(None, None)
     if not handle:
         raise NativeMemoryLimitUnsupportedError(f"CreateJobObject failed: {_windows_error_code()}")

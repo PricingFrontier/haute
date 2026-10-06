@@ -1,14 +1,14 @@
 import { useMemo, useState } from "react"
 import { Search, X } from "lucide-react"
 import type { OnUpdateConfig } from "../editors"
-import { NODE_GROUP_COLORS } from "../../theme/colors"
 import { configField } from "../../utils/configField"
-import { withAlpha } from "../../utils/color"
 import { isNumericDtype } from "../../utils/polarsDtypes"
+import { NODE_GROUP_COLORS } from "../../theme/colors"
+import { withAlpha } from "../../utils/color"
+import { getDtypeColor } from "../../utils/dtypeColors"
 import {
   finalSelectedFeatureNames,
   roleColumns,
-  type ModellingAlgorithm,
   type ModellingColumn,
 } from "./featureSelection"
 
@@ -16,7 +16,6 @@ type Props = {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
   columns: ModellingColumn[]
-  algorithm: ModellingAlgorithm
 }
 
 const MONOTONIC_DIRECTIONS = [
@@ -43,26 +42,13 @@ const MONOTONIC_DIRECTIONS = [
   },
 ] as const
 
-const INCLUDE_BUTTON_STYLE = {
-  background: withAlpha(NODE_GROUP_COLORS.data, 0.1),
-  border: `1px solid ${NODE_GROUP_COLORS.data}`,
-  color: NODE_GROUP_COLORS.data,
-} as const
-
-const EXCLUDE_BUTTON_STYLE = {
-  background: "var(--danger-soft)",
-  border: "1px solid var(--danger)",
-  color: "var(--danger)",
-} as const
-
-export function CommonFeatureConfig({
-  config,
-  onUpdate,
-  columns,
-  algorithm,
-}: Props) {
+export function CommonFeatureConfig({ config, onUpdate, columns }: Props) {
   const [filter, setFilter] = useState("")
-  const exclude = configField<string[]>(config, "exclude", [])
+  const [membership, setMembership] = useState<"all" | "included" | "excluded">(
+    "all",
+  )
+  // Features are opt-in: a column is a feature only once it is ticked.
+  const featureColumns = configField<string[]>(config, "feature_columns", [])
   const monotone = configField<Record<string, number>>(
     config,
     "monotone_constraints",
@@ -77,16 +63,22 @@ export function CommonFeatureConfig({
     () => new Set(eligible.map((column) => column.name)),
     [eligible],
   )
-  const staleExclusions = exclude.filter(
-    (name) => !columns.some((column) => column.name === name),
+  const upstreamNames = useMemo(
+    () => new Set(columns.map((column) => column.name)),
+    [columns],
   )
-  const visible = eligible.filter((column) =>
-    column.name.toLowerCase().includes(filter.trim().toLowerCase()),
+  const selectedNames = finalSelectedFeatureNames(config, eligible)
+  // Missing features are only flagged once the upstream columns have arrived.
+  const staleFeatures = columns.length === 0 ? [] : featureColumns.filter(
+    (name) => !upstreamNames.has(name),
   )
-  const selectedNames = finalSelectedFeatureNames(config, eligible, algorithm)
-  const includedCount = eligible.filter(
-    (column) => !exclude.includes(column.name),
-  ).length
+  const visible = eligible.filter(
+    (column) =>
+      column.name.toLowerCase().includes(filter.trim().toLowerCase()) &&
+      (membership === "all" ||
+        (membership === "included") === selectedNames.has(column.name)),
+  )
+  const includedCount = selectedNames.size
 
   const updateMonotonicity = (
     name: string,
@@ -95,10 +87,7 @@ export function CommonFeatureConfig({
     const next = { ...monotone }
     if (direction === 0) delete next[name]
     else next[name] = direction
-    onUpdate(
-      "monotone_constraints",
-      Object.keys(next).length > 0 ? next : null,
-    )
+    onUpdate("monotone_constraints", Object.keys(next).length > 0 ? next : null)
   }
 
   const monotonicityUnavailableReason = (
@@ -111,89 +100,142 @@ export function CommonFeatureConfig({
     if (excluded) {
       return "Include this feature to set monotonicity."
     }
-    return algorithm === "glm"
-      ? "Add this feature as a GLM factor to set monotonicity."
-      : "Monotonicity is unavailable for this feature."
+    return "Monotonicity is unavailable for this feature."
   }
 
-  const requestExclusionUpdate = (nextExclude: string[]) => {
-    onUpdate({ exclude: [...nextExclude] })
+  // Upstream column order, then any stored name upstream no longer has.
+  const writeSelection = (next: ReadonlySet<string>) => {
+    onUpdate({
+      feature_columns: [
+        ...columns.map((column) => column.name).filter((name) => next.has(name)),
+        ...featureColumns.filter((name) => next.has(name) && !upstreamNames.has(name)),
+      ],
+    })
   }
-
   return (
     <section aria-labelledby="model-features-heading">
       <div className="flex items-end justify-between gap-3">
         <h3
           id="model-features-heading"
-          className="text-[11px] font-bold uppercase tracking-[0.08em]"
+          className="text-[14px] font-semibold"
           style={{ color: "var(--text-muted)" }}
         >
           Features
         </h3>
         <span
-          className="text-[10px] tabular-nums"
+          className="text-xs tabular-nums"
           style={{ color: "var(--text-secondary)" }}
         >
-          {includedCount} of {eligible.length} included
+          {includedCount} included · {eligible.length - includedCount} excluded
         </span>
       </div>
 
-      <div className="relative mt-2">
-        <Search
-          aria-hidden="true"
-          className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2"
-          size={13}
-          style={{ color: "var(--text-muted)" }}
-        />
-        <input
-          aria-label="Search features"
-          className="w-full rounded-lg py-2 pl-8 pr-2.5 text-xs outline-none focus:ring-1 focus:ring-[var(--model-accent-border)]"
-          style={{
-            background: "var(--bg-input)",
-            border: "1px solid var(--border)",
-            color: "var(--text-primary)",
-          }}
-          value={filter}
-          onChange={(event) => setFilter(event.target.value)}
-          placeholder="Search features"
-        />
+      <div
+        className="sticky top-0 z-10 mt-2 space-y-2 py-1"
+        style={{ background: "var(--bg-panel)" }}
+      >
+        <div className="relative mt-2">
+          <Search
+            aria-hidden="true"
+            className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2"
+            size={13}
+            style={{ color: "var(--text-muted)" }}
+          />
+          <input
+            aria-label="Search features"
+            className="w-full rounded-lg py-2 pl-8 pr-2.5 text-xs outline-none focus:ring-1 focus:ring-[var(--model-accent-border)]"
+            style={{
+              background: "var(--bg-input)",
+              border: "1px solid var(--border)",
+              color: "var(--text-primary)",
+            }}
+            value={filter}
+            onChange={(event) => setFilter(event.target.value)}
+            placeholder="Search features"
+          />
+        </div>
+
+        <div
+          className="flex flex-wrap gap-1.5"
+          role="group"
+          aria-label="Feature filter"
+        >
+          {(["all", "included", "excluded"] as const).map((state) => (
+            <button
+              key={state}
+              type="button"
+              aria-pressed={membership === state}
+              onClick={() => setMembership(state)}
+              className="rounded px-2 py-1 text-[12px]"
+              style={{
+                background:
+                  membership === state
+                    ? "var(--model-accent-soft)"
+                    : "var(--bg-input)",
+                border: "1px solid var(--border)",
+                color: "var(--text-primary)",
+              }}
+            >
+              {state[0].toUpperCase() + state.slice(1)} (
+              {state === "all"
+                ? eligible.length
+                : state === "included"
+                  ? includedCount
+                  : eligible.length - includedCount}
+              )
+            </button>
+          ))}
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          <button
+            type="button"
+            aria-label="Include all features"
+            className="rounded px-2 py-1 text-[12px] font-medium transition-[filter] hover:brightness-125"
+            style={{
+              background: "var(--model-accent-soft)",
+              border: "1px solid var(--model-accent-border)",
+              color: "var(--model-accent)",
+            }}
+            onClick={() =>
+              writeSelection(new Set([...featureColumns, ...eligibleNames]))
+            }
+          >
+            Include all
+          </button>
+          <button
+            type="button"
+            aria-label="Exclude all features"
+            className="rounded px-2 py-1 text-[12px] font-medium transition-[filter] hover:brightness-125"
+            style={{
+              background: "var(--bg-input)",
+              border: "1px solid var(--border)",
+              color: "var(--text-secondary)",
+            }}
+            onClick={() =>
+              writeSelection(
+                new Set(featureColumns.filter((name) => !eligibleNames.has(name))),
+              )
+            }
+          >
+            Exclude all
+          </button>
+        </div>
       </div>
 
-      <div className="mt-2 flex flex-wrap gap-1.5">
-        <button
-          type="button"
-          aria-label="Include all features"
-          className="rounded-lg px-2.5 py-1 text-[10px] font-medium transition-[filter] hover:brightness-125"
-          style={INCLUDE_BUTTON_STYLE}
-          onClick={() =>
-            requestExclusionUpdate(
-              exclude.filter((name) => !eligibleNames.has(name)),
-            )
-          }
-        >
-          Include all
-        </button>
-        <button
-          type="button"
-          aria-label="Exclude all features"
-          className="rounded-lg px-2.5 py-1 text-[10px] font-medium transition-[filter] hover:brightness-125"
-          style={EXCLUDE_BUTTON_STYLE}
-          onClick={() =>
-            requestExclusionUpdate([
-              ...new Set([
-                ...exclude,
-                ...eligible.map((column) => column.name),
-              ]),
-            ])
-          }
-        >
-          Exclude all
-        </button>
+      <div
+        className="mt-4 grid grid-cols-[1rem_minmax(0,1fr)_4.5rem_6rem] gap-2 px-0 text-[11px]"
+        style={{ color: "var(--text-muted)" }}
+      >
+        <span aria-hidden="true" /> <span>Feature</span>
+        <span>Type</span>
+        <span>Monotonicity</span>
       </div>
-
-      <div className="mt-3 grid gap-1.5">
+      <div
+        className="mt-1 divide-y divide-[var(--border)]"
+        style={{ borderColor: "var(--border)" }}
+      >
         {visible.map((column) => {
-          const excluded = exclude.includes(column.name)
+          const excluded = !selectedNames.has(column.name)
           const canSetMonotonicity =
             selectedNames.has(column.name) && isNumericDtype(column.dtype)
           const monotonicity = monotone[column.name] ?? 0
@@ -206,58 +248,40 @@ export function CommonFeatureConfig({
             <div
               role="group"
               aria-label={`${column.name} feature`}
-              className="flex min-w-0 items-center gap-1.5 rounded-lg px-2 py-1.5"
+              className="grid min-w-0 grid-cols-[1rem_minmax(0,1fr)_4.5rem_6rem] items-center gap-2 py-2"
               key={column.name}
               style={{
-                background: "var(--bg-elevated)",
-                border: "1px solid var(--border)",
+                background: "transparent",
               }}
             >
+              <input
+                type="checkbox"
+                aria-label={`Include ${column.name}`}
+                checked={!excluded}
+                className="accent-purple-500"
+                onChange={() => {
+                  const next = new Set(featureColumns)
+                  if (excluded) next.add(column.name)
+                  else next.delete(column.name)
+                  writeSelection(next)
+                }}
+              />
               <span
-                className="min-w-0 flex-1 truncate font-mono text-[11px] font-semibold"
+                className="min-w-0 truncate font-mono text-[13px] font-semibold"
                 title={column.name}
                 style={{ color: "var(--text-primary)" }}
               >
                 {column.name}
               </span>
               <span
-                className="max-w-20 shrink-0 truncate rounded-full px-1.5 py-0.5 font-mono text-[9px]"
+                className={`max-w-full justify-self-start truncate rounded-full px-1.5 py-0.5 font-mono text-[11px] ${getDtypeColor(column.dtype)}`}
                 title={column.dtype}
-                style={{
-                  background: "var(--chrome-hover)",
-                  color: "var(--text-secondary)",
-                }}
+                style={{ background: "var(--chrome-hover)" }}
               >
                 {column.dtype}
               </span>
-              <button
-                type="button"
-                aria-label={`${column.name} is ${
-                  excluded
-                    ? "excluded; click to include"
-                    : "included; click to exclude"
-                }`}
-                aria-pressed={!excluded}
-                className="shrink-0 rounded-lg px-2.5 py-1 text-[10px] font-medium transition-[filter] hover:brightness-125"
-                style={excluded ? EXCLUDE_BUTTON_STYLE : INCLUDE_BUTTON_STYLE}
-                title={
-                  excluded
-                    ? "Excluded — click to include"
-                    : "Included — click to exclude"
-                }
-                onClick={() =>
-                  requestExclusionUpdate(
-                    excluded
-                      ? exclude.filter((name) => name !== column.name)
-                      : [...exclude, column.name],
-                  )
-                }
-              >
-                {excluded ? "Exclude" : "Include"}
-              </button>
-
               <fieldset
-                className="m-0 shrink-0 border-0 p-0 disabled:opacity-40 disabled:grayscale"
+                className="m-0 min-w-0 border-0 p-0 disabled:opacity-40 disabled:grayscale"
                 disabled={!canSetMonotonicity}
                 title={canSetMonotonicity ? undefined : unavailableReason}
               >
@@ -305,11 +329,13 @@ export function CommonFeatureConfig({
             className="rounded-lg border border-dashed px-3 py-5 text-center text-[10px]"
             style={{ color: "var(--text-muted)", borderColor: "var(--border)" }}
           >
-            No matching feature columns.
+            {columns.length === 0
+              ? `The upstream columns are not known yet${featureColumns.length > 0 ? `; ${featureColumns.length} saved ${featureColumns.length === 1 ? "feature" : "features"} will apply` : ""}.`
+              : "No matching feature columns."}
           </p>
         )}
 
-        {staleExclusions.map((name) => (
+        {staleFeatures.map((name) => (
           <div
             className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-[11px]"
             key={name}
@@ -319,17 +345,15 @@ export function CommonFeatureConfig({
               color: "var(--danger-text-soft)",
             }}
           >
-            <span className="min-w-0 flex-1 truncate">
-              {name} — not found
-            </span>
+            <span className="min-w-0 flex-1 truncate">{name} - not found</span>
             <button
               type="button"
-              aria-label={`Remove ${name} exclusion`}
+              aria-label={`Remove ${name} feature`}
               className="rounded p-1 hover:bg-[var(--danger-soft)]"
               onClick={() =>
                 onUpdate(
-                  "exclude",
-                  exclude.filter((entry) => entry !== name),
+                  "feature_columns",
+                  featureColumns.filter((entry) => entry !== name),
                 )
               }
             >

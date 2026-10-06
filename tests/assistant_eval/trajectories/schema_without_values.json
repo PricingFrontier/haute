@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "id": "schema_without_values",
+  "case": "schema_without_values",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "schema",
+              "tool": "inspect_node",
+              "arguments": {
+                "node": "quotes"
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "quotes has four columns: quote_id and region as strings, driver_age as an integer and private_note as a string. I did not read any row values.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

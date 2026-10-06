@@ -10,12 +10,17 @@
  * 6. resolveGraphFromRefs: falls back to graphRef when parentGraphRef is null
  * 7. buildGraph: empty inputs
  */
-import { describe, it, expect } from "vitest"
+import { afterEach, describe, it, expect } from "vitest"
 import type { Node, Edge } from "@xyflow/react"
 import { buildGraph, graphForRequestIdentity, resolveGraphFromRefs } from "../buildGraph"
 import { makeSimpleNode, makeSimpleEdge } from "../../test-utils/factories"
+import useGraphStore from "../../stores/useGraphStore"
 
 describe("buildGraph", () => {
+  afterEach(() => {
+    useGraphStore.getState().resetForTests()
+  })
+
   it("serializes nodes with id, type, data, and zeroed position", () => {
     // Catches: if position is taken from the input node instead of
     // being zeroed, the backend would receive UI coordinates that
@@ -29,8 +34,10 @@ describe("buildGraph", () => {
     expect(result.nodes[0].id).toBe("n1")
     expect(result.nodes[0].type).toBe("polars")
     expect(result.nodes[0].position).toEqual({ x: 0, y: 0 })
-    expect(result.nodes[0].data).toBe(nodes[0].data)
-    expect(result.edges).toBe(edges)
+    expect(result.nodes[0].data).toEqual(nodes[0].data)
+    expect(result.nodes[0].data).not.toBe(nodes[0].data)
+    expect(result.edges).toEqual(edges)
+    expect(result.edges).not.toBe(edges)
   })
 
   it("falls back to data.nodeType when node.type is undefined", () => {
@@ -55,25 +62,29 @@ describe("buildGraph", () => {
     expect(result.nodes[0].type).toBe("submodel")
   })
 
-  it("passes through submodels and preamble when provided", () => {
-    // Catches: if these optional fields are accidentally dropped,
-    // saving a pipeline with submodels or preamble would lose that data.
+  it("preserves canonical submodels when provided", () => {
+    // Catches: if this optional field is accidentally dropped,
+    // saving a pipeline with submodels would lose that data.
     const submodels = { sub1: { graph: { nodes: [], edges: [] } } }
-    const preamble = "import polars as pl"
 
-    const result = buildGraph([], [], submodels, preamble)
+    const result = buildGraph([], [], submodels)
 
-    expect(result.submodels).toBe(submodels)
-    expect(result.preamble).toBe(preamble)
+    expect(result.submodels).toEqual(submodels)
+    expect(result.submodels).not.toBe(submodels)
   })
 
-  it("sets submodels and preamble to undefined when not provided", () => {
-    // Catches: if defaults were accidentally set to empty objects/strings,
-    // the backend might interpret them differently than "not provided".
+  it("carries the graph store's preamble, so no request can leave it out", () => {
+    useGraphStore.getState().setPreambleRaw("import polars as pl")
+
+    expect(buildGraph([], []).preamble).toBe("import polars as pl")
+  })
+
+  it("sets submodels to undefined when not provided", () => {
+    // Catches: if the default were accidentally an empty object,
+    // the backend might interpret it differently than "not provided".
     const result = buildGraph([], [])
 
     expect(result.submodels).toBeUndefined()
-    expect(result.preamble).toBeUndefined()
   })
 
   it("handles empty node and edge arrays", () => {
@@ -101,6 +112,49 @@ describe("buildGraph", () => {
     })
     expect(result.nodes[0].data.description).toBe("Important step")
   })
+
+  it("strips editor identities from root and nested graphs", () => {
+    const nodes = [makeSimpleNode("n1", "polars", {
+      config: { _semanticOption: true },
+      _functionName: "root_identity",
+      _defaultInputName: "root_identity",
+    })]
+    const edges = [{
+      ...makeSimpleEdge("e1", "n1", "n2"),
+      data: { _inputName: "root_identity" },
+    }]
+    const submodels = {
+      pricing: {
+        definitionId: "pricing",
+        file: "modules/pricing.py",
+        graph: {
+          nodes: [{
+            id: "child",
+            type: "polars",
+            position: { x: 0, y: 0 },
+            data: { label: "Child", nodeType: "polars", _functionName: "child_identity" },
+          }],
+          edges: [],
+        },
+        inputPorts: [],
+        outputPorts: [],
+      },
+    }
+
+    const result = buildGraph(nodes, edges, submodels)
+
+    expect(result.nodes[0].data).toEqual({
+      label: "Node n1",
+      description: "",
+      nodeType: "polars",
+      config: { _semanticOption: true },
+    })
+    expect(result.edges[0]).not.toHaveProperty("data")
+    const definition = result.submodels?.pricing as Record<string, unknown>
+    const child = (definition.graph as { nodes: Array<{ data: Record<string, unknown> }> }).nodes[0]
+    expect(child.data).not.toHaveProperty("_functionName")
+    expect(nodes[0].data).toHaveProperty("_functionName", "root_identity")
+  })
 })
 
 describe("graphForRequestIdentity", () => {
@@ -109,6 +163,7 @@ describe("graphForRequestIdentity", () => {
     _availableColumns: [{ name: "available", dtype: "Int64" }],
     _schemaWarnings: [{ column: "value", status: "stale" }],
     _columnsSource: "preview",
+    _columnsStructuralVersion: 42,
     _status: "running",
     _traceActive: true,
     _traceDimmed: true,
@@ -125,33 +180,31 @@ describe("graphForRequestIdentity", () => {
       nodeType: "polars",
       config: { code: "pl.col('value')" },
     }
-    const graph = buildGraph(
-      [{
-        id: "top",
-        type: "polars",
-        data: { ...semanticData, ...volatileNodeData },
-      }],
-      [],
-      {
-        child: {
-          label: "Child",
-          graph: {
-            nodes: [{
-              id: "nested",
-              type: "polars",
-              data: {
-                ...semanticData,
-                label: "Nested",
-                ...volatileNodeData,
-              },
-              position: { x: 12, y: 34 },
-            }],
-            edges: [],
-          },
+    const topNode = {
+      id: "top",
+      type: "polars",
+      data: { ...semanticData, ...volatileNodeData },
+    }
+    const nestedNode = {
+      id: "nested",
+      type: "polars",
+      data: {
+        ...semanticData,
+        label: "Nested",
+        ...volatileNodeData,
+      },
+      position: { x: 12, y: 34 },
+    }
+    useGraphStore.getState().setPreambleRaw("import polars as pl")
+    const graph = buildGraph([topNode], [], {
+      child: {
+        label: "Child",
+        graph: {
+          nodes: [nestedNode],
+          edges: [],
         },
       },
-      "import polars as pl",
-    )
+    })
 
     const identity = graphForRequestIdentity(graph)
     const identityNodes = identity.nodes as Array<{ data: Record<string, unknown> }>
@@ -163,7 +216,9 @@ describe("graphForRequestIdentity", () => {
     expect(childNodes[0].data).toEqual({ ...semanticData, label: "Nested" })
     expect(childGraph.edges).toEqual([])
     expect(identity.preamble).toBe("import polars as pl")
-    expect(graph.nodes[0].data._columns).toEqual(volatileNodeData._columns)
+    expect(graph.nodes[0].data).not.toHaveProperty("_columns")
+    expect(topNode.data._columns).toEqual(volatileNodeData._columns)
+    expect(nestedNode.data._columns).toEqual(volatileNodeData._columns)
   })
 
   it("preserves opaque legacy nodes and submodel definitions", () => {
@@ -233,9 +288,12 @@ describe("resolveGraphFromRefs", () => {
 
     const result = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
 
-    expect(result.nodes).toBe(parentNodes)
-    expect(result.edges).toBe(parentEdges)
-    expect(result.submodels).toBe(parentSubmodels)
+    expect(result.nodes).toEqual(parentNodes)
+    expect(result.nodes).not.toBe(parentNodes)
+    expect(result.edges).toEqual(parentEdges)
+    expect(result.edges).not.toBe(parentEdges)
+    expect(result.submodels).toEqual(parentSubmodels)
+    expect(result.submodels).not.toBe(parentSubmodels)
     expect(result.preamble).toBe("import numpy")
   })
 
@@ -253,9 +311,12 @@ describe("resolveGraphFromRefs", () => {
 
     const result = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
 
-    expect(result.nodes).toBe(nodes)
-    expect(result.edges).toBe(edges)
-    expect(result.submodels).toBe(submodels)
+    expect(result.nodes).toEqual(nodes)
+    expect(result.nodes).not.toBe(nodes)
+    expect(result.edges).toEqual(edges)
+    expect(result.edges).not.toBe(edges)
+    expect(result.submodels).toEqual(submodels)
+    expect(result.submodels).not.toBe(submodels)
     expect(result.preamble).toBe("# preamble")
   })
 
@@ -277,5 +338,45 @@ describe("resolveGraphFromRefs", () => {
     const result = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
 
     expect(result.preamble).toBe("import pandas as pd")
+  })
+})
+
+describe("global constants in built graphs", () => {
+  afterEach(() => {
+    useGraphStore.getState().resetForTests()
+  })
+
+  it("both builders carry the store's valid constants without caller arguments", () => {
+    useGraphStore.getState().setGlobalConstantsRaw([
+      { name: "rate", type: "float", split: true, value: "", bySource: { live: "1.5", nb_batch: "2.5" } },
+      { name: "broken", type: "integer", split: false, value: "x", bySource: {} },
+    ])
+    const graphRef = { current: { nodes: [] as Node[], edges: [] as Edge[] } }
+
+    for (const graph of [
+      buildGraph([], []),
+      resolveGraphFromRefs(graphRef, { current: null }, { current: {} }, { current: "" }),
+    ]) {
+      expect(graph.global_constants).toEqual([
+        { name: "rate", type: "float", by_source: { live: 1.5, nb_batch: 2.5 } },
+      ])
+      expect(graph.global_constants_error).toBeNull()
+    }
+  })
+
+  it("carry a load error and no constants while the file failed to load", () => {
+    useGraphStore.getState().loadGraphSnapshot({
+      nodes: [],
+      edges: [],
+      preamble: "",
+      submodels: {},
+      globalConstants: [{ name: "rate", type: "float", split: false, value: "1", bySource: {} }],
+      globalConstantsError: "bad JSON",
+    })
+
+    const graph = buildGraph([], [])
+
+    expect(graph.global_constants).toEqual([])
+    expect(graph.global_constants_error).toBe("bad JSON")
   })
 })

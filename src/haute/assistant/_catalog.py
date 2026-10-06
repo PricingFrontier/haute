@@ -1,76 +1,76 @@
-"""The node vocabulary exposed to the pricing assistant.
+"""The capability manifest: the node, operation and recipe vocabulary of the assistant.
 
-The catalog deliberately keeps its mechanical facts derived from the same
-registries that validate and save a pipeline.  The only hand-authored part is
-the short usage note for each node type.  That gives the model useful authoring
-guidance without creating a second source of truth for node names, config keys,
+Node descriptors derive their mechanical facts from the same registries that
+validate and save a pipeline.  The only hand-authored part is the short usage
+note for each node type.  That gives the model useful authoring guidance
+without creating a second source of truth for node names, config keys,
 decorators, sidecar folders, or singleton rules.
 """
 
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from types import MappingProxyType, UnionType
 from typing import Literal, Required, Union, cast, get_args, get_origin, get_type_hints
 
 from haute._cache import canonical_json
-from haute._config_io import NODE_TYPE_TO_FOLDER
+from haute._config_io import NODE_TYPE_TO_FOLDER, palette_default_config
 from haute._config_validation import _TYPED_DICT_BY_NODE_TYPE, VALID_KEYS
-from haute._types import NODE_TYPE_TO_DECORATOR, NodeType
+from haute._polars_steps import (
+    AGGREGATIONS,
+    BINARY_OPERATORS,
+    CAST_DTYPES,
+    FILL_STRATEGIES,
+    FUNCTIONS,
+    JOIN_HOW,
+    JOIN_VALIDATE,
+    LITERAL_TYPES,
+    OPERATORS,
+    PIVOT_AGGREGATIONS,
+    STEPPED_NODE_TYPES,
+    WINDOW_AGGREGATIONS,
+    step_fields,
+    stepped_surface_for,
+)
+from haute._standalone_nodes import SOURCE_NODE_TYPES, STANDALONE_PASSTHROUGH_TYPES
+from haute._types import NODE_TYPE_TO_DECORATOR, SINK_ONLY_NODE_TYPES, NodeType
+from haute.assistant._node_cards import node_card
 from haute.assistant._recipes import recipe_manifest
-from haute.assistant._wire_ops import graph_edit_operations_schema
+from haute.assistant._wire_ops import MAX_DECLARED_POSTCONDITIONS, graph_edit_operations_schema
 from haute.routes._save_pipeline import _SINGLETON_NODE_TYPES
-
-
-@dataclass(frozen=True, slots=True)
-class NodeCatalogEntry:
-    """Facts and authoring guidance for one :class:`~haute._types.NodeType`."""
-
-    node_type: NodeType
-    decorator: str | None
-    config_keys: tuple[str, ...]
-    config_folder: str | None
-    singleton: bool
-    usage_note: str
-
-    @property
-    def config_shapes(self) -> tuple[tuple[str, str], ...]:
-        """Return the TypedDict field shapes behind the config allowlist."""
-
-        config_type = _TYPED_DICT_BY_NODE_TYPE.get(self.node_type)
-        if config_type is None:
-            return ()
-        return tuple(
-            (key, str(shape).replace("typing.", ""))
-            for key, shape in config_type.__annotations__.items()
-        )
-
-    def as_dict(self) -> dict[str, object]:
-        """Return the stable, JSON-shaped representation used by tools."""
-
-        return {
-            "node_type": self.node_type.value,
-            "decorator": self.decorator,
-            "config_keys": list(self.config_keys),
-            "config_shapes": [{"key": key, "shape": shape} for key, shape in self.config_shapes],
-            "config_folder": self.config_folder,
-            "singleton": self.singleton,
-            "usage_note": self.usage_note,
-        }
-
+from haute.schemas import (
+    ASSISTANT_BUILD_PLAN_ID_PATTERN,
+    ASSISTANT_BUILD_PLAN_TITLE_LIMIT,
+    ASSISTANT_MAX_ASSUMPTIONS,
+    ASSISTANT_MAX_BUILD_PLAN_ITEMS,
+    ASSISTANT_RECEIPT_TEXT_LIMIT,
+)
 
 # The save service is the authority for singleton policy.  Keep this derived
 # rather than repeating the node list here: a new singleton must be visible to
-# both save validation and the assistant catalog in the same change.
+# both save validation and the capability manifest in the same change.
 _SINGLETON_TYPES = frozenset(node_type for node_type, _label in _SINGLETON_NODE_TYPES)
 
 
-# Usage notes are the catalog's intentionally hand-authored knowledge.  Every
+#: How an incoming edge names the input it gives, in the words of
+#: ``haute._graph_utils.executable_input_name``. The Polars descriptor, the
+#: system prompt, the authoring guide and every node card that names inputs
+#: state it verbatim, held so by test.
+INPUT_NAMING_RULE = (
+    "An input is named after its incoming edge: the upstream node's name, except that "
+    "an edge from a Quote Input frame, which `add_edge`'s `source_handle` selects, is "
+    "named by that frame, and an edge from a submodel output by its port."
+)
+
+
+# Usage notes are the manifest's intentionally hand-authored knowledge.  Every
 # current NodeType is listed explicitly so adding a NodeType without adding a
-# corresponding note leaves the catalog incomplete and fails at import time.
+# corresponding note leaves the manifest incomplete and fails at import time.
 _USAGE_NOTES: dict[NodeType, str] = {
     NodeType.API_INPUT: (
         "Declare the request contract and its input tables; use this as the "
@@ -81,12 +81,13 @@ _USAGE_NOTES: dict[NodeType, str] = {
         "an explicit provider and format; use a snapshot for remote or eager-only inputs."
     ),
     NodeType.DATA_OUTPUT: (
-        "Write or sink a Polars frame to a file or database target; keep it at "
-        "a deliberate branch endpoint rather than in the scoring path."
+        "Write or sink its one input frame to a file, database or lakehouse target "
+        "when the analyst runs the output; it has no output, so it ends its branch "
+        "and stays out of the scoring path."
     ),
     NodeType.POLARS: (
-        "Apply a Polars transform to connected inputs; keep reusable logic in "
-        "code and use inputMapping when named inputs need explicit binding."
+        "Apply a Polars transform to connected inputs; new logic is written as steps. "
+        + INPUT_NAMING_RULE
     ),
     NodeType.EDGE_JOIN: (
         "Join the base input with a connected input; specify the join keys and "
@@ -97,44 +98,61 @@ _USAGE_NOTES: dict[NodeType, str] = {
         "metadata; configure the feature contract and prediction output deliberately."
     ),
     NodeType.BANDING: (
-        "Turn continuous or discrete factor values into named bands; define an "
-        "output column and an explicit default for values outside the rules."
+        "Band a number or date column at breakpoints, or map categorical values to "
+        "named bands. Breakpoint rules are {boundary, label} rows: each boundary is "
+        "its band's upper bound (inclusive unless rightClosed is false), every "
+        "boundary is a number, a date, or a date and time of one kind, and one "
+        "final row may leave the boundary empty for the open-ended band. "
+        "Categorical rules are {value, assignment} rows. Give each factor an "
+        "outputColumn and an explicit default for values outside the rules."
     ),
     NodeType.RATING_STEP: (
-        "Look up rating factors from one or more tables and combine their "
-        "outputs with the chosen operation; make table factors and miss policy explicit."
+        "Rate its first input: look up rating factors from one or more tables and "
+        "combine their outputs with the chosen operation; make table factors and "
+        "miss policy explicit."
     ),
     NodeType.OUTPUT: (
         "Assemble the top-level JSON response from selected upstream columns "
-        "with an explicit outputMapping."
+        "with an explicit outputMapping whose source_port names the incoming "
+        "frame; it has no output edge."
     ),
     NodeType.EXPLORE: (
-        "Request exploratory summaries or apply an exploration code block; "
-        "treat it as an analysis branch, not as a required pricing stage."
+        "Summarise, pivot and chart its one input frame for analysis; it has no "
+        "output, so it ends an analysis branch and is never a pricing stage."
     ),
     NodeType.EXTERNAL_FILE: (
-        "Load a serialized external object such as a model or lookup artifact; "
-        "provide the file type and any type-specific model class."
+        "Load a pickle, JSON or joblib file and expose the loaded object as `obj`; "
+        "the first input is `df` and further inputs are named by their edges. "
+        "Without steps or code the node returns its first input unchanged. Set "
+        "fileType. A model Haute trains is scored with Model Scoring, not loaded here."
     ),
     NodeType.LIVE_SWITCH: (
         "Route one of several connected frames by scenario; use at most one "
         "switch per pipeline and name the scenario map unambiguously."
     ),
     NodeType.MODELLING: (
-        "Train a model from the connected frame; configure target, algorithm, "
-        "task, features, and evaluation settings, and keep training outside the live quote path."
+        "Train a model from its one input frame; configure target, algorithm, "
+        "task, features, and evaluation settings. It has no output, so nothing is "
+        "wired downstream of it and training stays outside the live quote path."
     ),
     NodeType.OPTIMISER: (
-        "Search for better factor or quote values under an objective and "
-        "constraints; select the mode and wire the required scored/factor inputs explicitly."
+        "Optimise prices under an objective and constraints: choose mode online or "
+        "ratebook, map the quote_id, scenario_index, scenario_value and objective "
+        "columns, and name the frame to optimise with data_input when several "
+        "inputs are connected (and the Banding input with banding_source in "
+        "ratebook mode). The solve runs from the editor and saves a result that "
+        "Apply Optimisation reads; the node has no output."
     ),
     NodeType.SCENARIO_EXPANDER: (
-        "Expand each quote into deterministic scenario values for optimisation "
-        "or analysis; set the source column, range, and number of steps together."
+        "Repeat each row once per scenario step: stepCount (required, at least 1) "
+        "sets how many; step_column names the 0-based index column (default "
+        "scenario_index); column_name, when set, adds a value column spaced evenly "
+        "from min_value to max_value; quote_id names the column identifying each quote."
     ),
     NodeType.OPTIMISER_APPLY: (
-        "Apply a saved optimisation artifact to an upstream frame; identify "
-        "the artifact source and preserve the version/output-column conventions."
+        "Apply a saved optimisation result from a file, run or registered model; a "
+        "ratebook result applies to the input named by ratebook_input and any other "
+        "to the first input. Keep the version and optimised-value column conventions."
     ),
     NodeType.CONSTANT: (
         "Create a one-row frame of named literal values for defaults or lookup "
@@ -151,121 +169,57 @@ _USAGE_NOTES: dict[NodeType, str] = {
 }
 
 
-def _make_entry(node_type: NodeType) -> NodeCatalogEntry:
-    """Build one entry from the canonical registries and the local usage note."""
-
-    return NodeCatalogEntry(
-        node_type=node_type,
-        decorator=NODE_TYPE_TO_DECORATOR.get(node_type),
-        config_keys=tuple(sorted(VALID_KEYS.get(node_type, frozenset()))),
-        config_folder=NODE_TYPE_TO_FOLDER.get(node_type),
-        singleton=node_type in _SINGLETON_TYPES,
-        usage_note=_USAGE_NOTES[node_type],
-    )
-
-
-# Iterate over the enum, rather than the hand-authored notes, so the enum's
-# order is the catalog's order and an omitted note cannot silently hide a new
-# node type.  The explicit membership check lets the completeness validator
-# report the missing type with its normal diagnostic instead of using a broad
-# fallback note.
-NODE_CATALOG: dict[NodeType, NodeCatalogEntry] = {
-    node_type: _make_entry(node_type) for node_type in NodeType if node_type in _USAGE_NOTES
+# The palette's display names (``NODE_TYPE_META`` in
+# ``frontend/src/utils/nodeTypes.ts``), held equal to the editor by test, so
+# the model and the analyst call each node by the same name.
+_DISPLAY_NAMES: dict[NodeType, str] = {
+    NodeType.API_INPUT: "Quote Input",
+    NodeType.DATA_INPUT: "Data Input",
+    NodeType.DATA_OUTPUT: "Data Output",
+    NodeType.POLARS: "Transform",
+    NodeType.EDGE_JOIN: "Edge Join",
+    NodeType.MODEL_SCORE: "Model Scoring",
+    NodeType.BANDING: "Banding",
+    NodeType.RATING_STEP: "Rating Step",
+    NodeType.OUTPUT: "Quote Response",
+    NodeType.EXPLORE: "Explore",
+    NodeType.EXTERNAL_FILE: "Load File",
+    NodeType.LIVE_SWITCH: "Source Switch",
+    NodeType.MODELLING: "Model Training",
+    NodeType.OPTIMISER: "Optimisation",
+    NodeType.SCENARIO_EXPANDER: "Expander",
+    NodeType.OPTIMISER_APPLY: "Apply Optimisation",
+    NodeType.CONSTANT: "Constant",
+    NodeType.SUBMODEL: "Submodel",
+    NodeType.SUBMODEL_PORT: "Port",
 }
 
 
-def validate_catalog_complete() -> None:
-    """Assert that every canonical node type has a complete catalog entry.
-
-    This mirrors ``haute._registry.validate_registry_complete``: a missing
-    entry is a release-time programming error, not a condition for the model
-    to recover from.  Mechanical fields are checked too, so a hand-edited
-    catalog entry cannot quietly disagree with save/config behaviour.
-    """
-
-    canonical_types = frozenset(NodeType)
-    catalog_types = frozenset(NODE_CATALOG)
-    missing = [node_type for node_type in NodeType if node_type not in catalog_types]
-    unexpected = [node_type for node_type in NODE_CATALOG if node_type not in canonical_types]
-
-    invalid_entries: list[str] = []
-    for node_type in NodeType:
-        entry = NODE_CATALOG.get(node_type)
-        if entry is None:
-            continue
-        if entry.node_type is not node_type:
-            invalid_entries.append(f"{node_type.value}: entry.node_type={entry.node_type!r}")
-        if entry.decorator != NODE_TYPE_TO_DECORATOR.get(node_type):
-            invalid_entries.append(f"{node_type.value}: decorator")
-        expected_keys = tuple(sorted(VALID_KEYS.get(node_type, frozenset())))
-        if entry.config_keys != expected_keys:
-            invalid_entries.append(f"{node_type.value}: config_keys")
-        if entry.config_folder != NODE_TYPE_TO_FOLDER.get(node_type):
-            invalid_entries.append(f"{node_type.value}: config_folder")
-        if entry.singleton != (node_type in _SINGLETON_TYPES):
-            invalid_entries.append(f"{node_type.value}: singleton")
-        if not entry.usage_note.strip():
-            invalid_entries.append(f"{node_type.value}: usage_note")
-
-    if missing or unexpected or invalid_entries:
-        raise RuntimeError(
-            "NODE_CATALOG is incomplete or disagrees with canonical registries — "
-            "every NodeType needs matching assistant metadata.\n"
-            f"  Missing: {[node_type.value for node_type in missing]}\n"
-            f"  Unexpected: {[str(node_type) for node_type in unexpected]}\n"
-            f"  Invalid: {invalid_entries}"
-        )
-
-
-def render_catalog() -> str:
-    """Render the catalog section in a stable, model-readable Markdown form."""
-
-    lines = [
-        "## Haute node catalog",
-        "Use only these canonical node types and config keys when authoring a graph.",
-    ]
-    for node_type in NodeType:
-        entry = NODE_CATALOG[node_type]
-        lines.extend(
-            (
-                f"### `{node_type.value}`",
-                (
-                    f"- Decorator: `{entry.decorator}`"
-                    if entry.decorator
-                    else "- Decorator: structural-only"
-                ),
-                (
-                    "- Config keys: " + ", ".join(f"`{key}`" for key in entry.config_keys)
-                    if entry.config_keys
-                    else "- Config keys: none"
-                ),
-                (
-                    "- Config shapes: "
-                    + ", ".join(f"`{key}`: `{shape}`" for key, shape in entry.config_shapes)
-                    if entry.config_shapes
-                    else "- Config shapes: none"
-                ),
-                (
-                    f"- Sidecar folder: `config/{entry.config_folder}/`"
-                    if entry.config_folder
-                    else "- Sidecar folder: none"
-                ),
-                f"- Singleton: {'yes' if entry.singleton else 'no'}",
-                f"- Usage: {entry.usage_note}",
-                "",
-            )
-        )
-    return "\n".join(lines).rstrip()
-
-
-# Fail during import if a new node type is not represented here.  This is
-# intentionally eager: an incomplete catalog must not reach a configured model.
-validate_catalog_complete()
+# One-line purposes shown beside each palette name in the prompt's node index.
+_SUMMARIES: dict[NodeType, str] = {
+    NodeType.API_INPUT: "The live quote request, one frame per declared request table.",
+    NodeType.DATA_INPUT: "Read a file, database, lakehouse, Databricks table or inline records.",
+    NodeType.DATA_OUTPUT: "Write a frame to a file, database or lakehouse when the output is run.",
+    NodeType.POLARS: "Transform one or more frames with Polars steps.",
+    NodeType.EDGE_JOIN: "Join a base frame with a lookup frame on keys.",
+    NodeType.MODEL_SCORE: "Score rows with a saved model.",
+    NodeType.BANDING: "Group number, date or categorical values into named bands.",
+    NodeType.RATING_STEP: "Look up rating factors from tables and combine them.",
+    NodeType.OUTPUT: "Assemble the quote's JSON response from upstream columns.",
+    NodeType.EXPLORE: "Analyse an upstream frame with summaries, pivots and charts.",
+    NodeType.EXTERNAL_FILE: "Load a pickle, JSON, joblib or CatBoost file for use in steps.",
+    NodeType.LIVE_SWITCH: "Route the live request or a batch source by scenario.",
+    NodeType.MODELLING: "Train a gradient boosting, t-boost, EBM or GLM model.",
+    NodeType.OPTIMISER: "Optimise prices under an objective and constraints.",
+    NodeType.SCENARIO_EXPANDER: "Repeat each row across a grid of scenario values.",
+    NodeType.OPTIMISER_APPLY: "Apply a saved optimisation result to price rows.",
+    NodeType.CONSTANT: "A one-row frame of named constant values.",
+    NodeType.SUBMODEL: "An occurrence of a reusable sub-pipeline.",
+    NodeType.SUBMODEL_PORT: "A submodel's structural input or output port.",
+}
 
 
 # ASSIST-A04 capability manifest -------------------------------------------------
-# This intentionally lives beside the legacy catalogue: it is the authoritative
-# descriptor and the latter remains a small compatibility projection.
 MANIFEST_SCHEMA_VERSION = "1.0"
 _MANIFEST_CACHE: dict[tuple[str, str], CapabilityManifest] = {}
 
@@ -342,6 +296,32 @@ def _schema_for_typeddict(typed_dict: type, *, keys: set[str] | None = None) -> 
     return result
 
 
+def _enum_values(schema: Mapping[str, object]) -> list[object] | None:
+    """The closed values a schema allows, or None when it is open."""
+    if "const" in schema:
+        return [schema["const"]]
+    if "enum" in schema:
+        return list(cast(list[object], schema["enum"]))
+    return None
+
+
+def _merge_branch_schemas(schemas: list[Mapping[str, object]]) -> Mapping[str, object]:
+    """One top-level property for a key several I/O branches declare.
+
+    Closed values merge into one enum in branch order; one open branch leaves
+    the merged property open, listing each distinct alternative.
+    """
+    closed = [_enum_values(schema) for schema in schemas]
+    if all(values is not None for values in closed):
+        merged = list(dict.fromkeys(value for values in closed for value in values or ()))
+        return {"const": merged[0]} if len(merged) == 1 else {"enum": merged}
+    distinct: list[Mapping[str, object]] = []
+    for schema in schemas:
+        if schema not in distinct:
+            distinct.append(schema)
+    return distinct[0] if len(distinct) == 1 else {"anyOf": distinct}
+
+
 def _config_schema(node_type: NodeType) -> dict[str, object]:
     """Closed top-level schema matching VALID_KEYS, with I/O branch detail."""
     allowed = set(VALID_KEYS.get(node_type, ()))
@@ -354,21 +334,30 @@ def _config_schema(node_type: NodeType) -> dict[str, object]:
             else DATA_OUTPUT_CONFIG_TYPES
         )
         branch_schemas = [_schema_for_typeddict(branch, keys=allowed) for branch in branches]
-        properties: dict[str, object] = {}
+        declared: dict[str, list[Mapping[str, object]]] = {}
+        branch_required: list[set[str]] = []
         for branch in branch_schemas:
             branch_properties = branch["properties"]
             if not isinstance(branch_properties, Mapping):
                 raise TypeError("Derived config schema properties must be a mapping")
-            properties.update(branch_properties)
+            for key, value in branch_properties.items():
+                declared.setdefault(key, []).append(cast(Mapping[str, object], value))
+            branch_required.append(set(cast(list[str], branch.get("required", []))))
+        properties: dict[str, object] = {
+            key: _merge_branch_schemas(schemas) for key, schemas in declared.items()
+        }
         # Universal keys do not belong to individual I/O alternatives.
         for key in allowed:
             properties.setdefault(key, _json_value_schema())
-        return {
+        schema: dict[str, object] = {
             "type": "object",
             "properties": {key: properties[key] for key in sorted(allowed)},
             "additionalProperties": False,
             "oneOf": branch_schemas,
         }
+        if required_everywhere := set.intersection(*branch_required):
+            schema["required"] = sorted(required_everywhere)
+        return schema
     typed_dict = _TYPED_DICT_BY_NODE_TYPE.get(node_type)
     if typed_dict is None:
         return {"type": "object", "properties": {}, "additionalProperties": False}
@@ -421,6 +410,7 @@ def _schema_enums(schema: Mapping[str, object]) -> dict[str, object]:
 @dataclass(frozen=True, slots=True)
 class NodeCapabilityDescriptor:
     id: str
+    display_name: str
     decorator: str | None
     config_schema: Mapping[str, object]
     required_fields: tuple[str, ...]
@@ -444,6 +434,8 @@ class NodeCapabilityDescriptor:
     examples: tuple[str, ...]
     recipes: tuple[str, ...]
     errors: tuple[Mapping[str, str], ...]
+    step_authoring: Mapping[str, object] | None
+    card: Mapping[str, object]
 
     def as_dict(self) -> dict[str, object]:
         return _thaw({name: getattr(self, name) for name in self.__dataclass_fields__})  # type: ignore[return-value]
@@ -516,51 +508,69 @@ def _haute_version() -> str:
         return "0.0.0-dev"
 
 
-_SOURCE_NODE_TYPES = frozenset(
+_TRAINING_NODE_TYPES = frozenset({NodeType.MODELLING, NodeType.OPTIMISER})
+# Each non-source node type's input cardinality is declared in exactly one of
+# these sets or special-cased below; a type in none fails loudly at import.
+# The single-input set is held equal to the palette's ``maxInputs: 1`` entries
+# (``frontend/src/utils/nodeTypes.ts``) by test.
+_SINGLE_INPUT_TYPES = frozenset(
     {
-        NodeType.API_INPUT,
-        NodeType.DATA_INPUT,
-        NodeType.CONSTANT,
-        NodeType.EXTERNAL_FILE,
+        NodeType.DATA_OUTPUT,
+        NodeType.EXPLORE,
+        NodeType.BANDING,
+        NodeType.SCENARIO_EXPANDER,
+        NodeType.RATING_STEP,
+        NodeType.MODELLING,
+        NodeType.MODEL_SCORE,
     }
 )
-_SINK_NODE_TYPES = frozenset({NodeType.DATA_OUTPUT, NodeType.OUTPUT})
-_TRAINING_NODE_TYPES = frozenset({NodeType.MODELLING, NodeType.OPTIMISER})
 _MULTI_INPUT_NODE_TYPES = frozenset(
     {
         NodeType.POLARS,
-        NodeType.RATING_STEP,
         NodeType.OUTPUT,
         NodeType.LIVE_SWITCH,
         NodeType.OPTIMISER,
+        NodeType.OPTIMISER_APPLY,
         NodeType.SUBMODEL,
     }
 )
 _EXAMPLE_IDS: dict[NodeType, tuple[str, ...]] = {
     NodeType.API_INPUT: ("minimal_live_quote",),
     NodeType.DATA_INPUT: ("minimal_batch",),
-    NodeType.BANDING: ("continuous_banding",),
+    NodeType.BANDING: ("discrete_banding",),
     NodeType.EDGE_JOIN: ("reference_join",),
     NodeType.RATING_STEP: ("rating_step",),
 }
 _RECIPE_IDS: dict[NodeType, tuple[str, ...]] = {
-    NodeType.DATA_INPUT: ("parquet_showcase",),
-    NodeType.BANDING: ("categorical_banding", "continuous_banding"),
-    NodeType.EDGE_JOIN: ("parquet_showcase", "reference_join"),
-    NodeType.POLARS: ("parquet_showcase",),
-    NodeType.OUTPUT: ("parquet_showcase", "response_output"),
+    NodeType.BANDING: ("categorical_banding",),
+    NodeType.EDGE_JOIN: ("reference_join",),
+    NodeType.OUTPUT: ("response_output",),
     NodeType.RATING_STEP: ("rating_step",),
 }
 
 
+_MULTI_INPUT_PORTS: dict[NodeType, str] = {
+    NodeType.POLARS: "one or more frames, each named by its edge",
+    NodeType.OUTPUT: "one or more frames, each addressed by a mapping row's source_port",
+    NodeType.OPTIMISER: (
+        "one or more frames; data_input names the frame to optimise when several are connected"
+    ),
+    NodeType.OPTIMISER_APPLY: (
+        "one or more frames; a ratebook result applies to the input named by "
+        "ratebook_input, any other result to the first input"
+    ),
+}
+
+
 def _node_ports(node_type: NodeType) -> dict[str, object]:
+    outputs: object = [] if node_type in SINK_ONLY_NODE_TYPES else ["frame"]
     if node_type is NodeType.API_INPUT:
         return {
             "inputs": [],
             "outputs": "one named output per declared request table",
         }
     if node_type is NodeType.LIVE_SWITCH:
-        return {"inputs": "one per configured scenario", "outputs": ["frame"]}
+        return {"inputs": "one per configured scenario", "outputs": outputs}
     if node_type is NodeType.SUBMODEL:
         return {
             "inputs": "declared submodel input ports",
@@ -568,53 +578,68 @@ def _node_ports(node_type: NodeType) -> dict[str, object]:
         }
     if node_type is NodeType.SUBMODEL_PORT:
         return {"inputs": "structural only", "outputs": "structural only"}
-    if node_type in _SOURCE_NODE_TYPES:
-        return {"inputs": [], "outputs": ["frame"]}
-    if node_type in _SINK_NODE_TYPES:
-        outputs = [] if node_type is NodeType.DATA_OUTPUT else ["response"]
-        return {"inputs": ["frame"], "outputs": outputs}
     if node_type is NodeType.EDGE_JOIN:
-        return {"inputs": ["base", "join"], "outputs": ["frame"]}
-    return {"inputs": ["frame"], "outputs": ["frame"]}
+        return {"inputs": ["base", "join"], "outputs": outputs}
+    if node_type is NodeType.EXTERNAL_FILE:
+        return {
+            "inputs": "optional; the first input is `df`, further inputs are named by their edges",
+            "outputs": outputs,
+        }
+    if node_type in SOURCE_NODE_TYPES:
+        return {"inputs": [], "outputs": outputs}
+    if node_type in _MULTI_INPUT_PORTS:
+        return {"inputs": _MULTI_INPUT_PORTS[node_type], "outputs": outputs}
+    return {"inputs": ["frame"], "outputs": outputs}
 
 
 def _input_cardinality(node_type: NodeType) -> str:
-    if node_type in _SOURCE_NODE_TYPES:
+    if node_type in SOURCE_NODE_TYPES:
         return "zero"
     if node_type is NodeType.EDGE_JOIN:
         return "exactly two"
-    if node_type in _MULTI_INPUT_NODE_TYPES:
-        return "one or more, subject to the descriptor configuration"
+    if node_type is NodeType.EXTERNAL_FILE:
+        return "zero or more"
     if node_type is NodeType.SUBMODEL_PORT:
         return "structural boundary; not directly wireable"
-    return "exactly one"
+    if node_type in _SINGLE_INPUT_TYPES:
+        return "exactly one"
+    if node_type in _MULTI_INPUT_NODE_TYPES:
+        return "one or more, subject to the descriptor configuration"
+    raise RuntimeError(f"No input cardinality is declared for node type {node_type.value!r}.")
 
 
 def _schema_effect(node_type: NodeType) -> str:
     effects = {
         NodeType.API_INPUT: "emits the declared request-table schemas",
         NodeType.DATA_INPUT: "emits the selected source schema",
-        NodeType.DATA_OUTPUT: "preserves its input schema while publishing a sink",
+        NodeType.DATA_OUTPUT: "writes its input schema to the destination",
         NodeType.POLARS: "derives the schema from validated Polars expressions",
         NodeType.EDGE_JOIN: "combines base and reference columns under join suffix/coalesce rules",
         NodeType.MODEL_SCORE: "adds the configured prediction output and optional post-processing",
         NodeType.BANDING: "adds each configured factor output column",
-        NodeType.RATING_STEP: "adds table-factor and combined-output columns",
-        NodeType.OUTPUT: "projects mapped columns into the declared response contract",
-        NodeType.EXPLORE: "preserves or derives columns according to exploration code",
-        NodeType.EXTERNAL_FILE: "emits an external artifact rather than a tabular schema",
+        NodeType.RATING_STEP: "adds table-factor and combined-output columns to its first input",
+        NodeType.OUTPUT: "projects mapped columns into the declared JSON response",
+        NodeType.EXPLORE: "reads its input for summaries, pivots and charts",
+        NodeType.EXTERNAL_FILE: "the steps or code see the loaded object as `obj`",
         NodeType.LIVE_SWITCH: "requires compatible schemas across selected scenarios",
-        NodeType.MODELLING: (
-            "preserves the input frame while producing training artifacts out of band"
+        NodeType.MODELLING: "reads its input to train; model artifacts are written out of band",
+        NodeType.OPTIMISER: (
+            "reads its inputs to solve; the optimisation result is saved for Apply Optimisation"
         ),
-        NodeType.OPTIMISER: "adds optimiser result columns for the selected mode",
-        NodeType.SCENARIO_EXPANDER: "adds scenario value and index columns and expands rows",
-        NodeType.OPTIMISER_APPLY: "adds configured optimized-value/version columns",
+        NodeType.SCENARIO_EXPANDER: (
+            "repeats rows stepCount times, adding the step index and optional value columns"
+        ),
+        NodeType.OPTIMISER_APPLY: "adds the configured version and optimised-value columns",
         NodeType.CONSTANT: "emits one row with the configured literal columns",
         NodeType.SUBMODEL: "exposes the declared schemas of its output ports",
         NodeType.SUBMODEL_PORT: "carries its enclosing submodel port schema",
     }
-    return effects[node_type]
+    effect = effects[node_type]
+    if node_type in SINK_ONLY_NODE_TYPES:
+        return f"no downstream frame; {effect}"
+    if node_type in STANDALONE_PASSTHROUGH_TYPES:
+        return f"returns its first input unless its steps or code transform it; {effect}"
+    return effect
 
 
 def _execution_class(node_type: NodeType) -> tuple[str, str]:
@@ -628,15 +653,136 @@ def _execution_class(node_type: NodeType) -> tuple[str, str]:
             "explicit output execution; unavailable to ordinary assistant tools",
             "writes to the configured destination",
         )
-    if node_type in _SOURCE_NODE_TYPES:
+    if node_type in SOURCE_NODE_TYPES:
         return ("lazy/local source resolution", "reads declared project or artifact state")
+    if node_type is NodeType.EXTERNAL_FILE:
+        return ("lazy pipeline execution; the file loads when the node runs", "reads the file")
     if node_type in {NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}:
         return ("structural graph expansion", "none")
     return ("lazy pipeline execution", "none until an owning execution surface materialises it")
 
 
+_WIRING_EXTRAS: dict[NodeType, str] = {
+    NodeType.OPTIMISER: (
+        "With several inputs, data_input names the frame to optimise and, in ratebook "
+        "mode, banding_source names the Banding input."
+    ),
+    NodeType.OPTIMISER_APPLY: (
+        "A ratebook result applies to the input named by ratebook_input; any other "
+        "result applies to the first input."
+    ),
+    NodeType.OUTPUT: "Each outputMapping row's source_port names one incoming frame.",
+}
+
+
+def _wiring_rules(node_type: NodeType) -> str:
+    if node_type is NodeType.EDGE_JOIN:
+        return (
+            'Connect the primary input with target_handle="base" and the lookup '
+            'input with target_handle="join"; exactly one incoming edge of each '
+            "role is required."
+        )
+    rules: list[str] = []
+    if node_type in SOURCE_NODE_TYPES:
+        rules.append("Takes no incoming edges.")
+    elif node_type is NodeType.EXTERNAL_FILE:
+        rules.append(
+            "Incoming edges are optional: the first input is `df` and further inputs "
+            "are named by their edges."
+        )
+    elif node_type in _SINGLE_INPUT_TYPES:
+        rules.append("Takes exactly one incoming edge.")
+    if node_type in SINK_ONLY_NODE_TYPES:
+        rules.append("It has no output: never wire an edge out of it; it ends its branch.")
+    if node_type in _WIRING_EXTRAS:
+        rules.append(_WIRING_EXTRAS[node_type])
+    rules.append("Use only declared ports and preserve top-level submodel boundaries.")
+    return " ".join(rules)
+
+
+#: Stands for the incoming edge a Transform's source step starts from.
+EDGE_NAME_PLACEHOLDER = "<edge name>"
+#: The free-code card the descriptors and the system prompt show: it opens with
+#: its one-line intent, which the step builder shows as the card's title, and
+#: names no column, so it applies unchanged on every stepped surface.
+NEW_LOGIC_EXAMPLE_CODE = "# Add a unit exposure column\ndf = df.with_columns(exposure=pl.lit(1.0))"
+
+
+def new_logic_steps(node_type: NodeType, code: str) -> list[dict[str, str]]:
+    """The step list that writes new logic *code* on *node_type*'s stepped surface.
+
+    A surface whose steps choose their input starts from a source step on the
+    incoming edge; every other surface binds ``df`` itself, so the list is one
+    free-code card.
+    """
+
+    logic = {"id": "logic", "kind": "free_code", "code": code}
+    if stepped_surface_for(node_type).start == "input":
+        return [{"id": "start", "kind": "source", "input": EDGE_NAME_PLACEHOLDER}, logic]
+    return [logic]
+
+
+def _step_authoring(node_type: NodeType) -> dict[str, object] | None:
+    """How *node_type*'s steps start, what they see and how new logic is written."""
+
+    surface = STEPPED_NODE_TYPES.get(node_type)
+    if surface is None:
+        return None
+    if surface.start == "input":
+        rules = ["Start with a source step whose input names the incoming edge that becomes df."]
+    elif surface.inputs == "edges":
+        rules = ["df is already the first input, so there is no source step."]
+    else:
+        rules = ["df is already the frame the node produced, so there is no source step."]
+    rules.append(
+        "Code reads the other inputs by their edge names."
+        if surface.inputs == "edges"
+        else "Code sees only df."
+    )
+    rules.append(
+        "Write new logic as one free_code step whose code starts with a one-line "
+        "`# intent` comment and assigns the transformed result to df."
+    )
+    if surface.start == "frame":
+        rules.append("With no post-processing to do, keep steps: [].")
+    rules.append(
+        "Change existing steps with edit_steps by step id; steps it does not name keep "
+        "their ids and order."
+    )
+    return {
+        "start": surface.start,
+        "inputs": surface.inputs,
+        "rule": " ".join(rules),
+        "new_logic": new_logic_steps(node_type, NEW_LOGIC_EXAMPLE_CODE),
+    }
+
+
+def step_grammar() -> dict[str, object]:
+    """The structured step grammar, read from the step renderer's own tables.
+
+    Nested expression shapes are not enumerated; the renderer's errors name
+    the offending field.
+    """
+
+    return {
+        "kinds": step_fields(),
+        "operators": list(OPERATORS),
+        "binary_operators": list(BINARY_OPERATORS),
+        "aggregations": list(AGGREGATIONS),
+        "window_aggregations": list(WINDOW_AGGREGATIONS),
+        "pivot_aggregations": list(PIVOT_AGGREGATIONS),
+        "join_how": list(JOIN_HOW),
+        "join_validate": list(JOIN_VALIDATE),
+        "cast_dtypes": list(CAST_DTYPES),
+        "fill_strategies": list(FILL_STRATEGIES),
+        "functions": {name: list(arguments) for name, (arguments, _template) in FUNCTIONS.items()},
+        "literal_types": list(LITERAL_TYPES),
+    }
+
+
 def _node_descriptor(node_type: NodeType) -> NodeCapabilityDescriptor:
-    entry = NODE_CATALOG[node_type]
+    config_folder = NODE_TYPE_TO_FOLDER.get(node_type)
+    usage = _USAGE_NOTES[node_type]
     schema = _config_schema(node_type)
     raw_required = schema.get("required", ())
     if not isinstance(raw_required, list | tuple):
@@ -660,55 +806,54 @@ def _node_descriptor(node_type: NodeType) -> NodeCapabilityDescriptor:
         else "Configuration keys must satisfy the closed schema."
     )
     execution, side_effects = _execution_class(node_type)
-    wiring_rules = (
-        'Connect the primary input with target_handle="base" and the lookup '
-        'input with target_handle="join"; exactly one incoming edge of each '
-        "role is required."
-        if node_type == NodeType.EDGE_JOIN
-        else (
-            "Source nodes cannot have upstream edges; otherwise use only compatible "
-            "declared ports and preserve top-level submodel boundaries."
-        )
-    )
     anti_patterns = [
         "Do not invent config keys or bypass graph wiring.",
         "Do not add disconnected decorative nodes; every new node must be wired.",
     ]
     if node_type == NodeType.POLARS:
+        anti_patterns.append("Do not discard immutable Polars results; assign them to df.")
         anti_patterns.append(
-            "Do not discard immutable Polars results; assign them to df or return them."
+            "Do not write new logic as code: start the steps with a source step naming "
+            "the input edge, which binds df, then transform df in a free_code step."
         )
         anti_patterns.append(
-            "Do not read df before assigning it; df is the output variable, not an "
-            "input - start from the node's named input parameters."
+            "When editing the code of a node already in code mode (it has no steps), do "
+            "not read df before assigning it: there df is only the output, so start from "
+            "an input by name (df = claims.filter(...))."
         )
     if node_type == NodeType.EDGE_JOIN:
         anti_patterns.append("Do not omit or duplicate edgeJoin target_handle roles.")
+    if node_type == NodeType.EXPLORE:
+        anti_patterns.append(
+            "An analyst's pivot table is a pivots entry on the Explore node, never a step; "
+            "Explore steps only shape the frame before it is explored."
+        )
     return NodeCapabilityDescriptor(
         node_type.value,
-        entry.decorator,
+        _DISPLAY_NAMES[node_type],
+        NODE_TYPE_TO_DECORATOR.get(node_type),
         cast(Mapping[str, object], _freeze(schema)),
         required,
         tuple(key for key in fields if key not in required),
-        MappingProxyType({}),  # defaults are absent unless a canonical TypedDict declares them.
+        cast(Mapping[str, object], _freeze(palette_default_config(node_type))),
         cast(Mapping[str, object], _freeze(_schema_enums(schema))),
         branches,
         (branch_constraints,),
-        entry.config_folder,
-        entry.singleton,
+        config_folder,
+        node_type in _SINGLETON_TYPES,
         (
             "Persisted in the canonical sidecar folder."
-            if entry.config_folder
+            if config_folder
             else "Inline graph configuration."
         ),
-        entry.usage_note,
+        _SUMMARIES[node_type],
         cast(Mapping[str, object], _freeze(_node_ports(node_type))),
         _input_cardinality(node_type),
-        wiring_rules,
+        _wiring_rules(node_type),
         _schema_effect(node_type),
         execution,
         side_effects,
-        entry.usage_note,
+        usage,
         tuple(anti_patterns),
         _EXAMPLE_IDS.get(node_type, ()),
         _RECIPE_IDS.get(node_type, ()),
@@ -720,6 +865,8 @@ def _node_descriptor(node_type: NodeType) -> NodeCapabilityDescriptor:
                 }
             ),
         ),  # type: ignore[arg-type]
+        cast(Mapping[str, object] | None, _freeze(_step_authoring(node_type))),
+        cast(Mapping[str, object], _freeze(node_card(node_type))),
     )
 
 
@@ -776,7 +923,7 @@ def _postconditions_schema() -> dict[str, object]:
     return {
         "type": "array",
         "items": {"oneOf": variants},
-        "maxItems": 100,
+        "maxItems": MAX_DECLARED_POSTCONDITIONS,
     }
 
 
@@ -793,33 +940,23 @@ def _operation_output_schema(name: str) -> dict[str, object]:
             "singletons",
             "project_revision",
         ),
-        "get_node_schema": (
+        "inspect_node": (
             "node",
-            "columns",
-            "ports",
-            "inputs",
-            "unresolved_reason",
+            "schema",
+            "config",
+            "profile",
+            "data",
+            "data_omitted",
+            "part_errors",
+            "withheld",
             "project_revision",
         ),
-        "get_node_config": ("node", "sensitivity", "config", "project_revision"),
-        "get_column_profiles": (
-            "node",
-            "input",
-            "columns",
-            "rows_scanned",
-            "scan_bounded",
-            "max_levels",
-            "project_revision",
-        ),
-        "list_node_types": ("node_types",),
-        "list_datasets": ("datasets", "directories", "recursive", "truncated"),
-        "get_dataset_schema": (
-            "path",
-            "columns",
-            "row_count",
-            "row_count_estimated",
-            "column_count",
-            "source_digest",
+        "find_data": (
+            "datasets",
+            "directories",
+            "recursive",
+            "truncated",
+            "schema",
             "project_revision",
         ),
         "get_project_knowledge": (
@@ -831,80 +968,27 @@ def _operation_output_schema(name: str) -> dict[str, object]:
             "max_sensitivity",
             "project_revision",
         ),
-        "get_example": ("name", "attribution", "narrative", "graph"),
-        "get_authoring_guide": (
-            "id",
-            "version",
-            "sha256",
-            "source",
-            "sensitivity",
-            "evidence_class",
-            "approval_status",
-            "content",
-        ),
-        "plan_recipe": (
-            "recipe_id",
-            "version",
-            "recipe_plan_hash",
-        ),
-        "dry_run_recipe_plan": (
-            "base_revision",
-            "capability_hash",
-            "revision_sources",
-            "normalized_operations",
-            "diff",
-            "affected_capabilities",
-            "postconditions",
-            "validation_warnings",
-            "resulting_graph_shape",
-            "egress",
-            "verification_tier",
-            "plan_hash",
-            "verification_evidence",
-        ),
+        "read_reference": ("count", "references"),
         "dry_run_graph_edits": (
-            "base_revision",
-            "capability_hash",
-            "revision_sources",
-            "normalized_operations",
-            "diff",
-            "affected_capabilities",
-            "postconditions",
-            "validation_warnings",
-            "resulting_graph_shape",
-            "egress",
-            "verification_tier",
             "plan_hash",
-            "verification_evidence",
+            "operations",
+            "verification_tier",
+            "evidence",
+            "warnings",
+            "changes",
+            "data_check",
+            "data_check_omitted",
+            "next",
         ),
         "apply_graph_plan": (
             "plan_hash",
-            "capability_hash",
-            "base_revision",
-            "result_revision",
-            "expected_diff",
-            "actual_diff",
-            "verification_tier",
-            "verification_evidence",
-            "verification_status",
-            "verification_error_code",
-            "graph_fingerprint",
-            "graph_publication_error",
-            "warnings",
-            "git_sha",
             "applied_operations",
+            "verification_tier",
+            "evidence",
+            "change",
+            "item",
         ),
-        "get_capability_manifest": (
-            "schema_version",
-            "haute_version",
-            "capability_hash",
-            "installed_capabilities",
-            "feature_flags",
-            "node_index",
-            "operation_index",
-            "recipe_index",
-        ),
-        "get_capability_descriptors": ("kind", "count", "descriptors"),
+        "update_build_plan": ("items",),
     }
     common_fields = ("capability_hash", "operation_version")
     fields = {
@@ -928,13 +1012,24 @@ def _operation_output_schema(name: str) -> dict[str, object]:
         "valid_names",
         "required_sensitivity",
         "max_sensitivity",
+        "part",
+        "withheld",
         "missing",
         "unknown",
         "argument",
         "recipe_id",
         "validation_path",
         "validation_reason",
-        *fields["apply_graph_plan"],
+        # A committed save whose post-save verification failed.
+        "plan_hash",
+        "verification_tier",
+        "verification_status",
+        "verification_error_code",
+        "graph_fingerprint",
+        "graph_publication_error",
+        "warnings",
+        "git_sha",
+        "applied_operations",
     }
     properties["error"] = _closed_object(
         {
@@ -944,14 +1039,25 @@ def _operation_output_schema(name: str) -> dict[str, object]:
         ["code", "message"],
     )
     optional_success_fields = {
-        "get_node_schema": {"columns", "ports", "inputs", "unresolved_reason"},
-        # `input` is null when the node's own output was profiled.
-        "get_column_profiles": {"input"},
-        "apply_graph_plan": {
-            "verification_status",
-            "verification_error_code",
-            "graph_publication_error",
+        # Each part answers only when the call asked for it and the policy permits it;
+        # a data part that does not fit the result is replaced by its omission note,
+        # and a part that failed beside one that answered is under `part_errors`.
+        "inspect_node": {
+            "schema",
+            "config",
+            "profile",
+            "data",
+            "data_omitted",
+            "part_errors",
+            "withheld",
         },
+        # A file's schema, and the revision its evidence enters, only for a `path`.
+        "find_data": {"schema", "project_revision"},
+        # The build-plan item the change was recorded against, only for an apply naming one.
+        "apply_graph_plan": {"item"},
+        # The data check, or the note that it did not fit, only when the policy runs one,
+        # and the reminder of what to do, only when it holds an advisory finding.
+        "dry_run_graph_edits": {"data_check", "data_check_omitted", "next"},
     }
     success_required = [
         field
@@ -963,16 +1069,6 @@ def _operation_output_schema(name: str) -> dict[str, object]:
         "required": success_required,
         "not": {"required": ["error"]},
     }
-    if name == "get_node_schema":
-        # A node whose own output cannot resolve — an authored-but-empty
-        # transform — is still a successful inspection: the tool reports the
-        # stable reason plus the input schemas the analyst needs to write that
-        # code. It is a third success shape, not an error.
-        success_variant["oneOf"] = [
-            {"required": ["columns"]},
-            {"required": ["ports"]},
-            {"required": ["unresolved_reason", "inputs"]},
-        ]
     result = _closed_object(
         properties,
         ["capability_hash", "operation_version"],
@@ -984,116 +1080,248 @@ def _operation_output_schema(name: str) -> dict[str, object]:
     return result
 
 
-def _recipe_invocation_schema() -> dict[str, object]:
-    """Expose recipe arguments as a provider-friendly discriminated union."""
+def _argument_names(schema: Mapping[str, object], names: Sequence[str]) -> str:
+    """Name each argument, with the keys of an array's object items in braces, recursively."""
 
-    variants: list[dict[str, object]] = []
+    properties = cast(Mapping[str, Mapping[str, object]], schema["properties"])
+    rendered: list[str] = []
+    for name in names:
+        items = properties[name].get("items")
+        item_properties = items.get("properties") if isinstance(items, Mapping) else None
+        if isinstance(items, Mapping) and isinstance(item_properties, Mapping):
+            keys = _argument_names(items, [str(key) for key in item_properties])
+            rendered.append(f"{name} [{{{keys}}}]")
+        else:
+            rendered.append(name)
+    return ", ".join(rendered)
+
+
+def _recipe_arguments_description(recipe_id: str, schema: Mapping[str, object]) -> str:
+    """One line naming a recipe's arguments, required first.
+
+    The compatible projection keeps only the description of a property whose
+    schema differs between branches, so this line is how that lane learns
+    each recipe's argument names; the `recipe:<id>` reference has the schema.
+    """
+
+    required = [str(name) for name in cast(tuple[str, ...], schema["required"])]
+    optional = [
+        str(name)
+        for name in cast(Mapping[str, object], schema["properties"])
+        if name not in required
+    ]
+    text = f"{recipe_id} arguments: {_argument_names(schema, required)}"
+    if optional:
+        text += f"; optional {_argument_names(schema, optional)}"
+    return text + "."
+
+
+def _recipe_operation_branches(ref_schema: Mapping[str, object]) -> list[dict[str, object]]:
+    """One closed `recipe` operation branch per installed recipe.
+
+    `ref` is exactly `add_node`'s, so the provider projection keeps its one
+    description for both.
+    """
+
+    branches: list[dict[str, object]] = []
     for descriptor in recipe_manifest():
         recipe_id = descriptor.get("id")
         raw_schema = descriptor.get("argument_schema")
         if not isinstance(recipe_id, str) or not isinstance(raw_schema, Mapping):
-            raise TypeError("Recipe descriptor has an invalid invocation schema")
-        raw_properties = raw_schema.get("properties")
-        raw_required = raw_schema.get("required")
-        if not isinstance(raw_properties, Mapping) or not isinstance(raw_required, (list, tuple)):
+            raise TypeError("Recipe descriptor has an invalid argument schema")
+        if not isinstance(raw_schema.get("properties"), Mapping) or not isinstance(
+            raw_schema.get("required"), (list, tuple)
+        ):
             raise TypeError("Recipe argument schema must have properties and required fields")
-        properties = {
-            "recipe_id": {"const": recipe_id},
-            **{
-                str(key): cast(dict[str, object], _thaw(value))
-                for key, value in raw_properties.items()
-            },
-        }
-        variants.append(
+        arguments = cast(dict[str, object], _thaw(raw_schema))
+        arguments["description"] = _recipe_arguments_description(recipe_id, raw_schema)
+        branches.append(
             _closed_object(
-                properties,
-                ["recipe_id", *(str(item) for item in raw_required)],
+                {
+                    "op": {"const": "recipe"},
+                    "recipe": {"const": recipe_id},
+                    "arguments": arguments,
+                    "ref": dict(ref_schema),
+                },
+                ["op", "recipe", "arguments"],
             )
         )
-    return {
-        "oneOf": variants,
-        "additionalProperties": False,
-    }
+    return branches
+
+
+def _graph_edit_operations_schema() -> dict[str, object]:
+    """The `dry_run_graph_edits` operation union: the primitive branches, then the recipes."""
+
+    schema = graph_edit_operations_schema()
+    items = cast(dict[str, object], schema["items"])
+    branches = cast(list[dict[str, object]], items["oneOf"])
+    add_node = cast(Mapping[str, Mapping[str, object]], branches[0]["properties"])
+    items["oneOf"] = [*branches, *_recipe_operation_branches(add_node["ref"])]
+    return schema
+
+
+#: The provider-visible operations, in the order the provider receives them.
+OPERATION_IDS = (
+    "get_pipeline",
+    "inspect_node",
+    "find_data",
+    "read_reference",
+    "get_project_knowledge",
+    "dry_run_graph_edits",
+    "apply_graph_plan",
+    "update_build_plan",
+)
+#: The operations that change the project; every other operation leaves it as it is.
+MUTATING_OPERATION_IDS = frozenset({"apply_graph_plan"})
+#: The one operation that changes session state, the build plan, and nothing in the project.
+SESSION_OPERATION_IDS = frozenset({"update_build_plan"})
+#: The parts `inspect_node` can return, in the order it answers them.
+INSPECT_NODE_PARTS = ("schema", "config", "profile", "data")
+#: Ids one `read_reference` call may name.
+MAX_REFERENCE_IDS = 12
+#: A build-plan item id as `update_build_plan` and `apply_graph_plan` take it.
+_BUILD_PLAN_ITEM_ID: dict[str, object] = {
+    "type": "string",
+    "pattern": ASSISTANT_BUILD_PLAN_ID_PATTERN,
+}
+#: Each operation's egress class: the most sensitive project material it can send.
+_OPERATION_EGRESS = {
+    "get_pipeline": "internal-project-metadata",
+    # Per part: schema, config, profile, data. The profile is the one part that
+    # returns values from data, so its class is distinct and a policy review can see
+    # it plainly; the data part runs the node's lineage and returns counts only.
+    "inspect_node": (
+        "internal-schema-only, restricted-redacted, restricted-value-profile, "
+        "internal-aggregate-statistics"
+    ),
+    "find_data": "internal-schema-only",
+    "read_reference": "none",
+    "get_project_knowledge": "policy-filtered-project-content",
+    "dry_run_graph_edits": "internal-project-metadata",
+    "apply_graph_plan": "internal-project-metadata",
+    "update_build_plan": "none",
+}
 
 
 def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
     descriptions = {
         "get_pipeline": "Inspect the saved pipeline graph and its project revision.",
-        "get_node_schema": (
-            "Resolve a saved pipeline node's output columns and dtypes plus the columns "
+        "inspect_node": (
+            "Inspect one saved top-level node in the parts you name (default "
+            '["schema"]). "schema": the node\'s output columns and dtypes and the columns '
             "arriving on each of its inputs, keyed by the name the node's own code uses. "
             "A node reporting unresolved_reason 'node_has_no_code' is an empty transform "
             "already wired into the graph and awaiting its code: write that code onto it "
-            "with update_node rather than adding a parallel node beside it."
+            'with update_node rather than adding a parallel node beside it. "config": the '
+            "node's complete saved configuration. \"profile\": the values in the node's "
+            "output, or in the input named by `input`: per column, the distinct levels of a "
+            "small-cardinality categorical with their counts, or the min/max of a numeric "
+            "or date column, alongside a null count and, where the dtype can be counted, a "
+            "distinct count. Temporal and decimal bounds are reported in their written form "
+            "('2024-01-01', '12.50'). Profile instead of assuming how a column encodes its "
+            "categories - a 'fault' or 'status' column may hold Y/N, true/false, or a "
+            "description, and the schema alone cannot tell you which. A profile returns no "
+            "rows: a value appears only as a distinct level, and a high-cardinality column "
+            'is withheld. "data": why the node fails or why a column is null, in one call: '
+            "the node's lineage runs over the project's data under the active scenario (the "
+            "call waits up to 30 seconds) and returns value-free counts: each lineage node's "
+            "status, a failure reported once at the node that raised it with its error type "
+            "and step or line while the nodes it stops are `upstream_failed`, rows in and out, "
+            "Edge Join matches and findings; with `column`, that column's null count at each "
+            "node whose output has it and `first_null_node`, where its nulls appear or grow. "
+            'A check that cannot run returns `outcome` "not_run" with its reason. A part the '
+            "egress policy does not permit is listed under `withheld` with the setting it needs. "
+            "A part that fails is reported under `part_errors` with its error while the other "
+            "parts still answer."
         ),
-        "get_node_config": "Inspect one saved node's complete configuration.",
-        "get_column_profiles": (
-            "Summarise the values in one node frame before writing code against it: per "
-            "column, the distinct levels of a small-cardinality categorical with their "
-            "counts, or the min/max of a numeric or date column, alongside a null count "
-            "and, where the dtype can be counted, a distinct count. Temporal and decimal "
-            "bounds are reported in their written form ('2024-01-01', '12.50'). "
-            "Call this instead of assuming how a column encodes its categories - "
-            "a 'fault' or 'status' column may hold Y/N, true/false, or a description, and "
-            "the schema alone cannot tell you which. Pass 'input' to profile one of the "
-            "node's inputs by the name its code binds. Returns no rows: a value appears "
-            "only as a distinct level, and a high-cardinality column is withheld."
+        "find_data": (
+            "List the safe installed-format data files in one project directory, "
+            "optionally recursively, and, when `path` names a data file, also return its "
+            "column names and dtypes without reading rows."
         ),
-        "list_node_types": "List the manifest-backed node catalogue compatibility view.",
-        "list_datasets": (
-            "List safe installed-format datasets in one project directory, optionally recursively."
-        ),
-        "get_dataset_schema": "Inspect a dataset schema without implicitly reading rows.",
         "get_project_knowledge": (
             "Retrieve bounded policy-filtered project facts and untrusted documentation."
         ),
-        "get_example": "Load one packaged, versioned teaching example.",
-        "get_authoring_guide": (
-            "Retrieve the packaged canonical authoring guide with attribution."
+        "read_reference": (
+            "Read packaged library reference by id, one to twelve ids per call: "
+            '"guide" (the authoring guide and the structured step grammar: each step '
+            'kind\'s fields and the closed vocabularies), "node:<node type id>" (a node '
+            "type's complete descriptor; its card holds a minimal and a realistic "
+            "configuration with real values and the meaning of each field), "
+            '"recipe:<recipe id>" (a recipe\'s full argument schema) and '
+            '"example:<example name>" (a teaching example: its narrative and every '
+            "node's configuration with its values)."
         ),
         "dry_run_graph_edits": (
-            "Validate an exact graph-edit plan and report revision, semantic diff, "
-            "postconditions, authority and verification tier without writing."
+            "Validate an exact graph-edit plan without writing. Say in `summary` what the "
+            "plan does and list any `assumptions` you made; the analyst sees both on the "
+            'change card. An operation {"op": "recipe", "recipe": <recipe id>, '
+            '"arguments": {...}} expands into that recipe\'s nodes and edges inside the '
+            "same plan; give it a `ref` to address the node it creates from later "
+            "operations. Returns the plan hash to apply, the verification tier, an "
+            "evidence summary, warnings and the plan's node and edge changes, and, when the "
+            "egress policy permits aggregate statistics, `data_check`: value-free counts "
+            "measured by running the changed nodes over the project's data."
         ),
-        "dry_run_recipe_plan": (
-            "Dry-run exactly one pending canonical recipe by recipe_plan_hash."
+        "apply_graph_plan": (
+            "Apply one exact validated plan hash under revision authority. Returns the "
+            "change record the analyst sees, built from what was saved."
         ),
-        "apply_graph_plan": "Apply one exact validated plan hash under revision authority.",
-        "get_capability_manifest": "Read manifest identity and its compact capability index.",
-        "get_capability_descriptors": "Read ordered complete capability descriptors in one batch.",
-        "plan_recipe": (
-            "Select and plan one installed canonical recipe with its explicit structured "
-            "arguments. Supply output_name and explicit output_columns together for a "
-            "response output. Pass only the returned recipe_plan_hash to "
-            "dry_run_recipe_plan; canonical operations remain server-side."
+        "update_build_plan": (
+            "Set the build plan of a request with several stages, or mark one of its items "
+            "complete; the analyst sees the plan as a checklist. `items` sets the stages in "
+            "order, each a short `id` and a `title`; while the plan has an open item, an item "
+            "keeps its saved changes and completion under the same id. Name an item in "
+            "`apply_graph_plan`'s `item` to record that apply's saved change against it. "
+            "`complete` marks an item complete once its whole stage is saved; an item with "
+            "no saved change cannot be complete. Returns each item with whether it is "
+            "complete and how many saved changes it has."
         ),
     }
     input_schemas = {
         "get_pipeline": _closed_object(),
-        "get_node_schema": _closed_object({"node": {"type": "string"}}, ["node"]),
-        "get_node_config": _closed_object({"node": {"type": "string"}}, ["node"]),
-        "get_column_profiles": _closed_object(
+        "inspect_node": _closed_object(
             {
                 "node": {"type": "string"},
+                "parts": {
+                    "type": "array",
+                    "items": {"enum": list(INSPECT_NODE_PARTS)},
+                    "minItems": 1,
+                    "maxItems": len(INSPECT_NODE_PARTS),
+                    "uniqueItems": True,
+                    "description": 'The parts to return; omit for ["schema"].',
+                },
                 "input": {
                     "type": "string",
                     "description": (
                         "Profile this input of the node instead of the node's own "
-                        "output, named exactly as get_node_schema reports it under "
-                        "'inputs'. Omit to profile the node's own output."
+                        "output, named exactly as the schema part reports it under "
+                        "'inputs'. Only with the \"profile\" part."
+                    ),
+                },
+                "column": {
+                    "type": "string",
+                    "description": (
+                        "A column whose null count the data part follows along the node's "
+                        'lineage. Only with the "data" part.'
                     ),
                 },
             },
             ["node"],
         ),
-        "list_node_types": _closed_object(),
-        "list_datasets": _closed_object(
+        "find_data": _closed_object(
             {
-                "project_root": {"type": "string"},
+                "directory": {
+                    "type": "string",
+                    "description": "Project-relative directory to list; omit for the project root.",
+                },
                 "recursive": {"type": "boolean"},
+                "path": {
+                    "type": "string",
+                    "description": "Project-relative data file whose columns and dtypes to return.",
+                },
             }
         ),
-        "get_dataset_schema": _closed_object({"path": {"type": "string"}}, ["path"]),
         "get_project_knowledge": _closed_object(
             {
                 "query": {"type": "string", "minLength": 1},
@@ -1101,44 +1329,101 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
             },
             ["query"],
         ),
-        "get_example": _closed_object({"name": {"type": "string"}}, ["name"]),
-        "get_authoring_guide": _closed_object(),
-        "dry_run_graph_edits": _closed_object(
+        "read_reference": _closed_object(
             {
-                "ops": graph_edit_operations_schema(),
-                "postconditions": _postconditions_schema(),
-            },
-            ["ops"],
-        ),
-        "dry_run_recipe_plan": _closed_object(
-            {
-                "recipe_plan_hash": {
-                    "type": "string",
-                    "pattern": "^[0-9a-f]{64}$",
-                },
-            },
-            ["recipe_plan_hash"],
-        ),
-        "apply_graph_plan": _closed_object(
-            {"plan_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
-            ["plan_hash"],
-        ),
-        "get_capability_manifest": _closed_object(),
-        "get_capability_descriptors": _closed_object(
-            {
-                "kind": {"enum": ["node", "operation", "recipe"]},
                 "ids": {
                     "type": "array",
                     "items": {"type": "string", "minLength": 1},
                     "minItems": 1,
-                    "maxItems": 12,
+                    "maxItems": MAX_REFERENCE_IDS,
+                    "uniqueItems": True,
                 },
             },
-            ["kind", "ids"],
+            ["ids"],
         ),
-        "plan_recipe": _recipe_invocation_schema(),
+        "dry_run_graph_edits": _closed_object(
+            {
+                "summary": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": ASSISTANT_RECEIPT_TEXT_LIMIT,
+                    "description": "One or two plain sentences saying what the plan does.",
+                },
+                "assumptions": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": ASSISTANT_RECEIPT_TEXT_LIMIT,
+                    },
+                    "maxItems": ASSISTANT_MAX_ASSUMPTIONS,
+                    "description": (
+                        "Choices you made that the analyst did not state, one sentence each."
+                    ),
+                },
+                "ops": _graph_edit_operations_schema(),
+                "postconditions": _postconditions_schema(),
+            },
+            ["summary", "ops"],
+        ),
+        "apply_graph_plan": _closed_object(
+            {
+                "plan_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                "item": {
+                    **_BUILD_PLAN_ITEM_ID,
+                    "description": (
+                        "The id of the build-plan item this plan implements, when a build "
+                        "plan is set; Haute records the saved change against that item."
+                    ),
+                },
+            },
+            ["plan_hash"],
+        ),
+        "update_build_plan": _closed_object(
+            {
+                "items": {
+                    "type": "array",
+                    "items": _closed_object(
+                        {
+                            "id": {
+                                **_BUILD_PLAN_ITEM_ID,
+                                "description": (
+                                    "A short stable id, such as `source` or `rating`: "
+                                    "lower-case letters, digits and underscores, starting "
+                                    "with a letter, at most 32 characters."
+                                ),
+                            },
+                            "title": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": ASSISTANT_BUILD_PLAN_TITLE_LIMIT,
+                                "description": (
+                                    "What the stage builds, in a few words (at most "
+                                    f"{ASSISTANT_BUILD_PLAN_TITLE_LIMIT} characters)."
+                                ),
+                            },
+                        },
+                        ["id", "title"],
+                    ),
+                    "minItems": 1,
+                    "maxItems": ASSISTANT_MAX_BUILD_PLAN_ITEMS,
+                    "description": (
+                        "The plan's stages in order, one item per stage; replaces the item "
+                        f"list. At most {ASSISTANT_MAX_BUILD_PLAN_ITEMS} items."
+                    ),
+                },
+                "complete": {
+                    **_BUILD_PLAN_ITEM_ID,
+                    "description": (
+                        "The id of an item whose whole stage is now saved; it needs at "
+                        "least one saved change recorded against it."
+                    ),
+                },
+            }
+        ),
     }
-    mutation = name == "apply_graph_plan"
+    mutation = name in MUTATING_OPERATION_IDS
+    session = name in SESSION_OPERATION_IDS
     plan_bound = name == "apply_graph_plan"
     errors = [
         {
@@ -1150,7 +1435,7 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
             "recovery": "Inspect the returned details and retry after correction.",
         },
     ]
-    if name in {"dry_run_graph_edits", "dry_run_recipe_plan"}:
+    if name == "dry_run_graph_edits":
         errors.extend(
             [
                 {
@@ -1165,22 +1450,42 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
                     "code": "schema_unresolvable",
                     "recovery": "Correct the affected node config or code, then dry-run again.",
                 },
+                {
+                    "code": "node_not_ready",
+                    "recovery": (
+                        "Complete or correct the named Modelling or Load File node, "
+                        "then dry-run again."
+                    ),
+                },
+                *(
+                    {
+                        "code": code,
+                        "recovery": (
+                            "Correct the recipe operation's arguments as `fix` says; the "
+                            "recipe:<id> reference holds its argument schema."
+                        ),
+                    }
+                    for code in ("unknown_recipe", "recipe_argument_invalid", "recipe_plan_invalid")
+                ),
             ]
         )
-        if name == "dry_run_graph_edits":
-            errors.append(
-                {
-                    "code": "recipe_plan_requires_handle",
-                    "recovery": "Pass the pending hash to dry_run_recipe_plan.",
-                }
-            )
-        else:
-            errors.append(
-                {
-                    "code": "recipe_plan_not_found",
-                    "recovery": "Call plan_recipe again and use its latest returned hash.",
-                }
-            )
+    elif name == "inspect_node":
+        errors.append(
+            {
+                "code": "egress_policy_denied",
+                "recovery": (
+                    "Ask only for parts the policy permits; `withheld` names the setting "
+                    "each denied part needs."
+                ),
+            }
+        )
+    elif name == "read_reference":
+        errors.append(
+            {
+                "code": "unknown_reference",
+                "recovery": "Use an id from the prompt's indexes; did_you_mean lists close ids.",
+            }
+        )
     elif name == "apply_graph_plan":
         errors.extend(
             [
@@ -1220,6 +1525,37 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
                     "code": "verification_failed",
                     "recovery": "Inspect or undo the committed save before continuing.",
                 },
+                {
+                    "code": "unknown_plan_item",
+                    "recovery": (
+                        "Name an item of the build plan (valid_ids), or set the plan's items "
+                        "with update_build_plan first; nothing was saved."
+                    ),
+                },
+            ]
+        )
+    elif name == "update_build_plan":
+        errors.extend(
+            [
+                {
+                    "code": "empty_plan_update",
+                    "recovery": "Send items, complete or both.",
+                },
+                {
+                    "code": "duplicate_plan_item",
+                    "recovery": "Give each item its own id.",
+                },
+                {
+                    "code": "unknown_plan_item",
+                    "recovery": "Name an item of the plan (valid_ids), or set the items first.",
+                },
+                {
+                    "code": "plan_item_unsaved",
+                    "recovery": (
+                        "Apply the plan that builds the stage with the item's id in "
+                        "apply_graph_plan's item, then mark it complete."
+                    ),
+                },
             ]
         )
     return OperationCapabilityDescriptor(
@@ -1228,59 +1564,32 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
         descriptions[name],
         _freeze(input_schemas[name]),  # type: ignore[arg-type]
         _freeze(_operation_output_schema(name)),  # type: ignore[arg-type]
-        "write" if mutation else "read",
-        "ready branch required" if mutation else "saved project state",
+        "write" if mutation else ("session" if session else "read"),
+        (
+            "ready branch required"
+            if mutation
+            else ("session build plan" if session else "saved project state")
+        ),
         (
             "exact base revision and single-use plan hash"
             if plan_bound
-            else ("transactional graph revision" if mutation else "snapshot read")
-        ),
-        "none",
-        (
-            "policy-filtered-project-content"
-            if name == "get_project_knowledge"
             else (
-                "restricted-redacted"
-                if name == "get_node_config"
-                # The only operation that reads project data. Its egress
-                # class is distinct so a policy review can see it plainly.
-                else (
-                    "restricted-value-profile"
-                    if name == "get_column_profiles"
-                    else "internal-schema-only"
-                    if name in {"get_dataset_schema", "get_node_schema"}
-                    else (
-                        "internal-project-metadata"
-                        if name
-                        in {
-                            "get_pipeline",
-                            "list_datasets",
-                            "dry_run_recipe_plan",
-                            "dry_run_graph_edits",
-                            "apply_graph_plan",
-                        }
-                        else "none"
-                    )
-                )
+                "transactional graph revision"
+                if mutation
+                else ("replaces the session's build plan" if session else "snapshot read")
             )
         ),
-        "graph mutation" if mutation else "none",
+        "none",
+        _OPERATION_EGRESS[name],
+        "graph mutation" if mutation else ("session build plan" if session else "none"),
         "bounded",
         "idempotent" if not mutation else "conditional",
         "never automatic",
         False,
-        name
-        in {
-            "get_capability_manifest",
-            "get_capability_descriptors",
-            "get_example",
-            "get_authoring_guide",
-            "list_node_types",
-            "plan_recipe",
-        },
-        not mutation,
-        "pipeline-save" if mutation else "assistant-read",
-        "ordered" if mutation else "independent",
+        name == "read_reference",
+        not (mutation or session),
+        "pipeline-save" if mutation else ("assistant-session" if session else "assistant-read"),
+        "ordered" if mutation or session else "independent",
         _freeze(
             {
                 "timeout_seconds": 30,
@@ -1297,29 +1606,7 @@ def capability_manifest() -> CapabilityManifest:
     installed = _installed_capabilities()
     nodes = tuple(_node_descriptor(node_type) for node_type in NodeType)
     recipes = recipe_manifest()
-    operations = tuple(
-        _operation_descriptor(name)
-        for name in (
-            *(
-                "get_pipeline",
-                "get_node_schema",
-                "get_node_config",
-                "get_column_profiles",
-                "list_node_types",
-                "list_datasets",
-                "get_dataset_schema",
-                "get_project_knowledge",
-                "get_example",
-                "get_authoring_guide",
-                "plan_recipe",
-                "dry_run_recipe_plan",
-                "dry_run_graph_edits",
-                "apply_graph_plan",
-            ),
-            "get_capability_manifest",
-            "get_capability_descriptors",
-        )
-    )
+    operations = tuple(_operation_descriptor(name) for name in OPERATION_IDS)
     feature_flags = {
         "capability_registry": True,
         "graph_edits": True,
@@ -1358,10 +1645,29 @@ def _clear_manifest_cache() -> None:
 
 def validate_manifest_complete() -> None:
     """Fail loudly if an exported descriptor becomes incomplete or open."""
+    for label, table in (
+        ("usage note", _USAGE_NOTES),
+        ("palette name", _DISPLAY_NAMES),
+        ("one-line summary", _SUMMARIES),
+    ):
+        missing = [node_type.value for node_type in NodeType if node_type not in table]
+        unexpected = [str(key) for key in table if not isinstance(key, NodeType)]
+        if missing or unexpected:
+            raise RuntimeError(
+                f"Every NodeType needs exactly one assistant {label}.\n"
+                f"  Missing: {missing}\n"
+                f"  Unexpected: {unexpected}"
+            )
+    if contradictory := SOURCE_NODE_TYPES & (SINK_ONLY_NODE_TYPES | STANDALONE_PASSTHROUGH_TYPES):
+        raise RuntimeError(
+            "A source node type cannot also be sink-only or pass through its first input: "
+            f"{sorted(node_type.value for node_type in contradictory)}"
+        )
     manifest = capability_manifest()
     if {node.id for node in manifest.nodes} != {node_type.value for node_type in NodeType}:
         raise RuntimeError("Capability manifest is missing a NodeType descriptor.")
     required_node_fields = (
+        "display_name",
         "summary",
         "wiring_rules",
         "usage",
@@ -1373,6 +1679,18 @@ def validate_manifest_complete() -> None:
             raise RuntimeError(f"Capability descriptor {node.id} has an open config schema.")
         if any(not getattr(node, field) for field in required_node_fields):
             raise RuntimeError(f"Capability descriptor {node.id} lacks semantic metadata.")
+        if (node.step_authoring is not None) != (NodeType(node.id) in STEPPED_NODE_TYPES):
+            raise RuntimeError(
+                f"Capability descriptor {node.id} must carry step_authoring exactly "
+                "when its type authors steps."
+            )
+        fields = {*node.required_fields, *node.optional_fields}
+        for config in node_card(NodeType(node.id)).get("configs", []):
+            if unknown := set(config["config"]) - fields:
+                raise RuntimeError(
+                    f"Node card {node.id} {config['name']!r} uses keys outside the "
+                    f"config schema: {sorted(unknown)}"
+                )
     if len({operation.id for operation in manifest.operations}) != len(manifest.operations):
         raise RuntimeError("Capability manifest contains duplicate operation descriptors.")
     for operation in manifest.operations:
@@ -1412,7 +1730,12 @@ def compact_manifest(manifest: CapabilityManifest | None = None) -> dict[str, ob
         "installed_capabilities": _thaw(manifest.installed_capabilities),
         "feature_flags": _thaw(manifest.feature_flags),
         "node_index": [
-            {"id": node.id, "decorator": node.decorator, "summary": node.summary}
+            {
+                "id": node.id,
+                "display_name": node.display_name,
+                "decorator": node.decorator,
+                "summary": node.summary,
+            }
             for node in manifest.nodes
         ],
         "operation_index": [
@@ -1435,17 +1758,100 @@ def compact_manifest(manifest: CapabilityManifest | None = None) -> dict[str, ob
 validate_manifest_complete()
 
 
+#: Each tool's activity-row title in plain words, while it runs and once it is done.
+_TOOL_TITLES: dict[str, str] = {
+    "get_pipeline": "Reading the pipeline",
+    "inspect_node": "Inspecting a node",
+    "find_data": "Finding data",
+    "read_reference": "Reading references",
+    "get_project_knowledge": "Searching project notes",
+    "dry_run_graph_edits": "Checking the plan",
+    "apply_graph_plan": "Applying the plan",
+    "update_build_plan": "Updating the checklist",
+}
+
+
+#: A dry-run's activity-row title while its data check runs.
+DATA_CHECK_PROGRESS_TITLE = "Checking the data"
+#: The running tool call's progress reporter; the loop sets one for each call.
+_TOOL_PROGRESS: ContextVar[Callable[[str], None] | None] = ContextVar(
+    "assistant_tool_progress", default=None
+)
+
+
+@contextmanager
+def tool_progress_reporter(report: Callable[[str], None]) -> Iterator[None]:
+    """Make *report* receive the progress titles of the tool calls started inside."""
+
+    token = _TOOL_PROGRESS.set(report)
+    try:
+        yield
+    finally:
+        _TOOL_PROGRESS.reset(token)
+
+
+def report_tool_progress(title: str) -> None:
+    """Retitle the running tool call's activity row while it runs.
+
+    The loop streams the title as a ``tool_progress`` event. A tool called
+    outside a turn has no activity row, so nothing receives it.
+    """
+
+    report = _TOOL_PROGRESS.get()
+    if report is not None:
+        report(title)
+
+
+def _changes(count: int) -> str:
+    return f"{count} change" if count == 1 else f"{count} changes"
+
+
+def tool_title(
+    name: str, arguments: Mapping[str, object], result: Mapping[str, object] | None = None
+) -> str:
+    """The activity row's title for one tool call, in plain words.
+
+    A started row (no *result*) reads the arguments: a dry-run counts its
+    operations. A finished row reads only the result, so a resumed row, whose
+    arguments are redacted, reads the same as the live one: a dry-run counts
+    the result's ``operations`` and an apply its ``applied_operations``; a
+    failed call, whose result counts nothing, keeps the tool's plain title. A
+    name no tool has is its own title.
+    """
+
+    verb = {"dry_run_graph_edits": "Checking", "apply_graph_plan": "Applying"}.get(name)
+    count: object
+    if result is None:
+        ops = arguments.get("ops") if name == "dry_run_graph_edits" else None
+        count = len(ops) if isinstance(ops, list) else None
+    else:
+        count = result.get("operations" if name == "dry_run_graph_edits" else "applied_operations")
+    if verb is not None and isinstance(count, int) and not isinstance(count, bool):
+        return f"{verb} {_changes(count)}"
+    return _TOOL_TITLES.get(name, name)
+
+
 __all__ = [
+    "DATA_CHECK_PROGRESS_TITLE",
+    "EDGE_NAME_PLACEHOLDER",
+    "INPUT_NAMING_RULE",
+    "INSPECT_NODE_PARTS",
     "MANIFEST_SCHEMA_VERSION",
-    "NODE_CATALOG",
+    "MAX_REFERENCE_IDS",
+    "MUTATING_OPERATION_IDS",
+    "NEW_LOGIC_EXAMPLE_CODE",
     "CapabilityManifest",
     "NodeCapabilityDescriptor",
-    "NodeCatalogEntry",
+    "OPERATION_IDS",
+    "SESSION_OPERATION_IDS",
     "OperationCapabilityDescriptor",
     "capability_manifest",
     "compact_manifest",
     "materialise_json",
-    "render_catalog",
-    "validate_catalog_complete",
+    "new_logic_steps",
+    "report_tool_progress",
+    "step_grammar",
+    "tool_progress_reporter",
+    "tool_title",
     "validate_manifest_complete",
 ]

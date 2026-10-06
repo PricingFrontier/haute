@@ -3,10 +3,10 @@
  *
  * Tests: formatValue (null/undefined/number/string/boolean/maxFractionDigits),
  * formatValueCompact (truncation), formatNumber (M/K suffixes, negatives),
- * formatElapsed (seconds, minutes+seconds boundary).
+ * formatDuration (seconds, minutes+seconds boundary).
  */
 import { describe, it, expect } from "vitest"
-import { formatValue, formatValueCompact, formatNumber, formatElapsed } from "../../utils/formatValue"
+import { formatValue, formatValueCompact, formatNumber, formatDuration } from "../../utils/formatValue"
 
 // ── formatValue ─────────────────────────────────────────────────
 
@@ -148,38 +148,32 @@ describe("formatNumber", () => {
   })
 })
 
-// ── formatElapsed ───────────────────────────────────────────────
+// ── formatDuration ──────────────────────────────────────────────
 
-describe("formatElapsed", () => {
-  it("formats zero seconds", () => {
-    expect(formatElapsed(0)).toBe("0s")
+describe("formatDuration", () => {
+  it("keeps one decimal under ten seconds", () => {
+    expect(formatDuration(0)).toBe("0.0 s")
+    expect(formatDuration(0.4)).toBe("0.4 s")
+    expect(formatDuration(9.94)).toBe("9.9 s")
   })
 
-  it("formats fractional seconds (rounds to nearest integer)", () => {
-    expect(formatElapsed(3.7)).toBe("4s")
+  it("changes unit on the printed value, so 9.96 s reads as whole seconds", () => {
+    expect(formatDuration(9.96)).toBe("10 s")
   })
 
-  it("formats seconds under 60 without minutes", () => {
-    expect(formatElapsed(45)).toBe("45s")
+  it("rounds whole seconds under a minute", () => {
+    expect(formatDuration(12.4)).toBe("12 s")
+    expect(formatDuration(59.4)).toBe("59 s")
   })
 
-  it("formats 59.4 seconds (rounds down, stays under 60)", () => {
-    expect(formatElapsed(59.4)).toBe("59s")
+  it("carries a rounded minute instead of printing 60 seconds", () => {
+    expect(formatDuration(59.6)).toBe("1m 00s")
+    expect(formatDuration(119.6)).toBe("2m 00s")
   })
 
-  it("formats exactly 60 seconds as 1m 0s", () => {
-    expect(formatElapsed(60)).toBe("1m 0s")
-  })
-
-  it("formats 90 seconds as 1m 30s", () => {
-    expect(formatElapsed(90)).toBe("1m 30s")
-  })
-
-  it("formats large values correctly", () => {
-    expect(formatElapsed(3661)).toBe("61m 1s")
-  })
-
-  it("formats fractional minutes correctly (floors minutes and seconds)", () => {
-    expect(formatElapsed(125.9)).toBe("2m 5s")
+  it("pads seconds after minutes", () => {
+    expect(formatDuration(60)).toBe("1m 00s")
+    expect(formatDuration(125.4)).toBe("2m 05s")
+    expect(formatDuration(3661)).toBe("61m 01s")
   })
 })

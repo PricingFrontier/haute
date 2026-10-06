@@ -10,18 +10,17 @@ submodel = haute.Submodel(
     definition_id="definition_reusable_enrichment",
     input_ports=[
         {
-            "portId": "quotes",
-            "label": "Quotes",
+            "name": "quotes",
             "targets": [{"nodeId": "enriched", "handleId": None}],
         }
     ],
     output_ports=[
         {
-            "portId": "enriched",
-            "label": "Enriched",
+            "name": "enriched",
             "source": {"nodeId": "enriched", "handleId": None},
         }
     ],
+    pipeline_dir="..",
 )
 
 

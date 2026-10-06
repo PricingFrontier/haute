@@ -64,12 +64,16 @@ export interface HauteNodeData extends Record<string, unknown> {
   _columns?: ColumnInfo[]
   /** Full column set before selected_columns filtering — set by usePipelineAPI */
   _availableColumns?: ColumnInfo[]
+  /** Columns per output handle for a multi-frame producer (a submodel's outputs) — set by usePipelineAPI */
+  _frameColumns?: Record<string, ColumnInfo[]>
   /** Schema warnings from last preview — set by usePipelineAPI */
   _schemaWarnings?: { column: string; status: string }[]
   /** Active source the column stash (_columns/_availableColumns/_schemaWarnings)
    *  was captured under — set by usePipelineAPI. A stash whose source no longer
    *  matches the active source is stale and gets invalidated, never served. */
   _columnsSource?: string
+  /** Graph structural version that produced the preview column schema. */
+  _columnsStructuralVersion?: number
   /** Node execution status — set by useTracing */
   _status?: NodeStatus
   /** Persisted editor-load availability; independent of transient execution status. */
@@ -78,6 +82,8 @@ export interface HauteNodeData extends Record<string, unknown> {
   _loadDiagnosticIds?: string[]
   /** Authored node path from the nearest unavailable dependency through this node. */
   _loadBlockingPath?: string[]
+  /** Server-derived: this loadable node may be saved in isolation while the document stays fenced. */
+  _scopedEditable?: boolean
   /** Editor-only identity and source metadata supplied by the recovery adapter. */
   _recoveryId?: string
   _authoredId?: string
@@ -99,6 +105,10 @@ export interface HauteNodeData extends Record<string, unknown> {
   _traceActive?: boolean
   _traceDimmed?: boolean
   _hoverDimmed?: boolean
+  /** The node a trace card or derivation row points at: ringed on the canvas. */
+  _traceFocused?: boolean
+  /** A node the latest assistant change or undo touched: ringed on the canvas. */
+  _changeFocused?: boolean
   _traceValue?: unknown
   _traceMotionDisabled?: boolean
   /** Diff status in the read-only comparison view (S11) — drives a ring on the
@@ -123,6 +133,22 @@ export type PipelineEdge = Edge<Record<string, unknown>> & {
   targetPort?: string | null
 }
 
+/** Complete persisted graph envelope returned by the pipeline API. */
+export interface PipelineGraph {
+  nodes: Node[]
+  edges: PipelineEdge[]
+  pipeline_name?: string | null
+  pipeline_description?: string | null
+  preamble?: string | null
+  source_file?: string | null
+  submodels?: Record<string, unknown> | null
+  warning?: string | null
+  sources?: string[]
+  active_source?: string
+  preserved_blocks?: string[]
+  source_revision?: string | null
+}
+
 /** A definition-owned endpoint; never used as the parent graph handle id. */
 export interface SubmodelEndpoint {
   nodeId: string
@@ -130,14 +156,12 @@ export interface SubmodelEndpoint {
 }
 
 export interface SubmodelInputPort {
-  portId: string
-  label: string
+  name: string
   targets: SubmodelEndpoint[]
 }
 
 export interface SubmodelOutputPort {
-  portId: string
-  label: string
+  name: string
   source: SubmodelEndpoint
 }
 
@@ -145,11 +169,9 @@ export interface SubmodelOutputPort {
 export interface SubmodelDefinition {
   definitionId: string
   file: string
-  graph: { nodes: Node[]; edges: Edge[] }
+  graph: PipelineGraph
   inputPorts: SubmodelInputPort[]
   outputPorts: SubmodelOutputPort[]
-  /** Server-owned executable input identity for each public input port. */
-  _inputPortInputNames?: Record<string, string>
 }
 
 const isNonBlankText = (value: unknown): value is string =>
@@ -165,18 +187,19 @@ export function isSubmodelEndpoint(value: unknown): value is SubmodelEndpoint {
 export function isSubmodelInputPort(value: unknown): value is SubmodelInputPort {
   if (typeof value !== "object" || value === null) return false
   const port = value as Partial<SubmodelInputPort>
-  return isNonBlankText(port.portId)
-    && isNonBlankText(port.label)
+  return isNonBlankText(port.name)
+    && !("label" in port)
+    && !("portId" in port)
     && Array.isArray(port.targets)
-    && port.targets.length > 0
     && port.targets.every(isSubmodelEndpoint)
 }
 
 export function isSubmodelOutputPort(value: unknown): value is SubmodelOutputPort {
   if (typeof value !== "object" || value === null) return false
   const port = value as Partial<SubmodelOutputPort>
-  return isNonBlankText(port.portId)
-    && isNonBlankText(port.label)
+  return isNonBlankText(port.name)
+    && !("label" in port)
+    && !("portId" in port)
     && isSubmodelEndpoint(port.source)
 }
 
@@ -193,11 +216,11 @@ export function isSubmodelDefinition(
   if (!Array.isArray(definition.graph.nodes) || !Array.isArray(definition.graph.edges)) return false
   if (!Array.isArray(definition.inputPorts) || !definition.inputPorts.every(isSubmodelInputPort)) return false
   if (!Array.isArray(definition.outputPorts) || !definition.outputPorts.every(isSubmodelOutputPort)) return false
-  const portIds = [
-    ...definition.inputPorts.map((port) => port.portId),
-    ...definition.outputPorts.map((port) => port.portId),
+  const portNames = [
+    ...definition.inputPorts.map((port) => port.name),
+    ...definition.outputPorts.map((port) => port.name),
   ]
-  return new Set(portIds).size === portIds.length
+  return new Set(portNames).size === portNames.length
 }
 
 export function isSubmodelInstanceConfig(value: unknown): value is SubmodelInstanceConfig {
@@ -245,11 +268,11 @@ export type SubmodelBoundaryEdgeData = {
   submodelBoundary: {
     direction: "input"
     parentEdges: PipelineEdge[]
-    portId: string
+    name: string
   } | {
     direction: "output"
     parentConsumerEdges: PipelineEdge[]
-    portId: string
+    name: string
   }
 }
 
@@ -259,6 +282,10 @@ export interface SubmodelPortData extends Record<string, unknown> {
   definitionId: string
   portDirection: "input" | "output"
   ports: SubmodelBoundaryPort[]
+  /** Input rows retain bindings for every shared occurrence so history can restore the parent graph. */
+  _parentBindingScope?: "definition"
+  /** Parent edge ids in their authoritative order, so a restored binding returns to its own position. */
+  _parentEdgeOrder?: string[]
   externalNodeIds: string[]
   _traceActive?: boolean
   _traceDimmed?: boolean

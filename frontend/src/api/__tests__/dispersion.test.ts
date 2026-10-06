@@ -40,6 +40,7 @@ function makeDispersionStatus(overrides: Record<string, unknown> = {}) {
     n_fits: null,
     error: null,
     terminal_reason: null,
+    worker_remote_traceback: null,
     ...overrides,
   }
 }
@@ -71,7 +72,7 @@ describe("dispersion estimation endpoints", () => {
     mockFetch.mockReturnValue(jsonResponse({ status: "started" }))
     await expect(
       estimateGlmDispersion({ graph: dummyGraph, node_id: "n1", param: "theta" }),
-    ).rejects.toThrow("unexpected payload")
+    ).rejects.toThrow("DispersionEstimateResponse: invalid contract")
   })
 
   it("getDispersionStatus GETs the job status", async () => {

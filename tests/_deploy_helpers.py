@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from haute.deploy._config import ContainerConfig, DeployConfig, ResolvedDeploy
+from haute.deploy._project_modules import ProjectModules
 from haute.graph_utils import PipelineGraph
 
 FIXTURE_DIR = Path("tests/fixtures")
@@ -74,6 +75,7 @@ def make_resolved_deploy(
         "artifacts": {},
         "input_schema": {"col": "Int64"},
         "output_schema": {"col": "Int64"},
+        "project_modules": ProjectModules(utility=None, unbundled_imports=()),
     }
     defaults.update(overrides)
     return ResolvedDeploy(**defaults)

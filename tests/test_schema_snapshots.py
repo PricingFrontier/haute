@@ -8,9 +8,6 @@ import pytest
 
 from haute.schemas import (
     ExecutionMetricsPayload,
-    ExploreRunResponse,
-    ExploreStatusResponse,
-    JsonCacheStatusResponse,
     OptimiserStatusResponse,
     PreviewNodeResponse,
     SavePipelineResponse,
@@ -135,7 +132,9 @@ def _schema_summary(model: type[Any]) -> dict[str, Any]:
                 "glm_coefficients": {"type": "array", "items": "object"},
                 "glm_relativities": {"type": "array", "items": "object"},
                 "glm_fit_statistics": {"type": "object", "additionalProperties": "number"},
-                "glm_regularization_path": {"anyOf": ["object", "null"], "default": None},
+                "glm_inference": {"anyOf": ["object", "null"], "default": None},
+                "glm_smooth_terms": {"type": "array", "items": "object"},
+                "glm_regularization": {"anyOf": ["object", "null"], "default": None},
                 "diagnostics_errors": {"type": "array", "items": "object"},
                 "warning": {"anyOf": ["string", "null"], "default": None},
                 "total_source_rows": {"anyOf": ["integer", "null"], "default": None},
@@ -153,32 +152,6 @@ def _schema_summary(model: type[Any]) -> dict[str, Any]:
                 "train_loss": {"type": "object", "additionalProperties": "number"},
                 "result": {"anyOf": ["ref:TrainResponse", "null"], "default": None},
                 "warning": {"anyOf": ["string", "null"], "default": None},
-                "execution_metrics": {
-                    "anyOf": ["ref:ExecutionMetricsPayload", "null"],
-                    "default": None,
-                },
-            },
-        ),
-        (
-            ExploreRunResponse,
-            ["status"],
-            {
-                "status": {"type": "string"},
-                "job_id": {"anyOf": ["string", "null"], "default": None},
-                "cached": {"type": "boolean", "default": False},
-                "message": {"type": "string", "default": ""},
-                "result": {"anyOf": ["ref:ExploreCacheReport", "null"], "default": None},
-            },
-        ),
-        (
-            ExploreStatusResponse,
-            ["status"],
-            {
-                "status": {"type": "string"},
-                "progress": {"type": "number", "default": 0.0},
-                "message": {"type": "string", "default": ""},
-                "result": {"anyOf": ["ref:ExploreCacheReport", "null"], "default": None},
-                "terminal_reason": {"anyOf": ["string", "null"], "default": None},
                 "execution_metrics": {
                     "anyOf": ["ref:ExecutionMetricsPayload", "null"],
                     "default": None,
@@ -233,20 +206,6 @@ def _schema_summary(model: type[Any]) -> dict[str, Any]:
                 },
             },
         ),
-        (
-            JsonCacheStatusResponse,
-            ["cached"],
-            {
-                "cached": {"type": "boolean"},
-                "path": {"anyOf": ["string", "null"], "default": None},
-                "data_path": {"type": "string", "default": ""},
-                "row_count": {"type": "integer", "default": 0},
-                "column_count": {"type": "integer", "default": 0},
-                "columns": {"type": "object", "additionalProperties": "string"},
-                "size_bytes": {"type": "integer", "default": 0},
-                "cached_at": {"type": "number", "default": 0},
-            },
-        ),
     ],
 )
 def test_ui_facing_response_models_match_contract_snapshots(
@@ -268,7 +227,9 @@ def test_train_response_exposes_glm_fields_used_by_frontend_modelling_panels() -
         "glm_coefficients",
         "glm_relativities",
         "glm_fit_statistics",
-        "glm_regularization_path",
+        "glm_inference",
+        "glm_smooth_terms",
+        "glm_regularization",
         "diagnostics_errors",
     ):
         assert field_name in properties

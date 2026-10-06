@@ -6,11 +6,8 @@ Layered:
    edge cases.
 2. ``shred_to_buffers`` — algorithm correctness on rating-shaped
    nested-array data (including ancestor-column distribution).
-3. ``build_per_port_cache`` + ``load_per_port_cache`` +
-   ``is_per_port_cache_valid`` — disk round-trip, fingerprint
-   invalidation on schema change.
-4. Route dispatch via the FastAPI test client — build/status and the
-   422 returned when no schema source is present.
+3. ``build_test_api_input_snapshots`` + ``load_v2_api_source`` — the input
+   snapshot store round-trip (build every emitting table, lease it back).
 """
 
 from __future__ import annotations
@@ -22,8 +19,9 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
-import orjson
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from haute._api_input_schema import (
     ApiInputSchemaError,
@@ -31,13 +29,19 @@ from haute._api_input_schema import (
     parse_table_path,
     validate_v2_schema,
 )
-from haute._json_shred._cache import (
-    build_per_port_cache,
-    is_per_port_cache_valid,
-    load_per_port_cache,
-    read_per_port_cache_meta,
+from haute._json_shred import _shred
+from haute._json_shred._cache import load_v2_api_source
+from haute._json_shred._shred import (
+    _SCALAR_VALUE_LEAF,
+    _coerce_scalar,
+    _compile_row_reader,
+    _resolve_leaf,
+    _WalkSpec,
+    shred_to_buffers,
 )
-from haute._json_shred._shred import shred_to_buffers
+from haute._sandbox import set_project_root
+from tests._property_budget import pr_budget
+from tests.conftest import build_test_api_input_snapshots
 
 # ─── Path helpers ─────────────────────────────────────────────────
 
@@ -579,279 +583,34 @@ def _write_rating_json(path: Path) -> None:
     path.write_text(json.dumps(_rating_records()), encoding="utf-8")
 
 
-def test_build_per_port_cache_writes_one_parquet_per_emit_table(tmp_path: Path) -> None:
+def test_build_writes_one_input_snapshot_per_emit_table(tmp_path: Path) -> None:
     data_path = tmp_path / "data.json"
     _write_rating_json(data_path)
-    cache_dir = tmp_path / "cache"
+    set_project_root(tmp_path)
 
-    summary = build_per_port_cache(data_path, _rating_v2(), cache_dir)
-    assert summary["schema_mode"] == "v2"
-    assert len(summary["tables"]) == 3
+    generations = build_test_api_input_snapshots(data_path, _rating_v2())
 
-    # All three parquets exist + a meta.json
-    files = sorted(p.name for p in cache_dir.iterdir())
-    assert "meta.json" in files
-    assert any(f.startswith("policies") and f.endswith(".parquet") for f in files)
-    assert any(f.startswith("drivers") and f.endswith(".parquet") for f in files)
-    assert any(f.startswith("licenses") and f.endswith(".parquet") for f in files)
+    assert len(generations) == 3
+    for generation in generations.values():
+        assert generation.data_paths
+        for part in generation.data_paths:
+            assert Path(part).suffix == ".parquet"
 
 
-def test_built_parquet_carries_per_frame_schema_in_footer(tmp_path: Path) -> None:
-    """DUAL_CACHE.md §3 — per-frame schema embedded in parquet footer
-    so each file is self-describing (no separate schema-side-file race)."""
-    import pyarrow.parquet as pq
-
+def test_load_v2_api_source_returns_one_lazyframe_per_emit_table(tmp_path: Path) -> None:
     data_path = tmp_path / "data.json"
     _write_rating_json(data_path)
-    cache_dir = tmp_path / "cache"
-    build_per_port_cache(data_path, _rating_v2(), cache_dir)
+    set_project_root(tmp_path)
+    config = _rating_v2()
+    build_test_api_input_snapshots(data_path, config)
 
-    drivers_parquet = next(p for p in cache_dir.iterdir() if p.name.startswith("drivers"))
-    pq_meta = pq.read_metadata(drivers_parquet)
-    schema_md = pq_meta.schema.to_arrow_schema().metadata or {}
-    assert b"haute_per_frame_schema" in schema_md, schema_md
-    payload = orjson.loads(schema_md[b"haute_per_frame_schema"])
-    assert payload["port_label"] == "drivers"
-    col_names = {c["name"] for c in payload["columns"]}
-    assert col_names == {"driver_id", "age_band"}
-
-
-def test_load_per_port_cache_returns_one_lazyframe_per_emit_table(tmp_path: Path) -> None:
-    data_path = tmp_path / "data.json"
-    _write_rating_json(data_path)
-    cache_dir = tmp_path / "cache"
-    build_per_port_cache(data_path, _rating_v2(), cache_dir)
-
-    bundle = load_per_port_cache(cache_dir, _rating_v2())
+    bundle = load_v2_api_source(str(data_path), config, read_snapshots=True)
     assert set(bundle.keys()) == {"policies", "drivers", "licenses"}
 
     drivers_df = bundle["drivers"].collect()
     assert drivers_df.height == 3
     assert sorted(drivers_df.columns) == ["age_band", "driver_id"]
     assert drivers_df["driver_id"].to_list() == [1, 2, 3]
-
-
-def test_cache_validity_passes_when_schema_unchanged(tmp_path: Path) -> None:
-    data_path = tmp_path / "data.json"
-    _write_rating_json(data_path)
-    cache_dir = tmp_path / "cache"
-    cfg = _rating_v2()
-    build_per_port_cache(data_path, cfg, cache_dir)
-    assert is_per_port_cache_valid(cache_dir, cfg, data_path=data_path) is True
-
-
-def test_cache_validity_fails_when_fingerprint_changes(tmp_path: Path) -> None:
-    """Adding a column to a table changes the schema fingerprint;
-    is_per_port_cache_valid must return False so the cache layer rebuilds."""
-    data_path = tmp_path / "data.json"
-    _write_rating_json(data_path)
-    cache_dir = tmp_path / "cache"
-    cfg = _rating_v2()
-    build_per_port_cache(data_path, cfg, cache_dir)
-    # Mutate schema by adding a column to the drivers table.
-    cfg["tables"][1]["columns"].append(
-        {
-            "name": "main",
-            "path": "$[:].drivers[:].main",
-            "type": "bool",
-            "selected": True,
-        },
-    )
-    assert is_per_port_cache_valid(cache_dir, cfg, data_path=data_path) is False
-
-
-def test_cache_validity_fails_when_a_parquet_missing(tmp_path: Path) -> None:
-    data_path = tmp_path / "data.json"
-    _write_rating_json(data_path)
-    cache_dir = tmp_path / "cache"
-    cfg = _rating_v2()
-    build_per_port_cache(data_path, cfg, cache_dir)
-    # Delete one of the per-port parquets out-of-band.
-    drivers_parquet = next(p for p in cache_dir.iterdir() if p.name.startswith("drivers"))
-    drivers_parquet.unlink()
-    assert is_per_port_cache_valid(cache_dir, cfg, data_path=data_path) is False
-
-
-def test_rebuild_clears_stale_per_port_parquets(tmp_path: Path) -> None:
-    """If a previous build wrote a parquet for a now-disabled or renamed
-    table, the next build removes it so the directory stays clean."""
-    data_path = tmp_path / "data.json"
-    _write_rating_json(data_path)
-    cache_dir = tmp_path / "cache"
-    cfg_with_drivers = _rating_v2()
-    build_per_port_cache(data_path, cfg_with_drivers, cache_dir)
-    assert any(p.name.startswith("drivers") for p in cache_dir.iterdir())
-
-    # Disable drivers and rebuild.
-    cfg_no_drivers = _rating_v2()
-    cfg_no_drivers["tables"][1]["emit"] = False
-    build_per_port_cache(data_path, cfg_no_drivers, cache_dir)
-    assert not any(
-        p.name.startswith("drivers") and p.suffix == ".parquet" for p in cache_dir.iterdir()
-    )
-
-
-# ─── meta.json shape ──────────────────────────────────────────────
-
-
-def test_meta_json_carries_schema_mode_and_fingerprint(tmp_path: Path) -> None:
-    data_path = tmp_path / "data.json"
-    _write_rating_json(data_path)
-    cache_dir = tmp_path / "cache"
-    build_per_port_cache(data_path, _rating_v2(), cache_dir)
-    meta = read_per_port_cache_meta(cache_dir)
-    assert meta is not None
-    assert meta["schema_mode"] == "v2"
-    assert isinstance(meta["schema_fingerprint"], str)
-    assert len(meta["schema_fingerprint"]) == 64  # sha256 hex
-
-
-# ─── Route dispatch via FastAPI test client ───────────────────────
-
-
-@pytest.fixture()
-def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from fastapi.testclient import TestClient
-
-    monkeypatch.chdir(tmp_path)
-    from haute.server import app
-
-    return TestClient(app)
-
-
-def _write_v2_config(tmp_path: Path) -> Path:
-    cfg_path = tmp_path / "quotes.json"
-    cfg_path.write_text(json.dumps(_rating_v2()))
-    return cfg_path
-
-
-def _write_v2_data(tmp_path: Path) -> Path:
-    data_path = tmp_path / "data.json"
-    _write_rating_json(data_path)
-    return data_path
-
-
-def test_route_build_dispatches_to_v2_when_config_is_v2(
-    client,
-    tmp_path: Path,
-) -> None:
-    """POST /api/json-cache/build with a v2 config file on disk runs the
-    per-port shred and returns 200 with the aggregated counts."""
-    data_path = _write_v2_data(tmp_path)
-    cfg_path = _write_v2_config(tmp_path)
-
-    resp = client.post(
-        "/api/json-cache/build",
-        json={
-            "path": str(data_path.relative_to(tmp_path)),
-            "config_path": str(cfg_path.relative_to(tmp_path)),
-        },
-    )
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    # Aggregate counts across the three rating-shaped tables.
-    # policies:2 + drivers:3 + licenses:3 = 8 rows total.
-    assert body["row_count"] == 8
-    # 1 + 2 + 1 = 4 columns total.
-    assert body["column_count"] == 4
-    # Cache path points at the directory (not a single parquet file).
-    # Normalise to POSIX separators so the assertion holds on Windows too.
-    cache_path = Path(body["path"])
-    assert cache_path.parent.name == "working"
-    assert cache_path.parent.parent.name == ".haute_cache"
-    assert cache_path.name.startswith("json_")
-
-
-def test_route_post_status_returns_v2_aggregate_after_build(
-    client,
-    tmp_path: Path,
-) -> None:
-    data_path = _write_v2_data(tmp_path)
-    cfg_path = _write_v2_config(tmp_path)
-    rel_data = str(data_path.relative_to(tmp_path))
-    rel_cfg = str(cfg_path.relative_to(tmp_path))
-
-    build_resp = client.post(
-        "/api/json-cache/build",
-        json={"path": rel_data, "config_path": rel_cfg},
-    )
-    assert build_resp.status_code == 200
-
-    status_resp = client.post(
-        "/api/json-cache/status",
-        json={"path": rel_data, "config_path": rel_cfg},
-    )
-    assert status_resp.status_code == 200
-    status = status_resp.json()
-    assert status["cached"] is True
-    assert status["row_count"] == 8
-    assert status["column_count"] == 4
-
-
-def test_route_get_status_with_config_matches_post_for_v2(
-    client,
-    tmp_path: Path,
-) -> None:
-    """GET /api/json-cache/status with the same inputs returns the same
-    cached-true payload as the POST variant. Closes the GET/POST
-    divergence flagged in MULTI_FRAME_PLAN §commit 3."""
-    data_path = _write_v2_data(tmp_path)
-    cfg_path = _write_v2_config(tmp_path)
-    rel_data = str(data_path.relative_to(tmp_path))
-    rel_cfg = str(cfg_path.relative_to(tmp_path))
-
-    client.post("/api/json-cache/build", json={"path": rel_data, "config_path": rel_cfg})
-    post_body = client.post(
-        "/api/json-cache/status",
-        json={"path": rel_data, "config_path": rel_cfg},
-    ).json()
-    get_body = client.get(
-        "/api/json-cache/status",
-        params={"path": rel_data, "config_path": rel_cfg},
-    ).json()
-
-    # cached + counts must match between the two surfaces. The mtime
-    # field can differ on the float epsilon if measured at different
-    # moments, so we compare structurally.
-    assert get_body["cached"] == post_body["cached"]
-    assert get_body["row_count"] == post_body["row_count"]
-    assert get_body["column_count"] == post_body["column_count"]
-
-
-def test_route_status_after_clear_returns_cached_false(
-    client,
-    tmp_path: Path,
-) -> None:
-    data_path = _write_v2_data(tmp_path)
-    cfg_path = _write_v2_config(tmp_path)
-    rel_data = str(data_path.relative_to(tmp_path))
-    rel_cfg = str(cfg_path.relative_to(tmp_path))
-
-    client.post("/api/json-cache/build", json={"path": rel_data, "config_path": rel_cfg})
-    client.delete("/api/json-cache", params={"path": rel_data})
-    status_resp = client.post(
-        "/api/json-cache/status",
-        json={"path": rel_data, "config_path": rel_cfg},
-    )
-    assert status_resp.status_code == 200
-    assert status_resp.json()["cached"] is False
-
-
-def test_route_build_without_schema_source_returns_422(
-    client,
-    tmp_path: Path,
-) -> None:
-    """Without a schema source, the build route returns 422."""
-    data_path = tmp_path / "data.jsonl"
-    data_path.write_text('{"a": 1, "b": "x"}\n{"a": 2, "b": "y"}\n')
-
-    resp = client.post(
-        "/api/json-cache/build",
-        json={"path": str(data_path.relative_to(tmp_path))},
-    )
-    assert resp.status_code == 422, resp.text
-    body = resp.json()
-    assert body.get("type") == "ApiInputSchemaError"
 
 
 # ─── W1 — ancestor-leaf duplicate mapping ─────────────────────────
@@ -1026,3 +785,126 @@ def test_shred_object_table_ignores_ancestor_scalar_value_column() -> None:
     assert shred_to_buffers([{"items": [{"name": "kept"}]}], cfg) == {
         "items": [{"name": "kept", "root_value": None}],
     }
+
+
+# ─── Compiled row readers equal per-column resolution ─────────────
+
+
+def _per_column_row(
+    columns: tuple[_WalkSpec, ...], own_depth: int, value: Any, ancestors: tuple[Any, ...]
+) -> tuple[Any, ...]:
+    """The reference: resolve and coerce each column on its own, in order."""
+    row = []
+    for _name, leaf, type_token, depth in columns:
+        resolved = _resolve_leaf(value if depth == own_depth else ancestors[depth], leaf)
+        if leaf == _SCALAR_VALUE_LEAF or (
+            type_token == "str" and not isinstance(resolved, (dict, list))
+        ):
+            resolved = _coerce_scalar(resolved, type_token)
+        row.append(resolved)
+    return tuple(row)
+
+
+def _assert_reader_matches_per_column(
+    columns: tuple[_WalkSpec, ...], own_depth: int, value: Any, ancestors: tuple[Any, ...]
+) -> None:
+    read_row = _compile_row_reader(columns, own_depth)
+    try:
+        expected = _per_column_row(columns, own_depth, value, ancestors)
+    except ApiInputSchemaError as error:
+        with pytest.raises(ApiInputSchemaError) as actual:
+            read_row(value, ancestors)
+        assert actual.value.message == error.message
+        assert actual.value.context == error.context
+        return
+    actual_row = read_row(value, ancestors)
+    # Compare types as well: True == 1 == 1.0 would hide a coercion difference.
+    assert [(type(cell), cell) for cell in actual_row] == [(type(cell), cell) for cell in expected]
+
+
+_reader_scalars = st.one_of(
+    st.none(),
+    st.booleans(),
+    st.integers(min_value=-(2**63), max_value=2**63 - 1),
+    st.floats(allow_nan=False, allow_infinity=False),
+    st.text(max_size=4),
+)
+_reader_values = st.recursive(
+    _reader_scalars,
+    lambda children: st.one_of(
+        st.lists(children, max_size=3),
+        st.dictionaries(st.sampled_from(["a", "b", "c", "d", "x", "y"]), children, max_size=4),
+    ),
+    max_leaves=16,
+)
+_reader_records = st.dictionaries(
+    st.sampled_from(["a", "b", "c", "d", "x", "y"]), _reader_values, max_size=5
+)
+
+# A depth-1 object table whose columns share prefixes (``a.*``), include a leaf
+# that is also another column's prefix (``a``), interleave prefixes in declared
+# order (``b.y`` sits between ``a.b.c`` and ``a.b.d``), and read two ancestor
+# columns plus an ancestor ``$value`` from the depth-0 element.
+_OBJECT_TABLE_COLUMNS: tuple[_WalkSpec, ...] = (
+    ("a", "a", "str", 1),
+    ("a_x", "a.x", "int", 1),
+    ("a_y", "a.y", "str", 1),
+    ("a_b_c", "a.b.c", "float", 1),
+    ("b_y", "b.y", "str", 1),
+    ("a_b_d", "a.b.d", "str", 1),
+    ("c", "c", "bool", 1),
+    ("root_a", "a", "str", 0),
+    ("root_a_x", "a.x", "date", 0),
+    ("root_value", _SCALAR_VALUE_LEAF, "str", 0),
+)
+
+
+@given(value=_reader_values, ancestor=_reader_records)
+@pr_budget(400)
+def test_object_table_reader_matches_per_column_resolution(value: Any, ancestor: Any) -> None:
+    _assert_reader_matches_per_column(_OBJECT_TABLE_COLUMNS, 1, value, (ancestor,))
+
+
+@pytest.mark.parametrize("type_token", ["str", "float", "int", "bool", "date"])
+@given(value=_reader_values, ancestor=_reader_records)
+@pr_budget(100)
+def test_scalar_table_reader_matches_per_column_resolution(
+    type_token: str, value: Any, ancestor: Any
+) -> None:
+    columns: tuple[_WalkSpec, ...] = (
+        ("value", _SCALAR_VALUE_LEAF, type_token, 1),
+        ("root_x", "x", "str", 0),
+    )
+    _assert_reader_matches_per_column(columns, 1, value, (ancestor,))
+
+
+def test_reader_names_the_first_crossing_column_in_declared_order() -> None:
+    # ``a.q.z`` shares the ``a`` prefix with the first column, so a reader that
+    # grouped by prefix could meet its list before ``b.y``'s; the error must
+    # still name ``b.y``, the first crossing column in declared order.
+    columns: tuple[_WalkSpec, ...] = (
+        ("p", "a.p.x", "int", 0),
+        ("y", "b.y", "int", 0),
+        ("z", "a.q.z", "int", 0),
+    )
+    read_row = _compile_row_reader(columns, 0)
+    record = {"a": {"p": {"x": 1}, "q": [{"z": 2}]}, "b": [{"y": 3}]}
+
+    with pytest.raises(ApiInputSchemaError) as exc_info:
+        read_row(record, ())
+
+    assert exc_info.value.context == {"column": "b.y"}
+    assert "crosses an array at segment 'y'" in exc_info.value.message
+    assert read_row({"a": {"p": {"x": 1}, "q": []}, "b": []}, ()) == (1, None, None)
+
+
+def test_reader_fails_loud_when_per_column_resolution_does_not_cross(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The reader leaves the crossing error to per-column resolution. Were the
+    # two ever to disagree, the row must fail rather than be emitted.
+    monkeypatch.setattr(_shred, "_resolve_leaf", lambda *_args: None)
+    read_row = _compile_row_reader((("x", "a.x", "int", 0),), 0)
+
+    with pytest.raises(RuntimeError, match="per-column resolution does not cross"):
+        read_row({"a": [{"x": 1}]}, ())

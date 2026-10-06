@@ -1,11 +1,11 @@
-"""Train a tiny synthetic model and document the corresponding scoring contract."""
+"""Train a tiny synthetic model on one branch and score with it on another.
 
-from pathlib import Path
-
-import polars as pl
+Model Training has no output, so training is a terminal branch: nothing is
+wired downstream of it. The response is fed by the Model Score node, which
+names the training run whose artifact it scores with.
+"""
 
 import haute
-from haute.graph_utils import resolve_data_input_from_config
 
 pipeline = haute.Pipeline(
     "model_lifecycle",
@@ -14,23 +14,16 @@ pipeline = haute.Pipeline(
 
 
 @pipeline.data_input(config="config/training_data.json")
-def training_rows() -> pl.LazyFrame:
-    return resolve_data_input_from_config(
-        "config/training_data.json",
-        base_dir=Path(__file__).parent,
-    )
+def training_rows(): ...
 
 
 @pipeline.modelling(config="config/model.json")
-def train(training_rows: pl.LazyFrame) -> pl.LazyFrame:
-    return training_rows
+def train(training_rows): ...
 
 
 @pipeline.model_score(config="config/model_score.json")
-def scored(training_rows: pl.LazyFrame) -> pl.LazyFrame:
-    return training_rows
+def scored(training_rows): ...
 
 
 @pipeline.output(config="config/output.json")
-def response(train: pl.LazyFrame) -> pl.LazyFrame:
-    return train
+def response(scored): ...

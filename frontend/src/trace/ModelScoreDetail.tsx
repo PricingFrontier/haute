@@ -9,6 +9,7 @@ import {
 import { formatSignedValue, nextRunningTotal } from "./optimiserApplyHelpers"
 import {
   modelScoreFeatureColumns,
+  modelScoreLinkedPrediction,
   modelScorePrediction,
   modelScoreTitle,
   resolveContributionFeatureValue,
@@ -61,6 +62,7 @@ export function ModelScoreDetailBlock({ detail }: {
   })()
   const additivePrediction = explanation?.prediction_from_contributions ?? explanation?.prediction_from_shap
   const predictionFromLadder = additivePrediction ?? prediction.value
+  const linkedPrediction = modelScoreLinkedPrediction(explanation)
   const omittedContributionCount = explanation?.truncated ? explanation.omitted_count ?? 0 : 0
   return (
     <TraceDetailPanel
@@ -160,20 +162,50 @@ export function ModelScoreDetailBlock({ detail }: {
               Prediction includes {omittedContributionCount} omitted contribution{omittedContributionCount === 1 ? "" : "s"}.
             </div>
           )}
-          <div
-            className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)_minmax(4.5rem,auto)_minmax(4.5rem,auto)] gap-2 border-t pt-1 font-mono text-[10px] font-semibold"
-            style={{ borderColor: "var(--border)" }}
-            data-testid="model-score-ladder-row"
-          >
-            <span style={{ color: "var(--text-primary)" }}>Prediction</span>
-            <span style={{ overflowWrap: "anywhere", color: "var(--text-muted)" }}>
-              {predictionColumn ?? ""}
-            </span>
-            <span className="text-right" style={{ color: "var(--text-muted)" }}>
-              {outputSpace ? `(${outputSpace})` : ""}
-            </span>
-            <span className="text-right" style={{ color: "var(--accent)" }}>{formatValue(predictionFromLadder)}</span>
-          </div>
+          {linkedPrediction ? (
+            <>
+              <div
+                className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)_minmax(4.5rem,auto)_minmax(4.5rem,auto)] gap-2 border-t pt-1 font-mono text-[10px] font-semibold"
+                style={{ borderColor: "var(--border)" }}
+                data-testid="model-score-ladder-row"
+              >
+                <span style={{ color: "var(--text-primary)" }}>{linkedPrediction.sumLabel}</span>
+                <span />
+                <span />
+                <span className="text-right" style={{ color: "var(--text-primary)" }}>{formatValue(predictionFromLadder)}</span>
+              </div>
+              <div
+                className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)_minmax(4.5rem,auto)_minmax(4.5rem,auto)] gap-2 font-mono text-[10px] font-semibold"
+                data-testid="model-score-ladder-row"
+              >
+                <span style={{ color: "var(--text-primary)" }}>
+                  {linkedPrediction.isProbability ? "Probability" : "Prediction"}
+                </span>
+                <span style={{ overflowWrap: "anywhere", color: "var(--text-muted)" }}>
+                  {linkedPrediction.isProbability ? "" : predictionColumn ?? ""}
+                </span>
+                <span className="text-right" style={{ color: "var(--text-muted)" }}>
+                  {linkedPrediction.inverseLink}
+                </span>
+                <span className="text-right" style={{ color: "var(--accent)" }}>{formatValue(linkedPrediction.value)}</span>
+              </div>
+            </>
+          ) : (
+            <div
+              className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)_minmax(4.5rem,auto)_minmax(4.5rem,auto)] gap-2 border-t pt-1 font-mono text-[10px] font-semibold"
+              style={{ borderColor: "var(--border)" }}
+              data-testid="model-score-ladder-row"
+            >
+              <span style={{ color: "var(--text-primary)" }}>Prediction</span>
+              <span style={{ overflowWrap: "anywhere", color: "var(--text-muted)" }}>
+                {predictionColumn ?? ""}
+              </span>
+              <span className="text-right" style={{ color: "var(--text-muted)" }}>
+                {outputSpace ? `(${outputSpace})` : ""}
+              </span>
+              <span className="text-right" style={{ color: "var(--accent)" }}>{formatValue(predictionFromLadder)}</span>
+            </div>
+          )}
           </div>
         </TraceDetailSection>
       )}

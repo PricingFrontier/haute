@@ -8,6 +8,7 @@ import pytest
 
 import haute
 from haute import _contracts
+from haute._column_summary import json_safe_scalar
 from haute._contracts import Contract, get_column_contract
 from haute._json_safe import row_to_json_safe, rows_to_json_safe, to_json_safe
 from haute._registry import NodeRegistryEntry
@@ -87,6 +88,19 @@ class TestJsonSafe:
                 "delta": "0:00:30",
             },
         ]
+
+    @pytest.mark.parametrize(
+        ("value", "token"),
+        [(math.nan, "nan"), (math.inf, "inf"), (-math.inf, "-inf")],
+    )
+    def test_provider_scalar_renderer_uses_the_one_non_finite_encoding(
+        self, value: float, token: str
+    ) -> None:
+        # The assistant's profile renderer and the HTTP payload encoder must
+        # agree: one tagged shape, never a bare string that a text column
+        # holding "inf" could also produce.
+        assert json_safe_scalar(value) == to_json_safe(value)
+        assert json_safe_scalar(value) == {"__haute_type__": "non_finite_float", "value": token}
 
 
 class TestContracts:

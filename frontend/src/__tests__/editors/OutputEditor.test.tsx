@@ -29,6 +29,7 @@ vi.mock("../../api/client", async () => {
   return {
     ...actual,
     outputAssembleDryRun: vi.fn(),
+    previewInputs: vi.fn(async () => ({ input_node_ids: [] as string[] })),
     previewNode: vi.fn(),
   }
 })
@@ -306,7 +307,7 @@ function expandFrame(prefix: string) {
   fireEvent.click(screen.getByTestId(`${prefix}-toggle`))
 }
 
-describe("OutputEditor — frame blocks", () => {
+describe("OutputEditor - frame blocks", () => {
   it("renders the Response Mapping label", () => {
     render(<OutputEditor {...DEFAULT_PROPS} />)
     expect(screen.getByText("Response Mapping")).toBeTruthy()
@@ -413,7 +414,7 @@ describe("OutputEditor — frame blocks", () => {
   })
 })
 
-describe("OutputEditor — rows: add / remove / enable / save", () => {
+describe("OutputEditor - rows: add / remove / enable / save", () => {
   it("Add row appends a blank enabled entry for that frame and saves v2", () => {
     const onUpdateSpy = vi.fn()
     render(
@@ -555,7 +556,7 @@ describe("OutputEditor — rows: add / remove / enable / save", () => {
   })
 })
 
-describe("OutputEditor — Infer (Inferred pills)", () => {
+describe("OutputEditor - Infer (Inferred pills)", () => {
   it("Infer adds one row per frame column with [:] paths, flagged Inferred", () => {
     const onUpdateSpy = vi.fn()
     render(
@@ -647,7 +648,7 @@ describe("OutputEditor — Infer (Inferred pills)", () => {
   })
 })
 
-describe("OutputEditor — Clear", () => {
+describe("OutputEditor - Clear", () => {
   it("Clear removes ALL of the frame's rows, leaving other frames untouched", () => {
     const onUpdateSpy = vi.fn()
     render(
@@ -717,7 +718,7 @@ describe("OutputEditor — Clear", () => {
   })
 })
 
-describe("OutputEditor — path validation", () => {
+describe("OutputEditor - path validation", () => {
   it("an invalid output_path surfaces an error and is never committed", () => {
     const onUpdateSpy = vi.fn()
     render(
@@ -791,8 +792,8 @@ describe("OutputEditor — path validation", () => {
       { allNodes: MULTI_FRAME_NODES, edges: MULTI_FRAME_EDGES },
     )
     expandFrame("output-frame-0")
-    expect(screen.getByTestId("output-frame-0-row-0-path-conflict")).toBeTruthy()
-    expect(screen.getByTestId("output-frame-0-row-1-path-conflict")).toBeTruthy()
+    expect(screen.getByTestId("output-frame-0-row-0-path-warning")).toBeTruthy()
+    expect(screen.getByTestId("output-frame-0-row-1-path-warning")).toBeTruthy()
   })
 
   it("a scalar leaf and an array container at the same name do NOT conflict (array-flag aware)", () => {
@@ -813,12 +814,12 @@ describe("OutputEditor — path validation", () => {
       { allNodes: MULTI_FRAME_NODES, edges: MULTI_FRAME_EDGES },
     )
     expandFrame("output-frame-0")
-    expect(screen.queryByTestId("output-frame-0-row-0-path-conflict")).toBeNull()
-    expect(screen.queryByTestId("output-frame-0-row-1-path-conflict")).toBeNull()
+    expect(screen.queryByTestId("output-frame-0-row-0-path-warning")).toBeNull()
+    expect(screen.queryByTestId("output-frame-0-row-1-path-warning")).toBeNull()
   })
 })
 
-describe("OutputEditor — source_port derivation (blocker)", () => {
+describe("OutputEditor - source_port derivation (blocker)", () => {
   it.each([
     ["a resolved singleton frame", SINGLE_FRAME_API_NODES, SINGLE_FRAME_API_EDGES, "quotes"],
     [
@@ -882,7 +883,7 @@ describe("OutputEditor — source_port derivation (blocker)", () => {
 
 })
 
-describe("OutputEditor — same-resolved-port collision (blocker)", () => {
+describe("OutputEditor - same-resolved-port collision (blocker)", () => {
   it("two sources resolving to the same port show a blocking banner", () => {
     render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [], outputFormat: "json" }} />, {
       allNodes: COLLIDING_PORT_NODES,
@@ -916,7 +917,83 @@ describe("OutputEditor — same-resolved-port collision (blocker)", () => {
   })
 })
 
-describe("OutputEditor — Inferred pill survives earlier-row removal (major)", () => {
+describe("OutputEditor - one frame per array level (JSON-R02)", () => {
+  function row(source_port: string, source_column: string, output_path: string, enabled = true) {
+    return { source_port, source_column, output_path, enabled }
+  }
+
+  it("two frames emitting at the root level show a banner naming both and the level", () => {
+    render(
+      <OutputEditor
+        {...DEFAULT_PROPS}
+        config={{
+          outputMapping: [row("Source_A", "alpha", "$[:].alpha"), row("Source_B", "beta", "$[:].beta")],
+          outputFormat: "json",
+        }}
+      />,
+      { allNodes: TWO_SINGLE_PORT_NODES, edges: TWO_SINGLE_PORT_EDGES },
+    )
+    const banner = screen.getByTestId("output-same-level-banner")
+    expect(banner.textContent).toContain("Frames Source_A and Source_B emit at the same array level ($[:])")
+    expect(banner.textContent).toContain("join them upstream (for example with a Join node)")
+  })
+
+  it("a frame emits at its deepest level, and three frames there are all named", () => {
+    render(
+      <OutputEditor
+        {...DEFAULT_PROPS}
+        config={{
+          outputMapping: [
+            row("policies", "policy_id", "$[:].policy_id"),
+            row("policies", "premium", "$[:].drivers[:].premium"),
+            row("drivers", "driver_id", "$[:].drivers[:].driver_id"),
+            row("claims", "claim_id", "$[:].drivers[:].claim_id"),
+          ],
+          outputFormat: "json",
+        }}
+      />,
+      { allNodes: MULTI_FRAME_NODES, edges: MULTI_FRAME_EDGES },
+    )
+    const banner = screen.getByTestId("output-same-level-banner")
+    expect(banner.textContent).toContain("Frames policies, drivers and claims emit at the same array level ($[:].drivers[:])")
+  })
+
+  // Each mapping would share a level if the excluded rows or frame counted.
+  it.each([
+    [
+      "the frames emit at different levels",
+      [row("policies", "policy_id", "$[:].policy_id"), row("drivers", "driver_id", "$[:].drivers[:].driver_id")],
+    ],
+    [
+      "the other frame's root row is disabled",
+      [row("policies", "policy_id", "$[:].policy_id"), row("drivers", "driver_id", "$[:].driver_id", false)],
+    ],
+    [
+      "the other frame's root row has no column",
+      [row("policies", "policy_id", "$[:].policy_id"), row("drivers", "", "$[:].driver_id")],
+    ],
+    [
+      "the other frame's root row has an invalid path",
+      [row("policies", "policy_id", "$[:].policy_id"), row("drivers", "driver_id", "$.driver_id")],
+    ],
+    [
+      "the other frame emits into divergent branches (its own error)",
+      [
+        row("policies", "premium", "$[:].a[:].premium"),
+        row("drivers", "driver_id", "$[:].a[:].driver_id"),
+        row("drivers", "claim_id", "$[:].b[:].claim_id"),
+      ],
+    ],
+  ])("shows no banner when %s", (_case, outputMapping) => {
+    render(
+      <OutputEditor {...DEFAULT_PROPS} config={{ outputMapping, outputFormat: "json" }} />,
+      { allNodes: MULTI_FRAME_NODES, edges: MULTI_FRAME_EDGES },
+    )
+    expect(screen.queryByTestId("output-same-level-banner")).toBeNull()
+  })
+})
+
+describe("OutputEditor - Inferred pill survives earlier-row removal (major)", () => {
   it("removing an earlier row keeps the pill on the originally-inferred later row", () => {
     const onUpdateSpy = vi.fn()
     render(
@@ -953,7 +1030,7 @@ describe("OutputEditor — Inferred pill survives earlier-row removal (major)", 
   })
 })
 
-describe("OutputEditor — response config (output format)", () => {
+describe("OutputEditor - response config (output format)", () => {
   it("initialises the format dropdown to the placeholder, not an opinionated default", () => {
     render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [] }} />)
     const select = screen.getByTestId("output-format-select") as HTMLSelectElement
@@ -997,7 +1074,7 @@ describe("OutputEditor — response config (output format)", () => {
 
 // ─── Frames-table input-schema (expandable) ───────────────────────
 
-describe("OutputEditor — frames-table input schema", () => {
+describe("OutputEditor - frames-table input schema", () => {
   it("is collapsed by default (no schema container)", () => {
     render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [], outputFormat: "json" }} />, {
       allNodes: MULTI_FRAME_NODES,
@@ -1071,7 +1148,7 @@ describe("OutputEditor — frames-table input schema", () => {
 
 // ─── Assembled-output preview ─────────────────────────────────────
 
-describe("OutputEditor — assembled-output preview", () => {
+describe("OutputEditor - assembled-output preview", () => {
   const SINGLE_PORT_CONFIG = {
     outputMapping: [
       { source_port: "Upstream Node", source_column: "premium", output_path: "$[:].premium", enabled: true },
@@ -1186,7 +1263,7 @@ describe("OutputEditor — assembled-output preview", () => {
 
 // ─── Per-frame input-data preview ─────────────────────────────────
 
-describe("OutputEditor — per-frame input-data preview", () => {
+describe("OutputEditor - per-frame input-data preview", () => {
   it("each frame block has an Input-data preview with Copy + Export", () => {
     render(<OutputEditor {...DEFAULT_PROPS} />, {
       allNodes: SINGLE_PORT_NODES,

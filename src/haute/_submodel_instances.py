@@ -4,13 +4,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 from haute._graph_utils import (
     _edge_id,
-    _sanitize_func_name,
-    canonical_downstream_identity,
     edge_input_name,
+)
+from haute._polars_steps import (
+    PolarsStepError,
+    rename_step_inputs,
+    stepped_surface_allows_input_references,
 )
 from haute._types import (
     GraphEdge,
@@ -27,7 +30,7 @@ from haute.errors import ParseError
 
 _GLOBAL_NODE_REFERENCE_FIELDS: frozenset[str] = frozenset({"instanceOf"})
 _INPUT_SELECTOR_FIELDS: dict[NodeType, frozenset[str]] = {
-    NodeType.OPTIMISER: frozenset({"data_input", "banding_source"}),
+    NodeType.OPTIMISER: frozenset({"data_input", "banding_source", "analysis_input"}),
     NodeType.OPTIMISER_APPLY: frozenset({"ratebook_input"}),
 }
 
@@ -41,11 +44,28 @@ class ResolvedSubmodelInstance:
     definition: SubmodelDefinition
 
 
+_RUNTIME_PREFIX = "submodel_runtime/"
+
+
 def qualified_runtime_node_id(instance_id: str, local_node_id: str) -> str:
     """Return a deterministic, delimiter-safe runtime id for one cloned child."""
     if not instance_id or not local_node_id:
         raise ValueError("Runtime submodel ids require non-empty instance and local ids.")
-    return f"submodel_runtime/{quote(instance_id, safe='')}/{quote(local_node_id, safe='')}"
+    return f"{_RUNTIME_PREFIX}{quote(instance_id, safe='')}/{quote(local_node_id, safe='')}"
+
+
+def runtime_instance_id(node_id: str) -> str | None:
+    """The occurrence a :func:`qualified_runtime_node_id` id was cloned for, or ``None``.
+
+    ``None`` for an id that is not a runtime id. The occurrence's own id may
+    itself be a runtime id, for a submodel nested inside another.
+    """
+    if not node_id.startswith(_RUNTIME_PREFIX):
+        return None
+    instance, separator, local = node_id[len(_RUNTIME_PREFIX) :].partition("/")
+    if not instance or not separator or not local:
+        raise ValueError(f"Malformed runtime submodel node id: {node_id!r}")
+    return unquote(instance)
 
 
 def _definition_registry(graph: PipelineGraph) -> dict[str, SubmodelDefinition]:
@@ -83,6 +103,16 @@ def resolve_submodel_instances(
         config = _parse_instance_config(node)
         if config is None:
             continue
+        if node.data.label != config.alias:
+            raise ParseError(
+                "Submodel occurrence label must equal its alias.",
+                instance_id=node.id,
+                label=node.data.label,
+                alias=config.alias,
+                remediation=(
+                    "An occurrence's display name is its alias; rename it by changing the alias."
+                ),
+            )
         definition = definitions.get(config.definition_id)
         if definition is None:
             raise ParseError(
@@ -106,7 +136,8 @@ def resolve_submodel_instances(
         )
 
     parent_node_ids = set(node_ids)
-    alias_node_collisions = sorted(set(aliases) & parent_node_ids)
+    ordinary_node_ids = {node.id for node in graph.nodes if node.id not in resolved}
+    alias_node_collisions = sorted(set(aliases) & ordinary_node_ids)
     if alias_node_collisions:
         raise ParseError(
             "Submodel instance alias collides with a parent node id.",
@@ -181,7 +212,7 @@ def resolve_submodel_instances(
                     source=edge.source,
                     target=edge.target,
                 )
-            _output_port(resolved[edge.source], edge)
+            bound_output_port(resolved[edge.source], edge)
         if edge.target in resolved:
             if edge.source not in parent_node_ids:
                 raise ParseError(
@@ -191,15 +222,15 @@ def resolve_submodel_instances(
                     target=edge.target,
                 )
             instance = resolved[edge.target]
-            port = _input_port(instance, edge)
-            binding_key = (edge.target, port.port_id)
+            port = bound_input_port(instance, edge)
+            binding_key = (edge.target, port.name)
             previous_edge_id = bound_input_ports.get(binding_key)
             if previous_edge_id is not None:
                 raise ParseError(
                     "Submodel input port is bound more than once.",
                     instance_id=edge.target,
                     definition_id=instance.config.definition_id,
-                    port_id=port.port_id,
+                    port_name=port.name,
                     edge_ids=[previous_edge_id, edge.id],
                 )
             bound_input_ports[binding_key] = edge.id
@@ -211,7 +242,7 @@ def validate_submodel_instances(graph: PipelineGraph) -> None:
     resolve_submodel_instances(graph)
 
 
-def _port_id(
+def _port_name(
     *,
     edge: GraphEdge,
     handle: str | None,
@@ -225,26 +256,27 @@ def _port_id(
             edge_id=edge.id,
             endpoint=endpoint,
             handle=handle,
-            expected=f"{prefix}<portId>",
+            expected=f"{prefix}<name>",
             instance_id=instance.node.id,
             definition_id=instance.config.definition_id,
         )
-    port_id = handle[len(prefix) :]
-    if not port_id:
+    port_name = handle[len(prefix) :]
+    if not port_name:
         raise ParseError(
-            "Submodel boundary edge has an empty public port id.",
+            "Submodel boundary edge has an empty public port name.",
             edge_id=edge.id,
             endpoint=endpoint,
             instance_id=instance.node.id,
         )
-    return port_id
+    return port_name
 
 
-def _input_port(
+def bound_input_port(
     instance: ResolvedSubmodelInstance,
     edge: GraphEdge,
 ) -> SubmodelInputPort:
-    port_id = _port_id(
+    """The public input port a parent edge into *instance* binds."""
+    port_name = _port_name(
         edge=edge,
         handle=edge.targetHandle,
         prefix="in__",
@@ -252,7 +284,7 @@ def _input_port(
         instance=instance,
     )
     for port in instance.definition.input_ports:
-        if port.port_id == port_id:
+        if port.name == port_name:
             return port
 
     raise ParseError(
@@ -260,16 +292,17 @@ def _input_port(
         edge_id=edge.id,
         instance_id=instance.node.id,
         definition_id=instance.config.definition_id,
-        port_id=port_id,
-        known_ports=[port.port_id for port in instance.definition.input_ports],
+        port_name=port_name,
+        known_ports=[port.name for port in instance.definition.input_ports],
     )
 
 
-def _output_port(
+def bound_output_port(
     instance: ResolvedSubmodelInstance,
     edge: GraphEdge,
 ) -> SubmodelOutputPort:
-    port_id = _port_id(
+    """The public output port a parent edge out of *instance* binds."""
+    port_name = _port_name(
         edge=edge,
         handle=edge.sourceHandle,
         prefix="out__",
@@ -277,7 +310,7 @@ def _output_port(
         instance=instance,
     )
     for port in instance.definition.output_ports:
-        if port.port_id == port_id:
+        if port.name == port_name:
             return port
 
     raise ParseError(
@@ -285,37 +318,204 @@ def _output_port(
         edge_id=edge.id,
         instance_id=instance.node.id,
         definition_id=instance.config.definition_id,
-        port_id=port_id,
-        known_ports=[port.port_id for port in instance.definition.output_ports],
+        port_name=port_name,
+        known_ports=[port.name for port in instance.definition.output_ports],
     )
 
 
-def rewrite_input_selectors(
+def _reject_output_mapping_collisions(
+    node_id: str,
+    output_mapping: list[dict[str, Any]],
+) -> None:
+    """Reject renamed OUTPUT mappings that duplicate or contradict each other."""
+    seen: set[tuple[Any, Any, Any]] = set()
+    by_destination: dict[tuple[Any, Any], Any] = {}
+    for entry in output_mapping:
+        if not entry.get("enabled", True):
+            continue
+        source_port = entry.get("source_port")
+        source_column = entry.get("source_column")
+        output_path = entry.get("output_path")
+        identity = (source_port, source_column, output_path)
+        destination = (output_path, source_port)
+        if identity in seen or (
+            destination in by_destination and by_destination[destination] != source_column
+        ):
+            raise ParseError(
+                "Submodel boundary outputMapping rename collides.",
+                node_id=node_id,
+                output_path=output_path,
+            )
+        seen.add(identity)
+        by_destination[destination] = source_column
+
+
+def rewrite_boundary_input_names(
     nodes: list[GraphNode],
     rename_map_by_node: dict[str, dict[str, str]],
 ) -> list[GraphNode]:
-    """Rewrite exact incoming-edge selectors after a graph boundary rename."""
+    """Rewrite every schema-owned input-name reference after boundary expansion.
+
+    Selector fields and live-switch map keys follow the new physical edge name.
+    Ordinary Polars code retains its public logical name through
+    ``inputMapping``; instance mappings only update existing physical values.
+    """
     rewritten: list[GraphNode] = []
     for node in nodes:
         renames = rename_map_by_node.get(node.id, {})
+        if not renames:
+            rewritten.append(node)
+            continue
         fields = _INPUT_SELECTOR_FIELDS.get(node.data.nodeType, frozenset())
         config = dict(node.data.config)
         changed = False
+        if node.data.nodeType == NodeType.OUTPUT and "outputMapping" in config:
+            raw_output_mapping = config["outputMapping"]
+            if not isinstance(raw_output_mapping, list):
+                raise ParseError(
+                    "Submodel boundary OUTPUT outputMapping must be a list.",
+                    node_id=node.id,
+                )
+            output_mapping: list[dict[str, Any]] = []
+            for entry_index, entry in enumerate(raw_output_mapping):
+                if not isinstance(entry, dict):
+                    raise ParseError(
+                        "Submodel boundary OUTPUT outputMapping entries must be objects.",
+                        node_id=node.id,
+                        entry_index=entry_index,
+                    )
+                source_port = entry.get("source_port")
+                if not isinstance(source_port, str) or not source_port:
+                    raise ParseError(
+                        "Submodel boundary OUTPUT outputMapping source_port must be a "
+                        "non-empty string.",
+                        node_id=node.id,
+                        entry_index=entry_index,
+                    )
+                replacement = renames.get(source_port)
+                if replacement is None:
+                    output_mapping.append(entry)
+                    continue
+                rewritten_entry = dict(entry)
+                rewritten_entry["source_port"] = replacement
+                output_mapping.append(rewritten_entry)
+            if output_mapping != raw_output_mapping:
+                _reject_output_mapping_collisions(node.id, output_mapping)
+                config["outputMapping"] = output_mapping
+                changed = True
+
         for field in fields:
             selected = config.get(field)
             replacement = renames.get(selected) if isinstance(selected, str) else None
             if replacement is not None:
                 config[field] = replacement
                 changed = True
+
+        raw_scenario_map = config.get("input_scenario_map")
+        if raw_scenario_map is not None:
+            if not isinstance(raw_scenario_map, dict):
+                raise ParseError(
+                    "Submodel boundary input_scenario_map must be an object with string keys.",
+                    node_id=node.id,
+                )
+            scenario_map: dict[str, Any] = {}
+            for name, scenario in raw_scenario_map.items():
+                if not isinstance(name, str):
+                    raise ParseError(
+                        "Submodel boundary input_scenario_map must be an object with string keys.",
+                        node_id=node.id,
+                    )
+                rewritten_name = renames.get(name, name)
+                if rewritten_name in scenario_map:
+                    raise ParseError(
+                        "Submodel boundary input_scenario_map rename collides.",
+                        node_id=node.id,
+                        input_name=name,
+                        expanded_input_name=rewritten_name,
+                    )
+                scenario_map[rewritten_name] = scenario
+            if scenario_map != raw_scenario_map:
+                config["input_scenario_map"] = scenario_map
+                changed = True
+
+        raw_mapping = config.get("inputMapping")
+        if raw_mapping is not None:
+            if not isinstance(raw_mapping, dict) or any(
+                not isinstance(logical, str)
+                or not logical
+                or not isinstance(current, str)
+                or not current
+                for logical, current in raw_mapping.items()
+            ):
+                raise ParseError(
+                    "Submodel boundary inputMapping must map non-empty string names.",
+                    node_id=node.id,
+                )
+            input_mapping: dict[str, str] = {}
+            renamed_currents: set[str] = set()
+            for logical, current in raw_mapping.items():
+                replacement = renames.get(current)
+                if replacement is not None:
+                    renamed_currents.add(current)
+                    current = replacement
+                input_mapping[logical] = current
+        else:
+            input_mapping = {}
+            renamed_currents = set()
+
+        steps = config.get("steps")
+        if (
+            stepped_surface_allows_input_references(node.data.nodeType)
+            and not config.get("instanceOf")
+            and isinstance(steps, list)
+        ):
+            # A stepped edges surface addresses inputs by their edge names, so the
+            # boundary rename rewrites the references inside the steps rather
+            # than recording an ``inputMapping`` indirection.
+            try:
+                renamed_steps = rename_step_inputs(steps, renames)
+            except PolarsStepError as exc:
+                raise ParseError(
+                    "Submodel boundary cannot rename a stepped transform's inputs.",
+                    node_id=node.id,
+                    detail=str(exc),
+                ) from exc
+            if renamed_steps != steps:
+                config["steps"] = renamed_steps
+                changed = True
+        elif node.data.nodeType == NodeType.POLARS and not config.get("instanceOf"):
+            for logical, current in renames.items():
+                if logical == current or logical in renamed_currents:
+                    continue
+                if logical in input_mapping:
+                    raise ParseError(
+                        "Submodel boundary cannot preserve a Polars logical input name "
+                        "already used by inputMapping.",
+                        node_id=node.id,
+                        logical_input_name=logical,
+                        mapped_input_name=input_mapping[logical],
+                        expanded_input_name=current,
+                    )
+                input_mapping[logical] = current
+
+        duplicate_currents = sorted(
+            current
+            for current in set(input_mapping.values())
+            if list(input_mapping.values()).count(current) > 1
+        )
+        if duplicate_currents:
+            raise ParseError(
+                "Submodel boundary inputMapping produces duplicate physical inputs.",
+                node_id=node.id,
+                duplicate_input_names=duplicate_currents,
+            )
+        if input_mapping != (raw_mapping or {}):
+            config["inputMapping"] = input_mapping
+            changed = True
         if not changed:
             rewritten.append(node)
             continue
-        rewritten.append(
-            node.model_copy(
-                deep=True,
-                update={"data": node.data.model_copy(update={"config": config})},
-            )
-        )
+        rewritten.append(node.with_config(config))
     return rewritten
 
 
@@ -338,14 +538,7 @@ def rewrite_node_references(
         if not changed:
             rewritten.append(node)
             continue
-        rewritten.append(
-            node.model_copy(
-                deep=True,
-                update={
-                    "data": node.data.model_copy(update={"config": config}),
-                },
-            )
-        )
+        rewritten.append(node.with_config(config))
     return rewritten
 
 
@@ -500,31 +693,12 @@ def _expanded_edge(
 def _boundary_edge_input_name(
     edge: GraphEdge,
     node_map: dict[str, GraphNode],
+    definitions: dict[str, SubmodelDefinition],
 ) -> str:
     """Return the executable input name on a graph that may contain submodels."""
     source = node_map[edge.source]
-    if source.data.nodeType == NodeType.SUBMODEL:
-        config = _parse_instance_config(source)
-        if config is None or not edge.sourceHandle:
-            raise ParseError(
-                "Submodel output edge cannot provide an executable input name.",
-                edge_id=edge.id,
-                source=edge.source,
-                source_handle=edge.sourceHandle,
-            )
-        prefix = "out__"
-        if not edge.sourceHandle.startswith(prefix) or edge.sourceHandle == prefix:
-            raise ParseError(
-                "Submodel output edge has a malformed public-port handle.",
-                edge_id=edge.id,
-                source_handle=edge.sourceHandle,
-            )
-        return canonical_downstream_identity(
-            config.alias,
-            edge.sourceHandle.removeprefix(prefix),
-        )
     try:
-        return edge_input_name(edge, source)
+        return edge_input_name(edge, source, submodels=definitions)
     except ValueError as exc:
         raise ParseError(
             "Graph edge cannot provide an executable input name.",
@@ -663,9 +837,10 @@ def expand_submodel_instances(
 
     remaining_nodes = [node for node in graph.nodes if node.id not in selected_ids]
     expanded_node_map = {node.id: node for node in [*remaining_nodes, *cloned_nodes]}
-    selector_renames: dict[str, dict[str, str]] = {}
+    input_name_renames: dict[str, dict[str, str]] = {}
+    definitions = _definition_registry(graph)
 
-    def add_selector_rename(
+    def add_input_name_rename(
         *,
         target_id: str,
         old_name: str,
@@ -674,7 +849,7 @@ def expand_submodel_instances(
     ) -> None:
         if old_name == new_name:
             return
-        target_map = selector_renames.setdefault(target_id, {})
+        target_map = input_name_renames.setdefault(target_id, {})
         previous = target_map.get(old_name)
         if previous is not None and previous != new_name:
             raise ParseError(
@@ -684,6 +859,15 @@ def expand_submodel_instances(
                 input_name=old_name,
                 expanded_input_names=sorted({previous, new_name}),
             )
+        for other_old, other_new in target_map.items():
+            if other_old != old_name and other_new == new_name:
+                raise ParseError(
+                    "Submodel boundary input names collide after expansion.",
+                    edge_id=edge_id,
+                    target_id=target_id,
+                    input_names=sorted({other_old, old_name}),
+                    expanded_input_name=new_name,
+                )
         target_map[old_name] = new_name
 
     expanded_parent_edges: list[GraphEdge] = []
@@ -703,7 +887,7 @@ def expand_submodel_instances(
                     edge_id=edge.id,
                     instance_id=edge.source,
                 )
-            output = _output_port(source_instance, edge)
+            output = bound_output_port(source_instance, edge)
             source_variants = [
                 (
                     id_maps[edge.source][output.source.node_id],
@@ -727,7 +911,15 @@ def expand_submodel_instances(
                     edge_id=edge.id,
                     instance_id=edge.target,
                 )
-            input_port = _input_port(target_instance, edge)
+            input_port = bound_input_port(target_instance, edge)
+            if not input_port.targets:
+                raise ParseError(
+                    "Submodel input port bound by a parent edge has no internal targets.",
+                    edge_id=edge.id,
+                    instance_id=target_instance.node.id,
+                    definition_id=target_instance.config.definition_id,
+                    port_name=input_port.name,
+                )
             target_variants = [
                 (
                     id_maps[edge.target][target.node_id],
@@ -754,25 +946,32 @@ def expand_submodel_instances(
                     continue
                 if edge.target in selected_ids:
                     assert target_instance is not None
-                    old_name = _sanitize_func_name(_input_port(target_instance, edge).port_id)
+                    old_name = bound_input_port(target_instance, edge).name
                 else:
-                    old_name = _boundary_edge_input_name(edge, graph.node_map)
-                new_name = _boundary_edge_input_name(expanded_edge, expanded_node_map)
-                add_selector_rename(
+                    old_name = _boundary_edge_input_name(
+                        edge,
+                        graph.node_map,
+                        definitions,
+                    )
+                new_name = _boundary_edge_input_name(
+                    expanded_edge,
+                    expanded_node_map,
+                    definitions,
+                )
+                add_input_name_rename(
                     target_id=target,
                     old_name=old_name,
                     new_name=new_name,
                     edge_id=edge.id,
                 )
 
-    remaining_nodes = rewrite_input_selectors(remaining_nodes, selector_renames)
-    cloned_nodes = rewrite_input_selectors(cloned_nodes, selector_renames)
+    remaining_nodes = rewrite_boundary_input_names(remaining_nodes, input_name_renames)
+    cloned_nodes = rewrite_boundary_input_names(cloned_nodes, input_name_renames)
     remaining_instances = {
         instance.config.definition_id
         for instance_id, instance in instances.items()
         if instance_id not in selected_ids
     }
-    definitions = _definition_registry(graph)
     remaining_definitions = {
         definition_id: definition
         for definition_id, definition in definitions.items()

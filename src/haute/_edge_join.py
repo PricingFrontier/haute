@@ -10,7 +10,7 @@ import polars as pl
 from haute._cardinality import normalise_join_validation
 from haute._config_validation import reject_removed_config_keys
 from haute._polars_utils import execution_collect
-from haute._types import EDGE_JOIN_CONFIG_KEYS, NodeType
+from haute._types import COLUMN_CONFIG_KEYS, EDGE_JOIN_CONFIG_KEYS, NodeType
 from haute.errors import ConfigError
 
 EDGE_JOIN_DEFAULT_HOW = "left"
@@ -53,7 +53,9 @@ def normalise_edge_join_decorator_kwargs(kwargs: dict[str, Any]) -> dict[str, An
 def edge_join_config_to_decorator_kwargs(config: dict[str, Any]) -> list[tuple[str, Any]]:
     """Return decorator kwargs in stable snake-case order."""
     items: list[tuple[str, Any]] = []
-    for key in EDGE_JOIN_CONFIG_KEYS:
+    # Column metadata belongs to the node, rather than LazyFrame.join, but
+    # must survive the same decorator round trip as the join settings.
+    for key in (*EDGE_JOIN_CONFIG_KEYS, *COLUMN_CONFIG_KEYS):
         if key not in config:
             continue
         value = config[key]

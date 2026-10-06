@@ -1,0 +1,73 @@
+{
+  "schema_version": 5,
+  "id": "smoke_categorical_banding",
+  "fixture_version": "1",
+  "project_fixture": "ordinary_pricing",
+  "area": "banding",
+  "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
+  "turns": [
+    {
+      "request": "After quotes, add a categorical banding node named region_band. For column region, output region_group. Map north and south to core, east and west to other, with unknown as the default. Connect quotes to region_band.",
+      "expectations": {
+        "outcome": "applied",
+        "saves": true,
+        "required_node_types": [
+          "banding"
+        ],
+        "forbidden_node_types": [],
+        "required_edges": [
+          {
+            "source": "quotes",
+            "target": "region_band",
+            "target_handle": null
+          }
+        ],
+        "require_connected_graph": true,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [],
+        "node_configs": {
+          "region_band": {
+            "factors": [
+              {
+                "banding": "categorical",
+                "column": "region",
+                "outputColumn": "region_group",
+                "rules": [
+                  {
+                    "value": "north",
+                    "assignment": "core"
+                  },
+                  {
+                    "value": "south",
+                    "assignment": "core"
+                  },
+                  {
+                    "value": "east",
+                    "assignment": "other"
+                  },
+                  {
+                    "value": "west",
+                    "assignment": "other"
+                  }
+                ],
+                "default": "unknown"
+              }
+            ]
+          }
+        },
+        "execution": [
+          {
+            "node": "region_band",
+            "scenario": "live",
+            "golden": "quotes = pl.scan_csv('data/quotes.csv')\ndf = quotes.with_columns(\n    pl.when(pl.col('region').is_in(['north', 'south'])).then(pl.lit('core'))\n    .when(pl.col('region').is_in(['east', 'west'])).then(pl.lit('other'))\n    .otherwise(pl.lit('unknown'))\n    .alias('region_group')\n)\n",
+            "order_free": false
+          }
+        ],
+        "efficiency": null,
+        "data_findings": null
+      }
+    }
+  ]
+}

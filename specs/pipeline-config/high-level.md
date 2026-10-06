@@ -20,7 +20,7 @@ root directory and pipeline entry file, including scaffolding a new one via `hau
 **In scope:** the `Pipeline`/`Submodel`/`NodeRegistry` decorator API and its standalone
 `run()`/`score()` executor; per-node-type config dict construction and its cross-check against
 a user-declared `contract=`; the sidecar JSON path conventions, read/write helpers, and the
-write-time key allowlist; the per-node-type recognised config contract; converting parsed source into the graph models
+declared config keys that parse and save enforce; the per-node-type recognised config contract; converting parsed source into the graph models
 (explicit `connect()` edges and implicit parameter-name-matching edges — never invented
 ones); the topology-only shape contracts (currently: Explore node in/out-degree); Haute
 project-root and pipeline-file discovery; and `haute init` project scaffolding.
@@ -41,9 +41,10 @@ decorator per authorable node type — `api_input`, `polars`, `banding`, `rating
 `model_score`, `output`, `edge_join`, `live_switch`, `optimiser`, `optimiser_apply`,
 `scenario_expander`, `modelling`, `constant`, `data_input`, `data_output`,
 `explore`, `external_file`, `instance` — each a thin wrapper that tags the function with its
-`NodeType` and delegates to a shared registration path. A function with zero parameters is
-treated as a source node; duplicate function names are rejected the moment a second decorator
-tries to register them. `connect(source, target, source_port=, target_port=)` declares an
+`NodeType` and delegates to a shared registration path. Configured API Input, Data Input
+and Constant nodes are sources whatever their signature; any other function with zero
+positional parameters is treated as a source node; duplicate function names are rejected the
+moment a second decorator tries to register them. `connect(source, target, source_port=, target_port=)` declares an
 edge and is chainable; both endpoints must already be registered nodes, and port names, if
 given, must be non-empty strings.
 
@@ -53,8 +54,38 @@ decorator keywords — the folder convention is fixed per type. Parsing one of t
 `config=` is rejected with a message naming the exact folder and pointing at `haute init` for a
 starter sidecar. Every other type builds its config directly from decorator keywords and, for
 several types, from Python code extracted out of the function body. The live `Pipeline` decorator
-API does not load or validate a `config=` path; it records the keyword as ordinary node metadata,
-and generated function bodies/runtime graph builders own the corresponding executable behaviour.
+API records `config=` and the other keywords as node metadata at import time and reads a sidecar
+only when a standalone run executes the node (see Standalone execution).
+
+**Declarations and hooks.** A node with settings is a configured node: an Edge Join or
+Explore node (its settings are its decorator keywords), or a node of any other type except
+`polars` that names a `config=` sidecar. Its decorator performs the node's configured work —
+loading, scoring, rating, expanding, joining, switching, assembling — when the file runs on its
+own, and the function says only what the user added. On a type that accepts code (Data
+Input, External File, Rating Step, Model Score, Scenario Expander, Explore), a function whose
+first positional parameter is `df` (for an External File, a function with the keyword-only
+parameter `obj`) is a **hook**: the decorator calls it with the frame its work produced as
+`df` — for an External File, with the node's inputs by name, the loaded object as `obj`, and a
+body that binds `df` to the first input itself — and the hook returns the node's result. Any
+other function is a **declaration**: its body is `...`, `pass` or a docstring alone, it is
+never called, and its positional parameters name the node's inputs. On a type that accepts no
+code (API Input, Data Output, Edge Join, Banding, Output, Live Switch, Modelling, Optimiser,
+Optimiser Apply, Constant) every function is a declaration, and a parameter named `df` is
+just an input. Registration fails loudly for a declaration with a body (the code would never
+run; on a type that accepts no code the message says so) and for a hook without one. The
+static parser enforces the same shapes. Canvas execution and the deployed scorer give a hook's
+code the same names the saved function has: the preamble's names, `df` and the node's other
+inputs (an External File's inputs and `obj`), never the first input under its own name. One
+difference remains: a Model Score's code on the canvas and when deployed can also use
+`model`, which a standalone run does not provide. Node code
+leaves its result in `df`; a closing `return <expr>` reads as `df = <expr>`, and an earlier
+return is a parse error rather than an assignment that would fall through. The decorator returns a callable that runs the node:
+calling a configured node's function directly — `quotes()` in a notebook — performs the same
+work, and hands it to the same hook, as a run does, while a transform's decorator returns the
+function itself. A sidecar-typed node registered without `config=` has no settings for its
+decorator to act on, so the live API treats it as a plain function and a standalone run calls
+its body as written; the static parser rejects that form, so it never appears in a saved
+pipeline file.
 
 **Strict parsing and editor recovery.** `parse_pipeline_file()` and
 `parse_pipeline_source()` are strict canonical entry points: Python syntax, decorator,
@@ -64,26 +95,29 @@ uses a separate recovery entry point and separate models. It first records autho
 connection skeletons with source spans, then resolves known nodes independently. An expected
 node-local configuration or contract failure becomes an unavailable recovery node without
 inventing config or mutating its referenced file; an unexpected exception is isolated only
-at that recovery boundary and receives a logged incident id. Syntax-invalid source may use
-the regex extractor only through recovery. If it cannot produce a trustworthy skeleton the
-result is `source_only`, never a successful empty canonical graph.
+at that recovery boundary and receives a logged incident id. Syntax-invalid source has no
+skeleton: the result is `source_only`, carrying the syntax error, never a recovered canvas or a
+successful empty canonical graph.
 
 The editor's `.haute.json` read distinguishes absent, valid, corrupt, and unreadable states.
 Only a valid sidecar supplies source selection. Corrupt or unreadable content leaves its raw
 bytes untouched, uses presentation-only default positions, degrades the document, and blocks
 preview because active-source state is untrusted. Recovery revisions hash raw dependency
 bytes and explicit missing sentinels rather than requiring a valid `PipelineGraph`.
+A module-level statement that a save would drop (see [codegen](../codegen/high-level.md))
+is an `unkept_module_statement` diagnostic on its lines, so the document is degraded until the
+statement moves between the imports and the constructor or into preserve markers. Save refuses a document that is not ready on disk with `409`, naming each diagnostic's
+location, message and fix, and leaves the file untouched.
+Every mutation of a persisted document, including Save, names the `source_revision` it was
+based on and fails closed when the on-disk document has moved; initial creation names no
+revision and succeeds only while the target file is absent.
 
 **Wiring.** In the statically parsed source graph, edges come from exactly two declared
 sources: explicit `connect()` calls and function parameter names matching other node names.
 Explicit calls take precedence and
 implicit inference only fills in what wasn't already covered. Edges are never invented: a
-file that declares no wiring parses as a disconnected graph. (A definition-order chain
-fallback used to fabricate a linear chain for any multi-node file with zero declared edges;
-it was removed because it made deliberately disconnected graphs unrepresentable — deleting
-the last edge resurrected it on reparse, a GUI save then materialised the invented edge into
-source, and the fabricated chain disagreed with `run()`, which fails loudly on unwired
-transforms.)
+file that declares no wiring parses as a disconnected graph, keeping deliberately disconnected
+graphs representable and in agreement with `run()`, which fails loudly on unwired transforms.
 
 A static `connect()` whose source or target does not name a root node is retained as unresolved
 until referenced submodels have been loaded, because cross-boundary connections legitimately name
@@ -101,8 +135,9 @@ Keyword-only parameters are configuration and never become graph edges.
 **Standalone execution.** `Pipeline.run()` and `Pipeline.score(df)` are a self-contained
 executor over the live decorator graph (distinct from the full graph executor used for
 deployment/preview, which operates on the parsed `GraphNode`/`GraphEdge` representation
-instead). They topologically sort the registered nodes and edges, run each node's function
-with its wired-in DataFrame(s), and resolve which node's output to return: an explicit
+instead). They topologically sort the registered nodes and edges, run each node with its
+wired-in DataFrame(s) — a transform's function directly, a configured node's work through its
+decorator and then its hook, if it has one — and resolve which node's output to return: an explicit
 `@pipeline.output` node wins if there is exactly one; otherwise the single node with no
 outgoing edge is used; anything more ambiguous than that raises, naming every candidate.
 `score(df)` additionally seeds a live input DataFrame into whichever source is marked as the
@@ -121,11 +156,29 @@ pipelines take a bare frame), or a bare frame against a multi-port source all ra
 multiple ports. Both `run()` and `score()` resolve each edge's frame through the same
 port-aware selection the full executor uses, keeping the
 single-execution-engine invariant.
+A pipeline that registers submodels runs them: `run()` and `score()` import each registered
+file's one `haute.Submodel` (a file that defines none, or several, is refused naming it) and
+execute a copy of the pipeline in which every occurrence is replaced by its definition's nodes,
+named `<occurrence>.<node>`. An edge into an occurrence's input port feeds every node the port
+targets, an edge out of an output port leaves the node the port names, as flattening wires them
+for `haute run`, and a submodel's node with several inputs receives them in its parameters'
+order: an input named by a parameter (its source's name, or the port's) takes that place, and
+the others fill the remaining parameters in order, as a hook's `df` names no input (the
+pipeline's own nodes keep their connection order, as without submodels). Each definition's
+module is in `sys.modules` while the run uses it, and a pipeline whose nodes all live in
+submodels runs too. Two
+occurrences of one definition each run its nodes under their own names.
 `@pipeline.instance` registrations are not executable on this live-object surface: the
 decorator records an internal instance marker, and `run()`/`score()` raise `ExecutionError`
 before calling the node regardless of whether `instanceOf` or `inputMapping` is empty. Static
 codegen may resolve an instance into a concrete generated function; the live registry may not
 silently treat an unresolved instance as an ordinary Polars node.
+
+`run()` takes the source to run under as the keyword `source`, which it requires: a bare
+`run()` raises `TypeError` before any node runs, naming the sources the pipeline's
+`.haute.json` sidecar lists (`live` alone when there is no sidecar), because no default source
+is right for every pipeline. The source is what Source Switches route on, which value each
+global constant takes, and (anything but `live`) selects batched model scoring.
 
 **Project & discovery.** A Haute project is a directory containing `haute.toml` that also
 sits inside a git repository. Every surface that binds one pipeline, including `run`, `lint`,
@@ -146,12 +199,21 @@ removes a root `main.py`, creates no `prompts/` directory, and creates no node s
 
 **CI/CD generation.** `haute init --ci` supports three providers today — GitHub Actions,
 GitLab CI, Azure DevOps — plus `none`, which writes no workflow files at all, crossed against
-seven `--target` deploy targets (`databricks`, `container`, `azure-container-apps`, `aws-ecs`,
-`gcp-run`, `sagemaker`, `azure-ml`). Whichever provider is chosen, the generated workflow
+five `--target` deploy targets (`databricks`, `container`, `azure-container-apps`, `aws-ecs`,
+`gcp-run`; the last three are labelled build and push only in the generated `haute.toml`,
+`.env.example` and CI files, because deploy pushes their image to the required registry and
+does not update their service yet). Whichever
+provider is chosen, the generated workflow
 encodes the same fixed release flow: a validate job (lint, type check, test, pipeline lint,
 `haute deploy --dry-run`), an automatic deploy-to-staging job, a smoke test against staging
 (scores `tests/quotes/*.json`), an impact-analysis job comparing staging against production,
-and a production-deploy job gated behind a provider-specific approval mechanism — GitHub uses
+and a production-deploy job gated behind a provider-specific approval mechanism. A
+build-and-push-only target's workflow has no smoke-test or impact-analysis job (its production
+job follows staging directly): nothing runs the pushed image until someone updates the service
+by hand, so those checks would test the old service. The production job tags the release in git:
+Databricks as `deploy/v<registered model version>`; a container-based target, which has no
+registered version, as `deploy/<short commit>` (the commit its image tag carries), leaving an
+existing tag in place when the same commit is deployed again. GitHub uses
 a separate `workflow_dispatch`-triggered workflow (so the split works without GitHub
 Team/Enterprise environment protection rules); GitLab uses `when: manual` on the production
 job; Azure DevOps runs the production job as a `deployment` under an `environment: production`
@@ -199,48 +261,285 @@ names a particular Data Output. Their only sidecar folders are
 active branch, format/group agreement, safe references, cache constraints, and
 the absence of output code.
 
-**Retained input sidecars are authoritative.** Generated `apiInput` and
-`externalFile` functions retain executable user code but do not embed a second
-copy of declarative paths, source types, schemas, file types, or model classes.
-At execution time shared helpers load the duplicate-key-rejecting sidecar,
-validate its active shape, resolve relative paths through the normal
-project/pipeline policy, and perform the same source/object load used by the
-executor. Editing a valid sidecar therefore changes the next parse and
-standalone execution without regenerating Python; a missing, malformed, or
-shape-incomplete sidecar fails before the data/object file is read.
+**Sidecars are authoritative.** No function body embeds a copy of a sidecar's
+paths, source types, schemas, file types, model classes, switch mappings or constant
+values. When a standalone run executes a configured node, the decorator's shared
+helpers load the duplicate-key-rejecting sidecar (resolving its `config=` path against
+the pipeline's directory: the directory of the file that defines the function, or, in a
+submodel definition file below its pipeline, the directory its constructor's `pipeline_dir`
+leads to), validate its active shape,
+resolve relative paths through the normal project/pipeline policy, and perform the
+same load, scoring or assembly the executor performs. Editing a valid sidecar therefore
+changes the next parse and standalone execution without regenerating Python; a
+missing, malformed, or shape-incomplete sidecar fails before the data/object file is
+read.
 
 For tabular Data Input values specifically, a relative `path` is interpreted
-from the Haute project root by both canvas execution and generated standalone
-functions. The generated helper receives the project root discovered from the
-pipeline file and uses the same canonical runtime resolver as the executor;
-the sidecar's own `config/data_input/...json` location remains pipeline-relative.
-When parsing a handwritten Data Input function, the canonical direct-return
-wrapper `return resolve_data_input_from_config(...)` is loading scaffold, not
-post-load transform code. It round-trips as an empty executable `code` field
-instead of being re-executed as a bare `return` statement.
-There is no generated-code-only rebasing of `data/foo.parquet` beneath the
-pipeline module directory.
+from the Haute project root by both canvas execution and standalone runs. The
+standalone runtime discovers the project root from the pipeline file and uses the
+same canonical runtime resolver as the executor; the sidecar's own
+`config/data_input/...json` location remains pipeline-relative. There is no
+standalone-only rebasing of `data/foo.parquet` beneath the pipeline module
+directory.
+
+**Stepped transforms.** A `polars` transform may be authored as an ordered list of
+low-code steps instead of hand-written code. The steps live in the node's optional
+`config/polars/<name>.json` sidecar, which the generated decorator references with
+`config=`; a `@pipeline.polars` function without `config=` is a code-only transform
+and has no sidecar. The `polars` folder is the one optional sidecar folder: the sidecar
+walks (collection, load-error protection, and the save-time collision and
+reserved-filename guard) treat a `polars` node as a sidecar owner only while its config
+carries a `steps` list, and the stale-file sweep removes the file when a node stops
+carrying one. One renderer (`src/haute/_polars_steps.py`) validates the closed step
+schema and renders the steps into the function body, recording each step's inclusive
+line range and raising a step-indexed error for any malformed or incomplete step.
+Each structured step renders one statement in common Python style, as ruff and the
+Polars documentation write it: brackets only where operator precedence needs them,
+double quotes unless single ones need fewer escapes, group-by keys, aggregations and
+selected, dropped or filled columns passed as separate arguments rather than lists,
+and a sort or unique that uses Polars' defaults leaves them unsaid. A statement that does
+not fit in 88 columns at the function body's indentation is laid out over several lines
+the way `ruff format` lays it out,
+except that a broken call always puts one argument per line with a trailing comma; a
+list that still does not fit is broken the same way. The body reads like a formatted
+pipeline file, and `ruff format` at its default line length and quote style leaves it
+unchanged; free-code steps keep their authored layout. A saved body is compared with
+the rendering of its steps as a program, not as text (the same syntax tree and the
+same comments), so a body saved in an earlier layout, quoting or call spelling of the
+same steps (lists where the renderer now passes separate arguments, Polars' sort and
+unique defaults spelled out), or reformatted by `ruff format`, keeps its steps, while
+any other edit discards them.
+Step-id uniqueness checks for valid lists run in linear time in the number of steps.
+The vocabulary covers filters
+(comparison, null, membership, text and regex operators), derived columns (formulas,
+typed functions over numbers, text, dates and durations, conditionals, window
+aggregates with a partition and an optional in-partition order, and text joins),
+select, drop, rename, cast (the integer, float, string, boolean, date, datetime and
+categorical dtypes), sort, unique, group-by with optional per-aggregate row filters
+and quantiles (an empty key list summarises the whole frame), joins with optional
+key-cardinality validation (inner, left and full joins only, as Polars refuses it
+elsewhere) and output-order control, concat, fill-null, limit, and
+node-local variables; a null literal renders as `pl.lit(None)` in expression position
+and is refused in membership lists and variables. An operand may itself be a nested
+expression (`{"kind": "expr", "expr": ...}`) wherever a value, column or variable is
+accepted, except in membership lists, variable values and function arguments, which
+stay plain values; a value, formula or function expression may carry a `text` annotation (the
+formula exactly as the editor's user typed it, kept for display and never rendered); a
+nested formula is bracketed only where Python's left-to-right
+evaluation needs it (a left operand only when its operator is weaker than the
+parent's, a right operand and either side of `**` always, and anywhere outside a
+formula), so a chain of terms reads flat, and nesting is capped at twelve levels (a
+step's own expression is level one), beyond which the step is refused
+with a message to compute part of the expression in an earlier step; inside a
+group-by aggregation's row filter operands stay plain, because a nested aggregate
+there would mean the group's value rather than the frame's. Two reshaping steps
+complete the vocabulary: a fixed-column `pivot` (index columns, the column whose
+values spread out, one entry per output column pairing a plain literal value with an
+output name, the values column, and an aggregate among sum, mean, min, max, median,
+first, last, count of non-null values and row count) is lowered to a maintain-order
+group-by of filtered aggregates rather than Polars' own `pivot`, so the lineage and
+cardinality models prove it and its output schema is fixed by the step (each cell
+matches `pivot(on_columns=...)` value for value: an empty cell is 0 for sum and the
+counts and null otherwise); duplicate values, duplicate or index-colliding names,
+mixed value types and null values are refused; and `unpivot` renders the native
+call with a non-empty literal `on` list, an optional index, and distinct name and
+value columns that must not collide with the index (row order afterwards is
+unspecified, as in Polars). Select and drop take an optional list of column types
+beside the named columns, rendered as one `pl.col(<dtype>)` per type excluding the
+named columns so a column is never projected twice (`df.select(['g',
+pl.col(pl.Float64).exclude('g')])`), and a group-by aggregation may target every
+column of one type instead of a column, naming its outputs by suffix
+(`pl.col(pl.Float64).mean().name.suffix('_mean')`; no row filter, no row count, and
+no uniqueness check on suffixes). Those dtype selections are the closed selector forms
+the lineage model expands from an upstream dtype schema; without one, or after a
+computed column whose dtype is not propagated, lineage fails closed exactly as the
+same hand-written selector would. The node data
+model enforces
+one invariant on construction: a `polars` config that carries `steps` always carries the
+rendering of those steps as its `code`, or an empty `code` plus an editor-state
+`_steps_error` message when they cannot be rendered, so every consumer that reads
+transform code (execution, chunk-local classification, projection, estimation, tracing, codegen)
+sees the same program without knowing about steps and a stale `code` in a browser
+payload is overwritten on ingress; in-process config replacement uses the validated
+`GraphNode.with_config` helper rather than an unvalidated model copy so the invariant
+also holds after assistant and submodel operations. A stepped original transform
+addresses its inputs by their current edge names and never carries `inputMapping` (a
+config with both fails loudly); an instance of a stepped transform keeps its own
+`inputMapping`, and submodel flattening rewrites the input references inside a stepped
+transform's steps instead of recording a mapping. When a polars sidecar is referenced,
+parsing loads it, renders its steps against the function's parameter names, and
+compares the result with the code extracted from the body before the node model is
+built: an identical body keeps the node in step mode; a different body, or a body that
+is not empty while the steps cannot be rendered, discards the steps (the body was edited
+by hand), marks the config with an editor-state `_steps_discarded` reason and an
+editor-state `_discarded_sidecar` path that the stale-sidecar sweep baseline includes so
+the file is retired on the next save, and logs a warning; an empty body with
+unrenderable steps keeps the steps, because that is how an incomplete step list is
+saved. A sidecar whose `steps` value is not a list fails the parse with a `ConfigError`.
+
+**Stepped surfaces.** The same step list authors the Polars code of every surface
+that has one: a Data Input's post-load code, an External File's code over the loaded
+object, the post-processing of a Rating Step, a Model Score and a Scenario
+Expander, and an Explore node's analysis frame. The renderer takes a required start mode: `input` is the transform's (the
+first step chooses the input and renders `df = <input>`), and `frame` is for a
+surface whose code runs with `df` already bound (the opened snapshot, the first input
+beside `obj`, the rated, scored or expanded frame). In frame mode an empty list renders
+to empty code without error, because the node then simply keeps its base behaviour, a
+`source` step is refused at any position with a step-indexed message, and
+`join`/`concat` references are checked against the surface's eligible input names.
+Explore is the one stepped type with no config folder: its steps travel as a `steps=`
+decorator argument beside its overview, pivot and chart cards, are reconciled against
+the body exactly as a sidecar's are, and leave no `_discarded_sidecar` marker when a
+hand edit discards them (there is no file to retire).
+One table (`STEPPED_NODE_TYPES` in `haute._polars_steps`) maps every stepped node type
+to its start mode and its input eligibility: `edges` for a transform and for an
+External File (whose code sees every connected input by name, the first also as
+`df`), `none` for the surfaces whose code sees only `df` (Data Input, Rating Step,
+Model Score, Scenario Expander, Explore), where a join or concat is refused. Every path that
+renders a node's steps (the node data model, the parser's reconcile, the executor
+builder, codegen, the deploy interceptors and the render endpoint) obtains the
+eligible names from it. Only an `edges` surface has its step references rewritten when
+an input is renamed (a node rename, an Edge Join insertion, a submodel boundary), and a
+stepped `edges` original never carries `inputMapping`. A node
+type outside that table that carries a `steps` key is left alone. A Scenario
+Expander's grid size is its required `stepCount` (a whole number of at least 1, read
+by the executor builder, the standalone runtime's helper, the chunk planner, the RAM
+estimator and the trace enrichment through one `scenario_step_count` function with no
+absent-key default; a new node is created with an explicit 21), so `steps` on that
+type is free for its step list. A missing or malformed `stepCount` is a config defect the
+user can fix, so `scenario_step_count` raises `NodeConfigError` (stable code
+`node_config_invalid`, safe field `setting`): a preview, trace, output write or job reports
+it as the public contract failure (HTTP 422, background `contract_error`) with the message
+naming the setting, never as an internal error. The planner and estimator, which only ask
+whether they can plan the node, still see it as a `ValueError`. The node-data invariant, the sidecar filter and the reconcile rule
+apply to every stepped type: a Data Input's `steps` persist in its required
+`config/data_input/<name>.json` sidecar beside its source settings, `code` is always
+their rendering (or empty plus `_steps_error`), and on load the parser compares the
+code extracted from the body with the rendering after the same extraction, so a
+rendering the extractor normalises (a lone `df = (df.head(2))` free-code step loses
+its brackets) still reloads in step mode; the `_discarded_sidecar` marker is set only
+for the transform, whose sidecar is optional, while a Data Input's sidecar stays and
+is next written without `steps`. An unrenderable Data Input step list is saved
+as a hook whose body is the generated placeholder, so a standalone run raises rather
+than silently reading the source unchanged, and reload keeps the steps behind empty
+code exactly as for a transform. A new Data Input starts in step mode with an
+empty list.
+
+A `free_code` step carries a `code` string containing Python statements and can
+appear anywhere after the source step (anywhere at all in frame mode). Its statements run inline, in order with
+the low-code steps: `df` is the current frame, `pl` is available, and earlier
+Define variable values can be used. Assign transformations back to `df`; later
+steps consume that frame. Multiline expressions, comments, local helpers and
+control flow are supported. Blank or comment-only snippets, invalid Python, and
+node-level `return`, `yield`, `await`, or loop control outside a loop fail with the
+offending step index; returns inside helper functions are allowed. Validation
+compiles but never executes authored code; frame validation models `df` already
+bound, and diagnostics and ranges refer to authored lines. The stored snippet is
+preserved; rendering normalises line endings and removes trailing whitespace so
+generated code round-trips through the existing extractor. Free code shares the existing
+code execution and planning contracts, with no separate evaluator. Input renames
+continue to rewrite structured input fields; authored Python is unchanged. Use
+`df` to operate on the current frame across input renames; direct references to
+other input names in a snippet must be kept in sync by the author.
+
+**Global constants.** A pipeline may declare global constants: named, typed values that node
+code reads as `global_constants.<name>`. A name starts with a letter, continues with letters,
+digits and underscores, is not a Python keyword, and is unique (case-sensitively). The type is
+`integer`, `float`, `text`, `boolean` or `date`, and a constant is either uniform (one `value`)
+or split by source (`by_source`, at most one value per source; a source it lacks is incomplete,
+not invalid). Values are JSON scalars of their type: an `integer` lies within ±(2⁵³ − 1), the
+whole numbers the editor holds exactly; a `float` is stored as a float however it
+is written, and a `date` is `YYYY-MM-DD` text naming a real date. The constants live in
+`config/global_constants.json` beside the node configs: one object whose only key, `constants`,
+lists them in order, each with `name`, `type` and exactly one of `value` and `by_source`. The
+pipeline constructor names the file, `global_constants="config/global_constants.json"` (the
+only value it accepts), and the statement after the constructor binds the reserved name,
+`global_constants = pipeline.global_constants`; every submodel file the pipeline writes binds
+`global_constants = submodel.global_constants`, because a submodel reads its pipeline's
+constants and declares none. A pipeline without constants has no file, keyword or binding. No
+other module-level statement, node function, preamble, node code or step variable may bind
+`global_constants`. In the live API both bindings return one sentinel: every read of it raises
+a global-constant error saying that constants are read in node code while the pipeline runs.
+
+Code reads a constant as `global_constants.<name>` in the code box and the free-code steps of
+every stepped node type (Transform, Data Input, External File, Rating Step, Model Score,
+Scenario Expander and Explore), and in a pipeline file's node functions. A structured step
+reads one through a Constant operand, offered wherever the step editor offers a variable, and
+in a typed function argument; the step renders as `global_constants.<name>`. A comparison,
+fill, formula or branch value takes a constant of any type, a string operator's value a `text`
+one, and a function argument a constant of its type (a whole number of zero or more takes an
+`integer` whose every value is at least zero; a number takes an `integer` or a `float`; a type
+argument takes none). Save refuses a step operand naming an undefined constant, or one whose
+type or value its slot does not take, naming the node, the step and the constant, except while
+the constants file fails to load, when the definitions are unavailable.
+A node reads the constants its code names as `global_constants.<name>` (in an f-string's
+expressions too) and its steps reference.
+Code that uses the name `global_constants` any other way (passing it to a function, `getattr`
+with a computed name) may read every constant. No other route to a constant is tracked, so a
+read by any other route (`eval` of a string, say) fails in that node, naming the constant and
+asking for `global_constants.<name>`. A cached result can therefore never depend on a constant
+its identity does not sign.
+
+Every run binds `global_constants` for the source it executes under, which is the value its
+Source Switches route on:
+
+- previews, traces, free-code column resolution, Explore and training use the toolbar's source,
+  which their requests carry;
+- the optimiser, and a Data Output write started under `live`, use the graph's batch scenario
+  (its Source Switches' one non-live source, or `"batch"`), as they do today;
+- deployed scoring uses `live`;
+- `pipeline.run(source=...)` uses the source it is given, which it requires, and
+  `pipeline.score()` and `haute run` use `live`.
+
+A run binds concrete values, never a lookup that depends on the calling thread, so a lazy
+Polars callback that reads a constant during collection reads the run's value on whichever
+thread runs it, and two runs under different sources never see each other's values. A
+submodel's nodes read the run's constants through the binding in their own file, as the
+pipeline's nodes do.
+
+No node, step variable, node code or preamble may bind the name `global_constants`, so nothing
+shadows it. A constant's name is only ever an attribute of that name, so it can never collide
+with an input, a preamble binding or a step variable.
+
+Reading an undefined constant, a split constant with no value for the run's source, or any
+constant while its file failed to load raises a global-constant error in the node that reads
+it, naming the constant, the source and the fix, and so does a read by a route the reads
+analysis cannot see, such as `eval` of a string. That error is an ordinary node failure: a
+preview shows it on the reading node and keeps previewing the rest, and every other run stops
+with it. A trace shows each constant's value where a formula reads it.
+
+Deployment: the deployed graph carries the pipeline's constants and reads their `live`
+values. Deploy validation refuses a deployed graph that reads a constant with no `live` value,
+naming it. A constant read only on a branch that deployment prunes away does not need a `live`
+value.
+
+The editor edits constants in the Constants pane
+([frontend-shared](../frontend-shared/high-level.md)), whose every execution request and save
+carries them, and the step editor offers them as operands
+([frontend-node-editors](../frontend-node-editors/high-level.md)).
 
 ## Design rationale
 
 The component leans hard on failing loudly rather than guessing: duplicate node names,
 `async def` node bodies, ambiguous pipeline auto-discovery, a `contract=` declaration that
 disagrees with what the config implies, and a missing sidecar for a folder-backed node type
-all raise a specific, named error rather than silently picking a default. The one deliberate
-exception is unrecognised config keys, which are logged at WARNING and otherwise ignored —
-both when a node's config is first built and again when it is written back to its sidecar —
-so a stale or externally-introduced key is observable without turning every load into a hard
-failure.
+all raise a specific, named error rather than silently picking a default. Unrecognised config
+keys follow the same rule. A key the node type does not declare fails the parse with a
+`ConfigError` naming the node and the key, and a save that carries one is refused before
+anything is written. A key that is dropped and logged would lose persisted work without the
+user seeing it. The editor opens a pipeline whose sidecar carries such a key in recovery,
+where only that node is unavailable, and the node's repair removes the key while keeping it
+in the recovery evidence.
 
 Config that is genuinely code (pricing logic, transforms) lives in the `.py` function body;
 everything else declarative lives in a JSON sidecar. This keeps generated/round-tripped
 Python readable — no large JSON blobs embedded as string literals — while letting the GUI
 edit the declarative parts without ever touching Python source.
 
-Sidecar writes pass every config dict through an allowlist derived from each node type's
-`TypedDict` annotations before serialising, dropping (and logging) anything outside it. This
-catches off-spec keys smuggled in by external tooling, a not-yet-hardened code path, or a
-frontend bug, without failing the save itself.
+A node type's declared keys are its `TypedDict` annotations plus the universal keys. The same
+set is checked at parse, at save validation, and again at the sidecar write boundary. An
+off-spec key from external tooling, a not-yet-hardened code path, or a frontend bug therefore
+fails the operation that carries it, and no code path removes a key and continues.
 
 Rating-step sidecars have one canonical persisted entry shape: ordered row arrays. Reads and
 writes validate that shape directly. Object-key maps are not accepted because a JSON object key
@@ -250,11 +549,11 @@ rating table leaves the prior sidecar untouched.
 
 Contract validation at parse time deliberately avoids contacting MLflow for model-scoring nodes:
 their input side is treated as opaque while the locally configured output column is still
-checked. For other node types, a `ConfigError`, `OSError`, `ImportError`, `RuntimeError`, or
-`MlflowException` raised while deriving a contract causes that comparison to use an opaque
-contract; programmer-shaped errors such as `TypeError`, `AttributeError`, and `KeyError`
-propagate. This fallback is broader than infrastructure-only failure because `ConfigError` and
-`RuntimeError` are included by the implementation.
+checked. For other node types, only a named infrastructure failure raised while deriving a
+contract (`OSError`, `ImportError` or `MlflowException`) makes that comparison use an opaque
+contract, as the [canonical-input rule](../README.md#canonical-only-format-policy) allows. A
+`ConfigError`, a `RuntimeError` and programmer-shaped errors such as `TypeError`,
+`AttributeError` and `KeyError` propagate, so the node fails to load with that error.
 
 Windows-reserved device filenames (`CON`, `NUL`, `COM1`, etc.) are rejected on every
 platform, not only when running on Windows, so a project saved on Linux or macOS stays
@@ -304,14 +603,32 @@ Using a folder-backed node type without a `config=` sidecar raises, naming the c
 config folder and suggesting `haute init`. A JSON sidecar with a repeated key is rejected at
 read time rather than silently keeping the last value. Two node functions sharing a name are
 rejected, both at live decorator-registration time and again at static parse time (the
-function name becomes the graph node id, so a silent collision would drop a node). An
+function name becomes the graph node id, so a silent collision would drop a node).
+Registration also applies the codegen specification's executable-name rule, naming the node:
+a reserved or built-in name, a name equal ignoring case to another node or submodel
+occurrence, and a module-level function whose name the module already binds to something
+else (a preamble helper, an import) are refused, while `pipeline.polars(f)` on an
+already-defined `f` registers it. A
+Constant node whose `values` hold two entries with one non-empty name is refused with a
+node-config error naming the name, wherever its frame is built (`constant_frame`, which
+canvas execution and a standalone run share), rather than keeping the second value; an
+entry without a name is skipped, as before. An
 `async def` node body is rejected at parse time. A user-declared `contract=` that disagrees
 with the contract derived from the rest of the node's config raises, naming which side
 (inputs/outputs) mismatched and what was missing or extra on each. Ambiguous or absent
 pipeline-file resolution raises, enumerating every candidate it considered. Not being inside
-a Haute project (no `haute.toml`, or no git repository above it) raises. Unrecognised config
-keys are logged at WARNING and dropped or ignored rather than failing the surrounding operation,
-except retired identity fields whose presence is an explicit contract error. Optimiser
+a Haute project (no `haute.toml`, or no git repository above it) raises. An unrecognised config
+key is a `ConfigError` at parse that names the node and the key, and a save that carries one is
+refused with HTTP 400 naming both, before any file is written. Retired identity fields are
+refused with their own targeted message. Optimiser
 `data_input`/`banding_source` and Optimiser Apply `ratebook_input` persist exact incoming-edge
 names and are never remapped from node ids; an unmatched name fails graph/runtime validation.
-Plural discovery still skips a candidate whose contents cannot be read.
+Plural discovery still skips a candidate whose contents cannot be read. A declared global
+constants file that is missing, unreadable, not strict-UTF-8 JSON, or invalid (an unknown key,
+a bad or duplicate name, a value that does not fit its type, both or neither of `value` and
+`by_source`) is a load error naming the file and the entry: the pipeline still parses, with a
+graph warning, and no save rewrites or deletes the file. A constructor keyword naming any other
+path, a submodel constructor that names one, and any other binding of `global_constants` are
+parse errors naming the line, apart from a node function of that name: it breaks the codegen
+naming rule like a node named `pl`, which the strict parse refuses and the editor load reports
+as a renameable name violation.

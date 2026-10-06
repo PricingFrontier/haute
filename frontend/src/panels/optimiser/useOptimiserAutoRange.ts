@@ -16,23 +16,25 @@ import useDocumentStatusStore, {
   type DocumentExecutionFence,
 } from "../../stores/useDocumentStatusStore"
 import useGraphStore from "../../stores/useGraphStore"
-import useSettingsStore from "../../stores/useSettingsStore"
+import { waitForJob } from "../../hooks/jobPollingController"
 import {
   buildExecutionFailureMessage,
-  executionErrorDetailMessage,
   executionJobStatusFromReason,
   executionMetricsFromError,
   executionTerminalReasonFromError,
 } from "../../utils/executionDiagnostics"
-import type { OnUpdateConfig } from "../editors"
+import { apiErrorMessage } from "../../api/errors"
+import type { OnUpdateConfigResult } from "../editors"
 
 const POLL_INTERVAL_MS = 1_000
 
-type FrontierRange = { min: number; max: number }
+export type FrontierRange = { min: number; max: number }
 
 type AutoRangeState = {
   generation: number
   scopeKey: string | null
+  /** The constraints the latest run fills; its loading and error state belong to them. */
+  targets: readonly string[]
   loading: boolean
   error: string | null
   terminalMetrics: ExecutionMetrics | null
@@ -42,7 +44,7 @@ type AutoRangeState = {
 }
 
 type AutoRangeAction =
-  | { type: "begin"; generation: number; scopeKey: string }
+  | { type: "begin"; generation: number; scopeKey: string; targets: readonly string[] }
   | {
       type: "terminal"
       generation: number
@@ -61,12 +63,12 @@ type AutoRangeAction =
       type: "completed"
       generation: number
       scopeKey: string
-      warning: string | null
     }
 
 const initialState: AutoRangeState = {
   generation: 0,
   scopeKey: null,
+  targets: [],
   loading: false,
   error: null,
   terminalMetrics: null,
@@ -81,6 +83,7 @@ function reducer(state: AutoRangeState, action: AutoRangeAction): AutoRangeState
       ...initialState,
       generation: action.generation,
       scopeKey: action.scopeKey,
+      targets: action.targets,
       loading: true,
     }
   }
@@ -112,7 +115,7 @@ function reducer(state: AutoRangeState, action: AutoRangeAction): AutoRangeState
         ...initialState,
         generation: action.generation,
         scopeKey: action.scopeKey,
-        error: action.warning,
+        targets: state.targets,
       }
   }
 }
@@ -150,39 +153,6 @@ function statusFailureMessage(status: FrontierAutoRangeStatusResponse): string {
   })
 }
 
-function requestErrorDetail(error: unknown): string {
-  const detailMessage = executionErrorDetailMessage(error)
-  if (detailMessage) return detailMessage
-  if (
-    error
-    && typeof error === "object"
-    && "detail" in error
-    && typeof error.detail === "string"
-  ) {
-    return error.detail
-  }
-  return error instanceof Error ? error.message : String(error)
-}
-
-function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) {
-      reject(new DOMException("Aborted", "AbortError"))
-      return
-    }
-
-    const onAbort = () => {
-      clearTimeout(timeoutId)
-      reject(new DOMException("Aborted", "AbortError"))
-    }
-    const timeoutId = setTimeout(() => {
-      signal.removeEventListener("abort", onAbort)
-      resolve()
-    }, ms)
-    signal.addEventListener("abort", onAbort, { once: true })
-  })
-}
-
 function validateRanges(
   status: FrontierAutoRangeStatusResponse,
   constraintNames: readonly string[],
@@ -211,6 +181,7 @@ function validateRanges(
 type ActiveRun = {
   generation: number
   scopeKey: string
+  targets: readonly string[]
   graphVersion: number
   controller: AbortController
   jobId: string | null
@@ -220,9 +191,9 @@ type ActiveRun = {
 
 export type UseOptimiserAutoRangeOptions = {
   nodeId: string
-  constraintNames: readonly string[]
   buildGraph: () => GraphPayload
-  onUpdate: OnUpdateConfig
+  /** Writes the filled ranges, merged over the constraints' other ranges. */
+  writeRanges: (ranges: Record<string, FrontierRange>) => OnUpdateConfigResult
 }
 
 function documentScopeKey(state: ReturnType<typeof useDocumentStatusStore.getState>): string {
@@ -239,28 +210,24 @@ function autoRangeScopeKey(
   nodeId: string,
   graphVersion: number,
   documentKey: string,
-  constraintNames: readonly string[],
 ): string {
-  return JSON.stringify([nodeId, graphVersion, documentKey, constraintNames])
+  return JSON.stringify([nodeId, graphVersion, documentKey])
 }
 
-/** Owns optimiser frontier auto-range identity, polling, cancellation, and terminal UI state. */
+/**
+ * Owns optimiser frontier auto-range identity, polling, cancellation, and
+ * terminal UI state. One run at a time: a run fills the constraints it names,
+ * and starting another supersedes it.
+ */
 export function useOptimiserAutoRange({
   nodeId,
-  constraintNames,
   buildGraph,
-  onUpdate,
+  writeRanges,
 }: UseOptimiserAutoRangeOptions) {
   const [state, dispatch] = useReducer(reducer, initialState)
   const graphVersion = useGraphStore((current) => current.structuralVersion)
-  const streamingChunkSize = useSettingsStore((current) => current.streamingChunkSize)
   const currentDocumentKey = useDocumentStatusStore(documentScopeKey)
-  const scopeKey = autoRangeScopeKey(
-    nodeId,
-    graphVersion,
-    currentDocumentKey,
-    constraintNames,
-  )
+  const scopeKey = autoRangeScopeKey(nodeId, graphVersion, currentDocumentKey)
   const generationRef = useRef(0)
   const activeRef = useRef<ActiveRun | null>(null)
   const unmountedRef = useRef(false)
@@ -307,7 +274,6 @@ export function useOptimiserAutoRange({
       const start = await startOptimiserFrontierAutoRange({
         graph: buildGraph(),
         node_id: nodeId,
-        streamingChunkSize,
         signal: active.controller.signal,
       })
       if (start.status === "started" && start.job_id) active.jobId = start.job_id
@@ -320,19 +286,16 @@ export function useOptimiserAutoRange({
       }
 
       const jobId = start.job_id
-      let status = await getOptimiserFrontierAutoRangeStatus(jobId, {
+      const status = await waitForJob({
+        poll: (signal) => getOptimiserFrontierAutoRangeStatus(jobId, { signal }),
+        isTerminal: (current) => current.status !== "running",
+        intervalMs: POLL_INTERVAL_MS,
         signal: active.controller.signal,
+        // Retiring aborts the run's signal, which ends the wait.
+        onStatus: () => {
+          if (!isCurrent(active)) retire(active)
+        },
       })
-      while (status.status === "running") {
-        await abortableDelay(POLL_INTERVAL_MS, active.controller.signal)
-        if (!isCurrent(active)) {
-          retire(active)
-          return
-        }
-        status = await getOptimiserFrontierAutoRangeStatus(jobId, {
-          signal: active.controller.signal,
-        })
-      }
       if (!isCurrent(active)) {
         retire(active)
         return
@@ -359,22 +322,20 @@ export function useOptimiserAutoRange({
         return
       }
 
-      const ranges = validateRanges(status, constraintNames)
+      const ranges = validateRanges(status, active.targets)
       if (!isCurrent(active)) return
-      const updateResult = onUpdate({ frontier_ranges: ranges })
+      const updateResult = writeRanges(ranges)
       if (!updateResult.ok) throw new Error(updateResult.error)
 
       const publishedScopeKey = autoRangeScopeKey(
         nodeId,
         useGraphStore.getState().structuralVersion,
         documentScopeKey(useDocumentStatusStore.getState()),
-        constraintNames,
       )
       dispatch({
         type: "completed",
         generation: active.generation,
         scopeKey: publishedScopeKey,
-        warning: status.result?.warning ?? null,
       })
     } catch (error) {
       if (!isCurrent(active)) return
@@ -383,7 +344,7 @@ export function useOptimiserAutoRange({
       dispatch({
         type: "failure",
         generation: active.generation,
-        error: buildExecutionFailureMessage(requestErrorDetail(error), metrics, {
+        error: buildExecutionFailureMessage(apiErrorMessage(error), metrics, {
           prefix: "Auto range failed",
           terminalReason: reason,
         }),
@@ -394,9 +355,9 @@ export function useOptimiserAutoRange({
     } finally {
       if (activeRef.current === active) activeRef.current = null
     }
-  }, [buildGraph, constraintNames, isCurrent, nodeId, onUpdate, retire, streamingChunkSize])
+  }, [buildGraph, isCurrent, nodeId, writeRanges, retire])
 
-  const run = useCallback(() => {
+  const run = useCallback((targets: readonly string[]) => {
     const documentFence = captureDocumentExecutionFence()
     if (!isDocumentExecutionFenceCurrent(documentFence)) return
 
@@ -405,6 +366,7 @@ export function useOptimiserAutoRange({
     const active: ActiveRun = {
       generation: ++generationRef.current,
       scopeKey,
+      targets: [...targets],
       graphVersion,
       controller: new AbortController(),
       jobId: null,
@@ -412,12 +374,13 @@ export function useOptimiserAutoRange({
       documentFence,
     }
     activeRef.current = active
-    dispatch({ type: "begin", generation: active.generation, scopeKey })
+    dispatch({ type: "begin", generation: active.generation, scopeKey, targets: active.targets })
     void executeRun(active)
   }, [executeRun, graphVersion, retire, scopeKey])
 
   const visibleState = state.scopeKey === scopeKey ? state : initialState
   return {
+    autoRangeTargets: visibleState.targets,
     autoRangeLoading: visibleState.loading,
     autoRangeError: visibleState.error,
     autoRangeTerminalMetrics: visibleState.terminalMetrics,

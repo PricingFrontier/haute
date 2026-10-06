@@ -1,0 +1,43 @@
+{
+  "node_type": "constant",
+  "authorable": true,
+  "fields": {
+    "values": "One {name, value} entry per column of the node's single output row. A source node: it has no inputs.",
+    "values[].name": "The column name.",
+    "values[].value": "Always written as a string. A value that reads as a number becomes a Float64 column (\"350\" becomes 350.0); anything else stays a string column."
+  },
+  "inputs": [],
+  "configs": [
+    {
+      "name": "minimal",
+      "intent": "A base rate to multiply relativities onto.",
+      "config": {
+        "values": [{"name": "base_rate", "value": "350"}]
+      },
+      "produces": ["base_rate"]
+    },
+    {
+      "name": "realistic",
+      "intent": "Rating constants: a base rate, a minimum premium and the tariff version.",
+      "config": {
+        "values": [
+          {"name": "base_rate", "value": "350"},
+          {"name": "minimum_premium", "value": "95.5"},
+          {"name": "tariff_version", "value": "2026-Q3"}
+        ]
+      },
+      "produces": ["base_rate", "minimum_premium", "tariff_version"]
+    }
+  ],
+  "fixture": {
+    "downstream": [
+      {"op": "add_node", "node_type": "explore", "name": "inspect", "config": {}},
+      {"op": "add_edge", "source": "card", "target": "inspect"}
+    ],
+    "expect": {
+      "realistic": [
+        {"base_rate": 350.0, "minimum_premium": 95.5, "tariff_version": "2026-Q3"}
+      ]
+    }
+  }
+}

@@ -7,10 +7,15 @@ and the _build_node_fn dispatcher.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import polars as pl
 import pytest
 
+import haute._builders as builders
 from haute._builders import _build_node_fn, resolve_instance_node
+from haute._registry import MODELLING_NODE_SEMANTICS
+from haute._types import GraphEdge
 from haute.errors import ExecutionError, LiveSwitchScenarioError
 from haute.graph_utils import GraphNode, NodeData
 from tests.conftest import make_node as _n
@@ -39,6 +44,35 @@ def _build(
     )
 
 
+def test_modelling_passthrough_rejects_an_unrecognised_input_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    node = _n(
+        {
+            "id": "model",
+            "data": {"label": "Model", "nodeType": "modelling", "config": {}},
+        }
+    )
+    upstream = _n(
+        {
+            "id": "input",
+            "data": {"label": "Input", "nodeType": "dataInput", "config": {}},
+        }
+    )
+    monkeypatch.setattr(
+        builders,
+        "MODELLING_NODE_SEMANTICS",
+        replace(MODELLING_NODE_SEMANTICS, input_policy=object()),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(RuntimeError, match="Unsupported modelling input policy"):
+        builders.pass_through_selected_edge(
+            node,
+            [GraphEdge(id="edge", source=upstream.id, target=node.id)],
+            {upstream.id: upstream, node.id: node},
+        )
+
+
 class TestResolveInstanceNode:
     def test_valid_instance_merges_original_config(self) -> None:
         original = _n(
@@ -52,15 +86,9 @@ class TestResolveInstanceNode:
                             {
                                 "column": "age",
                                 "outputColumn": "age_band",
-                                "banding": "continuous",
+                                "banding": "breakpoints",
                                 "rules": [
-                                    {
-                                        "op1": ">=",
-                                        "val1": 0,
-                                        "op2": "<",
-                                        "val2": 50,
-                                        "assignment": "young",
-                                    },
+                                    {"boundary": "50", "label": "young"},
                                 ],
                             }
                         ],
@@ -372,36 +400,34 @@ class TestBuildLiveSwitchEdgeCases:
 
 class TestBuildScenarioExpanderEdgeCases:
     def test_steps_less_than_one_raises(self) -> None:
-        with pytest.raises(ValueError, match="steps >= 1"):
+        with pytest.raises(ValueError, match="stepCount >= 1"):
             _build(
                 "scenarioExpander",
-                {"column_name": "sv", "steps": 0},
+                {"column_name": "sv", "stepCount": 0},
                 source_names=["up"],
             )
 
     def test_negative_steps_raises(self) -> None:
-        with pytest.raises(ValueError, match="steps >= 1"):
+        with pytest.raises(ValueError, match="stepCount >= 1"):
             _build(
                 "scenarioExpander",
-                {"column_name": "sv", "steps": -5},
+                {"column_name": "sv", "stepCount": -5},
                 source_names=["up"],
             )
 
-    def test_empty_config_uses_defaults(self) -> None:
-        _, fn, _ = _build(
-            "scenarioExpander",
-            {},
-            source_names=["up"],
-        )
-        lf = pl.DataFrame({"x": [1]}).lazy()
-        result = fn(lf).collect()
+    def test_empty_config_is_rejected(self) -> None:
+        # The grid size has no absent-key default; a new node carries an explicit 21.
+        with pytest.raises(ValueError, match="requires stepCount"):
+            _build("scenarioExpander", {}, source_names=["up"])
+        _, fn, _ = _build("scenarioExpander", {"stepCount": 21}, source_names=["up"])
+        result = fn(pl.DataFrame({"x": [1]}).lazy()).collect()
         assert "scenario_index" in result.columns
         assert result.shape[0] == 21
 
     def test_cross_join_produces_correct_row_count(self) -> None:
         _, fn, _ = _build(
             "scenarioExpander",
-            {"column_name": "sv", "min_value": 0.9, "max_value": 1.1, "steps": 5},
+            {"column_name": "sv", "min_value": 0.9, "max_value": 1.1, "stepCount": 5},
             source_names=["up"],
         )
         lf = pl.DataFrame({"id": [1, 2, 3]}).lazy()
@@ -413,7 +439,7 @@ class TestBuildScenarioExpanderEdgeCases:
     def test_cross_join_10_rows_7_steps(self) -> None:
         _, fn, _ = _build(
             "scenarioExpander",
-            {"column_name": "sv", "min_value": 0.8, "max_value": 1.2, "steps": 7},
+            {"column_name": "sv", "min_value": 0.8, "max_value": 1.2, "stepCount": 7},
             source_names=["up"],
         )
         lf = pl.DataFrame({"id": list(range(10))}).lazy()
@@ -444,9 +470,9 @@ class TestBuildBandingEdgeCases:
                     {
                         "column": "",
                         "outputColumn": "out",
-                        "banding": "continuous",
+                        "banding": "breakpoints",
                         "rules": [
-                            {"op1": ">=", "val1": 0, "op2": "<", "val2": 10, "assignment": "low"},
+                            {"boundary": "10", "label": "low"},
                         ],
                     },
                 ],
@@ -466,9 +492,9 @@ class TestBuildBandingEdgeCases:
                     {
                         "column": "age",
                         "outputColumn": "",
-                        "banding": "continuous",
+                        "banding": "breakpoints",
                         "rules": [
-                            {"op1": ">=", "val1": 0, "op2": "<", "val2": 50, "assignment": "young"},
+                            {"boundary": "50", "label": "young"},
                         ],
                     },
                 ],
@@ -532,7 +558,13 @@ class TestBuildNodeFnDispatcher:
 
 class TestBuildOutputEmptyDataFrame:
     def test_build_output_empty_dataframe(self) -> None:
-        """A 0-row source frame assembles to an empty document."""
+        """A 0-row source frame assembles to an empty document — under the
+        document schema derived from the mapping and the source schema.
+
+        EXEC-P08: the frame's schema no longer comes from Python inference over
+        the assembled rows, so an empty document keeps its mapped columns and
+        their source dtypes instead of degenerating to no columns at all.
+        """
         _, fn, _ = _build("output", make_output_config(["a", "c"]), source_names=["up"])
         lf = pl.DataFrame(
             {
@@ -542,5 +574,6 @@ class TestBuildOutputEmptyDataFrame:
             }
         ).lazy()
         result = fn(lf).collect()
-        assert result.columns == []
-        assert result.shape == (0, 0)
+        assert result.columns == ["a", "c"]
+        assert result.schema == pl.Schema({"a": pl.Int64, "c": pl.Int64})
+        assert result.height == 0

@@ -10,17 +10,22 @@ between the loop and those adapters:
   ``tool_results=[{"tool_call_id", "name", "content", "is_error"}]``.
 * :class:`AssistantTurn` groups one user message with all assistant/tool
   messages produced while answering it.  Turns are the indivisible unit for
-  both retention policies.
+  retention and for the provider's compacted history.
 * :class:`SessionStore` owns process-local sessions, their one-turn locks,
-  provider history windows, and bounded retention.
+  the compacted provider history, and bounded retention.
 
 Messages and turns have explicit ``as_dict`` methods, so their serialized
 form contains only ordinary JSON values.  A session itself is not
-serialized wholesale because its ``asyncio.Lock`` is live runtime state;
-``AssistantSession.as_dict`` intentionally omits that lock.
+serialized wholesale because its ``asyncio.Lock`` and evidence ledger are
+live runtime state; ``AssistantSession.as_dict`` intentionally omits both.
 
-The default limits are deliberately fixed in this module: a provider window
-contains at most 40 complete messages, stored history retains at most 200
+The stored history is append-only.  The provider never sees it whole: each
+earlier turn reaches it as a compact turn record (its request, final text and
+Haute's record of its outcome and saved changes), the newest records within a
+character budget (:meth:`SessionStore.provider_history`).
+
+The default limits are deliberately fixed in this module: the earlier turns'
+records hold at most 24,000 characters, stored history retains at most 200
 messages where whole turns permit it, and the live-session LRU has capacity
 for 32 sessions.  If every existing session is busy, creation temporarily
 keeps those busy sessions rather than evicting one; the next creation or
@@ -36,20 +41,24 @@ import math
 import os
 import re
 import time
-from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, TypeAlias
+from typing import Any, TypeAlias, cast
 from uuid import uuid4
 
 from haute._credential_security import redact_sensitive_text
 from haute._logging import get_logger
+from haute._lru_cache import LRUCache
+from haute.assistant._build_plan import BuildPlan
+from haute.assistant._ops import SourceEvidenceLedger
+from haute.assistant._render import TurnRecord, render_omitted_turns, render_turn_record
+from haute.schemas import AssistantBuildPlan, AssistantChangeRecord, AssistantTurnOutcome
 
 logger = get_logger(component="assistant.session")
 
-PROVIDER_WINDOW_MESSAGES = 40
-"""Maximum number of complete historical messages sent to a provider."""
+PROVIDER_HISTORY_CHARACTERS = 24_000
+"""Maximum characters of earlier-turn records sent to a provider; the current turn is outside it."""
 
 STORED_HISTORY_MESSAGES = 200
 """Maximum stored historical messages, subject to whole-turn retention."""
@@ -66,7 +75,6 @@ _SESSION_ID_PATTERN = re.compile(r"[0-9a-f]{32}")
 JSONValue: TypeAlias = None | bool | int | float | str | list["JSONValue"] | dict[str, "JSONValue"]
 
 _MESSAGE_ROLES = frozenset({"user", "assistant", "tool", "controller"})
-_MISSING = object()
 
 
 def _copy_json_value(value: object) -> JSONValue:
@@ -248,10 +256,10 @@ class AssistantMessage:
             self.role == "tool"
             and not self.is_error
             and isinstance(content, dict)
-            and "graph_fingerprint" in content
-            and not isinstance(content["graph_fingerprint"], str)
+            and "change" in content
         ):
-            raise TypeError("tool graph_fingerprint must be a string")
+            # A saved plan's change record: a malformed one fails here, not on resume.
+            AssistantChangeRecord.model_validate(content["change"])
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> AssistantMessage:
@@ -328,8 +336,8 @@ _PERSISTED_TOOL_EVIDENCE_KEYS = frozenset(
         "base_revision",
         "capability_hash",
         "git_sha",
-        "graph_fingerprint",
         "operation_version",
+        "operations",
         "plan_hash",
         "policy_hash",
         "project_revision",
@@ -370,23 +378,84 @@ class SessionSummary:
     message_count: int
 
 
+def _persisted_text(text: str) -> str:
+    """Redact credential-shaped material from model-written text before it is stored."""
+
+    return redact_sensitive_text(
+        text,
+        known_secrets=(
+            env_secret
+            for name in (
+                "ANTHROPIC_API_KEY",
+                "OPENAI_API_KEY",
+                "DATABRICKS_TOKEN",
+            )
+            if (env_secret := os.environ.get(name))
+        ),
+    )
+
+
+def _persisted_outcome(outcome: AssistantTurnOutcome | None) -> JSONValue:
+    """Store a turn outcome; its detail is model-derived text and is redacted like it.
+
+    Its change ids are plan hashes, kept as they are.
+    """
+
+    if outcome is None:
+        return None
+    detail = None if outcome.detail is None else _persisted_text(outcome.detail)
+    return {"kind": outcome.kind, "detail": detail, "changes": list(outcome.changes)}
+
+
+def _persisted_change(change: JSONValue) -> JSONValue:
+    """Store an apply's change record; its summary and assumptions are model text."""
+
+    record = AssistantChangeRecord.model_validate(change)
+    return cast(
+        JSONValue,
+        record.model_copy(
+            update={
+                "summary": _persisted_text(record.summary),
+                "assumptions": [_persisted_text(item) for item in record.assumptions],
+            }
+        ).model_dump(mode="json"),
+    )
+
+
+def _persisted_build_plan(plan: AssistantBuildPlan | None) -> JSONValue:
+    """Store a build plan; its item titles are model-written text, redacted like it."""
+
+    if plan is None:
+        return None
+    return cast(
+        JSONValue,
+        AssistantBuildPlan.model_validate(
+            {
+                "items": [
+                    {**item.model_dump(mode="json"), "title": _persisted_text(item.title)}
+                    for item in plan.items
+                ]
+            }
+        ).model_dump(mode="json"),
+    )
+
+
+def _revived_build_plan(value: object) -> AssistantBuildPlan | None:
+    """A stored build plan, or none.
+
+    A session or turn written before build plans existed has no `build_plan`
+    key and revives with no plan, as a fresh session starts.
+    """
+
+    return None if value is None else AssistantBuildPlan.model_validate(value)
+
+
 def _persisted_message(message: AssistantMessage) -> dict[str, JSONValue]:
     """Redact provider-working tool payloads for durable restart history."""
 
     wire: dict[str, JSONValue] = message.as_dict()
     if isinstance(message.content, str):
-        wire["content"] = redact_sensitive_text(
-            message.content,
-            known_secrets=(
-                env_secret
-                for name in (
-                    "ANTHROPIC_API_KEY",
-                    "OPENAI_API_KEY",
-                    "DATABRICKS_TOKEN",
-                )
-                if (env_secret := os.environ.get(name))
-            ),
-        )
+        wire["content"] = _persisted_text(message.content)
     if message.tool_calls:
         wire["tool_calls"] = [
             {
@@ -406,6 +475,9 @@ def _persisted_message(message: AssistantMessage) -> dict[str, JSONValue]:
                     isinstance(evidence_value, (str, int, float, bool)) or evidence_value is None
                 ):
                     redacted[key] = _copy_json_value(evidence_value)
+            if "change" in content:
+                # A committed save's record, verified or not.
+                redacted["change"] = _persisted_change(content["change"])
             error = content.get("error")
             if isinstance(error, dict) and isinstance(error.get("code"), str):
                 safe_error: dict[str, JSONValue] = {"code": error["code"]}
@@ -420,11 +492,26 @@ def _persisted_message(message: AssistantMessage) -> dict[str, JSONValue]:
 
 @dataclass(frozen=True, slots=True)
 class AssistantTurn:
-    """One complete user turn and all messages produced for it."""
+    """One complete user turn and all messages produced for it.
+
+    ``outcome`` is how a completed turn ended, the value its ``completed``
+    event carried; a turn that failed or was cancelled has none. ``undone``
+    holds the records of the changes the analyst undid after this turn, in
+    order; each is kept whole, so it outlives the pruning of the turn that
+    saved it. ``build_plan`` is the session's build plan as this turn left it,
+    none when the turn did not change the plan.
+    """
 
     messages: tuple[AssistantMessage, ...]
+    outcome: AssistantTurnOutcome | None = None
+    undone: tuple[AssistantChangeRecord, ...] = ()
+    build_plan: AssistantBuildPlan | None = None
 
     def __post_init__(self) -> None:
+        if self.outcome is not None and not isinstance(self.outcome, AssistantTurnOutcome):
+            raise TypeError("turn outcome must be an AssistantTurnOutcome")
+        if self.build_plan is not None and not isinstance(self.build_plan, AssistantBuildPlan):
+            raise TypeError("turn build plan must be an AssistantBuildPlan")
         normalized: list[AssistantMessage] = []
         for message in self.messages:
             if isinstance(message, AssistantMessage):
@@ -445,6 +532,10 @@ class AssistantTurn:
     def from_messages(
         cls,
         messages: Iterable[AssistantMessage | Mapping[str, Any]],
+        *,
+        outcome: AssistantTurnOutcome | None = None,
+        undone: Iterable[AssistantChangeRecord] = (),
+        build_plan: AssistantBuildPlan | None = None,
     ) -> AssistantTurn:
         """Create a complete turn from an iterable of neutral messages."""
 
@@ -454,7 +545,36 @@ class AssistantTurn:
                 if isinstance(message, AssistantMessage)
                 else AssistantMessage.from_mapping(message)
                 for message in messages
-            )
+            ),
+            outcome=outcome,
+            undone=tuple(undone),
+            build_plan=build_plan,
+        )
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> AssistantTurn:
+        """Build a turn from its JSON record; ``messages``, ``outcome`` and ``undone``
+        are required, and ``build_plan`` is read when present."""
+
+        for key in ("messages", "outcome", "undone"):
+            if key not in value:
+                raise ValueError(f"turn record is missing required field: {key}")
+        undone = value["undone"]
+        if not isinstance(undone, list):
+            raise TypeError("turn undone records must be a list")
+        messages = value["messages"]
+        if isinstance(messages, (str, bytes)) or not isinstance(messages, Iterable):
+            raise TypeError("turn messages must be a sequence of JSON objects")
+        raw_outcome = value["outcome"]
+        if raw_outcome is not None and not isinstance(raw_outcome, Mapping):
+            raise TypeError("turn outcome must be a JSON object or null")
+        return cls.from_messages(
+            messages,
+            outcome=None
+            if raw_outcome is None
+            else AssistantTurnOutcome.model_validate(raw_outcome),
+            undone=[AssistantChangeRecord.model_validate(record) for record in undone],
+            build_plan=_revived_build_plan(value.get("build_plan")),
         )
 
     @property
@@ -466,17 +586,73 @@ class AssistantTurn:
     def as_dict(self) -> dict[str, JSONValue]:
         """Return the JSON-shaped turn record."""
 
-        return {"messages": [message.as_dict() for message in self.messages]}
+        return {
+            "messages": [message.as_dict() for message in self.messages],
+            "outcome": None if self.outcome is None else self.outcome.model_dump(),
+            "undone": [record.model_dump(mode="json") for record in self.undone],
+            "build_plan": (
+                None if self.build_plan is None else self.build_plan.model_dump(mode="json")
+            ),
+        }
+
+    def record(self) -> TurnRecord:
+        """This turn as a compact record for a later turn's provider history.
+
+        Everything it reads survives persistence: the request and final text,
+        the outcome, the build plan it left, the undone records, and each saved
+        change's record, which a committed apply's tool result carries whether
+        or not its verification passed.
+        """
+
+        request = self.messages[0].content
+        if not isinstance(request, str):
+            raise TypeError("a turn's request must be text")
+        last_reply = next(
+            (message for message in reversed(self.messages) if message.role == "assistant"),
+            None,
+        )
+        reply = (
+            last_reply.content
+            if last_reply is not None
+            and not last_reply.tool_calls
+            and isinstance(last_reply.content, str)
+            else ""
+        )
+        changes = tuple(
+            AssistantChangeRecord.model_validate(message.content["change"])
+            for message in self.messages
+            if message.role == "tool"
+            and isinstance(message.content, dict)
+            and "change" in message.content
+        )
+        return TurnRecord(
+            request=request,
+            reply=reply,
+            outcome=self.outcome,
+            changes=changes,
+            build_plan=self.build_plan,
+            undone=tuple(change.id for change in self.undone),
+        )
 
 
 @dataclass(slots=True)
 class AssistantSession:
-    """One process-local assistant session bound to a pipeline source file."""
+    """One process-local assistant session bound to a pipeline source file.
+
+    ``evidence`` is the session's evidence ledger, live state like ``lock``:
+    it is never serialized, so a revived session starts with an empty one.
+    ``build_plan`` is the session's build plan, persisted as its current
+    snapshot so a revived session keeps it.
+    """
 
     id: str
     source_file: str
     history: list[AssistantTurn] = field(default_factory=list)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
+    evidence: SourceEvidenceLedger = field(
+        default_factory=SourceEvidenceLedger, repr=False, compare=False
+    )
+    build_plan: BuildPlan = field(default_factory=BuildPlan, repr=False, compare=False)
     created_at: float = field(default_factory=time.time)
     last_used: float = field(default_factory=time.time)
 
@@ -490,9 +666,9 @@ class AssistantSession:
         self.history = [
             turn
             if isinstance(turn, AssistantTurn)
-            else AssistantTurn.from_messages(
-                turn["messages"] if isinstance(turn, Mapping) else turn
-            )
+            else AssistantTurn.from_mapping(turn)
+            if isinstance(turn, Mapping)
+            else AssistantTurn.from_messages(turn)
             for turn in self.history
         ]
 
@@ -519,6 +695,11 @@ class AssistantSession:
             "id": self.id,
             "source_file": self.source_file,
             "history": [turn.as_dict() for turn in self.history],
+            "build_plan": (
+                None
+                if self.build_plan.current is None
+                else self.build_plan.current.model_dump(mode="json")
+            ),
             "created_at": self.created_at,
             "last_used": self.last_used,
         }
@@ -530,9 +711,17 @@ class AssistantSession:
             "id": self.id,
             "source_file": self.source_file,
             "history": [
-                {"messages": [_persisted_message(message) for message in turn.messages]}
+                {
+                    "messages": [_persisted_message(message) for message in turn.messages],
+                    "outcome": _persisted_outcome(turn.outcome),
+                    "undone": [
+                        _persisted_change(record.model_dump(mode="json")) for record in turn.undone
+                    ],
+                    "build_plan": _persisted_build_plan(turn.build_plan),
+                }
                 for turn in self.history
             ],
+            "build_plan": _persisted_build_plan(self.build_plan.current),
             "created_at": self.created_at,
             "last_used": self.last_used,
         }
@@ -561,6 +750,7 @@ def _session_from_payload(payload: object, session_id: str) -> AssistantSession:
         id=session_id,
         source_file=source_file,
         history=list(history),
+        build_plan=BuildPlan(_revived_build_plan(payload.get("build_plan"))),
         created_at=float(payload["created_at"]),
         last_used=float(payload["last_used"]),
     )
@@ -583,23 +773,29 @@ class SessionStore:
     The store is used on the asyncio event-loop thread, so its synchronous
     mutations are atomic with respect to other store calls.  The per-session
     :attr:`AssistantSession.lock` remains the one-turn guard for async work.
+
+    Live sessions are an :class:`LRUCache` bounded at ``max_live_sessions``
+    idle sessions. A session with a running turn is pinned for the turn's
+    length (:meth:`pin_running_turn`), so it is never evicted and does not
+    count against the bound; eviction happens only when an insert, or the end
+    of a turn, leaves more idle sessions than the bound.
     """
 
     def __init__(
         self,
         *,
-        max_provider_messages: int = PROVIDER_WINDOW_MESSAGES,
+        max_provider_history_chars: int = PROVIDER_HISTORY_CHARACTERS,
         max_stored_messages: int = STORED_HISTORY_MESSAGES,
         max_live_sessions: int = MAX_LIVE_SESSIONS,
         max_persisted_sessions: int = MAX_PERSISTED_SESSIONS,
         clock: Callable[[], float] = time.time,
         storage_dir: Callable[[], Path] | None = None,
     ) -> None:
-        self._validate_limit("max_provider_messages", max_provider_messages)
+        self._validate_limit("max_provider_history_chars", max_provider_history_chars)
         self._validate_limit("max_stored_messages", max_stored_messages)
         self._validate_limit("max_live_sessions", max_live_sessions)
         self._validate_limit("max_persisted_sessions", max_persisted_sessions)
-        self.max_provider_messages = max_provider_messages
+        self.max_provider_history_chars = max_provider_history_chars
         self.max_stored_messages = max_stored_messages
         self.max_live_sessions = max_live_sessions
         self.max_persisted_sessions = max_persisted_sessions
@@ -607,7 +803,7 @@ class SessionStore:
         # A factory, not a Path: the project root is the server's cwd, which
         # is resolved per call like the tool layer does, never at import.
         self._storage_dir = storage_dir
-        self._sessions: OrderedDict[str, AssistantSession] = OrderedDict()
+        self._sessions: LRUCache[str, AssistantSession] = LRUCache(max_size=max_live_sessions)
 
     @staticmethod
     def _validate_limit(name: str, value: int) -> None:
@@ -623,36 +819,30 @@ class SessionStore:
 
     def _touch(self, session: AssistantSession) -> None:
         session.last_used = self._clock()
-        self._sessions.move_to_end(session.id)
+        self._sessions.get(session.id)  # promotes to most recently used
 
     def _require(self, session_ref: SessionRef) -> AssistantSession:
         if isinstance(session_ref, AssistantSession):
-            session = self._sessions.get(session_ref.id)
+            session = self._sessions.peek(session_ref.id)
             if session is not session_ref:
                 raise KeyError(session_ref.id)
             return session
         if not isinstance(session_ref, str):
             raise TypeError("session reference must be a session id or AssistantSession")
-        session = self._sessions.get(session_ref)
+        session = self._sessions.peek(session_ref)
         if session is None:
             raise KeyError(session_ref)
         return session
 
-    def _evict_idle(self, *, exclude: frozenset[str] = frozenset()) -> None:
-        """Evict oldest idle sessions until the configured bound is met."""
+    def pin_running_turn(self, session: AssistantSession) -> None:
+        """Keep a session whose turn is running out of eviction until it ends."""
 
-        while len(self._sessions) > self.max_live_sessions:
-            candidate_id: str | None = None
-            for session_id, session in self._sessions.items():
-                if session_id in exclude or session.lock.locked():
-                    continue
-                candidate_id = session_id
-                break
-            if candidate_id is None:
-                # All retained sessions are active.  Keeping them is required
-                # to avoid invalidating a turn that is already in flight.
-                return
-            del self._sessions[candidate_id]
+        self._sessions.pin(session.id)
+
+    def unpin_running_turn(self, session: AssistantSession) -> None:
+        """End a turn's pin; the session is idle and evictable again."""
+
+        self._sessions.unpin(session.id)
 
     def _persist(self, session: AssistantSession) -> None:
         """Write one session's file atomically; failure warns, never raises.
@@ -739,9 +929,8 @@ class SessionStore:
             return None
         if expected_source_file is not None and session.source_file != expected_source_file:
             return None
-        self._sessions[session_id] = session
-        self._sessions.move_to_end(session_id)
-        self._evict_idle(exclude=frozenset({session_id}))
+        # Inserted most recently used, so eviction takes an older idle session.
+        self._sessions.put(session_id, session)
         return session
 
     def create(self, source_file: str | os.PathLike[str]) -> AssistantSession:
@@ -758,10 +947,9 @@ class SessionStore:
             created_at=now,
             last_used=now,
         )
-        self._sessions[session_id] = session
-        # Never evict the object just returned.  It is the caller's newly
-        # created session even when every older session is currently busy.
-        self._evict_idle(exclude=frozenset({session_id}))
+        # Inserted most recently used, so eviction takes an older idle session,
+        # never the one just returned: busy sessions are pinned and do not count.
+        self._sessions.put(session_id, session)
         self._persist(session)
         self._prune_persisted(session_id)
         return session
@@ -824,8 +1012,9 @@ class SessionStore:
                 summary = self._persisted_summary(path)
                 if summary is not None and summary[0] == source:
                     summaries[summary[1].session_id] = summary[1]
-        for session in self._sessions.values():
-            if session.source_file != source:
+        for session_id in self._sessions:
+            session = self._sessions.peek(session_id)
+            if session is None or session.source_file != source:
                 continue
             summaries[session.id] = SessionSummary(
                 session_id=session.id,
@@ -854,7 +1043,7 @@ class SessionStore:
 
         if not isinstance(session_id, str):
             raise TypeError("session id must be a string")
-        session = self._sessions.get(session_id)
+        session = self._sessions.peek(session_id)
         if session is None:
             session = self._revive(session_id)
         if session is None:
@@ -874,7 +1063,7 @@ class SessionStore:
         if not isinstance(session_id, str):
             raise TypeError("session id must be a string")
         source = self._source_file_text(source_file)
-        session = self._sessions.get(session_id)
+        session = self._sessions.peek(session_id)
         if session is not None and session.source_file != source:
             return None
         if session is None:
@@ -888,9 +1077,8 @@ class SessionStore:
         """Append one complete turn, prune whole oldest turns, and persist.
 
         A turn that is itself larger than ``max_stored_messages`` remains
-        intact; splitting it would violate the provider conversation shape.
-        The same rule applies when building a provider window: an oversized
-        newest turn is omitted rather than sliced.
+        intact: a turn is never split. A later turn's provider sees it only as
+        its compact record (:meth:`provider_history`).
         """
 
         session = self._require(session_ref)
@@ -900,6 +1088,19 @@ class SessionStore:
         self._persist(session)
         return record
 
+    def record_undo(self, session_ref: SessionRef, change: AssistantChangeRecord) -> None:
+        """Record that the analyst undid *change*, after the latest turn and in the
+        build plan, and persist."""
+
+        session = self._require(session_ref)
+        if not session.history:
+            raise ValueError("an undo follows a turn that saved the change")
+        latest = session.history[-1]
+        session.history[-1] = replace(latest, undone=(*latest.undone, change))
+        session.build_plan.undo(change.id)
+        self._touch(session)
+        self._persist(session)
+
     def prune(self, session_ref: SessionRef) -> None:
         """Prune a session's history at complete-turn boundaries."""
 
@@ -908,40 +1109,42 @@ class SessionStore:
             session.history.pop(0)
         self._touch(session)
 
-    def history_window(
-        self,
-        session_ref: SessionRef,
-        *,
-        max_messages: int | None = None,
-    ) -> list[dict[str, JSONValue]]:
-        """Return the newest contiguous complete-turn provider history window."""
+    def provider_history(self, session_ref: SessionRef) -> list[dict[str, JSONValue]]:
+        """Return the session's earlier turns as the provider sees them: compact records.
+
+        Each stored turn becomes a ``user`` message holding its request and an
+        ``assistant`` message holding :func:`render_turn_record`. Records are
+        kept newest first while the characters of both messages fit
+        ``max_provider_history_chars``; the older ones are dropped whole, never
+        cut, and a leading ``controller`` note then says how many were left out.
+        No earlier tool call, result or thinking is included.
+        """
 
         session = self._require(session_ref)
-        limit = self.max_provider_messages if max_messages is None else max_messages
-        if type(limit) is not int or limit < 0:
-            raise ValueError("max_messages must be a non-negative integer")
-
-        selected: list[AssistantTurn] = []
-        count = 0
+        kept: list[tuple[str, str]] = []
+        size = 0
         for turn in reversed(session.history):
-            if count + turn.message_count > limit:
+            record = turn.record()
+            reply = render_turn_record(record)
+            size += len(record.request) + len(reply)
+            if size > self.max_provider_history_chars:
                 break
-            selected.append(turn)
-            count += turn.message_count
-        selected.reverse()
+            kept.append((record.request, reply))
+        omitted = len(session.history) - len(kept)
         self._touch(session)
-        return [message.as_dict() for turn in selected for message in turn.messages]
+        messages: list[dict[str, JSONValue]] = []
+        if omitted:
+            messages.append({"role": "controller", "content": render_omitted_turns(omitted)})
+        for request, reply in reversed(kept):
+            messages.append({"role": "user", "content": request})
+            messages.append({"role": "assistant", "content": reply})
+        return messages
 
     def _coerce_turn(self, turn: TurnInput) -> AssistantTurn:
         if isinstance(turn, AssistantTurn):
             return turn
         if isinstance(turn, Mapping):
-            messages = turn.get("messages", _MISSING)
-            if messages is _MISSING:
-                raise ValueError("turn record is missing required field: messages")
-            if isinstance(messages, (str, bytes)):
-                raise TypeError("turn messages must be a sequence of JSON objects")
-            return AssistantTurn.from_messages(messages)
+            return AssistantTurn.from_mapping(turn)
         return AssistantTurn.from_messages(turn)
 
     def __len__(self) -> int:
@@ -952,7 +1155,7 @@ class SessionStore:
     def __contains__(self, session_id: object) -> bool:
         """Return whether *session_id* is currently retained."""
 
-        return session_id in self._sessions
+        return isinstance(session_id, str) and session_id in self._sessions
 
 
 __all__ = [
@@ -964,7 +1167,7 @@ __all__ = [
     "JSONValue",
     "MAX_LIVE_SESSIONS",
     "MAX_PERSISTED_SESSIONS",
-    "PROVIDER_WINDOW_MESSAGES",
+    "PROVIDER_HISTORY_CHARACTERS",
     "STORED_HISTORY_MESSAGES",
     "SessionStore",
     "SessionSummary",

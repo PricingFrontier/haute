@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import polars as pl
 import pytest
 from pydantic import ValidationError
 
@@ -15,7 +16,9 @@ from haute._graph_shape import validate_pipeline_graph_shape_contracts
 from haute._parser_submodels import extract_submodel_registrations, parse_submodel_source
 from haute._polars_io_registry import validate_data_input_config
 from haute._submodel_instances import (
+    expand_submodel_instances,
     qualified_runtime_node_id,
+    rewrite_boundary_input_names,
     validate_submodel_instances,
 )
 from haute._types import (
@@ -33,7 +36,7 @@ from haute._types import (
 from haute.codegen import graph_to_code_multi
 from haute.errors import ParseError
 from haute.parser import parse_pipeline_source
-from haute.routes._submodel_ops import SubmodelValidationError, create_submodel_graph
+from haute.routes._submodel_ops import create_submodel_graph
 
 
 def _node(
@@ -81,8 +84,7 @@ def _definition(
         if input_ports is not None
         else [
             SubmodelInputPort(
-                port_id="policy",
-                label="Policy data",
+                name="policy",
                 targets=[SubmodelEndpoint(node_id="local_input", handle_id="frame")],
             )
         ],
@@ -90,8 +92,7 @@ def _definition(
         if output_ports is not None
         else [
             SubmodelOutputPort(
-                port_id="premium",
-                label="Written premium",
+                name="premium",
                 source=SubmodelEndpoint(node_id="local_output", handle_id="scored"),
             )
         ],
@@ -100,21 +101,22 @@ def _definition(
 
 def _instance(
     instance_id: str,
-    alias: str,
+    alias: str | None = None,
     *,
     instance_of: str | None = None,
     definition_id: str = "definition_scoring",
     x: float = 0,
     y: float = 0,
 ) -> GraphNode:
-    config: dict[str, object] = {"definitionId": definition_id, "alias": alias}
+    name = alias if alias is not None else instance_id
+    config: dict[str, object] = {"definitionId": definition_id, "alias": name}
     if instance_of is not None:
         config["instanceOf"] = instance_of
     return _node(
         instance_id,
         NodeType.SUBMODEL,
         config=config,
-        label=alias.replace("_", " ").title(),
+        label=name,
         x=x,
         y=y,
     )
@@ -125,15 +127,13 @@ def test_definition_rejects_duplicate_public_port_ids() -> None:
         _definition(
             input_ports=[
                 SubmodelInputPort(
-                    port_id="shared",
-                    label="Input",
+                    name="shared",
                     targets=[SubmodelEndpoint(node_id="local_input")],
                 )
             ],
             output_ports=[
                 SubmodelOutputPort(
-                    port_id="shared",
-                    label="Output",
+                    name="shared",
                     source=SubmodelEndpoint(node_id="local_output"),
                 )
             ],
@@ -145,12 +145,57 @@ def test_definition_rejects_missing_internal_endpoint() -> None:
         _definition(
             input_ports=[
                 SubmodelInputPort(
-                    port_id="policy",
-                    label="Policy",
+                    name="policy",
                     targets=[SubmodelEndpoint(node_id="missing_child")],
                 )
             ]
         )
+
+
+def test_unrouted_input_port_round_trips_and_is_legal_when_unbound() -> None:
+    port = SubmodelInputPort(name="policy", targets=[])
+    definition = _definition(input_ports=[port])
+
+    restored = SubmodelDefinition.model_validate(definition.model_dump(by_alias=True))
+
+    assert restored.input_ports == [port]
+    expanded = expand_submodel_instances(
+        PipelineGraph(
+            nodes=[_instance("instance_a", "scoring")],
+            edges=[],
+            submodels={"definition_scoring": definition},
+        )
+    )
+    assert [node.id for node in expanded.nodes] == [
+        qualified_runtime_node_id("instance_a", "local_input"),
+        qualified_runtime_node_id("instance_a", "local_output"),
+    ]
+
+
+def test_expand_rejects_parent_binding_to_unrouted_input_port() -> None:
+    definition = _definition(input_ports=[SubmodelInputPort(name="policy", targets=[])])
+    graph = PipelineGraph(
+        nodes=[_node("source"), _instance("instance_a", "scoring")],
+        edges=[
+            GraphEdge(
+                id="source_to_scoring",
+                source="source",
+                target="instance_a",
+                targetHandle="in__policy",
+            )
+        ],
+        submodels={"definition_scoring": definition},
+    )
+
+    with pytest.raises(ParseError, match="no internal targets") as exc_info:
+        expand_submodel_instances(graph)
+
+    assert exc_info.value.context == {
+        "edge_id": "source_to_scoring",
+        "instance_id": "instance_a",
+        "definition_id": "definition_scoring",
+        "port_name": "policy",
+    }
 
 
 def test_instance_validation_rejects_unknown_definition_and_duplicate_alias() -> None:
@@ -525,8 +570,7 @@ def test_public_input_port_can_fan_out_to_ordered_targets() -> None:
         graph=child,
         input_ports=[
             SubmodelInputPort(
-                port_id="policy",
-                label="Policy",
+                name="policy",
                 targets=[
                     SubmodelEndpoint(node_id="left", handle_id="left_frame"),
                     SubmodelEndpoint(node_id="right", handle_id="right_frame"),
@@ -614,17 +658,22 @@ def test_exact_input_selectors_are_not_rewritten_as_node_ids(
     assert consumer.data.config[field] == "referenced"
 
 
-def test_flatten_rewrites_public_input_selector_to_exact_external_frame_name() -> None:
+def test_flatten_rewrites_public_input_label_to_exact_external_frame_name() -> None:
     child = PipelineGraph(
-        nodes=[_node("consumer", NodeType.OPTIMISER, config={"data_input": "quotes"})],
+        nodes=[
+            _node(
+                "consumer",
+                NodeType.OPTIMISER,
+                config={"data_input": "quotes"},
+            )
+        ],
         edges=[],
     )
     definition = _definition(
         graph=child,
         input_ports=[
             SubmodelInputPort(
-                port_id="quotes",
-                label="Quotes",
+                name="quotes",
                 targets=[SubmodelEndpoint(node_id="consumer")],
             )
         ],
@@ -653,15 +702,14 @@ def test_flatten_rewrites_public_input_selector_to_exact_external_frame_name() -
     assert consumer.data.config["data_input"] == "quote_info"
 
 
-def test_flatten_rewrites_public_output_selector_to_exact_internal_source_name() -> None:
+def test_flatten_rewrites_public_output_label_to_exact_internal_source_name() -> None:
     child = PipelineGraph(nodes=[_node("output", label="Internal Output")], edges=[])
     definition = _definition(
         graph=child,
         input_ports=[],
         output_ports=[
             SubmodelOutputPort(
-                port_id="results",
-                label="Results",
+                name="results",
                 source=SubmodelEndpoint(node_id="output"),
             )
         ],
@@ -672,7 +720,7 @@ def test_flatten_rewrites_public_output_selector_to_exact_internal_source_name()
             _node(
                 "consumer",
                 NodeType.OPTIMISER_APPLY,
-                config={"ratebook_input": "score__results"},
+                config={"ratebook_input": "results"},
             ),
         ],
         edges=[
@@ -691,6 +739,253 @@ def test_flatten_rewrites_public_output_selector_to_exact_internal_source_name()
     assert result.node_map["consumer"].data.config["ratebook_input"] == "Internal_Output"
 
 
+def test_flatten_rewrites_public_output_source_port_in_multi_frame_mapping() -> None:
+    child = PipelineGraph(nodes=[_node("output", label="Internal Output")], edges=[])
+    definition = _definition(
+        graph=child,
+        input_ports=[],
+        output_ports=[
+            SubmodelOutputPort(
+                name="results",
+                source=SubmodelEndpoint(node_id="output"),
+            )
+        ],
+    )
+    graph = PipelineGraph(
+        nodes=[
+            _node("other", label="Unrelated source"),
+            _instance("instance_a", "score"),
+            _node(
+                "response",
+                NodeType.OUTPUT,
+                config={
+                    "outputMapping": [
+                        {
+                            "source_port": "results",
+                            "source_column": "premium",
+                            "output_path": "$.premium",
+                            "enabled": True,
+                        },
+                        {
+                            "source_port": "Unrelated_source",
+                            "source_column": "reference",
+                            "output_path": "$.reference",
+                            "enabled": True,
+                        },
+                    ]
+                },
+            ),
+        ],
+        edges=[
+            GraphEdge(
+                id="submodel_output",
+                source="instance_a",
+                target="response",
+                sourceHandle="out__results",
+            ),
+            GraphEdge(id="other_output", source="other", target="response"),
+        ],
+        submodels={"definition_scoring": definition},
+    )
+
+    result = flatten_graph(graph)
+
+    assert result.node_map["response"].data.config["outputMapping"] == [
+        {
+            "source_port": "Internal_Output",
+            "source_column": "premium",
+            "output_path": "$.premium",
+            "enabled": True,
+        },
+        {
+            "source_port": "Unrelated_source",
+            "source_column": "reference",
+            "output_path": "$.reference",
+            "enabled": True,
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    ("output_mapping", "entry_index"),
+    [
+        pytest.param({"source_port": "Published_results"}, None, id="non-list-mapping"),
+        pytest.param(["not-an-object"], 0, id="non-object-entry"),
+        pytest.param([{}], 0, id="missing-source-port"),
+        pytest.param([{"source_port": ""}], 0, id="empty-source-port"),
+        pytest.param([{"source_port": 1}], 0, id="non-string-source-port"),
+    ],
+)
+def test_rewrite_boundary_input_names_rejects_malformed_output_mapping(
+    output_mapping: object,
+    entry_index: int | None,
+) -> None:
+    node = _node(
+        "response",
+        NodeType.OUTPUT,
+        config={"outputMapping": output_mapping},
+    )
+
+    with pytest.raises(ParseError) as exc_info:
+        rewrite_boundary_input_names([node], {"response": {"Published_results": "Internal_Output"}})
+
+    assert exc_info.value.context["node_id"] == "response"
+    if entry_index is not None:
+        assert exc_info.value.context["entry_index"] == entry_index
+
+
+def test_flatten_preserves_public_input_label_for_ordinary_polars_code() -> None:
+    child = PipelineGraph(
+        nodes=[
+            _node(
+                "consumer",
+                NodeType.POLARS,
+                label="Child transform",
+                config={"code": "df = policy"},
+            )
+        ],
+        edges=[],
+    )
+    definition = _definition(
+        graph=child,
+        input_ports=[
+            SubmodelInputPort(
+                name="policy",
+                targets=[SubmodelEndpoint(node_id="consumer")],
+            )
+        ],
+        output_ports=[],
+    )
+    graph = PipelineGraph(
+        nodes=[
+            _node("source", label="External policies"),
+            _instance("instance_a", "scoring"),
+        ],
+        edges=[
+            GraphEdge(
+                id="input",
+                source="source",
+                target="instance_a",
+                targetHandle="in__policy",
+            )
+        ],
+        submodels={"definition_scoring": definition},
+    )
+
+    result = flatten_graph(graph)
+    consumer = result.node_map[qualified_runtime_node_id("instance_a", "consumer")]
+
+    assert consumer.data.config["inputMapping"] == {"policy": "External_policies"}
+    generated = graph_to_code_multi(result, pipeline_name="main")["main.py"]
+    assert "def Child_transform(policy: pl.LazyFrame)" in generated
+    assert "df = policy" in generated
+
+
+def test_flatten_preserves_public_output_label_for_ordinary_polars_code() -> None:
+    child = PipelineGraph(nodes=[_node("output", label="Internal Output")], edges=[])
+    definition = _definition(
+        graph=child,
+        input_ports=[],
+        output_ports=[
+            SubmodelOutputPort(
+                name="results",
+                source=SubmodelEndpoint(node_id="output"),
+            )
+        ],
+    )
+    graph = PipelineGraph(
+        nodes=[
+            _instance("instance_a", "score"),
+            _node(
+                "consumer",
+                NodeType.POLARS,
+                label="Consumer",
+                config={"code": "df = results"},
+            ),
+        ],
+        edges=[
+            GraphEdge(
+                id="output",
+                source="instance_a",
+                target="consumer",
+                sourceHandle="out__results",
+            )
+        ],
+        submodels={"definition_scoring": definition},
+    )
+
+    result = flatten_graph(graph)
+
+    assert result.node_map["consumer"].data.config["inputMapping"] == {"results": "Internal_Output"}
+    generated = graph_to_code_multi(result, pipeline_name="main")["main.py"]
+    assert "def Consumer(results: pl.LazyFrame)" in generated
+    assert "df = results" in generated
+
+
+def test_flatten_preserves_public_input_label_for_polars_instances() -> None:
+    child = PipelineGraph(
+        nodes=[
+            _node(
+                "original",
+                NodeType.POLARS,
+                label="Original",
+                config={"code": "df = published"},
+            ),
+            _node(
+                "copy",
+                NodeType.POLARS,
+                label="Copy",
+                config={
+                    "instanceOf": "original",
+                    "inputMapping": {"published": "published"},
+                },
+            ),
+        ],
+        edges=[],
+    )
+    definition = _definition(
+        graph=child,
+        input_ports=[
+            SubmodelInputPort(
+                name="published",
+                targets=[
+                    SubmodelEndpoint(node_id="original"),
+                    SubmodelEndpoint(node_id="copy"),
+                ],
+            )
+        ],
+        output_ports=[],
+    )
+    graph = PipelineGraph(
+        nodes=[
+            _node("source", label="External source"),
+            _instance("instance_a", "scoring"),
+        ],
+        edges=[
+            GraphEdge(
+                id="input",
+                source="source",
+                target="instance_a",
+                targetHandle="in__published",
+            )
+        ],
+        submodels={"definition_scoring": definition},
+    )
+
+    flattened = flatten_graph(graph)
+    original = flattened.node_map[qualified_runtime_node_id("instance_a", "original")]
+    copy = flattened.node_map[qualified_runtime_node_id("instance_a", "copy")]
+
+    assert original.data.config["inputMapping"] == {"published": "External_source"}
+    assert copy.data.config["inputMapping"] == {"published": "External_source"}
+    generated = graph_to_code_multi(flattened, pipeline_name="main")["main.py"]
+    assert "def Original(published: pl.LazyFrame)" in generated
+    assert (
+        '@pipeline.instance(of="Original", inputMapping={"published": "External_source"})\n'
+        "def Copy(External_source): ...\n"
+    ) in generated
+
+
 def test_stale_schema_declared_node_reference_fails_loudly() -> None:
     child = PipelineGraph(
         nodes=[_node("consumer", config={"instanceOf": "missing"})],
@@ -698,7 +993,7 @@ def test_stale_schema_declared_node_reference_fails_loudly() -> None:
     )
     definition = _definition(graph=child, input_ports=[], output_ports=[])
     graph = PipelineGraph(
-        nodes=[_instance("instance_a", "scoring")],
+        nodes=[_instance("scoring", "scoring")],
         edges=[],
         submodels={"definition_scoring": definition},
     )
@@ -706,7 +1001,7 @@ def test_stale_schema_declared_node_reference_fails_loudly() -> None:
     with pytest.raises(ParseError, match="instanceOf") as exc_info:
         flatten_graph(graph)
 
-    assert exc_info.value.context["instance_id"] == "instance_a"
+    assert exc_info.value.context["instance_id"] == "scoring"
     assert exc_info.value.context["local_node_id"] == "consumer"
 
 
@@ -719,8 +1014,7 @@ def test_unbound_occurrence_validates_definition_topology_from_public_interface(
         graph=child,
         input_ports=[
             SubmodelInputPort(
-                port_id="policy",
-                label="Policy",
+                name="policy",
                 targets=[SubmodelEndpoint(node_id="explore")],
             )
         ],
@@ -760,27 +1054,20 @@ def test_registration_parser_preserves_explicit_identity_and_alias() -> None:
         """
 pipeline.submodel(
     "modules/scoring.py",
-    definition_id="definition_scoring",
-    instance_id="instance_a",
-    alias="scoring_a",
+    "scoring_a",
 ).submodel(
     "modules/scoring.py",
-    definition_id="definition_scoring",
-    instance_id="instance_b",
-    alias="scoring_b",
-    instance_of="instance_a",
+    "scoring_b",
+    instance_of="scoring_a",
 )
 """
     )
 
     registrations = extract_submodel_registrations(tree)
 
-    assert [
-        (item.path, item.definition_id, item.instance_id, item.alias, item.instance_of)
-        for item in registrations
-    ] == [
-        ("modules/scoring.py", "definition_scoring", "instance_a", "scoring_a", None),
-        ("modules/scoring.py", "definition_scoring", "instance_b", "scoring_b", "instance_a"),
+    assert [(item.path, item.name, item.instance_of) for item in registrations] == [
+        ("modules/scoring.py", "scoring_a", None),
+        ("modules/scoring.py", "scoring_b", "scoring_a"),
     ]
 
 
@@ -792,7 +1079,7 @@ def test_parser_rejects_path_only_submodel_source(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    with pytest.raises(ParseError, match="explicit stable identity|identity"):
+    with pytest.raises(ParseError, match="requires the occurrence name"):
         parse_pipeline_source(
             'import haute\npipeline = haute.Pipeline("main")\n'
             'pipeline.submodel("modules/scoring.py")\n',
@@ -814,6 +1101,7 @@ submodel = haute.Submodel(
     definition_id="definition_scoring",
     input_ports=[],
     output_ports=[],
+    pipeline_dir="..",
 )
 """,
         encoding="utf-8",
@@ -824,16 +1112,12 @@ import haute
 pipeline = haute.Pipeline("main")
 pipeline.submodel(
     "modules/scoring.py",
-    definition_id="definition_scoring",
-    instance_id="instance_a",
-    alias="scoring_a",
+    "scoring_a",
 )
 pipeline.submodel(
     "modules/scoring.py",
-    definition_id="definition_scoring",
-    instance_id="instance_b",
-    alias="scoring_b",
-    instance_of="instance_a",
+    "scoring_b",
+    instance_of="scoring_a",
 )
 """
 
@@ -856,8 +1140,8 @@ pipeline.submodel(
     assert parse_child.call_count == 1
     assert set(graph.submodels or {}) == {"definition_scoring"}
     assert {node.id for node in graph.nodes if node.data.nodeType == NodeType.SUBMODEL} == {
-        "instance_a",
-        "instance_b",
+        "scoring_a",
+        "scoring_b",
     }
 
 
@@ -888,15 +1172,14 @@ def test_codegen_emits_definition_once_and_two_stable_registrations() -> None:
     assert list(files).count("modules/scoring.py") == 1
     main = files["main.py"]
     assert main.count("pipeline.submodel(") == 2
-    assert 'definition_id="definition_scoring"' in main
-    assert 'instance_id="instance_a"' in main
-    assert 'instance_id="instance_b"' in main
-    assert 'alias="scoring_a"' in main
-    assert 'alias="scoring_b"' in main
-    assert 'instance_of="instance_a"' in main
+    assert 'pipeline.submodel("modules/scoring.py", "scoring_a")' in main
+    assert 'pipeline.submodel("modules/scoring.py", "scoring_b", instance_of="scoring_a")' in main
 
 
-def test_codegen_derives_child_config_base_from_registration_depth(tmp_path: Path) -> None:
+def test_codegen_records_the_owning_pipeline_directory_by_registration_depth(
+    tmp_path: Path,
+) -> None:
+    """A definition below its pipeline says how to reach it: config= paths resolve there."""
     score_config = {
         "sourceType": "run",
         "run_id": "abc123",
@@ -916,15 +1199,13 @@ def test_codegen_derives_child_config_base_from_registration_depth(tmp_path: Pat
             graph=PipelineGraph(nodes=[score], edges=[]),
             input_ports=[
                 SubmodelInputPort(
-                    port_id="policy",
-                    label="Policy data",
+                    name="policy",
                     targets=[SubmodelEndpoint(node_id="score")],
                 )
             ],
             output_ports=[
                 SubmodelOutputPort(
-                    port_id="scored",
-                    label="Scored",
+                    name="scored",
                     source=SubmodelEndpoint(node_id="score"),
                 )
             ],
@@ -939,31 +1220,100 @@ def test_codegen_derives_child_config_base_from_registration_depth(tmp_path: Pat
         return files[file]
 
     depth_cases = {
-        "scoring.py": "parents[0]",
-        "modules/scoring.py": "parents[1]",
-        "modules/nested/scoring.py": "parents[2]",
+        "scoring.py": None,
+        "modules/scoring.py": "..",
+        "modules/nested/scoring.py": "../..",
         # Depth counts real path segments, not raw separators: dot and empty
-        # segments never inflate how far the emitted base climbs.
-        "./modules/scoring.py": "parents[1]",
-        "modules//scoring.py": "parents[1]",
-        "modules/./scoring.py": "parents[1]",
+        # segments never add a level.
+        "./modules/scoring.py": "..",
+        "modules//scoring.py": "..",
+        "modules/./scoring.py": "..",
     }
-    for file, expected_base in depth_cases.items():
+    for file, expected in depth_cases.items():
         child_source = emitted_child(file)
-        assert (
-            f"_HAUTE_CONFIG_BASE = _HautePath(__file__).resolve().{expected_base}" in child_source
-        ), file
+        if expected is None:
+            assert "pipeline_dir" not in child_source, file
+        else:
+            assert f'    pipeline_dir="{expected}",\n)' in child_source, file
+        assert "_HAUTE_CONFIG_BASE" not in child_source, file
+        # The parser accepts the value only where it leads to the pipeline.
         reparsed = parse_submodel_source(child_source, source_file=file, _base_dir=tmp_path)
-        assert "_HAUTE_CONFIG_BASE" not in (reparsed.preamble or ""), file
+        assert "pipeline_dir" not in (reparsed.preamble or ""), file
+
+
+def test_parse_rejects_a_pipeline_dir_that_misses_the_registering_pipeline(
+    tmp_path: Path,
+) -> None:
+    source = (
+        "import haute\n\n"
+        "submodel = haute.Submodel(\n"
+        '    "scoring",\n'
+        '    definition_id="scoring",\n'
+        "    input_ports=[],\n"
+        "    output_ports=[],\n"
+        '    pipeline_dir="{value}",\n'
+        ")\n"
+    )
+    parse_submodel_source(
+        source.format(value=".."), source_file="modules/scoring.py", _base_dir=tmp_path
+    )
+    with pytest.raises(ParseError, match="config= paths would resolve in the wrong folder"):
+        parse_submodel_source(
+            source.format(value="../.."), source_file="modules/scoring.py", _base_dir=tmp_path
+        )
+    with pytest.raises(ParseError, match="config= paths would resolve in the wrong folder"):
+        parse_submodel_source(
+            source.replace('    pipeline_dir="{value}",\n', ""),
+            source_file="modules/scoring.py",
+            _base_dir=tmp_path,
+        )
+    with pytest.raises(ParseError, match="once per folder"):
+        parse_submodel_source(
+            source.format(value="../config"), source_file="modules/scoring.py", _base_dir=tmp_path
+        )
+
+
+def test_submodel_node_reads_its_sidecar_from_the_owning_pipeline_directory(
+    tmp_path: Path,
+) -> None:
+    """Calling a definition's node runs it against the pipeline's config/, not modules/."""
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "haute.toml").write_text('[project]\nname = "owner"\n', encoding="utf-8")
+    pl.DataFrame({"quote_id": [1, 2]}).write_parquet(tmp_path / "quotes.parquet")
+    sidecar = tmp_path / "config" / "data_input" / "quotes.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text(
+        json.dumps({"inputType": "file", "format": "parquet", "path": "quotes.parquet"}),
+        encoding="utf-8",
+    )
+    child = tmp_path / "modules" / "loader.py"
+    child.parent.mkdir()
+    source = (
+        "import haute\n\n"
+        "submodel = haute.Submodel(\n"
+        '    "loader",\n'
+        '    definition_id="loader",\n'
+        "    input_ports=[],\n"
+        '    output_ports=[{"name": "quotes", "source": {"nodeId": "quotes"}}],\n'
+        '    pipeline_dir="..",\n'
+        ")\n\n\n"
+        '@submodel.data_input(config="config/data_input/quotes.json")\n'
+        "def quotes(): ...\n"
+    )
+    child.write_text(source, encoding="utf-8")
+    namespace: dict[str, object] = {"__file__": str(child)}
+    exec(compile(source, str(child), "exec"), namespace)
+
+    frame = namespace["quotes"]()  # type: ignore[operator]
+
+    assert frame.lazy().collect().to_dicts() == [{"quote_id": 1}, {"quote_id": 2}]
 
 
 def test_codegen_parse_round_trip_preserves_occurrences_ports_labels_and_bindings(
     tmp_path: Path,
 ) -> None:
-    primary = _instance("instance_a", "scoring_a")
-    primary.data.label = "Primary scoring"
-    secondary = _instance("instance_b", "scoring_b", instance_of="instance_a")
-    secondary.data.label = "Secondary scoring"
+    primary = _instance("scoring_a", "scoring_a")
+    secondary = _instance("scoring_b", "scoring_b", instance_of="scoring_a")
     graph = PipelineGraph(
         nodes=[
             _node("root_source", config={"code": "return pl.DataFrame()"}),
@@ -975,24 +1325,41 @@ def test_codegen_parse_round_trip_preserves_occurrences_ports_labels_and_binding
             GraphEdge(
                 id="root_to_primary",
                 source="root_source",
-                target="instance_a",
+                target="scoring_a",
                 targetHandle="in__policy",
             ),
             GraphEdge(
                 id="primary_to_secondary",
-                source="instance_a",
-                target="instance_b",
+                source="scoring_a",
+                target="scoring_b",
                 sourceHandle="out__premium",
                 targetHandle="in__policy",
             ),
             GraphEdge(
                 id="secondary_to_sink",
-                source="instance_b",
+                source="scoring_b",
                 target="root_sink",
                 sourceHandle="out__premium",
             ),
         ],
-        submodels={"definition_scoring": _definition()},
+        submodels={
+            "definition_scoring": _definition(
+                graph=PipelineGraph(
+                    nodes=[
+                        _node(
+                            "local_input",
+                            config={
+                                "selected_columns": ["_id", "premium"],
+                                "column_renames": {"_id": "identifier"},
+                                "categorical_levels": {"premium": ["low", "high", None]},
+                            },
+                        ),
+                        _node("local_output", config={"instanceOf": "local_input"}),
+                    ],
+                    edges=[GraphEdge(id="local_edge", source="local_input", target="local_output")],
+                ),
+            )
+        },
     )
 
     files = graph_to_code_multi(
@@ -1023,18 +1390,78 @@ def test_codegen_parse_round_trip_preserves_occurrences_ports_labels_and_binding
         )
         for instance_id, node in occurrences.items()
     } == {
-        "instance_a": ("definition_scoring", "scoring_a", "Primary scoring", None),
-        "instance_b": ("definition_scoring", "scoring_b", "Secondary scoring", "instance_a"),
+        "scoring_a": ("definition_scoring", "scoring_a", "scoring_a", None),
+        "scoring_b": ("definition_scoring", "scoring_b", "scoring_b", "scoring_a"),
     }
     definition = (reparsed.submodels or {})["definition_scoring"]
-    assert [port.port_id for port in definition.input_ports] == ["policy"]
-    assert [port.port_id for port in definition.output_ports] == ["premium"]
+    assert {
+        key: definition.graph.node_map["local_input"].data.config[key]
+        for key in ("selected_columns", "column_renames", "categorical_levels")
+    } == {
+        "selected_columns": ["_id", "premium"],
+        "column_renames": {"_id": "identifier"},
+        "categorical_levels": {"premium": ["low", "high", None]},
+    }
+    assert [port.name for port in definition.input_ports] == ["policy"]
+    assert [port.name for port in definition.output_ports] == ["premium"]
     assert {
         (edge.source, edge.target, edge.sourceHandle, edge.targetHandle) for edge in reparsed.edges
     } == {
-        ("root_source", "instance_a", None, "in__policy"),
-        ("instance_a", "instance_b", "out__premium", "in__policy"),
-        ("instance_b", "root_sink", "out__premium", None),
+        ("root_source", "scoring_a", None, "in__policy"),
+        ("scoring_a", "scoring_b", "out__premium", "in__policy"),
+        ("scoring_b", "root_sink", "out__premium", None),
+    }
+
+    # The occurrence ids remain stable while users may rename their visible aliases.
+    reparsed.node_map["scoring_a"].data.config["alias"] = "rating_primary"
+    reparsed.node_map["scoring_a"].data.label = "rating_primary"
+    reparsed.node_map["scoring_b"].data.config["alias"] = "rating_copy"
+    reparsed.node_map["scoring_b"].data.label = "rating_copy"
+    renamed_files = graph_to_code_multi(
+        reparsed,
+        pipeline_name="main",
+        source_file="main.py",
+    )
+    for relative_path, source in renamed_files.items():
+        output = tmp_path / relative_path
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(source, encoding="utf-8")
+    renamed = parse_pipeline_source(
+        renamed_files["main.py"],
+        source_file=str(tmp_path / "main.py"),
+        _base_dir=tmp_path,
+    )
+
+    renamed_occurrences = {
+        node.id: node for node in renamed.nodes if node.data.nodeType == NodeType.SUBMODEL
+    }
+    assert {
+        instance_id: (
+            node.data.config["definitionId"],
+            node.data.config["alias"],
+            node.data.label,
+            node.data.config.get("instanceOf"),
+        )
+        for instance_id, node in renamed_occurrences.items()
+    } == {
+        "rating_primary": ("definition_scoring", "rating_primary", "rating_primary", None),
+        "rating_copy": ("definition_scoring", "rating_copy", "rating_copy", "rating_primary"),
+    }
+    renamed_definition = (renamed.submodels or {})["definition_scoring"]
+    assert {
+        key: renamed_definition.graph.node_map["local_input"].data.config[key]
+        for key in ("selected_columns", "column_renames", "categorical_levels")
+    } == {
+        "selected_columns": ["_id", "premium"],
+        "column_renames": {"_id": "identifier"},
+        "categorical_levels": {"premium": ["low", "high", None]},
+    }
+    assert {
+        (edge.source, edge.target, edge.sourceHandle, edge.targetHandle) for edge in renamed.edges
+    } == {
+        ("root_source", "rating_primary", None, "in__policy"),
+        ("rating_primary", "rating_copy", "out__premium", "in__policy"),
+        ("rating_copy", "root_sink", "out__premium", None),
     }
 
 
@@ -1085,23 +1512,22 @@ def test_grouping_creates_one_canonical_definition_and_first_occurrence() -> Non
 
     definition = (result.graph.submodels or {})["pricing"]
     assert definition.file == "modules/pricing.py"
-    assert [port.port_id for port in definition.input_ports] == ["input_1"]
+    assert [port.name for port in definition.input_ports] == ["source"]
     assert [(target.node_id, target.handle_id) for target in definition.input_ports[0].targets] == [
         ("child_a", "left"),
         ("child_b", "right"),
     ]
-    assert [port.port_id for port in definition.output_ports] == ["output_1"]
+    assert [port.name for port in definition.output_ports] == ["child_b"]
     assert definition.output_ports[0].source == SubmodelEndpoint(
         node_id="child_b",
         handle_id="priced",
     )
-    assert {"input_1", "output_1"}.isdisjoint({"child_a", "child_b"})
     assert {
         (edge.source, edge.target, edge.sourceHandle, edge.targetHandle)
         for edge in result.graph.edges
     } == {
-        ("source", occurrence.id, "policies", "in__input_1"),
-        (occurrence.id, "sink", "out__output_1", None),
+        ("source", occurrence.id, "policies", "in__source"),
+        (occurrence.id, "sink", "out__child_b", None),
     }
     assert len(result.graph.edges) == 2
 
@@ -1109,7 +1535,16 @@ def test_grouping_creates_one_canonical_definition_and_first_occurrence() -> Non
 def test_grouping_stores_local_positions_and_flatten_restores_authored_positions() -> None:
     graph = PipelineGraph(
         nodes=[
-            _node("child_a", x=100, y=200),
+            _node(
+                "child_a",
+                x=100,
+                y=200,
+                config={
+                    "selected_columns": ["_id", "premium"],
+                    "column_renames": {"_id": "identifier"},
+                    "categorical_levels": {"premium": ["low", "high", None]},
+                },
+            ),
             _node("child_b", x=500, y=600),
         ],
         edges=[GraphEdge(id="internal", source="child_a", target="child_b")],
@@ -1130,6 +1565,11 @@ def test_grouping_stores_local_positions_and_flatten_restores_authored_positions
         "child_a": {"x": -200.0, "y": -200.0},
         "child_b": {"x": 200.0, "y": 200.0},
     }
+    assert definition.graph.node_map["child_a"].data.config == {
+        "selected_columns": ["_id", "premium"],
+        "column_renames": {"_id": "identifier"},
+        "categorical_levels": {"premium": ["low", "high", None]},
+    }
 
     dissolved = flatten_graph(
         grouped.graph,
@@ -1143,9 +1583,82 @@ def test_grouping_stores_local_positions_and_flatten_restores_authored_positions
         "child_a": {"x": 100.0, "y": 200.0},
         "child_b": {"x": 500.0, "y": 600.0},
     }
+    assert dissolved.node_map[qualified_runtime_node_id(occurrence.id, "child_a")].data.config == {
+        "selected_columns": ["_id", "premium"],
+        "column_renames": {"_id": "identifier"},
+        "categorical_levels": {"premium": ["low", "high", None]},
+    }
 
 
-def test_grouping_normalises_child_input_configs_to_public_port_ids() -> None:
+def test_flattened_column_metadata_is_shared_per_definition_and_deeply_copied() -> None:
+    column_metadata = {
+        "selected_columns": ["_id", "premium"],
+        "column_renames": {"_id": "identifier"},
+        "categorical_levels": {"premium": ["low", "high", None]},
+    }
+    scoring = _definition(
+        graph=PipelineGraph(
+            nodes=[_node("local_input", config=column_metadata)],
+            edges=[],
+        ),
+        input_ports=[],
+        output_ports=[],
+    )
+    independent = SubmodelDefinition(
+        definition_id="definition_independent",
+        file="modules/independent.py",
+        graph=PipelineGraph(
+            nodes=[_node("local_input", config={"selected_columns": ["other"]})], edges=[]
+        ),
+        input_ports=[],
+        output_ports=[],
+    )
+    graph = PipelineGraph(
+        nodes=[
+            _instance("scoring_a", "scoring_a"),
+            _instance("scoring_b", "scoring_b", instance_of="scoring_a"),
+            _instance("independent", "independent", definition_id="definition_independent"),
+        ],
+        edges=[],
+        submodels={"definition_scoring": scoring, "definition_independent": independent},
+    )
+
+    flattened = flatten_graph(graph)
+    scoring_a = flattened.node_map[qualified_runtime_node_id("scoring_a", "local_input")]
+    scoring_b = flattened.node_map[qualified_runtime_node_id("scoring_b", "local_input")]
+    independent_node = flattened.node_map[qualified_runtime_node_id("independent", "local_input")]
+    assert scoring_a.data.config == column_metadata
+    assert scoring_b.data.config == column_metadata
+    assert independent_node.data.config == {"selected_columns": ["other"]}
+
+    scoring_a.data.config["categorical_levels"]["premium"].append("platinum")
+    assert scoring.graph.node_map["local_input"].data.config == column_metadata
+    assert scoring_b.data.config == column_metadata
+    assert independent_node.data.config == {"selected_columns": ["other"]}
+
+    edited_metadata = {
+        "selected_columns": ["_id", "risk_band"],
+        "column_renames": {"risk_band": "risk_tier"},
+        "categorical_levels": {"risk_band": ["low", "medium", "high", None]},
+    }
+    graph.submodels["definition_scoring"].graph.node_map[
+        "local_input"
+    ].data.config = edited_metadata
+    reflattened = flatten_graph(graph)
+    assert (
+        reflattened.node_map[qualified_runtime_node_id("scoring_a", "local_input")].data.config
+        == edited_metadata
+    )
+    assert (
+        reflattened.node_map[qualified_runtime_node_id("scoring_b", "local_input")].data.config
+        == edited_metadata
+    )
+    assert reflattened.node_map[
+        qualified_runtime_node_id("independent", "local_input")
+    ].data.config == {"selected_columns": ["other"]}
+
+
+def test_grouping_preserves_child_input_configs_and_uses_public_labels() -> None:
     graph = PipelineGraph(
         nodes=[
             _node("source", NodeType.API_INPUT, label="Quote source"),
@@ -1194,17 +1707,18 @@ def test_grouping_normalises_child_input_configs_to_public_port_ids() -> None:
     definition = (grouped.graph.submodels or {})["pricing"]
     children = definition.graph.node_map
 
+    assert [port.name for port in definition.input_ports] == ["drivers"]
     assert children["child_router"].data.config["input_scenario_map"] == {
-        "input_1": "live",
+        "drivers": "live",
         "stable_input": "batch",
     }
     assert children["child_instance"].data.config["inputMapping"] == {
-        "input_1": "input_1",
+        "drivers": "drivers",
         "stable_input": "stable_input",
     }
 
 
-def test_grouping_rejects_public_input_mapping_key_collisions() -> None:
+def test_grouping_does_not_rewrite_configs_to_opaque_public_port_ids() -> None:
     graph = PipelineGraph(
         nodes=[
             _node("source", NodeType.API_INPUT, label="Quote source"),
@@ -1235,11 +1749,18 @@ def test_grouping_rejects_public_input_mapping_key_collisions() -> None:
         ],
     )
 
-    with pytest.raises(SubmodelValidationError) as exc_info:
-        create_submodel_graph(graph, ["child_router", "child_output"], "pricing")
+    grouped = create_submodel_graph(
+        graph,
+        ["child_router", "child_output"],
+        "pricing",
+    )
 
-    assert exc_info.value.code == "input_mapping_collision"
-    assert "input_scenario_map" in exc_info.value.detail
+    definition = (grouped.graph.submodels or {})["pricing"]
+    assert definition.input_ports[0].name == "drivers"
+    assert definition.graph.node_map["child_router"].data.config["input_scenario_map"] == {
+        "drivers": "live",
+        "input_1": "batch",
+    }
 
 
 def test_canonical_input_port_rejects_more_than_one_parent_binding() -> None:
@@ -1248,19 +1769,19 @@ def test_canonical_input_port_rejects_more_than_one_parent_binding() -> None:
         nodes=[
             _node("upstream_a"),
             _node("upstream_b"),
-            _instance("instance_a", "scoring"),
+            _instance("scoring", "scoring"),
         ],
         edges=[
             GraphEdge(
                 id="binding_a",
                 source="upstream_a",
-                target="instance_a",
+                target="scoring",
                 targetHandle="in__policy",
             ),
             GraphEdge(
                 id="binding_b",
                 source="upstream_b",
-                target="instance_a",
+                target="scoring",
                 targetHandle="in__policy",
             ),
         ],
@@ -1270,5 +1791,130 @@ def test_canonical_input_port_rejects_more_than_one_parent_binding() -> None:
     with pytest.raises(ParseError, match="bound more than once") as exc_info:
         validate_submodel_instances(graph)
 
-    assert exc_info.value.context["instance_id"] == "instance_a"
-    assert exc_info.value.context["port_id"] == "policy"
+    assert exc_info.value.context["instance_id"] == "scoring"
+    assert exc_info.value.context["port_name"] == "policy"
+
+
+def test_rewrite_boundary_input_names_rejects_duplicate_output_mapping_entries() -> None:
+    """Two entries renamed into the same identity fail loudly."""
+    node = _node(
+        "response",
+        NodeType.OUTPUT,
+        config={
+            "outputMapping": [
+                {
+                    "source_port": "Published_results",
+                    "source_column": "premium",
+                    "output_path": "$.premium",
+                    "enabled": True,
+                },
+                {
+                    "source_port": "Alternate_results",
+                    "source_column": "premium",
+                    "output_path": "$.premium",
+                    "enabled": True,
+                },
+            ]
+        },
+    )
+
+    with pytest.raises(ParseError) as exc_info:
+        rewrite_boundary_input_names(
+            [node],
+            {
+                "response": {
+                    "Published_results": "Internal_Output",
+                    "Alternate_results": "Internal_Output",
+                }
+            },
+        )
+
+    assert "outputMapping rename collides" in str(exc_info.value)
+    assert exc_info.value.context["node_id"] == "response"
+    assert exc_info.value.context["output_path"] == "$.premium"
+
+
+def test_rewrite_boundary_input_names_rejects_contradicting_output_mapping_entries() -> None:
+    """One destination fed by one port from two columns fails loudly."""
+    node = _node(
+        "response",
+        NodeType.OUTPUT,
+        config={
+            "outputMapping": [
+                {
+                    "source_port": "Published_results",
+                    "source_column": "premium",
+                    "output_path": "$.premium",
+                    "enabled": True,
+                },
+                {
+                    "source_port": "Alternate_results",
+                    "source_column": "loading",
+                    "output_path": "$.premium",
+                    "enabled": True,
+                },
+            ]
+        },
+    )
+
+    with pytest.raises(ParseError) as exc_info:
+        rewrite_boundary_input_names(
+            [node],
+            {
+                "response": {
+                    "Published_results": "Internal_Output",
+                    "Alternate_results": "Internal_Output",
+                }
+            },
+        )
+
+    assert "outputMapping rename collides" in str(exc_info.value)
+    assert exc_info.value.context["output_path"] == "$.premium"
+
+
+def test_flatten_rejects_boundary_input_names_colliding_after_expansion() -> None:
+    """Two public output ports collapsing onto one internal frame fail loudly."""
+    child = PipelineGraph(nodes=[_node("output", label="Internal Output")], edges=[])
+    definition = _definition(
+        graph=child,
+        input_ports=[],
+        output_ports=[
+            SubmodelOutputPort(
+                name="results",
+                source=SubmodelEndpoint(node_id="output"),
+            ),
+            SubmodelOutputPort(
+                name="alternate",
+                source=SubmodelEndpoint(node_id="output"),
+            ),
+        ],
+    )
+    graph = PipelineGraph(
+        nodes=[
+            _instance("instance_a", "score"),
+            _node("consumer", NodeType.POLARS),
+        ],
+        edges=[
+            GraphEdge(
+                id="first",
+                source="instance_a",
+                target="consumer",
+                sourceHandle="out__results",
+                targetHandle="in_1",
+            ),
+            GraphEdge(
+                id="second",
+                source="instance_a",
+                target="consumer",
+                sourceHandle="out__alternate",
+                targetHandle="in_2",
+            ),
+        ],
+        submodels={"definition_scoring": definition},
+    )
+
+    with pytest.raises(ParseError) as exc_info:
+        flatten_graph(graph)
+
+    assert "input names collide after expansion" in str(exc_info.value)
+    assert exc_info.value.context["expanded_input_name"] == "Internal_Output"

@@ -29,7 +29,8 @@ import copy
 import dataclasses
 import math
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
 
 import polars as pl
@@ -37,6 +38,8 @@ import polars as pl
 from haute._banding_config import normalise_banding_factors
 from haute._cache import canonical_json
 from haute._expression_parser import (
+    AssignmentPhases,
+    assignment_phases,
     evaluate_expression,
     parse_expression,
     parse_expression_chain,
@@ -48,7 +51,7 @@ from haute._rating import (
     SUPPORTED_BANDING_OPERATORS,
     _banding_rule_comparators,
     _breakpoints_to_rules,
-    _normalise_combined_outputs,
+    normalise_combined_outputs,
     normalise_rating_key,
 )
 from haute._rating_step_config import normalise_rating_tables
@@ -230,7 +233,7 @@ def enrich_rating_step(
     ]
 
     combined_outputs = []
-    for combined in _normalise_combined_outputs(config):
+    for combined in normalise_combined_outputs(config):
         column = combined["outputColumn"]
         combined_outputs.append(
             {
@@ -298,12 +301,12 @@ def _coerce_pair_through_dtype(
         return left, right
 
 
-def _match_continuous_rule(
+def _match_interval_rule(
     input_value: Any,
     rule: dict[str, Any],
     input_dtype: pl.DataType | None = None,
 ) -> bool:
-    """Check if input_value satisfies a continuous banding rule.
+    """Check if input_value satisfies one interval rule of a breakpoint.
 
     *input_dtype* is the source factor column's original Polars dtype;
     when supplied, the observed value and each rule threshold are
@@ -313,20 +316,44 @@ def _match_continuous_rule(
     """
     if input_value is None:
         return False
-    try:
-        val = float(input_value)
-    except (ValueError, TypeError):
-        return False
-
     comparators = _banding_rule_comparators(rule)
     if not comparators:
         return False
-    for op, threshold_num in comparators:
+    for op, threshold in comparators:
         fn = SUPPORTED_BANDING_OPERATORS[op]
-        cmp_val, cmp_threshold = _coerce_pair_through_dtype(val, threshold_num, input_dtype)
+        if isinstance(threshold, date):
+            observed = _temporal_trace_value(input_value, threshold)
+            if observed is None or not fn(observed, threshold):
+                return False
+            continue
+        try:
+            val = float(input_value)
+        except (ValueError, TypeError):
+            return False
+        cmp_val, cmp_threshold = _coerce_pair_through_dtype(val, threshold, input_dtype)
         if not fn(cmp_val, cmp_threshold):
             return False
     return True
+
+
+def _temporal_trace_value(value: Any, threshold: date) -> date | None:
+    """*value* as a date or date-and-time boundary compares it, as the runtime does.
+
+    A date boundary compares the calendar date and a date-and-time boundary the
+    wall-clock time, both in the column's own time zone, which is the zone a
+    traced time-zoned value already carries. A value of the wrong kind (a plain
+    date against a time) is one the runtime refuses, so it matches nothing.
+    """
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if isinstance(threshold, datetime):
+        return value.replace(tzinfo=None) if isinstance(value, datetime) else None
+    if isinstance(value, datetime):
+        return value.date()
+    return value if isinstance(value, date) else None
 
 
 def _values_equivalent(left: Any, right: Any) -> bool:
@@ -349,8 +376,8 @@ def _categorical_rule_matches(
     return str(input_value) == str(rule_val) and str(selected_band) == str(rule_assignment)
 
 
-def _continuous_rule_bounds(rule: dict[str, Any]) -> dict[str, Any]:
-    """Extract range metadata from a continuous banding rule for trace display."""
+def _interval_rule_bounds(rule: dict[str, Any]) -> dict[str, Any]:
+    """Extract range metadata from a breakpoint's interval rule for trace display."""
     result: dict[str, Any] = {
         "lower_bound": None,
         "upper_bound": None,
@@ -508,8 +535,8 @@ def enrich_banding(
     ``outputColumn``, ``rules``, ``banding``, and ``default``.
 
     *factor_input_dtypes* maps a factor's input column name to its
-    original Polars dtype.  It makes continuous-rule re-matching
-    dtype-faithful (see :func:`_match_continuous_rule`) so a
+    original Polars dtype.  It makes interval re-matching
+    dtype-faithful (see :func:`_match_interval_rule`) so a
     ``Float32``-banded value the engine matched is not reported as
     ``no_match``. When absent, numeric comparisons use ``float64``.
     """
@@ -525,7 +552,7 @@ def enrich_banding(
                 out_col = factor_cfg.get("outputColumn", "")
                 raw_rules = factor_cfg.get("rules", []) or []
                 rules = raw_rules
-                banding_type = factor_cfg.get("banding", "continuous")
+                banding_type = factor_cfg.get("banding")
                 default = factor_cfg.get("default")
                 if banding_type == "breakpoints":
                     rules = _breakpoints_to_rules(
@@ -547,13 +574,13 @@ def enrich_banding(
                             rule_index = i
                             matched_rule = dict(rule)
                             break
-                else:
-                    # Continuous — evaluate each rule against input value,
-                    # comparing in the source column's own dtype so a
-                    # Float32-banded value is not reported as no_match.
+                elif banding_type == "breakpoints":
+                    # Evaluate each interval against the input value, comparing
+                    # in the source column's own dtype so a Float32-banded value
+                    # is not reported as no_match.
                     input_dtype = dtype_by_column.get(col)
                     for i, rule in enumerate(rules):
-                        if _match_continuous_rule(input_value, rule, input_dtype):
+                        if _match_interval_rule(input_value, rule, input_dtype):
                             assignment = rule.get("assignment", "")
                             if _values_equivalent(assignment, selected_band):
                                 rule_index = i
@@ -586,7 +613,7 @@ def enrich_banding(
                     if banding_type == "categorical":
                         factor_detail["matched_value"] = matched_rule.get("value")
                     else:
-                        factor_detail.update(_continuous_rule_bounds(matched_rule))
+                        factor_detail.update(_interval_rule_bounds(matched_rule))
                 factor_details.append(factor_detail)
 
             result: dict[str, Any] = {
@@ -637,9 +664,11 @@ def enrich_model_score(
         # Model identity
         model_identity = {
             "source_type": config.get("sourceType", ""),
+            "model_path": config.get("model_path", ""),
             "run_id": config.get("run_id", ""),
             "registered_model": config.get("registered_model", ""),
             "version": config.get("version", ""),
+            "alias": config.get("alias", ""),
             "task": config.get("task", "regression"),
         }
 
@@ -745,7 +774,8 @@ def enrich_scenario_expansion(
             "parameters": {
                 "min_value": config.get("min_value"),
                 "max_value": config.get("max_value"),
-                "steps": config.get("steps"),
+                # The trace parameter keeps its name; the config key is the grid size.
+                "steps": config.get("stepCount"),
             },
         }
     except Exception as exc:
@@ -845,89 +875,50 @@ def enrich_optimiser_apply(
 # ---------------------------------------------------------------------------
 
 
-def _node_output_row_count(df: pl.DataFrame | dict[str, pl.DataFrame] | None) -> int:
-    """Row count of a node's materialised output for lineage detection.
-
-    Multi-frame sources store ``dict[label, DataFrame]`` in
-    ``eager_outputs`` — count the widest frame's rows (mirroring the
-    parent-side handling in ``enrich_steps``), never ``len(dict)``,
-    which would count FRAMES, not rows.
-    """
-    if df is None:
-        return 0
-    if isinstance(df, dict):
-        return max((len(frame) for frame in df.values()), default=0)
-    return len(df)
-
-
 def detect_row_lineage_type(
     *,
-    input_row_count: int | None = None,
-    output_row_count: int = 0,
     node_type: str = "",
     operation_type: str = "",
 ) -> str:
-    """Detect the row lineage type based on node metadata and row counts.
+    """Classify how a node produces its rows from node type and operation alone.
+
+    Trace frames are limited or row-scoped, so their heights say nothing about
+    a node's real cardinality; the label never depends on them.
 
     Returns one of:
       - "created"     : rows originate from a data source / API input
       - "selected"    : rows chosen by a live switch
-      - "filtered"    : rows removed by a filter
-      - "aggregated"  : rows collapsed by a group_by
+      - "filtered"    : rows may be removed by a filter
+      - "aggregated"  : rows collapsed per group (group_by, optimiser apply)
       - "joined"      : rows produced by a join
       - "expanded"    : rows multiplied (cross join, explode, scenario expansion)
       - "sorted"      : rows reordered
       - "passthrough" : rows unchanged (with_columns, rename, etc.)
     """
     try:
-        # Source nodes always create rows
-        if node_type in ("dataInput", "apiInput"):
+        if node_type in ("dataInput", "apiInput", "constant"):
             return "created"
-
         if node_type == "liveSwitch":
             return "selected"
-
-        # Join nodes are config-driven — their code carries no literal
-        # ".join(" token, so row-count deltas would otherwise mislabel a
-        # join fan-out as "expanded" or a fan-in as "filtered".  Classify
-        # them by node type before falling through to code/row-count.
+        # Config-driven nodes carry no literal operation in code.
         if node_type == "edgeJoin":
             return "joined"
-
-        # Operation-type based detection
-        op = operation_type.lower() if operation_type else ""
-
-        if op in ("group_by", "groupby", "agg"):
+        if node_type == "scenarioExpander":
+            return "expanded"
+        if node_type == "optimiserApply":
             return "aggregated"
 
+        op = operation_type.lower() if operation_type else ""
+        if op in ("group_by", "groupby", "agg"):
+            return "aggregated"
         if op in ("join",):
             return "joined"
-
         if op in ("sort", "sort_by"):
             return "sorted"
-
         if op in ("filter",):
-            # A filter call alone is not proof that rows were removed.
-            # Preserve actual observed cardinality in the trace.
-            if input_row_count is not None and output_row_count < input_row_count:
-                return "filtered"
-            return "passthrough"
-
+            return "filtered"
         if op in ("cross_join", "explode", "scenario_expand"):
             return "expanded"
-
-        # Fallback: infer from row count changes
-        parent = input_row_count if input_row_count is not None else 0
-
-        if parent == 0 and output_row_count > 0:
-            return "created"
-
-        if output_row_count < parent:
-            return "filtered"
-
-        if output_row_count > parent:
-            return "expanded"
-
         return "passthrough"
     except Exception as exc:
         logger.warning(
@@ -976,6 +967,101 @@ def _effective_node_code(
         if isinstance(original_config, dict):
             return original_config.get("code", "") or ""
     return local_code
+
+
+def _formula_fields(
+    step: TraceStep,
+    column: str,
+    code: str,
+    parsed: Any,
+    preamble_ns: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """*code*'s assignment of *column*, evaluated on *step*'s row.
+
+    ``expression_text`` when the parse found the formula, the
+    ``substituted_text`` and ``result_value`` of evaluating it, and
+    ``not_computable_reason``/``result_source`` when one row could not compute it.
+    """
+    fields: dict[str, Any] = {}
+    if parsed and parsed.expression_text:
+        fields["expression_text"] = parsed.expression_text
+    eval_values = _assignment_values(step, column, parsed, code)
+    if eval_values is None:
+        fields["result_value"] = step.output_values.get(column)
+        fields["substituted_text"] = f"{column} = {_quote_trace_value(fields['result_value'])}"
+        return fields
+    ev = evaluate_expression(
+        code,
+        column,
+        eval_values,
+        preamble_ns=preamble_ns,
+        row=_assignment_row(step, column, parsed, code),
+    )
+    if ev is not None:
+        fields["substituted_text"] = ev.substituted_text
+        fields.update(
+            _with_execution_value(
+                {
+                    "result_value": ev.result_value,
+                    "not_computable_reason": ev.not_computable_reason,
+                },
+                step,
+                column,
+            )
+        )
+    return fields
+
+
+def column_derivation(
+    step: TraceStep,
+    column: str,
+    node_map: dict[str, Any],
+    preamble_ns: dict[str, Any] | None,
+    reads: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """How *step* computed *column* for a traced value, and what it read.
+
+    The formula, when the step's code assigns the column, is evaluated on the
+    step's row as the traced column's own is; a column a rule computed (a
+    model's prediction, an optimiser's choice) or a source loaded has none.
+    A step read from a snapshot no recompute reproduced has no row to
+    evaluate on, so only its value is shown.
+    """
+    derivation: dict[str, Any] = {
+        "column": column,
+        "expression_text": None,
+        "substituted_text": None,
+        "result_value": step.output_values.get(column),
+        "not_computable_reason": None,
+        "result_source": None,
+        "reads": reads,
+        "error": None,
+        "error_type": None,
+    }
+    if step.snapshot_generation_id is not None and not step.snapshot_reproduced:
+        return derivation
+    node = node_map.get(step.node_id)
+    config = node.data.config if node is not None and isinstance(node.data.config, dict) else {}
+    code = _wrap_node_code(_effective_node_code(config, node_map))
+    if not code.strip():
+        return derivation
+    try:
+        parsed = parse_expression(code, column)
+        if parsed is None or not parsed.expression_text or parsed.expression_type == "opaque":
+            return derivation
+        derivation.update(_formula_fields(step, column, code, parsed, preamble_ns))
+    except Exception as exc:
+        logger.warning(
+            "column_derivation_failed",
+            node_id=step.node_id,
+            column=column,
+            error=str(exc),
+            error_type=type(exc).__name__,
+            exc_info=True,
+        )
+        derivation["error"] = f"formula evaluation failed: {exc}"
+        derivation["error_type"] = type(exc).__name__
+    return derivation
 
 
 def _build_input_sources(
@@ -1051,6 +1137,17 @@ def _build_input_sources(
                 "node_id": other_step.node_id,
                 "node_name": other_step.node_name,
             }
+            snapshot_generation_id = getattr(other_step, "snapshot_generation_id", None)
+            if snapshot_generation_id is not None and not getattr(
+                other_step, "snapshot_reproduced", False
+            ):
+                # Read from a shared snapshot no recompute reproduced: the input's
+                # provenance ends here, with the value it held, never a formula
+                # rebuilt from it.
+                source_info["result_value"] = other_combined.get(ref_col)
+                source_info["snapshot_generation_id"] = snapshot_generation_id
+                result[ref_col] = source_info
+                break
 
             # Parse the expression for this specific column from the
             # upstream node's code — don't rely on other_step.expression
@@ -1091,34 +1188,14 @@ def _build_input_sources(
                 if other_code and not banding_lineage_applied:
                     parsed = parse_expression(other_code, ref_col)
                     if parsed and parsed.expression_text:
-                        source_info["expression_text"] = parsed.expression_text
                         parsed_refs = list(parsed.referenced_columns)
-                    eval_values = {**other_step.input_values, **other_step.output_values}
-                    self_referential_modification = (
-                        ref_col in other_step.schema_diff.columns_modified
-                        and parsed
-                        and ref_col in parsed.referenced_columns
-                    )
-                    skip_evaluation = False
-                    if self_referential_modification:
-                        if ref_col in other_step.input_values:
-                            eval_values[ref_col] = other_step.input_values[ref_col]
-                        else:
-                            source_info["result_value"] = other_step.output_values.get(ref_col)
-                            source_info["substituted_text"] = (
-                                f"{ref_col} = {_quote_trace_value(source_info['result_value'])}"
-                            )
-                            skip_evaluation = True
-                    if not skip_evaluation:
-                        ev = evaluate_expression(
-                            other_code,
-                            ref_col,
-                            eval_values,
-                            preamble_ns=preamble_ns,
+                    # Code that never assigns the column (a model's transform
+                    # steps around its prediction) did not compute it: the
+                    # value is the one the node produced, as for a code-less node.
+                    if parsed is not None and parsed.expression_text:
+                        source_info.update(
+                            _formula_fields(other_step, ref_col, other_code, parsed, preamble_ns)
                         )
-                        if ev is not None:
-                            source_info["substituted_text"] = ev.substituted_text
-                            source_info["result_value"] = ev.result_value
             except Exception as exc:
                 # Surface the derivation failure on the source entry so
                 # the caller can see why an input column's value/
@@ -1417,6 +1494,213 @@ def _resolve_optimiser_apply_inputs(
     return input_frames, source_names
 
 
+def _same_value(left: Any, right: Any) -> bool:
+    if isinstance(left, float) and isinstance(right, float) and math.isnan(left):
+        return math.isnan(right)
+    return bool(left == right)
+
+
+def _is_self_referential(step: TraceStep, column: str, parsed: Any) -> bool:
+    return bool(
+        column in step.schema_diff.columns_modified
+        and parsed is not None
+        and column in parsed.referenced_columns
+    )
+
+
+def _read_before_call(step: TraceStep, phases: AssignmentPhases) -> frozenset[str]:
+    """The columns the call reads at their value from before it.
+
+    When a write in that call or a later one has no static name it may have
+    rewritten any column, even one whose value it left equal but whose dtype it
+    changed. Every column is then read from before the call, so only input
+    columns no earlier call assigned remain.
+    """
+    if not phases.unresolved:
+        return phases.at_or_after
+    return phases.at_or_after | frozenset(step.input_values) | frozenset(step.output_values)
+
+
+def _values_before_call(
+    values: dict[str, Any], step: TraceStep, phases: AssignmentPhases
+) -> dict[str, Any]:
+    """*values* as the ``with_columns`` call that assigns the target reads them.
+
+    A column the same or a later call assigns is read at its value from before
+    that call: the input value when no earlier call can have assigned it, and
+    otherwise a value the trace does not hold, so it is left out.
+    """
+    before = dict(values)
+    for name in _read_before_call(step, phases):
+        if _earlier_value_unknown(name, step.input_values, phases):
+            before.pop(name, None)
+        else:
+            before[name] = step.input_values[name]
+    return before
+
+
+def _earlier_value_unknown(name: str, inputs: Collection[str], phases: AssignmentPhases) -> bool:
+    """Whether an earlier call can have rewritten *name*, or it has no input value."""
+    return name in phases.before or phases.unresolved_before or name not in inputs
+
+
+def _row_before_call(row: pl.DataFrame, step: TraceStep, phases: AssignmentPhases) -> pl.DataFrame:
+    """The typed counterpart of :func:`_values_before_call`."""
+    input_row = step.input_row
+    for name in _read_before_call(step, phases):
+        if input_row is None or _earlier_value_unknown(name, input_row.columns, phases):
+            row = row.drop(name, strict=False)
+        else:
+            row = row.with_columns(input_row.get_column(name))
+    # Dropping every column would leave no row at all; the row is still there,
+    # it just holds nothing the formula can read.
+    return row if row.width else pl.DataFrame([{}])
+
+
+def _assignment_values(
+    step: TraceStep, column: str, parsed: Any, code: str
+) -> dict[str, Any] | None:
+    """The values *step*'s assignment of *column* in *code* is evaluated on.
+
+    Its ``with_columns`` call reads every column the same or a later call
+    assigns at its value from before the call, so a self-referential
+    assignment (``premium = premium * ...``) and a sibling reading a column its
+    call also assigns both see the earlier value, never the node's output.
+    ``None`` when a self-referential assignment's earlier value is unknown.
+    """
+    values = {**step.input_values, **step.output_values}
+    if _is_self_referential(step, column, parsed) and column not in step.input_values:
+        return None
+    phases = assignment_phases(code, column)
+    return values if phases is None else _values_before_call(values, step, phases)
+
+
+# A frame holding no row: the evaluator reports a formula it is handed as not
+# computable, instead of inferring dtypes from the trace's JSON-safe values.
+_NO_TRACED_ROW = pl.DataFrame()
+
+
+def _chain_start(row: pl.DataFrame, step: TraceStep, target: str) -> pl.DataFrame | None:
+    """A chain target starts from its pre-node value, or absent if the node creates it."""
+    if target in step.input_values:
+        if step.input_row is None or target not in step.input_row.columns:
+            return None
+        return row.with_columns(step.input_row.get_column(target))
+    return row.drop(target, strict=False)
+
+
+def _chain_feed(
+    row: pl.DataFrame, step: TraceStep, target: str, shown: Mapping[str, Any]
+) -> pl.DataFrame:
+    """*row* with one chain entry's result, for the entries after it to read.
+
+    An entry without a value leaves its column out, so a later entry that
+    reads it reports the column unavailable rather than reading a stale value.
+    """
+    if (
+        shown.get("not_computable_reason") is not None
+        and shown.get("result_source") != "trace_execution"
+    ):
+        return row.drop(target, strict=False)
+    dtype = step.output_row.schema.get(target) if step.output_row is not None else None
+    return row.with_columns(pl.Series(target, [shown["result_value"]], dtype=dtype))
+
+
+def _typed_values(step: TraceStep) -> pl.DataFrame | None:
+    """The typed row behind ``{**step.input_values, **step.output_values}``."""
+    output_row = step.output_row
+    if output_row is None:
+        return None
+    input_row = step.input_row
+    if input_row is None:
+        return None if step.input_values else output_row
+    carried = [name for name in input_row.columns if name not in output_row.columns]
+    if not carried:
+        return output_row
+    return pl.DataFrame([*input_row.select(carried).get_columns(), *output_row.get_columns()])
+
+
+def _assignment_row(step: TraceStep, column: str, parsed: Any, code: str) -> pl.DataFrame:
+    """The typed row :func:`_assignment_values` describes, or a frame with no row."""
+    row = _typed_values(step)
+    if row is None:
+        return _NO_TRACED_ROW
+    if _is_self_referential(step, column, parsed) and (
+        step.input_row is None or column not in step.input_row.columns
+    ):
+        return _NO_TRACED_ROW
+    phases = assignment_phases(code, column)
+    return row if phases is None else _row_before_call(row, step, phases)
+
+
+def _with_execution_value(
+    calculation: dict[str, Any], step: TraceStep, column: str
+) -> dict[str, Any]:
+    """Show a formula's full-context value where one row cannot compute it.
+
+    A formula that needs other rows (a window, aggregation, shift, or an
+    operation not known to be row-local) is not evaluated on the traced row.
+    Its value there is the one the trace's own execution computed: the step's
+    output for *column*. ``result_source`` marks it as coming from that
+    execution, and ``not_computable_reason`` still says why one row could not.
+    """
+    reason = calculation.get("not_computable_reason")
+    if (
+        isinstance(reason, str)
+        and reason.startswith("not_row_local")
+        and column in step.output_values
+    ):
+        calculation["result_value"] = step.output_values[column]
+        calculation["result_source"] = "trace_execution"
+    return calculation
+
+
+def _pass_through_origin(
+    target: TraceStep,
+    steps: Sequence[TraceStep],
+    parents_of: Mapping[str, Sequence[str]],
+    eager_outputs: Mapping[str, Any],
+    column: str,
+) -> TraceStep | None:
+    """The step whose assignment gave *target* the *column* value it passes on.
+
+    The value is followed back one step at a time through the single parent
+    that holds the column with that same value, to the step that added or
+    last modified it.  When no parent or more than one does — a join whose
+    sides each hold the column — or a parent whose row is unknown might, or
+    the value was read from a snapshot no recompute reproduced, its origin is
+    unproven and ``None``
+    is returned: another branch's formula would explain a value the target
+    never had.
+    """
+    by_id = {candidate.node_id: candidate for candidate in steps}
+    value = target.output_values.get(column)
+    current = target
+    while True:
+        carriers: list[TraceStep] = []
+        for parent_id in parents_of.get(current.node_id, ()):
+            parent = by_id.get(parent_id)
+            if parent is None:
+                frame = eager_outputs.get(parent_id)
+                if isinstance(frame, pl.DataFrame) and column not in frame.columns:
+                    continue
+                return None
+            if column in parent.output_values and _same_value(parent.output_values[column], value):
+                carriers.append(parent)
+        if len(carriers) != 1:
+            return None
+        current = carriers[0]
+        if getattr(current, "snapshot_generation_id", None) is not None and not getattr(
+            current, "snapshot_reproduced", False
+        ):
+            # The value was read from a snapshot no recompute reproduced: there
+            # is no code to show.
+            return None
+        diff = current.schema_diff
+        if column in diff.columns_added or column in diff.columns_modified:
+            return current
+
+
 def enrich_steps(
     steps: list[TraceStep],
     node_map: dict[str, Any],
@@ -1427,6 +1711,7 @@ def enrich_steps(
     preamble_ns: dict[str, Any] | None = None,
     source_frames_of: Mapping[tuple[str, str], Sequence[str | None]] | None = None,
     incoming_edges_of: Mapping[str, Sequence[GraphEdge]] | None = None,
+    lineage_plans: Callable[[], Mapping[str, Any]] | None = None,
 ) -> None:
     """Enrich trace steps in-place with expression/calculation/detail data.
 
@@ -1445,11 +1730,22 @@ def enrich_steps(
     order. Optimiser Apply uses it to keep materialised frames aligned with
     their exact executable input names, including multiple frames emitted by
     one API Input node.
+
+    *lineage_plans* returns the uncapped runtime plan of every lineage node.
+    Online Optimiser Apply explanations read their inputs from it: a quote's
+    full scenario set and a ratio constraint's whole-frame baseline both lie
+    outside a limited preview's head rows.
     """
     completed_memo: dict[_EnrichmentMemoKey, dict[str, Any]] = {}
     frame_identity = _enrichment_frame_identity(eager_outputs)
 
     for step in steps:
+        if getattr(step, "snapshot_generation_id", None) is not None and not getattr(
+            step, "snapshot_reproduced", False
+        ):
+            # Its row was read from a shared snapshot no recompute reproduced:
+            # there is no input row to explain it with.
+            continue
         try:
             node_data = node_map[step.node_id].data
             cfg = node_data.config if isinstance(node_data.config, dict) else {}
@@ -1483,61 +1779,62 @@ def enrich_steps(
                 and step.node_id == steps[-1].node_id  # target step
                 and column in step.schema_diff.columns_passed
             ):
-                for upstream in steps:
-                    if upstream is step:
-                        continue
-                    if column in upstream.schema_diff.columns_added:
-                        # Found the upstream creator — parse its code
-                        u_cfg = (
-                            node_map[upstream.node_id].data.config
-                            if isinstance(node_map[upstream.node_id].data.config, dict)
-                            else {}
-                        )
-                        u_raw = _effective_node_code(u_cfg, node_map)
-                        u_code = _wrap_node_code(u_raw)
-                        if u_code:
-                            try:
-                                u_combined = {
-                                    **upstream.input_values,
-                                    **upstream.output_values,
-                                }
-                                parsed = parse_expression(u_code, column)
-                                if parsed and parsed.expression_text:
-                                    step.expression = dataclasses.asdict(parsed)
-                                ev = evaluate_expression(
+                upstream = _pass_through_origin(step, steps, parents_of, eager_outputs, column)
+                if upstream is not None:
+                    # Found the upstream creator — parse its code
+                    u_cfg = (
+                        node_map[upstream.node_id].data.config
+                        if isinstance(node_map[upstream.node_id].data.config, dict)
+                        else {}
+                    )
+                    u_raw = _effective_node_code(u_cfg, node_map)
+                    u_code = _wrap_node_code(u_raw)
+                    if u_code:
+                        try:
+                            parsed = parse_expression(u_code, column)
+                            if parsed and parsed.expression_text:
+                                step.expression = dataclasses.asdict(parsed)
+                            u_combined = _assignment_values(upstream, column, parsed, u_code)
+                            ev = (
+                                evaluate_expression(
                                     u_code,
                                     column,
                                     u_combined,
                                     preamble_ns=preamble_ns,
+                                    row=_assignment_row(upstream, column, parsed, u_code),
                                 )
-                                if ev is not None:
-                                    step.calculation = dataclasses.asdict(ev)
-                            except Exception as exc:
-                                logger.warning(
-                                    "upstream_expression_failed",
-                                    node_id=upstream.node_id,
-                                    column=column,
-                                    error=str(exc),
-                                    error_type=type(exc).__name__,
-                                    exc_info=True,
+                                if u_combined is not None
+                                else None
+                            )
+                            if ev is not None:
+                                step.calculation = _with_execution_value(
+                                    dataclasses.asdict(ev), upstream, column
                                 )
-                                err_payload: dict[str, Any] = {
-                                    "error": f"upstream expression lookup failed: {exc}",
-                                    "error_type": type(exc).__name__,
-                                    "upstream_node_id": upstream.node_id,
-                                }
-                                # Surface the error on both enrichment
-                                # fields so downstream consumers see it
-                                # regardless of which one they inspect.
-                                if step.expression is None:
-                                    step.expression = dict(err_payload)
-                                else:
-                                    step.expression.setdefault("error", err_payload["error"])
-                                if step.calculation is None:
-                                    step.calculation = dict(err_payload)
-                                else:
-                                    step.calculation.setdefault("error", err_payload["error"])
-                        break
+                        except Exception as exc:
+                            logger.warning(
+                                "upstream_expression_failed",
+                                node_id=upstream.node_id,
+                                column=column,
+                                error=str(exc),
+                                error_type=type(exc).__name__,
+                                exc_info=True,
+                            )
+                            err_payload: dict[str, Any] = {
+                                "error": f"upstream expression lookup failed: {exc}",
+                                "error_type": type(exc).__name__,
+                                "upstream_node_id": upstream.node_id,
+                            }
+                            # Surface the error on both enrichment
+                            # fields so downstream consumers see it
+                            # regardless of which one they inspect.
+                            if step.expression is None:
+                                step.expression = dict(err_payload)
+                            else:
+                                step.expression.setdefault("error", err_payload["error"])
+                            if step.calculation is None:
+                                step.calculation = dict(err_payload)
+                            else:
+                                step.calculation.setdefault("error", err_payload["error"])
             _col_in_code = False
             if column and raw_code and ".with_columns(" in raw_code:
                 # Check if the column is a keyword arg or appears as an alias target
@@ -1565,56 +1862,31 @@ def enrich_steps(
                         "error_type": type(exc).__name__,
                         "target_column": column,
                     }
-                # Self-referential assignment (premium = premium * ...):
-                # the post-assignment output value must not clobber the
-                # RHS input, or the substitution shows the OUTPUT on the
-                # right-hand side and a result contradicting the
-                # displayed value.  Same guard as the input-sources path
-                # (``self_referential_modification`` above).
-                eval_values = {**step.input_values, **step.output_values}
-                self_referential = (
-                    column in step.schema_diff.columns_modified
-                    and parsed is not None
-                    and column in parsed.referenced_columns
-                )
-                skip_evaluation = False
-                if self_referential:
-                    if column in step.input_values:
-                        eval_values[column] = step.input_values[column]
-                    else:
-                        # No pre-assignment value available: showing a
-                        # substitution would require the input we don't
-                        # have, so present the output value directly
-                        # rather than an arithmetically false eval.
-                        result = step.output_values.get(column)
-                        step.calculation = {
-                            "target_column": column,
-                            "substituted_text": f"{column} = {_quote_trace_value(result)}",
-                            "result_value": result,
-                        }
-                        skip_evaluation = True
-                if not skip_evaluation:
+                eval_values = _assignment_values(step, column, parsed, code)
+                if eval_values is None:
+                    # No pre-assignment value available: showing a
+                    # substitution would require the input we don't
+                    # have, so present the output value directly
+                    # rather than an arithmetically false eval.
+                    result = step.output_values.get(column)
+                    step.calculation = {
+                        "target_column": column,
+                        "substituted_text": f"{column} = {_quote_trace_value(result)}",
+                        "result_value": result,
+                    }
+                else:
                     try:
                         evaluated = evaluate_expression(
                             code,
                             column,
                             eval_values,
                             preamble_ns=preamble_ns,
+                            row=_assignment_row(step, column, parsed, code),
                         )
                         if evaluated is not None:
-                            calc_dict = dataclasses.asdict(evaluated)
-                            # Add taken_branch info to calculation dict
-                            if evaluated.taken_branch is not None:
-                                calc_dict["taken_branch"] = evaluated.taken_branch
-                            if evaluated.taken_branch_index is not None:
-                                calc_dict["taken_branch_index"] = evaluated.taken_branch_index
-                            # For window functions, use the actual output value
-                            if (
-                                evaluated.expression_type == "window"
-                                and column in step.output_values
-                            ):
-                                calc_dict["result_value"] = step.output_values[column]
-                            step.calculation = calc_dict
+                            step.calculation = _with_execution_value(
+                                dataclasses.asdict(evaluated), step, column
+                            )
                     except Exception as exc:
                         logger.warning(
                             "expression_eval_failed",
@@ -1649,27 +1921,59 @@ def enrich_steps(
                         # PRE-node input values (absent if newly created)
                         # and are filled in as each entry evaluates.
                         combined_values = {**step.input_values, **step.output_values}
+                        chain_row = _typed_values(step)
                         chain_targets = {p.target_column for p in chain}
                         for target in chain_targets:
                             if target in step.input_values:
                                 combined_values[target] = step.input_values[target]
                             else:
                                 combined_values.pop(target, None)
+                            if chain_row is not None:
+                                chain_row = _chain_start(chain_row, step, target)
                         enriched_chain: list[dict[str, Any]] = []
                         for p in chain:
                             entry = dataclasses.asdict(p)
-                            # Enrich with substituted values and result
+                            # Enrich with substituted values and result. Each
+                            # entry reads the row as its own with_columns call
+                            # does: fed-forward values of earlier calls, and
+                            # earlier values of what its call assigns.
+                            phases = assignment_phases(raw_code, p.target_column)
+                            entry_values = (
+                                combined_values
+                                if phases is None
+                                else _values_before_call(combined_values, step, phases)
+                            )
+                            entry_row = (
+                                _NO_TRACED_ROW
+                                if chain_row is None
+                                else chain_row
+                                if phases is None
+                                else _row_before_call(chain_row, step, phases)
+                            )
                             try:
                                 ev = evaluate_expression(
                                     raw_code,
                                     p.target_column,
-                                    combined_values,
+                                    entry_values,
                                     preamble_ns=preamble_ns,
+                                    row=entry_row,
                                 )
                                 if ev is not None:
+                                    shown = _with_execution_value(
+                                        {
+                                            "result_value": ev.result_value,
+                                            "not_computable_reason": ev.not_computable_reason,
+                                        },
+                                        step,
+                                        p.target_column,
+                                    )
                                     entry["substituted_text"] = ev.substituted_text
-                                    entry["result_value"] = ev.result_value
-                                    combined_values[p.target_column] = ev.result_value
+                                    entry.update(shown)
+                                    combined_values[p.target_column] = shown["result_value"]
+                                    if chain_row is not None:
+                                        chain_row = _chain_feed(
+                                            chain_row, step, p.target_column, shown
+                                        )
                             except Exception as inner_exc:
                                 logger.warning(
                                     "chain_entry_eval_failed",
@@ -1806,7 +2110,7 @@ def enrich_steps(
                     )
                 elif node_type == "banding":
                     # Resolve each factor's source column dtype from
-                    # the parent frames so continuous-rule re-matching
+                    # the parent frames so interval re-matching
                     # compares in the engine's own numeric domain
                     # (Float32-faithful), not widened float64.
                     factor_input_dtypes = _resolve_factor_input_dtypes(
@@ -1833,9 +2137,13 @@ def enrich_steps(
                 elif node_type == "liveSwitch":
                     detail = enrich_live_switch(cfg, source)
                 elif node_type == "optimiserApply":
+                    # A ratebook apply is row-local, so the head frames that
+                    # produced the clicked row explain it; an online apply
+                    # reads the uncapped plans.
+                    row_local = cfg.get("optimiser_mode") == "ratebook"
                     input_frames, source_names = _resolve_optimiser_apply_inputs(
                         step.node_id,
-                        eager_outputs,
+                        eager_outputs if row_local or lineage_plans is None else lineage_plans(),
                         node_map,
                         incoming_edges_of,
                     )
@@ -1877,24 +2185,8 @@ def enrich_steps(
 
             # --- Row lineage type ---
             try:
-                parent_ids = parents_of.get(step.node_id, [])
-                parent_row_count = 0
-                for pid in parent_ids:
-                    parent_row_count = max(
-                        parent_row_count,
-                        _node_output_row_count(eager_outputs.get(pid)),
-                    )
-                # The node's own output may itself be a multi-frame
-                # bundle (the source appearing as an intermediate
-                # step) — same dict guard as the parent side.
-                child_row_count = _node_output_row_count(eager_outputs.get(step.node_id))
-
-                # Sniff operation type from code string
                 operation_type = _sniff_operation_type(code) if code else ""
-
                 step.row_lineage_type = detect_row_lineage_type(
-                    input_row_count=parent_row_count,
-                    output_row_count=child_row_count,
                     node_type=node_type,
                     operation_type=operation_type,
                 )

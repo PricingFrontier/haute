@@ -8,7 +8,7 @@ code-to-canvas sync channel (file watcher + WebSocket), the request/response con
 route in the product speaks (Pydantic schemas, the typed error hierarchy, the sanitized-error
 convention), and the two largest route families itself: pipeline CRUD/preview/trace/output and
 file/schema browsing. Every other route module (Databricks, Explore, MLflow, modelling,
-optimiser, submodel, git, JSON cache) is included into the same `FastAPI` app but owned by
+optimiser, submodel, git, JSON schema inference) is included into the same `FastAPI` app but owned by
 its own component; this one is the substrate they all sit on.
 
 It exists so that a pricing analyst editing a pipeline on the canvas gets sub-second preview
@@ -27,7 +27,7 @@ In scope:
   exact local-Origin checks, the HttpOnly-cookie bootstrap, and the per-process
   session token accepted through that cookie. URL/header token transport is unsupported.
 - The shared Pydantic contract layer: `haute.schemas` (the cross-route request/response models;
-  OUTPUT dry-run keeps two route-local models). JSON-cache and output routes consume the
+  OUTPUT dry-run keeps two route-local models). JSON schema-inference and output routes consume the
   v2 input/output schema modules owned by [json-shredding](../json-shredding/high-level.md).
   Explore's shared models include dedicated pivot run/status/cancel and exact-member contracts.
   They distinguish a typed `cache_required` response from started/completed work and expose only
@@ -41,7 +41,8 @@ In scope:
   WebSocket client registry and broadcast fan-out, and the on-disk sidecar (`.haute.json`)
   format.
 - The pipeline routes (`haute.routes.pipeline`): list/get/save/preview/trace/output-write
-  and output-destination preview, their
+  and output-destination preview, the pipeline settings (`GET`/`PATCH
+  /api/pipeline-settings`, the per-clone `.haute/pipeline-settings.json`), their
   request-supersession and concurrency-limiting behaviour, and the transactional save
   service (`haute.routes._save_pipeline`).
 - The file-browsing and schema-inspection routes (`haute.routes.files`), the utility-script
@@ -58,7 +59,8 @@ Interactive preview and trace are dispatched to the execution engine's warm isol
 worker pool. Their HTTP deadline is destructive for the worker, not merely a response
 deadline: after a 504 the timed-out computation no longer consumes CPU or memory.
 Same-key supersession likewise kills obsolete work before the replacement is admitted
-to that affinity slot. OUTPUT dry-runs use the warm pool; JSON-cache builds, output
+to that affinity slot. OUTPUT dry-runs and the optimiser input estimate use the warm pool;
+API Input table builds, output
 writes, and Explore materialisation use killable one-shot workers under the same
 admitted native-memory policy. Irreversible file/cache publication remains
 parent-owned; a transactional database or lakehouse sink necessarily performs its
@@ -154,7 +156,9 @@ chain.
 **Pipeline CRUD, preview, trace, and output publication.** `GET /api/pipelines` lists every
 discovered pipeline with `ready`, `degraded`, or `source_only` load status. The editor-facing
 `GET /api/pipeline` and `GET /api/pipeline/{name}` routes return a versioned editor document,
-not the canonical runtime graph: readable authored failures are HTTP 200 responses carrying
+not the canonical runtime graph, and name that document's fingerprint — the same SHA-256
+live-sync frames carry — in the `x-haute-document-fingerprint` response header, so the
+canvas's first resync after loading can skip an unchanged document: readable authored failures are HTTP 200 responses carrying
 structured diagnostics, element availability, explicit capabilities, and a raw-artifact
 revision. The unnamed route selects the first discovered document with authored content
 without skipping a broken document in favour of a later healthy one. It returns an empty
@@ -168,14 +172,38 @@ its resolved executable input name. Recovery edges retain the field but may use
 `null` when an unavailable source prevents resolution. Capabilities include the
 sorted reserved API-input frame-label set. Prospective browser-created or renamed
 nodes use the bounded, side-effect-free `POST /api/pipeline/editor-identities`
-contract, whose response preserves request order and never reads or writes project state.
+contract. Submodel and drilled Input requests carry an exact handle-to-public-label
+map so the server, rather than the browser, derives their executable names. The
+response preserves request order and never reads or writes project state. The request may
+also carry the document's naming context, and it then stops being pure: its verdict is a
+function of the request and of the project's saved utility files, which it reads (and only
+those) to resolve `utility.<module>` star imports, from where the executor imports them. The
+naming context is the whole graph, in the representation save receives, with the request's
+nodes applied. The response then lists the name violations (executable names and support
+code) that remain in it (`violations`), as the document carries them. Utility files reach the
+disk only through the utility routes, and save, preview and the deployed scorer read the same
+files, so the editor and save judge one set of utility contents.
+
+A file whose names break the codegen specification's executable-name rule in a way the
+parser can build a graph from (anything but a structural collision; expression-parsing)
+loads as a ready document listing them in `name_violations`, each with its kind, name,
+message and the nodes taking part (a submodel child names its definition). The document is
+editable (`can_mutate`), but while the list is non-empty `can_save`, `can_execute` and
+`can_preview` are false, and the server refuses save and execution with the same message:
+save through `validate_graph`, and every route that runs a browser graph through
+`flatten_executable_graph`, which refuses a graph with a violation before flattening it. Renames use the
+ordinary rename path, and the browser revalidates through the identity request until the list
+is empty.
 `POST /api/pipeline/save` is the single write path for a pipeline's `.py` source, its
 per-node config JSON sidecars, and its `.haute.json` position sidecar — described in detail
 below. Before changing an existing named document, Save and submodel create/dissolve reread
 its current on-disk editor state under the shared save lock and reject a non-ready document
 before staging bytes, regardless of the client-posted graph. `POST /api/pipeline/preview`
 runs the graph up to one node and returns its schema,
-sample rows, and per-node timing/memory; `POST /api/pipeline/trace` follows one row's values
+sample rows, per-node timing/memory, and the columns of every ancestor it ran (a submodel
+occurrence, which the executor only knows by its flattened internals, is reported under its
+own id with one entry per output port keyed like the edges that leave it, `out__<port>`);
+`POST /api/pipeline/trace` follows one row's values
 through every node it passed through and returns typed correlation omissions plus generation
 provenance; `POST /api/pipeline/write-output` explicitly materialises a
 `dataOutput` node, with `overwrite=false` by default. A pre-existing destination returns
@@ -185,8 +213,8 @@ are keyed on (graph fingerprint, source, node, row/column selectors): a newer re
 *same* key supersedes the older request and terminates and joins its active worker before the
 replacement starts, so same-key workers never overlap. A *different* key runs independently,
 bounded by a small per-operation concurrency semaphore. Preview, trace, and output-write
-enforce a response timeout (`HAUTE_{PREVIEW,TRACE,SINK}_TIMEOUT`, default 120s/120s/300s;
-the historical internal `SINK` setting governs output-write). Production dispatches all three
+enforce the pipeline settings' pipeline time limit (30 minutes unless set) as their
+response timeout. Production dispatches all three
 to killable worker processes under admitted native memory growth limits. Timeout, request
 cancellation, or supersession terminates and joins the exact worker before the route releases
 admission or returns; there is no late graph computation. For file outputs, the worker may
@@ -210,7 +238,15 @@ the installed I/O registry. Directory items omit file size in the backend model 
 serialize it as `null`; file items carry their byte size. `GET /api/schema` reads a data file's
 column schema, a 5-row preview, and (for parquet) an exact row count or (for JSONL) an estimated
 one, without loading the whole file. XML is decoded through the API-input structured-record
-normaliser and returns an exact row count; invalid or unsafe XML returns 400.
+normaliser and returns an exact row count; invalid or unsafe XML returns 400. Given a Data
+Input's `format` and `arguments`, it reads the file with that format's scanner and those
+arguments (the `schema` argument aside, since the schema is what is detected), so a CSV's
+separator shapes the columns; reader settings the scanner cannot take return 400.
+`GET /api/model-file` inspects a model file in the project for the Model Scoring editor
+(family, recorded task, features, offset and the contract it scores under) by loading it
+and binding its contract exactly as scoring does; a file scoring would refuse returns 400
+with the scoring error, and a path outside the project is refused as for every runtime
+input.
 `GET /api/io-capabilities` exposes provider groups, the Polars I/O
 format registry (read/write capability, modes, accepted arguments, missing optional engines),
 and cache/materialisation capabilities so the dataInput/dataOutput node editors never
@@ -218,10 +254,51 @@ hard-code format knowledge. `/api/input-cache/*` owns shared snapshot build, pro
 cancellation, status, and clear operations for file, database, lakehouse, and Databricks
 inputs.
 
+`/api/node-data/*` reports and builds the data a consumer node reads. A request names the
+consumer node; the data-point resolver maps it to a point and column demand. `point` reports
+the point, its kind, its state for that consumer's demand (a fresh snapshot lacking demanded
+columns is `partial`), data version, row count, size, and for a node output the generation's
+column set, retention (`pinned` or `automatic`), and any running build with its progress.
+`run` builds a node-output point as a pinned, full-width snapshot in an isolated worker under
+the `node_snapshot` profile, with the existing admission, memory budget, cancellation, and job
+failure envelope. A run for the identity a running build is producing joins that build; a run
+for the same slot under a different signature supersedes the running build, and the new build
+waits for the superseded worker to stop before it is admitted; simultaneous identical requests
+start one build; a build publishes under the signature of the inputs it actually read, including
+input snapshots it prepared; a non-refresh run on a point already current
+for every column pins it and completes as cached; `refresh` rebuilds a current point. A
+snapshot-backed Data Input or an API-input table point is never built here: `run` answers
+`delegated` naming the input-cache build route, and a direct-Parquet
+Data Input completes as cached because it reads its file directly. `clear` cancels a running
+build of the slot, waits for it to stop, and removes every signature's snapshot and the slot's
+pin, while any
+generation still leased elsewhere retires when released, and any stored analysis of the point
+is removed. Invalid consumer wiring returns 400 `node_data_point_invalid`.
+
+`profile` reports the data profile — per-column statistics and the overview summary — of the
+point's current data version. A point that is not current asks to be cached; a stored profile
+of exactly that data version is returned immediately; a running profile of the same data is
+joined; otherwise a profile job runs the computation in an isolated worker under the
+`explore_analysis` profile while the request's parent holds the point's lease, and the result
+is stored by data version, so a refreshed, rewritten, or widened point is always profiled
+again and never serves the previous data's profile. Short analyses that answer inside a
+request (banding statistics, rating levels, pivot members) run under the same admission and
+memory controls, are memoised per data version, and are cancelled when the client
+disconnects.
+
 **Utility scripts.** `GET/POST/PUT/DELETE /api/utility[/{module}]` manage Python files under
 the project's `utility/` directory — reusable helpers a pipeline's preamble imports via
 `from utility.<module> import *`. Every write is AST-syntax-checked before landing on disk;
-a syntax error is rejected with a line-numbered message, never written half-valid.
+a syntax error is rejected with a line-numbered message, never written half-valid. Create
+also refuses a module name that is a Python hard keyword (`from utility.class import *` cannot
+be written) or a Windows device name (`CON`, `NUL`, `COM1`), with HTTP 400, and one equal to an
+existing module's ignoring case (HTTP 409), on every platform whatever its file system allows,
+so a checkout made on Linux still works on Windows and macOS. Create and
+update also parse every project pipeline that mentions `utility` twice, with its support code
+read as it is and with the module holding the new content, and refuse (HTTP 400, nothing
+written) any name violation the edit adds (codegen "Names cannot collide with support code"),
+naming the pipeline and the colliding node; a pipeline that does not parse is skipped, since
+it fails on its own.
 
 **OUTPUT assembly dry-run.** `POST /api/output-assemble/dry-run` lets the OUTPUT node editor
 preview the assembled JSON response from an *in-progress, unsaved* field→path mapping: it
@@ -248,30 +325,81 @@ the bounded version-1 strategy diagnostic DTO: canonical, capped collections des
 boundaries, reasons, and provenance without frames, plans, or user data. The shared
 public-error adapter is a closed set mapped to synchronous HTTP 422 and background-job
 `contract_error`: `ApiInputSchemaError`, `PreambleError`, `ContractResolutionError`,
-`ChunkMemoryRiskError`, `GroupByExecutionUnsupportedError`,
+`GroupByExecutionUnsupportedError`,
 `TraceCorrelationUnsupportedError`, `RatingExtremaUndefinedError`,
 `RatingFactorMissingError`, `RatingFactorDtypeContractError`,
-`LiveSwitchScenarioError`, and `OutputNestingKeyError`. Every payload preserves the
+`LiveSwitchScenarioError`, `NodeConfigError`, `OutputNestingKeyError`, and
+`InputPreparationError`. The one
+exception to the uniform mapping is `InputPreparationError` with reason code
+`memory_limited`: automatic input preparation is the single public contract error that can
+report memory exhaustion, so it maps to background-job `memory_limited` with error code
+`memory_limit` and HTTP status 507; a synchronous route answers that same 507 rather than
+the uniform 422. A worker that raises a public contract error returns it
+in its closed outcome envelope together with that terminal reason, so the supervising parent
+records `memory_limited` rather than flattening it to `contract_error`. Every payload
+preserves the
 exception's stable code and named safe fields; malformed or unsupported diagnostic versions
 become diagnostic-unavailable rather than a fabricated success.
+
+**Step rendering.** `POST /api/pipeline/polars-steps/render` accepts a step list
+and its input names and returns either the rendered code with each step's line range or
+the failing step index and message. Both outcomes are ordinary responses, so a half-built
+step list shows as an editor message rather than a network error; only a malformed
+request is a transport error. The endpoint reads and writes no project state and runs no
+authored code, so the code text never waits on a snippet.
+
+**Free-code columns.** `POST /api/pipeline/polars-steps/free-code-columns` takes the same
+step list with the node id and the columns the editor knows for each input (and for a
+frame-mode surface's `df`), and returns, for each Free code step, the columns of `df`
+after it: the rendered steps up to that one run as node code over empty frames of those
+columns and only the resulting schema is read, or the entry says in one line why it could
+not be resolved. The editor asks for them after a successful render of a list that has a
+Free code step. Because this runs authored code, it runs where previews do: in the
+isolated interactive preview worker under the preview memory budget, with a short
+deadline (`FREE_CODE_COLUMNS_TIMEOUT_SECONDS`, 5 seconds, since the frames are empty) and
+one running request per node, a newer one stopping an older one. A snippet that never
+finishes has its worker stopped and replaced at the deadline, and every Free code step of
+that request reports that the code did not finish in time; a worker that runs out of
+memory or stops otherwise is reported the same way, never as an error. One request
+resolves every Free code step of the list, so one snippet that does not finish leaves the
+earlier ones unresolved for that request too. In the thread execution mode (a development
+fallback) the deadline bounds the response but cannot stop the snippet's thread. The
+steps themselves read no rows; Free code that reads a file itself does so on each
+resolution, as it does in a preview.
+
+**Saving global constants.** The editor document carries the pipeline's global constants
+and their load error, and the request graph carries the constants back. Save writes
+`config/global_constants.json` whenever the graph has constants and removes it, with the
+constructor keyword and the bindings, when none remain. The document revision covers the file
+through the same captured read the document's constants come from, so a save from a document
+loaded before another writer changed the file is refused as stale. The file's load state comes
+from disk, never from the request: while the declared file fails to load, save neither rewrites
+nor deletes it, keeps the keyword and the bindings, skips the checks against the unavailable
+definitions, and refuses a request that carries constants. Save refuses (HTTP 400) a node named
+`global_constants`, a preamble or node code that binds the name, and a code read of an
+undefined constant, and warns for each split constant missing a value for one of the
+pipeline's sources.
 
 ## Design rationale
 
 - **One stable schema surface, one shared error hierarchy.** Nearly every route in the product —
   including the ones owned by other components — imports its Pydantic models from
   `schemas.py`, which may re-export cohesive private domain modules, and raises through
-  `errors.py`'s `HauteError` family. The execution-diagnostic and Explore-chart pilots generate
-  reviewed browser declarations and standalone validators from their canonical Pydantic models;
-  other frontend contracts remain explicitly maintained rather than being claimed as generated.
+  `errors.py`'s `HauteError` family. The execution-diagnostic and Explore-chart pilots, and the
+  response models of each converted module group (`RESPONSE_CONTRACT_GROUPS` in
+  `scripts/generate_api_contracts.py`), generate reviewed browser declarations and standalone
+  validators from their canonical Pydantic models; the browser checks those responses with the
+  generated validators alone. Other frontend contracts remain explicitly maintained until they
+  are converted, rather than being claimed as generated.
   A single `except HauteError` at any boundary catches the
   entire product's domain-error surface (with the documented exceptions — the OUTPUT
   dry-run request/response models are route-local, and resource-exhaustion
   and deadline errors deliberately extend stdlib bases instead, so existing `except
   MemoryError` / `except TimeoutError` handlers keep working).
 - **Sanitized error detail, always.** `_INTERNAL_ERROR_DETAIL` ("Operation failed. Check the
-  server logs for details.") is the only text most `except Exception` handlers return to the
+  server logs for details.") is the only text an unexpected exception returns to the
   client; the real exception — which can embed absolute filesystem paths, OS error strings,
-  or git stderr — is logged server-side with `exc_info=True`. This is deliberate defence
+  or git stderr — is logged server-side with its traceback. This is deliberate defence
   against information disclosure, not an oversight; contrast with explicitly surfaced
   domain subclasses such as `ConfigError`, `ContractMismatchError`, and
   `SchemaMismatchError`, whose hand-authored messages are safe to return.
@@ -308,13 +436,19 @@ become diagnostic-unavailable rather than a fabricated success.
   case-insensitive preflight returning `409` before any write.
 - **Self-write tracking instead of debounce-only.** The file watcher's 300ms debounce alone
   cannot distinguish a server-originated write from a user's IDE edit that happens to land in
-  the same window. Every write the server makes is registered by absolute path just before
-  the rename; the watcher consumes (and clears) that registration on the matching event. This
-  closes the feedback loop precisely, rather than by a timing heuristic that could either miss
-  a genuine external edit (window too wide) or re-broadcast the server's own write (window too
-  narrow).
-- **Path allowlisting at multiple layers.** `validate_safe_path` guards ad-hoc file/schema
-  reads; `SavePipelineService._validate_output_rel_path` separately allowlists *codegen
+  the same window. Every write the server makes is registered by absolute path and committed content just
+  before the rename (deletions register a deletion marker); the watcher consumes (and clears)
+  that registration only while the file still holds the registered content, so an external
+  write that lands on the same path before the flush is broadcast rather than mistaken for
+  the server's own write. This closes the feedback loop precisely, rather than by a timing
+  heuristic that could either miss a genuine external edit (window too wide) or re-broadcast
+  the server's own write (window too narrow).
+- **Saves name the revision they were based on.** A save prepared against an older on-disk
+  document is rejected with a `409` `stale_document_revision` conflict before any artifact
+  changes; the client keeps its unsaved work and must reload before saving again. There is
+  no unconditional overwrite and no automatic retry.
+- **Path allowlisting at multiple layers.** The sandbox's one containment check,
+  `contained_path`, guards every path a request supplies; `SavePipelineService._validate_output_rel_path` separately allowlists *codegen
   output* paths (only the declared main file or `modules/<name>.py`, no traversal, no
   Windows-reserved device names, casefold-collision-checked) because codegen output paths
   come from a different trust boundary (generated strings, not direct user path input) and
@@ -330,9 +464,16 @@ ledger capture.
 
 `SavePipelineService.validate_graph(...)` is the public, no-write validation
 entry point used by both `save(...)` and assistant dry-run. It performs the
-same singleton, data-I/O, Edge Join role/key/topology, sanitized-name,
-load-error, API-input and path validation that can be decided without staging
-files. Edge Join validation uses the canonical backend join validators, not a
+same singleton, data-I/O, declared-config-key, Edge Join role/key/topology,
+sanitized-name, load-error, API-input and path validation that can be decided without staging
+files. A Quote Input table labelled like another node is refused there, naming the table, the
+Quote Input and the node, because a parameter of that name would read both and the saved
+file would not reload. It rejects any edge out of a node type that has no output
+(`haute._types.SINK_ONLY_NODE_TYPES`: Quote Response, Data Output, Explore, Model
+Training and Optimisation), and it runs codegen's executable-name check
+(`haute.codegen.check_executable_names`, the codegen specification's naming rule), so
+two names equal ignoring case, a reserved or built-in node name, or a reserved node input
+fails here, every violation listed, rather than at codegen. Edge Join validation uses the canonical backend join validators, not a
 save- or assistant-specific approximation. Save invokes it before any write,
 so the validation paths cannot drift.
 
@@ -374,13 +515,13 @@ describes. Stale, changed or already-applied plans fail before
   [caching](../caching/high-level.md) owns the included `routes/json_cache.py` router, which
   consumes [json-shredding](../json-shredding/high-level.md)'s schema/shred modules.
 - **[caching](../caching/high-level.md)** — `routes/pipeline.py` reads `_preview_cache` and
-  `graph_fingerprint` to key supersession and to inject the preview reader `execute_trace`
-  needs.
+  `graph_fingerprint` to key supersession.
 - **[assistant](../assistant/high-level.md)** — owns `routes/assistant.py`, included into the same
   app; its `Assistant*` request/response/SSE-event models live in `schemas.py`; its mutation
   tools run `SavePipelineService` under the shared `save_lock`, mark self-writes, and publish
   `pipeline.document.update` on the shared event bus so assistant edits broadcast over
-  `/ws/sync` exactly like external edits.
+  `/ws/sync` exactly like external edits, tagged with an assistant `origin`; its undo
+  route saves an earlier commit forward through the same service.
 - **[codegen](../codegen/high-level.md)** — `SavePipelineService._write_code` calls
   `graph_to_code` / `graph_to_code_multi` and therefore depends on the shared registry
   between codegen and the executor.
@@ -388,7 +529,8 @@ describes. Stale, changed or already-applied plans fail before
   `collect_node_configs` / `config_path_for_node` to decide which config JSON sidecars a
   save writes, and owns the on-disk config layout under `<pipeline>/config/`.
 - **[sandbox-security](../sandbox-security/high-level.md)** — `_get_project_root()` anchors
-  `validate_safe_path` and the `/pipeline/read-json` route.
+  the `/pipeline/read-json` route, and `contained_path` is the containment check
+  behind every request path.
 - **[frontend-shared](../frontend-shared/high-level.md)** — the sole consumer of every
   schema and route this component (and the routers it hosts) exposes; the WebSocket resync
   protocol and browser call to `/api/session/bootstrap` are frontend-facing contracts owned
@@ -405,24 +547,30 @@ turn that loudness into a well-typed HTTP response rather than a raw traceback.
   `ContractMismatchError` → 422; trace `ContractMismatchError` → 422; and preview
   `ContractMismatchError` / `SchemaMismatchError` failures are embedded in
   `NodeResult.error` so the canvas can show either mismatch in-situ rather than
-  as a banner. JSON-cache `ApiInputSchemaError` uses a direct 422 body
+  as a banner. JSON schema inference's `ApiInputSchemaError` uses a direct 422 body
   with a `type` discriminator, while preview/write execution uses the stable public-contract
   payload under `detail`; `OutputMappingSchemaError` uses FastAPI's
   `{"detail": <message>}` 422 envelope.
-- **Everything else** — any exception not explicitly mapped — is normally caught at the
-  route level, logged server-side, and returned as `{"detail": "Operation failed. Check the
-  server logs for details."}`. If a route-level handler is bypassed,
-  `_RequestIdMiddleware` returns the separately pinned sanitized envelope
-  `{"detail": "Internal server error"}`. Neither exposes a traceback; outer trusted-host
-  and session middleware rejections bypass request-ID middleware entirely.
+- **Error families are translated once, at the application edge.** Application exception
+  handlers (`routes/_error_handlers.py`, installed on the app by `server.py`) answer the
+  same way for every route: a public contract error with its stable payload, a memory
+  refusal or overrun with 507, and a `GitError` through the git mapping. A route keeps an
+  `except` clause only where it maps an error differently from its family's handler (the
+  explicit mappings above, a trace row mismatch → 409), and route code never catches
+  `Exception` merely to log it and answer 500.
+- **Everything else** — any exception no handler claims — reaches `_RequestIdMiddleware`,
+  which logs it with its error class and traceback and returns `{"detail": "Operation
+  failed. Check the server logs for details."}` with the request ID. No response exposes a
+  traceback; outer trusted-host and session middleware rejections bypass request-ID
+  middleware entirely.
 - **Resource limits** surface as their own status codes rather than a generic 500:
-  `ExecutionAdmissionError` / `ExecutionMemoryLimitExceededError` → 507 for preview,
-  output-write, and OUTPUT dry-run; a superseded request →
+  `ExecutionAdmissionError` / `ExecutionMemoryLimitExceededError` → 507 from any synchronous
+  route, through the one memory-limit mapping; a superseded request →
   `SupersededRequestError` → 409; a timed-out isolated operation → 504. Production heavy-route
   workers are terminated and joined before the terminal response or job transition. Parent
   cleanup then removes the exact private staging artifact, and admission is released only after
   both worker termination and cleanup have completed.
-- **Path-safety violations** (`validate_safe_path`, the save-time output-path allowlist,
+- **Path-safety violations** (`contained_path`, the save-time output-path allowlist,
   runtime-input-path validation) return 400 for malformed input (null bytes, empty codegen
   paths, traversal segments) and 403 for a resolved path that escapes its allowed root —
   never a 500, since these are user-input-shaped failures, not internal ones.
@@ -450,16 +598,34 @@ turn that loudness into a well-typed HTTP response rather than a raw traceback.
   no poisoned batch is retained and no unbounded retry chain is scheduled.
 - **WebSocket sends never block the broadcaster indefinitely**: each client send has a hard
   1-second timeout; a stalled client is force-closed and dropped from the client set rather
-  than stalling the fan-out to every other connected canvas.
+  than stalling the fan-out to every other connected canvas. A broadcast drops a client only
+  then, or when its send raises; the canvas reconnects. The timeout is wall clock, so a server
+  starved of CPU for longer than it can drop a live but slow client too; concurrent
+  broadcasts and disconnects never drop a client on their own.
 
 **Missing-key configuration policy.** `routes/_helpers.py::pipeline_dir()`
-treats a missing `[project].pipeline` key in `haute.toml` as a soft omission
-(warns and falls back to `Path.cwd()`), while malformed or unreadable
-configuration raises `ConfigError`. The asymmetry is deliberate: a missing key
-can be a fresh-project state, whereas swallowing a decode failure could
-silently misroute subsequent saves and loads.
+parses `[project].pipeline` with `_project._toml_configured_pipeline`, the
+reader pipeline binding and the executor's configured pipeline directory
+use; it applies it to the current directory, while the executor applies it
+to the execution-scoped project root (one project context is still to come).
+It treats a missing `[project].pipeline` key in `haute.toml` as a
+soft omission (warns and falls back to `Path.cwd()`), while malformed or
+unreadable configuration, a `[project]` that is not a table, or a
+`pipeline` value that is not a path string raises `ConfigError`. The asymmetry is deliberate: a missing key can be a
+fresh-project state, whereas swallowing a decode failure could silently
+misroute subsequent saves and loads.
 
 ## Pipeline recovery, preview, and live-sync contract
+
+**Supported hand-editing scope.** The `.py` file is the source of truth and may be edited
+outside Haute. The editor supports hand edits to node bodies and to the preamble. A file that is
+valid Python loads per node: a node whose body, decorator or sidecar no longer resolves becomes an
+unavailable (or blocked) recovery node while the rest of the canvas stays loaded, and the remove,
+reset and recover actions repair it. A file that is not valid Python has no canvas. Its editor
+document is `source_only`, carrying the Python syntax error's location with the remediation to open
+the source there in an editor and correct it; the editor shows that parse error and the current
+source, never a recovered or earlier canvas. There is no textual recovery of syntax-invalid source.
+The same `source_only` document contains an unexpected recovery defect, with an incident id.
 
 Editor loads are conservation-oriented. Every top-level authored node decorator is discovered before
 support is checked; unknown types and duplicate identities remain editor-only recovery elements.
@@ -477,33 +643,34 @@ preview execution service. Other execution and persistence capabilities remain f
 WebSocket sync publishes versioned `pipeline_document_update` frames for ready, degraded, and
 source-only states. Status, capabilities, diagnostics, source identity, and revision are authoritative
 even when a dirty client retains its local graph. Sidecar changes are dependency events. A source-only
-update may leave a prior canvas visible only as an explicitly stale read-only reference; it is never
-treated as the current graph or accepted by save/execution routes. If the editor document itself cannot
+update replaces the canvas with the parse-error view; no earlier canvas stays visible, and a dirty
+local graph stays in the client, fenced and hidden, until a renderable document arrives. If the editor document itself cannot
 be read or built, the server logs the underlying exception and sends a sanitized
 `parse_error`; that frame carries only document transport failure — authored errors always
 arrive as degraded or source-only documents.
 
 ## Minimal transactional pipeline repair
 
-The only structured repair action is `Remove unavailable node`. It is not a
+Structured repair includes `Remove unavailable node` and the explicit update/reset
+actions defined in [node recovery actions](node-recovery-actions.md). Removal is not a
 recovery-graph Save and does not accept source bytes, source spans, replacement
-graphs, or migration instructions from the client. Dry-run identifies the
-current document by source file and raw-artifact revision, resolves the target
-recovery node on the server, and returns a deterministic plan hash, bounded
-human-readable patches, the exact touched-artifact manifest, retained config
-artifacts, warnings, and predicted recovery state without writing.
-
-Apply takes the same identities, revision, explicit config-deletion choice,
-and confirmed plan hash. Under the shared save lock it reloads recovery state,
-recomputes the plan, rejects revision or plan drift, then uses the existing
-atomic staged-write/rollback machinery. It removes only the selected
+graphs, or migration instructions from the client. Each action is one confirmed
+apply request naming the current document by source file and raw-artifact
+revision, the target recovery node and, for removal, the explicit config-deletion
+choice; there is no dry-run preview or plan hash. Under the shared save lock the
+server reloads recovery state, rejects a stale revision, resolves the target,
+computes the plan itself and applies it through the existing atomic
+staged-write/rollback machinery, then returns the authoritative editor document
+with the touched-artifact manifest and bounded human-readable patches of what it
+changed. Removal removes only the selected
 decorator/function block, standalone explicit connection declarations that
 reference it, and its position entry. A referenced config JSON file is
-retained unless it is separately enumerated and explicitly approved. A
+retained unless the request explicitly asks for its deletion. A
 shared config, config path overlapping a pipeline source/position artifact,
 duplicate authored identity, ambiguous span, mixed connection chain, authored
 content sharing a connection's removal line, or downstream function parameter
-naming the node rejects the repair without a write. Post-write
+naming the node rejects the repair without a write; a parameter refusal names each
+consumer function and parameter, so the author removes those consumers first. Post-write
 recovery/conservation verification must succeed;
 strict parsing transitions the document to ready when no independent problem
 remains, while an unrelated diagnosed failure may leave it degraded.

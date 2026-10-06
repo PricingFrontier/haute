@@ -21,8 +21,6 @@ function ctx(over: Partial<GitCommitContext> = {}): GitCommitContext {
     nearest_milestone: ref(),
     distance: 0,
     delta_from_base: null,
-    pushed: false,
-    push_error: null,
     ...over,
   }
 }
@@ -34,7 +32,7 @@ describe("CommitBreadcrumb", () => {
         context={ctx({
           is_root: true,
           message: "Initial pricing project",
-          short_sha: "selfsha", // the commit's own sha — collapsed anchors don't render it
+          short_sha: "selfsha", // the commit's own sha - collapsed anchors don't render it
           nearest_milestone: ref({ message: "Initial pricing project", short_sha: "root123", is_root: true }),
         })}
       />,

@@ -39,9 +39,8 @@ pipeline = haute.Pipeline("test", description="A test pipeline")
 
 
 @pipeline.data_input(config="{source_config}")
-def load_data() -> pl.DataFrame:
+def load_data():
     """Load input data."""
-    return pl.scan_parquet("data.parquet")
 
 
 @pipeline.polars
@@ -85,8 +84,7 @@ pipeline = haute.Pipeline("edges_test")
 
 
 @pipeline.data_input(config="{source_config}")
-def a() -> pl.DataFrame:
-    return pl.DataFrame()
+def a(): ...
 
 
 @pipeline.polars
@@ -120,13 +118,11 @@ pipeline = haute.Pipeline("disconnected")
 
 
 @pipeline.data_input(config="{config_a}")
-def quotes() -> pl.DataFrame:
-    return pl.DataFrame()
+def quotes(): ...
 
 
 @pipeline.data_input(config="{config_b}")
-def nb_batch() -> pl.DataFrame:
-    return pl.DataFrame()
+def nb_batch(): ...
 """
         p = _write_pipeline(tmp_path, code)
         graph = parse_pipeline_file(p)
@@ -143,8 +139,7 @@ pipeline = haute.Pipeline("implicit")
 
 
 @pipeline.data_input(config="{source_config}")
-def source() -> pl.DataFrame:
-    return pl.DataFrame()
+def source(): ...
 
 
 @pipeline.polars
@@ -166,9 +161,8 @@ pipeline = haute.Pipeline("config_test")
 
 
 @pipeline.data_input(config="{source_config}")
-def load_data() -> pl.DataFrame:
+def load_data():
     """Read the data."""
-    return pl.scan_parquet("data/input.parquet")
 '''
         p = _write_pipeline(tmp_path, code)
         graph = parse_pipeline_file(p)
@@ -201,13 +195,11 @@ pipeline = haute.Pipeline("explore_test")
 
 
 @pipeline.data_input(config="config/data_input/source.json")
-def source() -> pl.LazyFrame:
-    return pl.LazyFrame()
+def source(): ...
 
 
 @pipeline.explore
-def inspect_claims(source: pl.LazyFrame) -> pl.LazyFrame:
-    return source
+def inspect_claims(source): ...
 
 
 pipeline.connect("source", "inspect_claims")
@@ -231,13 +223,11 @@ pipeline = haute.Pipeline("explore_code")
 
 
 @pipeline.data_input(config="config/data_input/source.json")
-def source() -> pl.LazyFrame:
-    return pl.LazyFrame()
+def source(): ...
 
 
 @pipeline.explore
-def inspect_claims(source: pl.LazyFrame) -> pl.LazyFrame:
-    df = source
+def inspect_claims(df: pl.LazyFrame) -> pl.LazyFrame:
     df = df.filter(pl.col("premium") > 0)
     df = df.with_columns((pl.col("premium") * 2).alias("double_premium"))
     return df
@@ -268,13 +258,11 @@ pipeline = haute.Pipeline("explore_overview")
 
 
 @pipeline.data_input(config="config/data_input/source.json")
-def source() -> pl.LazyFrame:
-    return pl.LazyFrame()
+def source(): ...
 
 
 @pipeline.explore(overview={"dataset_snapshot": True})
-def inspect_claims(source: pl.LazyFrame) -> pl.LazyFrame:
-    return source
+def inspect_claims(source): ...
 
 
 pipeline.connect("source", "inspect_claims")
@@ -297,13 +285,11 @@ pipeline = haute.Pipeline("explore_overview_schema")
 
 
 @pipeline.data_input(config="config/data_input/source.json")
-def source() -> pl.LazyFrame:
-    return pl.LazyFrame()
+def source(): ...
 
 
 @pipeline.explore(overview={"schema": True})
-def inspect_claims(source: pl.LazyFrame) -> pl.LazyFrame:
-    return source
+def inspect_claims(source): ...
 
 
 pipeline.connect("source", "inspect_claims")
@@ -326,8 +312,7 @@ pipeline = haute.Pipeline("explore_overview_concise")
 
 
 @pipeline.data_input(config="config/data_input/source.json")
-def source() -> pl.LazyFrame:
-    return pl.LazyFrame()
+def source(): ...
 
 
 @pipeline.explore(
@@ -339,8 +324,7 @@ def source() -> pl.LazyFrame:
         "data_quality": True,
     }
 )
-def inspect_claims(source: pl.LazyFrame) -> pl.LazyFrame:
-    return source
+def inspect_claims(source): ...
 
 
 pipeline.connect("source", "inspect_claims")
@@ -369,13 +353,11 @@ pipeline = haute.Pipeline("explore_overview_empty")
 
 
 @pipeline.data_input(config="config/data_input/source.json")
-def source() -> pl.LazyFrame:
-    return pl.LazyFrame()
+def source(): ...
 
 
 @pipeline.explore(overview={})
-def inspect_claims(source: pl.LazyFrame) -> pl.LazyFrame:
-    return source
+def inspect_claims(source): ...
 
 
 pipeline.connect("source", "inspect_claims")
@@ -411,13 +393,11 @@ pipeline = haute.Pipeline("explore_overview_invalid")
 
 
 @pipeline.data_input(config="config/data_input/source.json")
-def source() -> pl.LazyFrame:
-    return pl.LazyFrame()
+def source(): ...
 
 
 @pipeline.explore({decorator_arg})
-def inspect_claims(source: pl.LazyFrame) -> pl.LazyFrame:
-    return source
+def inspect_claims(source): ...
 
 
 pipeline.connect("source", "inspect_claims")
@@ -428,7 +408,7 @@ pipeline.connect("source", "inspect_claims")
         with pytest.raises(ConfigError, match=message):
             parse_pipeline_file(p)
 
-    def test_explore_decorator_preserves_unknown_sane_overview_keys(self, tmp_path):
+    def test_explore_decorator_rejects_an_unknown_overview_card(self, tmp_path):
         code = """\
 import polars as pl
 import haute
@@ -437,8 +417,7 @@ pipeline = haute.Pipeline("explore_overview_unknown")
 
 
 @pipeline.data_input(config="config/data_input/source.json")
-def source() -> pl.LazyFrame:
-    return pl.LazyFrame()
+def source(): ...
 
 
 @pipeline.explore(
@@ -452,8 +431,7 @@ def source() -> pl.LazyFrame:
         },
     }
 )
-def inspect_claims(source: pl.LazyFrame) -> pl.LazyFrame:
-    return source
+def inspect_claims(source): ...
 
 
 pipeline.connect("source", "inspect_claims")
@@ -461,18 +439,8 @@ pipeline.connect("source", "inspect_claims")
         write_data_input_config(tmp_path, "source", "data.parquet")
         p = _write_pipeline(tmp_path, code)
 
-        graph = parse_pipeline_file(p)
-        node_map = {n.id: n for n in graph.nodes}
-
-        assert node_map["inspect_claims"].data.config["overview"] == {
-            "schema": True,
-            "custom_card": {
-                "label": "Loss ratio",
-                "columns": ["premium", "claims"],
-                "enabled": False,
-                "empty": None,
-            },
-        }
+        with pytest.raises(ConfigError, match="Explore overview has no card 'custom_card'"):
+            parse_pipeline_file(p)
 
     def test_explore_decorator_with_outgoing_edge_raises(self, tmp_path):
         code = """\
@@ -483,13 +451,11 @@ pipeline = haute.Pipeline("explore_bad")
 
 
 @pipeline.data_input(config="config/data_input/source.json")
-def source() -> pl.LazyFrame:
-    return pl.LazyFrame()
+def source(): ...
 
 
 @pipeline.explore
-def inspect_claims(source: pl.LazyFrame) -> pl.LazyFrame:
-    return source
+def inspect_claims(source): ...
 
 
 @pipeline.polars
@@ -539,17 +505,17 @@ def src() -> pl.DataFrame:
 
 
 class TestSyntaxRecoveryBoundary:
-    """Strict parsing raises while the editor recovery path conserves structure."""
+    """Strict parsing raises; the editor document of a syntax-invalid file is
+    source-only, with no recovered canvas."""
 
-    def test_strict_syntax_error_raises_and_editor_recovers_nodes(self, tmp_path):
+    def test_strict_syntax_error_raises_and_editor_document_is_source_only(self, tmp_path):
         source_config = write_data_input_config(tmp_path, "load_data", "data.parquet")
         code = f'''import polars as pl
 import haute
 pipeline = haute.Pipeline("broken", description="has syntax error")
 
 @pipeline.data_input(config="{source_config}")
-def load_data() -> pl.DataFrame:
-    return pl.scan_parquet("data.parquet")
+def load_data(): ...
 
 @pipeline.polars
 def transform(load_data: pl.DataFrame) -> pl.DataFrame:
@@ -561,9 +527,9 @@ def transform(load_data: pl.DataFrame) -> pl.DataFrame:
             parse_pipeline_file(path)
         document = load_pipeline_editor_document(path, project_root=tmp_path)
 
-        assert document.load_status == "degraded"
-        assert document.pipeline_name == "broken"
-        assert {node.authored_id for node in document.nodes} == {"load_data", "transform"}
+        assert document.load_status == "source_only"
+        assert document.nodes == []
+        assert [diagnostic.code for diagnostic in document.diagnostics] == ["python_syntax_error"]
 
     def test_editor_recovery_keeps_preserved_blocks(self, tmp_path):
         code = """import haute
@@ -584,53 +550,6 @@ broken = (
 
         assert document.preserved_blocks == ["KEEP_ME = True"]
         assert document.capabilities.can_save is False
-
-    def test_editor_recovery_conserves_connect_calls(self, tmp_path):
-        source_config = write_data_input_config(tmp_path, "a", "a.parquet")
-        code = f'''import haute
-pipeline = haute.Pipeline("edges_recovery")
-
-@pipeline.data_input(config="{source_config}")
-def a():
-    return pl.DataFrame()
-
-@pipeline.polars
-def b(a):
-    return a
-
-pipeline.connect("a", "b")
-x = {{
-'''
-        path = _write_pipeline(tmp_path, code)
-
-        document = load_pipeline_editor_document(path, project_root=tmp_path)
-
-        assert [(edge.source_authored_id, edge.target_authored_id) for edge in document.edges] == [
-            ("a", "b")
-        ]
-
-    def test_editor_recovery_keeps_connection_ports(self, tmp_path):
-        source_config = write_data_input_config(tmp_path, "a", "a.parquet")
-        code = f'''import haute
-pipeline = haute.Pipeline("edges_recovery_ports")
-
-@pipeline.data_input(config="{source_config}")
-def a():
-    return pl.DataFrame()
-
-@pipeline.polars
-def b(df):
-    return df
-
-pipeline.connect("a", "b", target_port="base")
-x = {{
-'''
-        path = _write_pipeline(tmp_path, code)
-
-        document = load_pipeline_editor_document(path, project_root=tmp_path)
-
-        assert len(document.edges) == 1
-        assert document.edges[0].target_handle == "base"
 
 
 class TestSubmodelFileParsing:
@@ -696,8 +615,7 @@ pipeline = haute.Pipeline("flat_test")
 
 
 @pipeline.data_input(config="{source_config}")
-def src() -> pl.DataFrame:
-    return pl.DataFrame()
+def src(): ...
 """
         p = _write_pipeline(tmp_path, code)
         graph = parse_pipeline_file(p, flatten=True)
@@ -743,10 +661,15 @@ def my_step() -> pl.DataFrame:
     return pl.DataFrame()
 '''
         p = _write_pipeline(tmp_path, code)
-        graph = parse_pipeline_file(p)
+        from haute.parser import parse_pipeline_source_with_name_violations
 
-        # The decorator checker looks for @pipeline.<type> on FunctionDefs.
-        # Even without a proper Pipeline() constructor, nodes should parse.
+        graph, violations = parse_pipeline_source_with_name_violations(
+            p.read_text(encoding="utf-8"), str(p), _base_dir=tmp_path
+        )
+
+        # The preamble's own ``pipeline`` binding is a name violation (NAME-03),
+        # which the strict parse refuses; the decorators still parse.
+        assert [(v.kind, v.name) for v in violations] == [("support_reserved", "pipeline")]
         assert len(graph.nodes) == 1
         assert graph.nodes[0].id == "my_step"
         # Pipeline name defaults to "main" when no haute.Pipeline() found.
@@ -1037,9 +960,8 @@ pipeline = haute.Pipeline("roundtrip")
 
 
 @pipeline.data_input(config="{source_config}")
-def source() -> pl.DataFrame:
+def source():
     """Load data."""
-    return pl.scan_parquet("data.parquet")
 
 
 @pipeline.polars
@@ -1059,6 +981,12 @@ pipeline.connect("source", "transform")
         write_data_input_config(tmp_path, "source", "data.parquet")
 
         generated = graph_to_code(graph1, pipeline_name="roundtrip")
+        # A Data Input without code is regenerated as a declaration whose
+        # description is its whole body.
+        assert (
+            f'@pipeline.data_input(config="{source_config}")\ndef source():\n    """Load data."""\n'
+            in generated
+        )
         p2 = tmp_path / "roundtrip2.py"
         p2.write_text(generated)
         graph2 = parse_pipeline_file(p2)
@@ -1069,6 +997,10 @@ pipeline.connect("source", "transform")
         names1 = {n.id for n in graph1.nodes}
         names2 = {n.id for n in graph2.nodes}
         assert names1 == names2
+        assert graph2.nodes[0].data.description == "Load data."
+        assert graph2.model_dump(exclude={"source_file"}) == graph1.model_dump(
+            exclude={"source_file"}
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1088,15 +1020,12 @@ pipeline = haute.Pipeline("circular_main")
 
 
 @pipeline.data_input(config="{main_src_config}")
-def src() -> pl.DataFrame:
-    return pl.DataFrame()
+def src(): ...
 
 
 pipeline.submodel(
     "sub_b.py",
-    definition_id="circular_b",
-    instance_id="submodel__circular_b",
-    alias="circular_b",
+    "circular_b",
 )
 """
         sub_b_code = f"""\
@@ -1107,14 +1036,11 @@ pipeline = haute.Pipeline("circular_b")
 
 pipeline.submodel(
     "test_pipeline.py",
-    definition_id="circular_main",
-    instance_id="submodel__circular_main",
-    alias="circular_main",
+    "circular_main",
 )
 
 @pipeline.data_input(config="{sub_src_config}")
-def b_node() -> pl.DataFrame:
-    return pl.DataFrame()
+def b_node(): ...
 """
         (tmp_path / "test_pipeline.py").write_text(main_code)
         (tmp_path / "sub_b.py").write_text(sub_b_code)
@@ -1136,21 +1062,16 @@ pipeline = haute.Pipeline("missing_sub")
 
 
 @pipeline.data_input(config="{source_config}")
-def src() -> pl.DataFrame:
-    return pl.DataFrame()
+def src(): ...
 
 
 pipeline.submodel(
     "nonexistent.py",
-    definition_id="missing_one",
-    instance_id="submodel__missing_one",
-    alias="missing_one",
+    "missing_one",
 )
 pipeline.submodel(
     "modules/also_missing.py",
-    definition_id="missing_two",
-    instance_id="submodel__missing_two",
-    alias="missing_two",
+    "missing_two",
 )
 """
         p = _write_pipeline(tmp_path, code)
@@ -1231,21 +1152,16 @@ pipeline = haute.Pipeline("collision_parent")
 
 
 @pipeline.data_input(config="{source_config}")
-def src() -> pl.DataFrame:
-    return pl.DataFrame()
+def src(): ...
 
 
 pipeline.submodel(
     "sub_a.py",
-    definition_id="definition_a",
-    instance_id="instance_a",
-    alias="a",
+    "a",
 )
 pipeline.submodel(
     "sub_b.py",
-    definition_id="definition_b",
-    instance_id="instance_b",
-    alias="b",
+    "b",
 )
 """
         (tmp_path / "sub_a.py").write_text(sub_a_code)
@@ -1260,8 +1176,8 @@ pipeline.submodel(
         occurrences = {
             node.id: node.data.config for node in graph.nodes if node.data.nodeType == "submodel"
         }
-        assert occurrences["instance_a"] == {"definitionId": "definition_a", "alias": "a"}
-        assert occurrences["instance_b"] == {"definitionId": "definition_b", "alias": "b"}
+        assert occurrences["a"] == {"definitionId": "definition_a", "alias": "a"}
+        assert occurrences["b"] == {"definitionId": "definition_b", "alias": "b"}
 
 
 class TestEmptySubmodelFile:
@@ -1275,15 +1191,12 @@ pipeline = haute.Pipeline("empty_sub_parent")
 
 
 @pipeline.data_input(config="{source_config}")
-def src() -> pl.DataFrame:
-    return pl.DataFrame()
+def src(): ...
 
 
 pipeline.submodel(
     "empty_sub.py",
-    definition_id="empty_definition",
-    instance_id="empty_instance",
-    alias="empty",
+    "empty",
 )
 """
         (tmp_path / "empty_sub.py").write_text("")
@@ -1304,12 +1217,12 @@ submodel = haute.Submodel(
     definition_id="scoring",
     input_ports=[],
     output_ports=[],
+    pipeline_dir="..",
 )
 
 
 @submodel.data_input(config="{child_source_config}")
-def raw_rows() -> pl.LazyFrame:
-    return pl.scan_parquet("data/in.parquet")
+def raw_rows(): ...
 
 
 @submodel.polars
@@ -1326,9 +1239,7 @@ pipeline = haute.Pipeline("submodel_only")
 
 pipeline.submodel(
     "modules/scoring.py",
-    definition_id="scoring",
-    instance_id="submodel__scoring",
-    alias="scoring",
+    "scoring",
 )
 """
         (tmp_path / "modules").mkdir()
@@ -1338,7 +1249,7 @@ pipeline.submodel(
         graph = parse_pipeline_file(p)
 
         assert graph.pipeline_name == "submodel_only"
-        assert {n.id for n in graph.nodes} == {"submodel__scoring"}
+        assert {n.id for n in graph.nodes} == {"scoring"}
         assert graph.submodels is not None
         assert "scoring" in graph.submodels
         assert graph.submodels["scoring"].file == "modules/scoring.py"
@@ -1371,15 +1282,12 @@ pipeline = haute.Pipeline("syntax_err_parent")
 
 
 @pipeline.data_input(config="{source_config}")
-def src() -> pl.DataFrame:
-    return pl.DataFrame()
+def src(): ...
 
 
 pipeline.submodel(
     "broken_sub.py",
-    definition_id="broken_sub",
-    instance_id="submodel__broken_sub",
-    alias="broken_sub",
+    "broken_sub",
 )
 """
         (tmp_path / "broken_sub.py").write_text(broken_sub_code)

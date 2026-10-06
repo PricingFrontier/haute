@@ -1,0 +1,173 @@
+# Explicit node recovery actions
+
+## Recovery loading and retention
+
+Recovery loading remains read-only. Rejected literal submodel registrations retain an
+unavailable submodel card, their authored connections, source span, and saved position.
+Their literal child reference and its artifacts participate in the recovery revision even
+when the current strict parser rejects the old registration. Ambiguous identities are
+diagnosed and cannot be repaired automatically. Downstream nodes remain blocked.
+
+## Loadable incomplete configurations
+
+A loadable configuration is not necessarily a complete one. Data Input and Data Output
+accept declared-incomplete required locators (the empty string, equivalent to absence)
+at parse, load, and save; the strict io-layer contract still rejects them for execution,
+preview, deploy, and caching. The editor document reports these gaps per node in a
+bounded document-level `completeness` list (node recovery id, field path, code, safe
+message), computed by the document loader from the same authoritative validators.
+Completeness entries never mark a node unavailable, never degrade the document, and
+never appear in `diagnostics`. Palette-created Data Input/Output nodes therefore save
+and reload before a path is chosen, like every other palette default.
+
+## Confirmed recovery actions
+
+The recovery inspector extends removal with two explicitly confirmed actions. There is
+no migration action: a submodel registration or public port written in a removed form
+(`definition_id=`, `instance_id=`, `alias=` or `label=` on `pipeline.submodel()`, or
+`portId`/`label` port keys) is rejected at load by the parser with a targeted message
+naming the removed form and the current one, which the unavailable node's diagnostic
+carries as its remediation. The author rewrites it, or removes the node.
+
+- **Reset node** supports known ordinary node types with an unambiguous function span
+  and resolvable incoming connections. It never requires healthy upstream nodes: a
+  damaged chain resets in any order, binding inputs from authored identities. It uses
+  the same default configuration as adding that type from the palette and the current
+  single-node code generator. It preserves
+  identity, description, position and authored connections, but replaces that node's
+  settings and function body. Existing config references are preserved and their content
+  replaced only when exclusively owned by this node. Unknown types, node instances,
+  submodels and ambiguous/shared artifacts cannot be reset. Resetting an empty Polars
+  node produces the normal explicit incomplete-code template; it never invents a
+  passthrough. The confirmation explains that configuration/code may be needed before running.
+  Palette defaults with declared-incomplete required values (for example a file input's
+  empty path) persist as loadable incomplete configurations reported through the
+  document's completeness list; reset is never blocked by completeness, only by unknown
+  types, ambiguous spans, or shared artifacts.
+- **Recover settings** supports known ordinary node types with an unambiguous function
+  span and resolvable incoming connections. It rebuilds the target's configuration with
+  the pure recovery engine: authored fields that are valid under the current contract
+  are retained exactly; an invalid present value is replaced with the matching branch's
+  audited default only where that default is structurally valid; a top-level field the
+  saved configuration lacks (one added or renamed since it was written) takes its palette
+  default, reported as `defaulted`, so the node comes back as a new node would with the
+  unchanged fields kept. The palette is used only when it belongs to the configuration's
+  branch: the discriminant (`inputType`, `outputType`, `sourceType`, `algorithm`, `mode`)
+  is present and equals the palette's, and for Data Input/Output so do a present `format`
+  and `mode`; recovery never fills a default from a different provider/format/mode
+  branch. A stepped node's absent `steps` stays absent, because its absence means the
+  function body's code runs and an empty step list would discard that code. Unrecoverable
+  collection entries are excluded from the candidate and reported with their original
+  value, never emitted as null placeholders. Missing required values use the
+  declared-incomplete form and surface as completeness, not as a blocked plan. Every
+  error-level engine issue that survives the recover, for any node type, is reported
+  as a completeness entry on the target with the engine's own message, so nothing
+  unresolved reads as fixed. Authored
+  code in a declared code slot is retained when the function has its node type's current
+  form: a declaration, or a hook (first parameter `df`; an External File's keyword-only
+  `obj`). A body the decorator never calls — code on a type that carries none, or code
+  outside a hook, which is how every generated body was written before node
+  declarations — has no place under the current contract, and the parser rejects it by
+  the same rule. Recover replaces that function with the declaration generated from the
+  recovered settings and reports the dropped body as a `/code` field change with outcome
+  `removed`, its lines visible in the source diff; the author re-adds any custom code
+  in the node's editor. Such a body is never moved into a hook, where its old calls would
+  name inputs the hook does not bind. It is never compared with a stepped node's
+  `steps` either: a step list the parser can use (a list, and no `inputMapping` beside an
+  edges surface) is kept as settings and regenerates the hook that performs it. The
+  `contract=` annotation is generated
+  scaffolding: recover derives it from the recovered settings exactly as the parse-time check does (never loading an
+  external model artifact), and a declared contract supplies only the sides that
+  derivation leaves opaque, so an annotation left stale by a settings edit is replaced
+  rather than carried forward. The recovered sidecar holds no `contract` key; the
+  annotation lives on the decorator. The applied node must load (available, or blocked only by an upstream
+  failure) — completeness and execution-readiness are explicitly not plan gates.
+  Identity, description, position, connections, and exclusively owned config references
+  follow the Reset rules, so a damaged chain recovers in any order and the applied node
+  may remain blocked solely by an unrepaired upstream. An unreadable
+  configuration sidecar (malformed JSON, duplicate keys, bad encoding) refuses the
+  action with a manual-repair error and changes no bytes — there is no draft archive,
+  and Reset is the explicit destructive replacement. Unknown types, node instances,
+  submodels, and ambiguous or shared artifacts cannot be recovered by this action.
+
+## Consumer error attribution
+
+Rewriting a rejected submodel registration may reveal a separately invalid consumer
+signature. Attribute that failure to the consumer and make its recovery inspector
+available; the consumer's custom code is never rewritten on the submodel's behalf.
+
+## Recovery apply API
+
+`POST /api/pipeline/repair/recover/apply` accepts source file/revision, target source
+file/recovery id, and `action: reset | recover`; there is no dry-run step or
+plan hash. Responses carry `repair_kind: reset_node | recover_node`, the
+applied artifacts, their bounded display diffs (`changes`) and the authoritative
+document. Recover responses additionally carry the engine's field-outcome report
+(`field_changes`: path, `outcome: retained | defaulted | needs_input | removed`, reason),
+the target's completeness entries, and the exact previous configuration
+(`previous_config`) for optional display. The removal route shares this contract with
+its explicit `delete_config` choice. No request accepts replacement bytes or source spans.
+
+## Engine coverage and limits
+
+Configuration recovery preserves valid fields across all 17 ordinary node
+types. Submodels have no recovery action: a removed registration or port form is
+rewritten by the author. Projected ports belong to their definition and require
+recovery there. Unknown types, computed or custom source, and ambiguous shared
+instances remain explicit manual actions. Completeness checks are static:
+successful recovery does not certify runtime data, services or arbitrary user
+code. Field-shape reconciliation precedes semantic validation, and malformed
+discriminator values (including JSON arrays and objects) produce structured
+outcomes, never an unhandled exception or an inferred default branch.
+
+## Node-scoped save in degraded documents
+
+Whole-document mutation and save remain fenced by `PipelineDocumentCapabilities` while
+any source is unresolved. Editing one loadable node must not depend on that fence. Each
+document node carries server-derived `scoped_editable`: true only for a known, loadable
+node (available, or blocked only by an upstream failure) with a trustworthy identity and
+source span whose edited artifacts are exclusively owned by that node. `source_only`
+documents and nodes inside read-only submodel copies are never eligible.
+
+`POST /api/pipeline/node/save` accepts the document source file and revision, the target
+source file and recovery id, and the proposed node configuration (including declared
+code slots). The server resolves spans and affected files itself, revalidates
+eligibility under the shared save lock, refuses a configuration key the node type does
+not declare with HTTP 400 (`node_config_undeclared_keys`, naming the node and listing the
+keys in `unrecognized_config_keys`) before any other check or write, requires the
+candidate to remain loadable (completeness gaps allowed), rewrites only that node's settings and code through the
+existing LibCST and staged-write boundaries (regenerating the `contract=` annotation and
+omitting a sidecar `contract` copy exactly as Recover settings does, so a settings edit
+cannot leave a stale annotation, and adding `import polars as pl` below `import haute`
+when the rewritten function needs `pl` and the module does not import it), verifies
+conservation of every other node,
+edge, and artifact byte, rejects stale revisions with HTTP 409, and returns the
+authoritative document. Shared or ambiguous artifacts, and edits that would change
+unresolved structural bindings, fail with actionable diagnostics instead of widening the
+write scope. No persistent draft is created anywhere in this flow.
+
+## Verification, rollback, and save-lock transactions
+
+Plans are computed on the server under the shared save lock, bound to the entire
+raw-artifact revision and exact before/after bytes. Application rejects a stale revision
+or artifact, stages all
+edits using the existing rollback boundary, and reloads the authoritative document.
+Verification must conserve all node/edge identities except the explicit old-to-current
+registration identity mapping; the target must cease being unavailable. Other invalid
+nodes may keep the document degraded. Any failed verification restores original bytes.
+
+## Acceptance evidence
+
+Acceptance evidence includes a minimal copy of the demo's legacy registration, output
+port and stale Polars signature: both nodes and the connection remain visible; update
+preserves the child/config and exposes the consumer error; resetting that consumer uses
+its current connected input and returns a ready but deliberately incomplete Polars node.
+Also cover stale child/config revisions, shared/path-escaping artifacts, duplicate
+identities, rollback, strict transport parsing, a banding node whose saved annotation
+promises an output its draft factor no longer creates (recover loads it with a
+regenerated annotation and a sidecar without the stale `contract` copy), a function body
+in the pre-declaration generated form on a type without code and on a hook type (recover
+keeps the settings, regenerates the declaration and reports the body removed), the same
+on a stepped node (its steps survive and regenerate the hook), a reset below an
+unavailable upstream, and the UI's
+action-specific confirmation/apply and failure behaviour.

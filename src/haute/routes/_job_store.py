@@ -18,13 +18,13 @@ import functools
 import threading
 import time
 import uuid
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 from math import isfinite
 from types import MappingProxyType
-from typing import Any, Literal, NotRequired, TypedDict, cast
+from typing import Any, Literal, NotRequired, Protocol, TypedDict, cast, runtime_checkable
 
 from fastapi import HTTPException
 
@@ -34,7 +34,12 @@ from haute.schemas import JobStatus
 _DEFAULT_TTL_SECONDS = 24 * 60 * 60  # 24 hours
 _DEFAULT_HEAVY_OBJECT_TTL_SECONDS = 15 * 60  # 15 minutes
 _DEFAULT_HEAVY_OBJECT_KEYS = ("solver", "solve_result", "quote_grid")
-_HEAVY_OBJECT_KEYS = (*_DEFAULT_HEAVY_OBJECT_KEYS, "factors_df", "ratebook_factor_contexts")
+_HEAVY_OBJECT_KEYS = (
+    *_DEFAULT_HEAVY_OBJECT_KEYS,
+    "factors_df",
+    "ratebook_factor_contexts",
+    "solver_session",
+)
 _HEAVY_OBJECT_EXPIRES_AT_KEY = "heavy_objects_expires_at"
 
 logger = get_logger(component="server.job_store")
@@ -185,9 +190,48 @@ class _ArtifactCleanupState(threading.local):
     def __init__(self) -> None:
         self.depth = 0
         self.cleanups: list[_ArtifactCleanup] = []
+        # Heavy values detached under the lock, released once it is dropped.
+        self.heavy_releases: list[Any] = []
 
 
 _ARTIFACT_CLEANUP_STATE = _ArtifactCleanupState()
+
+
+class ArtifactHandleUnavailableError(LookupError):
+    """The job, or its artifact handle under the requested key, no longer exists."""
+
+
+def _artifact_lease_key(handle: Mapping[str, Any]) -> tuple[str, str]:
+    """A handle's identity for lease counting: its kind and its path."""
+    return str(handle["kind"]), str(handle.get("path"))
+
+
+@runtime_checkable
+class HeavyResource(Protocol):
+    """A heavy value that owns something beyond memory (a process), ended on removal."""
+
+    def release(self) -> None: ...
+
+
+def _detach_heavy_values(job: Mapping[str, Any], keys: tuple[str, ...]) -> None:
+    """Queue *job*'s resource-owning heavy values under *keys* for release after the lock."""
+    for key in keys:
+        value = job.get(key)
+        if isinstance(value, HeavyResource):
+            _ARTIFACT_CLEANUP_STATE.heavy_releases.append(value)
+
+
+def _release_heavy_values(values: list[Any]) -> None:
+    for value in values:
+        try:
+            value.release()
+        except Exception as exc:
+            logger.warning(
+                "job_heavy_resource_release_failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+                exc_info=True,
+            )
 
 
 def register_artifact_cleaner(kind: str, cleaner: ArtifactCleaner) -> None:
@@ -237,6 +281,9 @@ class JobStore:
         self._heavy_object_timer_factory = heavy_object_timer_factory
         self._heavy_object_timers: dict[str, Any] = {}
         self._write_lock = threading.RLock()
+        # Readers holding an artifact, and the cleanups deferred until they finish.
+        self._artifact_leases: dict[tuple[str, str], int] = {}
+        self._deferred_artifact_cleanups: dict[tuple[str, str], tuple[str, dict[str, Any]]] = {}
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -256,7 +303,10 @@ class JobStore:
             if state.depth == 0:  # pragma: no mutate
                 cleanups = state.cleanups
                 state.cleanups = []
+                heavy_releases = state.heavy_releases
+                state.heavy_releases = []
                 self._run_artifact_cleanups(cleanups)
+                _release_heavy_values(heavy_releases)
 
     def _evict_stale_locked(
         self,
@@ -290,17 +340,37 @@ class JobStore:
         if job is None:
             return
         handles = tuple(dict(handle) for handle in job.get("artifact_handles", {}).values())
+        _detach_heavy_values(job, _HEAVY_OBJECT_KEYS)
         self._jobs.pop(job_id)
         cleanups.append((job_id, handles))
         self._running_activity_at.pop(job_id, None)
         self._cancel_heavy_object_timer_locked(job_id)
 
-    @staticmethod
     def _cleanup_artifact_handles(
+        self,
         job_id: str,
         handles: tuple[dict[str, Any], ...],
     ) -> None:
-        """Remove persisted artifact files when the owning job expires."""
+        """Remove persisted artifact files when the owning job expires.
+
+        A handle a reader holds a lease on is deferred: its lease's last release
+        cleans it.
+        """
+        with self._write_lock:
+            unleased = []
+            for handle in handles:
+                key = _artifact_lease_key(handle)
+                if self._artifact_leases.get(key, 0) > 0:
+                    self._deferred_artifact_cleanups[key] = (job_id, handle)
+                else:
+                    unleased.append(handle)
+        self._run_artifact_cleaners(job_id, tuple(unleased))
+
+    @staticmethod
+    def _run_artifact_cleaners(
+        job_id: str,
+        handles: tuple[dict[str, Any], ...],
+    ) -> None:
         for handle in handles:
             kind = handle["kind"]
             cleaner = _ARTIFACT_CLEANERS.get(kind)
@@ -348,7 +418,7 @@ class JobStore:
         timer: Any | None = None,  # pragma: no mutate
     ) -> None:
         """Timer entry point: slim heavy completed-job payloads if due."""
-        with self._write_lock:
+        with self._write_locked_with_artifact_cleanup():
             now = time.time()
             if job_id is not None:
                 job = self._jobs.get(job_id)
@@ -376,6 +446,7 @@ class JobStore:
         now: float,
     ) -> None:
         _validate_common_record(job)
+        _detach_heavy_values(job, _HEAVY_OBJECT_KEYS)
         cleaned = {k: v for k, v in job.items() if k not in _HEAVY_OBJECT_KEYS}
         cleaned.pop(_HEAVY_OBJECT_EXPIRES_AT_KEY, None)
         cleaned["heavy_objects_cleared_at"] = now
@@ -435,6 +506,19 @@ class JobStore:
     ) -> tuple[dict[str, Any], bool, float | None]:  # pragma: no mutate
         owned_fields = cast(dict[str, Any], _detach_builtin(fields))
         merged = {**old, **owned_fields}
+        # A value a merge replaces is detached like any other removal.
+        for key in _HEAVY_OBJECT_KEYS:
+            if key in owned_fields and key in old and old[key] is not owned_fields[key]:
+                _detach_heavy_values(old, (key,))
+        if merged.get("status") not in (RUNNING_STATUS, "completed"):
+            # A value that owns a process must not outlive a failed, stopped or
+            # corrected job; plain heavy values keep their existing lifetime.
+            owning = tuple(
+                key for key in _HEAVY_OBJECT_KEYS if isinstance(merged.get(key), HeavyResource)
+            )
+            if owning:
+                _detach_heavy_values(merged, owning)
+                merged = {k: v for k, v in merged.items() if k not in owning}
         schedule_cleanup = self._prepare_heavy_object_policy_locked(merged, now=now)
         _validate_common_record(merged)
         expires_at = merged.get(_HEAVY_OBJECT_EXPIRES_AT_KEY)
@@ -577,7 +661,7 @@ class JobStore:
             fault_injector("terminal_transition_before_write")
         schedule_cleanup = False
         expires_at: float | None = None
-        with self._write_lock:
+        with self._write_locked_with_artifact_cleanup():
             old = self._jobs[job_id]
             _validate_common_record(old)
             if old.get("status") == expected_status:
@@ -615,7 +699,7 @@ class JobStore:
             _validate_timestamp("now", now)
         schedule_cleanup = False
         expires_at: float | None = None
-        with self._write_lock:
+        with self._write_locked_with_artifact_cleanup():
             old = self._jobs[job_id]
             _validate_common_record(old)
             if old.get("status") != RUNNING_STATUS:
@@ -741,7 +825,7 @@ class JobStore:
         self._validate_expected_status(expected_status)
         schedule_cleanup = False  # pragma: no mutate
         expires_at: float | None = None
-        with self._write_lock:
+        with self._write_locked_with_artifact_cleanup():
             old = self._jobs[job_id]
             _validate_common_record(old)
             if expected_status is not None and old.get("status") != expected_status:
@@ -775,7 +859,7 @@ class JobStore:
         self._validate_expected_status(expected_status)
         schedule_cleanup = False  # pragma: no mutate
         expires_at: float | None = None
-        with self._write_lock:
+        with self._write_locked_with_artifact_cleanup():
             old = self._jobs[job_id]
             _validate_common_record(old)
             if expected_status is not None and old.get("status") != expected_status:
@@ -802,6 +886,72 @@ class JobStore:
         if job is None:
             raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
         return job
+
+    def detach_artifact_handle(self, job_id: str, key: str) -> bool:
+        """Release one owned artifact handle from a job and clean it up.
+
+        Returns ``False`` when the job or handle is already gone. The job record
+        itself is kept; only its ownership of that artifact ends.
+        """
+        with self._write_locked_with_artifact_cleanup() as artifact_cleanups:
+            old = self._jobs.get(job_id)
+            if old is None:
+                return False
+            handles = dict(old.get("artifact_handles") or {})
+            handle = handles.pop(key, None)
+            if handle is None:
+                return False
+            self._jobs[job_id] = {**old, "artifact_handles": handles}
+            artifact_cleanups.append((job_id, (dict(handle),)))
+            return True
+
+    def release_detached_artifact_handles(
+        self, job_id: str, handles: Iterable[Mapping[str, Any]]
+    ) -> None:
+        """Clean up handles the caller already removed from the job in its own update.
+
+        An unleased handle is cleaned at once; a leased one when its last lease
+        is released, as for every other cleanup.
+        """
+        self._cleanup_artifact_handles(job_id, tuple(dict(handle) for handle in handles))
+
+    @contextmanager
+    def lease(self, job_id: str, key: str) -> Iterator[dict[str, Any]]:
+        """Hold the job's artifact under *key* for reading; yield a copy of its handle.
+
+        While any lease on a handle is held, its cleanup (job expiry,
+        ``delete_job``, ``detach_artifact_handle``, ``clear_all``) still detaches
+        it from the job but is deferred until the last lease is released.
+
+        Raises:
+            ArtifactHandleUnavailableError: the job, or its handle under *key*,
+                is gone.
+        """
+        with self._write_locked_with_artifact_cleanup() as artifact_cleanups:
+            self._evict_stale_locked(time.time(), artifact_cleanups)
+            job = self._jobs.get(job_id)
+            if job is None:
+                raise ArtifactHandleUnavailableError(f"Job {job_id!r} no longer exists.")
+            handle = (job.get("artifact_handles") or {}).get(key)
+            if not isinstance(handle, dict):
+                raise ArtifactHandleUnavailableError(f"Job {job_id!r} holds no {key!r} artifact.")
+            leased = dict(handle)
+            lease_key = _artifact_lease_key(leased)
+            self._artifact_leases[lease_key] = self._artifact_leases.get(lease_key, 0) + 1
+        try:
+            yield dict(leased)
+        finally:
+            with self._write_lock:
+                remaining = self._artifact_leases[lease_key] - 1
+                if remaining:
+                    self._artifact_leases[lease_key] = remaining
+                    deferred = None
+                else:
+                    del self._artifact_leases[lease_key]
+                    deferred = self._deferred_artifact_cleanups.pop(lease_key, None)
+            if deferred is not None:
+                deferred_job_id, deferred_handle = deferred
+                self._run_artifact_cleaners(deferred_job_id, (deferred_handle,))
 
     def delete_job(self, job_id: str) -> None:
         """Remove a job and clean up any owned artifacts."""
@@ -859,11 +1009,12 @@ class JobStore:
 
         No-op if *job_id* does not exist or keys are already absent.
         """
-        with self._write_lock:
+        with self._write_locked_with_artifact_cleanup():
             job = self._jobs.get(job_id)
             if job is None:
                 return
             _validate_common_record(job)
+            _detach_heavy_values(job, tuple(key for key in keys if key in _HEAVY_OBJECT_KEYS))
             cleaned = {k: v for k, v in job.items() if k not in keys}
             if not any(key in cleaned for key in _HEAVY_OBJECT_KEYS):
                 cleaned.pop(_HEAVY_OBJECT_EXPIRES_AT_KEY, None)
@@ -899,7 +1050,7 @@ class JobStore:
 #   3. Add a test that asserts the new prefix returns a store distinct
 #      from the existing ones.
 _KNOWN_PREFIXES: frozenset[str] = frozenset(  # pragma: no mutate
-    {"training", "optimiser", "explore", "input_cache"}
+    {"training", "optimiser", "optimiser_worker", "explore", "input_cache", "node_data"}
 )
 
 

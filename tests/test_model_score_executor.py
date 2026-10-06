@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import numpy as np
 import polars as pl
@@ -88,6 +88,8 @@ def _make_mock_model(task: str = "regression", feature_names: list[str] | None =
     model.predict.return_value = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
     model.get_cat_feature_indices.return_value = []
     if task == "classification":
+        # Native CatBoost classifiers declare their label domain.
+        model.classes_ = np.array([0, 1])
         model.predict_proba.return_value = np.array(
             [
                 [0.9, 0.1],
@@ -533,6 +535,19 @@ class TestScoreEager:
 # ---------------------------------------------------------------------------
 
 
+def _fake_backend():
+    """A server backend whose tracking URI the download must be pinned to."""
+    from haute._mlflow_utils import ResolvedBackend
+
+    return ResolvedBackend(
+        mode="server",
+        tracking_uri="http://tracking.example.invalid",
+        registry_uri="http://tracking.example.invalid",
+        identity="server:http://tracking.example.invalid|registry=http://tracking.example.invalid",
+        digest="0123456789abcdef",
+    )
+
+
 class TestResolveArtifactLocal:
     """Tests for _resolve_artifact_local disk caching."""
 
@@ -541,12 +556,15 @@ class TestResolveArtifactLocal:
         from haute._mlflow_io import _resolve_artifact_local
 
         monkeypatch.chdir(tmp_path)
-        cached_file = _artifact_cache_path(tmp_path / ".cache" / "models", "run123", "model.cbm")
+        backend = _fake_backend()
+        cached_file = _artifact_cache_path(
+            tmp_path / ".cache" / "models", backend.digest, "run123", "model.cbm"
+        )
         cached_file.parent.mkdir(parents=True)
         cached_file.write_bytes(b"fake model")
 
         mock_mlflow = MagicMock()
-        result = _resolve_artifact_local(mock_mlflow, "run123", "model.cbm")
+        result = _resolve_artifact_local(mock_mlflow, backend, "run123", "model.cbm")
 
         assert result == str(cached_file)
         mock_mlflow.artifacts.download_artifacts.assert_not_called()
@@ -559,7 +577,8 @@ class TestResolveArtifactLocal:
 
         monkeypatch.chdir(tmp_path)
 
-        def fake_download(uri, dst_path):
+        def fake_download(uri, dst_path, *, tracking_uri):
+            assert tracking_uri == "http://tracking.example.invalid"
             Path(dst_path).mkdir(parents=True, exist_ok=True)
             out = Path(dst_path) / "model.cbm"
             out.write_bytes(b"downloaded model")
@@ -568,7 +587,56 @@ class TestResolveArtifactLocal:
         mock_mlflow = MagicMock()
         mock_mlflow.artifacts.download_artifacts.side_effect = fake_download
 
-        result = _resolve_artifact_local(mock_mlflow, "run456", "model.cbm")
+        result = _resolve_artifact_local(
+            mock_mlflow,
+            _fake_backend(),
+            "run456",
+            "model.cbm",
+        )
 
         assert Path(result).is_file()
-        mock_mlflow.artifacts.download_artifacts.assert_called_once()
+        mock_mlflow.artifacts.download_artifacts.assert_called_once_with(
+            "runs:/run456/model.cbm",
+            dst_path=ANY,
+            tracking_uri="http://tracking.example.invalid",
+        )
+
+
+@pytest.mark.parametrize("task", ["regression", "classification"])
+def test_a_schema_only_build_never_batch_scores_the_input(sample_data, task):
+    """A schema-only build (sizing, training preparation) must not score the whole input.
+
+    With a batch source the scorer's batched path sinks every input row to temp
+    and scores it at build time; under ``schema_only`` the build returns the
+    lazy row-local scan instead, which scores at most a one-row dtype probe.
+    """
+    from haute.execution import execute_lazy_graph
+
+    graph = _make_model_score_graph(data_path=sample_data, task=task)
+    mock_model = _make_mock_model(task=task)
+    with (
+        patch("haute._mlflow_io.load_mlflow_model", return_value=mock_model),
+        patch(
+            "haute._model_scorer._sink_to_temp",
+            side_effect=AssertionError("a schema-only build sank the input"),
+        ) as sink,
+        patch(
+            "haute._model_scorer._score_batched_standalone",
+            side_effect=AssertionError("a schema-only build batch-scored the input"),
+        ) as batched,
+    ):
+        frames, *_ = execute_lazy_graph(
+            graph,
+            _build_node_fn,
+            target_node_id="score",
+            source="batch",
+            schema_only=True,
+        )
+        schema = frames["score"].collect_schema()
+
+    assert sink.call_count == 0
+    assert batched.call_count == 0
+    assert "prediction" in schema.names()
+    # Only a one-row dtype probe may have run.
+    for call in mock_model._model.predict.call_args_list:
+        assert len(call.args[0]) <= 1

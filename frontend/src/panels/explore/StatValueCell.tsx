@@ -1,14 +1,11 @@
+import { CELL_CLASS, MUTED_STYLE, PRIMARY_STYLE } from "./exploreTableStyles"
+
 /**
  * Shared table cell for an optional, monospaced stat value (min/max, profile
  * aggregates). Renders a muted placeholder when the value is null/undefined and
  * truncates long values with the full value available on hover. Used by both
  * the Schema and Numeric Summary cards so their value cells stay consistent.
  */
-
-const CELL_CLASS = "px-2 py-1.5"
-const MUTED_STYLE = { color: "var(--text-muted)" } as const
-const PRIMARY_STYLE = { color: "var(--text-primary)" } as const
-
 export function StatValueCell({
   value,
   testId,

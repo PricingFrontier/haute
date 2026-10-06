@@ -25,6 +25,8 @@ from unittest.mock import patch
 import polars as pl
 import pytest
 
+from tests._source_files import source_files
+
 # ---------------------------------------------------------------------------
 # #6 — ws_clients set mutated without a lock
 # ---------------------------------------------------------------------------
@@ -187,6 +189,7 @@ class TestWsClientsConcurrentMutation:
     def test_concurrent_broadcast_while_client_disconnects(
         self,
         _isolated_ws_clients,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Reproduce the async corruption pattern: broadcast iterates
         ws_clients and may try to discard dead clients, while a
@@ -196,11 +199,33 @@ class TestWsClientsConcurrentMutation:
         raised and the invariant holds.
 
         A proper fix exposes a shared lock or uses a thread-safe
-        container; we verify by stress-testing the pattern.
+        container. The interleaving is forced rather than left to the
+        scheduler: every dead client's send is held until the disconnector
+        has discarded the dead clients, so the broadcasts discard clients the
+        disconnect already removed.
+
+        The hard send timeout is pinned well above any runner stall: this
+        test is about set mutation, and on a loaded runner a starved thread
+        could otherwise hold a live client's send past the specified 1 s,
+        which drops it as stalled by design (see the stalled-client test).
         """
         from unittest.mock import AsyncMock, MagicMock
 
-        from haute.routes._helpers import broadcast, ws_clients
+        import haute.routes._helpers as helpers
+        from haute.routes._helpers import broadcast, ws_clients, ws_clients_discard
+
+        monkeypatch.setattr(helpers, "_WS_SEND_TIMEOUT_SECONDS", 60.0)
+
+        sending = threading.Event()
+        disconnected = threading.Event()
+
+        async def send_to_closed_socket(_payload: str) -> None:
+            # A broadcast has snapshotted the clients and is mid-send: hold the
+            # send until the disconnector has discarded this client.
+            sending.set()
+            while not disconnected.is_set():
+                await asyncio.sleep(0.001)
+            raise RuntimeError("closed")
 
         # 50 clients, half of which are "dead" (raise on send_text)
         dead_clients = []
@@ -208,7 +233,7 @@ class TestWsClientsConcurrentMutation:
         for i in range(50):
             m = MagicMock()
             if i % 2:
-                m.send_text = AsyncMock(side_effect=RuntimeError("closed"))
+                m.send_text = send_to_closed_socket
                 dead_clients.append(m)
             else:
                 m.send_text = AsyncMock()
@@ -216,16 +241,19 @@ class TestWsClientsConcurrentMutation:
             ws_clients.add(m)
 
         errors: list[BaseException] = []
-        barrier = threading.Barrier(3)
+        barrier = threading.Barrier(2)
 
         def disconnector() -> None:
             """Mimic ws_sync finally block: discards clients mid-broadcast."""
             try:
-                barrier.wait()
+                if not sending.wait(timeout=30):
+                    raise AssertionError("no broadcast reached a dead client")
                 for c in dead_clients:
-                    ws_clients.discard(c)
+                    ws_clients_discard(c)
             except BaseException as exc:  # noqa: BLE001
                 errors.append(exc)
+            finally:
+                disconnected.set()
 
         def broadcaster(n: int) -> None:
             try:
@@ -244,10 +272,17 @@ class TestWsClientsConcurrentMutation:
             threading.Thread(target=broadcaster, args=(5,), daemon=True),
             threading.Thread(target=broadcaster, args=(5,), daemon=True),
         ]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=10)
+        try:
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=30)
+            assert [t.name for t in threads if t.is_alive()] == [], "#6: a worker never finished"
+        finally:
+            # Release any held send so no worker outlives the fixture teardown.
+            disconnected.set()
+            for t in threads:
+                t.join(timeout=30)
 
         assert not errors, (
             "#6: concurrent broadcast + disconnect raised: "
@@ -258,6 +293,43 @@ class TestWsClientsConcurrentMutation:
             assert c not in ws_clients, "#6: dead client leaked back into ws_clients"
         for c in live_clients:
             assert c in ws_clients, "#6: live client was accidentally removed"
+            c.send_text.assert_awaited()
+
+    def test_a_live_client_whose_send_stalls_past_the_timeout_is_closed_and_dropped(
+        self,
+        _isolated_ws_clients,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A send that does not finish within the hard timeout drops the client.
+
+        This is the specified rule a slow runner used to trip in the race test
+        above: the client is force-closed and removed, and the other clients
+        still receive the broadcast.
+        """
+        from unittest.mock import AsyncMock, MagicMock
+
+        import haute.routes._helpers as helpers
+        from haute.routes._helpers import broadcast, ws_clients
+
+        monkeypatch.setattr(helpers, "_WS_SEND_TIMEOUT_SECONDS", 0.05)
+
+        async def never_finishes(_payload: str) -> None:
+            await asyncio.Event().wait()
+
+        stalled = MagicMock()
+        stalled.send_text = never_finishes
+        stalled.close = AsyncMock()
+        healthy = MagicMock()
+        healthy.send_text = AsyncMock()
+        ws_clients.add(stalled)
+        ws_clients.add(healthy)
+
+        asyncio.run(broadcast({"type": "upd"}))
+
+        assert stalled not in ws_clients
+        stalled.close.assert_awaited_once()
+        assert healthy in ws_clients
+        healthy.send_text.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -416,7 +488,7 @@ class TestJobStoreAtomicUpdateEnforced:
 
         routes_dir = Path(routes_pkg.__file__).resolve().parent
         offenders: list[str] = []
-        for f in routes_dir.rglob("*.py"):
+        for f in source_files(routes_dir):
             if f.name == "_job_store.py":
                 continue
             txt = f.read_text(encoding="utf-8", errors="replace")

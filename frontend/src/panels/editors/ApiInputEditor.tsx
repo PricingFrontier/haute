@@ -1,4 +1,4 @@
-import { useMemo, useState, type CSSProperties } from "react"
+import { useMemo, useState } from "react"
 import { AlertTriangle, Radio, Check, HelpCircle, KeyRound, Plus, X } from "lucide-react"
 import { SchemaPreview } from "./_shared"
 import type { OnUpdateConfig, OnUpdateConfigResult } from "./_shared"
@@ -6,24 +6,12 @@ import { useSchemaFetch } from "../../hooks/useSchemaFetch"
 import { configField } from "../../utils/configField"
 import { withAlpha } from "../../utils/color"
 import {
-  apiInputHasEmittingTable,
   apiInputLabelIssue,
   apiInputLabelIssueMessage,
 } from "../../utils/apiInputPorts"
-import {
-  CacheFetchButton,
-  PARQUET_CACHE_LABELS,
-} from "../../components/CacheFetchButton"
 import { FrameTableActions } from "./FrameTableActions"
 import PathPickerField from "./shared/PathPickerField"
-import {
-  buildJsonCache,
-  getJsonCacheProgress,
-  getJsonCacheStatus,
-  getJsonCacheStatusForSchema,
-  deleteJsonCache,
-  inferJsonCacheSchema,
-} from "../../api/client"
+import { inferJsonCacheSchema } from "../../api/client"
 import {
   classifyConfig,
   emptyV2,
@@ -54,93 +42,13 @@ import {
 import FramesTable, { type FramesTableRow } from "../../components/FramesTable"
 import KeyPickerModal from "../../components/KeyPickerModal"
 import Tooltip from "../../components/Tooltip"
+import { ValidatedTextField } from "../../components/form"
 
 // The re-infer merge is `reconcileInferredTables` (apiInputInherit.ts): the
 // column-level reconciliation that supersedes the old whole-column-array
 // adoption — confirmed and structurally-incomplete columns survive, stale
 // non-confirmed ones go, fresh ones append (fresh side de-dup-suffixed), new
 // frames arrive with the user's cascaded keys prepended.
-
-// ─── JsonCacheButton ──────────────────────────────────────────────
-//
-// Wraps the shared cache-button. Sends the editor's in-memory v2 as
-// `volatile_schema` on every cache POST so the build uses what the user
-// is looking at, regardless of whether the on-disk config matches yet
-// (working principle 4: volatile vs persistent at the schema plane
-// mirrors PR13's data plane). When the editor has nothing to cache
-// (no schema source, or no emit:true tables) the button is rendered
-// `disabled` rather than firing a no-op POST.
-
-type JsonCacheStatus = {
-  cached: boolean
-  path?: string
-  data_path: string
-  row_count: number
-  column_count: number
-  size_bytes: number
-  cached_at: number
-}
-
-function JsonCacheButton({
-  dataPath,
-  configPath,
-  volatileSchema,
-  disabled,
-  disabledReason,
-}: {
-  dataPath: string
-  configPath?: string
-  /** The editor's in-memory v2 (`writeV2(v2)` of the live state). When
-   * defined, becomes `volatile_schema` on the cache POST so the backend
-   * builds from the user's unsaved edits. */
-  volatileSchema?: Record<string, unknown>
-  disabled?: boolean
-  disabledReason?: string
-}) {
-  // `volatileSchema` comes from the canonical `writeV2` writer, so its JSON
-  // representation is a stable value identity. Array encoding also avoids the
-  // delimiter collisions of a hand-built composite key. CacheFetchButton uses
-  // this key only to reset/refetch status; the API callbacks below intentionally
-  // continue to send the original path/schema payloads.
-  const resourceKey = JSON.stringify([
-    dataPath,
-    configPath ?? null,
-    volatileSchema ?? null,
-  ])
-
-  return (
-    <CacheFetchButton<JsonCacheStatus>
-      resourceKey={resourceKey}
-      getStatus={(_key) =>
-        configPath
-          ? getJsonCacheStatusForSchema({
-              path: dataPath,
-              config_path: configPath,
-              volatile_schema: volatileSchema,
-            })
-          : getJsonCacheStatus(dataPath)
-      }
-      startFetch={(_key) =>
-        buildJsonCache({
-          path: dataPath,
-          config_path: configPath,
-          volatile_schema: volatileSchema,
-        }).then(
-          (data) => ({ cached: true, ...data }) as JsonCacheStatus,
-        )
-      }
-      getProgress={(_key) => getJsonCacheProgress(dataPath)}
-      deleteCache={(_key) => deleteJsonCache(dataPath) as Promise<JsonCacheStatus>}
-      timestampField="cached_at"
-      labels={{
-        ...PARQUET_CACHE_LABELS,
-        notCachedHint: "Runs directly from JSON — cache as Parquet for faster repeat runs",
-      }}
-      disabled={disabled}
-      disabledReason={disabledReason}
-    />
-  )
-}
 
 // ─── ApiInputEditor ───────────────────────────────────────────────
 
@@ -150,22 +58,16 @@ export default function ApiInputEditor({
   config,
   onUpdate,
   accentColor,
-  configPath,
   reservedFrameLabels,
 }: {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
   accentColor: string
-  /** Pipeline-relative path to the on-disk schema mapping file (e.g.
-   * `rating/config/quote_input/quotes.json`). */
-  configPath?: string
   /** Server-advertised frame labels reserved by the executable language. */
   reservedFrameLabels: ReadonlySet<string>
 }) {
   const currentPath = configField<string | undefined>(config, "path", undefined)
   const { schema, loading: loadingSchema, error: schemaError, fetchForPath } = useSchemaFetch(currentPath)
-  const showCacheButton =
-    !!currentPath && /\.(?:json|jsonl|ndjson|xml)$/i.test(currentPath)
   const [inferring, setInferring] = useState(false)
   const [inferError, setInferError] = useState<string | null>(null)
   // Defect 2 — when a re-infer would overwrite tables the user has
@@ -396,9 +298,22 @@ export default function ApiInputEditor({
     }
     writeBack(next)
   }
+  // A hand-added table is labelled as inference labels one: `quote_info` for
+  // the root, the array's key below it, suffixed until no other label clashes.
+  const uniqueTableLabel = (base: string) => {
+    const labels = v2.tables.map((t) => t.label)
+    const clashes = (label: string) => {
+      const issue = apiInputLabelIssue(label, labels, reservedFrameLabels)
+      return issue?.kind === "duplicate" || issue?.kind === "sanitised-collision"
+    }
+    let label = base
+    for (let n = 2; clashes(label); n++) label = `${base}_${n}`
+    return label
+  }
   const addTable = () => {
-    const newPath = v2.tables.length === 0 ? "$[:]" : `$[:].table_${v2.tables.length}[:]`
-    const newLabel = newPath
+    const key = v2.tables.length === 0 ? null : `table_${v2.tables.length}`
+    const newPath = key === null ? "$[:]" : `$[:].${key}[:]`
+    const newLabel = uniqueTableLabel(key ?? "quote_info")
     const next = {
       ...v2,
       tables: [
@@ -727,36 +642,6 @@ export default function ApiInputEditor({
           }}
         />
 
-        {/* Bundle 3b — cache button positioned ABOVE the Tables editor.
-            Contextual rationale: the cache action operates on the data
-            file selected just above; placing the affordance there
-            groups it with the data source and leaves the schema editor
-            (Tables) as the primary authoring surface below. */}
-        {showCacheButton && (() => {
-          // Cache eligibility shares the frontend mirror of backend
-          // `table_is_emitting`: emit=true AND at least one selected column.
-          const hasSchemaSource = v2.tables.length > 0
-          const hasEmitTrue = v2.tables.some((t) => t.emit)
-          const hasEmittingTable = apiInputHasEmittingTable({ tables: v2.tables })
-          const cacheDisabled = !hasSchemaSource || !hasEmittingTable
-          const cacheReason = !hasSchemaSource
-            ? "Add at least one table (Infer Tables / Add Table) before caching."
-            : !hasEmitTrue
-            ? "Toggle at least one table's emit so it produces a frame."
-            : !hasEmittingTable
-            ? "Select at least one column in an emitted table before caching."
-            : undefined
-          return (
-            <JsonCacheButton
-              dataPath={currentPath!}
-              configPath={configPath}
-              volatileSchema={writeV2(v2)}
-              disabled={cacheDisabled}
-              disabledReason={cacheReason}
-            />
-          )
-        })()}
-
         {/* Frames table — the surface cascade and inherit-attributes operate
             from. Hidden while there are no frames yet. Using an entry point
             while the replace-tables confirmation gate is open DISMISSES the
@@ -802,10 +687,11 @@ export default function ApiInputEditor({
                     onChange={(e) => setSaltNames(e.target.checked)}
                   />
                   salt names
-                  <Tooltip label="Key naming: the dotted part of the path inside its record collapses to underscores — $[:].customer.id becomes customer_id — so sibling leaves like customer.id and order.id stay distinct. Any remaining name collision gets a numeric suffix (_2). Untick to name by the bare leaf (id) instead, relying on the suffix alone.">
+                  <Tooltip label="Key naming: the dotted part of the path inside its record collapses to underscores - $[:].customer.id becomes customer_id - so sibling leaves like customer.id and order.id stay distinct. Any remaining name collision gets a numeric suffix (_2). Untick to name by the bare leaf (id) instead, relying on the suffix alone.">
                     <HelpCircle
                       size={11}
                       data-testid="api-input-salt-help"
+                      aria-hidden
                       style={{ color: "var(--text-muted)" }}
                     />
                   </Tooltip>
@@ -891,7 +777,7 @@ export default function ApiInputEditor({
               {/* Positional keys, NOT `${table.path}-${ti}`: rows are only
                   ever appended/removed (never reordered), and a key derived
                   from the edited path remounted the row on every committed
-                  path change — dropping focus mid-edit (CODE_REVIEW W1.5). */}
+                  path change - dropping focus mid-edit (CODE_REVIEW W1.5). */}
               {v2.tables.map((table, ti) => (
                 <TableBlock
                   key={ti}
@@ -987,7 +873,7 @@ export default function ApiInputEditor({
         return (
           <KeyPickerModal
             title={isAttributes ? "Add keys" : "Inherit keys"}
-            targetLabel={`${t.label || "(unnamed)"} — ${t.path}`}
+            targetLabel={`${t.label || "(unnamed)"} - ${t.path}`}
             accentColor={accentColor}
             groups={
               isAttributes
@@ -1124,7 +1010,7 @@ function TableBlock({
             refused with visible validation instead of ever reaching
             config (where a per-keystroke commit used to destroy the
             edges bound to a connected frame). */}
-        <CommittedTextInput
+        <ValidatedTextField
           dataTestId={`${testIdPrefix}-label`}
           value={table.label}
           onCommit={(label) => onUpdate({ label })}
@@ -1138,7 +1024,7 @@ function TableBlock({
             color: "var(--text-primary)",
           }}
         />
-        <CommittedTextInput
+        <ValidatedTextField
           dataTestId={`${testIdPrefix}-path`}
           value={table.path}
           onCommit={(path) => onUpdate({ path })}
@@ -1209,7 +1095,7 @@ function TableBlock({
  */
 function columnNameError(candidate: string, otherNames: readonly string[]): string | null {
   if (!candidate.trim()) {
-    return "A name is required — this column is invalid and can't be saved without one."
+    return "A name is required - this column is invalid and can't be saved without one."
   }
   if (otherNames.includes(candidate)) {
     return `Duplicate column name: "${candidate}" is already used in this table.`
@@ -1290,7 +1176,7 @@ function ColumnRow({
         checked={col.selected}
         onChange={(e) => onUpdate({ selected: e.target.checked })}
       />
-      <CommittedTextInput
+      <ValidatedTextField
         dataTestId={`${testIdPrefix}-name`}
         value={col.name}
         onCommit={(name) => onUpdate({ name })}
@@ -1308,14 +1194,14 @@ function ColumnRow({
       />
       {collidingPaths.length > 0 && (
         <Tooltip
-          label={`"${col.name}" is also the name of a different field: ${collidingPaths.join(", ")}. A name should mean one field everywhere — rename one of them.`}
+          label={`"${col.name}" is also the name of a different field: ${collidingPaths.join(", ")}. A name should mean one field everywhere - rename one of them.`}
         >
           <span data-testid={`${testIdPrefix}-name-collision`} className="shrink-0 mt-0.5">
             <AlertTriangle size={10} style={{ color: "var(--danger-text)" }} />
           </span>
         </Tooltip>
       )}
-      <CommittedTextInput
+      <ValidatedTextField
         dataTestId={`${testIdPrefix}-path`}
         value={col.path}
         onCommit={(path) => onUpdate({ path })}
@@ -1344,7 +1230,7 @@ function ColumnRow({
       <Tooltip
         label={
           col.key === true
-            ? "A key — click to remove it from the keys section (stays confirmed)"
+            ? "A key - click to remove it from the keys section (stays confirmed)"
             : "Make this field a key: confirms it and moves it into the keys at the top"
         }
       >
@@ -1396,30 +1282,6 @@ function ColumnRow({
   )
 }
 
-// ─── CommittedTextInput ───────────────────────────────────────────
-//
-// CODE_REVIEW W1.5 (paths) + W1.3/W1.4 (labels) — schema-identity text
-// fields buffer locally and commit on blur or Enter instead of writing
-// to config per keystroke. The old per-keystroke scheme had coupled
-// defects: (1) row keys derived from the path remounted the row on
-// each committed keystroke and the input lost focus; (2) every
-// half-typed value reached the config, churning structuralVersion
-// downstream; (3) for LABELS — which double as React Flow handle ids /
-// backend frame names — each keystroke was a live frame-identity change
-// that destroyed the edges bound to a connected frame; (4) a
-// transiently blank path/label silently destroyed config via readV2.
-//
-// `validate` closes (4) for deliberate edits too: an invalid candidate
-// (blank path; blank/duplicate/sanitised-colliding label; blank or
-// per-table-duplicate column name — W1.9) is REFUSED at the commit
-// boundary — the draft and a visible error stay in place so the user
-// can fix or revert, and nothing destructive ever reaches config. When
-// idle, the committed value itself is validated, so invalid states
-// arriving from disk or an infer-merge surface without any interaction
-// — load-bearing now that `readV2` KEEPS blank-path/blank-name entries
-// (default read path) instead of silently dropping them: the kept entry
-// renders here and this validation is what makes it visible/repairable.
-
 // ─── INPUT path grammar validation ────────────────────────────────
 //
 // Previously the table/column path inputs only `requireNonBlank` — the INPUT
@@ -1436,7 +1298,7 @@ function ColumnRow({
 function validateTablePath(candidate: string): string | null {
   const trimmed = candidate.trim()
   if (!trimmed) {
-    return "A path is required — this table is invalid and can't be saved without one."
+    return "A path is required - this table is invalid and can't be saved without one."
   }
   return validateInputTablePath(trimmed)
 }
@@ -1444,7 +1306,7 @@ function validateTablePath(candidate: string): string | null {
 /** INPUT column-path validator: blank-guard + the shared column-path grammar. */
 function validateColumnPath(candidate: string): string | null {
   if (!candidate.trim()) {
-    return "A path is required — this column is invalid and can't be saved without one."
+    return "A path is required - this column is invalid and can't be saved without one."
   }
   return validateInputColumnPath(candidate.trim())
 }
@@ -1481,91 +1343,4 @@ function attributesGroups(
     ...shallower,
     { ancestorPath: table.path, ancestorLabel: "this level", candidates: sameLevel },
   ]
-}
-
-function CommittedTextInput({
-  value,
-  onCommit,
-  validate,
-  commitError = null,
-  dataTestId,
-  containerClassName,
-  className,
-  style,
-}: {
-  /** The committed value from config — the source of truth when idle. */
-  value: string
-  /** Called once per commit boundary (blur / Enter) with the final value. */
-  onCommit: (next: string) => OnUpdateConfigResult
-  /** User-facing error for an invalid candidate; null = valid. Invalid
-   * candidates are never committed. */
-  validate: (candidate: string) => string | null
-  dataTestId: string
-  containerClassName: string
-  className: string
-  style: CSSProperties
-  /** Graph-level rejection from the commit owner, distinct from local validation. */
-  commitError?: string | null
-}) {
-  // Raw edit buffer; null = not editing, render the committed value.
-  const [draft, setDraft] = useState<string | null>(null)
-  // External committed-value changes win over a stale draft (React's
-  // adjust-state-on-render pattern). This matters because rows use
-  // positional keys: after removing the row above, this instance is
-  // adopted by the row that slides up, and the dead row's half-typed
-  // draft must never be shown for — or committed into — the survivor.
-  // Same for a confirmed re-infer replacing the tables wholesale.
-  const [lastValue, setLastValue] = useState(value)
-  if (lastValue !== value) {
-    setLastValue(value)
-    setDraft(null)
-  }
-  const shown = draft ?? value
-  const validationError = validate(shown)
-  const error = validationError ?? commitError
-  const commit = () => {
-    if (draft === null) return
-    // Skip no-op commits: a draft equal to the committed value would
-    // only churn config/structuralVersion without changing anything.
-    if (draft === value) {
-      setDraft(null)
-      return
-    }
-    // Refuse invalid commits — keep the draft and the visible error so
-    // the user sees exactly what was rejected and why. Failing loud at
-    // the editor beats a backend 422 at save or a KeyError at run.
-    if (validate(draft) !== null) return
-    const result = onCommit(draft)
-    if (result.ok) setDraft(null)
-  }
-  return (
-    <div className={containerClassName}>
-      <input
-        data-testid={dataTestId}
-        type="text"
-        value={shown}
-        aria-invalid={error !== null ? true : undefined}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") commit()
-        }}
-        className={className}
-        style={
-          error !== null
-            ? { ...style, border: "1px solid var(--danger-border-strong)" }
-            : style
-        }
-      />
-      {error !== null && (
-        <div
-          data-testid={`${dataTestId}-error`}
-          className="mt-0.5 px-1.5 py-0.5 rounded text-[10px] leading-snug"
-          style={{ background: "var(--danger-soft)", color: "var(--danger-text)" }}
-        >
-          {error}
-        </div>
-      )}
-    </div>
-  )
 }

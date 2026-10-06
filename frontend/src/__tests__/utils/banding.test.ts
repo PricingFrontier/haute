@@ -53,26 +53,6 @@ describe("extractBandingLevelsForNode", () => {
     expect(extractBandingLevelsForNode(nodes, "missing")).toEqual({})
   })
 
-  it("extracts single factor levels correctly", () => {
-    const nodes: SimpleNode[] = [
-      makeBandingNode("b1", [
-        {
-          banding: "continuous",
-          column: "age",
-          outputColumn: "age_band",
-          rules: [
-            { op1: ">=", val1: "18", op2: "<", val2: "30", assignment: "Young" },
-            { op1: ">=", val1: "30", op2: "<", val2: "50", assignment: "Middle" },
-            { op1: ">=", val1: "50", op2: "", val2: "", assignment: "Senior" },
-          ],
-        },
-      ]),
-    ]
-
-    const result = extractBandingLevelsForNode(nodes, "b1")
-    expect(result).toEqual({ age_band: ["Young", "Middle", "Senior"] })
-  })
-
   it("extracts breakpoint labels as levels", () => {
     const nodes: SimpleNode[] = [
       makeBandingNode("b1", [
@@ -99,12 +79,12 @@ describe("extractBandingLevelsForNode", () => {
     const nodes: SimpleNode[] = [
       makeBandingNode("b1", [
         {
-          banding: "continuous",
+          banding: "breakpoints",
           column: "age",
           outputColumn: "age_band",
           rules: [
-            { op1: ">=", val1: "0", op2: "<", val2: "30", assignment: "Young" },
-            { op1: ">=", val1: "30", op2: "", val2: "", assignment: "Old" },
+            { boundary: "30", label: "Young" },
+            { boundary: "", label: "Old" },
           ],
         },
         {
@@ -131,19 +111,19 @@ describe("extractBandingLevelsForNode", () => {
     const nodes: SimpleNode[] = [
       makeBandingNode("b1", [
         {
-          banding: "continuous",
+          banding: "breakpoints",
           column: "age",
           outputColumn: "",
           rules: [
-            { op1: ">=", val1: "18", op2: "<", val2: "30", assignment: "Young" },
+            { boundary: "30", label: "Young" },
           ],
         },
         {
-          banding: "continuous",
+          banding: "breakpoints",
           column: "score",
           outputColumn: "score_band",
           rules: [
-            { op1: ">=", val1: "0", op2: "<", val2: "50", assignment: "Low" },
+            { boundary: "50", label: "Low" },
           ],
         },
       ]),
@@ -155,17 +135,17 @@ describe("extractBandingLevelsForNode", () => {
     expect(Object.keys(result)).toEqual(["score_band"])
   })
 
-  it("ignores rules without assignment", () => {
+  it("ignores breakpoints without a label", () => {
     const nodes: SimpleNode[] = [
       makeBandingNode("b1", [
         {
-          banding: "continuous",
+          banding: "breakpoints",
           column: "age",
           outputColumn: "age_band",
           rules: [
-            { op1: ">=", val1: "18", op2: "<", val2: "30", assignment: "Young" },
-            { op1: ">=", val1: "30", op2: "<", val2: "50", assignment: "" },
-            { op1: ">=", val1: "50", op2: "", val2: "" },
+            { boundary: "30", label: "Young" },
+            { boundary: "50", label: "" },
+            { boundary: "" },
           ],
         },
       ]),
@@ -198,18 +178,19 @@ describe("extractBandingLevelsForNode", () => {
 })
 
 describe("classifyBandingFactors", () => {
-  it("classifies all supported modes and reports configured zero-level outputs without throwing on drafts", () => {
+  it("classifies both banding types and reports configured zero-level outputs without throwing on drafts", () => {
     expect(classifyBandingFactors([
-      { banding: "continuous", outputColumn: "age_band", rules: [{ assignment: "Young" }] },
       { banding: "categorical", outputColumn: "channel_band", rules: [{ assignment: "Direct" }] },
       { banding: "breakpoints", outputColumn: "vehicle_band", rules: [{ label: "New" }] },
-      { banding: "continuous", outputColumn: "empty_band", rules: [{}] },
+      { banding: "breakpoints", outputColumn: "empty_band", rules: [{}] },
       null,
       { banding: "unknown", outputColumn: "ignored", rules: [{ assignment: "Ignored" }] },
-      { banding: "continuous", outputColumn: "   ", rules: [{ assignment: "Ignored" }] },
+      // The removed operator type is no longer a banding type.
+      { banding: "continuous", outputColumn: "age_band", rules: [{ assignment: "Young" }] },
+      { banding: "categorical", outputColumn: "   ", rules: [{ assignment: "Ignored" }] },
     ])).toEqual({
-      levels: { age_band: ["Young"], channel_band: ["Direct"], vehicle_band: ["New"] },
-      configuredOutputs: ["age_band", "channel_band", "vehicle_band", "empty_band"],
+      levels: { channel_band: ["Direct"], vehicle_band: ["New"] },
+      configuredOutputs: ["channel_band", "vehicle_band", "empty_band"],
       zeroLevelOutputs: ["empty_band"],
       zeroLevelIssues: [{ outputColumn: "empty_band" }],
     })
@@ -218,9 +199,9 @@ describe("classifyBandingFactors", () => {
   it("does not invent a level from a malformed default container", () => {
     expect(classifyBandingFactors([
       {
-        banding: "continuous",
+        banding: "categorical",
         outputColumn: "age_band",
-        rules: [{ assignment: "Young" }],
+        rules: [{ value: "18", assignment: "Young" }],
         default: { label: "not-a-persisted-default" },
       },
     ], { includeDefault: true }).levels).toEqual({ age_band: ["Young"] })
@@ -339,21 +320,21 @@ describe("extractBandingLevels", () => {
     const nodes: SimpleNode[] = [
       makeBandingNode("b1", [
         {
-          banding: "continuous",
+          banding: "breakpoints",
           column: "age",
           outputColumn: "age_band",
           rules: [
-            { op1: ">=", val1: "0", op2: "<", val2: "30", assignment: "Young" },
+            { boundary: "30", label: "Young" },
           ],
         },
       ]),
       makeBandingNode("b2", [
         {
-          banding: "continuous",
+          banding: "breakpoints",
           column: "age",
           outputColumn: "age_band",
           rules: [
-            { op1: ">=", val1: "30", op2: "", val2: "", assignment: "Old" },
+            { boundary: "60", label: "Old" },
           ],
         },
         {

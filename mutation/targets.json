@@ -2,27 +2,6 @@
   "schema_version": 2,
   "targets": [
     {
-      "name": "job-store",
-      "config": "mutation/cosmic-ray.job-store.toml",
-      "max_pending_per_shard": 80,
-      "max_survival_rate": 6.0,
-      "rationale": "Job state transitions back long-running route behavior and must not silently regress. The target's witness command follows the implementation boundary by combining the store and lifecycle contract suites. Exclusions are limited to syntax-only postponed annotations, a private keyword marker, a non-negative-depth comparison equivalence, and deliberately non-contractual numeric rank magnitudes; executable lifecycle decisions remain mutation-tested."
-    },
-    {
-      "name": "path-resolution",
-      "config": "mutation/cosmic-ray.path-resolution.toml",
-      "max_pending_per_shard": 80,
-      "max_survival_rate": 5.0,
-      "rationale": "Path validation is a security boundary; mutation survivors are treated as high-priority signal."
-    },
-    {
-      "name": "registry",
-      "config": "mutation/cosmic-ray.registry.toml",
-      "max_pending_per_shard": 80,
-      "max_survival_rate": 0.0,
-      "rationale": "Registry contracts define node/API surface area and should be resistant to subtle branch mutations."
-    },
-    {
       "name": "output-assembler",
       "config": "mutation/cosmic-ray.output-assembler.toml",
       "max_pending_per_shard": 80,
@@ -41,21 +20,7 @@
       "config": "mutation/cosmic-ray.json-shred.toml",
       "max_pending_per_shard": 20,
       "max_survival_rate": 5.0,
-      "rationale": "The structured-input engine is the load-bearing JSON/JSONL/XML decomposition, bounded-spill, cache-publication, source-proof, cross-process-lock, and runtime-snapshot boundary. Its maintained 557-test mutation command combines seven focused hardening modules with 334 exact selectors that accounted for every named killer in the latest complete run; one 16-second integration witness is replaced by the new direct signature witnesses, while all broader modules remain in ordinary CI. It exercises parser conservation, multi-port loading, native source revisions, direct spill limits, atomic prepare/commit/discard, recovery, concurrent locking, source invalidation, process ownership, and adversarial cleanup paths. The isolated Windows baseline is 37.5 seconds in pytest and 40.1 seconds end to end under the unchanged 90-second ceiling. The 5% survival ceiling remains unchanged as the module grows. Only proven-equivalent selection and syntax-only postponed annotations are excluded with reviewed pragmas; executable expressions and branch decisions remain mutation-tested."
-    },
-    {
-      "name": "json-cache",
-      "config": "mutation/cosmic-ray.json-cache.toml",
-      "max_pending_per_shard": 80,
-      "max_survival_rate": 11.0,
-      "rationale": "The v2 per-port JSON cache route owns build/status/cancel/progress/infer/delete orchestration over the shred engine. Its 74-test cold-cache command contains every exact test that killed a route mutant in the latest complete run; the broader modules remain in ordinary CI. Focused witnesses cover path confinement, exact worker-manifest binding under adversarial equality overloads, native-memory diagnostics, progress reference counts and timing, response aggregation, and publication failures. The isolated Windows baseline is 32.2 seconds in pytest and 41.1 seconds end to end under the unchanged 60-second ceiling. The measured survivor rate is 8.56% against the unchanged 11% ceiling after syntax-only exclusions."
-    },
-    {
-      "name": "executor",
-      "config": "mutation/cosmic-ray.executor.toml",
-      "max_pending_per_shard": 80,
-      "max_survival_rate": 15.0,
-      "rationale": "The graph executor runs live Polars pipelines across preview, projection, materialisation, caching, sandboxed code, and transactional outputs. The maintained witnesses cover resource defaults, prepared-output immutability, path confinement, preamble safety, preview budgets, cache completeness, graph execution, model scoring, tracing, and output publication. Syntax-only postponed annotations and keyword markers are excluded; executable decisions remain under the unchanged 15% ceiling."
+      "rationale": "The structured-input engine is the load-bearing JSON/JSONL/XML decomposition, bounded-spill, cache-publication, source-proof, cross-process-lock, and runtime-snapshot boundary. Its maintained 687-test mutation command combines eight focused modules with 362 exact selectors, while broader modules remain in ordinary CI. It exercises parser conservation, multi-port loading, native source revisions, direct spill limits, atomic prepare/commit/discard, recovery, concurrent locking, source invalidation, process ownership, and adversarial cleanup paths. Complete-inference witnesses additionally cover cache bounds and request sharing, strict shape-filter equivalence and fast-path acceptance at integer/array/depth boundaries, shared-prefix learning, fused-parser error parity, and exact record-size limits. The hosted plan calibrates the exact command under the unchanged 90-second ceiling before scheduling shards. The 5% survival ceiling remains unchanged as the module grows. Only proven-equivalent selection and syntax-only postponed annotations are excluded with reviewed pragmas; executable expressions and branch decisions remain mutation-tested."
     }
   ]
 }

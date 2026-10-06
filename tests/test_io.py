@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import polars as pl
 import pytest
@@ -49,9 +49,8 @@ class TestReadSourceCSV:
             ExecutionProfile.LAZY_SINK,
             ExecutionProfile.TRAINING_PREP,
             ExecutionProfile.OPTIMISER_SETUP,
-            ExecutionProfile.AUTO_RANGE,
+            ExecutionProfile.OPTIMISER_SOLVE,
             ExecutionProfile.DEPLOY_BATCH,
-            ExecutionProfile.CHUNKED_MAP_REDUCE,
         ],
     )
     def test_bounded_profiles_require_declared_csv_schema(
@@ -90,7 +89,7 @@ class TestReadSourceCSV:
 
         result = read_source(
             path,
-            profile=ExecutionProfile.AUTO_RANGE,
+            profile=ExecutionProfile.OPTIMISER_SOLVE,
             schema_overrides={"quote_id": "String", "premium": "Float64"},
         ).collect()
 
@@ -195,7 +194,7 @@ class TestReadSourceProjectionAndSchema:
         assert "PROJECT 1/2 COLUMNS" in lf.explain()
         assert lf.select(pl.len().alias("row_count")).collect().item() == 3
 
-    def test_bounded_csv_empty_projection_uses_a_declared_validation_carrier(
+    def test_bounded_csv_empty_projection_uses_the_first_schema_column_as_carrier(
         self,
         tmp_path: Path,
     ) -> None:
@@ -204,13 +203,12 @@ class TestReadSourceProjectionAndSchema:
 
         lf = read_source(
             path,
-            profile=ExecutionProfile.AUTO_RANGE,
+            profile=ExecutionProfile.OPTIMISER_SOLVE,
             columns=[],
-            validate_columns=["b"],
-            schema_overrides={"b": "Int64"},
+            schema_overrides={"a": "Int64"},
         )
 
-        assert lf.collect_schema().names() == ["b"]
+        assert lf.collect_schema().names() == ["a"]
         assert lf.select(pl.len().alias("row_count")).collect().item() == 3
 
     def test_csv_schema_overrides_are_applied(self, tmp_path: Path) -> None:
@@ -251,8 +249,29 @@ class TestReadSourceProjectionAndSchema:
         path = tmp_path / "data.csv"
         pl.DataFrame({"a": [1]}).write_csv(path)
 
-        with pytest.raises(SchemaMismatchError, match="Unsupported declared source dtype"):
+        with pytest.raises(SchemaMismatchError, match="Unsupported declared dtype"):
             read_source(path, schema_overrides={"a": "NotAType"})
+
+    @pytest.mark.parametrize("name", ["col", "DataFrame", "Expr", "Config"])
+    def test_a_polars_attribute_that_is_not_a_dtype_is_rejected(
+        self, tmp_path: Path, name: str
+    ) -> None:
+        path = tmp_path / "data.csv"
+        pl.DataFrame({"a": [1]}).write_csv(path)
+
+        with pytest.raises(SchemaMismatchError, match=rf"column=a, dtype={name}\)"):
+            read_source(path, schema_overrides={"a": name})
+
+    def test_declared_dtypes_use_the_shared_dtype_vocabulary(self, tmp_path: Path) -> None:
+        path = tmp_path / "data.csv"
+        pl.DataFrame({"a": [1], "b": ["1.25"]}).write_csv(path)
+
+        lf = read_source(
+            path,
+            schema_overrides={"a": "float", "b": {"type": "Decimal", "precision": 6, "scale": 2}},
+        )
+
+        assert lf.collect_schema() == pl.Schema({"a": pl.Float64, "b": pl.Decimal(6, 2)})
 
     def test_parquet_schema_declarations_validate_without_replacing_schema(
         self,
@@ -409,26 +428,14 @@ class TestLoadExternalObjectJoblib:
         assert result is sentinel
 
 
-class TestLoadExternalObjectCatboost:
+class TestLoadExternalObjectHasNoModelFileType:
     @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_classifier_by_default(self, tmp_path: Path) -> None:
+    def test_a_catboost_file_type_is_unsupported(self, tmp_path: Path) -> None:
+        """Model files are scored through Model Scoring; Load File refuses them."""
         path = tmp_path / "model.cbm"
-        path.write_bytes(b"fake")
-        mock_model = MagicMock()
-        with patch("catboost.CatBoostClassifier", return_value=mock_model):
-            result = load_external_object(str(path), "catboost")
-        mock_model.load_model.assert_called_once_with(str(path))
-        assert result is mock_model
-
-    @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_regressor_class(self, tmp_path: Path) -> None:
-        path = tmp_path / "model.cbm"
-        path.write_bytes(b"fake")
-        mock_model = MagicMock()
-        with patch("catboost.CatBoostRegressor", return_value=mock_model):
-            result = load_external_object(str(path), "catboost", model_class="regressor")
-        mock_model.load_model.assert_called_once_with(str(path))
-        assert result is mock_model
+        path.write_bytes(b"model")
+        with pytest.raises(ValueError, match="Unsupported file_type: 'catboost'"):
+            load_external_object(str(path), "catboost")
 
 
 class TestObjectCacheBehavior:
@@ -539,7 +546,7 @@ class TestDataSourceAdapterFlatFile:
                 "path": str(path),
                 schema_key: {"quote_id": "String", "premium": "Float64"},
             },
-            profile=ExecutionProfile.AUTO_RANGE,
+            profile=ExecutionProfile.OPTIMISER_SOLVE,
         ).collect()
 
         assert result.schema["quote_id"] == pl.String
@@ -559,7 +566,7 @@ class TestDataSourceAdapterFlatFile:
                     "path": str(path),
                     "expected_columns": ["quote_id", "premium"],
                 },
-                profile=ExecutionProfile.AUTO_RANGE,
+                profile=ExecutionProfile.OPTIMISER_SOLVE,
             )
 
     def test_source_config_is_not_mutated(self, tmp_path: Path) -> None:
@@ -582,18 +589,8 @@ class TestApiInputSourceAdapterErrors:
             build_data_source_adapter({"sourceType": "warehouse", "path": "data.parquet"})
 
 
-class TestObjectCacheDifferentModelClass:
-    """Cache keys include model_class — different model_class = cache miss."""
-
-    @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_different_model_class_is_cache_miss(self, tmp_path: Path) -> None:
-        path = tmp_path / "model.json"
-        path.write_text('{"x": 1}')
-        r1 = load_external_object(str(path), "json", model_class="classifier")
-        r2 = load_external_object(str(path), "json", model_class="regressor")
-        # Both calls load the same data, but cache has 2 entries (different keys)
-        assert r1 == r2
-        assert _object_cache_size() == 2
+class TestObjectCacheKey:
+    """Cache keys are the path, its content and the file type."""
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_same_key_is_cache_hit(self, tmp_path: Path) -> None:

@@ -9,19 +9,17 @@ from typing import Any
 import orjson
 import pytest
 
-from haute._json_flatten import _json_cache_dir
-from haute._json_shred import _cache, _publication, _runtime_storage
+from haute import _file_lock
+from haute._json_shred import _cache, _runtime_storage
 
 
 @pytest.fixture(autouse=True)
 def _isolated_runtime_storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     _runtime_storage._cleanup_direct_spill_dirs()
-    _runtime_storage._cleanup_runtime_snapshot_dirs()
     _runtime_storage._RUNTIME_STORAGE_RECOVERED_ROOTS.clear()
     yield
     _runtime_storage._cleanup_direct_spill_dirs()
-    _runtime_storage._cleanup_runtime_snapshot_dirs()
     _runtime_storage._RUNTIME_STORAGE_RECOVERED_ROOTS.clear()
 
 
@@ -131,7 +129,7 @@ def test_recovery_removes_only_old_dead_owned_directories(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = tmp_path / ".haute_cache"
-    parent = root / "working" / _runtime_storage._RUNTIME_SNAPSHOT_DIRNAME
+    parent = root / _runtime_storage._DIRECT_SPILL_DIRNAME
     dead = _owner(parent, "dead", pid=10, created_at=1.0)
     active = _owner(parent, "active", pid=20, created_at=1.0)
     young = _owner(parent, "young", pid=30, created_at=99.5)
@@ -227,14 +225,14 @@ def test_runtime_budget_blocks_allocation_for_non_plain_preserved_entry(
     runtime_parent.mkdir(parents=True)
     marker = runtime_parent / "must-survive"
     marker.write_text("owned elsewhere", encoding="utf-8")
-    original_plain_directory_stat = _publication._plain_directory_stat
+    original_plain_directory_stat = _file_lock._plain_directory_stat
 
     def reject_runtime_parent(path: Path) -> Any:
         if path == runtime_parent:
-            raise _publication.JsonCacheRecoveryError("simulated non-plain runtime entry")
+            raise _file_lock.UnsafeCachePathError("simulated non-plain runtime entry")
         return original_plain_directory_stat(path)
 
-    monkeypatch.setattr(_publication, "_plain_directory_stat", reject_runtime_parent)
+    monkeypatch.setattr(_file_lock, "_plain_directory_stat", reject_runtime_parent)
 
     with pytest.raises(
         _runtime_storage.JsonRuntimeStorageIntegrityError,
@@ -287,23 +285,6 @@ def test_direct_spill_budget_exhaustion_fails_and_cleans_partial_bundle(
     assert not runtime_root.exists() or not list(runtime_root.rglob("*.parquet"))
 
 
-def test_runtime_snapshot_budget_exhaustion_fails_before_returning_lazyframe(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    data = tmp_path / "records.json"
-    data.write_text('[{"id": 1}]', encoding="utf-8")
-    cache_dir = _json_cache_dir(data, "working")
-    _cache.build_per_port_cache(data, _config(), cache_dir)
-    monkeypatch.setenv("HAUTE_JSON_RUNTIME_DISK_BUDGET_BYTES", "1")
-
-    with pytest.raises(_runtime_storage.JsonRuntimeDiskBudgetExceededError):
-        _cache.load_per_port_cache(cache_dir, _config())
-
-    runtime_parent = cache_dir.parent / _runtime_storage._RUNTIME_SNAPSHOT_DIRNAME
-    assert not runtime_parent.exists() or not list(runtime_parent.rglob("*.parquet"))
-
-
 @pytest.mark.parametrize("invalid_now", [True, float("nan"), float("inf"), "later"])
 def test_runtime_recovery_rejects_nonfinite_or_non_numeric_clock(invalid_now: object) -> None:
     with pytest.raises(ValueError, match="now must be finite"):
@@ -323,9 +304,9 @@ def test_runtime_recovery_fails_closed_for_unreadable_parent_and_bad_owner_metad
     report = _runtime_storage.recover_json_runtime_storage(root, now=100.0)
     assert report["preserved"] == 1 and owner.exists()
 
-    original = _publication._plain_directory_stat
+    original = _file_lock._plain_directory_stat
     monkeypatch.setattr(
-        _publication,
+        _file_lock,
         "_plain_directory_stat",
         lambda path: (_ for _ in ()).throw(OSError("denied")) if path == parent else original(path),
     )
@@ -338,12 +319,12 @@ def test_runtime_recovery_preserves_non_plain_root(
 ) -> None:
     root = tmp_path / ".haute_cache"
     root.mkdir()
-    original = _publication._plain_directory_stat
+    original = _file_lock._plain_directory_stat
     monkeypatch.setattr(
-        _publication,
+        _file_lock,
         "_plain_directory_stat",
         lambda path: (
-            (_ for _ in ()).throw(_publication.JsonCacheRecoveryError("hostile"))
+            (_ for _ in ()).throw(_file_lock.UnsafeCachePathError("hostile"))
             if path == root
             else original(path)
         ),

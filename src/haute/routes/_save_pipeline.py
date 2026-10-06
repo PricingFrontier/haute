@@ -20,22 +20,35 @@ handlers see the real cause.
 
 from __future__ import annotations
 
+import ast
+import hashlib
 from collections import defaultdict
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import NamedTuple
 
 from fastapi import HTTPException
 
 from haute._api_input_schema import is_json_api_input_path
+from haute._ast_helpers import _extract_global_constants_declaration
 from haute._file_ops import Writer, atomic_write_bytes
+from haute._global_constants import (
+    code_binds_global_constants,
+    node_code_sources,
+    node_constant_reads,
+    node_step_constant_problems,
+    preamble_binds_global_constants,
+)
 from haute._logging import get_logger
+from haute._pipeline_recovery import load_pipeline_editor_document
+from haute._sandbox import contained_path
 from haute._submodel_paths import (
     MalformedSubmodelPathError,
     SubmodelPathOutsideProjectError,
     resolve_submodel_reference,
 )
-from haute.errors import ConfigError
+from haute._types import GLOBAL_CONSTANTS_FILE, GLOBAL_CONSTANTS_NAME, SINK_ONLY_NODE_TYPES
+from haute.errors import ConfigError, ParseError, PathOutsideProjectError
 from haute.graph_utils import (
     GraphEdge,
     GraphNode,
@@ -49,17 +62,41 @@ from haute.routes._helpers import (
     load_sidecar,
     mark_self_write,
     save_sidecar,
-    validate_safe_path,
 )
 from haute.schemas import SavePipelineRequest, SavePipelineResponse
 
 logger = get_logger(component="server.pipeline.save")
 
+
+class StaleDocumentRevisionError(Exception):
+    """The submitted ``base_revision`` does not match the on-disk document.
+
+    Raised before any artifact is written so the newer on-disk generation
+    survives untouched; the route reports it as a ``409`` conflict.
+    """
+
+    code = "stale_document_revision"
+
+    def __init__(
+        self,
+        *,
+        expected_revision: str | None,
+        provided_revision: str | None,
+        message: str | None = None,
+    ) -> None:
+        self.expected_revision = expected_revision
+        self.provided_revision = provided_revision
+        super().__init__(
+            message
+            or "The pipeline changed on disk after this document was loaded. "
+            "Reload it before saving."
+        )
+
+
 # Singleton node types: at most one of each is allowed per pipeline.
 _SINGLETON_NODE_TYPES: list[tuple[NodeType, str]] = [
     (NodeType.API_INPUT, "API Input"),
     (NodeType.OUTPUT, "Output"),
-    (NodeType.LIVE_SWITCH, "Source Switch"),
 ]
 
 # Allowlist for codegen output paths.
@@ -76,6 +113,10 @@ class _TouchedFile(NamedTuple):
 
     target: Path
     previous_bytes: bytes | None
+    # sha256 of the bytes this transaction committed, when the writer recorded it.
+    written_digest: str | None = None
+    # True for a staged delete: rollback restores only while the path is still absent.
+    deleted: bool = False
 
 
 class _ManagedChildSidecar(NamedTuple):
@@ -93,14 +134,49 @@ class _DefinitionFile(NamedTuple):
     definition_id: str
 
 
-def _mark_self_write_cb(_path: Path) -> None:
+def _artifact_digest(path: Path) -> str | None:
+    """sha256 of *path*'s bytes, or ``None`` when it does not exist as a file."""
+    if not path.is_file():
+        return None
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _recorded_digest_for_same_file(
+    target: Path,
+    identities: dict[str, str | None],
+) -> str | None:
+    """Digest *identities* recorded for the on-disk file *target* names.
+
+    A case-insensitive filesystem reaches one file through spellings the
+    precondition never recorded: ``modules/Foo.py`` and ``modules/foo.py`` are
+    the same file on macOS, where ``Path.resolve`` keeps the spelling it was
+    handed instead of the on-disk name. Device and inode identify that file
+    however it is spelled, and still tell genuinely distinct files apart on a
+    case-sensitive filesystem. ``None`` when nothing recorded names it, which
+    reads as "absent when the precondition ran".
+    """
+    try:
+        wanted = target.stat()
+    except OSError:
+        return None
+    for recorded, digest in identities.items():
+        try:
+            candidate = Path(recorded).stat()
+        except OSError:
+            continue
+        if candidate.st_dev == wanted.st_dev and candidate.st_ino == wanted.st_ino:
+            return digest
+    return None
+
+
+def _mark_self_write_cb(path: Path, payload: bytes) -> None:
     """Writer callback — signals the file-watcher for each rename.
 
-    Writer passes the path it is about to rename; our self-write tracker
-    records that path, so the watcher can skip the exact event without
-    relying on the total save duration.
+    Writer passes the path it is about to rename and the exact bytes it
+    commits; the self-write tracker records that content identity, so the
+    watcher skips the event only while the file still holds those bytes.
     """
-    mark_self_write(_path)
+    mark_self_write(path, content=payload)
 
 
 def _stage_artifact_write_bytes(
@@ -110,7 +186,13 @@ def _stage_artifact_write_bytes(
 ) -> None:
     """Write one artifact atomically while recording exact rollback state."""
     previous_bytes = out_path.read_bytes() if out_path.exists() else None
-    touched.append(_TouchedFile(target=out_path, previous_bytes=previous_bytes))
+    touched.append(
+        _TouchedFile(
+            target=out_path,
+            previous_bytes=previous_bytes,
+            written_digest=hashlib.sha256(payload).hexdigest(),
+        )
+    )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with Writer(out_path, mark_self_write=_mark_self_write_cb) as writer:
         writer.write_bytes(payload)
@@ -122,8 +204,8 @@ def _stage_artifact_delete(target: Path, touched: list[_TouchedFile]) -> None:
         return
     if not target.is_file():
         raise HTTPException(status_code=400, detail="Artifact delete target is not a file.")
-    touched.append(_TouchedFile(target=target, previous_bytes=target.read_bytes()))
-    mark_self_write(target)
+    touched.append(_TouchedFile(target=target, previous_bytes=target.read_bytes(), deleted=True))
+    mark_self_write(target, deleted=True)
     target.unlink()
 
 
@@ -133,11 +215,23 @@ def _rollback_artifacts(touched: list[_TouchedFile]) -> list[Path]:
     for entry in reversed(touched):
         target = entry.target
         try:
-            mark_self_write(target)
+            current = _artifact_digest(target)
+            if entry.deleted and current is not None:
+                # A staged delete whose path exists again was recreated by
+                # someone else; do not overwrite it with the old bytes.
+                logger.warning("rollback_skipped_external_change", file=str(target))
+                continue
+            if entry.written_digest is not None and current != entry.written_digest:
+                # An external writer replaced this transaction's bytes; restoring
+                # would destroy that work, so leave the file as it is.
+                logger.warning("rollback_skipped_external_change", file=str(target))
+                continue
             if entry.previous_bytes is None:
+                mark_self_write(target, deleted=True)
                 if target.is_file():
                     target.unlink()
             else:
+                mark_self_write(target, content=entry.previous_bytes)
                 atomic_write_bytes(target, entry.previous_bytes)
         except OSError as exc:
             failed.append(target)
@@ -167,6 +261,79 @@ class SavePipelineService:
         self._pipeline_root = (pipeline_root or project_root).resolve()
         if not self._pipeline_root.is_relative_to(self._root):
             raise ValueError("pipeline_root must resolve inside project_root")
+        self._precondition_identities: dict[str, str | None] | None = None
+        self._identity_roots: tuple[Path, ...] = ()
+
+    def _require_base_revision(self, py_path: Path, base_revision: str | None) -> None:
+        """Fail closed unless the client's base revision matches the on-disk document.
+
+        ``None`` is only valid while the target file does not exist (initial
+        creation). An existing file must be reloaded first: a document that
+        has no ready revision can never be overwritten through this path.
+        """
+        # Never establish a new baseline after authenticating the client's
+        # revision: an external edit in that gap would otherwise be blessed.
+        self._precondition_identities = self._capture_artifact_identities(py_path)
+        if py_path.is_file():
+            document = load_pipeline_editor_document(py_path, project_root=self._root)
+            expected = document.source_revision
+            if expected is None or expected != base_revision:
+                raise StaleDocumentRevisionError(
+                    expected_revision=expected,
+                    provided_revision=base_revision,
+                )
+        elif base_revision is not None:
+            raise StaleDocumentRevisionError(
+                expected_revision=None,
+                provided_revision=base_revision,
+            )
+
+    def _capture_artifact_identities(self, py_path: Path) -> dict[str, str | None]:
+        """Digest every owned artifact as the precondition observes it.
+
+        Covers the parent source and its sidecar, every module and module
+        sidecar under ``modules/``, and every JSON config under ``config/``
+        beneath the pipeline root. A missing parent file is recorded as
+        ``None``; anything that later appears under the covered directories
+        also counts as drift.
+        """
+        modules_dir = self._pipeline_root / "modules"
+        config_dir = self._pipeline_root / "config"
+        self._identity_roots = (modules_dir.resolve(), config_dir.resolve())
+        candidates = [py_path, py_path.with_suffix(".haute.json")]
+        if modules_dir.is_dir():
+            candidates.extend(sorted(modules_dir.rglob("*.py")))
+            candidates.extend(sorted(modules_dir.rglob("*.haute.json")))
+        if config_dir.is_dir():
+            candidates.extend(sorted(config_dir.rglob("*.json")))
+        return {str(path.resolve()): _artifact_digest(path) for path in candidates}
+
+    def _require_artifact_identity(self, target: Path) -> None:
+        """Stop the transaction if *target* drifted since the precondition.
+
+        Only artifacts the precondition could observe are governed: the two
+        parent files and anything under the modules and config directories.
+        """
+        identities = self._precondition_identities
+        if identities is None:
+            return
+        resolved = target.resolve()
+        key = str(resolved)
+        if key in identities:
+            expected = identities[key]
+        elif any(resolved.is_relative_to(root) for root in self._identity_roots):
+            expected = _recorded_digest_for_same_file(target, identities)
+        else:
+            return
+        if _artifact_digest(target) != expected:
+            raise StaleDocumentRevisionError(
+                expected_revision=None,
+                provided_revision=None,
+                message=(
+                    "The pipeline changed on disk while this save was committing "
+                    f"({target.name}). Reload it before saving."
+                ),
+            )
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -175,6 +342,8 @@ class SavePipelineService:
     def save(
         self,
         body: SavePipelineRequest,
+        *,
+        commit_message: str | None = None,
     ) -> SavePipelineResponse:
         """Validate, generate code, write configs, and persist sidecar.
 
@@ -184,11 +353,20 @@ class SavePipelineService:
         Save is transactional: if any write step fails, all files we
         already touched are restored (or deleted for new files) before
         the exception propagates.  No partial save is ever left on disk.
+
+        *commit_message* is the ledger commit's message; without one the
+        commit names the changed files.
         """
         graph = body.graph
 
+        # Global constants: the file on disk, never the request, says whether
+        # the declared constants file loads. Validation and codegen read it.
+        self._adopt_disk_global_constants_state(graph, self._resolve_source_file(body.source_file))
+        self._refuse_preamble_global_constants_binding(body.preamble, label="The preamble")
         warnings = self.validate_graph(graph, source_file=body.source_file)
+        warnings.extend(self._global_constant_source_warnings(graph, body.sources))
         py_path = self._resolve_source_file(body.source_file)
+        self._require_base_revision(py_path, body.base_revision)
         derived_new_files, derived_delete_files = self._derive_definition_file_lifecycle(
             parent_path=py_path,
             graph=graph,
@@ -223,9 +401,15 @@ class SavePipelineService:
         try:
             self._write_code(body, graph, py_path, touched)
             self._write_config_files(graph, touched)
-            self._mirror_api_input_caches(graph)
             warnings.extend(
-                self._write_sidecar(py_path, graph, body.sources, body.active_source, touched)
+                self._write_sidecar(
+                    py_path,
+                    graph,
+                    body.sources,
+                    body.active_source,
+                    touched,
+                    identity_check=self._require_artifact_identity,
+                )
             )
             warnings.extend(
                 self._write_managed_submodel_sidecars(
@@ -287,7 +471,9 @@ class SavePipelineService:
         # after all files land successfully.
         invalidate_pipeline_index()
 
-        git_sha, identity_required = self._capture_save_in_ledger(touched, removed, warnings)
+        git_sha, identity_required = self._capture_save_in_ledger(
+            touched, removed, warnings, commit_message
+        )
 
         return SavePipelineResponse(
             file=str(py_path.relative_to(self._root)),
@@ -303,6 +489,7 @@ class SavePipelineService:
         touched: list[_TouchedFile],
         removed: list[Path],
         warnings: list[str],
+        message: str | None,
     ) -> tuple[str | None, bool]:
         """Commit this save to the clone's ledger branch, when configured.
 
@@ -349,7 +536,7 @@ class SavePipelineService:
             return None, True
 
         try:
-            sha = _git.commit_save(rel_paths, working, cwd=self._root)
+            sha = _git.commit_save(rel_paths, working, cwd=self._root, message=message)
             if sha is not None:
                 # Publish to durable storage when bound; no-op otherwise.
                 from haute import _project_storage
@@ -373,6 +560,8 @@ class SavePipelineService:
         description: str,
         preamble: str | None,
         source_file: str,
+        base_revision: str | None,
+        commit_message: str | None = None,
     ) -> SavePipelineResponse:
         """Save an already-mutated graph through the normal save transaction.
 
@@ -394,7 +583,9 @@ class SavePipelineService:
                 sources=graph.sources,
                 active_source=graph.active_source,
                 preserved_blocks=graph.preserved_blocks,
+                base_revision=base_revision,
             ),
+            commit_message=commit_message,
         )
 
     # ------------------------------------------------------------------
@@ -409,13 +600,19 @@ class SavePipelineService:
         drift onto separate structural validators.
         """
 
-        self._validate_singletons(graph)
+        self._validate_executable_names(graph)
+        self._validate_support_code_names(graph)
         flattened = flatten_graph(graph)
+        self._validate_singletons(flattened)
+        self._validate_no_source_switch_instances(flattened)
+        self._validate_nothing_leaves_a_sink(flattened)
         self._validate_edge_join_configs(flattened)
         self._validate_optimiser_input_selectors(flattened)
+        self._validate_declared_config_keys(graph)
         self._validate_strict_node_configs(graph)
-        self._validate_unique_sanitized_names(graph)
+        self._validate_quote_input_tables_do_not_shadow_nodes(graph)
         self._validate_no_load_errors(graph)
+        self._validate_global_constants(graph)
         py_path = self._resolve_source_file(source_file)
         self._validate_source_file_matches_pipeline_root(py_path)
         warnings: list[str] = []
@@ -628,7 +825,7 @@ class SavePipelineService:
 
     @staticmethod
     def _validate_singletons(graph: PipelineGraph) -> None:
-        """Ensure singleton node types appear at most once."""
+        """Ensure singleton node types appear at most once in an executable graph."""
         for singleton_type, label in _SINGLETON_NODE_TYPES:
             count = sum(1 for n in graph.nodes if n.data.nodeType == singleton_type)
             if count > 1:
@@ -636,6 +833,192 @@ class SavePipelineService:
                     status_code=400,
                     detail=f"Only one {label} node is allowed per pipeline (found {count}).",
                 )
+
+    @staticmethod
+    def _validate_no_source_switch_instances(graph: PipelineGraph) -> None:
+        """Refuse an instance of a Source Switch.
+
+        A switch routes by its own input names, which an instance's inputs do
+        not share, so the instance would have no input for any source.
+        """
+        nodes = graph.node_map
+        for node in graph.nodes:
+            original = nodes.get(node.data.config.get("instanceOf") or "")
+            if original is not None and original.data.nodeType == NodeType.LIVE_SWITCH:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"{node.data.label!r} cannot be an instance of the Source Switch "
+                        f"{original.data.label!r}; add another Source Switch instead."
+                    ),
+                )
+
+    @staticmethod
+    def _validate_nothing_leaves_a_sink(flattened: PipelineGraph) -> None:
+        """Refuse an edge out of a node type that has no output."""
+        # An edge naming an unknown node is refused by codegen's strict topology.
+        nodes = flattened.node_map
+        for edge in flattened.edges:
+            source = nodes.get(edge.source)
+            if source is None or source.data.nodeType not in SINK_ONLY_NODE_TYPES:
+                continue
+            target = nodes.get(edge.target)
+            target_label = target.data.label if target is not None else edge.target
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Node {source.data.label!r} ({source.data.nodeType.value}) has no "
+                    f"output, so it cannot feed {target_label!r}. "
+                    "Remove that edge. Nothing was saved."
+                ),
+            )
+
+    def _adopt_disk_global_constants_state(self, graph: PipelineGraph, py_path: Path) -> None:
+        """Take the global constants load state from the file on disk.
+
+        A request's ``global_constants_error`` is ignored. While the declared
+        file on disk fails to load, codegen keeps naming it, the file is
+        neither rewritten nor deleted, and a request that carries constants is
+        refused rather than overwriting what could not be read.
+        """
+        error = self._disk_global_constants_error(py_path)
+        if error is not None and graph.global_constants:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Global constants could not be loaded from {GLOBAL_CONSTANTS_FILE}: "
+                    f"{error} Fix or remove the file, then save again."
+                ),
+            )
+        graph.global_constants_error = error
+
+    @staticmethod
+    def _disk_global_constants_error(py_path: Path) -> str | None:
+        """Why the on-disk pipeline's declared constants file fails to load, or ``None``.
+
+        Only the constructor is read, so an unparseable source (which no save
+        can be based on) reports nothing here.
+        """
+        from haute.parser import load_declared_global_constants
+
+        if not py_path.is_file():
+            return None
+        try:
+            tree = ast.parse(py_path.read_bytes())
+        except (SyntaxError, ValueError):
+            return None
+        try:
+            declared = _extract_global_constants_declaration(tree, receiver="pipeline")
+        except ParseError as exc:
+            return str(exc)
+        if not declared:
+            return None
+        _constants, error = load_declared_global_constants(py_path.parent)
+        return error
+
+    @staticmethod
+    def _refuse_preamble_global_constants_binding(preamble: str | None, *, label: str) -> None:
+        if preamble and preamble_binds_global_constants(preamble):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{label} binds {GLOBAL_CONSTANTS_NAME!r}, which is reserved for the "
+                    "pipeline's global constants. Rename it."
+                ),
+            )
+
+    @staticmethod
+    def _validate_global_constants(graph: PipelineGraph) -> None:
+        """Refuse what would shadow ``global_constants`` or read an undefined constant.
+
+        While the constants file fails to load the definitions are unavailable
+        rather than absent, so reads are not checked against them.
+        """
+        SavePipelineService._refuse_preamble_global_constants_binding(
+            graph.preamble, label="The preamble"
+        )
+        for definition_id, definition in (graph.submodels or {}).items():
+            SavePipelineService._refuse_preamble_global_constants_binding(
+                definition.graph.preamble, label=f"Submodel {definition_id!r}'s preamble"
+            )
+        constants_by_name = {constant.name: constant for constant in graph.global_constants}
+        defined = set(constants_by_name)
+        check_reads = graph.global_constants_error is None
+        for node in SavePipelineService._iter_nodes_recursive(graph):
+            label = node.data.label
+            config = node.data.config
+            if any(code_binds_global_constants(code) for code in node_code_sources(config)):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Node {label!r}'s code binds {GLOBAL_CONSTANTS_NAME!r}, which is "
+                        "reserved for the pipeline's global constants. Rename the variable."
+                    ),
+                )
+            if not check_reads:
+                continue
+            step_problems = node_step_constant_problems(node, constants_by_name)
+            if step_problems:
+                step_index, reason = step_problems[0]
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Node {label!r}, step {step_index + 1}: {reason}",
+                )
+            reads = node_constant_reads(config)
+            undefined = sorted(reads - defined) if isinstance(reads, frozenset) else []
+            if undefined:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Node {label!r} reads global constant(s) {undefined} that the "
+                        "pipeline does not define. Define them in the Constants pane or "
+                        "correct the names."
+                    ),
+                )
+
+    @staticmethod
+    def _global_constant_source_warnings(
+        graph: PipelineGraph,
+        sources: Sequence[str],
+    ) -> list[str]:
+        """One warning per split constant and pipeline source it holds no value for."""
+        return [
+            f"Global constant {constant.name!r} has no value for source {source!r}."
+            for constant in graph.global_constants
+            if constant.by_source is not None
+            for source in sources
+            if source not in constant.by_source
+        ]
+
+    def _validate_support_code_names(self, graph: PipelineGraph) -> None:
+        """Refuse names that collide with support code, or support code with itself.
+
+        The utility files are read where the executor imports them from: the
+        pipeline directory, then the project root.
+        """
+        from haute._executable_names import format_name_violations
+        from haute._support_code_names import support_code_violations, utility_reader
+
+        violations = support_code_violations(graph, utility_reader(self._pipeline_root, self._root))
+        if violations:
+            raise HTTPException(status_code=400, detail=format_name_violations(violations))
+
+    @staticmethod
+    def _validate_executable_names(graph: PipelineGraph) -> None:
+        """Refuse what codegen's executable-name check refuses, before generating.
+
+        Node and occurrence names are unique ignoring case across the pipeline
+        and its submodels. That is a policy, not an execution need (submodel
+        children run under qualified ids): one name means one node in labels,
+        traces, messages and generated files. Reserved and built-in names, and
+        reserved inputs, would rebind what the generated module binds itself.
+        """
+        from haute.codegen import check_executable_names
+
+        try:
+            check_executable_names(graph)
+        except ParseError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
 
     @staticmethod
     def _validate_strict_node_configs(graph: PipelineGraph) -> None:
@@ -647,14 +1030,21 @@ class SavePipelineService:
             NodeType.DATA_INPUT,
             NodeType.DATA_OUTPUT,
             NodeType.BANDING,
+            NodeType.SCENARIO_EXPANDER,
+            NodeType.MODELLING,
         }
         for scoped_graph in graphs:
             for node in scoped_graph.nodes:
                 if node.data.nodeType not in strict_types:
                     continue
+                if node.data.config.get("instanceOf"):
+                    # An instance carries its original's config, checked where it is authored.
+                    continue
                 try:
-                    validate_node_config(node.data.nodeType, node.data.config)
-                except ValueError as exc:
+                    validate_node_config(
+                        node.data.nodeType, node.data.config, require_complete=False
+                    )
+                except (ValueError, ConfigError) as exc:
                     raise HTTPException(
                         status_code=400,
                         detail=(
@@ -664,87 +1054,69 @@ class SavePipelineService:
                     ) from exc
 
     @staticmethod
-    def _validate_unique_sanitized_names(graph: PipelineGraph) -> None:
-        """Reject graphs where node labels sanitize to the same function name.
+    def _validate_declared_config_keys(graph: PipelineGraph) -> None:
+        """Refuse a config key its node type does not declare, which a write would lose."""
+        from haute._config_validation import reject_unrecognized_config_keys
 
-        Scope is GLOBAL across the root graph and every embedded submodel
-        graph, matching codegen's ``_error_on_name_collisions``.  The
-        load-bearing reason is runtime flattening: preview/trace/run call
-        ``flatten_graph`` which inlines every submodel child into ONE
-        graph keyed by ``node.id`` — and ``node.id`` round-trips to the
-        sanitised function name for root and submodel nodes alike
-        (``_graph_builders._build_rf_nodes``).  ``PipelineGraph.node_map``
-        is a plain ``{n.id: n}`` dict, so a cross-module duplicate would
-        silently shadow its twin at execution time.
+        graphs = [graph, *SavePipelineService._iter_embedded_submodel_graphs(graph)]
+        for scoped_graph in graphs:
+            for node in scoped_graph.nodes:
+                try:
+                    reject_unrecognized_config_keys(
+                        node.data.nodeType, node.data.config, node_label=node.data.label
+                    )
+                except ConfigError as exc:
+                    raise HTTPException(
+                        status_code=400, detail=f"{exc.message} Nothing was saved."
+                    ) from None
 
-        Two passes:
+    @staticmethod
+    def _validate_quote_input_tables_do_not_shadow_nodes(graph: PipelineGraph) -> None:
+        """Refuse a Quote Input table labelled like another node's function name.
 
-        * per-graph — any two nodes in the SAME graph (root, or one
-          submodel) whose labels sanitise identically. Identical labels
-          collide too. The same rule applies to each submodel graph so
-          collisions cannot escape this guard and surface as an unhandled
-          codegen ``ParseError``.
-        * cross-module: a sanitised name used in more than one module.
-          Structural `SUBMODEL` / `SUBMODEL_PORT` nodes are excluded
-          because they never emit Python function definitions.
+        A table's label is its frame handle, the input name a consumer's
+        parameter carries. The parser also infers an edge from any parameter
+        named like a node, so a consumer of frame ``quotes`` beside a node
+        ``quotes`` would be bound to both and the saved file would not reload.
+        Names are global across the pipeline and its submodels (see
+        :meth:`_validate_executable_names`); the Quote Input's own name
+        is exempt, since its explicit connection already covers that edge.
         """
-        scoped_graphs: list[tuple[str, PipelineGraph]] = [("the pipeline", graph)]
-        scoped_graphs.extend(
-            (f"submodel {name!r}", nested)
-            for name, nested in SavePipelineService._iter_named_embedded_submodel_graphs(graph)
-        )
-
-        # Pass 1 — collisions within a single graph (root or one submodel).
-        for scope, scoped_graph in scoped_graphs:
-            sanitized_to_labels: dict[str, list[str]] = defaultdict(list)
-            for node in scoped_graph.nodes:
-                sanitized = _sanitize_func_name(node.data.label)
-                sanitized_to_labels[sanitized].append(node.data.label)
-
-            collisions = {
-                name: labels for name, labels in sanitized_to_labels.items() if len(labels) > 1
-            }
-            if collisions:
-                parts = [f"  {name!r} <- {labels!r}" for name, labels in sorted(collisions.items())]
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"Duplicate sanitized node names detected in {scope}. "
-                        "The following node labels produce the same Python "
-                        "function name:\n" + "\n".join(parts)
-                    ),
-                )
-
-        # Pass 2: collisions across modules. Submodels execute in one
-        # flattened namespace with the root graph, so a sanitised name may
-        # only be used in a single module. Canonical definitions own their
-        # child graphs; root nodes never duplicate definition-owned children.
+        scoped = [
+            graph,
+            *(g for _, g in SavePipelineService._iter_named_embedded_submodel_graphs(graph)),
+        ]
         structural_types = (NodeType.SUBMODEL, NodeType.SUBMODEL_PORT)
-        sanitized_to_scoped: dict[str, dict[str, list[str]]] = defaultdict(dict)
-        for scope, scoped_graph in scoped_graphs:
-            for node in scoped_graph.nodes:
-                if node.data.nodeType in structural_types:
-                    continue
-                sanitized = _sanitize_func_name(node.data.label)
-                sanitized_to_scoped[sanitized].setdefault(scope, []).append(node.data.label)
-        cross_module = {
-            name: scopes for name, scopes in sanitized_to_scoped.items() if len(scopes) > 1
+        labels_by_name = {
+            _sanitize_func_name(node.data.label): node.data.label
+            for scoped_graph in scoped
+            for node in scoped_graph.nodes
+            if node.data.nodeType not in structural_types
         }
-        if cross_module:
-            parts = [
-                f"  {name!r} <- "
-                + "; ".join(f"{labels!r} in {scope}" for scope, labels in scopes.items())
-                for name, scopes in sorted(cross_module.items())
-            ]
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Duplicate sanitized node names detected across the "
-                    "pipeline and its submodels. Submodels run in one "
-                    "flattened namespace with the main pipeline, so each "
-                    "node name may be used in only one module:\n" + "\n".join(parts)
-                ),
-            )
+        for scoped_graph in scoped:
+            for node in scoped_graph.nodes:
+                if node.data.nodeType != NodeType.API_INPUT:
+                    continue
+                tables = node.data.config.get("tables")
+                if not isinstance(tables, list):
+                    continue
+                own_name = _sanitize_func_name(node.data.label)
+                for table in tables:
+                    label = table.get("label") if isinstance(table, dict) else None
+                    if not isinstance(label, str) or label == own_name:
+                        continue
+                    clashing = labels_by_name.get(label)
+                    if clashing is None:
+                        continue
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Quote Input {node.data.label!r} has a table {label!r} named "
+                            f"like the node {clashing!r}. A step or parameter reading "
+                            f"{label!r} would read both, so the pipeline could not be "
+                            "reloaded. Rename the table or the node. Nothing was saved."
+                        ),
+                    )
 
     @staticmethod
     def _iter_named_embedded_submodel_graphs(
@@ -785,7 +1157,7 @@ class SavePipelineService:
                 detail="source_file is required \u2014 the frontend must track"
                 " and send the original pipeline file path",
             )
-        return validate_safe_path(self._root, source_file)
+        return contained_path(self._root, source_file)
 
     def _validate_source_file_matches_pipeline_root(self, py_path: Path) -> None:
         """Reject saves whose source file does not belong to ``pipeline_root``."""
@@ -893,8 +1265,11 @@ class SavePipelineService:
         # Defence in depth: even after the prefix check, the resolved path
         # must still sit under the project root.  A symlink inside
         # ``modules/`` pointing outside the repo would bypass the string
-        # check but fail here.
-        if not out_path.is_relative_to(self._root):
+        # check but fail here.  Codegen output is not request input, so this
+        # stays a 400 rather than the containment check's 403.
+        try:
+            contained_path(self._root, out_path)
+        except PathOutsideProjectError:
             logger.warning(
                 "save_reject_output_path_resolve",
                 rel_path=rel_path,
@@ -903,7 +1278,7 @@ class SavePipelineService:
             raise HTTPException(
                 status_code=400,
                 detail="Codegen output path resolves outside the project root.",
-            )
+            ) from None
         return out_path
 
     def _resolve_module_output_path(self, normalised: str) -> Path | None:
@@ -914,7 +1289,9 @@ class SavePipelineService:
         else:
             out_path = (self._root / normalised).resolve()
 
-        if not out_path.is_relative_to(self._root):
+        try:
+            contained_path(self._root, out_path)
+        except PathOutsideProjectError:
             return None
         try:
             relative_to_modules = out_path.relative_to(modules_dir)
@@ -1119,10 +1496,12 @@ class SavePipelineService:
         rename so the file-watcher sees a coherent self-write event for
         every file, not just the last one of a long save.
         """
+        self._require_artifact_identity(out_path)
         _stage_artifact_write_bytes(out_path, code.encode("utf-8"), touched)
 
     def _stage_delete(self, target: Path, touched: list[_TouchedFile]) -> None:
         """Delete one file after recording enough state to restore it."""
+        self._require_artifact_identity(target)
         _stage_artifact_delete(target, touched)
 
     # ------------------------------------------------------------------
@@ -1245,20 +1624,47 @@ class SavePipelineService:
         raises if the pipeline is actually run, and this warning points at the
         node so the user is not surprised by that later.
         """
-        from haute._builders import resolve_instance_node
+        from haute._builders import resolve_instance_node, stepped_code_problem
+        from haute._graph_utils import edge_input_name
+        from haute._polars_steps import (
+            STEPPED_SURFACE_LABELS,
+            is_stepped_config,
+            step_input_names,
+        )
 
         scoped_graphs = [graph, *self._iter_embedded_submodel_graphs(graph)]
         for scoped_graph in scoped_graphs:
             node_map = {node.id: node for node in scoped_graph.nodes}
             upstream_counts: dict[str, int] = {}
+            incoming: dict[str, list] = {}
             for edge in scoped_graph.edges:
                 upstream_counts[edge.target] = upstream_counts.get(edge.target, 0) + 1
+                incoming.setdefault(edge.target, []).append(edge)
 
             for node in scoped_graph.nodes:
                 resolved_node = resolve_instance_node(node, node_map)
-                if resolved_node.data.nodeType != NodeType.POLARS:
+                node_type = resolved_node.data.nodeType
+                config = resolved_node.data.config
+                if is_stepped_config(node_type, config) and not config.get("instanceOf"):
+                    edge_names = [
+                        edge_input_name(edge, node_map[edge.source], submodels=graph.submodels)
+                        for edge in incoming.get(node.id, [])
+                        if edge.source in node_map
+                    ]
+                    problem = stepped_code_problem(
+                        config, node_type, step_input_names(node_type, edge_names)
+                    )
+                    if problem is not None:
+                        label = node.data.label or node.id
+                        warnings.append(
+                            f"{STEPPED_SURFACE_LABELS[node_type]} node {label!r} has an incomplete "
+                            f"step list ({problem}). It will save, but running the pipeline "
+                            "will fail until the step is completed."
+                        )
                     continue
-                if str(resolved_node.data.config.get("code") or "").strip():
+                if node_type != NodeType.POLARS:
+                    continue
+                if str(config.get("code") or "").strip():
                     continue
                 count = upstream_counts.get(node.id, 0)
                 label = node.data.label or node.id
@@ -1271,51 +1677,6 @@ class SavePipelineService:
                 warnings.append(
                     f"Transform node {label!r} {detail}. It will save, but running "
                     "the pipeline will fail until you add code to the node."
-                )
-
-    # ------------------------------------------------------------------
-    # Dual-cache: mirror working/ → committed/ per API Input node
-    # ------------------------------------------------------------------
-
-    def _mirror_api_input_caches(self, graph: PipelineGraph) -> None:
-        """Promote each API Input node's volatile cache to the committed layer.
-
-        Walks every API Input node backed by a JSON or newline-delimited JSON
-        data file and
-        invokes :func:`haute._json_flatten.mirror_cache_to_committed`.
-        Mirror semantics (test plan):
-
-        - When working/<hash>/ exists, copy it into committed/<hash>/
-          (no-op trapdoor if fingerprints already match).
-        - When working/<hash>/ does NOT exist *and* this process previously
-          cached the file (delete-then-save flow), remove committed/<hash>/.
-        - When this process has never cached the file, do nothing — avoids
-          promoting a stale on-disk working/ from a previous session.
-
-        Mirror failures are not rolled back through ``_TouchedFile``
-        because the operation is idempotent: a partial state on disk is a
-        valid intermediate that the next save can repair. Logged for the
-        operator to investigate.
-        """
-        from haute._json_flatten import mirror_cache_to_committed
-
-        for node in graph.nodes:
-            if node.data.nodeType != NodeType.API_INPUT:
-                continue
-            cfg = node.data.config
-            path = cfg.get("path", "")
-            if not isinstance(path, str) or not is_json_api_input_path(path):
-                continue
-            data_path = (self._root / path).resolve()
-            if not data_path.is_relative_to(self._root):
-                continue
-            try:
-                mirror_cache_to_committed(str(data_path), cfg)
-            except Exception as exc:  # pragma: no cover - logged for operator
-                logger.error(
-                    "json_cache_mirror_failed",
-                    data_path=str(data_path),
-                    error=str(exc),
                 )
 
     # ------------------------------------------------------------------
@@ -1340,6 +1701,12 @@ class SavePipelineService:
         # on-disk graph, not rotated from the previous `_last`.  See
         # `_compute_disk_prev_config_files` for rationale.
         self._last_config_files = self._collect_node_configs_recursive(graph)
+        if graph.global_constants and graph.global_constants_error is None:
+            from haute._config_io import global_constants_json
+
+            self._last_config_files[GLOBAL_CONSTANTS_FILE] = global_constants_json(
+                graph.global_constants
+            )
         self._protected_config_files: set[str] = set(
             self._collect_config_load_errors_recursive(graph)
         )
@@ -1358,8 +1725,28 @@ class SavePipelineService:
         for rel_path, json_content in self._last_config_files.items():
             out_path = (self._pipeline_root / rel_path).resolve()
             if not out_path.is_relative_to(self._pipeline_root):
-                continue
+                # A link out of the pipeline folder: writing would leave it,
+                # and skipping would drop the edit while the save succeeds.
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Cannot save {rel_path}: it resolves outside the pipeline folder. "
+                        "Replace the link with a folder inside the project, then save again."
+                    ),
+                )
             self._stage_write(out_path, json_content, touched)
+
+    @staticmethod
+    def _discarded_sidecars_recursive(graph: PipelineGraph) -> list[str]:
+        """Relative sidecar paths recorded as ``_discarded_sidecar`` by the parser."""
+        found: list[str] = []
+        scoped = [graph, *SavePipelineService._iter_embedded_submodel_graphs(graph)]
+        for scoped_graph in scoped:
+            for node in scoped_graph.nodes:
+                rel = node.data.config.get("_discarded_sidecar")
+                if isinstance(rel, str) and rel:
+                    found.append(rel.replace("\\", "/"))
+        return found
 
     @staticmethod
     def _iter_embedded_submodel_graphs(graph: PipelineGraph) -> Iterator[PipelineGraph]:
@@ -1398,8 +1785,8 @@ class SavePipelineService:
     def _validate_unique_config_paths_in_graph(graph: PipelineGraph) -> None:
         from haute._config_io import (
             config_path_for_node,
-            has_config_folder,
             is_windows_reserved_filename,
+            node_emits_sidecar,
         )
 
         # Compare paths casefolded: labels differing only in case (``Foo`` /
@@ -1420,7 +1807,7 @@ class SavePipelineService:
         reserved: set[str] = set()
         for node in graph.nodes:
             nt = node.data.nodeType
-            if not has_config_folder(nt):
+            if not node_emits_sidecar(node):
                 continue
             if node.data.config.get("instanceOf"):
                 continue
@@ -1590,7 +1977,25 @@ class SavePipelineService:
             )
             return {}
         try:
-            return self._collect_node_configs_recursive(disk_graph)
+            prev = self._collect_node_configs_recursive(disk_graph)
+            # A polars sidecar whose steps were discarded on parse (the body
+            # was hand-edited) is no longer collected from the graph, but this
+            # pipeline still owns the file: keep it in the baseline so the
+            # stale sweep retires it.
+            for rel in self._discarded_sidecars_recursive(disk_graph):
+                path = (self._pipeline_root / rel).resolve()
+                if rel not in prev and path.is_relative_to(self._pipeline_root) and path.is_file():
+                    prev[rel] = path.read_text(encoding="utf-8")
+            # A declared constants file that loads is this pipeline's to retire
+            # when its last constant goes; one that fails to load is left alone.
+            constants_path = self._pipeline_root / GLOBAL_CONSTANTS_FILE
+            if (
+                disk_graph._parser_global_constants_declared
+                and disk_graph.global_constants_error is None
+                and constants_path.is_file()
+            ):
+                prev[GLOBAL_CONSTANTS_FILE] = constants_path.read_text(encoding="utf-8")
+            return prev
         except HTTPException as exc:
             logger.warning(
                 "stale_cleanup_baseline_unavailable",
@@ -1616,6 +2021,7 @@ class SavePipelineService:
         touched: list[_TouchedFile] | None = None,
         *,
         managed_parent: str | None = None,
+        identity_check: Callable[[Path], None] | None = None,
     ) -> list[str]:
         """Persist node positions and source state to ``.haute.json``.
 
@@ -1630,11 +2036,17 @@ class SavePipelineService:
         if touched is not None:
             # Snapshot for rollback: the transactional save needs to
             # restore the previous sidecar bytes if a later step fails.
+            if identity_check is not None:
+                identity_check(sidecar_path)
             previous_bytes: bytes | None = None
             if sidecar_path.exists():
                 previous_bytes = sidecar_path.read_bytes()
             touched.append(_TouchedFile(target=sidecar_path, previous_bytes=previous_bytes))
-        return save_sidecar(py_path, graph, managed_parent=managed_parent)
+        warnings = save_sidecar(py_path, graph, managed_parent=managed_parent)
+        if touched is not None:
+            # Record the committed identity so rollback restores only our bytes.
+            touched[-1] = touched[-1]._replace(written_digest=_artifact_digest(sidecar_path))
+        return warnings
 
     def _write_managed_submodel_sidecars(
         self,
@@ -1655,6 +2067,7 @@ class SavePipelineService:
                     child.graph.active_source,
                     touched,
                     managed_parent=parent_relative,
+                    identity_check=self._require_artifact_identity,
                 )
             )
         return warnings

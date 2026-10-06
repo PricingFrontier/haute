@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor, act } from "@testing-library/react"
 import UtilityPanel from "../UtilityPanel"
 
@@ -50,6 +50,8 @@ describe("UtilityPanel", () => {
   const defaultProps = {
     onClose: vi.fn(),
     onImportAdded: vi.fn(),
+    preamble: "from utility.features import *",
+    onPreambleChange: vi.fn(),
   }
 
   beforeEach(() => {
@@ -63,6 +65,45 @@ describe("UtilityPanel", () => {
     render(<UtilityPanel {...defaultProps} />)
     expect(screen.getByText("Utility Scripts")).toBeInTheDocument()
     expect(screen.getByTitle("Close")).toBeInTheDocument()
+  })
+
+  describe("Imports entry", () => {
+    const openImports = async () => {
+      render(<UtilityPanel {...defaultProps} />)
+      await waitFor(() => expect(mockListFiles).toHaveBeenCalled())
+      fireEvent.click(screen.getByText("No files"))
+      fireEvent.click(await screen.findByTestId("utility-imports-entry"))
+      return screen.findByTestId("utility-imports")
+    }
+
+    it("is listed first and shows the preamble", async () => {
+      mockListFiles.mockResolvedValue({ files: [{ module: "features", path: "utility/features.py" }] })
+      mockReadFile.mockResolvedValue({ module: "features", content: "def f(): ..." })
+      render(<UtilityPanel {...defaultProps} />)
+      await waitFor(() => expect(mockReadFile).toHaveBeenCalledWith("features"))
+      fireEvent.click(screen.getByText("features"))
+      const imports = await screen.findByTestId("utility-imports-entry")
+      expect(imports.previousElementSibling).toBeNull()
+      expect(imports.nextElementSibling?.textContent).toBe("features")
+      fireEvent.click(screen.getByTestId("utility-imports-entry"))
+      await screen.findByTestId("utility-imports")
+      expect(screen.getByTestId("code-editor")).toHaveValue("from utility.features import *")
+      expect(screen.queryByTitle("Delete features")).not.toBeInTheDocument()
+    })
+
+    it("edits the preamble without the utility file routes", async () => {
+      await openImports()
+      fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "import numpy as np" } })
+      expect(defaultProps.onPreambleChange).toHaveBeenCalledWith("import numpy as np")
+      expect(mockUpdateFile).not.toHaveBeenCalled()
+      expect(mockReadFile).not.toHaveBeenCalled()
+    })
+
+    it("notes the imports that are always included", async () => {
+      await openImports()
+      expect(screen.getByText(/import polars as pl/)).toBeInTheDocument()
+      expect(screen.getByText(/import haute/)).toBeInTheDocument()
+    })
   })
 
   it("close button calls onClose", () => {
@@ -137,6 +178,25 @@ describe("UtilityPanel", () => {
     expect(screen.queryByText("Saved")).toBeNull()
   })
 
+  it("shows a refused create in the empty panel, keeping the typed name", async () => {
+    mockListFiles.mockResolvedValue({ files: [] })
+    mockCreateFile.mockRejectedValue(
+      new MockApiError("Invalid module name: 'class' is a Python keyword", 400),
+    )
+
+    render(<UtilityPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getByText("No utility files yet.")).toBeInTheDocument())
+    fireEvent.click(screen.getByText("Create one"))
+    const input = screen.getByPlaceholderText("module_name")
+    fireEvent.change(input, { target: { value: "class" } })
+    fireEvent.submit(input.closest("form")!)
+
+    expect(await screen.findByTestId("utility-create-error")).toHaveTextContent("is a Python keyword")
+    expect(screen.getByPlaceholderText("module_name")).toHaveValue("class")
+    fireEvent.blur(screen.getByPlaceholderText("module_name"))
+    expect(screen.getByPlaceholderText("module_name")).toHaveValue("class")
+  })
+
   it("calls onImportAdded on create", async () => {
     mockListFiles.mockResolvedValue({ files: [] })
     mockCreateFile.mockResolvedValue({
@@ -166,6 +226,8 @@ describe("UtilityPanel auto-save", () => {
   const defaultProps = {
     onClose: vi.fn(),
     onImportAdded: vi.fn(),
+    preamble: "from utility.features import *",
+    onPreambleChange: vi.fn(),
   }
 
   beforeEach(() => {
@@ -254,6 +316,36 @@ describe("UtilityPanel auto-save", () => {
     await waitFor(() => expect(mockUpdateFile).toHaveBeenCalledWith("features", "x = 99\n"))
     // And the switch still completed — the new file was loaded after the flush.
     await waitFor(() => expect(mockReadFile).toHaveBeenCalledWith("helpers"))
+  })
+
+  it("persists a pending edit when the panel unmounts", async () => {
+    mockUpdateFile.mockResolvedValue({ status: "ok", name: "features.py", module: "features", import_line: "", error: null, error_line: null })
+
+    const { unmount } = render(<UtilityPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getByTestId("code-editor")).toBeInTheDocument())
+
+    fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "x = 5\n" } })
+    expect(mockUpdateFile).not.toHaveBeenCalled()
+
+    unmount()
+    await waitFor(() => expect(mockUpdateFile).toHaveBeenCalledWith("features", "x = 5\n"))
+    expect(mockUpdateFile).toHaveBeenCalledTimes(1)
+  })
+
+  it("discards a pending edit when its file is deleted", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true)
+    onTestFinished(() => confirmSpy.mockRestore())
+    mockDeleteFile.mockResolvedValue({ status: "ok" })
+
+    render(<UtilityPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getByTestId("code-editor")).toBeInTheDocument())
+
+    fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "x = 6\n" } })
+    fireEvent.click(screen.getByTitle("Delete features"))
+    await waitFor(() => expect(mockDeleteFile).toHaveBeenCalledWith("features"))
+
+    await act(async () => { vi.advanceTimersByTime(600) })
+    expect(mockUpdateFile).not.toHaveBeenCalled()
   })
 
   it("does not switch files when flushing a dirty draft fails", async () => {
@@ -457,6 +549,8 @@ describe("UtilityPanel dropdown close-on-outside-click", () => {
   const defaultProps = {
     onClose: vi.fn(),
     onImportAdded: vi.fn(),
+    preamble: "from utility.features import *",
+    onPreambleChange: vi.fn(),
   }
 
   beforeEach(() => {

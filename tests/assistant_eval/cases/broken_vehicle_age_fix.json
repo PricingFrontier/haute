@@ -1,0 +1,41 @@
+{
+  "schema_version": 5,
+  "id": "broken_vehicle_age_fix",
+  "fixture_version": "1",
+  "project_fixture": "broken_pricing",
+  "area": "recovery",
+  "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
+  "turns": [
+    {
+      "request": "rating_features fails to run, so vehicle_bands has nothing to band. Find out why and fix it without changing what the step is meant to do.",
+      "expectations": {
+        "outcome": "applied",
+        "saves": true,
+        "required_node_types": [
+          "polars",
+          "banding"
+        ],
+        "forbidden_node_types": [],
+        "required_edges": [],
+        "require_connected_graph": true,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [
+          "rating_features"
+        ],
+        "node_configs": {},
+        "execution": [
+          {
+            "node": "vehicle_bands",
+            "scenario": "live",
+            "golden": "df = pl.read_csv('data/quotes.csv').with_columns(\n    vehicle_age=2025 - pl.col('year_of_manufacture'),\n).with_columns(\n    vehicle_age_band=pl.when(pl.col('vehicle_age') <= 3).then(pl.lit('new')).when(pl.col('vehicle_age') <= 10).then(pl.lit('mid')).when(pl.col('vehicle_age').is_not_null()).then(pl.lit('old')).otherwise(pl.lit('unknown')),\n)\n",
+            "order_free": false
+          }
+        ],
+        "efficiency": null,
+        "data_findings": null
+      }
+    }
+  ]
+}

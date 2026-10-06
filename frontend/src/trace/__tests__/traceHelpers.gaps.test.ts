@@ -4,6 +4,8 @@ import {
   resolveWaterfallProp,
   buildChainEntries,
   buildInputSourceEntries,
+  describeNotComputable,
+  notComputableNote,
 } from "../traceHelpers"
 import type {
   WaterfallEntryProp,
@@ -205,5 +207,72 @@ describe("buildInputSourceEntries", () => {
       source: "n",
       subSources: null,
     })
+  })
+})
+
+describe("values the evaluator could not compute from the traced row", () => {
+  it("never shows the row's input value in place of an uncomputed result", () => {
+    const chain: ExpressionChainEntry[] = [
+      {
+        expression_text: "x.sum().over(g)",
+        target_column: "share",
+        result_value: null,
+        not_computable_reason: "not_row_local: sum",
+      },
+      { expression_text: "share * 2", target_column: "y" },
+    ]
+    const [share] = buildChainEntries(chain, "y", { share: 7 })
+    expect(share.value).toBeNull()
+    expect(share.note).toBe("Not computed from this row: can depend on other rows (sum)")
+  })
+
+  it("shows the traced run's value, and says so, when that run supplied it", () => {
+    const sources: Record<string, InputSourceEntry> = {
+      share: {
+        node_name: "shares",
+        expression_text: "x.sum().over(g)",
+        result_value: 30,
+        not_computable_reason: "not_row_local: sum",
+        result_source: "trace_execution",
+      },
+    }
+    const [share] = buildInputSourceEntries(sources, { share: 7 }, new Set())
+    expect(share.value).toBe(30)
+    expect(share.note).toBe("From the traced run: can depend on other rows (sum)")
+  })
+
+  it("keeps a null the traced run computed instead of the row's input value", () => {
+    const chain: ExpressionChainEntry[] = [
+      {
+        expression_text: "x.shift(1)",
+        target_column: "lagged",
+        result_value: null,
+        not_computable_reason: "not_row_local: shift",
+        result_source: "trace_execution",
+      },
+      { expression_text: "x == 1", target_column: "flag", result_value: null },
+      { expression_text: "lagged + 1", target_column: "y" },
+    ]
+    const [lagged, flag] = buildChainEntries(chain, "y", { lagged: 7, flag: true })
+    expect(lagged.value).toBeNull()
+    expect(lagged.note).toBe("From the traced run: can depend on other rows (shift)")
+    expect(flag.value).toBeNull()
+  })
+
+  it("describes every reason code and passes unknown ones through", () => {
+    expect(describeNotComputable("unresolved_name: RATE")).toBe(
+      "uses RATE, which the trace cannot resolve",
+    )
+    expect(describeNotComputable("column_unavailable: premium")).toBe(
+      "column premium is not in the traced row",
+    )
+    expect(describeNotComputable("traced_row_unavailable")).toBe(
+      "the traced row could not be recovered",
+    )
+    expect(describeNotComputable("expression_not_located")).toBe(
+      "no formula assigns this column",
+    )
+    expect(describeNotComputable("something_new")).toBe("something_new")
+    expect(notComputableNote({ result_value: 1 })).toBeNull()
   })
 })

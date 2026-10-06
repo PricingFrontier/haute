@@ -19,7 +19,7 @@ import pytest
 from fastapi import HTTPException
 
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
-from haute.routes._optimiser_service import (
+from haute.routes._optimiser_artifacts import (
     _APPLY_ARTIFACT_DIR_PREFIX,
     _APPLY_RESULT_FILENAME,
     _APPLY_RESULT_HANDLE_KIND,
@@ -30,17 +30,17 @@ from haute.routes._optimiser_service import (
     _cleanup_apply_result_artifact,
     _cleanup_orphan_apply_result_artifact,
     _cleanup_ratebook_factors_artifact,
-    _load_apply_result_artifact,
     _load_ratebook_factors_artifact,
-    _optimiser_side_input_ids,
     _persist_apply_result_artifact,
     _persist_ratebook_factors_artifact,
     _persist_ratebook_factors_lazy_artifact,
     _ratebook_factors_artifact_root,
+    _scan_apply_result_artifact,
     _scan_ratebook_factors_artifact,
     _validate_apply_result_artifact_handle,
     _validate_ratebook_factors_artifact_handle,
 )
+from haute.routes._optimiser_input import _optimiser_side_input_ids
 
 
 def _handle(**overrides: object) -> dict[str, object]:
@@ -140,12 +140,19 @@ def test_validate_accepts_well_formed_handle() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_persist_returns_none_without_dataframe_attr() -> None:
-    assert _persist_apply_result_artifact(SimpleNamespace()) is None
-
-
-def test_persist_returns_none_for_non_dataframe() -> None:
-    assert _persist_apply_result_artifact(SimpleNamespace(dataframe=[1, 2, 3])) is None
+@pytest.mark.parametrize(
+    ("solve_result", "found"),
+    [
+        (SimpleNamespace(), "NoneType"),
+        (SimpleNamespace(dataframe=None), "NoneType"),
+        (SimpleNamespace(dataframe=[1, 2, 3]), "list"),
+    ],
+)
+def test_persist_refuses_a_result_without_a_per_quote_frame(solve_result: Any, found: str) -> None:
+    """Persisting is only called for results that must carry a per-quote frame;
+    anything else is a defect to surface, not a silent ``None`` handle."""
+    with pytest.raises(TypeError, match=f"per-quote Polars DataFrame.*is {found}"):
+        _persist_apply_result_artifact(solve_result)
 
 
 def test_persist_cleans_up_dir_when_write_fails() -> None:
@@ -170,7 +177,7 @@ def test_persist_cleans_up_dir_when_write_fails() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _load_apply_result_artifact — corrupt-parquet arm
+# _scan_apply_result_artifact — corrupt-parquet arm
 # ---------------------------------------------------------------------------
 
 
@@ -184,7 +191,7 @@ def test_load_rejects_corrupt_parquet() -> None:
         # validation passes and the read_parquet failure arm is exercised.
         Path(str(handle["path"])).write_bytes(b"not a parquet file")
         with pytest.raises(HTTPException) as exc_info:
-            _load_apply_result_artifact(handle)
+            _scan_apply_result_artifact(handle)
         assert exc_info.value.status_code == 500
         assert "corrupt" in str(exc_info.value.detail)
     finally:
@@ -199,7 +206,7 @@ def test_load_reports_missing_artifact() -> None:
     try:
         Path(str(handle["path"])).unlink()
         with pytest.raises(HTTPException) as exc_info:
-            _load_apply_result_artifact(handle)
+            _scan_apply_result_artifact(handle)
         assert exc_info.value.status_code == 410
         assert exc_info.value.detail == (
             "Optimiser apply artifact is no longer available. Re-run the solve to regenerate it."
@@ -216,7 +223,7 @@ def test_load_reports_missing_artifact() -> None:
 def test_orphan_cleanup_swallows_and_logs_failure() -> None:
     """An invalid handle makes the inner cleanup raise; the helper logs, no raise."""
     bad_handle = _handle(directory="relative", path="relative/result.parquet")
-    with patch("haute.routes._optimiser_service.logger.warning") as warn:
+    with patch("haute.routes._optimiser_artifacts.logger.warning") as warn:
         _cleanup_orphan_apply_result_artifact(
             bad_handle,
             job_id="job-123",
@@ -235,7 +242,7 @@ def test_orphan_cleanup_silent_on_success() -> None:
     handle = _persist_apply_result_artifact(SimpleNamespace(dataframe=df))
     assert handle is not None
     artifact_dir = Path(str(handle["directory"]))
-    with patch("haute.routes._optimiser_service.logger.warning") as warn:
+    with patch("haute.routes._optimiser_artifacts.logger.warning") as warn:
         _cleanup_orphan_apply_result_artifact(
             handle,
             job_id="job-xyz",
@@ -357,9 +364,9 @@ def test_persist_ratebook_factors_lazy_cleans_up_dir_when_sink_fails() -> None:
         created_dirs.append(Path(path).parent)
         raise OSError("sink exploded")
 
-    with patch("haute.routes._optimiser_service.bounded_sink", _capture_then_fail):
+    with patch("haute.routes._optimiser_artifacts.bounded_sink", _capture_then_fail):
         with pytest.raises(OSError, match="sink exploded"):
-            _persist_ratebook_factors_lazy_artifact(lf, streaming_chunk_size=64)
+            _persist_ratebook_factors_lazy_artifact(lf)
 
     assert created_dirs, "bounded_sink should have been called"
     assert not created_dirs[0].exists(), "temp factors dir must be removed on sink failure"
@@ -368,7 +375,7 @@ def test_persist_ratebook_factors_lazy_cleans_up_dir_when_sink_fails() -> None:
 def test_persist_ratebook_factors_lazy_happy_path_roundtrips() -> None:
     """The lazy persist path writes a real handle that loads back equal."""
     lf = pl.DataFrame({"quote_id": ["q1", "q2"], "region": ["n", "s"]}).lazy()
-    handle = _persist_ratebook_factors_lazy_artifact(lf, streaming_chunk_size=64)
+    handle = _persist_ratebook_factors_lazy_artifact(lf)
     try:
         assert handle["kind"] == _RATEBOOK_FACTORS_HANDLE_KIND
         assert handle["row_count"] == 2
@@ -495,7 +502,7 @@ def test_orphan_cleanup_dispatches_to_ratebook_factors_cleaner() -> None:
     assert handle is not None
     factors_dir = Path(str(handle["directory"]))
     assert factors_dir.exists()
-    with patch("haute.routes._optimiser_service.logger.warning") as warn:
+    with patch("haute.routes._optimiser_artifacts.logger.warning") as warn:
         _cleanup_orphan_apply_result_artifact(
             handle,
             job_id="job-rb",

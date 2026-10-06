@@ -20,16 +20,20 @@ import polars as pl
 
 import haute.projection as projection
 from haute._cache import canonical_json
-from haute._contracts import _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY
+from haute._contracts import (
+    _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY,
+    _DEPLOY_OPTIMISER_INPUT_COLUMNS_CONFIG_KEY,
+)
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._graph_utils import edge_input_name, upstream_node_ids
 from haute._hashing import content_hash_bytes
 from haute._io import load_external_object
 from haute._logging import get_logger
+from haute._mlflow_io import clear_local_model_cache, load_local_model_cached
 from haute._node_builder import NodeBuildHooks, NodeFnResult, node_fn_name, wrap_builder
+from haute._polars_dtypes import contract_dtype_name
 from haute._polars_utils import streaming_collect
-from haute._stat_gated_cache import StatGatedCache, artifact_cache_key, resolve_artifact_path
 from haute._types import (
     GraphNode,
     NodeType,
@@ -38,15 +42,11 @@ from haute._types import (
 )
 from haute.execution import (
     _stat_gated_runtime_path_fingerprint,
-    build_dataframe_execution_cache_request,
-    dataframe_frame_input_fingerprint,
-    dataframe_graph_input_fingerprint,
     execute_lazy_graph,
 )
 from haute.executor import _build_node_fn
 
 if TYPE_CHECKING:
-    from haute._mlflow_io import ScoringModel
     from haute.modelling._feature_contract import FeatureContract
 
 _RUNTIME_PATH_NODE_TYPES = frozenset(
@@ -65,39 +65,14 @@ logger = get_logger(component="deploy_scorer")
 # A deployed container serves every ``/quote`` from the same bundled
 # artifacts; reloading the model and re-reading/re-hashing the feature
 # contract per request turns disk parsing into per-quote latency.  Models
-# are cached by ``(resolved path, task)``, contracts by resolved path, both
-# gated on ``(st_mtime_ns, st_size)`` — the same invalidation discipline as
-# :func:`haute.execution._stat_gated_runtime_path_fingerprint`.  One slot
-# per key, replaced when the stat gate changes, so the caches stay bounded
-# by the bundle's artifact count.
-#
-# Concurrency: the first ``/quote`` to need an artifact loads it under a
-# per-key lock; concurrent requests wait and reuse the cached value, so a
-# thundering herd on container start performs exactly one disk load.
-# Failed loads are never cached, and cached values are shared across
-# requests/threads — treated as immutable.  (See
-# :class:`haute._stat_gated_cache.StatGatedCache` for the full contract.)
-
-_local_model_cache: StatGatedCache[tuple[str, str], ScoringModel] = StatGatedCache(
-    artifact_kind="deploy model artifact"
-)
-
-
-def _load_local_model_cached(path: str, task: str) -> ScoringModel:
-    """Stat-gated process cache over :func:`haute._mlflow_io.load_local_model`."""
-    # The SLOT key is case-folded (normcase; a no-op on POSIX, so a macOS
-    # case-variant spelling still gets its own slot — accepted, as in
-    # haute._json_flatten._path_hash). The stat/open path keeps the on-disk
-    # case: a folded spelling need not exist on a case-sensitive filesystem.
-    io_path = resolve_artifact_path(path)
-    key = artifact_cache_key(io_path)
-
-    def _load() -> ScoringModel:
-        from haute._mlflow_io import load_local_model
-
-        return load_local_model(io_path, task)
-
-    return _local_model_cache.get_or_load((key, task), io_path, _load)
+# load through :func:`haute._mlflow_io.load_local_model_cached`, the
+# stat-gated local-model cache file-sourced Model Scoring shares, which binds
+# each model to its bundled contract exactly as the preview does; contracts
+# are cached by resolved path. Both are gated on the file's freshness token —
+# the same invalidation discipline as
+# :func:`haute.execution._stat_gated_runtime_path_fingerprint` — and a failed
+# load is never cached. (See :class:`haute._stat_gated_cache.StatGatedCache`
+# for the full contract.)
 
 
 def _load_feature_contract_cached(path: str) -> FeatureContract:
@@ -117,7 +92,7 @@ def _clear_deploy_artifact_caches() -> None:
     """Drop every cached deploy artifact (test isolation / targeted resets)."""
     from haute.modelling._feature_contract import _clear_contract_cache
 
-    _local_model_cache.clear()
+    clear_local_model_cache()
     _clear_contract_cache()
 
 
@@ -160,31 +135,23 @@ def deploy_execution_profile(row_count: int) -> ExecutionProfile:
     return ExecutionProfile.DEPLOY_BATCH if row_count > 1 else ExecutionProfile.DEPLOY_LIVE
 
 
-def admit_deploy_execution(*, operation: str, row_count: int) -> ExecutionContext:
-    """Create an admitted deploy execution context from request metadata."""
+def admit_deploy_execution(
+    *,
+    operation: str,
+    row_count: int,
+    profile: ExecutionProfile | None = None,
+) -> ExecutionContext:
+    """Create an admitted deploy execution context from request metadata.
+
+    ``profile`` overrides the row-count-derived profile for a caller that runs
+    one fixed execution path whatever the payload size: the batch worker always
+    admits ``DEPLOY_BATCH``, including for the bundle's one-row schema dry-run,
+    so the served envelope and the batch ``modelScore`` contract apply there.
+    """
     return create_admitted_execution_context(
         operation=operation,
-        profile=deploy_execution_profile(row_count),
+        profile=profile if profile is not None else deploy_execution_profile(row_count),
     )
-
-
-def _deploy_model_score_source(execution_context: ExecutionContext) -> str:
-    """Return the modelScore source contract for the admitted deploy profile."""
-    if execution_context.profile == ExecutionProfile.DEPLOY_BATCH:
-        return ExecutionProfile.DEPLOY_BATCH.value
-    return "live"
-
-
-def _model_score_has_configured_source(config: dict[str, Any]) -> bool:
-    """Return whether a modelScore node has enough config to load a model."""
-    source_type = config.get("sourceType", "")
-    if not source_type:
-        return False
-    if source_type == "run" and not config.get("run_id", ""):
-        return False
-    if source_type == "registered" and not config.get("registered_model", ""):
-        return False
-    return True
 
 
 def _cleanup_model_score_temp_paths(
@@ -260,8 +227,7 @@ def _resolve_runtime_graph_paths(graph: PipelineGraph) -> PipelineGraph:
             and not Path(raw_path).is_absolute()
         ):
             resolved = str((base_dir / raw_path).resolve())
-            data = node.data.model_copy(update={"config": {**config, "path": resolved}})
-            nodes.append(node.model_copy(update={"data": data}))
+            nodes.append(node.with_config({**config, "path": resolved}))
             changed = True
         else:
             nodes.append(node)
@@ -291,10 +257,7 @@ def _attach_bundled_feature_contracts(
         if config.get("feature_contract_path") == contract_path:
             nodes.append(node)
             continue
-        data = node.data.model_copy(
-            update={"config": {**config, "feature_contract_path": contract_path}}
-        )
-        nodes.append(node.model_copy(update={"data": data}))
+        nodes.append(node.with_config({**config, "feature_contract_path": contract_path}))
         changed = True
     if not changed:
         return graph
@@ -330,12 +293,12 @@ def _attach_bundled_model_contract_inputs(
             nodes.append(node)
             continue
 
-        model_path = _remap_artifact(node.id, config, remap, "artifact_path")
+        model_path = _remap_artifact(node.id, config, remap, model_artifact_field(config))
         if model_path is None:
             nodes.append(node)
             continue
 
-        scoring_model = _load_local_model_cached(
+        scoring_model = load_local_model_cached(
             model_path,
             config.get("task", "regression"),
         )
@@ -377,17 +340,52 @@ def _attach_bundled_model_contract_inputs(
         deploy_inputs = list(feature_names)
         if offset_column is not None and offset_column not in deploy_inputs:
             deploy_inputs.append(offset_column)
-        data = node.data.model_copy(
-            update={
-                "config": {
-                    **config,
-                    _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY: deploy_inputs,
-                }
-            }
+        nodes.append(
+            node.with_config({**config, _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY: deploy_inputs})
         )
-        nodes.append(node.model_copy(update={"data": data}))
         changed = True
 
+    return graph.model_copy(update={"nodes": nodes}) if changed else graph
+
+
+def _attach_bundled_optimiser_artifacts(
+    graph: PipelineGraph,
+    remap: dict[str, str],
+) -> PipelineGraph:
+    """Annotate file-sourced optimiserApply nodes with their served artifact's inputs.
+
+    The deployed apply reads the bundled artifact, which may differ from the
+    file at the graph's original path; projection must plan from the same one.
+    An online artifact contributes the columns it reads; any other leaves an
+    empty list, so projection keeps the generic rules without loading a file.
+    """
+    if not remap:
+        return graph
+    from haute._builders import online_apply_input_columns
+    from haute._optimiser_io import load_optimiser_artifact
+
+    nodes: list[GraphNode] = []
+    changed = False
+    for node in graph.nodes:
+        config = node.data.config
+        bundled = (
+            _remap_artifact(node.id, config, remap, "artifact_path")
+            if node.data.nodeType == NodeType.OPTIMISER_APPLY and config.get("sourceType") == "file"
+            else None
+        )
+        if bundled is None:
+            nodes.append(node)
+            continue
+        artifact = load_optimiser_artifact(bundled)
+        columns = (
+            sorted(online_apply_input_columns(artifact))
+            if isinstance(artifact, Mapping) and artifact.get("mode", "online") != "ratebook"
+            else []
+        )
+        nodes.append(
+            node.with_config({**config, _DEPLOY_OPTIMISER_INPUT_COLUMNS_CONFIG_KEY: columns})
+        )
+        changed = True
     return graph.model_copy(update={"nodes": nodes}) if changed else graph
 
 
@@ -404,11 +402,17 @@ def _remap_artifact(
 
     Returns the remapped local path if found, otherwise ``None``.
     """
+    from haute.deploy._utils import artifact_basename
+
     raw_path = config.get(key_field, "")
-    # Use Path (platform-aware) to match the bundler's Path(abs_path).name.
-    # PurePosixPath would fail on Windows backslash paths.
-    artifact_key = f"{node_id}__{Path(raw_path).name}" if raw_path else f"{node_id}__"
+    # Either separator: a path saved on Windows is served on Linux.
+    artifact_key = f"{node_id}__{artifact_basename(raw_path)}" if raw_path else f"{node_id}__"
     return remap.get(artifact_key)
+
+
+def model_artifact_field(config: Mapping[str, Any]) -> str:
+    """The config key whose basename names a Model Scoring node's bundled model."""
+    return "model_path" if config.get("sourceType") == "file" else "artifact_path"
 
 
 def _bundled_contract_path(node_id: str, remap: dict[str, str]) -> str | None:
@@ -428,22 +432,27 @@ def _validate_deploy_model_score_source(node: GraphNode, remap: dict[str, str]) 
         return
     config = node.data.config
     if (
-        _model_score_has_configured_source(config)
-        or _remap_artifact(node.id, config, remap, "artifact_path") is not None
+        _remap_artifact(node.id, config, remap, model_artifact_field(config)) is not None
         or _bundled_contract_path(node.id, remap) is not None
     ):
         return
 
-    from haute.errors import DeployError
+    from haute._model_source import parse_model_source
+    from haute.errors import ConfigError, DeployError
 
-    raise DeployError(
+    message = (
         f"modelScore node {node.id!r} cannot be served: it has no usable "
         "model source (set sourceType with a run_id or "
-        "registered_model) and no bundled model artifact, so the "
+        "registered_model, or a model file) and no bundled model artifact, so the "
         "deployed endpoint would serve it as a silent identity "
-        "passthrough that omits the model from every quote.",
-        node_id=node.id,
+        "passthrough that omits the model from every quote."
     )
+    try:
+        model_source = parse_model_source(config)
+    except ConfigError as exc:
+        raise DeployError(f"{message} {exc}", node_id=node.id) from exc
+    if model_source is None:
+        raise DeployError(message, node_id=node.id)
 
 
 def _declared_categorical_levels_for_model_score(
@@ -506,7 +515,7 @@ def _assert_runtime_contract_matches(
             # placeholder so the diff names the missing column.
             feature_types[name] = "MISSING"
             continue
-        canonical = _canonical_dtype(dtype)
+        canonical = contract_dtype_name(dtype)
         feature_types[name] = canonical
     for name in runtime_features:
         if feature_types.get(name) == "String":
@@ -562,22 +571,6 @@ def _assert_runtime_contract_matches(
     return {column: list(levels) for column, levels in score_levels.items()}
 
 
-def _canonical_dtype(dtype: Any) -> str:
-    """Map a polars dtype to the canonical contract dtype string.
-
-    Matches the convention used by ``haute.modelling._training_job``.
-    """
-    if dtype == pl.Boolean:
-        return "Boolean"
-    if dtype in (pl.Utf8, pl.String, pl.Categorical):
-        return "String"
-    if hasattr(dtype, "is_integer") and dtype.is_integer():
-        return "Int64"
-    if hasattr(dtype, "is_float") and dtype.is_float():
-        return "Float64"
-    return str(dtype)
-
-
 def score_graph_lazy(
     graph: PipelineGraph,
     input_df: pl.DataFrame,
@@ -627,6 +620,42 @@ def score_graph_lazy(
         raise
 
 
+def _reject_incomplete_stepped_nodes(graph: PipelineGraph, relevant_node_ids: set[str]) -> None:
+    """Fail before deploy preparation loads anything or builds functions.
+
+    Deploy score plans fail early at preparation time before model loading or
+    interceptor execution, reporting the same step-numbered message the
+    executor builder would raise.
+    """
+    from haute._builders import stepped_code_problem
+    from haute._code_extraction import INCOMPLETE_STEPS_MESSAGE
+    from haute._polars_steps import is_stepped_config, step_input_names
+    from haute.errors import ConfigError
+
+    node_by_id = {node.id: node for node in graph.nodes}
+    for node in graph.nodes:
+        if node.id not in relevant_node_ids:
+            continue
+        if not is_stepped_config(node.data.nodeType, node.data.config):
+            continue
+        edge_names = [
+            edge_input_name(edge, node_by_id[edge.source])
+            for edge in graph.edges
+            if edge.target == node.id and edge.source in node_by_id
+        ]
+        problem = stepped_code_problem(
+            node.data.config,
+            node.data.nodeType,
+            step_input_names(node.data.nodeType, edge_names),
+        )
+        if problem is not None:
+            raise ConfigError(
+                f"{INCOMPLETE_STEPS_MESSAGE} {problem}",
+                node_id=node.id,
+                node_label=node.data.label,
+            )
+
+
 def _score_graph_lazy(
     graph: PipelineGraph,
     input_df: pl.DataFrame,
@@ -639,7 +668,9 @@ def _score_graph_lazy(
     """Construct the lazy score plan using an already-admitted context."""
     remap = artifact_paths or {}
     graph = _attach_bundled_feature_contracts(_resolve_runtime_graph_paths(graph), remap)
+    graph = _attach_bundled_optimiser_artifacts(graph, remap)
     relevant_node_ids = set(upstream_node_ids(output_node_id, graph.parents_of)) | {output_node_id}
+    _reject_incomplete_stepped_nodes(graph, relevant_node_ids)
     graph = _attach_bundled_model_contract_inputs(graph, remap, relevant_node_ids)
     node_by_id = {node.id: node for node in graph.nodes}
     parents_of = graph.parents_of
@@ -657,6 +688,11 @@ def _score_graph_lazy(
             _validate_deploy_model_score_source(node, remap)
     input_set = set(input_node_ids)
     input_lf = input_df.lazy()
+    runtime_source_frames_by_node = {
+        node.id: input_df
+        for node in graph.nodes
+        if node.id in input_set and node.data.nodeType in {NodeType.API_INPUT, NodeType.DATA_INPUT}
+    }
     model_score_temp_paths: list[str] = []
     retained_lazy_frames: list[pl.LazyFrame] = []
 
@@ -670,35 +706,26 @@ def _score_graph_lazy(
         node_type = node.data.nodeType
         config = node.data.config
         func_name = node_fn_name(node)
+        # The preamble's names (the run's global constants among them), which
+        # code boxes see beside their own, exactly as the editor builders give them.
+        _preamble_names: dict[str, Any] = dict(build_kwargs.get("preamble_ns") or {})
 
-        # Intercept: apiInput source → inject live DataFrame
-        if node_type in {NodeType.API_INPUT, NodeType.DATA_INPUT} and nid in input_set:
+        # Intercept: apiInput source → inject live DataFrame directly
+        if node_type == NodeType.API_INPUT and nid in input_set:
 
             def inject_input() -> _Frame:
                 return input_lf
 
             return func_name, inject_input, True
 
-        # Intercept: retained Data Input snapshot or canonical direct Parquet
-        # source. The graph config remains canonical; only this deploy-only
-        # execution path reads the matching bundled artifact.
-        bundled_data_path: str | None = None
-        if node_type == NodeType.DATA_INPUT and remap:
-            from haute._polars_io_registry import data_input_is_direct
-
-            if data_input_is_direct(config):
-                bundled_data_path = _remap_artifact(nid, config, remap, "path")
-            else:
-                bundled_data_path = remap.get(f"{nid}__snapshot.parquet")
-        if bundled_data_path is not None:
-            _bundled_data_path = bundled_data_path
+        # Intercept: dataInput source → inject live DataFrame through apply_source_scan
+        if node_type == NodeType.DATA_INPUT and nid in input_set:
             _code = str(config.get("code") or "").strip()
             _preamble = build_kwargs.get("preamble_ns")
             _profile = build_kwargs.get("execution_profile")
             _required = build_kwargs.get("required_output_columns")
 
-            def bundled_snapshot_input(
-                _path: str = _bundled_data_path,
+            def inject_data_input(
                 _config: dict[str, Any] = config,
                 _node_id: str = nid,
                 _code_value: str = _code,
@@ -706,34 +733,63 @@ def _score_graph_lazy(
                 _execution_profile: str | None = _profile,
                 _required_columns: frozenset[str] | set[str] | None = _required,
             ) -> _Frame:
-                from haute._builders import _source_scan_projection
-                from haute._io import _select_columns
-                from haute._user_exec import _exec_user_code
+                from haute._builders import apply_source_scan
 
-                preserves_projection = projection.source_user_code_preserves_column_projection(
-                    _code_value
-                )
-                projected = _source_scan_projection(
-                    _execution_profile,
-                    _required_columns if preserves_projection else None,
-                    _config,
+                return apply_source_scan(
+                    input_lf,
+                    profile=_execution_profile,
+                    required_output_columns=_required_columns,
+                    config=_config,
+                    code=_code_value,
+                    preamble_ns=_preamble_ns,
                     node_id=_node_id,
                 )
-                frame = pl.scan_parquet(_path)
-                frame = _select_columns(
-                    frame,
-                    None if projected.columns is None else tuple(projected.columns),
-                    validate_columns=tuple(projected.validate_columns),
+
+            return func_name, inject_data_input, True
+
+        # Intercept: retained Data Input snapshot or canonical direct Parquet
+        # source. The graph config remains canonical; only this deploy-only
+        # execution path reads the matching bundled artifact.
+        bundled_data_source: str | list[str] | None = None
+        if node_type == NodeType.DATA_INPUT and remap:
+            from haute._polars_io_registry import data_input_is_direct
+
+            if data_input_is_direct(config):
+                bundled_data_source = _remap_artifact(nid, config, remap, "path")
+            else:
+                prefix = f"{nid}__snapshot.part-"
+                part_keys = sorted(
+                    k for k in remap.keys() if k.startswith(prefix) and k.endswith(".parquet")
                 )
-                if _code_value:
-                    return _exec_user_code(
-                        _code_value,
-                        ["df"],
-                        (frame,),
-                        extra_ns=_preamble_ns,
-                        alias_first_input_as_df=True,
-                    )
-                return frame
+                if part_keys:
+                    bundled_data_source = [remap[k] for k in part_keys]
+        if bundled_data_source is not None:
+            _bundled_data_source = bundled_data_source
+            _code = str(config.get("code") or "").strip()
+            _preamble = build_kwargs.get("preamble_ns")
+            _profile = build_kwargs.get("execution_profile")
+            _required = build_kwargs.get("required_output_columns")
+
+            def bundled_snapshot_input(
+                _source: str | list[str] = _bundled_data_source,
+                _config: dict[str, Any] = config,
+                _node_id: str = nid,
+                _code_value: str = _code,
+                _preamble_ns: dict[str, Any] | None = _preamble,
+                _execution_profile: str | None = _profile,
+                _required_columns: frozenset[str] | set[str] | None = _required,
+            ) -> _Frame:
+                from haute._builders import apply_source_scan
+
+                return apply_source_scan(
+                    pl.scan_parquet(_source),
+                    profile=_execution_profile,
+                    required_output_columns=_required_columns,
+                    config=_config,
+                    code=_code_value,
+                    preamble_ns=_preamble_ns,
+                    node_id=_node_id,
+                )
 
             return func_name, bundled_snapshot_input, True
 
@@ -743,7 +799,6 @@ def _score_graph_lazy(
             if remapped_path is not None:
                 code = config.get("code", "").strip()
                 file_type = config.get("fileType", "pickle")
-                model_class = config.get("modelClass", "classifier")
                 _src_names = list(source_names)
 
                 _remapped: str = remapped_path  # narrowed by the `is not None` guard above
@@ -753,18 +808,18 @@ def _score_graph_lazy(
                         *dfs: _Frame,
                         _p: str = _remapped,
                         _ft: str = file_type,
-                        _mc: str = model_class,
                         _code: str = code,
                         _sn: list[str] = _src_names,
+                        _ns: dict[str, Any] = _preamble_names,
                     ) -> _Frame:
                         from haute._user_exec import _exec_user_code
 
-                        obj = load_external_object(_p, _ft, _mc)
+                        obj = load_external_object(_p, _ft)
                         return _exec_user_code(
                             _code,
                             _sn,
                             dfs,
-                            extra_ns={"obj": obj},
+                            extra_ns={**_ns, "obj": obj},
                             alias_first_input_as_df=True,
                         )
 
@@ -817,6 +872,8 @@ def _score_graph_lazy(
                 _rid = config.get("run_id", "")
                 _rm = config.get("registered_model", "")
                 _ver = config.get("version", "latest")
+                _alias = str(config.get("alias", "") or "")
+                _dest = str(config.get("mlflow_destination", "") or "")
 
                 def optimiser_apply_mlflow_fn(
                     *dfs: _Frame,
@@ -824,6 +881,8 @@ def _score_graph_lazy(
                     _run_id: str = _rid,
                     _reg_model: str = _rm,
                     _opt_ver: str = _ver,
+                    _opt_alias: str = _alias,
+                    _destination: str = _dest,
                     _version_col: str = _vcol,
                     _optimised_value_col: str = _opt_col,
                     _rb_input: str = _ratebook_input,
@@ -837,6 +896,8 @@ def _score_graph_lazy(
                         run_id=_run_id,
                         registered_model=_reg_model,
                         version=_opt_ver,
+                        alias=_opt_alias,
+                        destination=_destination,
                     )
                     lf = _select_optimiser_apply_input(
                         dfs,
@@ -855,7 +916,9 @@ def _score_graph_lazy(
         # This branch also covers configured non-bundled modelScore nodes.
         if node_type == NodeType.MODEL_SCORE:
             bundled_contract_path = _bundled_contract_path(nid, remap) if remap else None
-            remapped_path = _remap_artifact(nid, config, remap, "artifact_path") if remap else None
+            remapped_path = (
+                _remap_artifact(nid, config, remap, model_artifact_field(config)) if remap else None
+            )
             _task = config.get("task", "regression")
             _output_col = config.get("output_column", "prediction")
             _src_names = list(source_names)
@@ -867,7 +930,7 @@ def _score_graph_lazy(
                 upstream_node_ids(nid, parents_of),
             )
             _code = str(config.get("code") or "").strip()
-            _score_source = _deploy_model_score_source(execution_context)
+            _score_source = "live"
             _required_output_columns = projection.model_score_required_output_columns(
                 config,
                 build_kwargs.get("required_output_columns"),
@@ -893,7 +956,6 @@ def _score_graph_lazy(
 
                     lf = dfs[0] if dfs else pl.LazyFrame()
                     score_categorical_levels = dict(_categorical_levels)
-                    offset_column: str | None = None
                     if _contract_path is not None:
                         score_categorical_levels = _assert_runtime_contract_matches(
                             lf,
@@ -901,11 +963,9 @@ def _score_graph_lazy(
                             _t,
                             categorical_levels=_categorical_levels,
                         )
-                        # The bundled contract is the authoritative offset
-                        # source at serve time (the only one a pyfunc model
-                        # has); native models also self-describe.
-                        offset_column = _load_feature_contract_cached(_contract_path).offset_column
-                    scoring_model = _load_local_model_cached(_p, _t)
+                    # Bound to the bundled contract, which declares the offset
+                    # a pyfunc or an undeclared CatBoost model scores with.
+                    scoring_model = load_local_model_cached(_p, _t, _contract_path)
                     return _run_score_pipeline(
                         scoring_model,
                         lf,
@@ -918,7 +978,7 @@ def _score_graph_lazy(
                         required_output_columns=_required,
                         temporary_paths=model_score_temp_paths,
                         categorical_levels=score_categorical_levels,
-                        offset_column=offset_column,
+                        preamble_ns=_preamble_names,
                     )
 
                 return func_name, model_score_fn, False
@@ -985,8 +1045,9 @@ def _score_graph_lazy(
     )
 
     # Deployed graph routing stays on the live source so source-switch nodes
-    # select the API input branch. Individual modelScore nodes choose their
-    # eager/batch scoring mode from the admitted execution profile.
+    # select the API input branch. Deployed scoring always scores models in
+    # memory (source "live") and never uses the dataframe execution cache,
+    # for every profile, so no parquet is written between nodes.
     required_columns_by_node: dict[str, frozenset[str]] | None = None
     if output_fields:
         if isinstance(output_fields, str | bytes):
@@ -997,46 +1058,10 @@ def _score_graph_lazy(
                 raise ValueError("output_fields must contain non-empty string names")
             output_seed.add(column)
         required_columns_by_node = {output_node_id: frozenset(output_seed)}
-    deploy_model_score_source = _deploy_model_score_source(execution_context)
-    source_by_node = {
-        node.id: deploy_model_score_source
-        for node in graph.nodes
-        if node.data.nodeType == NodeType.MODEL_SCORE
-        and _model_score_has_configured_source(node.data.config)
-    }
     from haute._model_scorer import model_score_temp_file_scope
 
     try:
         with model_score_temp_file_scope(model_score_temp_paths):
-            remapped_node_ids = {key.split("__", 1)[0] for key in remap}
-            dataframe_cache_request = (
-                build_dataframe_execution_cache_request(
-                    graph,
-                    node_ids=[output_node_id],
-                    namespace="deploy_score",
-                    source="live",
-                    profile=execution_context.profile,
-                    input_fingerprint=dataframe_graph_input_fingerprint(
-                        graph,
-                        target_node_id=output_node_id,
-                        source="live",
-                        ignore_node_ids=input_set | remapped_node_ids,
-                        extra_fingerprints={
-                            "input_df": dataframe_frame_input_fingerprint(input_df),
-                            "input_node_ids": sorted(input_set),
-                            "artifact_paths": _deploy_artifact_paths_input_fingerprint(remap),
-                        },
-                    ),
-                    target_node_id=output_node_id,
-                    source_by_node=source_by_node,
-                    required_columns_by_node=required_columns_by_node,
-                    enforce_contracts=True,
-                    preamble_ns_supplied=preamble_ns is not None,
-                )
-                if output_node_id in graph.node_map
-                and execution_context.profile != ExecutionProfile.DEPLOY_LIVE
-                else None
-            )
             lazy_outputs, order, _parents, _names = execute_lazy_graph(
                 graph,
                 builder,
@@ -1046,8 +1071,11 @@ def _score_graph_lazy(
                 enforce_contracts=True,
                 required_columns_by_node=required_columns_by_node,
                 execution_context=execution_context,
-                source_by_node=source_by_node,
-                dataframe_cache_request=dataframe_cache_request,
+                runtime_source_frames_by_node=runtime_source_frames_by_node,
+                # Deploy scoring reads its Data Inputs through the bundled
+                # artifact intercept above; the canonical configs it carries
+                # must never trigger an automatic provider build here.
+                prepare_inputs=False,
             )
 
         output_lf = lazy_outputs.get(output_node_id)

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react"
+import type { Edge, Node } from "@xyflow/react"
 import {
   computeNextNodeId,
   filterIncomingEdges,
@@ -8,9 +9,8 @@ import {
 import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import useGraphStore from "../stores/useGraphStore"
-import useDocumentStatusStore, {
-  type RetainedPipelineCanvas,
-} from "../stores/useDocumentStatusStore"
+import useDocumentStatusStore from "../stores/useDocumentStatusStore"
+import { constantDrafts } from "../utils/globalConstants"
 import {
   adaptPipelineEditorDocument,
   parsePipelineEditorDocument,
@@ -22,7 +22,13 @@ import {
   notifyHauteSessionExpired,
 } from "../api/client"
 
-export type WsStatus = "connected" | "reconnecting" | "disconnected"
+/** Live-sync connection state. `idle`: sync is not enabled (the pipeline is
+ *  loading or failed to load). `connecting`: no attempt has failed yet.
+ *  `reconnecting`: a connection dropped or an attempt failed, and retries
+ *  continue. `disconnected`: retries are exhausted, the socket could not be
+ *  built, or the session expired. Only the last two mean the server is known
+ *  to be unreachable. */
+export type WsStatus = "idle" | "connecting" | "connected" | "reconnecting" | "disconnected"
 
 interface WebSocketSyncParams {
   preambleRef: React.MutableRefObject<string>
@@ -34,6 +40,7 @@ interface WebSocketSyncParams {
   nodeIdCounter: React.MutableRefObject<number>
   fitView: (options?: { padding?: number }) => void
   enabled?: boolean
+  onDocumentReload?: (reloaded: { nodes: Node[]; edges: Edge[] }) => void
 }
 
 const MAX_RETRIES = 50
@@ -112,10 +119,43 @@ function sourceFileLabel(value: unknown, fallback = "the current pipeline"): str
   return value.replace(/\\/g, "/")
 }
 
+/** The assistant change an update saved or undid, and every node id it names. */
+interface AssistantDocumentOrigin {
+  kind: "assistant"
+  sessionId: string
+  changeId: string
+  nodeIds: string[]
+}
+
 interface PipelineDocumentUpdateFrame {
   document: PipelineEditorDocument
   documentFingerprint: string
   sourceFile: string
+  /** Present only on an update an assistant apply or undo published. */
+  origin: AssistantDocumentOrigin | null
+}
+
+function parseDocumentOrigin(value: unknown): AssistantDocumentOrigin {
+  const invalid = () => new Error("pipeline_document_update: invalid origin")
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw invalid()
+  const origin = value as Record<string, unknown>
+  const keys = Object.keys(origin).sort()
+  if (keys.join(",") !== "change_id,kind,node_ids,session_id") throw invalid()
+  if (
+    origin.kind !== "assistant" ||
+    typeof origin.session_id !== "string" ||
+    typeof origin.change_id !== "string" ||
+    !Array.isArray(origin.node_ids) ||
+    !origin.node_ids.every((id) => typeof id === "string")
+  ) {
+    throw invalid()
+  }
+  return {
+    kind: "assistant",
+    sessionId: origin.session_id,
+    changeId: origin.change_id,
+    nodeIds: origin.node_ids as string[],
+  }
 }
 
 function parsePipelineDocumentUpdateFrame(
@@ -127,6 +167,7 @@ function parsePipelineDocumentUpdateFrame(
     "document",
     "document_fingerprint",
     "source_file",
+    ...("origin" in message ? ["origin"] : []),
   ]
   const actualKeys = Object.keys(message).sort()
   if (
@@ -159,45 +200,27 @@ function parsePipelineDocumentUpdateFrame(
     document,
     documentFingerprint,
     sourceFile: message.source_file,
-  }
-}
-
-function retainedCanvasFor(
-  document: PipelineEditorDocument,
-  dirty: boolean,
-): RetainedPipelineCanvas | null {
-  if (document.load_status !== "source_only") return null
-  const current = useDocumentStatusStore.getState()
-  if (current.loadStatus === "source_only") return current.retainedCanvas
-  if (current.loadStatus !== "ready" && current.loadStatus !== "degraded") return null
-  return {
-    kind: dirty ? "local_dirty" : "last_renderable",
-    sourceRevision: current.sourceRevision,
-    loadStatus: current.loadStatus,
+    origin: "origin" in message ? parseDocumentOrigin(message.origin) : null,
   }
 }
 
 export default function useWebSocketSync({
   preambleRef, submodelsRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef,
-  graphRefreshingRef, nodeIdCounter, fitView, enabled = true,
+  graphRefreshingRef, nodeIdCounter, fitView, enabled = true, onDocumentReload,
 }: WebSocketSyncParams): WsStatus {
   const { setSyncBanner } = useUIStore()
   const { addToast } = useToastStore()
-  const [status, setStatus] = useState<WsStatus>(() => enabled ? "reconnecting" : "disconnected")
+  const [status, setStatus] = useState<WsStatus>(() => enabled ? "connecting" : "idle")
   const retriesRef = useRef(0)
-  const appliedDocumentFingerprintRef = useRef<{
-    sourceFile: string
-    fingerprint: string
-  } | null>(null)
 
   useEffect(() => {
     if (!enabled) {
       retriesRef.current = 0
-      setStatus("disconnected")
+      setStatus("idle")
       return
     }
 
-    setStatus("reconnecting")
+    setStatus("connecting")
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
     const wsUrl = `${protocol}//${window.location.host}/ws/sync`
     let ws: WebSocket | null = null
@@ -233,22 +256,17 @@ export default function useWebSocketSync({
       return true
     }
 
-    function appliedDocumentFingerprintFor(sourceFile: string): string | undefined {
-      const applied = appliedDocumentFingerprintRef.current
-      if (!applied || !isCurrentSourceFile(applied.sourceFile, sourceFile)) {
-        return undefined
-      }
-      return applied.fingerprint
+    // The navigation ref names the visible child while drilled. Live sync and
+    // reconnect still belong to the authoritative parent document.
+    function currentDocumentSource(): string | undefined {
+      return useDocumentStatusStore.getState().sourceFile || sourceFileRef?.current
     }
 
-    function rememberAppliedDocumentFingerprint(
-      incomingSource: unknown,
-      fingerprint: string,
-    ) {
-      const sourceFile = normalizeSourceFile(incomingSource)
-        ?? normalizeSourceFile(sourceFileRef?.current)
-      appliedDocumentFingerprintRef.current = sourceFile
-        ? { sourceFile, fingerprint }
+    /** The accepted document's fingerprint (seeded by the initial load) when it belongs to `sourceFile`. */
+    function acceptedDocumentFingerprintFor(sourceFile: string): string | null {
+      const status = useDocumentStatusStore.getState()
+      return status.sourceFile && isCurrentSourceFile(status.sourceFile, sourceFile)
+        ? status.documentFingerprint
         : null
     }
 
@@ -299,7 +317,7 @@ export default function useWebSocketSync({
         opened = true
         retriesRef.current = 0
         setStatus("connected")
-        const sourceFile = sourceFileRef?.current.trim()
+        const sourceFile = currentDocumentSource()?.trim()
         if (sourceFile) {
           try {
             const resyncPayload: Record<string, string | number> = {
@@ -307,7 +325,7 @@ export default function useWebSocketSync({
               source_file: sourceFile,
               document_schema_version: DOCUMENT_SCHEMA_VERSION,
             }
-            const documentFingerprint = appliedDocumentFingerprintFor(sourceFile)
+            const documentFingerprint = acceptedDocumentFingerprintFor(sourceFile)
             if (documentFingerprint) {
               resyncPayload[DOCUMENT_FINGERPRINT_FIELD] = documentFingerprint
             }
@@ -335,24 +353,22 @@ export default function useWebSocketSync({
             addToast("error", `WebSocket sync error: ${formatSyncError(err)}`)
             return
           }
-          if (!isCurrentSourceFile(frame.sourceFile, sourceFileRef?.current)) {
+          if (!isCurrentSourceFile(frame.sourceFile, currentDocumentSource())) {
             return
           }
           const updateSeq = ++graphUpdateSeq
           const graphState = useGraphStore.getState()
           const dirty = graphState.dirty
-          const retainedCanvas = retainedCanvasFor(frame.document, dirty)
 
           // The document fence is authoritative independently of whether the
           // renderable graph can be replaced. Mirror its revision first so
           // request admission can never race a stale ready state.
           useDocumentStatusStore.getState().loadLiveDocumentStatus(
             frame.document,
-            retainedCanvas,
             false,
+            frame.documentFingerprint,
           )
           sourceRevisionRef.current = frame.document.source_revision ?? ""
-          rememberAppliedDocumentFingerprint(frame.sourceFile, frame.documentFingerprint)
 
           if (frame.document.load_status === "source_only") {
             if (dirty) {
@@ -373,7 +389,11 @@ export default function useWebSocketSync({
             const newEdges = normalizeEdges(adapted.edges)
             // Every validated document node carries a finite display position,
             // so external sync never generates layout and applies synchronously.
-            const { rejectedEdges } = filterIncomingEdges(newNodes, newEdges)
+            const { rejectedEdges } = filterIncomingEdges(
+              newNodes,
+              newEdges,
+              adapted.submodels,
+            )
             const nodesToApply = newNodes
 
             const previousPreservedBlocks = preservedBlocksRef.current
@@ -392,6 +412,8 @@ export default function useWebSocketSync({
                 edges: newEdges,
                 preamble: nextPreamble,
                 submodels: adapted.submodels,
+                globalConstants: constantDrafts(frame.document.global_constants),
+                globalConstantsError: frame.document.global_constants_error,
               })
               useDocumentStatusStore.getState().setGraphSynchronized(true)
               nodeIdCounter.current = computeNextNodeId(newNodes)
@@ -416,18 +438,32 @@ export default function useWebSocketSync({
             ) {
               ui.setSubmodelDialog(null)
             }
+            onDocumentReload?.({ nodes: newNodes, edges: newEdges })
 
             addToast(
               "info",
               frame.document.load_status === "degraded"
                 ? "Pipeline updated in recovery mode"
-                : "Pipeline updated from file",
+                : frame.origin !== null
+                  ? "Pipeline updated by the assistant"
+                  : "Pipeline updated from file",
             )
             if (rejectedEdges.length > 0) {
               addToast("warning", formatRejectedEdgeWarning(rejectedEdges))
             }
+            // An assistant change rings and centres the nodes it names that the
+            // new graph has; any other update clears that focus and fits the graph.
+            const focused = frame.origin === null
+              ? null
+              : frame.origin.nodeIds.filter((id) => newNodeIds.has(id))
+            if (focused === null) ui.setChangeFocus(null)
             scheduleDelayed(() => {
-              if (mounted && updateSeq === graphUpdateSeq) fitView({ padding: 0.8 })
+              if (!mounted || updateSeq !== graphUpdateSeq) return
+              if (focused === null) {
+                fitView({ padding: 0.8 })
+              } else {
+                useUIStore.getState().setChangeFocus(focused.length > 0 ? focused : null)
+              }
             }, 100)
           } catch (err) {
             if (!mounted || updateSeq !== graphUpdateSeq) return
@@ -437,14 +473,13 @@ export default function useWebSocketSync({
         }
 
         if (msg.type === "parse_error") {
-          if (!isCurrentSourceFile(msg.source_file, sourceFileRef?.current)) {
+          if (!isCurrentSourceFile(msg.source_file, currentDocumentSource())) {
             return
           }
           // A parse_error frame now means one thing: the current document
           // could not be loaded or resynced at all. Authored errors arrive
           // as degraded/source-only documents, never through this frame.
           ++graphUpdateSeq
-          appliedDocumentFingerprintRef.current = null
           useDocumentStatusStore.getState().setSystemFailure(
             String(msg.error || "Pipeline document could not be loaded."),
           )
@@ -454,6 +489,9 @@ export default function useWebSocketSync({
 
       ws.onclose = (event) => {
         if (!mounted) return
+        // The socket is gone whatever follows, so say so now rather than
+        // after a session probe below settles — its request can be slow to fail.
+        setStatus("reconnecting")
         if (event.code === 1008 && isHauteSessionExpiredReason(event.reason)) {
           void bootstrapHauteSession(true)
             .then(() => {

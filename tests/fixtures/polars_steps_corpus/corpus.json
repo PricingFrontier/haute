@@ -1,0 +1,414 @@
+[
+  {
+    "id": "high_premium_quotes",
+    "category": "filter",
+    "description": "Pull out quotes with premiums above £1,500 for review.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "df = quotes.filter(pl.col('premium') > 1500)"
+  },
+  {
+    "id": "eligible_direct_quotes",
+    "category": "filter",
+    "description": "Keep web and phone quotes for drivers aged 25 to 70 whose premium is missing or at least £250.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "df = quotes.filter(pl.col('channel').is_in(['web', 'phone']) & pl.col('age').is_between(25, 70, closed='both') & (pl.col('premium').is_null() | (pl.col('premium') >= 250)))"
+  },
+  {
+    "id": "target_postcode_quotes",
+    "category": "filter",
+    "description": "Find priced quotes in the AB and XY postcode areas with a plausible postcode format.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "df = quotes.filter(pl.col('premium').is_not_null() & (pl.col('postcode').str.starts_with('AB') | pl.col('postcode').str.starts_with('XY')) & pl.col('postcode').str.contains(' ', literal=True) & pl.col('postcode').str.contains(r'^[A-Z]{1,2}[0-9][A-Z0-9]? [0-9][A-Z]{2}$'))"
+  },
+  {
+    "id": "premium_rate_and_instalment",
+    "category": "numeric",
+    "description": "Calculate the premium per £1,000 insured and a monthly instalment including a five percent charge.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "df = quotes.filter(pl.col('sum_insured') > 0)\ndf = df.with_columns((1000 * pl.col('premium') / pl.col('sum_insured')).round(3).alias('rate_per_thousand'), (pl.col('premium') * 1.05 / 12).round(2).alias('monthly_instalment'))"
+  },
+  {
+    "id": "capped_vehicle_exposure",
+    "category": "numeric",
+    "description": "Cap vehicle values for rating and measure the absolute gap between vehicle value and sum insured.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "df = quotes.with_columns(pl.col('vehicle_value').clip(5000, 100000).alias('rating_vehicle_value'), (pl.col('sum_insured') - pl.col('vehicle_value')).abs().alias('insured_value_gap'))"
+  },
+  {
+    "id": "log_claim_severity",
+    "category": "numeric",
+    "description": "Create natural-log and base-ten severity measures for positive, non-declined claims.",
+    "inputs": [
+      "claims"
+    ],
+    "code": "df = claims.filter((pl.col('amount') > 0) & (pl.col('status') != 'declined'))\ndf = df.with_columns(pl.col('amount').log().alias('log_amount'), pl.col('amount').log(10).alias('log10_amount'))"
+  },
+  {
+    "id": "underwriting_decision",
+    "category": "conditional",
+    "description": "Route quotes to decline, referral, missing-price review or acceptance using ordered underwriting rules.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "df = quotes.with_columns(pl.when(pl.col('age') < 18).then(pl.lit('decline')).when((pl.col('claims_count') >= 3) | (pl.col('vehicle_value') > 100000)).then(pl.lit('refer')).when(pl.col('premium').is_null()).then(pl.lit('await_price')).otherwise(pl.lit('accept')).alias('decision'))"
+  },
+  {
+    "id": "nested_ncd_discount",
+    "category": "conditional",
+    "description": "Give claim-free drivers an NCD discount that depends on their years earned and sales channel.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "df = quotes.with_columns(pl.when(pl.col('claims_count') == 0).then(pl.when(pl.col('ncd_years') >= 5).then(pl.when(pl.col('channel') == 'web').then(0.30).otherwise(0.25)).when(pl.col('ncd_years') >= 2).then(0.15).otherwise(0.05)).otherwise(0.0).alias('ncd_discount'))\ndf = df.with_columns((pl.col('premium') * (1 - pl.col('ncd_discount'))).round(2).alias('discounted_premium'))"
+  },
+  {
+    "id": "normalise_rating_strings",
+    "category": "string",
+    "description": "Standardise postcode capitalisation and trim and lowercase the categorical rating fields.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "df = quotes.with_columns(pl.col('postcode').str.strip_chars().str.to_uppercase(), pl.col('region', 'channel', 'fuel').str.strip_chars().str.to_lowercase())"
+  },
+  {
+    "id": "postcode_components",
+    "category": "string",
+    "description": "Extract the outward code, inward code and postcode length for a geography quality check.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "df = quotes.with_columns(pl.col('postcode').str.split(' ').list.first().alias('outward_code'), pl.col('postcode').str.slice(-3, 3).alias('inward_code'), pl.col('postcode').str.len_chars().alias('postcode_length'))"
+  },
+  {
+    "id": "segment_key_and_compact_postcode",
+    "category": "string",
+    "description": "Build a readable rating segment key and remove whitespace from postcodes.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "df = quotes.with_columns(pl.concat_str([pl.col('region'), pl.col('channel'), pl.col('fuel')], separator='|').alias('segment_key'), pl.col('postcode').str.replace_all(r'\\s+', '').alias('compact_postcode'), pl.col('channel').str.replace('phone', 'telephone', literal=True).alias('channel_label'))"
+  },
+  {
+    "id": "inception_calendar_fields",
+    "category": "date",
+    "description": "Add inception year, month, day and weekday for seasonality analysis.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "df = quotes.with_columns(pl.col('start_date').dt.year().alias('inception_year'), pl.col('start_date').dt.month().alias('inception_month'), pl.col('start_date').dt.day().alias('inception_day'), pl.col('start_date').dt.weekday().alias('inception_weekday'))"
+  },
+  {
+    "id": "renewal_and_cooling_off_dates",
+    "category": "date",
+    "description": "Calculate the next annual renewal date and the end of a 14-day cooling-off period.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "df = quotes.with_columns(pl.col('start_date').dt.offset_by('1y').alias('renewal_date'), (pl.col('start_date') + pl.duration(days=14)).alias('cooling_off_end'))\ndf = df.with_columns((pl.col('renewal_date') - pl.col('start_date')).dt.total_days().alias('term_days'))"
+  },
+  {
+    "id": "claim_age_at_year_end",
+    "category": "date",
+    "description": "Measure the age of each 2025 claim at the end of that year.",
+    "inputs": [
+      "claims"
+    ],
+    "code": "df = claims.filter((pl.col('claim_date') >= pl.date(2025, 1, 1)) & (pl.col('claim_date') < pl.date(2026, 1, 1)))\ndf = df.with_columns((pl.date(2025, 12, 31) - pl.col('claim_date')).dt.total_days().alias('claim_age_days'))"
+  },
+  {
+    "id": "typed_rating_export",
+    "category": "casting",
+    "description": "Prepare string policy identifiers, integer premium pence and a fixed set of fuel categories for export.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "df = quotes.select(pl.col('quote_id'), pl.col('policy_id').cast(pl.String).alias('policy_reference'), (pl.col('premium') * 100).round(0).cast(pl.Int64).alias('premium_pence'), (pl.col('claims_count') > 0).cast(pl.Int8).alias('has_claims'), pl.col('fuel').cast(pl.Enum(['petrol', 'diesel', 'electric'])))"
+  },
+  {
+    "id": "numeric_postcode_district",
+    "category": "casting",
+    "description": "Parse the numeric district from the postcode and leave unparseable districts missing.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "df = quotes.with_columns(pl.col('postcode').str.extract(r'^[A-Z]+([0-9]+)', 1).cast(pl.Int32, strict=False).alias('postcode_district_number'))"
+  },
+  {
+    "id": "trimmed_quote_extract",
+    "category": "projection",
+    "description": "Create a quote extract without policy identifiers, postcodes or vehicle values and give premium a clearer name.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "df = quotes.drop('policy_id', 'postcode').rename({'premium': 'quoted_premium'})\ndf = df.select(pl.exclude('vehicle_value'))"
+  },
+  {
+    "id": "floating_measure_summary",
+    "category": "projection",
+    "description": "Summarise every floating-point quote measure without listing the measures individually.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "df = quotes.select(pl.len().alias('quote_count'), pl.col(pl.Float64).mean().name.suffix('_mean'))"
+  },
+  {
+    "id": "regional_review_order",
+    "category": "sorting",
+    "description": "Order quotes by region and descending premium with missing prices last and quote ID as the tie-breaker.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "df = quotes.sort(['region', 'premium', 'quote_id'], descending=[False, True, False], nulls_last=True)"
+  },
+  {
+    "id": "latest_quote_per_policy",
+    "category": "deduplication",
+    "description": "Keep the quote with the latest inception date for each policy, breaking ties with the highest quote ID.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "df = quotes.sort(['policy_id', 'start_date', 'quote_id'])\ndf = df.unique(subset=['policy_id'], keep='last', maintain_order=True).sort('policy_id')"
+  },
+  {
+    "id": "unambiguous_policy_inceptions",
+    "category": "deduplication",
+    "description": "Exclude every quote belonging to a repeated policy and inception-date combination.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "df = quotes.unique(subset=['policy_id', 'start_date'], keep='none', maintain_order=True)"
+  },
+  {
+    "id": "regional_channel_summary",
+    "category": "aggregation",
+    "description": "Compare quote volume, priced volume, distinct policies and premium totals by region and channel.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "df = quotes.group_by(['region', 'channel']).agg(pl.len().alias('quote_count'), pl.col('premium').count().alias('priced_quote_count'), pl.col('policy_id').n_unique().alias('policy_count'), pl.col('premium').sum().alias('total_quoted_premium'), pl.col('premium').mean().alias('mean_premium')).sort(['region', 'channel'])"
+  },
+  {
+    "id": "severity_distribution_by_status",
+    "category": "aggregation",
+    "description": "Compare median, upper-tail and variability measures of claim severity across claim statuses.",
+    "inputs": [
+      "claims"
+    ],
+    "code": "df = claims.group_by('status').agg(pl.len().alias('claim_count'), pl.col('amount').median().alias('median_amount'), pl.col('amount').quantile(0.95, interpolation='linear').alias('p95_amount'), pl.col('amount').std(ddof=1).alias('amount_std'), pl.col('amount').max().alias('largest_amount')).sort('status')"
+  },
+  {
+    "id": "policy_claim_status_totals",
+    "category": "aggregation",
+    "description": "Calculate open and closed claim amounts and count large non-declined claims for each policy.",
+    "inputs": [
+      "claims"
+    ],
+    "code": "df = claims.group_by('policy_id').agg(pl.col('amount').filter(pl.col('status') == 'open').sum().alias('open_amount'), pl.col('amount').filter(pl.col('status') == 'closed').sum().alias('closed_amount'), pl.col('claim_id').filter((pl.col('status') != 'declined') & (pl.col('amount') >= 10000)).count().alias('large_claim_count'), pl.col('claim_date').filter(pl.col('status') != 'declined').max().alias('latest_accepted_claim_date')).sort('policy_id')"
+  },
+  {
+    "id": "peer_premium_windows",
+    "category": "window",
+    "description": "Attach the regional mean, regional channel median and descending regional premium rank to every quote.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "df = quotes.with_columns(pl.col('premium').mean().over('region').alias('region_mean_premium'), pl.col('premium').median().over(['region', 'channel']).alias('segment_median_premium'), pl.col('premium').rank(method='dense', descending=True).over('region').alias('region_premium_rank'))"
+  },
+  {
+    "id": "running_policy_claims",
+    "category": "window",
+    "description": "Number each policy's claims chronologically and calculate its running claim amount.",
+    "inputs": [
+      "claims"
+    ],
+    "code": "df = claims.with_columns(pl.int_range(1, pl.len() + 1).over('policy_id', order_by=['claim_date', 'claim_id']).alias('claim_row_number'), pl.col('amount').cum_sum().over('policy_id', order_by=['claim_date', 'claim_id']).alias('cumulative_claim_amount')).sort(['policy_id', 'claim_date', 'claim_id'])"
+  },
+  {
+    "id": "previous_quote_movement",
+    "category": "window",
+    "description": "Compare each quote with the preceding quote for the same policy in inception-date order.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "df = quotes.with_columns(pl.col('premium').shift(1).over('policy_id', order_by=['start_date', 'quote_id']).alias('previous_premium'))\ndf = df.with_columns((pl.col('premium') - pl.col('previous_premium')).alias('premium_change')).sort(['policy_id', 'start_date', 'quote_id'])"
+  },
+  {
+    "id": "attach_regional_rates",
+    "category": "join",
+    "description": "Attach the regional rate and factor to every quote and calculate their product as a benchmark.",
+    "inputs": [
+      "quotes",
+      "rates"
+    ],
+    "code": "df = quotes.join(rates, on='region', how='left', validate='m:1', maintain_order='left')\ndf = df.with_columns((pl.col('base_rate') * pl.col('factor')).alias('regional_benchmark'))"
+  },
+  {
+    "id": "quotes_without_accepted_claims",
+    "category": "join",
+    "description": "Find quotes on policies with no open or closed claims.",
+    "inputs": [
+      "quotes",
+      "claims"
+    ],
+    "code": "accepted_policies = claims.filter(pl.col('status').is_in(['open', 'closed'])).select('policy_id').unique()\ndf = quotes.join(accepted_policies, on='policy_id', how='anti').sort('quote_id')"
+  },
+  {
+    "id": "quotes_with_large_open_claims",
+    "category": "join",
+    "description": "Keep quotes on policies with at least one open claim of £10,000 or more without multiplying quote rows.",
+    "inputs": [
+      "quotes",
+      "claims"
+    ],
+    "code": "large_open_claims = claims.filter((pl.col('status') == 'open') & (pl.col('amount') >= 10000))\ndf = quotes.join(large_open_claims, on='policy_id', how='semi').sort('quote_id')"
+  },
+  {
+    "id": "segment_benchmark_join",
+    "category": "join",
+    "description": "Compare each priced quote with the mean premium for its region and channel.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "benchmarks = quotes.drop_nulls('premium').group_by(['region', 'channel']).agg(pl.col('premium').mean())\ndf = quotes.drop_nulls('premium').join(benchmarks, on=['region', 'channel'], how='inner', suffix='_benchmark', validate='m:1')\ndf = df.with_columns((pl.col('premium') - pl.col('premium_benchmark')).alias('premium_gap')).sort('quote_id')"
+  },
+  {
+    "id": "all_region_rate_scenarios",
+    "category": "join",
+    "description": "Show the benchmark premium for each quote under every available regional rate scenario.",
+    "inputs": [
+      "quotes",
+      "rates"
+    ],
+    "code": "scenarios = rates.rename({'region': 'scenario_region'})\ndf = quotes.select('quote_id', 'region', 'premium').join(scenarios, how='cross')\ndf = df.with_columns((pl.col('base_rate') * pl.col('factor')).round(2).alias('scenario_premium')).sort(['quote_id', 'scenario_region'])"
+  },
+  {
+    "id": "combined_quote_review_queue",
+    "category": "concatenation",
+    "description": "Combine missing-price and high-price quotes into one queue with an explicit review reason.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "missing_prices = quotes.filter(pl.col('premium').is_null()).with_columns(pl.lit('missing_price').alias('review_reason'))\nhigh_prices = quotes.filter(pl.col('premium') > 2000).with_columns(pl.lit('high_price').alias('review_reason'))\ndf = pl.concat([missing_prices, high_prices], how='vertical').sort(['review_reason', 'quote_id'])"
+  },
+  {
+    "id": "policy_event_timeline",
+    "category": "concatenation",
+    "description": "Combine quote inceptions and claims into a policy timeline while retaining their different financial fields.",
+    "inputs": [
+      "quotes",
+      "claims"
+    ],
+    "code": "quote_events = quotes.select('policy_id', pl.col('quote_id').alias('record_id'), pl.col('start_date').alias('event_date'), 'premium', pl.lit('quote').alias('event_type'))\nclaim_events = claims.select('policy_id', pl.col('claim_id').alias('record_id'), pl.col('claim_date').alias('event_date'), 'amount', 'status', pl.lit('claim').alias('event_type'))\ndf = pl.concat([quote_events, claim_events], how='diagonal').sort(['policy_id', 'event_date', 'event_type', 'record_id'])"
+  },
+  {
+    "id": "complete_quote_reporting_values",
+    "category": "nulls",
+    "description": "Require complete rating identifiers and replace missing premiums with zero in a reporting-only column.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "df = quotes.drop_nulls(subset=['policy_id', 'region', 'start_date'])\ndf = df.with_columns(pl.col('premium').fill_null(0.0).alias('reporting_premium'), pl.col('premium').is_null().alias('premium_was_missing'))"
+  },
+  {
+    "id": "carry_forward_policy_price",
+    "category": "nulls",
+    "description": "Fill a missing quote premium from the preceding known premium on the same policy.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "df = quotes.with_columns(pl.col('premium').fill_null(strategy='forward').over('policy_id', order_by=['start_date', 'quote_id']).alias('carried_premium')).sort(['policy_id', 'start_date', 'quote_id'])"
+  },
+  {
+    "id": "hierarchical_premium_imputation",
+    "category": "nulls",
+    "description": "Fill missing premiums from the regional median, then the portfolio median, then an explicit £500 default.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "df = quotes.with_columns(pl.col('premium').fill_null(pl.col('premium').median().over('region')).alias('region_filled_premium'))\ndf = df.with_columns(pl.coalesce([pl.col('region_filled_premium'), pl.col('premium').median(), pl.lit(500.0)]).alias('imputed_premium'))"
+  },
+  {
+    "id": "regional_channel_pivot",
+    "category": "reshape",
+    "description": "Put average web, broker and phone premiums into separate columns for each region.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "df = quotes.pivot(on='channel', on_columns=['web', 'broker', 'phone'], index='region', values='premium', aggregate_function='mean').sort('region')"
+  },
+  {
+    "id": "quote_financial_measures_long",
+    "category": "reshape",
+    "description": "Turn premium, sum insured and vehicle value into a long table of quote financial measures.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "df = quotes.unpivot(on=['premium', 'sum_insured', 'vehicle_value'], index=['quote_id', 'policy_id'], variable_name='measure', value_name='value').sort(['quote_id', 'measure'])"
+  },
+  {
+    "id": "largest_claims_per_policy",
+    "category": "reshape",
+    "description": "List the three largest non-declined claims for each policy, using claim ID to break equal-amount ties.",
+    "inputs": [
+      "claims"
+    ],
+    "code": "df = claims.filter(pl.col('status') != 'declined').sort(['policy_id', 'amount', 'claim_id'], descending=[False, True, False], nulls_last=True)\ndf = df.group_by('policy_id').agg(pl.col('claim_id').head(3).alias('largest_claim_ids'))\ndf = df.explode('largest_claim_ids').rename({'largest_claim_ids': 'claim_id'}).join(claims, on=['policy_id', 'claim_id'], how='inner').sort(['policy_id', 'amount', 'claim_id'], descending=[False, True, False], nulls_last=True)"
+  },
+  {
+    "id": "vehicle_and_age_bands",
+    "category": "banding",
+    "description": "Assign vehicle-value bands with explicit cut points and age bands with ordered underwriting thresholds.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "df = quotes.with_columns(pl.col('vehicle_value').cut([10000, 25000, 50000], labels=['under_10k', '10k_to_under_25k', '25k_to_under_50k', '50k_plus'], left_closed=True).alias('vehicle_band'), pl.when(pl.col('age').is_null()).then(pl.lit('unknown')).when(pl.col('age') < 25).then(pl.lit('under_25')).when(pl.col('age') < 50).then(pl.lit('25_to_49')).when(pl.col('age') < 75).then(pl.lit('50_to_74')).otherwise(pl.lit('75_plus')).alias('age_band'))"
+  },
+  {
+    "id": "channel_mix_by_region",
+    "category": "share",
+    "description": "Calculate each channel's share of quotes within its region and across the whole portfolio.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "df = quotes.group_by(['region', 'channel']).agg(pl.len().alias('quote_count'))\ndf = df.with_columns((pl.col('quote_count') / pl.col('quote_count').sum().over('region')).alias('regional_quote_share'), (pl.col('quote_count') / pl.col('quote_count').sum()).alias('portfolio_quote_share')).sort(['region', 'channel'])"
+  },
+  {
+    "id": "regional_repricing_summary",
+    "category": "pipeline",
+    "description": "Apply regional factors to positive quoted premiums and summarise the financial impact by region and movement band.",
+    "inputs": [
+      "quotes",
+      "rates"
+    ],
+    "code": "df = quotes.filter(pl.col('premium') > 0)\ndf = df.join(rates, on='region', how='inner', validate='m:1')\ndf = df.with_columns((pl.col('premium') * pl.col('factor')).round(2).alias('proposed_premium'))\ndf = df.with_columns(pl.when(pl.col('proposed_premium') < pl.col('premium')).then(pl.lit('decrease')).when(pl.col('proposed_premium') <= pl.col('premium') * 1.10).then(pl.lit('zero_to_ten_percent')).otherwise(pl.lit('over_ten_percent')).alias('movement_band'))\ndf = df.group_by(['region', 'movement_band']).agg(pl.len().alias('quote_count'), pl.col('premium').sum().alias('current_premium_total'), pl.col('proposed_premium').sum().alias('proposed_premium_total'))\ndf = df.with_columns((pl.col('proposed_premium_total') - pl.col('current_premium_total')).alias('premium_change'), (pl.col('current_premium_total') / pl.col('current_premium_total').sum()).alias('current_premium_share'))\ndf = df.sort(['region', 'movement_band'])"
+  },
+  {
+    "id": "three_year_claim_history",
+    "category": "pipeline",
+    "description": "Attach each quote's non-declined claim history from the three calendar years before inception and flag repeat claimants.",
+    "inputs": [
+      "quotes",
+      "claims"
+    ],
+    "code": "accepted_claims = claims.filter(pl.col('status').is_in(['open', 'closed']))\nhistory = quotes.select('quote_id', 'policy_id', 'start_date').join(accepted_claims, on='policy_id', how='inner').filter((pl.col('claim_date') >= pl.col('start_date').dt.offset_by('-3y')) & (pl.col('claim_date') < pl.col('start_date')))\nhistory = history.group_by('quote_id').agg(pl.len().alias('prior_claim_count'), pl.col('amount').sum().alias('prior_claim_amount'), pl.col('claim_date').max().alias('latest_prior_claim_date'))\ndf = quotes.join(history, on='quote_id', how='left', validate='m:1')\ndf = df.with_columns(pl.col('prior_claim_count').fill_null(0), pl.col('prior_claim_amount').fill_null(0.0))\ndf = df.with_columns((pl.col('prior_claim_count') >= 2).alias('repeat_claimant'), (pl.col('start_date') - pl.col('latest_prior_claim_date')).dt.total_days().alias('days_since_last_claim'))\ndf = df.select('quote_id', 'policy_id', 'premium', 'prior_claim_count', 'prior_claim_amount', 'repeat_claimant', 'days_since_last_claim')\ndf = df.sort('quote_id')"
+  },
+  {
+    "id": "top_regional_price_outliers",
+    "category": "pipeline",
+    "description": "Find up to three latest priced quotes per region with the largest proportional premium excess over their regional age-band median.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "df = quotes.sort(['policy_id', 'start_date', 'quote_id']).unique(subset=['policy_id'], keep='last', maintain_order=True)\ndf = df.filter(pl.col('premium') > 0)\ndf = df.with_columns(pl.when(pl.col('age') < 25).then(pl.lit('under_25')).when(pl.col('age') < 65).then(pl.lit('25_to_64')).otherwise(pl.lit('65_plus')).alias('age_band'))\ndf = df.with_columns(pl.col('premium').median().over(['region', 'age_band']).alias('peer_median'))\ndf = df.with_columns((pl.col('premium') / pl.col('peer_median') - 1).alias('premium_excess')).filter(pl.col('premium_excess') > 0)\ndf = df.sort(['region', 'premium_excess', 'quote_id'], descending=[False, True, False])\ndf = df.with_columns(pl.int_range(1, pl.len() + 1).over('region').alias('review_position'))\ndf = df.filter(pl.col('review_position') <= 3).select('region', 'review_position', 'quote_id', 'policy_id', 'age_band', 'premium', 'peer_median', 'premium_excess').sort(['region', 'review_position'])"
+  }
+]

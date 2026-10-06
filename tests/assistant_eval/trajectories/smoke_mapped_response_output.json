@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "id": "smoke_mapped_response_output",
+  "case": "smoke_mapped_response_output",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "inspect",
+              "tool": "get_pipeline",
+              "arguments": {},
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "dry",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Map quote_id, driver_age and region from quotes into the quote_response output.",
+                "ops": [
+                  {
+                    "op": "recipe",
+                    "recipe": "response_output",
+                    "arguments": {
+                      "source": "quotes",
+                      "output_name": "quote_response",
+                      "output_columns": [
+                        "quote_id",
+                        "driver_age",
+                        "region"
+                      ]
+                    }
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "dry.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "Saved the change.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

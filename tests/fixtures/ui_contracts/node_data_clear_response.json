@@ -1,0 +1,20 @@
+{
+  "status": "cleared",
+  "point": {
+    "consumer_node_id": "explore",
+    "point": {"producer_node_id": "join", "port_label": null},
+    "slot_key": "join||live",
+    "kind": "node_output",
+    "state": "missing",
+    "demand": "all",
+    "data_version": null,
+    "row_count": null,
+    "size_bytes": null,
+    "retention": null,
+    "generation": null,
+    "job": null,
+    "reads_directly": false,
+    "build_endpoint": null,
+    "clear_endpoint": null
+  }
+}

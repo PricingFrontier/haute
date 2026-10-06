@@ -38,7 +38,29 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from haute._file_ops import Writer, atomic_write_bytes, atomic_write_text
+from haute._file_ops import (
+    Writer,
+    atomic_copy_files,
+    atomic_write_bytes,
+    atomic_write_text,
+    ensure_disk_headroom,
+)
+
+
+def test_ensure_disk_headroom_accepts_exact_boundary_and_refuses_one_byte_less(
+    tmp_path, monkeypatch
+) -> None:
+    import shutil
+
+    actual = shutil.disk_usage(tmp_path)
+    required = 123 + 64 * 1024
+    monkeypatch.setattr(shutil, "disk_usage", lambda _path: actual._replace(free=required))
+    ensure_disk_headroom(tmp_path, 123)
+    monkeypatch.setattr(shutil, "disk_usage", lambda _path: actual._replace(free=required - 1))
+    with pytest.raises(OSError) as exc_info:
+        ensure_disk_headroom(tmp_path, 123)
+    assert exc_info.value.errno == 28
+
 
 # ---------------------------------------------------------------------------
 # F2: atomic_write_bytes
@@ -236,13 +258,8 @@ class TestAtomicWriteBytes:
 
         atomic_write_bytes(target, b"payload")
 
-        # Any sibling whose name starts with the target stem and ends in .tmp
-        # is considered stray. Be permissive about exact suffix format.
-        strays = [
-            p
-            for p in tmp_path.iterdir()
-            if p != target and p.name.startswith(target.name) and p.suffix == ".tmp"
-        ]
+        # Any sibling ending in .tmp is considered stray, whatever its prefix.
+        strays = [p for p in tmp_path.iterdir() if p != target and p.suffix == ".tmp"]
         assert strays == [], f"Unexpected leftover temp files: {strays}"
 
 
@@ -490,14 +507,14 @@ class TestWriterSelfWriteCallback:
     """Tests for the mark_self_write callback wiring."""
 
     def test_mark_self_write_called_with_target_path(self, tmp_path: Path) -> None:
-        """Callback is invoked exactly once with the target path."""
+        """Callback is invoked exactly once with the target path and committed payload."""
         target = tmp_path / "pipeline.py"
         mark = MagicMock()
 
         with Writer(target, mark_self_write=mark) as w:
             w.write_text("content")
 
-        mark.assert_called_once_with(target)
+        mark.assert_called_once_with(target, b"content")
 
     def test_mark_self_write_called_before_rename(self, tmp_path: Path) -> None:
         """Callback fires BEFORE the commit — the target does not yet show
@@ -513,17 +530,19 @@ class TestWriterSelfWriteCallback:
 
         observed_at_callback: dict[str, object] = {}
 
-        def _callback(p: Path) -> None:
+        def _callback(p: Path, payload: bytes) -> None:
             # At the moment this callback runs, the rename must not yet
             # have been executed. So the target on disk still shows the
             # old content.
             observed_at_callback["path"] = p
+            observed_at_callback["payload"] = payload
             observed_at_callback["content_at_callback"] = p.read_text(encoding="utf-8")
 
         with Writer(target, mark_self_write=_callback) as w:
             w.write_text("AFTER")
 
         assert observed_at_callback["path"] == target
+        assert observed_at_callback["payload"] == b"AFTER"
         # Ordering invariant: when the callback fired, the new content
         # was not yet visible through the target path.
         assert observed_at_callback["content_at_callback"] == "BEFORE"
@@ -704,3 +723,141 @@ class TestWriterEdgeCases:
             w.write_text("fresh")
 
         assert target.read_text(encoding="utf-8") == "fresh"
+
+
+class TestAtomicCopyFiles:
+    """Tests for ``atomic_copy_files`` (stage-all-then-replace-all copy)."""
+
+    def test_copies_two_pairs_and_replaces_existing_targets(self, tmp_path: Path) -> None:
+        src_a = tmp_path / "a_src.bin"
+        src_b = tmp_path / "b_src.bin"
+        src_a.write_bytes(b"payload-a")
+        src_b.write_bytes(b"payload-b")
+
+        dst_a = tmp_path / "a_dst.bin"
+        dst_b = tmp_path / "b_dst.bin"
+        dst_a.write_bytes(b"stale-a")  # pre-existing target must be replaced
+
+        atomic_copy_files([(src_a, dst_a), (src_b, dst_b)])
+
+        assert dst_a.read_bytes() == b"payload-a"
+        assert dst_b.read_bytes() == b"payload-b"
+        # Sources untouched.
+        assert src_a.read_bytes() == b"payload-a"
+        assert src_b.read_bytes() == b"payload-b"
+        assert not tuple(tmp_path.glob("*.tmp"))
+
+    def test_a_copy_that_fails_part_way_leaves_no_staged_file(self, tmp_path: Path) -> None:
+        src = tmp_path / "src.bin"
+        src.write_bytes(b"payload")
+        dst = tmp_path / "dst.bin"
+        dst.write_bytes(b"original")
+
+        def partial_copy(source: Path, target: Path) -> None:
+            Path(target).write_bytes(b"pay")
+            raise OSError("disk full")
+
+        with (
+            patch("haute._file_ops.shutil.copyfile", side_effect=partial_copy),
+            pytest.raises(OSError, match="disk full"),
+        ):
+            atomic_copy_files([(src, dst)])
+
+        assert dst.read_bytes() == b"original"
+        assert sorted(path.name for path in tmp_path.iterdir()) == ["dst.bin", "src.bin"]
+
+    def test_missing_second_source_leaves_first_target_untouched(self, tmp_path: Path) -> None:
+        src_a = tmp_path / "a_src.bin"
+        src_a.write_bytes(b"payload-a")
+        missing_src = tmp_path / "does_not_exist.bin"
+
+        dst_a = tmp_path / "a_dst.bin"
+        dst_a.write_bytes(b"original-a")
+        dst_b = tmp_path / "b_dst.bin"
+
+        with pytest.raises(OSError):
+            atomic_copy_files([(src_a, dst_a), (missing_src, dst_b)])
+
+        # First target keeps its old bytes -- nothing was replaced because
+        # staging happens for every pair before any replace occurs.
+        assert dst_a.read_bytes() == b"original-a"
+        assert not dst_b.exists()
+        assert not tuple(tmp_path.glob("*.tmp"))
+
+
+class TestRemoveTree:
+    """Best-effort tree removal that survives a transient Windows handle."""
+
+    def test_a_transient_sharing_violation_is_retried_until_the_tree_is_gone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute import _file_ops
+
+        target = tmp_path / "staging"
+        (target / "nested").mkdir(parents=True)
+        (target / "nested" / "data.parquet").write_bytes(b"payload")
+        real_rmtree = _file_ops.shutil.rmtree
+        attempts: list[int] = []
+
+        def rmtree_locked_once(path, *args, **kwargs):
+            attempts.append(1)
+            if len(attempts) == 1:
+                error = OSError("The process cannot access the file")
+                error.winerror = 32
+                raise error
+            real_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(_file_ops, "_IS_WINDOWS", True)
+        monkeypatch.setattr(_file_ops.shutil, "rmtree", rmtree_locked_once)
+
+        assert _file_ops.remove_tree(target) is True
+
+        assert attempts == [1, 1]
+        assert not target.exists()
+
+    def test_a_tree_that_cannot_be_removed_is_reported_rather_than_raised(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute import _file_ops
+
+        target = tmp_path / "staging"
+        target.mkdir()
+
+        def rmtree_always_locked(_path, *_args, **_kwargs):
+            error = OSError("The process cannot access the file")
+            error.winerror = 32
+            raise error
+
+        monkeypatch.setattr(_file_ops, "_IS_WINDOWS", True)
+        monkeypatch.setattr(_file_ops.shutil, "rmtree", rmtree_always_locked)
+
+        assert _file_ops.remove_tree(target) is False
+        assert target.exists()
+
+    def test_an_absent_tree_counts_as_removed(self, tmp_path: Path) -> None:
+        from haute._file_ops import remove_tree
+
+        assert remove_tree(tmp_path / "never-existed") is True
+
+    def test_a_tree_whose_descendant_cannot_be_found_is_reported_not_assumed_gone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Windows reports a path it cannot open as a missing path.
+
+        A file past the 260-character limit raises ``FileNotFoundError`` from
+        inside the walk while the tree it belongs to is still there, so taking
+        that error as "already gone" would hide a survivor from the caller.
+        """
+        from haute import _file_ops
+
+        target = tmp_path / "staging"
+        target.mkdir()
+        (target / "data.parquet").write_bytes(b"payload")
+
+        def rmtree_descendant_missing(_path, *_args, **_kwargs):
+            raise FileNotFoundError(2, "The system cannot find the path specified")
+
+        monkeypatch.setattr(_file_ops.shutil, "rmtree", rmtree_descendant_missing)
+
+        assert _file_ops.remove_tree(target) is False
+        assert target.exists()

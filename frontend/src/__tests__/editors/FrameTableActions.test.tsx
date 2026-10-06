@@ -75,7 +75,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-describe("FrameTableActions — copy / share (clipboard)", () => {
+describe("FrameTableActions - copy / share (clipboard)", () => {
   beforeEach(() => installClipboard())
 
   it("Copy writes the grid as TAB-separated text (header + body)", async () => {
@@ -107,7 +107,7 @@ describe("FrameTableActions — copy / share (clipboard)", () => {
   })
 })
 
-describe("FrameTableActions — save (download)", () => {
+describe("FrameTableActions - save (download)", () => {
   beforeEach(() => installClipboard())
 
   it("Save JSON triggers a blob download of the schema JSON", () => {
@@ -158,7 +158,7 @@ describe("FrameTableActions — save (download)", () => {
   })
 })
 
-describe("FrameTableActions — paste-in", () => {
+describe("FrameTableActions - paste-in", () => {
   beforeEach(() => installClipboard())
 
   it("parses tab-separated text into rows and hands them to onPaste", () => {
@@ -183,7 +183,7 @@ describe("FrameTableActions — paste-in", () => {
   })
 })
 
-describe("FrameTableActions — non-secure / clipboard-absent guard", () => {
+describe("FrameTableActions - non-secure / clipboard-absent guard", () => {
   it("disables Copy and Share when the Clipboard API is unavailable", () => {
     // Default jsdom: no navigator.clipboard, isSecureContext undefined.
     restoreClipboard()

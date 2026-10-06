@@ -9,11 +9,17 @@ import {
   Upload,
 } from "lucide-react"
 
-import { ApiError, getGitRemotes, gitBranchAway, gitFastForward, gitPush } from "../api/client"
+import {
+  ApiError,
+  getGitRemotes,
+  gitBranchAway,
+  gitFastForward,
+  gitPush,
+  parseGitPushRejection,
+} from "../api/client"
 import type { GitPushRejection, GitRemote, GitRemoteLeg } from "../api/types"
-import { parseGitPushRejection } from "../types/guards"
 import useToastStore from "../stores/useToastStore"
-import { gitErrorMessage } from "../utils/gitError"
+import { apiErrorMessage } from "../api/errors"
 import ModalShell from "./ModalShell"
 import Tooltip from "./Tooltip"
 
@@ -121,11 +127,11 @@ export default function RemotePushControl({
         const body = (err.body as { detail?: unknown } | undefined)?.detail
         let parsed: GitPushRejection | null
         try {
-          parsed = parseGitPushRejection(body)
+          parsed = await parseGitPushRejection(body)
         } catch (parseError) {
           addToast(
             "error",
-            `Push failed: ${gitErrorMessage(parseError, "malformed divergence response")}`,
+            `Push failed: ${apiErrorMessage(parseError, "malformed divergence response")}`,
           )
           return
         }
@@ -134,8 +140,14 @@ export default function RemotePushControl({
           await load() // badges now reflect the freshly-known divergence
           return
         }
+        // A structured 409 this client cannot read: name the status rather
+        // than print the unread body.
+        if (typeof body === "object" && body !== null) {
+          addToast("error", `Push failed: ${err.message}`)
+          return
+        }
       }
-      const detail = gitErrorMessage(err, "unknown error")
+      const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Push failed: ${detail}`)
     } finally {
       setPushing(false)
@@ -156,11 +168,11 @@ export default function RemotePushControl({
     try {
       const res = await gitFastForward(selected)
       const n = res.fast_forwarded.length
-      addToast("success", `Caught up — updated ${n} branch${n === 1 ? "" : "es"} from ${res.remote}`)
+      addToast("success", `Caught up - updated ${n} branch${n === 1 ? "" : "es"} from ${res.remote}`)
       setRejection(null)
       await load()
     } catch (err) {
-      const detail = gitErrorMessage(err, "unknown error")
+      const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Couldn't catch up: ${detail}`)
     } finally {
       setCatchingUp(false)
@@ -184,12 +196,12 @@ export default function RemotePushControl({
       const res = await gitBranchAway(selected)
       addToast(
         "success",
-        `Set your version aside as ${res.set_aside_as} — you're now on the shared copy`,
+        `Set your version aside as ${res.set_aside_as} - you're now on the shared copy`,
       )
       setRejection(null)
       await load()
     } catch (err) {
-      const detail = gitErrorMessage(err, "unknown error")
+      const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Couldn't spin off a copy: ${detail}`)
     } finally {
       setBranchingAway(false)
@@ -211,7 +223,7 @@ export default function RemotePushControl({
         className="px-3 py-2 text-[11px]"
         style={{ color: "var(--text-muted)" }}
       >
-        No remotes configured — add one with{" "}
+        No remotes configured - add one with{" "}
         <span className="font-mono">git remote add</span> to push.
       </div>
     )
@@ -245,7 +257,7 @@ export default function RemotePushControl({
         <option value="">Select a remote…</option>
         {remotes.map((r) => (
           <option key={r.name} value={r.name}>
-            {r.url ? `${r.name} — ${r.url}` : r.name}
+            {r.url ? `${r.name} - ${r.url}` : r.name}
           </option>
         ))}
       </select>
@@ -312,7 +324,7 @@ function AheadBehind({ remote }: { remote: GitRemote }) {
   if (working === null || working.status === "untracked") {
     return (
       <Tooltip
-        label="Not pushed to this remote yet — divergence is unknown until you push"
+        label="Not pushed to this remote yet - divergence is unknown until you push"
         side="bottom"
       >
         <span
@@ -320,14 +332,14 @@ function AheadBehind({ remote }: { remote: GitRemote }) {
           className="text-[11px] font-mono shrink-0"
           style={{ color: "var(--text-muted)" }}
         >
-          —
+          -
         </span>
       </Tooltip>
     )
   }
   if (working.status === "unknown") {
     return (
-      <Tooltip label={`Can't tell — couldn't read ${remote.name}`} side="bottom">
+      <Tooltip label={`Can't tell - couldn't read ${remote.name}`} side="bottom">
         <span
           data-testid="git-push-aheadbehind"
           className="text-[11px] font-mono shrink-0"
@@ -385,7 +397,7 @@ function LedgerStatus({ remote }: { remote: GitRemote }) {
   if (leg.status === "diverged") {
     return (
       <Tooltip
-        label={`Save history has forked — your saves and ${remote.name}'s have both moved on. Reconcile before pushing.`}
+        label={`Save history has forked - your saves and ${remote.name}'s have both moved on. Reconcile before pushing.`}
         side="bottom"
       >
         <span
@@ -445,7 +457,7 @@ function PushRejectedModal({
     (legBehind(rejection.working) || legBehind(rejection.ledger))
   return (
     <ModalShell
-      ariaLabel="Push rejected — the shared copy changed"
+      ariaLabel="Push rejected - the shared copy changed"
       onClose={onClose}
       testId="git-push-rejected"
     >
@@ -465,7 +477,7 @@ function PushRejectedModal({
             </>
           ) : (
             <>
-              Couldn&rsquo;t push — <span className="font-mono">{rejection.remote}</span> has
+              Couldn&rsquo;t push - <span className="font-mono">{rejection.remote}</span> has
               changed
             </>
           )}
@@ -531,7 +543,7 @@ function RejectedLeg({
   const blocking = leg.status === "behind" || leg.status === "diverged"
   const detail =
     leg.status === "diverged"
-      ? `forked — you have ${leg.ahead ?? 0}, ${remote} has ${leg.behind ?? 0} you don't`
+      ? `forked - you have ${leg.ahead ?? 0}, ${remote} has ${leg.behind ?? 0} you don't`
       : leg.status === "behind"
         ? `${leg.behind ?? 0} newer on ${remote} you don't have yet`
         : leg.status === "ahead"

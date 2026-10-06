@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, within } from "@testing-library/react"
 import { PdpTab } from "../PdpTab"
 import { makeTrainResult } from "../../../test-utils/factories"
 
@@ -79,5 +79,27 @@ describe("PdpTab", () => {
     expect(screen.getByText("PDP unavailable for territory")).toBeInTheDocument()
     expect(screen.getByText("CardinalityError")).toBeInTheDocument()
     expect(screen.getByText("too many distinct categories")).toBeInTheDocument()
+  })
+
+  it("labels a null categorical level as missing without rendering null", () => {
+    const result = makeTrainResult({
+      feature_importance: [{ feature: "territory", importance: 10 }],
+      pdp_data: [
+        {
+          feature: "territory",
+          type: "categorical",
+          grid: [
+            { value: "north", avg_prediction: 1.2 },
+            { value: null, avg_prediction: 1.4 },
+          ],
+        },
+      ],
+    })
+
+    const { container } = render(<PdpTab result={result} />)
+
+    expect(container.querySelector("svg")).toBeInTheDocument()
+    expect(within(screen.getByRole("img", { name: "Partial dependence for territory" })).getByText("(missing)")).toBeInTheDocument()
+    expect(screen.queryByText("null")).not.toBeInTheDocument()
   })
 })

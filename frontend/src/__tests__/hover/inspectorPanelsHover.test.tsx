@@ -9,8 +9,6 @@
  *                                     across 8 JSX handler sites
  *     L441  onFocus       — label input borderColor + boxShadow (two writes)
  *     L442  onBlur        — label input borderColor + boxShadow reset (two writes)
- *     L449  onMouseEnter  — refresh button opacity
- *     L450  onMouseLeave  — refresh button opacity reset
  *     L458  onMouseEnter  — close-button background
  *     L459  onMouseLeave  — close-button background reset
  *     L479  onMouseEnter  — tab button background (state-gated on activeTab !== tab)
@@ -183,7 +181,7 @@ describe("inspector-panel hover structural checks", () => {
       const hits = countCurrentTargetStyleWrites(src)
       expect(
         hits,
-        `${rel} still contains ${hits} inline \`currentTarget.style.*\` writes — migrate each to a CSS class (.hover-chrome / .hover-bg in index.css) or Tailwind \`hover:bg-...\`.  Preserve only non-styling event-handler logic (selection, focus, tooltip side-effects).`,
+        `${rel} still contains ${hits} inline \`currentTarget.style.*\` writes - migrate each to a CSS class (.hover-chrome / .hover-bg in index.css) or Tailwind \`hover:bg-...\`.  Preserve only non-styling event-handler logic (selection, focus, tooltip side-effects).`,
       ).toBe(0)
     },
   )
@@ -372,9 +370,10 @@ function renderNodePanel(
 
 describe("NodePanel tab hover dual state", () => {
   it("active tab and inactive tab render distinguishably", () => {
-    // polars nodes show the Columns tab, so both tabs are present.
+    // polars nodes show the Columns tab beside their config tab (labelled
+    // "Transform"), so both tabs are present.
     renderNodePanel()
-    const configTab = screen.getByRole("button", { name: /config/i })
+    const configTab = screen.getByRole("button", { name: /^transform$/i })
     const columnsTab = screen.getByRole("button", { name: /columns/i })
     // Active tab uses accent-soft background; inactive tab should not.
     // We assert they are not the same string (a brittle "identical"
@@ -386,7 +385,7 @@ describe("NodePanel tab hover dual state", () => {
 
   it("hovering the ACTIVE tab does not change its inline background (no hover flash)", () => {
     renderNodePanel()
-    const configTab = screen.getByRole("button", { name: /config/i })
+    const configTab = screen.getByRole("button", { name: /^transform$/i })
     const before = configTab.style.background
     fireEvent.mouseEnter(configTab)
     const after = configTab.style.background
@@ -398,7 +397,7 @@ describe("NodePanel tab hover dual state", () => {
 
   it("hovering an INACTIVE tab does not rewrite inline styles of the active tab", () => {
     renderNodePanel()
-    const configTab = screen.getByRole("button", { name: /config/i })
+    const configTab = screen.getByRole("button", { name: /^transform$/i })
     const columnsTab = screen.getByRole("button", { name: /columns/i })
     const activeBefore = configTab.style.background
     fireEvent.mouseEnter(columnsTab)
@@ -421,7 +420,7 @@ describe("NodePanel tab hover dual state", () => {
 })
 
 // ─────────────────────────────────────────────────────────────────────
-//  NodePanel: close button + refresh button + label input (focus)
+//  NodePanel: close button + label input (focus)
 // ─────────────────────────────────────────────────────────────────────
 describe("NodePanel standalone hover/focus sites", () => {
   it("close button dispatches mouseEnter/mouseLeave without inline style mutation", () => {
@@ -434,18 +433,6 @@ describe("NodePanel standalone hover/focus sites", () => {
     const after = closeBtn.style.background
     // Post-migration the hover bg should come from CSS — so the inline
     // `.style.background` attribute should not flicker.
-    expect(duringHover).toBe(before)
-    expect(after).toBe(before)
-  })
-
-  it("refresh button dispatches mouseEnter/mouseLeave without inline opacity mutation", () => {
-    renderNodePanel()
-    const refreshBtn = screen.getByTitle("Refresh preview")
-    const before = refreshBtn.style.opacity
-    fireEvent.mouseEnter(refreshBtn)
-    const duringHover = refreshBtn.style.opacity
-    fireEvent.mouseLeave(refreshBtn)
-    const after = refreshBtn.style.opacity
     expect(duringHover).toBe(before)
     expect(after).toBe(before)
   })
@@ -503,6 +490,7 @@ function makeStep(overrides: Partial<TraceStep> = {}): TraceStep {
     output_values: { age: 25, premium: 100 },
     topological_rank: 0,
     column_relevant: true,
+    contributed_columns: [], derivations: [],
     ...overrides,
   }
 }
@@ -635,6 +623,7 @@ describe("TracePanel focused/full trace toggle", () => {
                 columns_passed: [],
               },
               column_relevant: true,
+              contributed_columns: [], derivations: [],
             }),
             makeStep({
               node_id: "n2",
@@ -647,6 +636,7 @@ describe("TracePanel focused/full trace toggle", () => {
                 columns_passed: ["premium"],
               },
               column_relevant: false,
+              contributed_columns: [], derivations: [],
             }),
             makeStep({
               node_id: "n3",
@@ -659,6 +649,7 @@ describe("TracePanel focused/full trace toggle", () => {
                 columns_passed: [],
               },
               column_relevant: true,
+              contributed_columns: [], derivations: [],
             }),
           ],
         })}

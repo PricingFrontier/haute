@@ -1,7 +1,7 @@
 import { useMemo } from "react"
 import { Play, Loader2, AlertTriangle, RefreshCw, CheckCircle2, Database, XCircle } from "lucide-react"
 import type { TrainResult, TrainProgress } from "../../stores/useNodeResultsStore"
-import type { TrainEstimate } from "../../api/types"
+import type { TrainEstimate, TrainEstimateUnavailable } from "../../api/types"
 import { MODEL_COLORS } from "../../theme/colors"
 import { TrainingProgress as TrainingProgressPanel } from "./TrainingProgress"
 import ExecutionDiagnosticsSummary from "../../components/ExecutionDiagnosticsSummary"
@@ -16,9 +16,26 @@ function formatMb(mb: number): string {
   return mb < 1024 ? `${mb.toFixed(0)} MB` : `${(mb / 1024).toFixed(1)} GB`
 }
 
+function unavailableEstimateReason(
+  unavailable: TrainEstimateUnavailable,
+  nodeLabel: (nodeId: string) => string,
+): string {
+  return unavailable.reason === "row_count_unprovable"
+    ? `The row count at "${nodeLabel(unavailable.blocking_node_id)}" can't be proven before it runs, so training memory can't be estimated.`
+    : "The columns reaching this node can't be resolved before it runs, so training memory can't be estimated."
+}
+
+/** Joins named for a sentence: "a", "a" and "b", "a", "b" and "c". */
+function joinNames(nodeIds: readonly string[], nodeLabel: (nodeId: string) => string): string {
+  const names = nodeIds.map((nodeId) => `"${nodeLabel(nodeId)}"`)
+  return names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`
+}
+
 export type TrainingActionsAndResultsProps = {
-  /** Validation messages to reveal after an invalid training attempt. */
+  /** Current readiness issues, shown before submission. */
   validationMessages?: readonly string[]
+  validationDestinations?: readonly string[]
+  onValidationMessageClick?: (index: number) => void
   training: boolean
   trainProgress: TrainProgress | null
   estimatedRemainingSeconds?: number | null
@@ -27,10 +44,18 @@ export type TrainingActionsAndResultsProps = {
   ramEstimate: TrainEstimate | null
   ramEstimateLoading: boolean
   ramEstimateError?: string | null
+  /** The estimate is waiting for the pipeline's input-snapshot build to release the budget. */
+  estimateWaiting?: boolean
   rowLimit: number | null
+  /** Canvas label for a node the estimate names (a blocking node, or a join without a key contract). */
+  nodeLabel: (nodeId: string) => string
+  /** The action that opens a node the estimate names, or null when it is not on this canvas. */
+  nodeOpener?: (nodeId: string) => (() => void) | null
   terminalMetrics?: ExecutionMetrics | null
   terminalStatus?: string | null
   terminalReason?: string | null
+  /** The training worker's traceback when it raised: the "job's error details" its message names. */
+  terminalTraceback?: string | null
   /** True while the short start request is waiting for its cancellable job handle. */
   submitting?: boolean
   cancelling?: boolean
@@ -41,6 +66,8 @@ export type TrainingActionsAndResultsProps = {
 
 export function TrainingActionsAndResults({
   validationMessages = [],
+  validationDestinations = [],
+  onValidationMessageClick,
   training,
   trainProgress,
   estimatedRemainingSeconds = null,
@@ -49,10 +76,14 @@ export function TrainingActionsAndResults({
   ramEstimate,
   ramEstimateLoading,
   ramEstimateError = null,
+  estimateWaiting = false,
   rowLimit,
+  nodeLabel,
+  nodeOpener,
   terminalMetrics = null,
   terminalStatus = null,
   terminalReason = null,
+  terminalTraceback = null,
   submitting = false,
   cancelling = false,
   tuningEnabled = false,
@@ -61,7 +92,8 @@ export function TrainingActionsAndResults({
 }: TrainingActionsAndResultsProps) {
   // Recalculate training MB and GPU VRAM reactively as row_limit changes
   const adjusted = useMemo(() => {
-    if (!ramEstimate || ramEstimate.total_rows == null) return null
+    // An unavailable estimate has no memory figure to scale.
+    if (!ramEstimate || ramEstimate.total_rows == null || ramEstimate.bytes_per_row == null) return null
     const sourceRows = ramEstimate.total_rows
     const hasUserLimit = rowLimit != null && rowLimit > 0
 
@@ -92,8 +124,13 @@ export function TrainingActionsAndResults({
 
     return { rows, trainingMb, wasDownsampled, isLimited, gpuVramMb }
   }, [ramEstimate, rowLimit])
+  // A row total resting on a join without a key contract is its worst case,
+  // never a count to call "fits" or "will downsample".
+  const unboundedJoins = ramEstimate && !ramEstimate.unavailable ? ramEstimate.unbounded_join_node_ids : []
 
   const busy = submitting || training
+  // Training would be refused while the snapshot build holds the budget.
+  const trainBlocked = busy || estimateWaiting
   const trainIcon = submitting
     ? <Database size={14} className="animate-pulse" />
     : training
@@ -116,7 +153,7 @@ export function TrainingActionsAndResults({
         <span style={{ color: "var(--warning)" }}>Config changed since last training</span>
           <button
             onClick={onTrain}
-            disabled={training || submitting}
+            disabled={trainBlocked}
             className="ml-auto px-2 py-0.5 rounded text-[11px] font-medium"
             style={{ background: MODEL_COLORS.accentSoft, color: MODEL_COLORS.accent }}
           >
@@ -127,18 +164,91 @@ export function TrainingActionsAndResults({
 
       {/* RAM Estimate */}
       {ramEstimateLoading && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--model-accent-soft)", border: "1px solid var(--accent-soft-hover)" }}>
+        <div
+          role={estimateWaiting ? "status" : undefined}
+          className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs"
+          style={{ background: "var(--model-accent-soft)", border: "1px solid var(--accent-soft-hover)" }}
+        >
           <Loader2 size={12} className="animate-spin" style={{ color: MODEL_COLORS.accent }} />
-          <span style={{ color: "var(--text-muted)" }}>Estimating dataset size...</span>
+          <span style={{ color: "var(--text-muted)" }}>
+            {estimateWaiting ? "Waiting for the input snapshot to finish" : "Estimating dataset size..."}
+          </span>
         </div>
       )}
       {ramEstimateError && !ramEstimateLoading && !ramEstimate && (
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--warning-soft-subtle)", border: "1px solid var(--warning-border)" }}>
           <AlertTriangle size={12} className="shrink-0" style={{ color: "var(--warning-strong)" }} />
-          <span style={{ color: "var(--warning)" }}>RAM estimate unavailable — training will still work</span>
+          <div style={{ color: "var(--warning)" }}>
+            <p className="font-medium">{ramEstimateError.startsWith("Evaluation preview failed:") ? "Evaluation preview failed" : "Memory estimate failed"}</p>
+            <p className="mt-1 break-words">{ramEstimateError.replace(/^Evaluation preview failed:\s*/, "")}</p>
+          </div>
         </div>
       )}
-      {ramEstimate && !ramEstimateLoading && adjusted && (
+      {ramEstimate?.unavailable && !ramEstimateLoading && (
+        <div
+          role="status"
+          className="px-3 py-2.5 rounded-lg text-xs space-y-1.5"
+          style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}
+        >
+          <p className="font-medium" style={{ color: "var(--text-primary)" }}>Memory estimate unavailable</p>
+          <p className="break-words" style={{ color: "var(--text-secondary)" }}>
+            {unavailableEstimateReason(ramEstimate.unavailable, nodeLabel)}
+          </p>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-[11px] font-mono" style={{ color: "var(--text-secondary)" }}>
+            {ramEstimate.total_rows != null && (
+              <>
+                <span>Source rows</span>
+                <span style={{ color: "var(--text-primary)" }}>{ramEstimate.total_rows.toLocaleString()}</span>
+              </>
+            )}
+            <span>Available RAM</span>
+            <span style={{ color: "var(--text-primary)" }}>{formatMb(ramEstimate.available_mb)}</span>
+          </div>
+        </div>
+      )}
+      {ramEstimate && !ramEstimate.unavailable && !ramEstimateLoading && adjusted && unboundedJoins.length > 0 && (
+        <div
+          role="status"
+          className="px-3 py-2.5 rounded-lg text-xs space-y-1.5"
+          style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}
+        >
+          <p className="font-medium" style={{ color: "var(--text-primary)" }}>Row count not proven</p>
+          <p className="break-words" style={{ color: "var(--text-secondary)" }}>
+            {`Up to ${ramEstimate.total_rows!.toLocaleString()} rows: ${joinNames(unboundedJoins, nodeLabel)} ${unboundedJoins.length === 1 ? "has" : "have"} no key contract. Declaring ${unboundedJoins.length === 1 ? "the join" : "each join"} many-to-one bounds the rows by its base input.`}
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {unboundedJoins.map((nodeId) => {
+              const open = nodeOpener?.(nodeId) ?? null
+              return open && (
+                <button
+                  key={nodeId}
+                  type="button"
+                  onClick={open}
+                  className="px-2 py-0.5 rounded text-[11px] font-medium"
+                  style={{ background: MODEL_COLORS.accentSoft, color: MODEL_COLORS.accent }}
+                >
+                  {`Open "${nodeLabel(nodeId)}"`}
+                </button>
+              )
+            })}
+          </div>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-[11px] font-mono" style={{ color: "var(--text-secondary)" }}>
+            <span>Rows (upper bound)</span>
+            <span style={{ color: "var(--text-primary)" }}>{ramEstimate.total_rows!.toLocaleString()}</span>
+            <span>RAM at upper bound</span>
+            <span style={{ color: "var(--text-primary)" }}>{formatMb(ramEstimate.total_rows! * ramEstimate.bytes_per_row! * TRAINING_OVERHEAD / (1024 * 1024))}</span>
+            {ramEstimate.safe_row_limit != null && (
+              <>
+                <span>Training row limit</span>
+                <span style={{ color: "var(--text-primary)" }}>{ramEstimate.safe_row_limit.toLocaleString()}</span>
+              </>
+            )}
+            <span>Available RAM</span>
+            <span style={{ color: "var(--text-primary)" }}>{formatMb(ramEstimate.available_mb)}</span>
+          </div>
+        </div>
+      )}
+      {ramEstimate && !ramEstimate.unavailable && !ramEstimateLoading && adjusted && unboundedJoins.length === 0 && (
         <div className="px-3 py-2.5 rounded-lg text-xs space-y-1.5" style={{
           background: adjusted.wasDownsampled ? "var(--warning-soft-subtle)" : "var(--train-summary-success-bg)",
           border: `1px solid ${adjusted.wasDownsampled ? "var(--warning-border)" : "var(--train-summary-success-border)"}`,
@@ -183,7 +293,7 @@ export function TrainingActionsAndResults({
             <div className="flex items-center gap-2 mt-1" style={{ color: "var(--warning-strong)" }}>
               <AlertTriangle size={12} className="shrink-0" />
               <span>
-                GPU training needs ~{formatMb(adjusted.gpuVramMb)} but GPU has {formatMb(ramEstimate.gpu_vram_available_mb)}. Select CPU and retry, or reduce rows/features.
+                GPU training needs ~{formatMb(adjusted.gpuVramMb)} but GPU has {formatMb(ramEstimate.gpu_vram_available_mb)} free. Select CPU and retry, or reduce rows/features.
               </span>
             </div>
           )}
@@ -194,12 +304,12 @@ export function TrainingActionsAndResults({
       <div className="pt-2" style={{ borderTop: "1px solid var(--border)" }}>
         <button
           onClick={onTrain}
-          disabled={busy}
+          disabled={trainBlocked}
           className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors"
           style={{
-            background: busy ? "var(--chrome-hover)" : MODEL_COLORS.accent,
-            color: busy ? "var(--text-muted)" : "var(--text-on-accent)",
-            opacity: busy ? 0.6 : 1,
+            background: trainBlocked ? "var(--chrome-hover)" : MODEL_COLORS.accent,
+            color: trainBlocked ? "var(--text-muted)" : "var(--text-on-accent)",
+            opacity: trainBlocked ? 0.6 : 1,
           }}
         >
           {trainIcon}
@@ -215,8 +325,10 @@ export function TrainingActionsAndResults({
             <div className="min-w-0" style={{ color: "var(--warning)" }}>
               <div className="font-medium">Complete before training</div>
               <ul className="mt-1 list-disc space-y-1 pl-4">
-                {validationMessages.map((message) => (
-                  <li key={message}>{message}</li>
+                {validationMessages.map((message, index) => (
+                  <li key={message}>{message}
+                    {onValidationMessageClick && <button type="button" className="ml-2 font-medium underline underline-offset-2" onClick={() => onValidationMessageClick(index)}>Go to {validationDestinations[index]}</button>}
+                  </li>
                 ))}
               </ul>
             </div>
@@ -251,7 +363,7 @@ export function TrainingActionsAndResults({
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--train-complete-bg)", border: "1px solid var(--train-complete-border)" }}>
           <CheckCircle2 size={12} style={{ color: "var(--train-complete-text)" }} className="shrink-0" />
           <span style={{ color: "var(--train-complete-text)" }}>
-            Model trained — results in preview panel below
+            Model trained - results in preview panel below
           </span>
         </div>
       )}
@@ -271,6 +383,17 @@ export function TrainingActionsAndResults({
                 status={terminalStatus}
                 terminalReason={terminalReason}
               />
+              {terminalTraceback && (
+                <details className="text-[11px]">
+                  <summary className="cursor-pointer" style={{ color: "var(--text-muted)" }}>Error details</summary>
+                  <pre
+                    className="mt-1 max-h-64 overflow-auto rounded p-2 font-mono leading-4"
+                    style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-secondary)" }}
+                  >
+                    {terminalTraceback}
+                  </pre>
+                </details>
+              )}
             </div>
           </div>
         </div>

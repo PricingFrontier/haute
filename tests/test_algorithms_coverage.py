@@ -12,7 +12,7 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock, mock_open, patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import polars as pl
@@ -23,9 +23,18 @@ def _stub_optional_catboost_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None
     """Keep training-path coverage tests focused on their asserted contract."""
     from haute.modelling._algorithms import CatBoostAlgorithm
 
-    monkeypatch.setattr(CatBoostAlgorithm, "shap_summary", lambda *a, **kw: [])
+    monkeypatch.delattr(CatBoostAlgorithm, "shap_values")
     monkeypatch.setattr(CatBoostAlgorithm, "feature_importance_typed", lambda *a, **kw: [])
     monkeypatch.setattr("haute.modelling._metrics.compute_pdp", lambda *a, **kw: [])
+
+
+_RANDOM_EVALUATION: dict[str, object] = {
+    "schema_version": 1,
+    "strategy": "random",
+    "seed": 42,
+    "test": {"size": 0.2},
+    "validation": {"method": "none"},
+}
 
 
 def _fast_training_params(**overrides: object) -> dict[str, object]:
@@ -41,95 +50,20 @@ def _fast_training_params(**overrides: object) -> dict[str, object]:
 
 
 class TestGetRssMb:
-    """Cover all three platform branches and the fallback."""
+    """Verify _get_rss_mb reads through the psutil-backed process probe."""
 
-    def test_linux_reads_proc_status(self):
+    def test_returns_positive_float(self):
         from haute.modelling._algorithms import _get_rss_mb
 
-        fake_status = "Name:\tpython\nVmRSS:\t102400 kB\nVmSize:\t200000 kB\n"
-        with (
-            patch.object(sys, "platform", "linux"),
-            patch("builtins.open", mock_open(read_data=fake_status)),
-        ):
-            result = _get_rss_mb()
-        assert result == pytest.approx(102400 / 1024, rel=1e-6)
-
-    def test_linux_oserror_returns_zero(self):
-        from haute.modelling._algorithms import _get_rss_mb
-
-        with (
-            patch.object(sys, "platform", "linux"),
-            patch("builtins.open", side_effect=OSError("no /proc")),
-        ):
-            assert _get_rss_mb() == 0.0
-
-    def test_linux_no_vmrss_line_returns_zero(self):
-        """If /proc/self/status exists but has no VmRSS line."""
-        from haute.modelling._algorithms import _get_rss_mb
-
-        fake_status = "Name:\tpython\nVmSize:\t200000 kB\n"
-        with (
-            patch.object(sys, "platform", "linux"),
-            patch("builtins.open", mock_open(read_data=fake_status)),
-        ):
-            result = _get_rss_mb()
-        assert result == 0.0
-
-    def test_darwin_uses_resource(self):
-        from haute.modelling._algorithms import _get_rss_mb
-
-        mock_resource = MagicMock()
-        usage = SimpleNamespace(ru_maxrss=104857600)  # 100 MB in bytes
-        mock_resource.getrusage.return_value = usage
-        mock_resource.RUSAGE_SELF = 0
-
-        with (
-            patch.object(sys, "platform", "darwin"),
-            patch.dict(sys.modules, {"resource": mock_resource}),
-        ):
-            result = _get_rss_mb()
-        assert result == pytest.approx(100.0, rel=1e-6)
-
-    def test_darwin_import_error_returns_zero(self):
-        from haute.modelling._algorithms import _get_rss_mb
-
-        with patch.object(sys, "platform", "darwin"), patch.dict(sys.modules, {"resource": None}):
-            # When module is None, import will raise ImportError
-            result = _get_rss_mb()
-        # On darwin with import failure the function falls through
-        assert result == 0.0
-
-    def test_windows_uses_ctypes(self):
-        """On win32, mock the ctypes calls to cover the Windows branch."""
-        from haute.modelling._algorithms import _get_rss_mb
-
-        # We mock _get_rss_mb's internals indirectly by calling it on win32.
-        # The function may return 0.0 if psapi isn't available, so we test
-        # that it at least runs without error and returns a non-negative float.
-        with patch.object(sys, "platform", "win32"):
-            result = _get_rss_mb()
+        result = _get_rss_mb()
         assert isinstance(result, float)
-        assert result >= 0.0
+        assert result > 0.0
 
-    def test_windows_oserror_returns_zero(self):
-        """Windows ctypes branch returns 0.0 on OSError."""
+    def test_returns_zero_when_probe_is_unavailable(self, monkeypatch: pytest.MonkeyPatch):
         from haute.modelling._algorithms import _get_rss_mb
 
-        with (
-            patch.object(sys, "platform", "win32"),
-            patch("ctypes.windll", create=True) as mock_windll,
-        ):
-            mock_windll.psapi.GetProcessMemoryInfo.side_effect = OSError("fail")
-            # Also need to handle GetCurrentProcess
-            mock_windll.kernel32.GetCurrentProcess.return_value = 1234
-            result = _get_rss_mb()
-        assert result == 0.0
-
-    def test_unknown_platform_returns_zero(self):
-        from haute.modelling._algorithms import _get_rss_mb
-
-        with patch.object(sys, "platform", "freebsd"):
-            assert _get_rss_mb() == 0.0
+        monkeypatch.setattr("haute.modelling._algorithms.current_process_rss_bytes", lambda: None)
+        assert _get_rss_mb() == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -270,14 +204,14 @@ class TestCatBoostProgressCallback:
         loss_history: list[dict[str, float]] = []
         calls: list[tuple] = []
 
-        def on_iter(iteration: int, total: int, metrics: dict) -> None:
-            calls.append((iteration, total, metrics))
+        def on_iter(iteration: int, total: int, metrics: dict, row: dict | None) -> None:
+            calls.append((iteration, total, metrics, row))
 
         cb = _CatBoostProgressCallback(on_iter, 100, loss_history)
 
-        # Build a mock info object with metrics
+        # Match CatBoost's one-based completed-iteration callback contract.
         info = SimpleNamespace(
-            iteration=0,
+            iteration=1,
             metrics={
                 "learn": {"RMSE": [0.5]},
                 "validation": {"RMSE": [0.6]},
@@ -286,11 +220,14 @@ class TestCatBoostProgressCallback:
         result = cb.after_iteration(info)
         assert result is True
         assert len(calls) == 1
-        assert calls[0] == (1, 100, {"RMSE": 0.5, "validation_RMSE": 0.6})
-        assert len(loss_history) == 1
-        assert loss_history[0]["iteration"] == 1.0
-        assert loss_history[0]["train_RMSE"] == 0.5
-        assert loss_history[0]["eval_RMSE"] == 0.6
+        # The readout keeps CatBoost's names; the history row is the prefixed one.
+        assert calls[0] == (
+            1,
+            100,
+            {"RMSE": 0.5, "validation_RMSE": 0.6},
+            {"iteration": 1.0, "train_RMSE": 0.5, "eval_RMSE": 0.6},
+        )
+        assert loss_history == [calls[0][3]]
 
     def test_after_iteration_without_callback(self):
         from haute.modelling._algorithms import _CatBoostProgressCallback
@@ -298,7 +235,7 @@ class TestCatBoostProgressCallback:
         loss_history: list[dict[str, float]] = []
         cb = _CatBoostProgressCallback(None, 10, loss_history)
 
-        info = SimpleNamespace(iteration=0, metrics={})
+        info = SimpleNamespace(iteration=1, metrics={})
         result = cb.after_iteration(info)
         assert result is True
         assert len(loss_history) == 1
@@ -309,7 +246,7 @@ class TestCatBoostProgressCallback:
         loss_history: list[dict[str, float]] = []
         cb = _CatBoostProgressCallback(None, 10, loss_history)
 
-        info = SimpleNamespace(iteration=4, metrics=None)
+        info = SimpleNamespace(iteration=5, metrics=None)
         result = cb.after_iteration(info)
         assert result is True
         assert loss_history[0]["iteration"] == 5.0
@@ -321,7 +258,7 @@ class TestCatBoostProgressCallback:
         loss_history: list[dict[str, float]] = []
         cb = _CatBoostProgressCallback(None, 10, loss_history)
 
-        info = SimpleNamespace(iteration=0, metrics={"learn": {"RMSE": []}})
+        info = SimpleNamespace(iteration=1, metrics={"learn": {"RMSE": []}})
         cb.after_iteration(info)
         assert "train_RMSE" not in loss_history[0]
 
@@ -337,11 +274,11 @@ class TestCatBoostProgressCallback:
             "haute.modelling._algorithms._mem_checkpoint",
             side_effect=lambda label: checkpoints.append(label),
         ):
-            for i in range(200):
+            for i in range(1, 201):
                 info = SimpleNamespace(iteration=i, metrics=None)
                 cb.after_iteration(info)
 
-        # Iterations 1-5 (i=0..4) and every 50th (50,100,150,200)
+        # Iterations 1-5 and every 50th (50,100,150,200)
         assert len(checkpoints) == 9  # 5 + 4
 
 
@@ -368,7 +305,7 @@ class TestBuildPool:
         assert pool.num_row() == 3
 
     def test_pool_with_weight_and_offset(self):
-        """Weight and offset are extracted from df correctly."""
+        """Weight and offset are extracted from df; a log link logs the exposure."""
         from haute.modelling._algorithms import _build_pool
 
         df = pl.DataFrame(
@@ -376,11 +313,30 @@ class TestBuildPool:
                 "f1": [1.0, 2.0, 3.0],
                 "y": [0.0, 1.0, 0.0],
                 "w": [1.0, 2.0, 1.0],
-                "off": [0.1, 0.2, 0.3],
+                "off": [0.5, 1.0, 2.0],
             }
         )
-        pool = _build_pool(df, ["f1"], [], target="y", weight="w", offset="off")
-        assert pool.num_row() == 3
+        log_pool = _build_pool(
+            df, ["f1"], [], target="y", weight="w", offset="off", offset_link="log"
+        )
+        identity_pool = _build_pool(
+            df, ["f1"], [], target="y", weight="w", offset="off", offset_link="identity"
+        )
+        assert log_pool.num_row() == 3
+        np.testing.assert_allclose(log_pool.get_baseline().ravel(), np.log([0.5, 1.0, 2.0]))
+        np.testing.assert_allclose(identity_pool.get_baseline().ravel(), [0.5, 1.0, 2.0])
+
+    def test_pool_offset_needs_its_link_and_log_link_refuses_non_positive_exposure(self):
+        from haute.errors import HauteValidationError
+        from haute.modelling._algorithms import _build_pool
+
+        df = pl.DataFrame({"f1": [1.0, 2.0], "y": [0.0, 1.0], "off": [0.0, 1.0]})
+        with pytest.raises(HauteValidationError, match="needs its link"):
+            _build_pool(df, ["f1"], [], target="y", offset="off")
+        with pytest.raises(
+            HauteValidationError, match="must be positive under a log link, but 1 rows"
+        ):
+            _build_pool(df, ["f1"], [], target="y", offset="off", offset_link="log")
 
     def test_pool_with_pre_extracted_arrays(self):
         """Pre-extracted y, w, baseline arrays bypass df extraction."""
@@ -814,14 +770,134 @@ class TestCatBoostAlgorithmPredictCoverage:
         np.testing.assert_array_almost_equal(preds, [1.0, 2.0, 3.0])
 
 
+class TestCatBoostImportanceOfAConstantModel:
+    """A refit at a small validation-selected tree count can predict a constant."""
+
+    @staticmethod
+    def _constant_model() -> Any:
+        from catboost import CatBoostRegressor
+
+        rows = 120
+        x = pl.DataFrame(
+            {
+                "a": [float(i % 7) for i in range(rows)],
+                "b": [float(i % 5) for i in range(rows)],
+            }
+        ).to_pandas()
+        y = [float(i % 3) for i in range(rows)]
+        model = CatBoostRegressor(iterations=1, depth=2, learning_rate=0.3, verbose=0)
+        model.fit(x, y)
+        assert len(np.unique(model.predict(x))) == 1
+        # CatBoost normalises by a zero total prediction change: 0/0.
+        assert np.isnan(model.get_feature_importance()).all()
+        return model, x, y
+
+    def test_split_features_score_zero_instead_of_nan(self):
+        from catboost import Pool
+
+        from haute.modelling._algorithms import CatBoostAlgorithm
+
+        model, x, y = self._constant_model()
+        algo = CatBoostAlgorithm()
+
+        assert algo.feature_importance(model) == [
+            {"feature": "a", "importance": 0.0},
+            {"feature": "b", "importance": 0.0},
+        ]
+        typed = algo.feature_importance_typed(model, Pool(x, y), "PredictionValuesChange")
+        assert {row["importance"] for row in typed} == {0.0}
+
+    def test_infinite_importance_is_not_masked(self):
+        from haute.modelling._algorithms import CatBoostAlgorithm
+
+        model = MagicMock()
+        model.feature_names_ = ["a", "b"]
+        model.get_feature_importance.return_value = np.array([np.inf, 1.0])
+
+        rows = CatBoostAlgorithm().feature_importance(model)
+
+        assert rows[0] == {"feature": "a", "importance": float("inf")}
+
+
 # ---------------------------------------------------------------------------
-# CatBoostAlgorithm.shap_summary — subsampling and 1D edge case
+# Diagnostic progress stages; CatBoostAlgorithm.shap_values 1D edge case
 # ---------------------------------------------------------------------------
 
 
-class TestShapSummaryCoverage:
+class TestDiagnosticProgress:
+    @pytest.fixture()
+    def metrics_inputs(self, monkeypatch):
+        from haute.modelling._training_job import TrainingJob, _SplitResult, _TrainModelResult
+
+        frame = pl.DataFrame({"x": [1.0, 2.0, 3.0], "y": [2.0, 4.0, 6.0]})
+        job = TrainingJob(name="diagnostic_progress", data=frame, target="y", metrics=["rmse"])
+        monkeypatch.setattr(job, "_read_partition", lambda *args, **kwargs: frame)
+        monkeypatch.setattr("haute.modelling._metrics.compute_pdp", lambda *args, **kwargs: [])
+        monkeypatch.setattr("haute.modelling._algorithms._mem_checkpoint", lambda *args: None)
+        pool_builder = MagicMock()
+        monkeypatch.setattr("haute.modelling._algorithms._build_pool", pool_builder)
+        algo = SimpleNamespace(
+            feature_importance=lambda model: [{"feature": "x", "importance": 1.0}],
+            predict=lambda *args, **kwargs: frame["y"].to_numpy(),
+        )
+        split = _SplitResult("unused.parquet", False, len(frame), 0, 0)
+        trained = _TrainModelResult(SimpleNamespace(), algo, None, {})
+        return job, split, trained, pool_builder
+
+    @pytest.mark.parametrize("has_shap", [True, False])
+    def test_progress_names_the_diagnostic_actually_running(self, metrics_inputs, has_shap):
+        job, split, trained, pool_builder = metrics_inputs
+        progress = []
+        active_at_call = []
+        loss_rows = [{"feature": "x", "importance": 0.25}]
+
+        def shap(model, rows, features, cat_features):
+            active_at_call.append(progress[-1])
+            return np.full((rows.height, len(features)), -0.5)
+
+        def loss(*args):
+            active_at_call.append(progress[-1])
+            return loss_rows
+
+        if has_shap:
+            trained.algo.shap_values = shap
+        trained.algo.feature_importance_typed = loss
+        pool_builder.side_effect = lambda *args, **kwargs: active_at_call.append(progress[-1])
+
+        result = job._compute_metrics(
+            split, ["x"], [], trained, lambda message, fraction: progress.append(message)
+        )
+
+        expected = ["Computing SHAP values"] if has_shap else []
+        assert active_at_call == expected + ["Computing loss-based feature importance"] * 2
+        assert ("Computing SHAP values" in progress) is has_shap
+        assert result.shap_summary == ([{"feature": "x", "mean_abs_shap": 0.5}] if has_shap else [])
+        assert [entry["feature"] for entry in result.shap_beeswarm] == (["x"] if has_shap else [])
+        assert result.feature_importance_loss == loss_rows
+        assert result.diagnostics_errors == []
+
+    def test_cancel_between_diagnostics_stops_before_loss_pool(self, metrics_inputs):
+        from haute._execution_context import ExecutionCancelledError
+
+        job, split, trained, pool_builder = metrics_inputs
+        trained.algo.shap_values = MagicMock(return_value=np.zeros((3, 1)))
+        trained.algo.feature_importance_typed = MagicMock(return_value=[])
+
+        def report(message, fraction):
+            if message == "Computing loss-based feature importance":
+                raise ExecutionCancelledError("Cancelled")
+
+        with pytest.raises(ExecutionCancelledError, match="Cancelled"):
+            job._compute_metrics(split, ["x"], [], trained, report)
+
+        trained.algo.shap_values.assert_called_once()
+        pool_builder.assert_not_called()
+        trained.algo.feature_importance_typed.assert_not_called()
+
+
+class TestCatBoostShapValues:
     def test_shap_1d_reshaped(self):
-        """1D shap_values array is reshaped to 2D."""
+        """A 1D ShapValues array is one row; the base value column is dropped."""
         from haute.modelling._algorithms import CatBoostAlgorithm
 
         algo = CatBoostAlgorithm()
@@ -832,30 +908,10 @@ class TestShapSummaryCoverage:
         df = pl.DataFrame({"f1": [1.0]})
 
         with patch("haute.modelling._algorithms._build_pool", return_value=MagicMock()):
-            result = algo.shap_summary(mock_model, df, ["f1"], max_rows=1000)
+            values = algo.shap_values(mock_model, df, ["f1"])
 
-        assert len(result) == 1
-        assert result[0]["feature"] == "f1"
-        assert result[0]["mean_abs_shap"] == pytest.approx(0.5)
-
-    def test_subsampling_when_df_exceeds_max_rows(self):
-        """When len(df) > max_rows, sample is taken."""
-        from haute.modelling._algorithms import CatBoostAlgorithm
-
-        algo = CatBoostAlgorithm()
-        mock_model = MagicMock()
-        # 5 rows sampled to 3 — shap returns (3, 2) (1 feature + base)
-        mock_model.get_feature_importance.return_value = np.array(
-            [[0.5, 0.1], [0.3, 0.1], [0.4, 0.1]]
-        )
-
-        df = pl.DataFrame({"f1": [1.0, 2.0, 3.0, 4.0, 5.0]})
-
-        with patch("haute.modelling._algorithms._build_pool", return_value=MagicMock()):
-            result = algo.shap_summary(mock_model, df, ["f1"], max_rows=3)
-
-        assert len(result) == 1
-        assert result[0]["mean_abs_shap"] > 0
+        assert values.shape == (1, 1)
+        assert values[0, 0] == pytest.approx(0.5)
 
 
 # ---------------------------------------------------------------------------
@@ -1061,9 +1117,10 @@ class TestSaveArtifactsCoverage:
 
         job = TrainingJob(
             name="myglm",
-            data=pl.DataFrame({"y": [1]}),
+            data=pl.DataFrame({"y": [1], "x": [1.0]}),
             target="y",
             algorithm="glm",
+            params={"family": "gaussian", "terms": {"x": {"type": "linear"}}},
             output_dir=str(tmp_path),
         )
         train_result = _TrainModelResult(
@@ -1073,7 +1130,7 @@ class TestSaveArtifactsCoverage:
 
         assert path == tmp_path / "myglm.rsglm"
 
-    def test_save_unknown_algorithm_default_extension(self, tmp_path):
+    def test_save_algorithm_without_a_suffix_raises(self, tmp_path):
         from haute.modelling._training_job import TrainingJob, _TrainModelResult
 
         mock_algo = MagicMock()
@@ -1087,13 +1144,15 @@ class TestSaveArtifactsCoverage:
             algorithm="catboost",  # will override
             output_dir=str(tmp_path),
         )
-        job.algorithm = "xgboost"  # unknown algo
+        job.algorithm = "unregistered"  # an algorithm with no registered suffix
         train_result = _TrainModelResult(
             model=mock_model, algo=mock_algo, fit_result=mock_fit_result, fit_params={}
         )
-        path = job._save_artifacts(train_result)
+        from haute.errors import HauteValidationError
 
-        assert path == tmp_path / "mymodel.model"
+        with pytest.raises(HauteValidationError, match="has no model file suffix"):
+            job._save_artifacts(train_result)
+        assert not (tmp_path / "mymodel.model").exists()
 
     def test_save_feature_contract_includes_declared_categorical_levels(self, tmp_path):
         from haute.modelling._feature_contract import load_contract
@@ -1180,51 +1239,6 @@ class TestSaveArtifactsCoverage:
 
 
 class TestLogToMlflowCoverage:
-    def test_log_to_mlflow_calls_log_experiment(self, tmp_path):
-        from haute.modelling._training_job import TrainingJob, TrainResult
-
-        job = TrainingJob(
-            name="mlflow_test",
-            data=pl.DataFrame({"y": [1]}),
-            target="y",
-            mlflow_experiment="/test/experiment",
-            model_name="test_model",
-            output_dir=str(tmp_path),
-        )
-
-        result = TrainResult(
-            metrics={"rmse": 0.5},
-            feature_importance=[{"feature": "x1", "importance": 1.0}],
-            model_path=str(tmp_path / "model.cbm"),
-            train_rows=100,
-            validation_rows=20,
-            features=["x1"],
-            cat_features=[],
-            holdout_rows=0,
-            holdout_metrics={},
-            diagnostics_set="validation",
-            shap_summary=[],
-            feature_importance_loss=[],
-            double_lift=[],
-            loss_history=[],
-            ave_per_feature=[],
-            residuals_histogram=[],
-            residuals_stats={},
-            actual_vs_predicted=[],
-            lorenz_curve=[],
-            lorenz_curve_perfect=[],
-            pdp_data=[],
-            glm_coefficients=[],
-            glm_relativities=[],
-            glm_fit_statistics={},
-            glm_regularization_path=None,
-        )
-
-        with patch("haute.modelling._mlflow_log.log_experiment") as mock_log:
-            job._log_to_mlflow(result)
-
-        mock_log.assert_called_once()
-
     def test_log_to_mlflow_no_experiment_returns_early(self):
         from haute.modelling._training_job import TrainingJob, TrainResult
 
@@ -1247,6 +1261,7 @@ class TestLogToMlflowCoverage:
             data=pl.DataFrame({"y": [1]}),
             target="y",
             mlflow_experiment="/test",
+            evaluation=_RANDOM_EVALUATION,
         )
 
         result = MagicMock(spec=TrainResult)
@@ -1467,8 +1482,8 @@ class TestGPUOnIterationPath:
 
         on_iter_calls: list[tuple] = []
 
-        def on_iter(it: int, total: int, metrics: dict) -> None:
-            on_iter_calls.append((it, total))
+        def on_iter(it: int, total: int, metrics: dict, row: dict | None) -> None:
+            on_iter_calls.append((it, total, row))
 
         # When model.fit is called in the thread, create a fake metric file
 
@@ -1506,6 +1521,8 @@ class TestGPUOnIterationPath:
         assert result.model is mock_model
         # on_iteration should have been called for each data line
         assert len(on_iter_calls) >= 1
+        # The GPU fit polls only the iteration: it adds no loss-history row.
+        assert all(row is None for _it, _total, row in on_iter_calls)
 
     def test_gpu_fit_error_is_reraised(self):
         """When model.fit raises in the GPU thread, the error is re-raised."""
@@ -1537,7 +1554,7 @@ class TestGPUOnIterationPath:
                     weight=None,
                     params={"task_type": "GPU", "iterations": 2},
                     task="regression",
-                    on_iteration=lambda it, total, m: None,
+                    on_iteration=lambda it, total, m, row: None,
                     pool=MagicMock(),
                 )
 
@@ -1782,64 +1799,6 @@ class TestTrainingJobGLMPaths:
 
 
 # ---------------------------------------------------------------------------
-# TrainingJob._log_to_mlflow with actual experiment
-# ---------------------------------------------------------------------------
-
-
-class TestLogToMlflowFull:
-    def test_log_to_mlflow_constructs_diagnostics_and_metadata(self, tmp_path):
-        """Verify _log_to_mlflow constructs ModelDiagnostics and calls log_experiment."""
-        from haute.modelling._training_job import TrainingJob, TrainResult
-
-        job = TrainingJob(
-            name="mlflow_full",
-            data=pl.DataFrame({"y": [1]}),
-            target="y",
-            mlflow_experiment="/test/exp",
-            model_name="my_model",
-            output_dir=str(tmp_path),
-        )
-
-        result = TrainResult(
-            metrics={"rmse": 0.5},
-            feature_importance=[],
-            model_path=str(tmp_path / "model.cbm"),
-            train_rows=100,
-            validation_rows=20,
-            features=["x1"],
-            cat_features=[],
-            holdout_rows=10,
-            holdout_metrics={"rmse": 0.6},
-            diagnostics_set="holdout",
-            shap_summary=[],
-            feature_importance_loss=[],
-            double_lift=[],
-            loss_history=[],
-            ave_per_feature=[],
-            residuals_histogram=[],
-            residuals_stats={},
-            actual_vs_predicted=[],
-            lorenz_curve=[],
-            lorenz_curve_perfect=[],
-            pdp_data=[],
-            glm_coefficients=[],
-            glm_relativities=[],
-            glm_fit_statistics={},
-            glm_regularization_path=None,
-        )
-
-        with patch("haute.modelling._mlflow_log.log_experiment") as mock_log:
-            job._log_to_mlflow(result)
-
-        mock_log.assert_called_once()
-        call_kwargs = mock_log.call_args[1]
-        assert call_kwargs["experiment_name"] == "/test/exp"
-        assert call_kwargs["run_name"] == "mlflow_full"
-        assert call_kwargs["metrics"] == {"rmse": 0.5}
-        assert call_kwargs["model_name"] == "my_model"
-
-
-# ---------------------------------------------------------------------------
 # CatBoostAlgorithm.fit — eval_df builds eval_pool automatically
 # ---------------------------------------------------------------------------
 
@@ -2070,8 +2029,8 @@ class TestPrepareDataWriteError:
 class TestComputeMetricsGLMExceptions:
     """Cover the try/except blocks in _compute_metrics for GLM diagnostics."""
 
-    def test_glm_coefficients_exception_is_logged(self, tmp_path):
-        """When coefficients_table raises, warning is logged and empty list returned."""
+    def test_glm_result_failures_are_recorded_without_failing_training(self, tmp_path, monkeypatch):
+        """Each GLM result diagnostic that raises is recorded by name; training succeeds."""
         from haute.modelling._training_job import TrainingJob
 
         rng = np.random.RandomState(42)
@@ -2089,34 +2048,34 @@ class TestComputeMetricsGLMExceptions:
             output_dir=str(tmp_path),
         )
 
-        # Patch the GLMAlgorithm methods to raise exceptions to cover the except blocks
-        from haute.modelling._rustystats import GLMAlgorithm
+        from haute.modelling import _rustystats
 
-        orig_coefs = GLMAlgorithm.coefficients_table
-        orig_rels = GLMAlgorithm.relativities
-        orig_stats = GLMAlgorithm.fit_statistics
+        def fail(name: str):
+            def raise_error(*_args, **_kwargs):
+                raise RuntimeError(f"{name} fail")
 
-        try:
-            GLMAlgorithm.coefficients_table = lambda self, model: (_ for _ in ()).throw(
-                RuntimeError("coef fail")
-            )
-            GLMAlgorithm.relativities = lambda self, model: (_ for _ in ()).throw(
-                RuntimeError("rel fail")
-            )
-            GLMAlgorithm.fit_statistics = lambda self, model: (_ for _ in ()).throw(
-                RuntimeError("stats fail")
-            )
+            return raise_error
 
-            result = job.run()
+        monkeypatch.setattr(_rustystats, "glm_coefficient_rows", fail("coef"))
+        monkeypatch.setattr(_rustystats, "glm_relativity_rows", fail("rel"))
+        monkeypatch.setattr(_rustystats, "glm_fit_statistics", fail("stats"))
 
-            # Diagnostics should be empty but training should still succeed
-            assert result.glm_coefficients == []
-            assert result.glm_relativities == []
-            assert result.glm_fit_statistics == {}
-        finally:
-            GLMAlgorithm.coefficients_table = orig_coefs
-            GLMAlgorithm.relativities = orig_rels
-            GLMAlgorithm.fit_statistics = orig_stats
+        result = job.run()
+
+        assert result.glm_coefficients == []
+        assert result.glm_relativities == []
+        assert result.glm_fit_statistics == {}
+        assert result.glm_inference == {
+            "status": "valid_standard",
+            "valid": True,
+            "standard_errors": "model",
+            "reason": None,
+        }
+        assert {(error["diagnostic"], error["error"]) for error in result.diagnostics_errors} >= {
+            ("glm_coefficients", "coef fail"),
+            ("glm_relativities", "rel fail"),
+            ("glm_fit_statistics", "stats fail"),
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -2161,8 +2120,9 @@ class TestMlflowExperimentTrigger:
     def _fast_optional_diagnostics(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _stub_optional_catboost_diagnostics(monkeypatch)
 
-    def test_mlflow_experiment_triggers_log(self, tmp_path):
-        """When mlflow_experiment is set, _log_to_mlflow is called during run()."""
+    def test_mlflow_experiment_logs_a_contracted_candidate_run(self, tmp_path):
+        """A scripted run with mlflow_experiment logs one candidate built from the
+        files it just wrote, identified by the job's own training identity."""
         from haute.modelling._training_job import TrainingJob
 
         rng = np.random.RandomState(42)
@@ -2174,13 +2134,41 @@ class TestMlflowExperimentTrigger:
             target="y",
             params=_fast_training_params(),
             mlflow_experiment="/test/exp",
+            mlflow_destination="local",
+            evaluation=_RANDOM_EVALUATION,
             output_dir=str(tmp_path),
         )
 
         with patch("haute.modelling._mlflow_log.log_experiment") as mock_log:
-            job.run()
+            result = job.run()
 
         mock_log.assert_called_once()
+        kwargs = mock_log.call_args.kwargs
+        assert kwargs["experiment_name"] == "/test/exp"
+        assert kwargs["destination"] == "local"
+        candidate = kwargs["candidate"]
+        assert candidate.run_name.startswith("mlflow_trigger · ")
+        assert candidate.tags["haute.training_identity_sha256"] == job.training_identity_sha256
+        assert candidate.artifacts.model == Path(result.model_path)
+        candidate.artifacts.require_files()
+        assert set(candidate.artifacts.evidence) == {
+            "evaluation_plan",
+            "evaluation_results",
+            "evaluation_report",
+        }
+        assert all(name.startswith("final_test_") for name in candidate.metrics)
+
+    def test_mlflow_experiment_requires_an_evaluation_contract(self):
+        from haute.errors import HauteValidationError
+        from haute.modelling._training_job import TrainingJob
+
+        with pytest.raises(HauteValidationError, match="requires an explicit evaluation"):
+            TrainingJob(
+                name="no_eval",
+                data=pl.DataFrame({"y": [1.0]}),
+                target="y",
+                mlflow_experiment="/test/exp",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -2193,8 +2181,8 @@ class TestSHAPExceptionPath:
     def _fast_optional_diagnostics(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _stub_optional_catboost_diagnostics(monkeypatch)
 
-    def test_shap_exception_is_logged_and_empty_list_returned(self, tmp_path):
-        """When shap_summary raises, empty list is used."""
+    def test_shap_exception_is_logged_and_empty_list_returned(self, tmp_path, monkeypatch):
+        """When shap_values raises, both SHAP views are empty and the failure is recorded."""
         from haute.modelling._algorithms import CatBoostAlgorithm
         from haute.modelling._training_job import TrainingJob
 
@@ -2209,17 +2197,15 @@ class TestSHAPExceptionPath:
             output_dir=str(tmp_path),
         )
 
-        orig_shap = CatBoostAlgorithm.shap_summary
-
         def failing_shap(self, *args: Any, **kwargs: Any) -> None:
             raise RuntimeError("SHAP failed")
 
-        CatBoostAlgorithm.shap_summary = failing_shap
-        try:
-            result = job.run()
-            assert result.shap_summary == []
-        finally:
-            CatBoostAlgorithm.shap_summary = orig_shap
+        monkeypatch.setattr(CatBoostAlgorithm, "shap_values", failing_shap, raising=False)
+        result = job.run()
+
+        assert result.shap_summary == []
+        assert result.shap_beeswarm == []
+        assert [error["diagnostic"] for error in result.diagnostics_errors] == ["shap"]
 
 
 # ---------------------------------------------------------------------------

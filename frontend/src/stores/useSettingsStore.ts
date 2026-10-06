@@ -1,8 +1,9 @@
 /**
  * Zustand store for application-level settings and caches:
  *   - Row limit (preview configuration)
- *   - Streaming chunk size (rows per streaming chunk for pipeline execution)
- *   - MLflow connection status (fetched once, shared by all panels)
+ *   - Pipeline settings (the project's .haute/pipeline-settings.json: chunk
+ *     rows, caching, cache size, preview memory, kept-free memory, time limits)
+ *   - MLflow destinations inventory (fetched once, shared by all panels)
  *   - Source system (data source routing)
  *   - Collapsible section states (persisted across panel mounts)
  *   - File listing cache (short-lived FS cache for file browsers)
@@ -11,12 +12,22 @@
  * directly control layout or chrome visibility.
  */
 import { create } from "zustand"
-import { checkMlflow } from "../api/client"
-import type { FileListItem } from "../api/types"
+import { getMlflowDestinations, getPipelineSettings, patchPipelineSettings } from "../api/client"
+import { apiErrorMessage } from "../api/errors"
+import type {
+  FileListItem,
+  MlflowDestinationEntry,
+  PipelineSettingsResponse,
+  PipelineSettingsValues,
+} from "../api/types"
+import type { MlflowInventoryState } from "../utils/mlflowDestinations"
 import { portableKey } from "../utils/portableKey"
+import useToastStore from "./useToastStore"
 
-export const MIN_STREAMING_CHUNK_SIZE = 1000
-export const MAX_STREAMING_CHUNK_SIZE = 10_000_000
+export const MIN_CHUNK_ROWS = 1000
+export const MAX_CHUNK_ROWS = 10_000_000
+
+export type PipelineSettingKey = keyof PipelineSettingsValues
 
 /**
  * Outcome of an `addSource` attempt. On success `key` is the minted (and now
@@ -34,34 +45,83 @@ export type AddSourceResult =
   | { ok: false; reason: "empty" }
   | { ok: false; reason: "duplicate"; key: string }
 
+// Settings requests can overlap (a load still in flight when the user commits,
+// the modal reopened during a save, or Enter followed by blur). A load never
+// overrides a pending save or settings a save confirmed after the load began,
+// only the latest save's response decides what is displayed, and saves reach
+// the server in order.
+let _settingsLoadSeq = 0
+let _settingsSaveSeq = 0
+let _settingsConfirmations = 0
+let _settingsSaves: Promise<void> = Promise.resolve()
+
 let _mlflowFetchingGuard = false
+let _mlflowRefetchQueued = false
+
+/**
+ * Deadline for the whole inventory request. The backend probes each remote
+ * concurrently under its own 5-second budget, so a probe that exhausts its
+ * budget must still arrive (as an amber entry) rather than trip this deadline.
+ */
+export const MLFLOW_INVENTORY_TIMEOUT_MS = 15_000
+
+function mlflowPending(): SettingsState["mlflow"] {
+  return {
+    status: "pending",
+    installed: null,
+    importable: null,
+    destinations: [],
+    detail: "",
+  }
+}
 
 interface SettingsState {
   // Row limit
   rowLimit: number
   setRowLimit: (limit: number) => void
 
-  streamingChunkSize: number
-  setStreamingChunkSize: (size: number) => void
+  /** The project's pipeline settings and each key's automatic figure; null until loaded. */
+  pipelineSettings: PipelineSettingsResponse | null
+  /** Why the last load failed, until a load succeeds. */
+  pipelineSettingsError: string | null
+  /** Loads the settings — call when the settings pane opens. Reopened while a
+   *  save is in flight, it waits for that save's outcome instead. */
+  loadPipelineSettings: () => Promise<void>
+  /** Shows the new value at once and saves that one key (`null` restores
+   *  automatic). On failure it restores the last confirmed settings and toasts. */
+  savePipelineSetting: <K extends PipelineSettingKey>(
+    key: K,
+    value: PipelineSettingsValues[K],
+  ) => Promise<void>
+  /** The last settings the server confirmed; a failed save restores them. */
+  _confirmedPipelineSettings: PipelineSettingsResponse | null
+  /** The value each queued save will send, so a repeat is not sent twice. */
+  _pendingPipelineSettings: Partial<PipelineSettingsValues>
 
   // Open/closed section states (keyed by section ID, e.g. "optimiser.advanced")
   openSections: Record<string, boolean>
   toggleSection: (key: string) => void
   isSectionOpen: (key: string, defaultOpen?: boolean) => boolean
 
-  // MLflow status cache (fetched once, shared by all panels)
+  // MLflow destinations inventory (fetched once, shared by all panels)
   mlflow: {
-    status: "pending" | "connected" | "error"
-    backend: string
-    host: string
+    /**
+     * `"ready"` once the inventory arrived, whatever the probes said;
+     * `"error"` when the package is missing or unimportable or the request
+     * failed, with the reason in `detail`.
+     */
+    status: "pending" | "ready" | "error"
     installed: boolean | null
     importable: boolean | null
-    trackingConfigured: boolean | null
+    /** The three wire entries, in backend order. */
+    destinations: MlflowDestinationEntry[]
     detail: string
   }
   _mlflowFetching: boolean
   _mlflowLastAttempt: number
   fetchMlflow: () => void
+  /** Reset to pending and refetch — call after PUT /api/mlflow/settings. */
+  invalidateMlflow: () => void
 
   // Source system
   sources: string[]
@@ -82,10 +142,96 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
   rowLimit: 100,
   setRowLimit: (limit) => set({ rowLimit: limit }),
 
-  streamingChunkSize: 500_000,
-  setStreamingChunkSize: (size) => set({
-    streamingChunkSize: Math.min(MAX_STREAMING_CHUNK_SIZE, Math.max(MIN_STREAMING_CHUNK_SIZE, Math.round(size))),
-  }),
+  pipelineSettings: null,
+  pipelineSettingsError: null,
+  _confirmedPipelineSettings: null,
+  _pendingPipelineSettings: {},
+  loadPipelineSettings: async () => {
+    if (Object.keys(get()._pendingPipelineSettings).length > 0) {
+      // The pending saves' outcome is what to show; loading would race it.
+      await _settingsSaves
+      return
+    }
+    const request = ++_settingsLoadSeq
+    const confirmations = _settingsConfirmations
+    try {
+      const settings = await getPipelineSettings()
+      // A save confirmed since this load began holds newer settings.
+      if (confirmations !== _settingsConfirmations) return
+      set({ _confirmedPipelineSettings: settings })
+      // A pending save shows its own value; its failure restores these.
+      if (request !== _settingsLoadSeq || Object.keys(get()._pendingPipelineSettings).length > 0) {
+        return
+      }
+      set({ pipelineSettings: settings, pipelineSettingsError: null })
+    } catch (e) {
+      if (request !== _settingsLoadSeq || Object.keys(get()._pendingPipelineSettings).length > 0) {
+        return
+      }
+      set({
+        pipelineSettings: null,
+        pipelineSettingsError: apiErrorMessage(e, "Could not load the pipeline settings."),
+      })
+    }
+  },
+  savePipelineSetting: async (key, value) => {
+    const state = get()
+    const shown = state.pipelineSettings
+    // Nothing is saved before the settings have loaded: the pane keeps every
+    // field disabled until then.
+    if (shown === null) return
+    const pending = state._pendingPipelineSettings
+    const alreadySaving = key in pending && pending[key] === value
+    const alreadySaved = !(key in pending)
+      && state._confirmedPipelineSettings?.settings[key] === value
+    if (alreadySaving || alreadySaved) {
+      await _settingsSaves
+      return
+    }
+    const request = ++_settingsSaveSeq
+    set({
+      pipelineSettings: { ...shown, settings: { ...shown.settings, [key]: value } },
+      _pendingPipelineSettings: { ...pending, [key]: value },
+    })
+    const settle = () => {
+      // This save no longer waits; a later save of the same key still does.
+      const current = get()._pendingPipelineSettings
+      if (key in current && current[key] === value) {
+        const rest = { ...current }
+        delete rest[key]
+        set({ _pendingPipelineSettings: rest })
+      }
+    }
+    const save = async () => {
+      try {
+        const settings = await patchPipelineSettings({ [key]: value })
+        _settingsConfirmations += 1
+        set({ _confirmedPipelineSettings: settings })
+        settle()
+        // Only the latest save's response is displayed: it holds every
+        // earlier save's key too, because saves reach the server in order.
+        if (request === _settingsSaveSeq) {
+          set({ pipelineSettings: settings, _pendingPipelineSettings: {} })
+        }
+      } catch (e) {
+        settle()
+        // Every failed save is reported: another key's later save does not
+        // retry this one.
+        useToastStore.getState().addToast(
+          "error",
+          apiErrorMessage(e, "Could not save the pipeline settings."),
+        )
+        if (request === _settingsSaveSeq) {
+          set({
+            pipelineSettings: get()._confirmedPipelineSettings,
+            _pendingPipelineSettings: {},
+          })
+        }
+      }
+    }
+    _settingsSaves = _settingsSaves.then(save)
+    await _settingsSaves
+  },
 
   // Open/closed sections
   openSections: {},
@@ -98,16 +244,8 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
     return val === undefined ? defaultOpen : val
   },
 
-  // MLflow status cache — fetched once on first call, shared by all panels
-  mlflow: {
-    status: "pending",
-    backend: "",
-    host: "",
-    installed: null,
-    importable: null,
-    trackingConfigured: null,
-    detail: "",
-  },
+  // MLflow inventory — fetched once on first call, shared by all panels
+  mlflow: mlflowPending(),
   _mlflowFetching: false,
   _mlflowLastAttempt: 0,
   fetchMlflow: () => {
@@ -122,49 +260,35 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
     set({ _mlflowFetching: true, _mlflowLastAttempt: Date.now() })
     let timeoutId: ReturnType<typeof setTimeout> | undefined
     const timeout = new Promise<never>((_, reject) => {
-      timeoutId = setTimeout(() => reject(new Error("MLflow check timed out after 5s")), 5_000)
+      timeoutId = setTimeout(
+        () => reject(new Error(
+          `MLflow inventory check timed out after ${MLFLOW_INVENTORY_TIMEOUT_MS / 1000}s`,
+        )),
+        MLFLOW_INVENTORY_TIMEOUT_MS,
+      )
     })
-    Promise.race([checkMlflow(), timeout])
+    Promise.race([getMlflowDestinations(true), timeout])
       .then((data) => {
-        const mlflowImportable = data.mlflow_importable
-        const trackingConfigured = data.tracking_configured
-        if (data.mlflow_installed && mlflowImportable && trackingConfigured) {
-          set({
-            mlflow: {
-              status: "connected",
-              backend: data.backend || "local",
-              host: data.databricks_host || "",
-              installed: true,
-              importable: true,
-              trackingConfigured: true,
-              detail: data.detail || "",
-            },
-          })
-        } else {
-          set({
-            mlflow: {
-              status: "error",
-              backend: data.backend || "",
-              host: data.databricks_host || "",
-              installed: data.mlflow_installed,
-              importable: mlflowImportable,
-              trackingConfigured,
-              detail: data.detail || "",
-            },
-          })
-        }
-      })
-      .catch((e) => {
-        console.warn("MLflow check failed:", e)
+        // The probes' verdicts live in the entries; only the package facts
+        // decide whether the inventory itself is usable.
+        const usable = data.mlflow_installed && data.mlflow_importable
         set({
           mlflow: {
+            status: usable ? "ready" : "error",
+            installed: data.mlflow_installed,
+            importable: data.mlflow_importable,
+            destinations: data.destinations,
+            detail: data.detail,
+          },
+        })
+      })
+      .catch((e) => {
+        console.warn("MLflow inventory check failed:", e)
+        set({
+          mlflow: {
+            ...mlflowPending(),
             status: "error",
-            backend: "",
-            host: "",
-            installed: null,
-            importable: null,
-            trackingConfigured: null,
-            detail: e instanceof Error ? e.message : "MLflow status check failed",
+            detail: e instanceof Error ? e.message : "MLflow inventory check failed",
           },
         })
       })
@@ -172,7 +296,23 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
         clearTimeout(timeoutId)
         _mlflowFetchingGuard = false
         set({ _mlflowFetching: false })
+        if (_mlflowRefetchQueued) {
+          // An invalidation arrived while this fetch was in flight: the
+          // response just stored is potentially stale, so reset and fetch
+          // exactly once more.
+          _mlflowRefetchQueued = false
+          set({ mlflow: mlflowPending() })
+          get().fetchMlflow()
+        }
       })
+  },
+  invalidateMlflow: () => {
+    if (_mlflowFetchingGuard) {
+      _mlflowRefetchQueued = true
+      return
+    }
+    set({ mlflow: mlflowPending() })
+    get().fetchMlflow()
   },
 
   // Source system
@@ -225,15 +365,18 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
 
 export default useSettingsStore
 
-/** Derive MLflow connection status for panel display (maps "pending" -> "loading"). */
-export function useMlflowStatus() {
+/**
+ * The MLflow inventory as display code wants it: the store's `"pending"`
+ * becomes `"loading"` here and nowhere else — the store itself never uses
+ * that word.
+ */
+export function useMlflowDestinations(): MlflowInventoryState {
   const mlflow = useSettingsStore((s) => s.mlflow)
   return {
-    mlflowStatus: mlflow.status === "pending" ? "loading" as const : mlflow.status,
-    mlflowBackend: mlflow.backend,
-    mlflowInstalled: mlflow.installed,
-    mlflowImportable: mlflow.importable,
-    mlflowTrackingConfigured: mlflow.trackingConfigured,
-    mlflowDetail: mlflow.detail,
+    status: mlflow.status === "pending" ? "loading" as const : mlflow.status,
+    installed: mlflow.installed,
+    importable: mlflow.importable,
+    destinations: mlflow.destinations,
+    detail: mlflow.detail,
   }
 }

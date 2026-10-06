@@ -12,13 +12,15 @@ from unittest.mock import patch
 
 import polars as pl
 import pytest
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from watchfiles import Change
 
 from haute._sandbox import set_project_root
+from haute.errors import PathOutsideProjectError
+from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from tests.conftest import (
     build_test_input_snapshot,
+    current_source_revision,
     make_ready_file_input_config,
     write_data_input_config,
 )
@@ -63,21 +65,15 @@ def pipeline_dir(tmp_path: Path) -> Path:
     build_test_input_snapshot(_file_input_config(data_path), base_dir=tmp_path)
 
     code = f'''\
-import polars as pl
 import haute
+import polars as pl
 
 pipeline = haute.Pipeline("test_pipeline", description="A test pipeline")
 
 
 @pipeline.data_input(config="{source_config}")
-def source() -> pl.LazyFrame:
+def source():
     """Read data."""
-    from pathlib import Path
-    from haute.graph_utils import resolve_data_input_from_config
-    df = resolve_data_input_from_config(
-        "{source_config}", base_dir=Path(__file__).parent
-    )
-    return df
 
 
 @pipeline.polars
@@ -157,7 +153,20 @@ class TestSessionStatus:
 # ---------------------------------------------------------------------------
 
 
+DOCUMENT_FINGERPRINT_HEADER = "x-haute-document-fingerprint"
+
+
 class TestGetFirstPipeline:
+    def test_names_the_returned_document_fingerprint(self, client: TestClient):
+        from haute._pipeline_recovery import pipeline_document_fingerprint
+
+        resp = client.get("/api/pipeline")
+
+        assert resp.status_code == 200
+        assert resp.headers[DOCUMENT_FINGERPRINT_HEADER] == pipeline_document_fingerprint(
+            resp.json()
+        )
+
     def test_returns_graph(self, client: TestClient):
         resp = client.get("/api/pipeline")
         assert resp.status_code == 200
@@ -240,6 +249,15 @@ class TestGetPipelineByName:
         graph = resp.json()
         assert graph["pipeline_name"] == "test_pipeline"
 
+    def test_names_the_returned_document_fingerprint(self, client: TestClient):
+        from haute._pipeline_recovery import pipeline_document_fingerprint
+
+        resp = client.get("/api/pipeline/test_pipeline")
+
+        assert resp.headers[DOCUMENT_FINGERPRINT_HEADER] == pipeline_document_fingerprint(
+            resp.json()
+        )
+
     def test_not_found(self, client: TestClient):
         resp = client.get("/api/pipeline/nonexistent")
         assert resp.status_code == 404
@@ -274,6 +292,101 @@ class TestPreviewNode:
         assert "node_statuses" in data
         assert node_id in data["node_statuses"]
         assert data["node_statuses"][node_id] == "ok"
+
+    def test_preview_reports_a_failed_input_preparation_as_a_contract_error(
+        self,
+        client: TestClient,
+        pipeline_dir: Path,
+    ) -> None:
+        """Automatic preparation's failure is a public 422 contract error.
+
+        The input is snapshot-backed, so the preview prepares it: through its
+        seed plan, which prepares only what it executes, or without one.
+        """
+        from unittest.mock import patch
+
+        from haute.errors import InputPreparationError
+        from haute.parser import parse_pipeline_file
+
+        graph = parse_pipeline_file(pipeline_dir / "test_pipeline.py")
+        csv_path = pipeline_dir / "data" / "input.csv"
+        pl.DataFrame({"x": [1, 2, 3], "y": [10, 20, 30]}).write_csv(csv_path)
+        graph.nodes[0].data.config = {
+            "inputType": "file",
+            "format": "csv",
+            "mode": "scan",
+            "path": csv_path.as_posix(),
+            "arguments": {},
+        }
+        failure = InputPreparationError(
+            "Preparing this Data Input's snapshot failed.",
+            node_id=graph.nodes[0].id,
+            identity_digest="a" * 64,
+            build_class="bounded",
+            reason_code="build_failed",
+            remediation="Build this Data Input's snapshot and try again.",
+        )
+
+        with (
+            patch("haute.executor.prepare_input_snapshots", side_effect=failure),
+            patch("haute._input_preparation.prepare_input_snapshots", side_effect=failure),
+        ):
+            resp = client.post(
+                "/api/pipeline/preview",
+                json={
+                    "graph": graph.model_dump(),
+                    "node_id": graph.nodes[0].id,
+                    "row_limit": 10,
+                },
+            )
+
+        assert resp.status_code == 422
+        assert resp.json()["detail"] == {
+            "error_code": "input_preparation_failed",
+            "message": "Preparing this Data Input's snapshot failed.",
+            "node_id": graph.nodes[0].id,
+            "identity_digest": "a" * 64,
+            "build_class": "bounded",
+            "reason_code": "build_failed",
+            "remediation": "Build this Data Input's snapshot and try again.",
+        }
+
+    def test_preview_reports_a_rejected_node_config_as_a_contract_error(
+        self,
+        client: TestClient,
+        pipeline_dir: Path,
+    ) -> None:
+        """A Scenario Expander without its grid size is a node config defect: the
+        preview answers 422 naming the setting, not the internal-error 500."""
+        from haute._types import GraphNode, NodeData
+        from haute.parser import parse_pipeline_file
+        from tests.conftest import make_edge
+
+        graph = parse_pipeline_file(pipeline_dir / "test_pipeline.py")
+        source_id = graph.nodes[0].id
+        graph.nodes.append(
+            GraphNode(
+                id="expander",
+                data=NodeData(
+                    label="expander",
+                    nodeType="scenarioExpander",
+                    config={"column_name": "price", "min_value": 0.1, "max_value": 0.3},
+                ),
+            )
+        )
+        graph.edges.append(make_edge(source_id, "expander"))
+
+        resp = client.post(
+            "/api/pipeline/preview",
+            json={"graph": graph.model_dump(), "node_id": "expander", "row_limit": 10},
+        )
+
+        assert resp.status_code == 422, resp.text
+        assert resp.json()["detail"] == {
+            "error_code": "node_config_invalid",
+            "message": "Scenario expander requires stepCount (the number of grid values).",
+            "setting": "stepCount",
+        }
 
     def test_preview_rejects_unassigned_submodel_input_draft(
         self,
@@ -526,6 +639,7 @@ class TestTraceRow:
         resp = client.post(
             "/api/pipeline/trace",
             json={
+                "seed_plan": [],
                 "graph": graph.model_dump(),
                 "row_index": 0,
             },
@@ -540,6 +654,7 @@ class TestTraceRow:
         resp = client.post(
             "/api/pipeline/trace",
             json={
+                "seed_plan": [],
                 "graph": {"nodes": [], "edges": []},
             },
         )
@@ -565,6 +680,7 @@ class TestTraceRow:
         resp = client.post(
             "/api/pipeline/trace",
             json={
+                "seed_plan": [],
                 "graph": graph.model_dump(),
                 "row_index": 0,
             },
@@ -603,6 +719,9 @@ class TestSavePipeline:
                 "description": "Test save",
                 "graph": graph,
                 "source_file": "saved_pipe.py",
+                "base_revision": current_source_revision(
+                    pipeline_dir / "saved_pipe.py", pipeline_dir
+                ),
             },
         )
         assert resp.status_code == 200
@@ -614,8 +733,13 @@ class TestSavePipeline:
         py_file = pipeline_dir / data["file"]
         assert py_file.exists()
         content = py_file.read_text()
-        assert "import polars as pl" in content
+        assert "import haute\n" in content
+        # Polars is imported only when the module refers to it.
+        assert "import polars as pl" not in content
         assert 'Pipeline("saved_pipe"' in content
+        assert (
+            '@pipeline.data_input(config="config/data_input/Source.json")\ndef Source(): ...\n'
+        ) in content
 
         # Sidecar should exist too
         sidecar = py_file.with_suffix(".haute.json")
@@ -684,7 +808,7 @@ class TestExecuteSinkEndpoint:
         unrelated_cwd.mkdir()
         monkeypatch.chdir(unrelated_cwd)
         graph = {
-            "source_file": str(pipeline_dir / "test_pipeline.py"),
+            "source_file": str(pipeline_dir / "rating" / "test_pipeline.py"),
             "nodes": [
                 {
                     "id": "sink",
@@ -926,7 +1050,7 @@ def _submodel_instance_node(graph: dict, definition_id: str) -> dict:
     ]
     assert len(matches) == 1
     instance = matches[0]
-    assert instance["id"].startswith("submodel_instance_")
+    assert instance["id"] == definition_id
     assert instance["data"]["config"]["alias"] == definition_id
     return instance
 
@@ -1037,6 +1161,9 @@ class TestGetSubmodel:
                 "description": three_node_graph.get("pipeline_description") or "",
                 "graph": created["graph"],
                 "source_file": "test_pipeline.py",
+                "base_revision": current_source_revision(
+                    pipeline_dir / "test_pipeline.py", pipeline_dir
+                ),
             },
         )
         assert save_resp.status_code == 200
@@ -1100,10 +1227,8 @@ class TestDissolveSubmodel:
         assert data["status"] == "ok"
 
         # The flattened graph should have the original nodes back
-        from haute._submodel_instances import qualified_runtime_node_id
-
         flat_ids = {n["id"] for n in data["graph"]["nodes"]}
-        assert flat_ids == {qualified_runtime_node_id(instance_id, node_id) for node_id in node_ids}
+        assert flat_ids == {f"submodel_runtime/temp_group/{node_id}" for node_id in node_ids}
 
         # Dissolve is in-memory; persistence artifacts remain untouched.
         assert "submodel_file_deleted" not in data
@@ -1182,6 +1307,9 @@ class TestWebSocket:
                     "description": "",
                     "graph": graph,
                     "source_file": "ws_test.py",
+                    "base_revision": current_source_revision(
+                        pipeline_dir / "ws_test.py", pipeline_dir
+                    ),
                 },
             )
             assert resp.status_code == 200
@@ -1260,12 +1388,13 @@ class TestWebSocketResync:
         pipeline_dir: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        from haute._pipeline_recovery import pipeline_document_fingerprint
         from haute.routes._helpers import load_pipeline_editor_document
-        from haute.server import _document_payload_fingerprint, _handle_ws_sync_message
+        from haute.server import _handle_ws_sync_message
 
         monkeypatch.chdir(pipeline_dir)
         pipeline_file = pipeline_dir / "test_pipeline.py"
-        current_fingerprint = _document_payload_fingerprint(
+        current_fingerprint = pipeline_document_fingerprint(
             load_pipeline_editor_document(pipeline_file, project_root=pipeline_dir).model_dump(
                 mode="json", by_alias=True
             )
@@ -1431,18 +1560,50 @@ class TestWebSocketResync:
         assert offload_calls == 1
         assert [frame["type"] for frame in ws.frames] == ["pipeline_document_update"]
 
+    def test_first_resync_with_the_loaded_fingerprint_sends_nothing(
+        self, client: TestClient, pipeline_dir: Path
+    ) -> None:
+        """A page that just loaded the document must not be sent it again on connect."""
+        from unittest.mock import patch
+
+        from haute.server import _handle_ws_sync_message
+
+        loaded = client.get("/api/pipeline")
+        assert loaded.json()["source_file"] == "test_pipeline.py"
+        ws = self._CollectingWebSocket()
+        with patch(
+            "haute.server.discover_pipelines",
+            return_value=[pipeline_dir / "test_pipeline.py"],
+        ):
+            asyncio.run(
+                _handle_ws_sync_message(
+                    ws,  # type: ignore[arg-type]
+                    json.dumps(
+                        {
+                            "type": "resync",
+                            "source_file": "test_pipeline.py",
+                            "document_schema_version": 1,
+                            "document_fingerprint": loaded.headers[DOCUMENT_FINGERPRINT_HEADER],
+                        }
+                    ),
+                )
+            )
+
+        assert ws.frames == []
+
     def test_v1_resync_sends_editor_document_and_suppresses_equal_fingerprint(
         self, pipeline_dir: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from unittest.mock import patch
 
+        from haute._pipeline_recovery import pipeline_document_fingerprint
         from haute.routes._helpers import load_pipeline_editor_document
-        from haute.server import _document_payload_fingerprint, _handle_ws_sync_message
+        from haute.server import _handle_ws_sync_message
 
         monkeypatch.chdir(pipeline_dir)
         pipeline_file = pipeline_dir / "test_pipeline.py"
         document = load_pipeline_editor_document(pipeline_file, project_root=pipeline_dir)
-        fingerprint = _document_payload_fingerprint(document.model_dump(mode="json", by_alias=True))
+        fingerprint = pipeline_document_fingerprint(document.model_dump(mode="json", by_alias=True))
         ws = self._CollectingWebSocket()
         with patch("haute.server.discover_pipelines", return_value=[pipeline_file]):
             asyncio.run(
@@ -2229,8 +2390,9 @@ class TestFileWatcher:
 
         self_written = pipeline_dir / "server_saved.py"
         user_edited = pipeline_dir / "test_pipeline.py"
-        self_written.write_text("import haute\n\npipeline = haute.Pipeline('server_saved')\n")
-        mark_self_write(self_written)
+        content = b"import haute\n\npipeline = haute.Pipeline('server_saved')\n"
+        self_written.write_bytes(content)
+        mark_self_write(self_written, content=content)
 
         fake_changes = [
             (Change.modified, str(self_written)),
@@ -2263,6 +2425,369 @@ class TestFileWatcher:
         assert [call["source_file"] for call in broadcast_calls] == [
             "test_pipeline.py",
         ]
+
+    def test_external_write_to_self_written_path_before_flush_is_broadcast(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """A path marked for self-write that receives external modifications
+        before flush must broadcast.
+        """
+        import asyncio
+        from unittest.mock import patch
+
+        from watchfiles import Change
+
+        from haute.routes._helpers import mark_self_write
+
+        monkeypatch.chdir(pipeline_dir)
+
+        pipeline_file = pipeline_dir / "test_pipeline.py"
+        content_x = b"""\
+import haute
+
+pipeline = haute.Pipeline("test_pipeline", description="Pipeline X")
+
+
+@pipeline.polars
+def node_x():
+    pass
+"""
+        pipeline_file.write_bytes(content_x)
+        mark_self_write(pipeline_file, content=content_x)
+
+        content_y = b"""\
+import haute
+
+pipeline = haute.Pipeline("test_pipeline", description="Pipeline Y")
+
+
+@pipeline.polars
+def unique_node_y():
+    pass
+"""
+        pipeline_file.write_bytes(content_y)
+
+        fake_changes = [(Change.modified, str(pipeline_file))]
+
+        async def _fake_awatch(*dirs, **kw):
+            yield fake_changes
+
+        broadcast_calls: list[dict] = []
+
+        async def _capture_broadcast(data: dict) -> None:
+            broadcast_calls.append(data)
+
+        with (
+            patch("watchfiles.awatch", _fake_awatch),
+            patch("haute.server.broadcast", _capture_broadcast),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
+        ):
+
+            async def _run() -> None:
+                await _run_file_watcher_and_drain()
+
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(_run())
+            finally:
+                loop.close()
+
+        assert len(broadcast_calls) == 1
+        call = broadcast_calls[0]
+        assert call["source_file"] == "test_pipeline.py"
+        assert call["document"]["pipeline_description"] == "Pipeline Y"
+        assert any(n["authored_id"] == "unique_node_y" for n in call["document"]["nodes"])
+
+    def test_unchanged_self_write_to_same_path_is_suppressed(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """A self-written file whose contents match the recorded mark is suppressed."""
+        import asyncio
+        from unittest.mock import patch
+
+        from watchfiles import Change
+
+        from haute.routes._helpers import mark_self_write
+
+        monkeypatch.chdir(pipeline_dir)
+
+        pipeline_file = pipeline_dir / "test_pipeline.py"
+        content_x = b"""\
+import haute
+
+pipeline = haute.Pipeline("test_pipeline", description="Pipeline X")
+
+
+@pipeline.polars
+def node_x():
+    pass
+"""
+        mark_self_write(pipeline_file, content=content_x)
+        pipeline_file.write_bytes(content_x)
+
+        fake_changes = [(Change.modified, str(pipeline_file))]
+
+        async def _fake_awatch(*dirs, **kw):
+            yield fake_changes
+
+        broadcast_calls: list[dict] = []
+
+        async def _capture_broadcast(data: dict) -> None:
+            broadcast_calls.append(data)
+
+        with (
+            patch("watchfiles.awatch", _fake_awatch),
+            patch("haute.server.broadcast", _capture_broadcast),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
+        ):
+
+            async def _run() -> None:
+                await _run_file_watcher_and_drain()
+
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(_run())
+            finally:
+                loop.close()
+
+        assert len(broadcast_calls) == 0
+
+    def test_self_delete_is_suppressed_but_external_recreate_is_broadcast(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Self-deletion of a sidecar is suppressed.
+
+        External deletion and recreation broadcast.
+        """
+        import asyncio
+        from unittest.mock import patch
+
+        from watchfiles import Change
+
+        from haute.routes._helpers import mark_self_write
+
+        monkeypatch.chdir(pipeline_dir)
+
+        sidecar = pipeline_dir / "test_pipeline.haute.json"
+        sidecar_content = json.dumps(
+            {"positions": {"source": {"x": 100, "y": 200}, "transform": {"x": 300, "y": 400}}}
+        ).encode("utf-8")
+        sidecar.write_bytes(sidecar_content)
+
+        broadcast_calls: list[dict] = []
+
+        async def _capture_broadcast(data: dict) -> None:
+            broadcast_calls.append(data)
+
+        def _run_watcher(changes: list[tuple[Change, str]]) -> None:
+            async def _fake_awatch(*dirs, **kw):
+                yield changes
+
+            with (
+                patch("watchfiles.awatch", _fake_awatch),
+                patch("haute.server.broadcast", _capture_broadcast),
+                patch("haute.server._DEBOUNCE_SECONDS", 0),
+            ):
+
+                async def _run() -> None:
+                    await _run_file_watcher_and_drain()
+
+                loop = asyncio.new_event_loop()
+                try:
+                    loop.run_until_complete(_run())
+                finally:
+                    loop.close()
+
+        # 1. Unmarked control: delete the sidecar without a marker,
+        # inject Change.deleted, assert one broadcast
+        sidecar.unlink()
+        _run_watcher([(Change.deleted, str(sidecar))])
+        assert len(broadcast_calls) == 1
+        assert broadcast_calls[0]["source_file"] == "test_pipeline.py"
+
+        # 2. Recreate the sidecar, mark mark_self_write(sidecar, deleted=True),
+        # delete it, inject Change.deleted, assert no additional broadcast
+        sidecar.write_bytes(sidecar_content)
+        mark_self_write(sidecar, deleted=True)
+        sidecar.unlink()
+        _run_watcher([(Change.deleted, str(sidecar))])
+        assert len(broadcast_calls) == 1
+
+        # 3. Recreate it externally (no marker), inject Change.added,
+        # assert one more broadcast
+        sidecar.write_bytes(sidecar_content)
+        _run_watcher([(Change.added, str(sidecar))])
+        assert len(broadcast_calls) == 2
+        assert broadcast_calls[1]["source_file"] == "test_pipeline.py"
+
+    def test_external_restore_of_previously_broadcast_content_is_broadcast_after_a_self_write(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Restoring previously-broadcast content after a self-write triggers broadcast."""
+        import asyncio
+        from unittest.mock import patch
+
+        from watchfiles import Change
+
+        from haute.routes._helpers import mark_self_write
+
+        monkeypatch.chdir(pipeline_dir)
+
+        pipeline_file = pipeline_dir / "test_pipeline.py"
+
+        content_a = b"""\
+import haute
+
+pipeline = haute.Pipeline("test_pipeline", description="Pipeline A")
+
+
+@pipeline.polars
+def node_a():
+    pass
+"""
+        content_b = b"""\
+import haute
+
+pipeline = haute.Pipeline("test_pipeline", description="Pipeline B")
+
+
+@pipeline.polars
+def node_b():
+    pass
+"""
+
+        broadcast_calls: list[dict] = []
+
+        async def _capture_broadcast(data: dict) -> None:
+            broadcast_calls.append(data)
+
+        async def _fake_awatch(*dirs, **kw):
+            # Batch 1: external write of valid pipeline A (no marker) -> expect a broadcast
+            pipeline_file.write_bytes(content_a)
+            yield [(Change.modified, str(pipeline_file))]
+            for _ in range(5):
+                await asyncio.sleep(0)
+            assert len(broadcast_calls) == 1
+
+            # Batch 2: server writes valid pipeline B and marks with content=
+            # B's bytes before event -> expect no new broadcast
+            pipeline_file.write_bytes(content_b)
+            mark_self_write(pipeline_file, content=content_b)
+            yield [(Change.modified, str(pipeline_file))]
+            for _ in range(5):
+                await asyncio.sleep(0)
+            assert len(broadcast_calls) == 1
+
+            # Batch 3: external restore of A's exact bytes (no marker) ->
+            # expect a broadcast whose document reflects A
+            pipeline_file.write_bytes(content_a)
+            yield [(Change.modified, str(pipeline_file))]
+            for _ in range(5):
+                await asyncio.sleep(0)
+            assert len(broadcast_calls) == 2
+
+        with (
+            patch("watchfiles.awatch", _fake_awatch),
+            patch("haute.server.broadcast", _capture_broadcast),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
+        ):
+
+            async def _run() -> None:
+                await _run_file_watcher_and_drain()
+
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(_run())
+            finally:
+                loop.close()
+
+        assert len(broadcast_calls) == 2
+        assert broadcast_calls[0]["document"]["pipeline_description"] == "Pipeline A"
+        assert any(n["authored_id"] == "node_a" for n in broadcast_calls[0]["document"]["nodes"])
+        assert broadcast_calls[1]["document"]["pipeline_description"] == "Pipeline A"
+        assert any(n["authored_id"] == "node_a" for n in broadcast_calls[1]["document"]["nodes"])
+
+    def test_unrelated_external_edit_in_same_batch_is_broadcast_with_its_content(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """In a batch containing both a self-write and an external edit,
+        only the external edit broadcasts.
+        """
+        import asyncio
+        from unittest.mock import patch
+
+        from watchfiles import Change
+
+        from haute.routes._helpers import mark_self_write
+
+        monkeypatch.chdir(pipeline_dir)
+
+        self_written = pipeline_dir / "server_saved.py"
+        user_edited = pipeline_dir / "test_pipeline.py"
+
+        server_content = b"import haute\n\npipeline = haute.Pipeline('server_saved')\n"
+        self_written.write_bytes(server_content)
+        mark_self_write(self_written, content=server_content)
+
+        user_content = b"""\
+import haute
+
+pipeline = haute.Pipeline("test_pipeline", description="External User Edit")
+
+
+@pipeline.polars
+def distinctive_node():
+    pass
+"""
+        user_edited.write_bytes(user_content)
+
+        fake_changes = [
+            (Change.modified, str(self_written)),
+            (Change.modified, str(user_edited)),
+        ]
+
+        async def _fake_awatch(*dirs, **kw):
+            yield fake_changes
+
+        broadcast_calls: list[dict] = []
+
+        async def _capture_broadcast(data: dict) -> None:
+            broadcast_calls.append(data)
+
+        with (
+            patch("watchfiles.awatch", _fake_awatch),
+            patch("haute.server.broadcast", _capture_broadcast),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
+        ):
+
+            async def _run() -> None:
+                await _run_file_watcher_and_drain()
+
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(_run())
+            finally:
+                loop.close()
+
+        assert len(broadcast_calls) == 1
+        call = broadcast_calls[0]
+        assert call["source_file"] == "test_pipeline.py"
+        assert (
+            isinstance(call.get("document_fingerprint"), str)
+            and len(call["document_fingerprint"]) > 0
+        )
+        assert call["document"]["pipeline_description"] == "External User Edit"
+        assert any(n["authored_id"] == "distinctive_node" for n in call["document"]["nodes"])
 
     def test_direct_non_discovered_python_files_are_not_parsed_or_broadcast(
         self,
@@ -2443,16 +2968,23 @@ class TestPipelineTimeouts:
         ids=["trace_timeout", "preview_timeout", "sink_timeout"],
     )
     def test_timeout_returns_504(
-        self, client: TestClient, pipeline_dir: Path, endpoint: str, use_parsed_graph: bool
+        self,
+        client: TestClient,
+        pipeline_dir: Path,
+        endpoint: str,
+        use_parsed_graph: bool,
+        pipeline_settings,
     ):
         from unittest.mock import patch
+
+        pipeline_settings(pipeline_time_limit_minutes=0.001 / 60)
 
         if use_parsed_graph:
             from haute.parser import parse_pipeline_file
 
             graph = parse_pipeline_file(pipeline_dir / "test_pipeline.py")
             if endpoint == "trace":
-                body = {"graph": graph.model_dump(), "row_index": 0}
+                body = {"graph": graph.model_dump(), "row_index": 0, "seed_plan": []}
             else:
                 body = {"graph": graph.model_dump(), "node_id": graph.nodes[0].id}
         else:
@@ -2471,17 +3003,7 @@ class TestPipelineTimeouts:
                 self._never_finishes,
             )
 
-        with (
-            timeout_patch,
-            patch.dict(
-                os.environ,
-                {
-                    "HAUTE_TRACE_TIMEOUT": "0.001",
-                    "HAUTE_PREVIEW_TIMEOUT": "0.001",
-                    "HAUTE_SINK_TIMEOUT": "0.001",
-                },
-            ),
-        ):
+        with timeout_patch:
             resp = client.post(f"/api/pipeline/{endpoint}", json=body)
         assert resp.status_code == 504
 
@@ -2554,7 +3076,7 @@ class TestPipelineExceptions:
 
             graph = parse_pipeline_file(pipeline_dir / "test_pipeline.py")
             if endpoint == "trace":
-                body = {"graph": graph.model_dump(), "row_index": 0}
+                body = {"graph": graph.model_dump(), "row_index": 0, "seed_plan": []}
             else:
                 body = {"graph": graph.model_dump(), "node_id": graph.nodes[0].id}
         else:
@@ -2677,7 +3199,7 @@ class TestListPipelinesParseError:
     """Broken readable pipelines remain discoverable editor documents."""
 
     def test_broken_pipeline_in_list(self, pipeline_dir: Path, monkeypatch: pytest.MonkeyPatch):
-        """A syntax-broken pipeline reports recovery status instead of disappearing."""
+        """A syntax-broken pipeline is listed as source-only instead of disappearing."""
         monkeypatch.chdir(pipeline_dir)
         from haute.routes._helpers import invalidate_pipeline_index
 
@@ -2705,9 +3227,9 @@ def broken(:
         data = resp.json()
         bad = [p for p in data if p["name"] == "bad_pipe"]
         assert len(bad) == 1
-        assert bad[0]["load_status"] == "degraded"
-        assert bad[0]["node_count"] == 1
-        assert bad[0]["diagnostic_count"] >= 1
+        assert bad[0]["load_status"] == "source_only"
+        assert bad[0]["node_count"] == 0
+        assert bad[0]["diagnostic_count"] == 1
 
 
 class TestGetPipelineParseError:
@@ -2762,34 +3284,45 @@ class TestSinkEmptyGraph:
 
 
 class TestClearBytecache:
-    """Test _clear_bytecache removes __pycache__ dirs."""
+    """The startup bytecode clear removes every __pycache__ under a tree.
+
+    These run on temporary trees: removing the real package's caches would race
+    other test workers walking the source tree.
+    """
 
     def test_removes_pycache_directories(self, tmp_path: Path):
-        from unittest.mock import patch
+        from haute.server import _remove_bytecode_caches
 
-        # Create a fake source tree with __pycache__
-        fake_src = tmp_path / "haute"
-        fake_src.mkdir()
-        pycache = fake_src / "__pycache__"
-        pycache.mkdir()
-        (pycache / "foo.cpython-312.pyc").write_bytes(b"\x00")
-        nested = fake_src / "routes" / "__pycache__"
+        pycache = tmp_path / "haute" / "__pycache__"
+        pycache.mkdir(parents=True)
+        (tmp_path / "haute" / "__pycache__" / "foo.cpython-312.pyc").write_bytes(b"\x00")
+        nested = tmp_path / "haute" / "routes" / "__pycache__"
         nested.mkdir(parents=True)
 
-        # Patch Path(__file__).resolve().parent to point at our fake dir
-        import haute.server as _srv
-
-        with patch.object(_srv, "__file__", str(fake_src / "server.py")):
-            _srv._clear_bytecache()
+        _remove_bytecode_caches(tmp_path / "haute")
 
         assert not pycache.exists()
         assert not nested.exists()
 
-    def test_handles_missing_pycache(self):
-        """_clear_bytecache should not raise even when there are no __pycache__ dirs."""
-        from haute.server import _clear_bytecache
+    def test_handles_missing_pycache(self, tmp_path: Path):
+        from haute.server import _remove_bytecode_caches
 
-        _clear_bytecache()  # should not raise
+        (tmp_path / "haute").mkdir()
+        _remove_bytecode_caches(tmp_path / "haute")  # should not raise
+
+    def test_startup_clears_the_package_tree(self, monkeypatch: pytest.MonkeyPatch):
+        import inspect
+
+        import haute.server as _srv
+
+        # The suite stubs the startup clear (conftest); unwrap to the real one.
+        clear_bytecache = inspect.unwrap(_srv._clear_bytecache)
+        roots: list[Path] = []
+        monkeypatch.setattr(_srv, "_remove_bytecode_caches", roots.append)
+
+        clear_bytecache()
+
+        assert roots == [Path(_srv.__file__).resolve().parent]
 
 
 class TestMiddleware500:
@@ -2823,7 +3356,7 @@ class TestMiddleware500:
         import json
 
         body = json.loads(resp.body)
-        assert body == {"detail": "Internal server error"}
+        assert body == {"detail": _INTERNAL_ERROR_DETAIL}
         assert 1 <= len(resp.headers["x-request-id"]) <= 64
 
     def test_request_id_header_passthrough(self, client: TestClient):
@@ -2945,14 +3478,13 @@ class TestFileWatcherRecoverySidecars:
         child = modules / "shared.py"
         child.write_text(
             'import haute\nsubmodel = haute.Submodel("shared", definition_id="shared", '
-            "input_ports=[], output_ports=[])\n",
+            'input_ports=[], output_ports=[], pipeline_dir="..")\n',
             encoding="utf-8",
         )
         owner = tmp_path / "owner.py"
         owner.write_text(
             'import haute\npipeline = haute.Pipeline("owner")\n'
-            'pipeline.submodel("modules/shared.py", definition_id="shared", '
-            'instance_id="shared__one", alias="shared_one")\n',
+            'pipeline.submodel("modules/shared.py", "shared_one")\n',
             encoding="utf-8",
         )
         unrelated = tmp_path / "unrelated.py"
@@ -4256,14 +4788,13 @@ class TestSubmodelEdgeRewiring:
         # Create a 3-node pipeline: source -> transform -> transform2
         source_config = write_data_input_config(pipeline_dir, "source", "data/input.parquet")
         code = f"""\
-import polars as pl
 import haute
+import polars as pl
 
 pipeline = haute.Pipeline("rewire_test", description="Rewire test")
 
 @pipeline.data_input(config="{source_config}")
-def source() -> pl.LazyFrame:
-    return pl.scan_parquet("data/input.parquet")
+def source(): ...
 
 @pipeline.polars
 def middle(source: pl.LazyFrame) -> pl.LazyFrame:
@@ -4301,6 +4832,7 @@ pipeline.connect("middle", "final")
         assert resp.status_code == 200
         data = resp.json()
         instance_id = _submodel_instance_node(data["graph"], "inner")["id"]
+        assert instance_id == "inner"
 
         # Parent graph should have the immutable occurrence plus final.
         parent_ids = {n["id"] for n in data["graph"]["nodes"]}
@@ -4316,7 +4848,7 @@ pipeline.connect("middle", "final")
         assert any(e["target"] == "final" for e in outgoing)
         # Parent handles expose stable public ids; internal endpoints stay private.
         definition = data["graph"]["submodels"]["inner"]
-        expected_handles = {f"out__{port['portId']}" for port in definition["outputPorts"]}
+        expected_handles = {f"out__{port['name']}" for port in definition["outputPorts"]}
         assert {edge.get("sourceHandle") for edge in outgoing} == expected_handles
         assert {port["source"]["nodeId"] for port in definition["outputPorts"]} == {"middle"}
 
@@ -4406,7 +4938,7 @@ class TestMiddlewareLogging:
 
         assert resp.status_code == 500
         body = json.loads(resp.body)
-        assert body == {"detail": "Internal server error"}
+        assert body == {"detail": _INTERNAL_ERROR_DETAIL}
         assert "secret internal detail" not in resp.body.decode()
         assert "Traceback" not in resp.body.decode()
 
@@ -4438,28 +4970,26 @@ class TestWebSocketKeepAlive:
 
 
 # ---------------------------------------------------------------------------
-# validate_safe_path unit tests
+# contained_path unit tests
 # ---------------------------------------------------------------------------
 
 
 class TestValidateSafePath:
     def test_valid_path_succeeds(self, tmp_path: Path):
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
-        result = validate_safe_path(tmp_path, "subdir/file.txt")
+        result = contained_path(tmp_path, "subdir/file.txt")
         assert result == (tmp_path / "subdir" / "file.txt").resolve()
 
     def test_traversal_raises_403(self, tmp_path: Path):
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
-        with pytest.raises(HTTPException) as exc_info:
-            validate_safe_path(tmp_path, "../../etc/passwd")
-        assert exc_info.value.status_code == 403
+        with pytest.raises(PathOutsideProjectError):
+            contained_path(tmp_path, "../../etc/passwd")
 
     def test_symlink_escape_raises_403(self, tmp_path: Path):
-        import os
 
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
         outside = tmp_path.parent / "outside_target"
         outside.mkdir(exist_ok=True)
@@ -4468,9 +4998,8 @@ class TestValidateSafePath:
             os.symlink(outside, link)
         except OSError:
             pytest.skip("symlink creation not supported")
-        with pytest.raises(HTTPException) as exc_info:
-            validate_safe_path(tmp_path, "escape_link/secret.txt")
-        assert exc_info.value.status_code == 403
+        with pytest.raises(PathOutsideProjectError):
+            contained_path(tmp_path, "escape_link/secret.txt")
 
 
 # ---------------------------------------------------------------------------
@@ -4617,6 +5146,9 @@ class TestGetSubmodelSidecarPositions:
                 "description": three_node_graph.get("pipeline_description") or "",
                 "graph": created["graph"],
                 "source_file": "test_pipeline.py",
+                "base_revision": current_source_revision(
+                    pipeline_dir / "test_pipeline.py", pipeline_dir
+                ),
             },
         )
         assert save_resp.status_code == 200

@@ -43,6 +43,9 @@ describe("FramePortRows", () => {
     const secondHandle = rows[1].querySelector('[data-handleid="frame-b"]')
     expect(firstHandle).toHaveClass("react-flow__handle-right")
     expect(secondHandle).toHaveClass("react-flow__handle-right")
+    expect(firstHandle).toHaveClass("output-origin-handle")
+    expect(secondHandle).toHaveClass("output-origin-handle")
+    expect(firstHandle).toHaveStyle({ color: "#56B4E9" })
     expect(firstHandle).toHaveStyle({ top: "50%" })
     expect(secondHandle).toHaveStyle({ top: "50%" })
   })
@@ -55,8 +58,43 @@ describe("FramePortRows", () => {
     const firstLabel = screen.getByTestId("shared-body-label-frame-a")
 
     expect(firstHandle).toHaveClass("react-flow__handle-left")
+    expect(firstHandle).toHaveClass("input-origin-handle")
+    expect(firstHandle).not.toHaveClass("output-origin-handle")
+    expect(firstHandle).toHaveStyle({ color: "#56B4E9" })
     expect(firstHandle).toHaveStyle({ top: "50%" })
     expect(firstLabel).toHaveClass("text-left")
+  })
+
+  it("can share the first source row with a default input target", () => {
+    render(
+      <ReactFlowProvider>
+        <FramePortRows
+          ports={[
+            { id: "frame-a", label: "frame_a", parentEdges: [] },
+            { id: "frame-b", label: "frame_b", parentEdges: [] },
+          ]}
+          direction="source"
+          accent="#56B4E9"
+          testIdPrefix="shared"
+          firstRowInput={{
+            handleId: "create-input",
+            handleTestId: "create-input-handle",
+          }}
+        />
+      </ReactFlowProvider>,
+    )
+
+    const firstRow = screen.getByTestId("shared-frame-row-frame-a")
+    const secondRow = screen.getByTestId("shared-frame-row-frame-b")
+    const inputHandle = screen.getByTestId("create-input-handle")
+
+    expect(firstRow).toHaveTextContent("inputs")
+    expect(firstRow).toContainElement(inputHandle)
+    expect(firstRow.querySelector('[data-handleid="frame-a"]')).toHaveClass(
+      "react-flow__handle-right",
+    )
+    expect(inputHandle).toHaveClass("react-flow__handle-left")
+    expect(secondRow).not.toHaveTextContent("inputs")
   })
 
   it("keeps duplicate display labels independent through stable handle ids", () => {

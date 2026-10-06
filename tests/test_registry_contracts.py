@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import inspect
+import json
 import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import FrozenInstanceError
+from pathlib import Path
 from typing import Any, get_type_hints
 
+import polars as pl
 import pytest
 
 from haute import _registry as registry
+from haute import _standalone_nodes as standalone_nodes
+from haute._standalone_nodes import STANDALONE_PASSTHROUGH_TYPES
 from haute._types import MODELLING_CONFIG_KEYS, NodeType
+from haute.errors import ConfigError
 
 
 def _exec_builder(*_args: object, **_kwargs: object) -> tuple[str, object, bool]:
@@ -27,14 +33,18 @@ def _column_contract(config: dict[str, object]) -> tuple[str, dict[str, object]]
     return "contract", config
 
 
-def _passthrough_codegen(*_args: object, **_kwargs: object) -> str:
-    """Codegen body that returns its input frame verbatim (a bare passthrough)."""
-    return "def node(src):\n    return src\n"
-
-
-def _wrapped_codegen(*_args: object, **_kwargs: object) -> str:
-    """Codegen body that routes through a helper (not a bare passthrough)."""
-    return "def node(src):\n    return apply_thing_from_config(src)\n"
+#: The node types the executor registers as behavioural (stateful apply).
+_BEHAVIOURAL_TYPES = frozenset(
+    {
+        NodeType.BANDING,
+        NodeType.LIVE_SWITCH,
+        NodeType.MODEL_SCORE,
+        NodeType.OPTIMISER_APPLY,
+        NodeType.OUTPUT,
+        NodeType.RATING_STEP,
+        NodeType.SCENARIO_EXPANDER,
+    }
+)
 
 
 def _complete_registry() -> dict[NodeType, registry.NodeRegistryEntry]:
@@ -50,6 +60,7 @@ def _complete_registry() -> dict[NodeType, registry.NodeRegistryEntry]:
             exec=_exec_builder,
             codegen=_codegen_builder,
             column_contract=_column_contract,
+            recompute_cost="cheap",
         )
         for node_type in NodeType
     }
@@ -60,6 +71,8 @@ def test_register_exec_signature_keeps_metadata_keyword_only() -> None:
 
     assert signature.parameters["node_type"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
     assert signature.parameters["column_contract"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert signature.parameters["recompute_cost"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert signature.parameters["slice_transparent"].kind is inspect.Parameter.KEYWORD_ONLY
 
 
 def test_register_exec_type_hints_are_valid_for_optional_column_contract() -> None:
@@ -89,6 +102,7 @@ def test_registry_module_starts_unready_in_fresh_interpreter() -> None:
 
 def test_registry_entry_uses_slots() -> None:
     entry = registry.NodeRegistryEntry()
+    assert entry.slice_transparent is True
 
     entry_repr = repr(registry.NodeRegistryEntry(column_contract=_column_contract))
     assert "column_contract" not in entry_repr
@@ -138,8 +152,15 @@ def test_register_exec_stores_builder_and_column_contract(
     assert registered is _exec_builder
     assert entry.exec is _exec_builder
     assert registry.get_exec(NodeType.DATA_INPUT) is _exec_builder
+    assert entry.slice_transparent is True
     assert entry.column_contract is _column_contract
     assert entry.column_contract(config) == ("contract", config)
+
+
+def test_register_exec_preserves_explicit_slice_barrier(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(registry, "NODE_REGISTRY", {})
+    registry.register_exec(NodeType.SCENARIO_EXPANDER, slice_transparent=False)(_exec_builder)
+    assert registry.NODE_REGISTRY[NodeType.SCENARIO_EXPANDER].slice_transparent is False
 
 
 def test_register_exec_then_codegen_preserves_single_entry(
@@ -281,6 +302,7 @@ def test_validate_registry_complete_accepts_fully_registered_registry(
                 exec=_exec_builder,
                 codegen=_codegen_builder,
                 column_contract=_column_contract,
+                recompute_cost="cheap",
             )
             for node_type in NodeType
         },
@@ -488,124 +510,235 @@ def test_validate_registry_complete_isolates_missing_contract(
     assert "Missing contract: ['submodel']" in message
 
 
-def test_behavioural_passthrough_body_is_flagged(
+def test_behavioural_standalone_passthrough_type_is_flagged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A behavioural node whose codegen returns a bare frame is rejected.
+    """A behavioural type that a standalone run passes straight through is rejected.
 
-    Drives the body of ``_validate_behavioural_bodies_not_passthrough`` end to
-    end: the loop must run (not zero-iterate), the entry must NOT be skipped,
-    and the bare-passthrough probe must append the offender and raise.
+    Drives ``_validate_behavioural_types_not_standalone_passthrough`` end to
+    end: the loop over the runtime's passthrough types must run, the registered
+    entry must NOT be skipped, and its behavioural flag must raise naming it.
     """
     monkeypatch.setattr(
         registry,
         "NODE_REGISTRY",
+        {NodeType.DATA_OUTPUT: registry.NodeRegistryEntry(is_behavioural=True)},
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        registry._validate_behavioural_types_not_standalone_passthrough()
+
+    message = str(exc_info.value)
+    assert "passed straight through by a standalone" in message
+    assert "['dataOutput']" in message
+
+
+def test_behavioural_standalone_passthrough_offenders_are_all_named_in_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every offender is reported, sorted, and a non-behavioural one is not."""
+    monkeypatch.setattr(
+        registry,
+        "NODE_REGISTRY",
         {
-            NodeType.BANDING: registry.NodeRegistryEntry(
-                codegen=_passthrough_codegen,
-                is_behavioural=True,
-            )
+            NodeType.OPTIMISER: registry.NodeRegistryEntry(is_behavioural=True),
+            NodeType.DATA_OUTPUT: registry.NodeRegistryEntry(is_behavioural=True),
+            NodeType.EXPLORE: registry.NodeRegistryEntry(is_behavioural=False),
         },
     )
 
     with pytest.raises(RuntimeError) as exc_info:
-        registry._validate_behavioural_bodies_not_passthrough()
+        registry._validate_behavioural_types_not_standalone_passthrough()
+
+    assert "['dataOutput', 'optimiser']" in str(exc_info.value)
+
+
+def test_behavioural_type_outside_standalone_passthrough_is_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A behavioural type whose decorator performs real work is accepted."""
+    monkeypatch.setattr(
+        registry,
+        "NODE_REGISTRY",
+        {node_type: registry.NodeRegistryEntry(is_behavioural=True) for node_type in NodeType}
+        | {
+            node_type: registry.NodeRegistryEntry(is_behavioural=False)
+            for node_type in STANDALONE_PASSTHROUGH_TYPES
+        },
+    )
+
+    registry._validate_behavioural_types_not_standalone_passthrough()
+
+
+def test_non_behavioural_standalone_passthrough_type_is_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pure passthrough type is exempt.
+
+    Pins the ``entry.is_behavioural`` arm of the check: dropping it would
+    start rejecting every passthrough type the runtime legitimately lists.
+    """
+    monkeypatch.setattr(
+        registry,
+        "NODE_REGISTRY",
+        {
+            node_type: registry.NodeRegistryEntry(is_behavioural=False)
+            for node_type in STANDALONE_PASSTHROUGH_TYPES
+        },
+    )
+
+    registry._validate_behavioural_types_not_standalone_passthrough()
+
+
+def test_unregistered_standalone_passthrough_type_is_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A passthrough type with no registry entry is skipped, not dereferenced.
+
+    Pins the ``entry is not None`` arm: without it the check would read
+    ``is_behavioural`` from ``None`` instead of leaving completeness to
+    ``validate_registry_complete``'s own report.
+    """
+    monkeypatch.setattr(registry, "NODE_REGISTRY", {})
+
+    registry._validate_behavioural_types_not_standalone_passthrough()
+
+
+def test_validate_registry_complete_rejects_a_behavioural_passthrough_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Registry validation runs the invariant once every type is registered."""
+    node_registry = _complete_registry()
+    node_registry[NodeType.MODELLING].is_behavioural = True
+    monkeypatch.setattr(registry, "NODE_REGISTRY", node_registry)
+
+    with pytest.raises(RuntimeError, match=r"standalone.*\['modelling'\]"):
+        registry.validate_registry_complete()
+
+
+def test_real_registry_keeps_behavioural_types_out_of_the_standalone_passthrough(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The shipped registry satisfies the invariant, and the check reads the runtime's list.
+
+    The negative half lists a behavioural type (Banding) as a standalone
+    passthrough in ``haute._standalone_nodes`` itself and proves validation
+    then fails naming it.
+    """
+    registry.ensure_registry_ready()
+    behavioural = {
+        node_type for node_type, entry in registry.NODE_REGISTRY.items() if entry.is_behavioural
+    }
+    assert behavioural == _BEHAVIOURAL_TYPES
+    assert behavioural.isdisjoint(STANDALONE_PASSTHROUGH_TYPES)
+    registry.validate_registry_complete()
+
+    monkeypatch.setattr(
+        standalone_nodes,
+        "STANDALONE_PASSTHROUGH_TYPES",
+        STANDALONE_PASSTHROUGH_TYPES | {NodeType.BANDING},
+    )
+    with pytest.raises(RuntimeError, match=r"\['banding'\]"):
+        registry.validate_registry_complete()
+
+
+def _declaration_in(directory: Path) -> Callable[..., Any]:
+    """A declaration defined in a pipeline file under *directory*.
+
+    Its ``config=`` paths resolve there, as they do for a saved pipeline.
+    """
+    namespace: dict[str, Any] = {"__file__": str(directory / "main.py")}
+    exec("def node(scored, factors): ...", namespace)
+    function: Callable[..., Any] = namespace["node"]
+    return function
+
+
+def test_standalone_passthrough_list_matches_what_a_standalone_run_does(
+    tmp_path: Path,
+) -> None:
+    """The list the invariant reads is the runtime's truth, in both directions.
+
+    Each listed type's standalone work hands back one of its input frames
+    untouched; each behavioural type's work needs its sidecar, so it can never
+    hand its input back unchanged without reading its settings.
+    """
+    sidecar = tmp_path / "config" / "optimiser" / "node.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text(json.dumps({"data_input": "factors"}), encoding="utf-8")
+    scored = pl.LazyFrame({"x": [1]})
+    factors = pl.LazyFrame({"y": [2]})
+    declaration = _declaration_in(tmp_path)
+
+    for node_type in STANDALONE_PASSTHROUGH_TYPES:
+        config = {"config": "config/optimiser/node.json"}
+        result = standalone_nodes.run_configured_node(
+            node_type,
+            "declaration",
+            name="node",
+            config=config,
+            fn=declaration,
+            frames=(scored, factors),
+        )
+        expected = factors if node_type is NodeType.OPTIMISER else scored
+        assert result is expected, node_type
+
+    for node_type in _BEHAVIOURAL_TYPES:
+        with pytest.raises(ConfigError, match="needs its config= sidecar path"):
+            standalone_nodes.run_configured_node(
+                node_type,
+                "declaration",
+                name="node",
+                config={},
+                fn=declaration,
+                frames=(scored, factors),
+            )
+
+
+def test_every_node_type_declares_recompute_cost() -> None:
+    registry.ensure_registry_ready()
+    expected_costs: dict[NodeType, registry.RecomputeCost] = {
+        NodeType.API_INPUT: "source",
+        NodeType.DATA_INPUT: "source",
+        NodeType.CONSTANT: "source",
+        NodeType.POLARS: "code",
+        NodeType.EXTERNAL_FILE: "code",
+        NodeType.EDGE_JOIN: "costly",
+        NodeType.RATING_STEP: "costly",
+        NodeType.MODEL_SCORE: "costly",
+        NodeType.OPTIMISER_APPLY: "costly",
+        NodeType.BANDING: "cheap",
+        NodeType.OUTPUT: "cheap",
+        NodeType.DATA_OUTPUT: "cheap",
+        NodeType.LIVE_SWITCH: "cheap",
+        NodeType.OPTIMISER: "cheap",
+        NodeType.MODELLING: "cheap",
+        NodeType.SUBMODEL: "cheap",
+        NodeType.SUBMODEL_PORT: "cheap",
+        NodeType.EXPLORE: "cheap",
+        NodeType.SCENARIO_EXPANDER: "cheap",
+    }
+    assert set(NodeType) == set(expected_costs.keys())
+    for node_type, expected_cost in expected_costs.items():
+        entry = registry.NODE_REGISTRY[node_type]
+        assert entry.recompute_cost == expected_cost
+        if node_type is NodeType.SCENARIO_EXPANDER:
+            assert entry.slice_transparent is False
+        else:
+            assert entry.slice_transparent is True
+
+
+def test_validation_rejects_a_type_without_recompute_cost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    node_registry = _complete_registry()
+    node_registry[NodeType.POLARS].recompute_cost = None
+    monkeypatch.setattr(registry, "NODE_REGISTRY", node_registry)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        registry.validate_registry_complete()
 
     message = str(exc_info.value)
-    assert "passthrough codegen body" in message
-    assert "banding" in message
-
-
-def test_behavioural_wrapped_body_is_allowed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A behavioural node whose codegen routes through a helper is accepted."""
-    monkeypatch.setattr(
-        registry,
-        "NODE_REGISTRY",
-        {
-            NodeType.BANDING: registry.NodeRegistryEntry(
-                codegen=_wrapped_codegen,
-                is_behavioural=True,
-            )
-        },
-    )
-
-    registry._validate_behavioural_bodies_not_passthrough()
-
-
-def test_non_behavioural_passthrough_body_is_skipped(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A NON-behavioural node is exempt even if its codegen is a bare passthrough.
-
-    Pins the ``not entry.is_behavioural`` arm of the skip guard: inverting it
-    would start policing passthrough bodies on pure-passthrough node types and
-    wrongly raise here.
-    """
-    monkeypatch.setattr(
-        registry,
-        "NODE_REGISTRY",
-        {
-            NodeType.BANDING: registry.NodeRegistryEntry(
-                codegen=_passthrough_codegen,
-                is_behavioural=False,
-            )
-        },
-    )
-
-    registry._validate_behavioural_bodies_not_passthrough()
-
-
-def test_behavioural_missing_codegen_is_skipped(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A behavioural node with no codegen builder is skipped, not probed.
-
-    Pins the ``entry.codegen is None`` arm of the skip guard: inverting it would
-    try to call ``None(node, …)`` and blow up instead of skipping.
-    """
-    monkeypatch.setattr(
-        registry,
-        "NODE_REGISTRY",
-        {
-            NodeType.BANDING: registry.NodeRegistryEntry(
-                codegen=None,
-                is_behavioural=True,
-            )
-        },
-    )
-
-    registry._validate_behavioural_bodies_not_passthrough()
-
-
-def test_codegen_body_is_bare_passthrough_detects_bare_return() -> None:
-    """A function whose sole return is a bare parameter is a passthrough.
-
-    Exercises every branch of ``_codegen_body_is_bare_passthrough``: both loops
-    must iterate, the FunctionDef ``continue`` must skip the module node, and
-    the ``return True`` must fire.
-    """
-    import ast
-
-    tree = ast.parse("def node(src):\n    return src\n")
-
-    assert registry._codegen_body_is_bare_passthrough(tree) is True
-
-
-def test_codegen_body_is_bare_passthrough_allows_wrapped_return() -> None:
-    """A function that returns a call (not a bare name) is not a passthrough."""
-    import ast
-
-    tree = ast.parse("def node(src):\n    return apply_thing_from_config(src)\n")
-
-    assert registry._codegen_body_is_bare_passthrough(tree) is False
-
-
-def test_codegen_body_is_bare_passthrough_allows_non_param_return() -> None:
-    """Returning a name that is NOT a parameter is not a passthrough."""
-    import ast
-
-    tree = ast.parse("def node(src):\n    return unrelated_local\n")
-
-    assert registry._codegen_body_is_bare_passthrough(tree) is False
+    assert "Missing cost:    ['polars']" in message
+    assert "Missing exec:    []" in message
+    assert "Missing codegen: []" in message
+    assert "Missing contract: []" in message

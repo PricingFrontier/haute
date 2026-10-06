@@ -2,7 +2,7 @@ import { useEffect, useState } from "react"
 import { InputSourcesBar, INPUT_STYLE } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
 import { configField } from "../../utils/configField"
-import { CommittedTextField } from "../../components/form"
+import { CommittedTextField, SavedValueOption } from "../../components/form"
 
 type ScenarioRangeNumberField = "min_value" | "max_value"
 type ScenarioRangeDraftState = {
@@ -62,7 +62,7 @@ export default function ScenarioExpanderEditor({
   const columnName = configField(config, "column_name", "")
   const minValue = configField(config, "min_value", "")
   const maxValue = configField(config, "max_value", "")
-  const steps = configField(config, "steps", "")
+  const steps = configField(config, "stepCount", "")
   const stepColumn = configField(config, "step_column", "")
   const committedMinText = numberConfigText(minValue)
   const committedMaxText = numberConfigText(maxValue)
@@ -177,6 +177,7 @@ export default function ScenarioExpanderEditor({
             onChange={(e) => onUpdate("quote_id", e.target.value)}
           >
             <option value="">-- select column --</option>
+            <SavedValueOption value={quoteId} options={upstreamColumns.map((c) => c.name)} />
             {upstreamColumns.map((c) => (
               <option key={c.name} value={c.name}>{c.name}</option>
             ))}
@@ -220,7 +221,7 @@ export default function ScenarioExpanderEditor({
             className="w-full px-2.5 py-1.5 rounded-md text-[12px] font-mono"
             style={INPUT_STYLE}
             value={String(steps)}
-            onCommit={(v) => onUpdate("steps", Math.max(1, parseInt(v) || 1))}
+            onCommit={(v) => onUpdate("stepCount", Math.max(1, parseInt(v) || 1))}
           />
         </div>
       )}
@@ -286,7 +287,7 @@ export default function ScenarioExpanderEditor({
                 className="w-full px-2 py-1.5 rounded-md text-[12px] font-mono"
                 style={INPUT_STYLE}
                 value={String(steps)}
-                onCommit={(v) => onUpdate("steps", Math.max(1, parseInt(v) || 1))}
+                onCommit={(v) => onUpdate("stepCount", Math.max(1, parseInt(v) || 1))}
               />
             </div>
             <div>
@@ -296,7 +297,7 @@ export default function ScenarioExpanderEditor({
                 style={{ ...INPUT_STYLE, opacity: 0.7 }}
                 data-testid="step-size"
               >
-                {steps && Number(steps) > 1 && parsedMin !== null && parsedMax !== null ? +((parsedMax - parsedMin) / Math.max(Number(steps) - 1, 1)).toFixed(4) : "—"}
+                {steps && Number(steps) > 1 && parsedMin !== null && parsedMax !== null ? +((parsedMax - parsedMin) / Math.max(Number(steps) - 1, 1)).toFixed(4) : "-"}
               </div>
             </div>
           </div>

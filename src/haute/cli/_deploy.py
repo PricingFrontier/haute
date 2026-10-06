@@ -17,6 +17,7 @@ from pathlib import Path
 import click
 
 from haute._project import resolve_pipeline_file
+from haute._scaffold import BUILD_AND_PUSH_ONLY_TARGETS
 from haute.cli._helpers import ENDPOINT_SUFFIX_HELP
 from haute.errors import DeployError
 
@@ -208,13 +209,24 @@ def handle_deploy(config: DeployCliConfig) -> None:
     try:
         from haute.deploy import deploy_resolved
 
+        target = resolved_deploy.config.target
         result = deploy_resolved(resolved_deploy)
-        click.echo(f"  \u2713 Deployed: {result.model_name} v{result.model_version}")
-        if result.endpoint_url:
-            click.echo(f"\nEndpoint ready:\n  POST {result.endpoint_url}")
-        elif result.model_uri:
-            click.echo("\nDeploy complete. Serve locally with:")
-            click.echo(f'  mlflow models serve -m "{result.model_uri}" -p 5001')
+        if target in BUILD_AND_PUSH_ONLY_TARGETS:
+            # Build and push only: the image tag is the handoff for a manual update.
+            click.echo(f"  \u2713 Image pushed: {result.model_uri}")
+            click.echo(
+                f"\nThe {target} service was not updated: updating it is not "
+                f"implemented yet.\nPoint the service at {result.model_uri}"
+            )
+        else:
+            click.echo(f"  \u2713 Deployed: {result.model_name} v{result.model_version}")
+            if result.endpoint_url:
+                click.echo(f"\nEndpoint ready:\n  POST {result.endpoint_url}")
+            elif target == "container":
+                click.echo(f"\nImage: {result.model_uri}")
+            elif result.model_uri:
+                click.echo("\nDeploy complete. Serve locally with:")
+                click.echo(f'  mlflow models serve -m "{result.model_uri}" -p 5001')
     except ImportError as e:
         click.echo(f"\n  \u2717 Missing dependency: {e}", err=True)
         click.echo(

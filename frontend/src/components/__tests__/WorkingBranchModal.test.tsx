@@ -27,9 +27,10 @@ import WorkingBranchModal from "../WorkingBranchModal"
 import useGitStore from "../../stores/useGitStore"
 import { setGitIdentity, setWorkingBranch } from "../../api/client"
 import type { GitWorkingBranchResponse } from "../../api/types"
+import { makeGitWorkingBranch } from "../../test-utils/factories"
 
 function status(overrides: Partial<GitWorkingBranchResponse>): GitWorkingBranchResponse {
-  return {
+  return makeGitWorkingBranch({
     working_branch: null,
     state: "unset",
     errors: [],
@@ -40,7 +41,7 @@ function status(overrides: Partial<GitWorkingBranchResponse>): GitWorkingBranchR
     user_name: "A",
     user_email: "a@b.c",
     ...overrides,
-  }
+  })
 }
 
 describe("WorkingBranchModal", () => {

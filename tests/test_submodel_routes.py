@@ -20,7 +20,7 @@ from haute.routes._helpers import invalidate_pipeline_index, pipeline_dir
 _CURRENT_REVISION = "revision-current"
 _SAVED_REVISION = "revision-saved"
 DEFINITION_ID = "pricing-definition"
-INSTANCE_ID = "pricing-instance"
+INSTANCE_ID = "pricing"
 ALIAS = "pricing"
 
 
@@ -196,6 +196,7 @@ def _dissolve_body(
 
 
 def _write_submodel(path: Path, *, node_name: str = "base_rate") -> None:
+    """Write a definition one folder below the pipeline that registers it."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         f"""import polars as pl
@@ -206,11 +207,12 @@ submodel = haute.Submodel(
     definition_id="pricing-definition",
     input_ports=[],
     output_ports=[],
+    pipeline_dir="..",
 )
 
 @submodel.polars
-def {node_name}(df: pl.LazyFrame) -> pl.LazyFrame:
-    return df
+def {node_name}() -> pl.LazyFrame:
+    return pl.LazyFrame({{"x": [1]}})
 """,
         encoding="utf-8",
     )
@@ -222,10 +224,7 @@ def _write_parent_reference(path: Path, child_reference: str) -> None:
         f"""import haute
 
 pipeline = haute.Pipeline({path.stem!r})
-pipeline.submodel(
-    {child_reference!r}, definition_id="pricing-definition",
-    instance_id="pricing-instance", alias="pricing",
-)
+pipeline.submodel({child_reference!r}, "pricing")
 """,
         encoding="utf-8",
     )
@@ -244,6 +243,39 @@ class TestCreateSubmodel:
         with _patch_parent_document(tmp_path, _simple_graph()):
             response = client.post("/api/submodel/create", json=body)
         assert response.status_code == 409
+
+    @pytest.mark.parametrize(
+        ("name", "message"),
+        [
+            pytest.param("pl", "takes the name `pl`", id="reserved"),
+            pytest.param("calc", "take one name, `calc`", id="named-after-a-selected-child"),
+        ],
+    )
+    def test_a_name_the_naming_rule_refuses_is_refused(
+        self, client: TestClient, tmp_path: Path, name: str, message: str
+    ) -> None:
+        body = _create_body()
+        body["name"] = name
+        with _patch_parent_document(tmp_path, _simple_graph()):
+            response = client.post("/api/submodel/create", json=body)
+
+        assert response.status_code == 400
+        assert "Nothing was changed" in response.json()["detail"]
+        assert message in response.json()["detail"]
+
+    def test_a_violation_the_graph_already_had_does_not_block_grouping(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        """Grouping moves an existing `pl` node into the submodel; it adds nothing."""
+        graph = _simple_graph()
+        for node in graph["nodes"]:
+            if node["id"] == "calc":
+                node["data"]["label"] = "pl"
+        body = _create_body(graph=graph)
+        with _patch_parent_document(tmp_path, graph):
+            response = client.post("/api/submodel/create", json=body)
+
+        assert response.status_code == 200, response.text
 
     def test_too_few_nodes(self, client: TestClient, tmp_path: Path) -> None:
         """A submodel must contain at least 2 nodes."""
@@ -494,7 +526,6 @@ class TestGetSubmodel:
         modules_dir.mkdir()
         (modules_dir / "pricing.py").write_text(
             """\
-import polars as pl
 import haute
 
 submodel = haute.Submodel(
@@ -502,12 +533,12 @@ submodel = haute.Submodel(
     definition_id="pricing-definition",
     input_ports=[],
     output_ports=[],
+    pipeline_dir="..",
 )
 
 
 @submodel.data_input(config="config/data_input/source.json")
-def source() -> pl.LazyFrame:
-    return pl.scan_parquet("rating-data.parquet")
+def source(): ...
 """,
             encoding="utf-8",
         )
@@ -538,18 +569,14 @@ def source() -> pl.LazyFrame:
             '    definition_id="pricing-definition",\n'
             "    input_ports=[],\n"
             "    output_ports=[],\n"
+            '    pipeline_dir="..",\n'
             ")\n"
-            "@submodel.polars\ndef rate(df: pl.LazyFrame) -> pl.LazyFrame:\n    return df\n",
+            "@submodel.polars\ndef rate() -> pl.LazyFrame:\n    return pl.LazyFrame({'x': [1]})\n",
             encoding="utf-8",
         )
         (rating_root / "main.py").write_text(
             'import haute\npipeline = haute.Pipeline("main")\n'
-            "pipeline.submodel(\n"
-            '    "lib/pricing.py",\n'
-            '    definition_id="pricing-definition",\n'
-            '    instance_id="pricing-instance",\n'
-            '    alias="pricing",\n'
-            ")\n",
+            'pipeline.submodel("lib/pricing.py", "pricing")\n',
             encoding="utf-8",
         )
         response = client.get(
@@ -576,28 +603,19 @@ def source() -> pl.LazyFrame:
             '    definition_id="pricing-definition",\n'
             "    input_ports=[],\n"
             "    output_ports=[],\n"
+            '    pipeline_dir="..",\n'
             ")\n"
-            "@submodel.polars\ndef rate(df: pl.LazyFrame) -> pl.LazyFrame:\n    return df\n",
+            "@submodel.polars\ndef rate() -> pl.LazyFrame:\n    return pl.LazyFrame({'x': [1]})\n",
             encoding="utf-8",
         )
         (tmp_path / "a_broken.py").write_text(
             'import haute\npipeline = haute.Pipeline("broken")\n'
-            "pipeline.submodel(\n"
-            '    "modules/missing.py",\n'
-            '    definition_id="missing-definition",\n'
-            '    instance_id="missing-instance",\n'
-            '    alias="missing",\n'
-            ")\n",
+            'pipeline.submodel("modules/missing.py", "missing")\n',
             encoding="utf-8",
         )
         (tmp_path / "z_owner.py").write_text(
             'import haute\npipeline = haute.Pipeline("owner")\n'
-            "pipeline.submodel(\n"
-            '    "modules/pricing.py",\n'
-            '    definition_id="pricing-definition",\n'
-            '    instance_id="pricing-instance",\n'
-            '    alias="pricing",\n'
-            ")\n",
+            'pipeline.submodel("modules/pricing.py", "pricing")\n',
             encoding="utf-8",
         )
 
@@ -662,7 +680,7 @@ class TestDissolveSubmodel:
 
     def test_submodel_not_in_graph(self, client: TestClient) -> None:
         body = _dissolve_body(graph=_simple_graph())
-        body["instance_id"] = "nonexistent-instance"
+        body["instance_id"] = "nonexistent_instance"
         resp = client.post("/api/submodel/dissolve", json=body)
         assert resp.status_code == 404
         assert "not found" in resp.json()["detail"]

@@ -4,8 +4,8 @@ import {
   fireEvent,
   render,
   screen,
-  within,
   waitFor,
+  within,
 } from "@testing-library/react"
 import type { IoCapabilityGroup } from "../../../api/types"
 
@@ -18,11 +18,6 @@ vi.mock("../../../api/client", () => ({
   getCatalogs: vi.fn(() => Promise.resolve({ catalogs: [] })),
   getSchemas: vi.fn(() => Promise.resolve({ schemas: [] })),
   getTables: vi.fn(() => Promise.resolve({ tables: [] })),
-  buildInputCache: vi.fn(),
-  getInputCacheStatus: vi.fn(),
-  getInputCacheJob: vi.fn(),
-  cancelInputCacheJob: vi.fn(),
-  clearInputCache: vi.fn(),
 }))
 
 vi.mock("../CodeEditor", () => ({
@@ -42,11 +37,9 @@ vi.mock("../CodeEditor", () => ({
 }))
 
 import {
-  buildInputCache,
   fetchSchema,
   fetchIoCapabilities,
-  getInputCacheJob,
-  getInputCacheStatus,
+  listFiles,
 } from "../../../api/client"
 import DataInputEditor from "../DataInputEditor"
 import { resetIoCapabilitiesRequestForTests } from "../_ioFormats"
@@ -76,6 +69,7 @@ const groups: IoCapabilityGroup[] = [
           cache_mode: "direct",
           direct_bounded: true,
           needs_schema_when_bounded: false,
+          source_is_folder: false,
           snapshot_build: "bounded",
           cached_read: true,
         },
@@ -94,6 +88,7 @@ const groups: IoCapabilityGroup[] = [
           cache_mode: "snapshot",
           direct_bounded: true,
           needs_schema_when_bounded: true,
+          source_is_folder: false,
           snapshot_build: "bounded",
           cached_read: true,
         },
@@ -112,6 +107,7 @@ const groups: IoCapabilityGroup[] = [
           cache_mode: "snapshot",
           direct_bounded: false,
           needs_schema_when_bounded: false,
+          source_is_folder: false,
           snapshot_build: "admitted_eager",
           cached_read: true,
         },
@@ -130,6 +126,7 @@ const groups: IoCapabilityGroup[] = [
           cache_mode: "snapshot",
           direct_bounded: false,
           needs_schema_when_bounded: false,
+          source_is_folder: false,
           snapshot_build: "admitted_eager",
           cached_read: true,
         },
@@ -173,6 +170,7 @@ const groups: IoCapabilityGroup[] = [
           cache_mode: "snapshot",
           direct_bounded: false,
           needs_schema_when_bounded: false,
+          source_is_folder: false,
           snapshot_build: "bounded",
           cached_read: true,
         },
@@ -209,6 +207,7 @@ const groups: IoCapabilityGroup[] = [
           cache_mode: "snapshot",
           direct_bounded: true,
           needs_schema_when_bounded: false,
+          source_is_folder: true,
           snapshot_build: "bounded",
           cached_read: true,
         },
@@ -264,6 +263,7 @@ const groups: IoCapabilityGroup[] = [
           cache_mode: "snapshot",
           direct_bounded: true,
           needs_schema_when_bounded: false,
+          source_is_folder: false,
           snapshot_build: "bounded",
           cached_read: true,
         },
@@ -272,14 +272,6 @@ const groups: IoCapabilityGroup[] = [
     ],
   },
 ]
-
-const missingSnapshot = {
-  schema_version: 1 as const,
-  identity_digest: "identity",
-  state: "missing" as const,
-  freshness: "unknown" as const,
-  generation: null,
-}
 
 function renderEditor(
   config: Record<string, unknown>,
@@ -317,39 +309,12 @@ beforeEach(() => {
     column_count: 2,
     preview: [],
   })
-  vi.mocked(getInputCacheStatus).mockResolvedValue(missingSnapshot)
-  vi.mocked(buildInputCache).mockResolvedValue({
-    schema_version: 1,
-    job_id: "job-1",
-    identity_digest: "identity",
-    status: "running",
-    joined: false,
-  })
-  vi.mocked(getInputCacheJob).mockResolvedValue({
-    schema_version: 1,
-    job_id: "job-1",
-    identity_digest: "identity",
-    status: "completed",
-    terminal_reason: null,
-    message: "Snapshot ready.",
-    refresh: false,
-    build_class: "bounded",
-    progress: {
-      phase: "completed",
-      rows: 10,
-      batches: 1,
-      bytes: 100,
-      elapsed_seconds: 0.1,
-    },
-    snapshot: missingSnapshot,
-    error_code: null,
-  })
 })
 
 afterEach(cleanup)
 
 describe("DataInputEditor", () => {
-  it("scans Parquet directly without one-option mode or cache controls", async () => {
+  it("scans Parquet directly without a one-option mode", async () => {
     renderEditor({
       inputType: "file",
       format: "parquet",
@@ -361,16 +326,14 @@ describe("DataInputEditor", () => {
 
     expect(await screen.findByLabelText("Format")).toHaveValue("parquet")
     expect(screen.queryByLabelText("Mode")).not.toBeInTheDocument()
-    expect(screen.queryByRole("button", { name: "Cache as Parquet" })).not.toBeInTheDocument()
     expect(screen.queryByText(/Data Input requires cache mode/)).not.toBeInTheDocument()
-    expect(getInputCacheStatus).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByTestId("file-change-btn"))
     expect(screen.queryByRole("textbox", { name: "Path" })).not.toBeInTheDocument()
     expect(screen.getAllByText("quotes.parquet")).toHaveLength(1)
   })
 
-  it("keeps the cache control usable for a snapshot-backed read-mode Parquet input", async () => {
+  it("accepts read mode for a Parquet input", async () => {
     renderEditor({
       inputType: "file",
       format: "parquet",
@@ -380,9 +343,7 @@ describe("DataInputEditor", () => {
       code: "",
     })
 
-    const build = await screen.findByRole("button", { name: "Cache as Parquet" })
-    expect(build).toBeEnabled()
-    await waitFor(() => expect(getInputCacheStatus).toHaveBeenCalled())
+    expect(await screen.findByLabelText("Format")).toHaveValue("parquet")
     expect(screen.queryByText("The selected mode is not valid for this format.")).not.toBeInTheDocument()
   })
 
@@ -398,15 +359,47 @@ describe("DataInputEditor", () => {
 
     expect(await screen.findByText("A schema mapping is required for this bounded input.")).toBeInTheDocument()
     expect(screen.queryByLabelText("Cache mode")).not.toBeInTheDocument()
-    expect(
-      screen.getByRole("button", { name: "Cache as Parquet" }),
-    ).toBeInTheDocument()
     fireEvent.click(await screen.findByRole("button", { name: "Use detected schema" }))
     expect(onUpdate).toHaveBeenCalledWith("arguments", {
       separator: "|",
       null_values: ["NA"],
       schema: { policy_id: "Int64", premium: "Float64" },
     })
+  })
+
+  it("detects the schema with the node's reader settings, its schema argument aside", async () => {
+    renderEditor({
+      inputType: "file",
+      format: "csv",
+      mode: "scan",
+      path: "claims.csv",
+      arguments: { separator: ";", schema: { claim_id: "Int64" } },
+      code: "",
+    })
+
+    await waitFor(() => expect(fetchSchema).toHaveBeenCalled())
+    expect(fetchSchema).toHaveBeenLastCalledWith(
+      "claims.csv",
+      { signal: expect.any(AbortSignal) },
+      { format: "csv", arguments: { separator: ";" } },
+    )
+  })
+
+  it("points a Delta Lakehouse input at a table folder", async () => {
+    vi.mocked(listFiles).mockImplementation((dir) =>
+      Promise.resolve(
+        dir === "."
+          ? { items: [{ name: "claims", path: "tables/claims", type: "directory" }] }
+          : { items: [{ name: "_delta_log", path: "tables/claims/_delta_log", type: "directory" }] },
+      ) as ReturnType<typeof listFiles>,
+    )
+    const { onUpdate } = renderEditor({ inputType: "lakehouse", format: "delta", mode: "scan", code: "" })
+
+    fireEvent.click(await screen.findByText("claims"))
+    await screen.findByText("_delta_log")
+    fireEvent.click(screen.getByRole("button", { name: "Use this folder" }))
+
+    expect(onUpdate).toHaveBeenCalledWith("path", "tables/claims")
   })
 
   it("tolerates a leftover cacheMode key and never migrates it", async () => {
@@ -421,7 +414,7 @@ describe("DataInputEditor", () => {
       code: "",
     }, onUpdate)
 
-    expect(await screen.findByRole("button", { name: "Cache as Parquet" })).toBeEnabled()
+    expect(await screen.findByLabelText("Format")).toHaveValue("csv")
     expect(screen.queryByText(/Data Input requires cache mode/)).not.toBeInTheDocument()
     expect(onUpdate).not.toHaveBeenCalledWith("cacheMode", expect.anything())
   })
@@ -499,6 +492,54 @@ describe("DataInputEditor", () => {
     })
   })
 
+  it.each([
+    ["an empty list", []],
+    ["a populated list", [{ id: "l", kind: "limit", n: 2 }]],
+  ])("keeps %s of post-load steps when the format or the provider changes", async (_label, steps) => {
+    const { onReplaceConfig } = renderEditor({
+      inputType: "file",
+      format: "csv",
+      mode: "scan",
+      path: "quotes.csv",
+      arguments: {},
+      steps,
+    })
+
+    fireEvent.change(await screen.findByLabelText("Format"), {
+      target: { value: "json" },
+    })
+    expect(onReplaceConfig).toHaveBeenLastCalledWith({
+      steps,
+      inputType: "file",
+      format: "json",
+      mode: "read",
+      arguments: {},
+      path: "quotes.csv",
+    })
+
+    const provider = await screen.findByRole("radiogroup", { name: "Provider" })
+    fireEvent.click(within(provider).getByRole("radio", { name: "Databricks" }))
+    expect(onReplaceConfig).toHaveBeenLastCalledWith(
+      expect.objectContaining({ steps, inputType: "databricks" }),
+    )
+  })
+
+  it.each([
+    ["a new node's empty step list", { inputType: "file", format: "parquet", mode: "scan", path: "", arguments: {}, steps: [] }],
+    ["step editor state", { inputType: "file", format: "csv", mode: "scan", path: "quotes.csv", arguments: {}, steps: [{ id: "f", kind: "filter", match: "all", conditions: [] }], _steps_error: "Step 1: Add at least one condition." }],
+    ["a discarded step list on Databricks", { inputType: "databricks", http_path: "/sql/1", table: "cat.schema.t", arguments: {}, code: "", _steps_discarded: "Steps were discarded because the body changed." }],
+  ])("reports no configuration error for %s", async (_label, config) => {
+    renderEditor(config)
+    await screen.findByRole("radiogroup", { name: "Provider" })
+    expect(screen.queryByText(/Unexpected configuration keys/)).not.toBeInTheDocument()
+  })
+
+  it("still reports a genuinely unknown configuration key", async () => {
+    renderEditor({ inputType: "file", format: "csv", mode: "scan", path: "quotes.csv", arguments: {}, stepz: [] })
+    await screen.findByLabelText("Format")
+    expect(screen.getByText(/Unexpected configuration keys: stepz\./)).toBeInTheDocument()
+  })
+
   it("switches to Parquet without authoring a cache-mode field", async () => {
     const { onReplaceConfig } = renderEditor({
       inputType: "file",
@@ -523,7 +564,7 @@ describe("DataInputEditor", () => {
     })
   })
 
-  it("shows database cache controls and clears the other locator atomically", async () => {
+  it("clears the other database locator atomically", async () => {
     const { onUpdate } = renderEditor({
       inputType: "database",
       format: "database",
@@ -532,11 +573,10 @@ describe("DataInputEditor", () => {
       arguments: {},
     })
 
-    expect(await screen.findByRole("button", { name: "Cache as Parquet" })).toBeInTheDocument()
+    const uri = await screen.findByLabelText("Credential-free URI")
     expect(screen.queryByLabelText("Cache mode")).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Add argument" })).toBeEnabled()
 
-    const uri = screen.getByLabelText("Credential-free URI")
     fireEvent.change(uri, { target: { value: "sqlite:///quotes.db" } })
     fireEvent.blur(uri)
     expect(onUpdate).toHaveBeenCalledWith({
@@ -555,7 +595,6 @@ describe("DataInputEditor", () => {
     })
 
     expect(await screen.findByText("SQL Warehouse")).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Cache as Parquet" })).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Add argument" })).toBeEnabled()
     expect(screen.queryByLabelText("Format")).not.toBeInTheDocument()
   })
@@ -584,6 +623,23 @@ describe("DataInputEditor", () => {
     })
   })
 
+  it("describes the Databricks query as a SELECT clause Haute completes with FROM", async () => {
+    renderEditor({
+      inputType: "databricks",
+      http_path: "/sql/1.0/warehouses/abc",
+      table: "catalog.schema.quotes",
+      arguments: {},
+      code: "df",
+    })
+
+    await screen.findByLabelText("SELECT clause")
+    expect(
+      screen.getByText(
+        "Optional. A SELECT list without FROM, such as SELECT policy_id, premium. Haute adds FROM and the chosen table.",
+      ),
+    ).toBeInTheDocument()
+  })
+
   it("validates inline records and commits one parsed update on blur", async () => {
     const { onUpdate } = renderEditor({
       inputType: "inline",
@@ -604,37 +660,9 @@ describe("DataInputEditor", () => {
     fireEvent.blur(records)
     expect(onUpdate).toHaveBeenCalledWith("records", [{ a: 1 }])
     expect(screen.queryByLabelText("Cache mode")).not.toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Cache as Parquet" })).toBeInTheDocument()
   })
 
-  it("uses the admitted-eager profile for eager-only snapshot builds", async () => {
-    renderEditor({
-      inputType: "file",
-      format: "json",
-      mode: "read",
-      path: "quotes.json",
-      arguments: {},
-      code: "",
-    })
-
-    const build = await screen.findByRole("button", { name: "Cache as Parquet" })
-    expect(screen.queryByText(/snapshot builds are/i)).not.toBeInTheDocument()
-    fireEvent.click(build)
-
-    await waitFor(() =>
-      expect(buildInputCache).toHaveBeenCalledWith({
-        schema_version: 1,
-        config: expect.objectContaining({
-          inputType: "file",
-          format: "json",
-        }),
-        refresh: false,
-        profile: "preview_eager",
-      }),
-    )
-  })
-
-  it("keeps unavailable formats visible but disables snapshot build", async () => {
+  it("keeps unavailable formats visible with the missing engine named", async () => {
     renderEditor({
       inputType: "file",
       format: "excel",
@@ -647,6 +675,5 @@ describe("DataInputEditor", () => {
     expect(
       await screen.findByText(/Missing engine package.*fastexcel/i),
     ).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Cache as Parquet" })).toBeDisabled()
   })
 })

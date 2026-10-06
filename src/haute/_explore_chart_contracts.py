@@ -10,7 +10,6 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    JsonValue,
     RootModel,
     field_validator,
     model_validator,
@@ -52,18 +51,6 @@ _SERIES_MEMBER_KINDS = frozenset(
         "float",
     }
 )
-
-
-def _is_finite_json_value(value: JsonValue) -> bool:
-    if isinstance(value, float):
-        return math.isfinite(value)
-    if isinstance(value, list):
-        return all(_is_finite_json_value(item) for item in value)
-    if isinstance(value, dict):
-        return all(
-            isinstance(key, str) and _is_finite_json_value(item) for key, item in value.items()
-        )
-    return True
 
 
 def canonical_series_key(value: Any) -> str:
@@ -117,27 +104,17 @@ def canonical_series_key(value: Any) -> str:
     return json.dumps(canonical, ensure_ascii=False, separators=(",", ":"))
 
 
-class ExtensibleChartModel(BaseModel):
-    """Strict known fields plus recursively JSON-valued additive fields."""
+class ChartModel(BaseModel):
+    """Strict known fields only: a field the model does not declare is rejected."""
 
     model_config = ConfigDict(
         strict=True,
-        extra="allow",
+        extra="forbid",
         allow_inf_nan=False,
     )
 
-    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
-    @model_validator(mode="after")
-    def _validate_additive_fields(self) -> ExtensibleChartModel:
-        if self.__pydantic_extra__ and not all(
-            _is_finite_json_value(value) for value in self.__pydantic_extra__.values()
-        ):
-            raise ValueError("additive fields must use string keys and simple literals")
-        return self
-
-
-class ChartStyle(ExtensibleChartModel):
+class ChartStyle(ChartModel):
     mark: ChartMark
     axis: ChartAxis
     stack_group: NonEmptyString | None
@@ -157,12 +134,6 @@ class ChartValueEncoding(ChartStyle):
     id: NonEmptyString
     value_id: NonEmptyString
 
-    @model_validator(mode="after")
-    def _reject_series_identity(self) -> ChartValueEncoding:
-        if self.__pydantic_extra__ and "series_key" in self.__pydantic_extra__:
-            raise ValueError("value encoding contains a misplaced identity field")
-        return self
-
 
 class ChartSeriesOverride(ChartStyle):
     id: NonEmptyString
@@ -173,14 +144,8 @@ class ChartSeriesOverride(ChartStyle):
     def _canonicalise_series_key(cls, value: str) -> str:
         return canonical_series_key(value)
 
-    @model_validator(mode="after")
-    def _reject_value_identity(self) -> ChartSeriesOverride:
-        if self.__pydantic_extra__ and "value_id" in self.__pydantic_extra__:
-            raise ValueError("series override contains a misplaced identity field")
-        return self
 
-
-class ChartAxisConfig(ExtensibleChartModel):
+class ChartAxisConfig(ChartModel):
     title: str
     minimum: ChartNumber | None
     maximum: ChartNumber | None
@@ -197,23 +162,23 @@ class ChartSecondaryAxisConfig(ChartAxisConfig):
     enabled: bool
 
 
-class ChartAxes(ExtensibleChartModel):
+class ChartAxes(ChartModel):
     primary: ChartAxisConfig
     secondary: ChartSecondaryAxisConfig
 
 
-class ChartCategory(ExtensibleChartModel):
+class ChartCategory(ChartModel):
     source: Literal["rows"]
     include_grand_total: bool
     label_rotation: Annotated[int, Field(ge=-90, le=90)]
 
 
-class ChartLegend(ExtensibleChartModel):
+class ChartLegend(ChartModel):
     visible: bool
     position: Literal["top", "right", "bottom", "left"]
 
 
-class ExploreChartConfig(ExtensibleChartModel):
+class ExploreChartConfig(ChartModel):
     version: Literal[1]
     id: NonEmptyString
     name: NonEmptyString

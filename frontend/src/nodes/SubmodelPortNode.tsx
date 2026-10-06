@@ -1,15 +1,9 @@
 import { memo, useEffect } from "react"
-import {
-  Handle,
-  Position,
-  useUpdateNodeInternals,
-  type NodeProps,
-} from "@xyflow/react"
+import { useUpdateNodeInternals, type NodeProps } from "@xyflow/react"
 import { ArrowRight } from "lucide-react"
 import { STRUCTURE_COLORS } from "../theme/colors"
 import type { SubmodelPortFlowNode } from "../types/node"
-import { DEFAULT_TARGET_HANDLE } from "../utils/flowHandles"
-import FramePortRows from "./FramePortRows"
+import FramePortRows, { DefaultInputPortRow } from "./FramePortRows"
 
 const portColor = STRUCTURE_COLORS.port
 const headerInset = {
@@ -93,22 +87,28 @@ function SubmodelPortNode({
       </div>
 
       <div className="px-3 py-2" style={bodyStyle}>
-        {isInput && nodeData.ports.length > 0 ? (
-          <FramePortRows
-            ports={nodeData.ports}
-            direction="source"
-            accent={portColor}
-            testIdPrefix="submodel-input"
-          />
+        {isInput ? (
+          nodeData.ports.length > 0 ? (
+            <FramePortRows
+              ports={nodeData.ports}
+              direction="source"
+              accent={portColor}
+              testIdPrefix="submodel-input"
+            />
+          ) : (
+            <div
+              className="text-[11px] leading-tight"
+              style={{ color: "var(--text-muted)" }}
+            >
+              No input frames
+            </div>
+          )
         ) : (
-          <div
-            className="text-[11px] leading-tight"
-            style={{ color: "var(--text-muted)" }}
-          >
-            {isInput ? "No input frames" : "Connect frames to export"}
-          </div>
+          <DefaultInputPortRow
+            accent={portColor}
+            rowTestId="submodel-output-input-frame-row"
+          />
         )}
-        {!isInput && <Handle id={DEFAULT_TARGET_HANDLE} type="target" position={Position.Left} style={{ background: portColor }} />}
       </div>
     </div>
   )

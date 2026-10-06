@@ -23,7 +23,6 @@ from haute.executor import (
     PreparedDataOutput,
     _cache_has_required_materialization,
     _contain_output_path,
-    _is_dangerous_preamble_binding,
     _pipeline_dir,
     _preview_row_limit_for_width,
 )
@@ -87,33 +86,6 @@ def test_contain_output_path_anchors_relative_pipeline_to_project_root(tmp_path:
     )
 
     assert result == (tmp_path / "pipelines" / "outputs" / "result.parquet").resolve()
-
-
-# ── L215 / L225: dangerous-import sandbox check (``or`` chain) ────────
-
-
-def test_dangerous_binding_submodule_of_dangerous_top_level_module() -> None:
-    """A module whose name is a SUBmodule of a dangerous top-level (e.g.
-    ``subprocess.fake``) is dangerous solely via L215
-    ``module_name.split(".", 1)[0] in _DANGEROUS_MODULES``. Mutating that
-    ``or`` to ``and`` (the first two clauses are False for this fake) would
-    wrongly clear it — a sandbox-escape regression.
-    """
-    fake = types.ModuleType("subprocess.fake")
-    assert _is_dangerous_preamble_binding(fake) is True
-
-
-def test_dangerous_binding_value_from_dangerous_submodule() -> None:
-    """Non-module value whose ``__module__`` is a dangerous submodule exercises
-    the second ``or`` chain (L225). Same kill: ``or``->``and`` clears a value
-    that should be flagged dangerous.
-    """
-
-    def _f() -> None:  # pragma: no cover - never called
-        return None
-
-    _f.__module__ = "ctypes.fake"
-    assert _is_dangerous_preamble_binding(_f) is True
 
 
 # ── L517 / L525: preview row-limit sizing ────────────────────────────

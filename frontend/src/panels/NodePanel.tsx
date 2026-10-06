@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react"
+import { useCallback, useMemo, useState } from "react"
 import { X, Link2, AlertTriangle, RefreshCw, Lock } from "lucide-react"
 import { fetchExplorePivotMembers } from "../api/client"
 import { NODE_TYPES, NODE_TYPE_META } from "../utils/nodeTypes"
@@ -6,9 +6,10 @@ import type { NodeTypeValue } from "../utils/nodeTypes"
 import { authoritativeSourceHandles, edgeInputName } from "../utils/apiInputPorts"
 import {
   ColumnsTab,
-  PolarsCodePanel,
+  SteppedCodePane,
   LazyEditorBoundary,
 } from "./LazyNodeEditors"
+import { stepInputNames, steppedSurfaceFor } from "../utils/polarsStepInputs"
 import type { InputSource, SimpleNode, SimpleEdge, OnUpdateConfig, OnUpdateConfigResult, OnReplaceConfig } from "./editors"
 import {
   effectiveNodeType,
@@ -18,15 +19,20 @@ import {
   type LoadAvailability,
 } from "../types/node"
 import type { PipelineDiagnostic } from "../types/pipelineDocument"
-import useUIStore, { type ExplorePane, type ModellingPane } from "../stores/useUIStore"
+import useUIStore, { type ExplorePane, type ModellingPane, type OptimiserPane } from "../stores/useUIStore"
+import useNodeDataStore, { profileForConsumer } from "../stores/useNodeDataStore"
 import useNodeResultsStore, { hashConfig } from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useDocumentStatusStore, { documentReadOnlyReason } from "../stores/useDocumentStatusStore"
-import { buildExploreCacheIdentity } from "./explore/cacheIdentity"
+import { recoverySummaryKey, useRecoverySummaryStore } from "../stores/useRecoverySummaryStore"
+import { buildNodeDataCacheIdentity } from "./dataPointIdentity"
+import { modellingPanesFor, resolveModellingPane } from "./modelling/modellingPanes"
+import { OPTIMISER_PANES, resolveOptimiserPane } from "./optimiser/optimiserPanes"
 import PanelShell from "./PanelShell"
 import PreviewPanelTabs from "./PreviewPanelTabs"
 import { useGraph } from "./useGraph"
 import { buildGraph } from "../utils/buildGraph"
+import { NODE_REFERENCE_URL } from "../utils/documentation"
 import { CommittedTextField } from "../components/form"
 import {
   useNodePanelSession,
@@ -34,6 +40,7 @@ import {
   type NodePanelTab,
 } from "./useNodePanelSession"
 import { NodeConfigEditor } from "./NodeConfigEditor"
+import { useRecordedNodeColumns } from "./useRecordedNodeColumns"
 
 type NodePanelProps = {
   node: SimpleNode | null
@@ -41,12 +48,16 @@ type NodePanelProps = {
   onUpdateNode?: (id: string, data: Record<string, unknown>) => OnUpdateConfigResult
   onRenameNode?: (id: string, label: string) => Promise<OnUpdateConfigResult>
   onDeleteEdge?: (edgeId: string) => void
+  onDeleteSubmodelInputPort?: (portName: string) => void
   onSwapEdgeJoinInputs?: (nodeId: string) => void
   onRefreshPreview?: () => void
+  onRecoverSettings?: () => void
   /** True when showing last-selected node while nothing is actively selected */
   dimmed?: boolean
   /** 1-based line number of the error in user code, if any */
   errorLine?: number | null
+  /** The last run's error message for this node, if it failed */
+  runError?: string | null
   /** Preview rows from the current node's preview data (input columns pass through) */
   previewRows?: Record<string, unknown>[]
   /** True while the selected node preview request is still in flight. */
@@ -55,13 +66,15 @@ type NodePanelProps = {
   readOnly?: boolean
   /** True when the current pipeline document is not executable/mutable. */
   documentReadOnly?: boolean
-  /** Opens the document-level remove-only recovery flow. */
-  onRemoveUnavailableNode?: (target: { sourceFile: string; recoveryId: string }) => void
+  /** Node-scoped save for a `scoped_editable` node while the document stays fenced. */
+  scopedSave?: () => Promise<{ ok: boolean; error?: string }>
+  /** Opens an explicitly confirmed document-level recovery action. */
+  onRemoveUnavailableNode?: (target: { sourceFile: string; recoveryId: string; action?: "remove" | "reset" | "recover" }) => void
 }
 
 // ─── Node types that do NOT show the Columns tab ──
 // Output already has its own field selection; submodels/ports are placeholders;
-// modelling and explore nodes are sink-only (no outputs).
+// modelling, optimiser and explore nodes are sink-only (no outputs).
 //
 // API input column selection lives in `tables[].columns[]` in its Schema panel.
 const NO_COLUMNS_TAB = new Set<string>([
@@ -70,6 +83,7 @@ const NO_COLUMNS_TAB = new Set<string>([
   NODE_TYPES.SUBMODEL,
   NODE_TYPES.SUBMODEL_PORT,
   NODE_TYPES.MODELLING,
+  NODE_TYPES.OPTIMISER,
   NODE_TYPES.EXPLORE,
 ])
 
@@ -89,28 +103,15 @@ const POLARS_TAB_HINTS: Record<string, React.ReactNode> = {
   [NODE_TYPES.MODEL_SCORE]: <>Post-processing Code (optional)</>,
 }
 
-const NO_REFRESH_PREVIEW = new Set<string>([
-  NODE_TYPES.SUBMODEL,
-  NODE_TYPES.SUBMODEL_PORT,
-])
-
 // Right-panel panes for Explore nodes. Code prepares the analysis dataset;
 // Overview, Pivots, and Charts configure display, while Export remains scaffolding.
 const EXPLORE_PANES = [
-  { key: "code", label: "Polars Code" },
+  { key: "code", label: "Transform" },
   { key: "overview", label: "Overview" },
   { key: "pivots", label: "Pivots" },
   { key: "charts", label: "Charts" },
   { key: "export", label: "Export" },
 ] as const satisfies readonly { key: ExplorePane; label: string }[]
-
-const MODELLING_PANES = [
-  { key: "target", label: "Target" },
-  { key: "features", label: "Features" },
-  { key: "params", label: "Params" },
-  { key: "split", label: "Split" },
-  { key: "train", label: "Train" },
-] as const satisfies readonly { key: ModellingPane; label: string }[]
 
 // ─── Instance sub-panel (kept inline — it references multiple node-level concerns) ──
 
@@ -236,12 +237,12 @@ function resolveOriginalInputNames({
       "Cannot derive instance inputs: definition " + definitionId + " is missing or malformed",
     )
   }
-  const publicInputPortIds = new Set(
+  const publicInputPortNames = new Set(
     definition.inputPorts
       .filter((port) => port.targets.some((target) => target.nodeId === originalId))
-      .map((port) => port.portId),
+      .map((port) => port.name),
   )
-  if (publicInputPortIds.size === 0) return uniquePreservingOrder(internalInputs)
+  if (publicInputPortNames.size === 0) return uniquePreservingOrder(internalInputs)
 
   const occurrenceIds = new Set<string>()
   for (const visibleNode of Object.values(visibleNodeMap)) {
@@ -262,7 +263,7 @@ function resolveOriginalInputNames({
       if (!occurrenceIds.has(edge.target) || !edge.targetHandle?.startsWith("in__")) {
         return false
       }
-      return publicInputPortIds.has(edge.targetHandle.slice("in__".length))
+      return publicInputPortNames.has(edge.targetHandle.slice("in__".length))
     })
     .map((edge) => {
       const sourceNode = visibleNodeMap[edge.source]
@@ -457,7 +458,7 @@ function InstancePanel({
               <div className="flex items-start gap-1.5 px-2 py-1.5 rounded-md" style={{ background: 'var(--warning-soft)', border: '1px solid var(--warning-border)' }}>
                 <AlertTriangle size={11} style={{ color: 'var(--warning-strong)' }} className="shrink-0 mt-0.5" />
                 <span className="text-[10px] leading-relaxed" style={{ color: 'var(--warning-strong)' }}>
-                  Name matching is ambiguous for {unresolvedAmbiguous.join(", ")} — several upstream
+                  Name matching is ambiguous for {unresolvedAmbiguous.join(", ")} - several upstream
                   sources fit. Pick each one explicitly; saving and running are blocked until mapped.
                 </span>
               </div>
@@ -475,7 +476,7 @@ function InstancePanel({
                     value={effectiveMap[orig] || ""}
                     onChange={(e) => handleMappingChange(orig, e.target.value)}
                   >
-                    <option value="">— unmapped —</option>
+                    <option value="">- unmapped -</option>
                     {instInputs.map((i) => (
                       <option key={i.name} value={i.name}>{i.label}</option>
                     ))}
@@ -519,13 +520,24 @@ function InstancePanel({
 
 type ColumnInfo = { name: string; dtype: string }
 
+/**
+ * The columns an edge carries: the source's columns for the output handle
+ * the edge leaves from (a submodel output), else the source's columns.
+ */
+function edgeSourceColumns(edge: SimpleEdge, nodeMap: Record<string, SimpleNode>): ColumnInfo[] | undefined {
+  const data = nodeMap[edge.source]?.data as Record<string, unknown> | undefined
+  const frames = data?._frameColumns as Record<string, ColumnInfo[]> | undefined
+  const handle = edge.sourceHandle
+  if (handle && frames?.[handle]) return frames[handle]
+  return data?._columns as ColumnInfo[] | undefined
+}
+
 /** Collect upstream columns from already-filtered incoming edges. */
 function collectColumnsFromEdges(edges: SimpleEdge[], nodeMap: Record<string, SimpleNode>): ColumnInfo[] {
   const cols: ColumnInfo[] = []
   const seen = new Set<string>()
   edges.forEach(e => {
-    const src = nodeMap[e.source]
-    const srcCols = (src?.data as Record<string, unknown>)?._columns as ColumnInfo[] | undefined
+    const srcCols = edgeSourceColumns(e, nodeMap)
     if (srcCols) srcCols.forEach(c => { if (!seen.has(c.name)) { seen.add(c.name); cols.push(c) } })
   })
   return cols
@@ -537,11 +549,7 @@ function columnsSignature(columns: ColumnInfo[] | undefined): string {
 
 function upstreamColumnsSignature(edges: SimpleEdge[], nodeMap: Record<string, SimpleNode>): string {
   return edges
-    .map((edge) => {
-      const src = nodeMap[edge.source]
-      const srcCols = (src?.data as Record<string, unknown> | undefined)?._columns as ColumnInfo[] | undefined
-      return `${edge.source}\u0003${columnsSignature(srcCols)}`
-    })
+    .map((edge) => `${edge.source}\u0003${edge.sourceHandle ?? ""}\u0003${columnsSignature(edgeSourceColumns(edge, nodeMap))}`)
     .join("\u0004")
 }
 
@@ -562,12 +570,14 @@ function inputSourceForEdge(
       || edge.sourceHandle === undefined
       || !authoritativeSourceHandles(sourceNode).includes(edge.sourceHandle))
 
+  const columns = edgeSourceColumns(edge, nodeMap)
   return {
     sourceNodeId: edge.source,
     name,
     sourceLabel,
     edgeId: edge.id,
     ...(frameUnresolved ? { frameUnresolved: true } : {}),
+    ...(columns ? { columns } : {}),
   }
 }
 
@@ -586,6 +596,7 @@ function upstreamInputSourceSignature(
         edge.sourceHandle === undefined ? "<undefined>" : edge.sourceHandle,
         source.name,
         source.frameUnresolved === true,
+        columnsSignature(source.columns),
       ]
     }),
   )
@@ -615,7 +626,9 @@ function UnknownNodeTypeDiagnostic({
           Node type <code className="font-mono">{nodeType}</code> is not registered in this UI build. This node is shown as a diagnostic only so its config is not edited through the wrong editor.
         </p>
         <a
-          href="/docs/building-models/nodes/"
+          href={NODE_REFERENCE_URL}
+          target="_blank"
+          rel="noopener noreferrer"
           className="text-[12px] font-semibold underline underline-offset-2 w-fit"
           style={{ color: 'var(--text-accent)' }}
         >
@@ -652,8 +665,10 @@ function UnknownNodeTypeDiagnostic({
 const CACHED_PREVIEW_KEYS: readonly (keyof HauteNodeData)[] = [
   "_columns",
   "_availableColumns",
+  "_frameColumns",
   "_schemaWarnings",
   "_columnsSource",
+  "_columnsStructuralVersion",
 ]
 
 function clearCachedResultShape(
@@ -668,14 +683,193 @@ function clearCachedResultShape(
   return next
 }
 
+
+type NodeRecoveryStatusProps = {
+  recoveryId: string | null
+  blockedPath: string[] | null
+  scopedSave?: () => Promise<{ ok: boolean; error?: string }>
+  scopedSaving: boolean
+}
+
+/** Recovery summary, completeness gaps, blockers, and the node-scoped save. */
+function NodeRecoveryStatus({
+  recoveryId,
+  blockedPath,
+  scopedSave,
+  scopedSaving,
+}: NodeRecoveryStatusProps) {
+  const documentSourceFile = useDocumentStatusStore((s) => s.sourceFile)
+  const summary = useRecoverySummaryStore((s) =>
+    recoveryId ? s.summaries[recoverySummaryKey(documentSourceFile, recoveryId)] : undefined,
+  )
+  const dismissSummary = useRecoverySummaryStore((s) => s.dismissSummary)
+  const completeness = useDocumentStatusStore((s) => s.completeness)
+  const entries = useMemo(
+    () => (recoveryId ? completeness.filter((entry) => entry.element_id === recoveryId) : []),
+    [completeness, recoveryId],
+  )
+  // What the recover could not fix. The document lists provider gaps itself;
+  // an engine issue (a missing grid size, an invalid range) only reaches the
+  // panel through the recover's own report.
+  const unresolved = useMemo(
+    () =>
+      summary
+        ? summary.completeness.filter(
+            (entry) => !entries.some((known) => known.path === entry.path && known.code === entry.code),
+          )
+        : [],
+    [entries, summary],
+  )
+  const saving = scopedSaving
+  const [saveError, setSaveError] = useState<string | null>(null)
+  if (!summary && entries.length === 0 && blockedPath === null && !scopedSave) return null
+  const counts = summary
+    ? {
+        retained: summary.fieldChanges.filter((change) => change.outcome === "retained").length,
+        defaulted: summary.fieldChanges.filter((change) => change.outcome === "defaulted").length,
+        needsInput: summary.fieldChanges.filter((change) => change.outcome === "needs_input").length,
+        removed: summary.fieldChanges.filter((change) => change.outcome === "removed").length,
+      }
+    : null
+  return (
+    <div
+      data-testid="node-recovery-status"
+      className="shrink-0 space-y-2 px-3 py-2 text-[11px]"
+      style={{ borderBottom: "1px solid var(--border)" }}
+    >
+      {blockedPath !== null && (
+        <p style={{ color: "var(--warning)" }}>
+          Blocked by an unavailable upstream node
+          {blockedPath.length > 0 ? `: ${blockedPath.join(" → ")}` : ""}. You can still edit
+          and save this node.
+        </p>
+      )}
+      {summary && counts && (
+        <section
+          aria-label="Recovery summary"
+          className="rounded p-2"
+          style={{ background: "var(--bg-elevated)" }}
+        >
+          <div className="flex items-start justify-between gap-2">
+            <p style={{ color: "var(--text-primary)" }}>
+              Recovered: {counts.retained} retained, {counts.defaulted} defaulted,{" "}
+              {counts.needsInput} need input, {counts.removed} removed.
+            </p>
+            <button
+              type="button"
+              aria-label="Dismiss recovery summary"
+              onClick={() => dismissSummary(summary.sourceFile, summary.recoveryId)}
+              style={{ color: "var(--text-muted)" }}
+            >
+              <X size={12} />
+            </button>
+          </div>
+          {unresolved.length > 0 && (
+            <div className="mt-1" aria-label="Still to complete">
+              <p style={{ color: "var(--warning)" }}>Still to complete:</p>
+              <ul className="mt-0.5" style={{ color: "var(--text-secondary)" }}>
+                {unresolved.map((entry) => (
+                  <li key={`${entry.path}:${entry.code}`}>
+                    <span className="font-mono">{entry.path}</span> - {entry.message}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <details className="mt-1">
+            <summary className="cursor-pointer" style={{ color: "var(--text-secondary)" }}>
+              Field details
+            </summary>
+            <ul className="mt-1 space-y-0.5" style={{ color: "var(--text-secondary)" }}>
+              {summary.fieldChanges.map((change, index) => (
+                <li key={`${change.path}:${index}`}>
+                  <span className="font-mono">{change.path || "settings"}</span>: {change.outcome}{" "}
+                  - {change.reason}
+                </li>
+              ))}
+            </ul>
+          </details>
+          {summary.previousConfig !== null && (
+            <details className="mt-1">
+              <summary className="cursor-pointer" style={{ color: "var(--text-secondary)" }}>
+                Previous configuration
+              </summary>
+              <pre
+                className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded p-2 text-[10px]"
+                style={{ background: "var(--bg-input)", color: "var(--text-secondary)" }}
+              >
+                {JSON.stringify(summary.previousConfig, null, 2)}
+              </pre>
+            </details>
+          )}
+          {summary.changes.some((change) => change.diff) && (
+            <details className="mt-1">
+              <summary className="cursor-pointer" style={{ color: "var(--text-secondary)" }}>
+                Source diff
+              </summary>
+              {summary.changes.map((change) =>
+                change.diff ? (
+                  <pre
+                    key={change.path}
+                    className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded p-2 text-[10px]"
+                    style={{ background: "var(--bg-input)", color: "var(--text-secondary)" }}
+                  >
+                    {change.diff}
+                  </pre>
+                ) : null,
+              )}
+            </details>
+          )}
+        </section>
+      )}
+      {entries.length > 0 && (
+        <section aria-label="Missing required values">
+          <p style={{ color: "var(--warning)" }}>Missing required values:</p>
+          <ul className="mt-0.5" style={{ color: "var(--text-secondary)" }}>
+            {entries.map((entry) => (
+              <li key={`${entry.path}:${entry.code}`}>
+                <span className="font-mono">{entry.path}</span> - {entry.message}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {scopedSave && (
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            data-testid="node-scoped-save"
+            disabled={saving}
+            onClick={() => {
+              setSaveError(null)
+              void scopedSave().then((result) => {
+                if (!result.ok) setSaveError(result.error ?? "Save failed.")
+              })
+            }}
+            className="rounded px-2 py-1 font-medium"
+            style={{ background: "var(--accent)", color: "var(--text-on-accent)" }}
+          >
+            {saving ? "Saving…" : "Save node"}
+          </button>
+          <span style={{ color: "var(--text-muted)" }}>
+            Saves only this node while the pipeline stays read-only.
+          </span>
+        </div>
+      )}
+      {saveError && (
+        <p role="alert" style={{ color: "var(--danger)" }}>
+          {saveError}
+        </p>
+      )}
+    </div>
+  )
+}
+
 type NodePanelHeaderProps = {
   nodeId: string
   label: string
   readOnly: boolean
   onRenameNode?: (nodeId: string, label: string) => Promise<OnUpdateConfigResult>
-  showRefreshPreview: boolean
-  refreshTitle: string
-  onRefreshPreview?: () => void
   onClose: () => void
 }
 
@@ -684,9 +878,6 @@ function NodePanelHeader({
   label,
   readOnly,
   onRenameNode,
-  showRefreshPreview,
-  refreshTitle,
-  onRefreshPreview,
   onClose,
 }: NodePanelHeaderProps) {
   const rename = useNodeRenameSession(nodeId)
@@ -710,17 +901,6 @@ function NodePanelHeader({
           >
             <Lock size={11} aria-hidden="true" />Read-only
           </span>
-        )}
-        {showRefreshPreview && (
-          <button
-            onClick={onRefreshPreview}
-            className="px-2 py-1 rounded shrink-0 transition-opacity flex items-center gap-1 text-[11px] font-medium hover:opacity-[0.85]"
-            style={{ background: "var(--accent)", color: "var(--text-on-accent)" }}
-            title={refreshTitle}
-          >
-            <RefreshCw size={11} />
-            Refresh
-          </button>
         )}
         <button
           data-testid="node-panel-close"
@@ -773,11 +953,21 @@ function RecoveryNodePanel({
       recoveryData._sourceSpan ? `:${recoveryData._sourceSpan.start_line}` : ""
     }`
     : null
-  const canRemove = availability === "unavailable"
-    && canRepair
-    && typeof recoveryData._sourceFile === "string"
+  const hasRecoveryTarget = typeof recoveryData._sourceFile === "string"
     && typeof recoveryData._recoveryId === "string"
     && onRemoveUnavailableNode !== undefined
+  const canRemove = availability === "unavailable"
+    && canRepair
+    && hasRecoveryTarget
+  const nodeType = effectiveNodeType(node)
+  const canReset = canRemove
+    && Object.hasOwn(NODE_TYPE_META, nodeType)
+    && nodeType !== NODE_TYPES.SUBMODEL
+    && nodeType !== NODE_TYPES.SUBMODEL_PORT
+    && !(typeof recoveryData.config?.instanceOf === "string")
+    && recoveryData._authoredDecorator !== "instance"
+  // Recover and Reset share eligibility: unavailable, known ordinary, owned.
+  const canRecover = canReset
 
   return (
     <PanelShell testId="node-panel">
@@ -879,18 +1069,48 @@ function RecoveryNodePanel({
             </ul>
           )}
         </section>
-        {canRemove && (
-          <button
-            type="button"
-            onClick={() => onRemoveUnavailableNode({
-              sourceFile: recoveryData._sourceFile!,
-              recoveryId: recoveryData._recoveryId!,
-            })}
-            className="w-full rounded px-3 py-2 text-[12px] font-semibold"
-            style={{ color: "var(--danger-text)", background: "var(--danger-soft)", border: "1px solid var(--danger-border)" }}
-          >
-            Remove unavailable node
-          </button>
+        {(canRemove || canRecover) && (
+          <div className="space-y-2">
+            {canRecover && (
+              <button
+                type="button"
+                onClick={() => onRemoveUnavailableNode({
+                  sourceFile: recoveryData._sourceFile!,
+                  recoveryId: recoveryData._recoveryId!,
+                  action: "recover",
+                })}
+                className="w-full rounded px-3 py-2 text-[12px] font-semibold"
+                style={{ color: "var(--text-on-accent)", background: "var(--accent)" }}
+              >
+                Recover settings
+              </button>
+            )}
+            {canReset && (
+              <button
+                type="button"
+                onClick={() => onRemoveUnavailableNode({
+                  sourceFile: recoveryData._sourceFile!,
+                  recoveryId: recoveryData._recoveryId!,
+                  action: "reset",
+                })}
+                className="w-full rounded px-3 py-2 text-[12px] font-semibold"
+                style={{ color: "var(--text-on-accent)", background: "var(--accent)" }}
+              >
+                Reset node
+              </button>
+            )}
+            {canRemove && <button
+              type="button"
+              onClick={() => onRemoveUnavailableNode({
+                sourceFile: recoveryData._sourceFile!,
+                recoveryId: recoveryData._recoveryId!,
+              })}
+              className="w-full rounded px-3 py-2 text-[12px] font-semibold"
+              style={{ color: "var(--danger-text)", background: "var(--danger-soft)", border: "1px solid var(--danger-border)" }}
+            >
+              Remove unavailable node
+            </button>}
+          </div>
         )}
       </div>
     </PanelShell>
@@ -902,9 +1122,11 @@ type NodeEditorTabStripProps = {
   tabs: NodePanelTab[]
   activeTab: NodePanelTab
   onSelect: (tab: NodePanelTab) => void
+  /** What the config tab is called for this node; a Transform's config is its Polars steps or code. */
+  configLabel?: string
 }
 
-function NodeEditorTabStrip({ visible, tabs, activeTab, onSelect }: NodeEditorTabStripProps) {
+function NodeEditorTabStrip({ visible, tabs, activeTab, onSelect, configLabel = "config" }: NodeEditorTabStripProps) {
   if (!visible) return null
   return (
     <div className="flex shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
@@ -928,7 +1150,7 @@ function NodeEditorTabStrip({ visible, tabs, activeTab, onSelect }: NodeEditorTa
                   borderBottom: "2px solid transparent",
                 }}
           >
-            {tab === "polars" ? "Polars" : tab}
+            {tab === "polars" ? "Transform" : tab === "config" ? configLabel : tab}
           </button>
         )
       })}
@@ -1003,6 +1225,7 @@ function SchemaWarningBanner({
 }
 
 type NodeEditorBodyProps = {
+  nodeId: string
   documentReadOnly: boolean
   readOnly: boolean
   config: Record<string, unknown>
@@ -1013,14 +1236,20 @@ type NodeEditorBodyProps = {
   inputSources: InputSource[]
   onDeleteEdge?: (edgeId: string) => void
   errorLine?: number | null
+  /** The last run's error message for this node, if it failed. */
+  runError?: string | null
   upstreamColumns: { name: string; dtype: string }[]
+  /** The node's own recorded columns, which the Transform tab offers after its input columns. */
+  nodeColumns: { name: string; dtype: string }[] | undefined
   availableColumns: { name: string; dtype: string }[]
   currentColumns: { name: string; dtype: string }[]
   onUpdateConfig: OnUpdateConfig
+  onReplaceConfig: OnReplaceConfig
   configEditor: React.ReactNode
 }
 
 function NodeEditorBody({
+  nodeId,
   documentReadOnly,
   readOnly,
   config,
@@ -1031,23 +1260,39 @@ function NodeEditorBody({
   inputSources,
   onDeleteEdge,
   errorLine,
+  runError,
   upstreamColumns,
+  nodeColumns,
   availableColumns,
   currentColumns,
   onUpdateConfig,
+  onReplaceConfig,
   configEditor,
 }: NodeEditorBodyProps) {
   let editor = configEditor
   if (activeTab === "polars" && showPolarsTab) {
+    const chips = nodeType === NODE_TYPES.DATA_INPUT ? [] : inputSources
+    // Every Polars-tab surface authors steps: the step builder while
+    // `config.steps` is a list, rendering against the surface's eligible
+    // input names (never the chips); `stepInputNames` refuses a type outside
+    // the surface table rather than falling back to a plain code box.
+    const surface = steppedSurfaceFor(nodeType)
+    if (surface === undefined) throw new Error(`Transform tab on ${nodeType}, which does not author steps.`)
     editor = (
-      <PolarsCodePanel
+      <SteppedCodePane
         config={config}
         onUpdate={onUpdateConfig}
-        inputSources={nodeType === NODE_TYPES.DATA_INPUT ? [] : inputSources}
+        onReplaceConfig={onReplaceConfig}
+        inputSources={chips}
+        inputNames={stepInputNames(nodeType, inputSources.map((source) => source.name))}
         onDeleteInput={onDeleteEdge}
         errorLine={errorLine}
+        runError={runError}
         upstreamColumns={upstreamColumns}
-        hint={POLARS_TAB_HINTS[nodeType] ?? null}
+        nodeColumns={nodeColumns}
+        start={surface.start}
+        nodeId={nodeId}
+        codeHint={POLARS_TAB_HINTS[nodeType] ?? null}
       />
     )
   } else if (activeTab === "columns" && showColumnsTab) {
@@ -1103,16 +1348,36 @@ function NodePanelContent({
   onUpdateNode,
   onRenameNode,
   onDeleteEdge,
+  onDeleteSubmodelInputPort,
   onSwapEdgeJoinInputs,
   onRefreshPreview,
   dimmed,
   errorLine,
+  runError,
   previewRows,
   selectedPreviewLoading = false,
   readOnly = false,
   documentReadOnly = false,
+  scopedSave,
   onRemoveUnavailableNode,
 }: ActiveNodePanelProps) {
+  const [scopedSaving, setScopedSaving] = useState(false)
+  // The editor freezes while a scoped save is in flight so keystrokes cannot
+  // race the adoption of the authoritative response.
+  const runScopedSave = useMemo(
+    () =>
+      scopedSave
+        ? async () => {
+            setScopedSaving(true)
+            try {
+              return await scopedSave()
+            } finally {
+              setScopedSaving(false)
+            }
+          }
+        : undefined,
+    [scopedSave],
+  )
   const { allNodes, edges, submodels, preamble } = useGraph()
   const config = useMemo(() => (node.data.config || {}) as Record<string, unknown>, [node.data.config])
   const {
@@ -1124,11 +1389,22 @@ function NodePanelContent({
   const rememberedExplorePane = useUIStore((s) => s.explorePanes[node.id])
   const setExplorePane = useUIStore((s) => s.setExplorePane)
   const rememberedModellingPane = useUIStore((s) => s.modellingPanes[node.id])
+  // The lazily loaded modelling editor owns issue derivation; the panel only badges tabs.
+  const [modellingPaneIssues, setModellingPaneIssues] = useState<{ nodeId: string; panes: readonly ModellingPane[] }>({ nodeId: "", panes: [] })
+  const onModellingPaneIssuesChange = useCallback((nodeId: string, panes: readonly ModellingPane[]) => {
+    setModellingPaneIssues({ nodeId, panes })
+  }, [])
   const setModellingPane = useUIStore((s) => s.setModellingPane)
   const hasActiveTrainJob = useNodeResultsStore((s) => Boolean(s.trainJobs[node.id]))
-  const cachedExploreResult = useNodeResultsStore((s) => s.exploreResults[node.id])
+  const rememberedOptimiserPane = useUIStore((s) => s.optimiserPanes[node.id])
+  const setOptimiserPane = useUIStore((s) => s.setOptimiserPane)
+  const hasActiveSolveJob = useNodeResultsStore((s) => Boolean(s.solveJobs[node.id]))
+  // The lazily loaded optimiser editor owns its Solve issues; the panel only badges tabs.
+  const [optimiserPaneIssues, setOptimiserPaneIssues] = useState<{ nodeId: string; panes: readonly OptimiserPane[] }>({ nodeId: "", panes: [] })
+  const onOptimiserPaneIssuesChange = useCallback((nodeId: string, panes: readonly OptimiserPane[]) => {
+    setOptimiserPaneIssues({ nodeId, panes })
+  }, [])
   const activeSource = useSettingsStore((s) => s.activeSource)
-  const streamingChunkSize = useSettingsStore((s) => s.streamingChunkSize)
   const documentDiagnostics = useDocumentStatusStore((s) => s.diagnostics)
   const canRepair = useDocumentStatusStore((s) => s.capabilities?.can_repair === true)
   const reservedApiInputFrameLabels = useDocumentStatusStore(
@@ -1145,35 +1421,43 @@ function NodePanelContent({
   // picker never renders members from a superseded identity.
   const exploreConfigHash = useMemo(() => {
     if (!node || effectiveNodeType(node) !== NODE_TYPES.EXPLORE) return null
-    const identity = buildExploreCacheIdentity({ node, allNodes, edges, submodels, preamble })
+    const identity = buildNodeDataCacheIdentity({ node, allNodes, edges, submodels, preamble })
     return hashConfig({ graph: identity, source: activeSource })
   }, [node, allNodes, edges, submodels, preamble, activeSource])
+
+  // The columns of the data this node reads, when another consumer of the
+  // point has already established them; never a request of its own. Gated on
+  // the identity above, so the previous point's columns are never offered
+  // after a source switch or a rewiring.
+  const exploreProfile = useNodeDataStore((s) =>
+    profileForConsumer(s, node.id, exploreConfigHash),
+  )
 
   const loadPivotFilterMembers = useCallback(
     (field: string, search: string, signal: AbortSignal) => {
       if (!node) throw new Error("Explore node is unavailable.")
       return fetchExplorePivotMembers({
-        graph: buildGraph(allNodes, edges, submodels, preamble),
+        graph: buildGraph(allNodes, edges, submodels),
         node_id: node.id,
         field,
         source: activeSource,
         search: search || undefined,
-        streamingChunkSize,
         signal,
       })
     },
-    // Keyed by the Explore cache identity hash (plus the fetch chunk size):
-    // any render that keeps the same hash captures a graph snapshot whose
-    // data-affecting parts are identical, so display-only pivot edits do not
-    // churn the loader or reload members, while a hash change rebuilds the
-    // closure with the new graph/source in the same render that re-keys the
-    // member picker — there is no ref-update ordering to race against.
+    // Keyed by the Explore cache identity hash: any render that keeps the
+    // same hash captures a graph snapshot whose data-affecting parts are
+    // identical, so display-only pivot edits do not churn the loader or
+    // reload members, while a hash change rebuilds the closure with the new
+    // graph/source in the same render that re-keys the member picker — there
+    // is no ref-update ordering to race against.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [exploreConfigHash, streamingChunkSize],
+    [exploreConfigHash],
   )
 
+  const effectiveReadOnly = readOnly || scopedSaving
   const handleConfigUpdate = useCallback<OnUpdateConfig>((keyOrUpdates, value) => {
-    if (readOnly) {
+    if (readOnly || scopedSaving) {
       return {
         ok: false,
         error: documentReadOnly
@@ -1200,10 +1484,10 @@ function NodePanelContent({
         { preserveAvailableColumns: selectionOnlyUpdate },
       ),
     )
-  }, [config, documentReadOnly, node, onUpdateNode, readOnly])
+  }, [config, documentReadOnly, node, onUpdateNode, readOnly, scopedSaving])
 
   const handleConfigReplace = useCallback<OnReplaceConfig>((nextConfig) => {
-    if (readOnly) {
+    if (readOnly || scopedSaving) {
       return {
         ok: false,
         error: documentReadOnly
@@ -1213,7 +1497,23 @@ function NodePanelContent({
     }
     if (!onUpdateNode) return { ok: false, error: "Node update handler is unavailable." }
     return onUpdateNode(node.id, clearCachedResultShape({ ...node.data, config: nextConfig }))
-  }, [documentReadOnly, node, onUpdateNode, readOnly])
+  }, [documentReadOnly, node, onUpdateNode, readOnly, scopedSaving])
+
+  // Export's "Use in Apply node" points another node at a saved artifact, under
+  // the same read-only guards as this node's own edits.
+  const handleOtherNodeConfigUpdate = useCallback((targetId: string, patch: Record<string, unknown>): OnUpdateConfigResult => {
+    if (readOnly || scopedSaving) {
+      return {
+        ok: false,
+        error: documentReadOnly ? documentReadOnlyReason() : "This submodel instance is read-only.",
+      }
+    }
+    if (!onUpdateNode) return { ok: false, error: "Node update handler is unavailable." }
+    const target = allNodes.find((candidate) => candidate.id === targetId)
+    if (!target) return { ok: false, error: `Cannot update missing node "${targetId}".` }
+    const targetConfig = (target.data.config ?? {}) as Record<string, unknown>
+    return onUpdateNode(targetId, clearCachedResultShape({ ...target.data, config: { ...targetConfig, ...patch } }))
+  }, [allNodes, documentReadOnly, onUpdateNode, readOnly, scopedSaving])
 
   const configWithNodeId = useMemo(
     () => ({ ...config, _nodeId: node.id }),
@@ -1243,16 +1543,20 @@ function NodePanelContent({
     // upstream schema, so they should preserve this array identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedNodeId, upstreamSchemaSignature])
-  const pivotColumns = useMemo(() => {
-    const report = cachedExploreResult?.configHash === exploreConfigHash
-      ? cachedExploreResult.result
-      : null
-    return report
-      ? report.columns.map(({ name, dtype }) => ({ name, dtype }))
-      : upstreamColumns
-  }, [cachedExploreResult, exploreConfigHash, upstreamColumns])
+  const nodeColumns = useRecordedNodeColumns(node.data as HauteNodeData, activeSource)
+  const pivotColumns = useMemo(
+    () =>
+      exploreProfile
+        ? exploreProfile.profile.columns.map(({ name, dtype }) => ({ name, dtype }))
+        : upstreamColumns,
+    [exploreProfile, upstreamColumns],
+  )
   const recoveryAvailability = (node.data as HauteNodeData)._loadAvailability ?? "ready"
-  if (recoveryAvailability !== "ready") {
+  const scopedEditable = (node.data as HauteNodeData)._scopedEditable === true
+  if (
+    recoveryAvailability === "unavailable" ||
+    (recoveryAvailability === "blocked" && !(scopedEditable && scopedSave))
+  ) {
     return (
       <RecoveryNodePanel
         node={node}
@@ -1271,17 +1575,34 @@ function NodePanelContent({
   const showColumnsTab = isKnownNodeType && !isInstance && !NO_COLUMNS_TAB.has(nodeType)
   const showPolarsTab = isKnownNodeType && !isInstance && POLARS_TAB_TYPES.has(nodeType)
   const showExplorePanes = isKnownNodeType && !isInstance && nodeType === NODE_TYPES.EXPLORE
-  const showRefreshPreview = !!onRefreshPreview && !NO_REFRESH_PREVIEW.has(nodeType)
-  const refreshTitle = showExplorePanes ? "Refresh Explore outputs" : "Refresh preview"
   const activeExplorePane = showExplorePanes ? rememberedExplorePane ?? "code" : "code"
   const algorithm = typeof config.algorithm === "string" ? config.algorithm.toLowerCase() : ""
-  const showModellingPanes = isKnownNodeType && !isInstance && nodeType === NODE_TYPES.MODELLING && (algorithm === "catboost" || algorithm === "glm")
-  const activeModellingPane = showModellingPanes ? rememberedModellingPane ?? "target" : "target"
-  const modellingTabs = MODELLING_PANES.map((pane) => ({
+  const modellingPanes = modellingPanesFor(algorithm)
+  const showModellingPanes = isKnownNodeType && !isInstance && nodeType === NODE_TYPES.MODELLING && modellingPanes.length > 0
+  const activeModellingPane = showModellingPanes ? resolveModellingPane(algorithm, rememberedModellingPane) : "target"
+  const flaggedModellingPanes = showModellingPanes && modellingPaneIssues.nodeId === node.id
+    ? modellingPaneIssues.panes
+    : []
+  const modellingTabs = modellingPanes.map((pane) => ({
     ...pane,
     indicator: pane.key === "train" && hasActiveTrainJob
       ? { kind: "active" as const, label: "Training is running" }
-      : undefined,
+      : flaggedModellingPanes.includes(pane.key)
+        ? { kind: "warning" as const, label: `${pane.label} needs attention`, compact: true }
+        : undefined,
+  }))
+  const showOptimiserPanes = isKnownNodeType && !isInstance && nodeType === NODE_TYPES.OPTIMISER
+  const activeOptimiserPane = resolveOptimiserPane(showOptimiserPanes ? rememberedOptimiserPane : undefined)
+  const flaggedOptimiserPanes = showOptimiserPanes && optimiserPaneIssues.nodeId === node.id
+    ? optimiserPaneIssues.panes
+    : []
+  const optimiserTabs = OPTIMISER_PANES.map((pane) => ({
+    ...pane,
+    indicator: pane.key === "solve" && hasActiveSolveJob
+      ? { kind: "active" as const, label: "Solve is running" }
+      : flaggedOptimiserPanes.includes(pane.key)
+        ? { kind: "warning" as const, label: `${pane.label} needs attention`, compact: true }
+        : undefined,
   }))
 
   const accentColor = NODE_TYPE_META[nodeType as NodeTypeValue]?.color ?? "var(--accent)"
@@ -1304,13 +1625,22 @@ function NodePanelContent({
       onReplaceConfig={handleConfigReplace}
       inputSources={inputSources}
       upstreamColumns={upstreamColumns}
+      nodeColumns={nodeColumns}
       pivotColumns={pivotColumns}
       activeExplorePane={activeExplorePane}
       activeModellingPane={activeModellingPane}
+      activeOptimiserPane={activeOptimiserPane}
+      onOptimiserPaneIssuesChange={onOptimiserPaneIssuesChange}
+      onUpdateNodeConfig={handleOtherNodeConfigUpdate}
+      onModellingPaneIssuesChange={onModellingPaneIssuesChange}
       onDeleteEdge={onDeleteEdge}
+      onDeleteSubmodelInputPort={
+        readOnly || documentReadOnly ? undefined : onDeleteSubmodelInputPort
+      }
       onSwapEdgeJoinInputs={onSwapEdgeJoinInputs}
       onShowPivots={() => setExplorePane(node.id, "pivots")}
       errorLine={errorLine}
+      runError={runError}
       previewRows={previewRows}
       selectedPreviewLoading={selectedPreviewLoading}
       loadPivotFilterMembers={loadPivotFilterMembers}
@@ -1335,12 +1665,20 @@ function NodePanelContent({
         key={String(node.data.label)}
         nodeId={node.id}
         label={String(node.data.label)}
-        readOnly={readOnly}
+        readOnly={readOnly || Boolean(scopedSave)}
         onRenameNode={onRenameNode}
-        showRefreshPreview={showRefreshPreview}
-        refreshTitle={refreshTitle}
-        onRefreshPreview={onRefreshPreview}
         onClose={onClose}
+      />
+
+      <NodeRecoveryStatus
+        recoveryId={(node.data as HauteNodeData)._recoveryId ?? null}
+        blockedPath={
+          recoveryAvailability === "blocked"
+            ? ((node.data as HauteNodeData)._loadBlockingPath ?? [])
+            : null
+        }
+        scopedSave={runScopedSave}
+        scopedSaving={scopedSaving}
       />
 
       <NodeEditorTabStrip
@@ -1348,6 +1686,7 @@ function NodePanelContent({
         tabs={editorTabs}
         activeTab={activeTab}
         onSelect={selectTab}
+        configLabel={nodeType === NODE_TYPES.POLARS ? "Transform" : undefined}
       />
 
       {showExplorePanes && (
@@ -1372,6 +1711,17 @@ function NodePanelContent({
           idPrefix="modelling"
         />
       )}
+      {showOptimiserPanes && (
+        <PreviewPanelTabs
+          tabs={optimiserTabs}
+          activeTab={activeOptimiserPane}
+          onChange={(pane) => setOptimiserPane(node.id, pane)}
+          ariaLabel="Optimiser panes"
+          accentColor={accentColor}
+          equalWidth
+          idPrefix="optimiser"
+        />
+      )}
 
       {!isInstance && !showExplorePanes && (
         <SchemaWarningBanner
@@ -1383,8 +1733,9 @@ function NodePanelContent({
       )}
 
       <NodeEditorBody
+        nodeId={node.id}
         documentReadOnly={documentReadOnly}
-        readOnly={readOnly}
+        readOnly={effectiveReadOnly}
         config={config}
         activeTab={activeTab}
         showPolarsTab={showPolarsTab}
@@ -1393,10 +1744,13 @@ function NodePanelContent({
         inputSources={inputSources}
         onDeleteEdge={onDeleteEdge}
         errorLine={errorLine}
+        runError={runError}
         upstreamColumns={upstreamColumns}
+        nodeColumns={nodeColumns}
         availableColumns={availableColumns}
         currentColumns={currentColumns}
         onUpdateConfig={handleConfigUpdate}
+        onReplaceConfig={handleConfigReplace}
         configEditor={configEditor}
       />
     </PanelShell>

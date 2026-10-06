@@ -1,0 +1,62 @@
+{
+  "node_type": "scenarioExpander",
+  "authorable": true,
+  "fields": {
+    "stepCount": "Required whole number of at least 1: how many copies of each input row to make, one per scenario step.",
+    "step_column": "The 0-based step index column added to each copy; default \"scenario_index\".",
+    "column_name": "Optional value column added to each copy, spaced evenly from min_value (step 0) to max_value (the last step); set it with min_value and max_value.",
+    "min_value / max_value": "The first and last scenario values, such as 0.9 and 1.1 for a price factor from -10% to +10%.",
+    "quote_id": "The column that identifies each quote, for the optimiser downstream.",
+    "steps": "Optional post-processing step cards over the expanded frame; df is already bound, so there is no source step."
+  },
+  "inputs": [
+    {
+      "edge": "quotes",
+      "columns": {
+        "quote_id": "String",
+        "technical_premium": "Float64"
+      }
+    }
+  ],
+  "configs": [
+    {
+      "name": "minimal",
+      "intent": "Copy each quote five times with a step index.",
+      "config": {
+        "stepCount": 5,
+        "steps": []
+      },
+      "produces": ["quote_id", "scenario_index"]
+    },
+    {
+      "name": "realistic",
+      "intent": "Test price factors from 0.9 to 1.1 in 21 steps and price each scenario.",
+      "config": {
+        "stepCount": 21,
+        "step_column": "scenario_index",
+        "column_name": "scenario_value",
+        "min_value": 0.9,
+        "max_value": 1.1,
+        "quote_id": "quote_id",
+        "steps": [
+          {
+            "id": "logic",
+            "kind": "free_code",
+            "code": "# Price each scenario\ndf = df.with_columns(scenario_premium=pl.col(\"technical_premium\") * pl.col(\"scenario_value\"))"
+          }
+        ]
+      },
+      "produces": ["quote_id", "scenario_index", "scenario_value", "scenario_premium"]
+    }
+  ],
+  "fixture": {
+    "frames": {
+      "quotes": {
+        "rows": [
+          {"quote_id": "q1", "technical_premium": 400.0},
+          {"quote_id": "q2", "technical_premium": 650.0}
+        ]
+      }
+    }
+  }
+}

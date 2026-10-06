@@ -2,6 +2,21 @@
 
 Thread-safe LRU cache for models loaded from MLflow.
 Supports CatBoost (native ``.cbm``) and any MLflow pyfunc model.
+
+Every load resolves its destination to a :class:`~haute._mlflow_utils.ResolvedBackend`
+exactly once, before any cache lookup, and threads that object through
+download, load, and lock selection. The backend is part of every cache
+identity, so the same run ID and artifact path on two destinations — or on
+two endpoints of one category — never alias:
+
+- disk cache: ``.cache/models/<backend digest>/<run_id>/<sha256 of
+  artifact_path>/artifact<suffix>``;
+- in-memory cache key: the backend's secret-free identity is the last element;
+- artifact I/O locks: keyed on ``(backend digest, run_id, artifact_path)``.
+
+The backend's ``tracking_uri`` is a connection value that may carry
+environment credentials, so it never reaches a log line, a cache path, or a
+lock key — only ``mode`` and ``digest`` are logged.
 """
 
 from __future__ import annotations
@@ -12,6 +27,8 @@ import uuid
 from collections import Counter
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -22,14 +39,29 @@ import polars as pl
 
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
-from haute._mlflow_utils import resolve_mlflow_source
-from haute._model_flavors import _SUPPORTED_FLAVORS, ModelFlavor
+from haute._mlflow_utils import (
+    ResolvedBackend,
+    mlflow_fluent_operation,
+    resolve_mlflow_source,
+    set_tracking_uri_preserving_env,
+)
+from haute._model_flavors import (
+    family_for_algorithm,
+    family_for_artifact,
+    is_registered_flavor,
+    model_families,
+    model_family,
+    model_file_suffixes,
+    supported_model_files_description,
+)
+from haute._stat_gated_cache import StatGatedCache, artifact_cache_key, resolve_artifact_path
 
 if TYPE_CHECKING:
     from catboost import CatBoostClassifier, CatBoostRegressor
     from mlflow.tracking import MlflowClient
 
     from haute._model_scorer import ScoreWriteProjection
+    from haute.modelling._feature_contract import FeatureContract
 
 logger = get_logger(component="mlflow_io")
 
@@ -62,21 +94,6 @@ class _ArtifactNotFoundError(FileNotFoundError):
 _model_cache_hits: int = 0
 _model_cache_misses: int = 0
 _model_cache_stats_lock = threading.Lock()
-
-
-def _flavor_from_artifact(artifact_path: str) -> ModelFlavor:
-    """Derive the model flavor from an artifact filename extension.
-
-    Kept in sync with the dispatch in :func:`load_mlflow_model`.  Used by
-    the fast-path cache hit site where the artifact string is known up
-    front but the full ``resolve_mlflow_source`` round-trip has been
-    skipped.
-    """
-    if artifact_path.endswith(".cbm"):
-        return "catboost"
-    if artifact_path.endswith(".rsglm"):
-        return "rustystats"
-    return "pyfunc"
 
 
 def get_model_cache_stats() -> dict[str, int]:
@@ -226,14 +243,17 @@ def _disk_cache_root() -> Path:
 # loser's ``shutil.move`` lands on the cache file the winner is actively
 # reading (on Windows the rename falls back to an in-place copy over the
 # open file); the corrupt-retry path can likewise ``unlink`` a file
-# mid-read.  One lock per on-disk artifact identity fixes all three:
-# the first caller downloads/loads, same-artifact callers wait and then
-# reuse the cached result, and distinct artifacts proceed concurrently.
+# mid-read.  One lock per on-disk artifact identity — which includes the
+# resolved backend's digest — fixes all three: the first caller
+# downloads/loads, same-artifact callers wait and then reuse the cached
+# result, and distinct artifacts (including the same run on a different
+# backend) proceed concurrently.
 #
-# ``WeakValueDictionary`` + guard mirrors the per-key materialization
-# lock in ``_dataframe_execution_cache``: entries evaporate once no
-# caller holds the lock, so the table never grows unboundedly.
-_artifact_io_locks: WeakValueDictionary[tuple[str, str], threading.RLock] = WeakValueDictionary()
+# ``WeakValueDictionary`` + guard: entries evaporate once no caller
+# holds the lock, so the table never grows unboundedly.
+_artifact_io_locks: WeakValueDictionary[tuple[str, str, str], threading.RLock] = (
+    WeakValueDictionary()
+)
 _artifact_io_locks_guard = threading.Lock()
 _disk_cache_active_runs: Counter[str] = Counter()
 _disk_cache_active_runs_guard = threading.Lock()
@@ -266,17 +286,39 @@ def _validate_artifact_path(artifact_path: str) -> None:
         raise ValueError(f"Invalid artifact_path: {artifact_path!r}")
 
 
-def _artifact_cache_path(cache_root: Path, run_id: str, artifact_path: str) -> Path:
-    """Return the safe disk-cache path for a run artifact."""
+def _validate_backend_digest(backend_digest: str) -> None:
+    """Reject anything that is not a ``ResolvedBackend`` filesystem digest.
+
+    The digest is the only part of a backend identity that reaches the
+    filesystem, so it is pinned to the shape :func:`resolve_backend` mints
+    (16 lowercase hex characters) before it is used as a directory name.
+    """
+    if len(backend_digest) != 16 or any(c not in "0123456789abcdef" for c in backend_digest):
+        raise ValueError(f"Invalid backend digest: {backend_digest!r}")
+
+
+def _artifact_cache_path(
+    cache_root: Path,
+    backend_digest: str,
+    run_id: str,
+    artifact_path: str,
+) -> Path:
+    """Return the safe disk-cache path for a run artifact on one backend.
+
+    ``<cache_root>/<backend digest>/<run_id>/<sha256 of artifact_path>/artifact<suffix>``
+    — the backend partition means two destinations never share a cached
+    file even for identical run IDs and artifact paths.
+    """
     from pathlib import PurePosixPath
 
+    _validate_backend_digest(backend_digest)
     _validate_disk_cache_run_id(run_id)
     _validate_artifact_path(artifact_path)
     digest = sha256(artifact_path.encode("utf-8")).hexdigest()
     suffix = PurePosixPath(artifact_path).suffix
     file_name = f"artifact{suffix}" if suffix else "artifact"
     cache_root_abs = cache_root.resolve()
-    candidate = (cache_root / run_id / digest / file_name).resolve()
+    candidate = (cache_root / backend_digest / run_id / digest / file_name).resolve()
     if not candidate.is_relative_to(cache_root_abs):
         raise ValueError(
             f"Invalid artifact cache identity: run_id={run_id!r}, artifact_path={artifact_path!r}"
@@ -303,17 +345,19 @@ def _active_disk_cache_runs() -> frozenset[str]:
         return frozenset(_disk_cache_active_runs)
 
 
-def _artifact_io_lock(run_id: str, artifact_path: str) -> threading.RLock:
-    """Return the per-(run, artifact-path) lock for *run_id*/*artifact_path*.
+def _artifact_io_lock(backend_digest: str, run_id: str, artifact_path: str) -> threading.RLock:
+    """Return the per-(backend, run, artifact-path) lock for one cached file.
 
-    Keyed on the artifact's full MLflow path — the disk-cache identity used
-    by :func:`_artifact_cache_path` — so every code path that could
-    touch the same cached file (downloader, loader, corrupt-retry
-    deleter, deploy bundler) is mutually exclusive without serializing
-    artifacts that merely share a basename.  Reentrant so the load path can re-enter
-    through ``_resolve_artifact_local`` while already holding the lock.
+    Keyed on the full disk-cache identity used by
+    :func:`_artifact_cache_path` — the resolved backend's digest plus the
+    artifact's full MLflow path — so every code path that could touch the
+    same cached file (downloader, loader, corrupt-retry deleter, deploy
+    bundler) is mutually exclusive without serializing artifacts that
+    merely share a basename, or the same run on two backends.  Reentrant so
+    the load path can re-enter through ``_resolve_artifact_local`` while
+    already holding the lock.
     """
-    key = (run_id, artifact_path)
+    key = (backend_digest, run_id, artifact_path)
     with _artifact_io_locks_guard:
         return _artifact_io_locks.setdefault(key, threading.RLock())
 
@@ -326,6 +370,7 @@ def _model_cache_key(
     artifact_path: str,
     task: str,
     artifact_fingerprint: str,
+    backend_identity: str,
 ) -> tuple[str, ...]:
     """Build the in-process model cache key.
 
@@ -338,12 +383,119 @@ def _model_cache_key(
     only where no local artifact file exists to fingerprint (pyfunc
     models loaded through MLflow by URI — a documented residual).
 
+    ``backend_identity`` is the resolved backend's secret-free identity and
+    is always the LAST element, so the same run ID and artifact path on two
+    destinations — or on two endpoints of the same category — never alias.
+    It is a required keyword for the same reason as the fingerprint: no
+    call site can silently drop the backend from the key.
+
     ``run_id`` stays in slot 1: targeted ``clear_model_cache(run_id=...)``
     eviction matches on ``key[1]``.
     """
     if version:
-        return (source_type, run_id, version, artifact_path, task, artifact_fingerprint)
-    return (source_type, run_id, artifact_path, task, artifact_fingerprint)
+        return (
+            source_type,
+            run_id,
+            version,
+            artifact_path,
+            task,
+            artifact_fingerprint,
+            backend_identity,
+        )
+    return (source_type, run_id, artifact_path, task, artifact_fingerprint, backend_identity)
+
+
+@dataclass(frozen=True, slots=True)
+class DiskCachedRunModel:
+    """Where the fast path of :func:`load_mlflow_model` finds one run artifact on disk.
+
+    The model file and, for an EBM, the contract it loads under, in the disk
+    model cache partition of one resolved backend.
+    """
+
+    artifact_path: str
+    model_path: Path
+    contract_artifact: str | None = None
+    contract_path: Path | None = None
+
+    @property
+    def files(self) -> tuple[Path, ...]:
+        return (
+            (self.model_path,)
+            if self.contract_path is None
+            else (
+                self.model_path,
+                self.contract_path,
+            )
+        )
+
+    def present(self) -> bool:
+        """Whether every file the fast path loads exists (a stat, never a read)."""
+        return all(path.is_file() for path in self.files)
+
+    def fingerprint(self) -> str:
+        """The byte identity the in-process model cache keys this artifact by."""
+        if self.contract_path is None or self.contract_artifact is None:
+            return _local_artifact_fingerprint(self.artifact_path, str(self.model_path))
+        return _ebm_identity_fingerprint(
+            self.artifact_path,
+            str(self.model_path),
+            self.contract_artifact,
+            str(self.contract_path),
+        )
+
+
+def _disk_cached_run_model(
+    backend: ResolvedBackend, run_id: str, artifact_path: str
+) -> DiskCachedRunModel | None:
+    """The disk-cache files of a run artifact, or ``None`` for a pyfunc, which has none."""
+    family = family_for_artifact(artifact_path)
+    if family.load_file is None:
+        return None
+    root = _disk_cache_root()
+    model_path = _artifact_cache_path(root, backend.digest, run_id, artifact_path)
+    if not family.requires_contract:
+        return DiskCachedRunModel(artifact_path, model_path)
+    # A contract-bound model is only as current as the contract it loads under.
+    contract_artifact = _run_contract_artifact(artifact_path)
+    return DiskCachedRunModel(
+        artifact_path,
+        model_path,
+        contract_artifact,
+        _artifact_cache_path(root, backend.digest, run_id, contract_artifact),
+    )
+
+
+def disk_cached_run_model(
+    *, run_id: str, artifact_path: str, destination: str
+) -> DiskCachedRunModel | None:
+    """The disk-cache files a run artifact loads from, resolved from configuration alone.
+
+    Raises ``MlflowConfigError`` when the destination does not resolve and
+    ``ValueError`` for an invalid run id or artifact path; ``None`` for a
+    pyfunc directory, which loads by MLflow URI and is never cached on disk.
+    """
+    from haute._mlflow_utils import resolve_backend
+
+    _validate_artifact_path(artifact_path)
+    return _disk_cached_run_model(resolve_backend(destination), run_id, artifact_path)
+
+
+_DISK_CACHE_ONLY: ContextVar[bool] = ContextVar("haute_disk_cache_only_model_loads", default=False)
+
+
+@contextmanager
+def disk_cache_only_model_loads() -> Iterator[None]:
+    """Within this scope, :func:`load_mlflow_model` loads only from the disk model cache.
+
+    Where it would otherwise resolve the model through a tracking server or
+    registry and download it, it raises :class:`ModelNotInDiskCacheError`.
+    """
+    token = _DISK_CACHE_ONLY.set(True)
+    try:
+        yield
+    finally:
+        _DISK_CACHE_ONLY.reset(token)
 
 
 def _local_artifact_fingerprint(artifact_path: str, local_path: str) -> str:
@@ -378,28 +530,59 @@ class ScoringModel:
     ``predict_proba`` / ``raw_model`` surface.
 
     ``offset_column`` names the offset/exposure column the model was
-    trained with (``None`` when the model has none).  Scoring frames must
-    carry it: the CatBoost path re-supplies it as a ``Pool`` baseline, the
+    trained with (``None`` when the model has none), and ``offset_link``
+    records how it enters the prediction: ``log`` for a positive exposure
+    multiplier, ``identity`` for an additive term.  Scoring frames must carry
+    the column: the CatBoost path re-supplies it as a ``Pool`` baseline, the
     RustyStats path hands it to the model inside the predict frame (it is
     already part of ``required_columns``).  A missing column fails loud —
     scoring never silently proceeds on an offset-0/absent basis.
+
+    ``offset_declared`` is ``False`` only for a CatBoost model whose file does
+    not record whether it was trained with an offset; :func:`bind_feature_contract`
+    takes the declaration from its contract or refuses it. Scoring reads the
+    offset from this carrier, never the raw model, so a contract-bound offset
+    applies to a raw model a cache may share.
     """
 
-    __slots__ = ("_model", "feature_names", "cat_feature_names", "flavor", "offset_column")
+    __slots__ = (
+        "_model",
+        "feature_names",
+        "cat_feature_names",
+        "flavor",
+        "offset_column",
+        "offset_link",
+        "offset_declared",
+    )
 
     def __init__(
         self,
         model: Any,
         feature_names: list[str],
         cat_feature_names: frozenset[str] = frozenset(),
-        flavor: ModelFlavor = "pyfunc",
+        flavor: str = "pyfunc",
         offset_column: str | None = None,
+        offset_link: str | None = None,
+        offset_declared: bool = True,
     ) -> None:
         self._model = model
         self.feature_names = feature_names
         self.cat_feature_names = cat_feature_names
         self.flavor = flavor
         self.offset_column = offset_column
+        self.offset_link = offset_link
+        self.offset_declared = offset_declared
+
+    def with_offset(self, offset_column: str | None, offset_link: str | None) -> ScoringModel:
+        """A declared carrier sharing this raw model, with the given offset."""
+        return ScoringModel(
+            model=self._model,
+            feature_names=self.feature_names,
+            cat_feature_names=self.cat_feature_names,
+            flavor=self.flavor,
+            offset_column=offset_column,
+            offset_link=offset_link,
+        )
 
     @property
     def raw_model(self) -> Any:
@@ -407,9 +590,8 @@ class ScoringModel:
         return self._model
 
     def predict(self, x_data: Any) -> np.ndarray:
-        """Return 1-D array of predictions."""
-        raw = self._model.predict(x_data)
-        return np.asarray(raw).flatten()
+        """Return 1-D array of predictions (binary labels from the positive probability)."""
+        return native_predictions(self._model, x_data, self.flavor)
 
     def predict_proba(self, x_data: Any) -> np.ndarray | None:
         """Return class probabilities, or ``None`` if unsupported."""
@@ -424,8 +606,24 @@ class ScoringModel:
 # ---------------------------------------------------------------------------
 
 
+# CatBoost losses that train a classifier; every other loss trains a regressor.
+_CATBOOST_CLASSIFICATION_LOSSES = frozenset(
+    {"Logloss", "CrossEntropy", "MultiClass", "MultiClassOneVsAll"}
+)
+
+
 def _load_catboost_model(path: str, task: str) -> CatBoostRegressor | CatBoostClassifier:
-    """Load a CatBoost model from a local file path."""
+    """Load a CatBoost model from a local file path as the *task* it will score.
+
+    The model file records the loss it was trained with, which fixes its task.
+    Loading a classifier as a regressor (or the reverse) predicts plausible but
+    wrong numbers, so a *task* that contradicts the recorded loss is rejected.
+
+    Raises:
+        ConfigError: the model was trained for the other task.
+    """
+    from haute.errors import ConfigError
+
     if task == "classification":
         from catboost import CatBoostClassifier
 
@@ -435,7 +633,121 @@ def _load_catboost_model(path: str, task: str) -> CatBoostRegressor | CatBoostCl
 
         model = CatBoostRegressor()
     model.load_model(path)
+    params = model.get_all_params()
+    recorded_loss = params.get("loss_function") if isinstance(params, dict) else None
+    # A model file without a recorded loss keeps the node's explicit task.
+    loss = recorded_loss.partition(":")[0] if isinstance(recorded_loss, str) else ""
+    if loss:
+        trained_task = "classification" if loss in _CATBOOST_CLASSIFICATION_LOSSES else "regression"
+        if trained_task != task:
+            raise ConfigError(
+                f"This CatBoost model was trained for {trained_task} (loss {loss}) but the "
+                f"node scores it as {task}. Set the node's task to {trained_task}.",
+                trained_task=trained_task,
+                task=task,
+            )
     return model
+
+
+def catboost_class_labels(model: Any) -> tuple[Any, Any] | None:
+    """``(negative, positive)`` for a binary CatBoost classifier, else ``None``.
+
+    A model Haute trained records the labels it encoded as 0/1; any other
+    binary CatBoost classifier uses its own ``classes_`` order.
+    """
+    import json
+
+    from haute.modelling._algorithms import CATBOOST_CLASS_LABELS_METADATA_KEY
+
+    try:
+        recorded = model.get_metadata().get(CATBOOST_CLASS_LABELS_METADATA_KEY)
+    except Exception:
+        recorded = None
+    if isinstance(recorded, str) and recorded:
+        labels = json.loads(recorded)
+        if not isinstance(labels, list) or len(labels) != 2:
+            from haute.errors import ConfigError
+
+            raise ConfigError(
+                "This CatBoost model's recorded class labels are malformed; retrain it.",
+            )
+        return labels[0], labels[1]
+    classes = getattr(model, "classes_", None)
+    if classes is None or len(classes) != 2:
+        return None
+    return _python_scalar(classes[0]), _python_scalar(classes[1])
+
+
+def _python_scalar(value: Any) -> Any:
+    return value.item() if isinstance(value, np.generic) else value
+
+
+def binary_labels(positive_proba: np.ndarray, labels: tuple[Any, Any]) -> np.ndarray:
+    """The label rule every binary classifier shares: positive iff proba > 0.5."""
+    negative, positive = labels
+    return np.where(np.asarray(positive_proba) > 0.5, positive, negative)
+
+
+def native_predictions(model: Any, x_data: Any, flavor: str) -> np.ndarray:
+    """1-D predictions; a binary CatBoost classifier's labels follow its probability."""
+    if flavor == "catboost":
+        labels = catboost_class_labels(model)
+        if labels is not None and callable(getattr(model, "predict_proba", None)):
+            positive = _positive_class_proba_vector(model.predict_proba(x_data), "prediction")
+            return binary_labels(positive, labels)
+    return np.asarray(model.predict(x_data)).flatten()
+
+
+def verify_contract_identity(identity: Any, scoring_model: ScoringModel) -> None:
+    """Fail when a loaded model is not the model its contract's identity describes."""
+    from haute.errors import ConfigError
+
+    expected = family_for_algorithm(identity.algorithm)
+    if expected is None or expected.flavor != scoring_model.flavor:
+        raise ConfigError(
+            f"The feature contract describes a {identity.algorithm} model, but the model file "
+            f"loads as {scoring_model.flavor}. Use the contract saved with this model.",
+            algorithm=identity.algorithm,
+            flavor=scoring_model.flavor,
+        )
+    if expected.self_describing and identity.loss:
+        from haute.modelling._descriptors import algorithm_descriptor
+
+        descriptor = algorithm_descriptor(identity.algorithm)
+        objective = scoring_model.raw_model.objective()
+        task = "classification" if identity.link == "logit" else "regression"
+        expected_objective = descriptor.native_loss(task, identity.loss).objective
+        if objective != expected_objective:
+            raise ConfigError(
+                f"The feature contract describes a {identity.loss} model, but this "
+                f"{descriptor.label} model was trained with {objective}. Use the contract "
+                "saved with this model.",
+                contract_loss=identity.loss,
+                model_objective=objective,
+            )
+    if scoring_model.flavor == "catboost" and identity.loss:
+        params = scoring_model.raw_model.get_all_params()
+        recorded = params.get("loss_function") if isinstance(params, dict) else None
+        loss = recorded.partition(":")[0] if isinstance(recorded, str) else ""
+        if loss and loss != identity.loss:
+            raise ConfigError(
+                f"The feature contract describes a {identity.loss} model, but this CatBoost "
+                f"model was trained with {loss}. Use the contract saved with this model.",
+                contract_loss=identity.loss,
+                model_loss=loss,
+            )
+
+
+def _catboost_offset_declared(model: Any) -> bool:
+    """Whether a CatBoost model's metadata declares its offset (or its absence).
+
+    Haute stamps ``CATBOOST_OFFSET_METADATA_KEY`` at every fit, empty for a fit
+    without an offset. A model without the key (trained outside Haute, or by
+    an earlier Haute) declares nothing: its baseline must come from a contract.
+    """
+    from haute.modelling._algorithms import CATBOOST_OFFSET_METADATA_KEY
+
+    return isinstance(model.get_metadata().get(CATBOOST_OFFSET_METADATA_KEY), str)
 
 
 def _catboost_offset_column(model: Any) -> str | None:
@@ -444,21 +756,81 @@ def _catboost_offset_column(model: Any) -> str | None:
     ``CatBoostAlgorithm.fit`` records the offset column name under
     ``CATBOOST_OFFSET_METADATA_KEY`` because the .cbm format has no native
     baseline memory — without this, a served model would silently score
-    from baseline 0.
+    from baseline 0. ``None`` covers both an empty value (no offset) and an
+    absent key (undeclared, see :func:`_catboost_offset_declared`); a failed
+    metadata read propagates.
     """
     from haute.modelling._algorithms import CATBOOST_OFFSET_METADATA_KEY
 
-    try:
-        value = model.get_metadata().get(CATBOOST_OFFSET_METADATA_KEY)
-    except Exception:
-        return None
+    value = model.get_metadata().get(CATBOOST_OFFSET_METADATA_KEY)
     # Strict str gate: metadata proxies (and mocked models in tests) can
     # return non-string truthy objects for absent keys.
     return value if isinstance(value, str) and value else None
 
 
-def _wrap_catboost(model: CatBoostRegressor | CatBoostClassifier) -> ScoringModel:
-    """Wrap a raw CatBoost model in a ``ScoringModel``."""
+def _catboost_offset_link(model: Any) -> str | None:
+    """Read how a CatBoost model's offset enters its raw score.
+
+    ``None`` when the model records no offset column. A model that records
+    an offset column without its link is refused: its baseline cannot be
+    rebuilt the way it was trained.
+    """
+    from haute.errors import ConfigError
+    from haute.modelling._algorithms import CATBOOST_OFFSET_LINK_METADATA_KEY, OFFSET_LINKS
+
+    column = _catboost_offset_column(model)
+    if column is None:
+        return None
+    value = model.get_metadata().get(CATBOOST_OFFSET_LINK_METADATA_KEY)
+    if not isinstance(value, str) or value not in OFFSET_LINKS:
+        raise ConfigError(
+            f"This CatBoost model records offset column {column!r} but not how the offset "
+            "enters its predictions. Retrain it with this version of Haute.",
+            offset_column=column,
+        )
+    return value
+
+
+def rustystats_offset_column(model: Any) -> str | None:
+    """The exposure (log link) or offset (other links) column a GLM was fitted with."""
+    for attribute in ("_exposure_spec", "_offset_spec"):
+        value = getattr(model, attribute, None)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def rustystats_offset_link(model: Any) -> str | None:
+    """``log`` for a GLM fitted with an exposure column, ``identity`` for an offset."""
+    exposure = getattr(model, "_exposure_spec", None)
+    if isinstance(exposure, str) and exposure:
+        return "log"
+    offset = getattr(model, "_offset_spec", None)
+    if isinstance(offset, str) and offset:
+        return "identity"
+    return None
+
+
+def _wrap_catboost(model: CatBoostRegressor | CatBoostClassifier, *, source: str) -> ScoringModel:
+    """Wrap a raw CatBoost model in a ``ScoringModel``.
+
+    *source* names the model (its file, or its run artifact) in the refusal
+    raised when its metadata cannot be read.
+
+    Raises:
+        ConfigError: the model's metadata cannot be read, so whether it was
+            trained with an offset is unknown.
+    """
+    from haute.errors import ConfigError
+
+    try:
+        model.get_metadata()
+    except Exception as exc:
+        raise ConfigError(
+            f"The metadata of CatBoost model {source} cannot be read "
+            f"({type(exc).__name__}: {exc}), so Haute cannot tell whether it was "
+            "trained with an offset and will not score it."
+        ) from exc
     feature_names = list(model.feature_names_)
     cat_idx = (
         set(model.get_cat_feature_indices()) if hasattr(model, "get_cat_feature_indices") else set()
@@ -470,49 +842,451 @@ def _wrap_catboost(model: CatBoostRegressor | CatBoostClassifier) -> ScoringMode
         cat_feature_names=cat_names,
         flavor="catboost",
         offset_column=_catboost_offset_column(model),
+        offset_link=_catboost_offset_link(model),
+        offset_declared=_catboost_offset_declared(model),
     )
 
 
-def _load_rustystats_model(path: str) -> ScoringModel:
+def _load_rustystats_model(path: str, *, source: str | None = None) -> ScoringModel:
     """Load a RustyStats GLM from a ``.rsglm`` binary file.
 
-    The required-feature list is read straight off the model via
-    ``required_columns`` — RustyStats ships the raw input column names
-    (including expression source columns, offsets, and complement
-    columns) on the model itself, mirroring CatBoost's ``feature_names_``
-    and removing the need for a manual terms-dict / feature-names
-    fallback chain.
+    *source* names the model in errors (an MLflow run); the file name otherwise.
+
+    ``required_columns`` includes expression sources, offsets, and complement
+    columns. RustyStats 0.9 reports named encoding keys there even though its
+    predictor reads their ``variable`` source. Resolve those aliases using
+    the saved terms, preserving the other required inputs and their order.
     """
     import rustystats as rs
 
+    from haute.errors import ConfigError
+    from haute.modelling._glm_terms import ENCODING_TERM_TYPES
+
     with open(path, "rb") as f:
-        model = rs.GLMModel.from_bytes(f.read())
-    offset_spec = getattr(model, "_offset_spec", None)
+        data = f.read()
+    try:
+        model = rs.GLMModel.from_bytes(data)
+    except rs.exceptions.ValidationError as exc:
+        # RustyStats refuses files written under another serialization schema,
+        # e.g. a GLM trained before the RustyStats 0.9 upgrade.
+        raise ConfigError(
+            f"The RustyStats GLM from {source or repr(Path(path).name)} was saved by an "
+            f"older RustyStats and cannot be loaded by RustyStats {rs.__version__}. "
+            "Retrain it with this version of Haute."
+        ) from exc
+    terms = model.terms_dict
+    aliases = (
+        {
+            name: spec["variable"]
+            for name, spec in terms.items()
+            if spec.get("type") in ENCODING_TERM_TYPES and "variable" in spec
+        }
+        if terms is not None
+        else {}
+    )
+    feature_names = list(dict.fromkeys(aliases.get(name, name) for name in model.required_columns))
     return ScoringModel(
         model=model,
-        feature_names=list(model.required_columns),
+        feature_names=feature_names,
         cat_feature_names=frozenset(),
         flavor="rustystats",
-        offset_column=offset_spec if isinstance(offset_spec, str) and offset_spec else None,
+        offset_column=rustystats_offset_column(model),
+        offset_link=rustystats_offset_link(model),
     )
 
 
-def load_local_model(path: str, task: str = "regression") -> ScoringModel:
+def _load_catboost_file(
+    path: str, task: str, *, contract_path: str | None, source: str | None
+) -> ScoringModel:
+    """The CatBoost family's file loader."""
+    raw = _load_catboost_model(path, task)
+    return _wrap_catboost(raw, source=source or repr(path))
+
+
+def _load_rustystats_file(
+    path: str, task: str, *, contract_path: str | None, source: str | None
+) -> ScoringModel:
+    """The RustyStats GLM family's file loader (the GLM records no task)."""
+    return _load_rustystats_model(path, source=source)
+
+
+def load_local_model(
+    path: str,
+    task: str = "regression",
+    *,
+    contract_path: str | None = None,
+    source: str | None = None,
+) -> ScoringModel:
     """Load a model from a local file path (e.g. bundled deploy artifact).
 
-    Auto-detects flavor from file extension:
-    - ``.cbm`` → CatBoost native loader
-    - ``.rsglm`` → RustyStats GLM loader
-    - Otherwise → not yet supported (pyfunc local loading planned)
+    The file's suffix selects its family in the registry, whose loader reads
+    it; a contract-bound family (EBM) loads under *contract_path* when given,
+    else the contract saved beside it.
+
+    *source* names the model in errors (an MLflow run); the path otherwise.
+
+    Raises:
+        ConfigError: no family loads files with this suffix, or the path names
+            a family that loads only from MLflow (a pyfunc directory).
     """
-    if path.endswith(".cbm"):
-        raw = _load_catboost_model(path, task)
-        return _wrap_catboost(raw)
-    if path.endswith(".rsglm"):
-        return _load_rustystats_model(path)
-    raise NotImplementedError(
-        f"Local model loading not yet supported for: {path!r}. "
-        "Supported formats: .cbm (CatBoost), .rsglm (RustyStats GLM)."
+    family = family_for_artifact(path)
+    if family.load_file is None:
+        from haute.errors import ConfigError
+
+        raise ConfigError(
+            f"{path!r} is not a model file Haute loads locally. Expected "
+            f"{', '.join(model_file_suffixes())}; an {family.label} model loads only from MLflow.",
+            model_path=path,
+            flavor=family.flavor,
+        )
+    return family.load_file(path, task, contract_path=contract_path, source=source)
+
+
+def _offset_transform(link: str | None) -> str | None:
+    """How an offset enters the raw score: ``log``, else ``identity`` (``None`` for none)."""
+    if link is None:
+        return None
+    return "log" if link == "log" else "identity"
+
+
+def bind_feature_contract(
+    scoring_model: ScoringModel, contract: FeatureContract | None, *, model_name: str
+) -> ScoringModel:
+    """Bind a loaded model to the feature contract it scores under.
+
+    A contract that records a model identity must describe the loaded model.
+    A model that declares its own offset must agree with the contract's; a
+    pyfunc model, whose contract is its only offset description, takes the
+    contract's. A CatBoost model whose file does not declare its offset takes
+    the contract's declaration: a null ``offset_column`` declares no offset, a
+    named one with an ``offset_link`` declares that offset. Returns the carrier
+    to score (a new one when the offset changes); *scoring_model* itself, which
+    a cache may hold, is never mutated.
+
+    Raises:
+        ConfigError: the identity or the offset disagree, or a CatBoost
+            model's offset is declared by neither its file nor its contract.
+    """
+    from haute.errors import ConfigError
+
+    if contract is not None and contract.model is not None:
+        verify_contract_identity(contract.model, scoring_model)
+    if not scoring_model.offset_declared:
+        remedy = (
+            "Save a feature contract beside the model that declares its offset "
+            "(offset_column with offset_link 'log' or 'identity', or offset_column null "
+            "for a model trained without one), or retrain it with this version of Haute."
+        )
+        if contract is None:
+            raise ConfigError(
+                f"CatBoost model {model_name} does not record whether it was trained with "
+                f"an offset, and no feature contract declares it. Scoring it without its "
+                f"offset would mis-price every row. {remedy}",
+                model=model_name,
+            )
+        if contract.offset_column is not None and contract.offset_link is None:
+            raise ConfigError(
+                f"The feature contract of CatBoost model {model_name} names offset column "
+                f"{contract.offset_column!r} but not how it enters the model "
+                f"(offset_link). {remedy}",
+                model=model_name,
+                offset_column=contract.offset_column,
+            )
+        return scoring_model.with_offset(contract.offset_column, contract.offset_link)
+    if contract is None:
+        return scoring_model
+    if scoring_model.flavor == "pyfunc":
+        return scoring_model.with_offset(contract.offset_column, contract.offset_link)
+    model_link = _offset_transform(scoring_model.offset_link)
+    if contract.offset_column != scoring_model.offset_column or (
+        contract.offset_link is not None and contract.offset_link != model_link
+    ):
+        raise ConfigError(
+            f"Model {model_name} records offset {scoring_model.offset_column!r} "
+            f"(link {model_link!r}), but its feature contract declares "
+            f"{contract.offset_column!r} (link {contract.offset_link!r}). Use the contract "
+            "saved with this model.",
+            model=model_name,
+            model_offset_column=scoring_model.offset_column,
+            contract_offset_column=contract.offset_column,
+        )
+    return scoring_model
+
+
+_local_model_cache: StatGatedCache[tuple[str, str, str | None], ScoringModel] = StatGatedCache(
+    artifact_kind="local model file"
+)
+
+
+def load_local_model_cached(
+    path: str,
+    task: str,
+    contract_path: str | None = None,
+    *,
+    model_name: str | None = None,
+) -> ScoringModel:
+    """Load a local model file bound to *contract_path*, through a stat-gated cache.
+
+    The one in-memory local-model cache, shared by file-sourced Model Scoring
+    and the deploy scorer. A slot is keyed on the case-folded path, the task
+    and the contract's byte identity, and gated on the model file's freshness
+    token: replacing the model or only its contract reloads, and a missing
+    model or contract raises however warm the cache. A failed load or binding
+    is never cached. *model_name* names the model in errors (its file name
+    otherwise).
+    """
+    from haute.deploy._scorer import artifact_identity_fingerprint
+
+    io_path = resolve_artifact_path(path)
+    name = model_name or repr(Path(path).name)
+    # The contract decides an EBM's offset, labels and loss and an undeclared
+    # CatBoost model's offset: replacing only it must reload.
+    contract_identity = (
+        artifact_identity_fingerprint({"contract": contract_path}) if contract_path else None
+    )
+
+    def _load() -> ScoringModel:
+        from haute.modelling._feature_contract import load_contract_cached
+
+        contract = load_contract_cached(contract_path) if contract_path else None
+        scoring_model = load_local_model(
+            io_path, task, contract_path=contract_path, source=model_name
+        )
+        return bind_feature_contract(scoring_model, contract, model_name=name)
+
+    return _local_model_cache.get_or_load(
+        (artifact_cache_key(io_path), task, contract_identity), io_path, _load
+    )
+
+
+def clear_local_model_cache() -> None:
+    """Drop every cached local model (test isolation / targeted resets)."""
+    _local_model_cache.clear()
+
+
+def model_contract_candidates(path: str | Path) -> list[Path]:
+    """Where a model file's feature contract sits: beside it, by name or in a package."""
+    from haute.modelling._feature_contract import CONTRACT_FILENAME
+    from haute.modelling._training_job import model_contract_filename
+
+    model_file = Path(path)
+    return [
+        model_file.with_name(model_contract_filename(model_file.stem)),
+        model_file.parent / CONTRACT_FILENAME,
+    ]
+
+
+def _sibling_contract(path: str) -> Any:
+    """The feature contract saved with *path*; an EBM cannot load without one."""
+    from haute.errors import ConfigError
+    from haute.modelling._feature_contract import load_contract
+
+    for candidate in model_contract_candidates(path):
+        if candidate.is_file():
+            return load_contract(candidate)
+    raise ConfigError(
+        f"No feature contract was found beside {Path(path).name}. An EBM model loads only "
+        "with the contract it was trained with (saved next to it as "
+        f"{model_contract_candidates(path)[0].name}).",
+        model_path=str(path),
+    )
+
+
+def _run_contract_artifact(artifact: str) -> str:
+    """The run-relative path of the contract logged beside *artifact*."""
+    from pathlib import PurePosixPath
+
+    return str(PurePosixPath(artifact).with_name(model_contract_candidates(artifact)[0].name))
+
+
+def _ebm_identity_fingerprint(
+    artifact: str, local_path: str, contract_artifact: str, contract_path: str
+) -> str:
+    """An EBM's cache identity: its model bytes and the contract it loads under."""
+    from haute.deploy._scorer import artifact_identity_fingerprint
+
+    return artifact_identity_fingerprint({artifact: local_path, contract_artifact: contract_path})
+
+
+def _loaded_artifact_fingerprint(
+    flavor: str,
+    mlflow_mod: Any,
+    backend: ResolvedBackend,
+    run_id: str,
+    artifact: str,
+    local_path: str,
+) -> str:
+    """The cache identity of a run artifact: its bytes, plus a contract-bound model's contract.
+
+    Lookup and insertion both use this, so an entry is always found under the
+    key it was stored with.
+    """
+    if not model_family(flavor).requires_contract:
+        return _local_artifact_fingerprint(artifact, local_path)
+    return _ebm_identity_fingerprint(
+        artifact,
+        local_path,
+        _run_contract_artifact(artifact),
+        _resolve_run_contract(mlflow_mod, backend, run_id, artifact),
+    )
+
+
+def _resolve_run_contract(
+    mlflow_mod: Any, backend: ResolvedBackend, run_id: str, artifact: str
+) -> str:
+    """Fetch the feature contract a run logged beside *artifact*.
+
+    An EBM loads only under it, and a CatBoost model whose file does not
+    declare its offset scores only under it.
+    """
+
+    from haute.errors import ConfigError
+
+    contract_artifact = _run_contract_artifact(artifact)
+    try:
+        return _resolve_artifact_local(mlflow_mod, backend, run_id, contract_artifact)
+    except Exception as exc:
+        raise ConfigError(
+            f"Run {run_id} has no feature contract {contract_artifact} beside {artifact}, and "
+            f"this model scores only with the contract it was trained with ({exc}).",
+            run_id=run_id,
+            artifact_path=artifact,
+        ) from exc
+
+
+def _require_remote_loads(source_type: str) -> None:
+    """Refuse an MLflow lookup within :func:`disk_cache_only_model_loads`."""
+    if _DISK_CACHE_ONLY.get():
+        from haute.errors import ModelNotInDiskCacheError
+
+        raise ModelNotInDiskCacheError(
+            "The local model cache holds no feature contract for this model, and this "
+            "execution loads models only from that cache. Preview the Model Scoring node "
+            "in the editor, which fills it.",
+            source_type=source_type,
+        )
+
+
+def resolve_run_artifact(
+    *,
+    source_type: str,
+    run_id: str = "",
+    artifact_path: str = "",
+    registered_model: str = "",
+    version: str = "",
+    alias: str = "",
+    backend: ResolvedBackend,
+) -> tuple[str, str]:
+    """The concrete ``(run_id, artifact_path)`` a model source names right now.
+
+    A registered version, alias or ``latest`` resolves once against *backend*,
+    and an absent artifact path is discovered in the run, so both reads that
+    follow name the same run on the same backend.
+
+    Raises:
+        ModelNotInDiskCacheError: loads are limited to the disk cache.
+    """
+    _require_remote_loads(source_type)
+    if artifact_path:
+        _validate_artifact_path(artifact_path)
+    resolved_run_id, _version, _mlflow, client, _backend = resolve_mlflow_source(
+        source_type=source_type,
+        run_id=run_id,
+        registered_model=registered_model,
+        version=version,
+        backend=backend,
+        alias=alias,
+    )
+    return resolved_run_id, artifact_path or _find_model_artifact(client, resolved_run_id)[0]
+
+
+def run_logged_contract_path(*, run_id: str, artifact_path: str, backend: ResolvedBackend) -> str:
+    """The local copy of the contract a run logged beside its model artifact on *backend*.
+
+    Answered from the disk model cache when the contract is there; otherwise it
+    downloads into the same cache (not within :func:`disk_cache_only_model_loads`).
+
+    Raises:
+        ConfigError: the run logged no contract beside the model.
+        ModelNotInDiskCacheError: loads are limited to the disk cache and the
+            contract is not in it.
+    """
+    _validate_artifact_path(artifact_path)
+    cached = _artifact_cache_path(
+        _disk_cache_root(), backend.digest, run_id, _run_contract_artifact(artifact_path)
+    )
+    if cached.is_file():
+        return str(cached)
+    _require_remote_loads("run")
+    _run_id, _version, mlflow_mod, _client, _backend = resolve_mlflow_source(
+        source_type="run", run_id=run_id, backend=backend
+    )
+    with _disk_cache_run_in_use(run_id):
+        return _resolve_run_contract(mlflow_mod, backend, run_id, artifact_path)
+
+
+def _load_xgboost_file(
+    path: str, task: str, *, contract_path: str | None, source: str | None
+) -> ScoringModel:
+    """The XGBoost family's file loader; the file describes itself."""
+    from haute.modelling._xgboost import XGBoostModel
+
+    return _wrapper_scoring_model(XGBoostModel.load(path), task, "xgboost")
+
+
+def _load_lightgbm_file(
+    path: str, task: str, *, contract_path: str | None, source: str | None
+) -> ScoringModel:
+    """The LightGBM family's file loader; the file describes itself."""
+    from haute.modelling._lightgbm import LightGBMModel
+
+    return _wrapper_scoring_model(LightGBMModel.load(path), task, "lightgbm")
+
+
+def _load_ebm_file(
+    path: str, task: str, *, contract_path: str | None, source: str | None
+) -> ScoringModel:
+    """The EBM family's file loader.
+
+    An EBM file is the bare estimator and loads under its feature contract:
+    *contract_path* when the caller fetched it (the MLflow cache keeps
+    artifacts apart), else the one saved beside the model.
+    """
+    from haute.modelling._ebm import EBMModel
+    from haute.modelling._feature_contract import load_contract
+
+    contract = load_contract(contract_path) if contract_path else _sibling_contract(path)
+    return _wrapper_scoring_model(EBMModel.load(path, contract), task, "ebm")
+
+
+def _load_tboost_file(
+    path: str, task: str, *, contract_path: str | None, source: str | None
+) -> ScoringModel:
+    """The t-boost family's file loader; the file describes itself."""
+    from haute.modelling._tboost import TBoostModel
+
+    return _wrapper_scoring_model(TBoostModel.load(path), task, "tboost")
+
+
+def _wrapper_scoring_model(model: Any, task: str, flavor: str) -> ScoringModel:
+    """Wrap a loaded Haute native model, refusing the task it was not trained for."""
+    from haute.errors import ConfigError
+
+    if model.task != task:
+        label = model_family(flavor).label
+        raise ConfigError(
+            f"This {label} model was trained for {model.task} but the node scores it as "
+            f"{task}. Set the node's task to {model.task}.",
+            trained_task=model.task,
+            task=task,
+        )
+    return ScoringModel(
+        model=model,
+        feature_names=list(model.features),
+        cat_feature_names=model.cat_feature_names,
+        flavor=flavor,
+        offset_column=model.offset_column,
+        offset_link=model.offset_link,
     )
 
 
@@ -521,10 +1295,26 @@ def load_local_model(path: str, task: str = "regression") -> ScoringModel:
 # ---------------------------------------------------------------------------
 
 
-def _load_pyfunc_model(mlflow_module: Any, run_id: str, artifact_path: str) -> Any:
-    """Load a model via MLflow pyfunc flavor."""
+def _load_pyfunc_model(
+    mlflow_module: Any,
+    run_id: str,
+    artifact_path: str,
+    *,
+    backend: ResolvedBackend,
+) -> Any:
+    """Load a model via MLflow pyfunc flavor from the resolved backend."""
     model_uri = f"runs:/{run_id}/{artifact_path}"
-    return mlflow_module.pyfunc.load_model(model_uri)
+    # MLflow 3's nested logged-model repository still constructs a client from
+    # global state, even when download_artifacts receives tracking_uri. Share
+    # the fluent lock with logging so this lookup cannot redirect an active run.
+    with mlflow_fluent_operation():
+        set_tracking_uri_preserving_env(mlflow_module, backend.tracking_uri)
+        mlflow_module.set_registry_uri(backend.registry_uri)
+        local_path = mlflow_module.artifacts.download_artifacts(
+            model_uri,
+            tracking_uri=backend.tracking_uri,
+        )
+    return mlflow_module.pyfunc.load_model(local_path)
 
 
 def _wrap_pyfunc(model: Any) -> ScoringModel:
@@ -596,21 +1386,12 @@ def _find_artifact_by_extension(
     )
 
 
-def _find_cbm_artifact(client: MlflowClient, run_id: str) -> str:
-    """Find the first ``.cbm`` artifact in a run's artifact list."""
-    return _find_artifact_by_extension(client, run_id, ".cbm", "CatBoost")
-
-
-def _find_rsglm_artifact(client: MlflowClient, run_id: str) -> str:
-    """Find the first ``.rsglm`` artifact in a run's artifact list."""
-    return _find_artifact_by_extension(client, run_id, ".rsglm", "RustyStats")
-
-
 def _find_model_artifact(client: MlflowClient, run_id: str) -> tuple[str, str]:
     """Find the model artifact in a run, returning ``(path, flavor)``.
 
-    Checks for CatBoost (``.cbm``) first, then RustyStats (``.rsglm``),
-    then falls back to a pyfunc model directory.
+    Probes each registered family's suffixes in registration order (CatBoost,
+    RustyStats, XGBoost, LightGBM, EBM), then falls back to a pyfunc model
+    directory.
 
     Only catches :class:`_ArtifactNotFoundError` — a dedicated subclass of
     :class:`FileNotFoundError` raised by our own helpers when a probe
@@ -620,15 +1401,15 @@ def _find_model_artifact(client: MlflowClient, run_id: str) -> tuple[str, str]:
     sees the real infrastructure problem instead of a misleading "no
     model artifact" message.
     """
-    try:
-        return _find_cbm_artifact(client, run_id), "catboost"
-    except _ArtifactNotFoundError:
-        pass
-
-    try:
-        return _find_rsglm_artifact(client, run_id), "rustystats"
-    except _ArtifactNotFoundError:
-        pass
+    for family in model_families():
+        for suffix in family.suffixes:
+            try:
+                return (
+                    _find_artifact_by_extension(client, run_id, suffix, family.label),
+                    family.flavor,
+                )
+            except _ArtifactNotFoundError:
+                pass
 
     # Look for a pyfunc model directory (contains MLmodel file).
     # ``list_artifacts`` failures (MlflowException etc.) propagate so
@@ -648,25 +1429,45 @@ def _find_model_artifact(client: MlflowClient, run_id: str) -> tuple[str, str]:
 
     raise _ArtifactNotFoundError(
         f"No model artifact found in run '{run_id}'. "
-        "Expected .cbm (CatBoost), .rsglm (RustyStats), or model directory (pyfunc)."
+        f"Expected {supported_model_files_description()}."
     )
+
+
+def _delete_tombstone(remove_tree: Callable[[Path], bool], tombstone: Path) -> None:
+    """Delete one tombstone, reporting a tree that survives.
+
+    Eviction is housekeeping and must never raise into a caller that only asked
+    for an artifact, but a tombstone that silently stays behind holds disk for
+    good: Windows fails a delete while an indexer or scanner briefly holds a
+    handle, so the shared retrying removal is used and a survivor is logged.
+    """
+    if not remove_tree(tombstone):
+        logger.warning("mlflow_disk_cache_tombstone_delete_failed", tombstone=str(tombstone))
 
 
 def _evict_disk_cache(cache_root: Path) -> None:
     """Remove oldest run directories when disk cache exceeds the limit.
 
-    Keeps at most ``_DISK_CACHE_MAX_DIRS`` run directories under
-    *cache_root*, deleting the ones with the oldest modification time.
+    Keeps at most ``_DISK_CACHE_MAX_DIRS`` run directories across *every*
+    backend-digest partition under *cache_root* (a run cached on two
+    backends is two directories), deleting the ones with the oldest
+    modification time.
     """
-    import shutil
+    from haute._file_ops import remove_tree
 
     if not cache_root.is_dir():
         return
 
-    cache_dirs = [d for d in cache_root.iterdir() if d.is_dir()]
+    cache_dirs = [
+        run_dir
+        for backend_dir in cache_root.iterdir()
+        if backend_dir.is_dir()
+        for run_dir in backend_dir.iterdir()
+        if run_dir.is_dir()
+    ]
     tombstones = [d for d in cache_dirs if d.name.startswith(_DISK_CACHE_EVICTION_PREFIX)]
     for tombstone in tombstones:
-        shutil.rmtree(tombstone, ignore_errors=True)
+        _delete_tombstone(remove_tree, tombstone)
 
     active_runs = _active_disk_cache_runs()
     run_dirs = [
@@ -684,9 +1485,18 @@ def _evict_disk_cache(cache_root: Path) -> None:
         with _disk_cache_active_runs_guard:
             if d.name in _disk_cache_active_runs:
                 continue
-            tombstone = d.with_name(f"{_DISK_CACHE_EVICTION_PREFIX}{d.name}-{uuid.uuid4().hex}")
+            # Short on purpose: a tombstone name that grew on the run id it
+            # replaced pushed the cached artifact underneath it past Windows'
+            # 260-character path limit, and a path that long cannot be opened —
+            # so the delete below failed and the tombstone held disk for good.
+            # 8 hex digits are shorter than any real run id and unique enough;
+            # the log line below records which run the tombstone was.
+            tombstone = d.with_name(f"{_DISK_CACHE_EVICTION_PREFIX}{uuid.uuid4().hex[:8]}")
             try:
                 d.replace(tombstone)
+            except FileExistsError:
+                # Another pass owns that name; this run is evicted on the next.
+                continue
             except FileNotFoundError:
                 continue
         # The active check and same-filesystem rename are atomic with respect
@@ -697,19 +1507,22 @@ def _evict_disk_cache(cache_root: Path) -> None:
             path=str(d),
             tombstone=str(tombstone),
         )
-        shutil.rmtree(tombstone, ignore_errors=True)
+        _delete_tombstone(remove_tree, tombstone)
 
 
 def _resolve_artifact_local(
     mlflow: Any,
+    backend: ResolvedBackend,
     run_id: str,
     artifact_path: str,
 ) -> str:
     """Return a local path to the model artifact, downloading only if needed.
 
-    Saves downloaded artifacts under ``.cache/models/<run_id>/`` so they
-    survive server restarts without re-downloading from remote tracking
-    servers (saves ~30 s+ for Databricks-hosted artifacts).
+    Saves downloaded artifacts under
+    ``.cache/models/<backend digest>/<run_id>/`` so they survive server
+    restarts without re-downloading from remote tracking servers (saves
+    ~30 s+ for Databricks-hosted artifacts) while never serving one
+    backend's bytes for another's run.
 
     Downloads to a temp file first then renames atomically, so a partial
     download (network interruption, timeout) never leaves a corrupt file
@@ -721,11 +1534,12 @@ def _resolve_artifact_local(
     never land on a file another thread is concurrently writing.
     """
     with _disk_cache_run_in_use(run_id):
-        return _resolve_artifact_local_in_use(mlflow, run_id, artifact_path)
+        return _resolve_artifact_local_in_use(mlflow, backend, run_id, artifact_path)
 
 
 def _resolve_artifact_local_in_use(
     mlflow: Any,
+    backend: ResolvedBackend,
     run_id: str,
     artifact_path: str,
 ) -> str:
@@ -734,7 +1548,7 @@ def _resolve_artifact_local_in_use(
     import tempfile
 
     cache_root = _disk_cache_root()
-    local_path = _artifact_cache_path(cache_root, run_id, artifact_path)
+    local_path = _artifact_cache_path(cache_root, backend.digest, run_id, artifact_path)
     cache_dir = local_path.parent
 
     if local_path.is_file():
@@ -744,7 +1558,7 @@ def _resolve_artifact_local_in_use(
         )
         return str(local_path)
 
-    with _artifact_io_lock(run_id, artifact_path):
+    with _artifact_io_lock(backend.digest, run_id, artifact_path):
         # Re-check under the lock: a concurrent caller may have completed
         # the download while this thread was waiting to acquire.
         if local_path.is_file():
@@ -761,6 +1575,8 @@ def _resolve_artifact_local_in_use(
             "mlflow_artifact_downloading",
             run_id=run_id,
             artifact=artifact_path,
+            backend_mode=backend.mode,
+            backend_digest=backend.digest,
         )
         tmp_dir = None
         try:
@@ -768,6 +1584,7 @@ def _resolve_artifact_local_in_use(
             downloaded = mlflow.artifacts.download_artifacts(
                 f"runs:/{run_id}/{artifact_path}",
                 dst_path=str(tmp_dir),
+                tracking_uri=backend.tracking_uri,
             )
             downloaded_path = Path(downloaded)
             if not downloaded_path.is_file():
@@ -805,10 +1622,10 @@ def clear_model_cache(run_id: str | None = None) -> int:
     """Delete cached model artifacts, returning the number of files removed.
 
     If *run_id* is given, only that run's cache is cleared — in-memory
-    entries whose cache key's ``run_id`` slot matches are evicted, the
-    on-disk directory for that run is removed, and observability
-    counters are left untouched (a targeted clear is not a
-    measurement-window boundary).
+    entries whose cache key's ``run_id`` slot matches are evicted (on every
+    backend), that run's on-disk directory is removed under every
+    backend-digest partition, and observability counters are left untouched
+    (a targeted clear is not a measurement-window boundary).
 
     If *run_id* is ``None``, everything goes: all in-memory entries, the
     entire ``.cache/models`` tree, AND the observability counters
@@ -827,10 +1644,15 @@ def clear_model_cache(run_id: str | None = None) -> int:
     removed = 0
     if cache_root.exists():
         if run_id:
-            target = cache_root / run_id
-            if target.exists():
-                removed = sum(1 for _ in target.rglob("*") if _.is_file())
-                shutil.rmtree(target, ignore_errors=True)
+            # Run directories live under a backend-digest partition, so a
+            # targeted clear walks ``cache_root/*/<run_id>``.
+            for backend_dir in cache_root.iterdir():
+                if not backend_dir.is_dir():
+                    continue
+                target = backend_dir / run_id
+                if target.exists():
+                    removed += sum(1 for _ in target.rglob("*") if _.is_file())
+                    shutil.rmtree(target, ignore_errors=True)
         else:
             for d in cache_root.iterdir():
                 if d.is_dir():
@@ -846,7 +1668,8 @@ def clear_model_cache(run_id: str | None = None) -> int:
         _reset_model_cache_stats()
     else:
         # Cache keys are ``(source_type, resolved_run_id, [version,]
-        # artifact, task, artifact_fingerprint)`` — run_id is always slot 1.
+        # artifact, task, artifact_fingerprint, backend_identity)`` —
+        # run_id is always slot 1, so the match is backend-agnostic.
         # Evict every entry whose run_id slot matches (may be multiple,
         # different task / version per run) and let the cascade handle
         # feature-validation-cache invalidation.  Counters are left
@@ -874,6 +1697,7 @@ _LOAD_BACKOFF_JITTER_S = 0.1
 def _load_with_bounded_retry(
     *,
     mlflow_mod: Any,
+    backend: ResolvedBackend,
     run_id: str,
     artifact: str,
     flavor: str,
@@ -891,22 +1715,36 @@ def _load_with_bounded_retry(
     import random
     import time
 
+    from haute._sandbox import ArtifactVersionMismatchError
+    from haute.errors import ConfigError
+
     last_err: BaseException | None = None
     for attempt in range(1, _LOAD_MAX_ATTEMPTS + 1):
         local_path: str | None = None
         try:
-            local_path = _resolve_artifact_local(mlflow_mod, run_id, artifact)
-            if flavor == "catboost":
-                raw = _load_catboost_model(local_path, task)
-                return _wrap_catboost(raw)
-            return _load_rustystats_model(local_path)
-        except (AttributeError, TypeError, KeyError):
+            local_path = _resolve_artifact_local(mlflow_mod, backend, run_id, artifact)
+            family = model_family(flavor)
+            assert family.load_file is not None  # only file-loaded families retry here
+            contract_path: str | None = None
+            if family.requires_contract:
+                contract_path = _resolve_run_contract(mlflow_mod, backend, run_id, artifact)
+            return family.load_file(
+                local_path,
+                task,
+                contract_path=contract_path,
+                source=f"MLflow run {run_id!r}, artifact {artifact!r}",
+            )
+        except (AttributeError, TypeError, KeyError, ConfigError, ArtifactVersionMismatchError):
             # Programmer error — a missing attribute, wrong type, or
             # unknown dict key is a bug in our dispatch code (or a
             # breaking change in catboost / rustystats), not a corrupt
-            # artifact.  Wrapping these as "persistently corrupt" would
-            # send on-call down the wrong path.  Re-raise so the real
-            # stack trace surfaces.
+            # artifact; a ConfigError (the node scores the model as the
+            # wrong task, or an EBM under a contract that does not describe
+            # it) and an ArtifactVersionMismatchError (a model written by
+            # another engine version) are readable models that
+            # re-downloading cannot fix.  Wrapping these as "persistently corrupt" would send
+            # on-call down the wrong path.  Re-raise so the real error
+            # surfaces.
             raise
         except Exception as err:
             last_err = err
@@ -949,35 +1787,53 @@ def load_mlflow_model(
     registered_model: str = "",
     version: str = "",
     task: str = "regression",
-    tracking_uri: str = "",
+    destination: str = "",
+    alias: str = "",
+    backend: ResolvedBackend | None = None,
 ) -> ScoringModel:
-    """Load a model from MLflow, auto-detecting CatBoost vs pyfunc.
+    """Load a model from MLflow through its registered model family.
 
-    CatBoost models (``.cbm`` artifacts) get the optimized native loader
-    with categorical feature support.  All other models are loaded via
-    MLflow's pyfunc flavor.
+    The artifact's suffix names its family, whose file loader reads the
+    downloaded artifact; a suffix-less artifact is an MLflow pyfunc model
+    directory, loaded through MLflow's pyfunc flavor.
 
     Cached by ``(source_type, identifier, version/artifact, task,
-    artifact_fingerprint)`` — the fingerprint is the byte identity of the
-    local model artifact, so re-logging a run or retraining a
-    ``version="latest"`` model in place invalidates the in-process entry.
+    artifact_fingerprint, backend_identity)`` — the fingerprint is the byte
+    identity of the local model artifact, so re-logging a run or retraining
+    a ``version="latest"`` model in place invalidates the in-process entry,
+    and the backend identity means the same run on another destination is a
+    different entry rather than a stale hit.
 
     Args:
         source_type: ``"run"`` to load from a specific run, or ``"registered"``
             to load from a registered model version.
         run_id: MLflow run ID (required when *source_type* is ``"run"``).
         artifact_path: Artifact path within the run (e.g. ``"model.cbm"``).
-            If empty, auto-discovers: tries ``.cbm`` first, then pyfunc ``model/``.
+            If empty, auto-discovers: probes each registered family's
+            suffixes in registration order, then a pyfunc ``MLmodel`` directory.
         registered_model: Registered model name (required when *source_type* is
             ``"registered"``).
         version: Model version string (``"1"``, ``"2"``, or ``"latest"``).
+        alias: Registered model alias; resolved to its current version on every
+            load, so the cache follows the alias when it moves.
         task: ``"regression"`` or ``"classification"`` — determines which
             CatBoost class to use for loading (ignored for pyfunc).
-        tracking_uri: Override tracking URI; auto-detected if empty.
+        destination: Destination key (``"databricks"``, ``"server"``,
+            ``"local"``) or ``""`` for the local folder.
+        backend: The destination already resolved by a caller that makes
+            further reads of the same source, so every read uses one backend;
+            *destination* is resolved here otherwise.
 
     Returns:
         A ``ScoringModel`` wrapping the loaded model with a uniform interface.
+
+    Raises:
+        MlflowConfigError: If *destination* cannot be resolved — raised
+            before any cache lookup, so a warm entry is never served for a
+            destination whose prerequisites are gone.
     """
+    from haute._mlflow_utils import resolve_backend
+
     valid_tasks = ("regression", "classification")
     if task not in valid_tasks:
         raise ValueError(f"Invalid task {task!r}. Expected one of: {', '.join(valid_tasks)}")
@@ -985,6 +1841,12 @@ def load_mlflow_model(
         # This is a POSIX-style identifier within an MLflow run, not a local
         # project path. Validate it before any cache lookup or network access.
         _validate_artifact_path(artifact_path)
+
+    # Resolve the destination exactly once, before any cache lookup: every
+    # cache path, key, and lock below is keyed on this backend, and the full
+    # path reuses the same object so a settings save mid-load cannot split
+    # one load across two backends.
+    backend = backend if backend is not None else resolve_backend(destination)
 
     # Fast-path cache check using the raw inputs — avoids calling
     # resolve_mlflow_source() (which hits the MLflow tracking server)
@@ -995,8 +1857,9 @@ def load_mlflow_model(
     # so the in-process entry can never outlive the bytes it was loaded
     # from; a fingerprint change (re-log / retrain-in-place) is a miss.
     if source_type == "run" and run_id and artifact_path:
-        flavor = _flavor_from_artifact(artifact_path)
-        if flavor == "pyfunc":
+        family = family_for_artifact(artifact_path)
+        flavor = family.flavor
+        if family.load_file is None:
             # No local artifact file exists to fingerprint — pyfunc loads
             # by MLflow URI.  Keyed without byte identity (documented
             # residual in _model_cache_key).
@@ -1007,6 +1870,7 @@ def load_mlflow_model(
                 artifact_path=artifact_path,
                 task=task,
                 artifact_fingerprint="",
+                backend_identity=backend.identity,
             )
             cached = _model_cache.get(fast_key)
             if cached is not None:
@@ -1018,21 +1882,21 @@ def load_mlflow_model(
                 return cached
         else:
             with _disk_cache_run_in_use(run_id):
-                local_path = _artifact_cache_path(
-                    _disk_cache_root(),
-                    run_id,
-                    artifact_path,
-                )
-                if local_path.is_file():
+                # An EBM is only as current as the contract it loads under, so
+                # its fast path needs the cached contract too.
+                cached_files = _disk_cached_run_model(backend, run_id, artifact_path)
+                assert cached_files is not None  # only a pyfunc has no cached file
+                local_path = cached_files.model_path
+                contract_local = cached_files.contract_path
+                if cached_files.present():
                     fast_key = _model_cache_key(
                         source_type=source_type,
                         run_id=run_id,
                         version=version,
                         artifact_path=artifact_path,
                         task=task,
-                        artifact_fingerprint=_local_artifact_fingerprint(
-                            artifact_path, str(local_path)
-                        ),
+                        artifact_fingerprint=cached_files.fingerprint(),
+                        backend_identity=backend.identity,
                     )
                     cached = _model_cache.get(fast_key)
                     if cached is not None:
@@ -1042,7 +1906,7 @@ def load_mlflow_model(
                             flavor=flavor,
                         )
                         return cached
-                    with _artifact_io_lock(run_id, artifact_path):
+                    with _artifact_io_lock(backend.digest, run_id, artifact_path):
                         # Single-flight: a concurrent caller may have loaded
                         # this exact model while we waited for the lock.
                         cached = _model_cache.get(fast_key)
@@ -1059,7 +1923,17 @@ def load_mlflow_model(
                                 artifact_path=artifact_path,
                                 flavor=flavor,
                             )
-                            scoring_model = load_local_model(str(local_path), task=task)
+                            source = f"MLflow run {run_id!r}"
+                            scoring_model = (
+                                load_local_model(str(local_path), task=task, source=source)
+                                if contract_local is None
+                                else load_local_model(
+                                    str(local_path),
+                                    task=task,
+                                    contract_path=str(contract_local),
+                                    source=source,
+                                )
+                            )
                             _model_cache.put(fast_key, scoring_model)
                             logger.info(
                                 "mlflow_model_loaded_from_disk_cache",
@@ -1069,28 +1943,49 @@ def load_mlflow_model(
                                 task=task,
                                 flavor=flavor,
                                 path=str(local_path),
+                                backend_mode=backend.mode,
+                                backend_digest=backend.digest,
                             )
                             return scoring_model
                     # The file vanished while this thread waited for the lock
                     # (e.g. a concurrent corrupt-retry deleted it).  Fall
                     # through to the full resolve + re-download path below.
 
-    resolved_run_id, resolved_version, mlflow_mod, client = resolve_mlflow_source(
+    if _DISK_CACHE_ONLY.get():
+        from haute.errors import ModelNotInDiskCacheError
+
+        reference = (
+            f"run {run_id!r}, artifact {artifact_path!r}"
+            if source_type == "run"
+            else f"registered model {registered_model!r}"
+        )
+        raise ModelNotInDiskCacheError(
+            f"The local model cache holds no model for {reference}, and this execution "
+            "loads models only from that cache. Preview the Model Scoring node in the "
+            "editor, which fills it.",
+            source_type=source_type,
+        )
+
+    # The already-resolved backend is threaded in, so this load resolves the
+    # destination exactly once no matter which path it takes.
+    resolved_run_id, resolved_version, mlflow_mod, client, _resolved = resolve_mlflow_source(
         source_type=source_type,
         run_id=run_id,
         registered_model=registered_model,
         version=version,
-        tracking_uri=tracking_uri,
+        backend=backend,
+        alias=alias,
     )
     resolved_artifact = artifact_path
 
     # Auto-discover artifact if not specified
     if not resolved_artifact:
         resolved_artifact, _flavor = _find_model_artifact(client, resolved_run_id)
-    # else: detect from the artifact path extension
 
-    # Detect flavor from artifact path
-    flavor = _flavor_from_artifact(resolved_artifact)
+    # The artifact's suffix names its family (no suffix: a pyfunc directory).
+    family = family_for_artifact(resolved_artifact)
+    flavor = family.flavor
+    loads_from_file = family.load_file is not None
 
     # Resolve the local artifact up front so its byte identity can be part
     # of the cache key: a "latest" retrain or re-logged run must miss, not
@@ -1100,14 +1995,17 @@ def load_mlflow_model(
     # keyed without byte identity (documented residual in _model_cache_key).
     local_artifact_path: str | None = None
     artifact_fp = ""
-    if flavor in ("catboost", "rustystats"):
+    if loads_from_file:
         with _disk_cache_run_in_use(resolved_run_id):
             local_artifact_path = _resolve_artifact_local(
                 mlflow_mod,
+                backend,
                 resolved_run_id,
                 resolved_artifact,
             )
-            artifact_fp = _local_artifact_fingerprint(resolved_artifact, local_artifact_path)
+            artifact_fp = _loaded_artifact_fingerprint(
+                flavor, mlflow_mod, backend, resolved_run_id, resolved_artifact, local_artifact_path
+            )
 
     cache_key = _model_cache_key(
         source_type=source_type,
@@ -1116,6 +2014,7 @@ def load_mlflow_model(
         artifact_path=resolved_artifact,
         task=task,
         artifact_fingerprint=artifact_fp,
+        backend_identity=backend.identity,
     )
 
     cached = _model_cache.get(cache_key)
@@ -1132,7 +2031,7 @@ def load_mlflow_model(
     # in-memory entry via the re-check below.  This also makes the
     # corrupt-retry's delete + re-download mutually exclusive with any
     # concurrent load of the same cached file.
-    with _artifact_io_lock(resolved_run_id, resolved_artifact):
+    with _artifact_io_lock(backend.digest, resolved_run_id, resolved_artifact):
         cached = _model_cache.get(cache_key)
         if cached is not None:
             _record_cache_hit(
@@ -1157,10 +2056,11 @@ def load_mlflow_model(
         # small exponential backoff with jitter so transient upstream hiccups
         # (tracking-server flaps) get a moment to recover — but the total
         # retry budget is bounded so persistent corruption surfaces loudly.
-        if flavor in ("catboost", "rustystats"):
+        if loads_from_file:
             with _disk_cache_run_in_use(resolved_run_id):
                 scoring_model = _load_with_bounded_retry(
                     mlflow_mod=mlflow_mod,
+                    backend=backend,
                     run_id=resolved_run_id,
                     artifact=resolved_artifact,
                     flavor=flavor,
@@ -1177,12 +2077,23 @@ def load_mlflow_model(
                     version=resolved_version,
                     artifact_path=resolved_artifact,
                     task=task,
-                    artifact_fingerprint=_local_artifact_fingerprint(
-                        resolved_artifact, local_artifact_path
+                    artifact_fingerprint=_loaded_artifact_fingerprint(
+                        flavor,
+                        mlflow_mod,
+                        backend,
+                        resolved_run_id,
+                        resolved_artifact,
+                        local_artifact_path,
                     ),
+                    backend_identity=backend.identity,
                 )
         else:
-            raw_model = _load_pyfunc_model(mlflow_mod, resolved_run_id, resolved_artifact)
+            raw_model = _load_pyfunc_model(
+                mlflow_mod,
+                resolved_run_id,
+                resolved_artifact,
+                backend=backend,
+            )
             scoring_model = _wrap_pyfunc(raw_model)
 
         _model_cache.put(cache_key, scoring_model)
@@ -1194,6 +2105,8 @@ def load_mlflow_model(
         artifact=resolved_artifact,
         task=task,
         flavor=flavor,
+        backend_mode=backend.mode,
+        backend_digest=backend.digest,
     )
     return scoring_model
 
@@ -1207,15 +2120,15 @@ def _prepare_predict_frame(
     df_eager: pl.DataFrame,
     features: list[str],
     cat_feature_names: frozenset[str] = frozenset(),
-    flavor: ModelFlavor = "pyfunc",
+    flavor: str = "pyfunc",
 ) -> Any:
     """Prepare a Polars DataFrame for model prediction.
 
-    Dispatch per flavor:
+    Dispatch on the family's registered ``predict_frame``:
 
-    - ``rustystats``: Polars DataFrame, untouched — the GLM owns its own
-      preprocessing (nulls, categoricals, casts).
-    - ``pyfunc``: **named pandas DataFrame with native dtypes**.  MLflow
+    - ``polars``: Polars DataFrame, untouched — RustyStats and the Haute
+      wrappers own their own preprocessing (nulls, categoricals, casts).
+    - ``pandas`` (pyfunc): **named pandas DataFrame with native dtypes**.  MLflow
       pyfunc models carry signatures; named-column signatures (the
       standard ``infer_signature`` case) hard-reject unnamed numpy input
       (``MlflowException: Model is missing inputs [...]``), and mlflow's
@@ -1224,34 +2137,25 @@ def _prepare_predict_frame(
       back to ``double`` with the mantissa bits already gone.  Float
       nulls surface as NaN; integer columns containing nulls widen to
       float64 NaN via the Arrow conversion.
-    - ``catboost``: numerics cast to Float32 (CatBoost's internal compute
+    - ``tabular`` (catboost): numerics cast to Float32 (CatBoost's internal compute
       dtype; null→NaN); declared categoricals filled with the
       ``_MISSING_`` sentinel and carried as ``pd.Categorical`` through
       pandas.  Without categoricals, the numpy fast path applies — the
       ONLY numpy branch (it avoids the Arrow-to-pandas round-trip that
       keeps the buffer alive twice).
 
-    Unknown flavors raise ``ValueError`` — silently routing them through
-    the catboost-shaped branch would score with the wrong input contract.
+    Unregistered flavors raise ``ValueError`` naming the registered ones —
+    routing them through any branch would score with a guessed input
+    contract.
     """
-    # RustyStats handles its own preprocessing — pass Polars directly
-    if flavor == "rustystats":
-        return df_eager.select(features) if features else df_eager
-
-    # ``catboost`` and ``pyfunc`` share the tabular (pandas/numpy) prep below;
-    # ``rustystats`` is handled above.  These are the SSOT flavors *minus*
-    # rustystats — anything else (including a flavor newly added to
-    # ``ModelFlavor`` but not yet taught a prep path here) fails loudly rather
-    # than being scored through the wrong input contract.  The error message
-    # enumerates the domain straight from ``_SUPPORTED_FLAVORS`` so it can
-    # never drift from the SSOT, and
-    # ``tests/test_mlflow_io.py::TestFlavorSsot`` pins that this function
-    # recognises exactly the SSOT flavors.
-    if flavor not in ("catboost", "pyfunc"):
+    if not is_registered_flavor(flavor):
         raise ValueError(
             f"Unknown model flavor {flavor!r} for predict-frame preparation. "
-            f"Expected one of: {sorted(_SUPPORTED_FLAVORS)}."
+            f"Expected one of: {sorted(f.flavor for f in model_families())}."
         )
+    predict_frame = model_family(flavor).predict_frame
+    if predict_frame == "polars":
+        return df_eager.select(features) if features else df_eager
 
     cat_cols = [c for c in features if c in cat_feature_names]
     selected = df_eager.select(features)
@@ -1260,7 +2164,7 @@ def _prepare_predict_frame(
             [pl.col(c).fill_null("_MISSING_").cast(pl.Categorical) for c in cat_cols]
         )
 
-    if flavor == "pyfunc":
+    if predict_frame == "pandas":
         # Named DataFrame per the model signature; mlflow's enforcement
         # sees exactly the dtypes the pipeline produced. MLflow's scalar
         # ``datetime`` type is timezone-agnostic and rejects pandas'
@@ -1275,7 +2179,7 @@ def _prepare_predict_frame(
     if numeric_cols:
         selected = selected.with_columns([pl.col(c).cast(pl.Float32) for c in numeric_cols])
     # Categorical dtype only round-trips through pandas; the numeric-only
-    # CatBoost path skips the pandas wrapper entirely.
+    # tabular path skips the pandas wrapper entirely.
     if cat_cols:
         return selected.to_pandas()
     return selected.to_numpy()
@@ -1353,19 +2257,15 @@ def _score_eager(
     output_col: str = "prediction",
     task: str = "regression",
     write_projection: ScoreWriteProjection | None = None,
-    offset_column: str | None = None,
 ) -> pl.LazyFrame:
     """Collect a LazyFrame and score in-memory. Returns a LazyFrame.
 
     Thin delegate onto :func:`haute._model_scorer.score_frame` with
     ``batch=False`` — the unified scoring entry point owns the flavor
-    dispatch and the batch/eager fork.
-
-    ``offset_column`` is threaded so the model's fit-time offset (contract
-    or self-described) is re-applied at score time; ``None`` lets the
-    scorer derive it from the model itself.
+    dispatch and the batch/eager fork. The carrier's offset (self-described
+    or contract-bound) is re-applied at score time.
     """
-    from haute._model_scorer import _declared_offset_column, score_frame
+    from haute._model_scorer import _declared_offset_column, _declared_offset_link, score_frame
 
     return score_frame(
         model=scoring_model.raw_model,
@@ -1377,7 +2277,6 @@ def _score_eager(
         output_col=output_col,
         batch=False,
         write_projection=write_projection,
-        offset_column=offset_column
-        if offset_column is not None
-        else _declared_offset_column(scoring_model),
+        offset_column=_declared_offset_column(scoring_model),
+        offset_link=_declared_offset_link(scoring_model),
     )

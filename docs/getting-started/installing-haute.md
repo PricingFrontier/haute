@@ -1,6 +1,6 @@
 # Installing Haute
 
-Make sure you've [set up your environment](environment.md) first (VS Code, Python, uv).
+Make sure you've [set up your environment](environment.md) first (VS Code and uv).
 
 ---
 
@@ -12,19 +12,27 @@ Open the VS Code terminal and run these commands one at a time:
 uv init my-pricing-project
 cd my-pricing-project
 uv add haute
-haute init --target databricks
+uv run haute init --target databricks
 ```
 
-This creates a new project folder with everything Haute needs: a `haute.toml` configuration file, test quote templates, CI/CD workflow files, and a `.env.example` credential template.
+`uv run` runs Haute from the project's environment, which you have not activated yet. `--target` names where you will deploy: `databricks` (the default), `container`, `azure-container-apps`, `aws-ecs` or `gcp-run`. `--ci` names where your CI/CD runs: `github` (the default), `gitlab`, `azure-devops` or `none`.
+
+This fills the project folder with everything Haute needs: the starter pipeline `rating/main.py` (the pipeline the editor opens), a `rating/utility/` folder for your own helper functions, a `data/` folder for your data files, a `haute.toml` configuration file, a starter test with an example test quote in `tests/`, CI/CD workflow files, and a `.env.example` credential template. It also removes the `main.py` that `uv init` created, because Haute uses `rating/main.py`.
+
+Copy the credential template to `.env` and fill in your values. `.env` is gitignored, so your credentials are never committed:
+
+```powershell
+cp .env.example .env
+```
 
 ---
 
-## Set up a virtual environment and run
+## Activate the environment and run
+
+`uv add` already created the project's virtual environment, `.venv`, and installed Haute into it. Activate it and start the editor:
 
 ```powershell
-uv venv
 .venv\Scripts\activate
-uv sync
 haute serve
 ```
 
@@ -43,6 +51,23 @@ Depending on your deploy target, you may need additional packages:
 uv add "haute[databricks]"         # Adds SQL support and pins Databricks clients
 ```
 
+### XGBoost GPU training
+
+Haute installs XGBoost's CPU-only build (`xgboost-cpu`). To train XGBoost models on an
+NVIDIA GPU on Windows or Linux, swap in the full CUDA build once, then restart
+`haute serve`:
+
+```powershell
+haute gpu-setup            # installs xgboost (CUDA) at the same version
+haute gpu-setup --check    # reports the build, the GPU and whether GPU training works
+haute gpu-setup --cpu      # switches back to xgboost-cpu
+```
+
+The command needs the NVIDIA driver (`nvidia-smi` must list the GPU) and checks the
+result in a fresh Python process. The CUDA build is a larger download (about 140 MB on
+Windows). Re-syncing the project (`uv sync`) restores `xgboost-cpu`; run
+`haute gpu-setup` again afterwards. macOS has no CUDA build.
+
 ---
 
 ## Troubleshooting
@@ -59,11 +84,21 @@ uv sync --no-managed-python --no-python-downloads
 .\.venv\Scripts\python.exe -m haute serve
 ```
 
-Calling the environment's Python explicitly means activation is optional. Once it is activated, the shorter `python -m haute serve` is equivalent. Both module forms and `haute serve` invoke the same command implementation and accept the same options. You can use the module form for every command, such as `python -m haute init` or `python -m haute lint`. If the approved Python interpreter itself is blocked, IT must permit or provision that runtime; Haute does not bypass operating-system policy.
+Calling the environment's Python explicitly means activation is optional. Once it is activated, the shorter `python -m haute serve` is equivalent. Both module forms and `haute serve` invoke the same command implementation and accept the same options. The module form works for `haute init` too: `python -m haute init`. If the approved Python interpreter itself is blocked, IT must permit or provision that runtime; Haute does not bypass operating-system policy.
+
+### macOS: XGBoost or LightGBM will not load
+
+The macOS wheels of XGBoost and LightGBM use the system's OpenMP runtime, which macOS does not ship. If training or scoring an XGBoost or LightGBM model fails with an error mentioning `libomp.dylib`, install it with [Homebrew](https://brew.sh) and restart `haute serve`:
+
+```bash
+brew install libomp
+```
+
+Windows and Linux installs need no extra step.
 
 **`haute serve` doesn't open anything in my browser**
 
-Look at the terminal output for a line like `Running on http://localhost:8000`. Copy that address and paste it into your browser. If you see an error, make sure your virtual environment is active (`(.venv)` in your prompt).
+Look at the terminal output for a line like `Uvicorn running on http://localhost:8000`. Copy that address and paste it into your browser. If you see an error, make sure your virtual environment is active (`(.venv)` in your prompt).
 
 **`(.venv)` isn't showing in my terminal prompt**
 
@@ -75,5 +110,5 @@ Run `.venv\Scripts\activate`. You need to do this every time you open a new term
 
 You've got Haute running locally. From here:
 
-- **Build a pipeline** - see the **Building Pipelines** guide to create your pricing pipeline
+- **Build a pipeline** - see the [Building Models](../building-models/index.md) guide to create your pricing pipeline
 - **Deploy it** - when you're ready to go live, head to the [Deployment](../deployment/index.md) docs. If you're new to Git, CI/CD, and other deployment concepts, read [Before You Start](../deployment/before-you-start.md) first - it explains everything in plain English.

@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 from haute.routes._helpers import invalidate_pipeline_index, parse_pipeline_to_graph, pipeline_dir
 
 DEFINITION_ID = "pricing-definition"
-INSTANCE_ID = "pricing-instance"
+INSTANCE_ID = "pricing"
 ALIAS = "pricing"
 
 
@@ -51,7 +51,8 @@ def second(first: pl.LazyFrame) -> pl.LazyFrame:
     return parent
 
 
-def _write_child(path: Path, *, node_name: str = "base_rate") -> None:
+def _write_child(path: Path, *, node_name: str = "base_rate", pipeline_dir: str) -> None:
+    """Write the child definition; *pipeline_dir* leads from its folder to the parent's."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         f"""import polars as pl
@@ -60,7 +61,11 @@ import haute
 CHILD_HELPER = {node_name!r}
 
 submodel = haute.Submodel(
-    "pricing", definition_id="pricing-definition", input_ports=[], output_ports=[]
+    "pricing",
+    definition_id="pricing-definition",
+    input_ports=[],
+    output_ports=[],
+    pipeline_dir="{pipeline_dir}",
 )
 
 @submodel.polars
@@ -82,15 +87,13 @@ def _write_parent_with_child(
     parent = root / parent_relative
     parent.parent.mkdir(parents=True, exist_ok=True)
     child = parent.parent / child_reference
-    _write_child(child, node_name=node_name)
+    folders = Path(child_reference).parent.parts
+    _write_child(child, node_name=node_name, pipeline_dir="/".join([".."] * len(folders)) or ".")
     parent.write_text(
         f"""import haute
 
 pipeline = haute.Pipeline({parent.stem!r})
-pipeline.submodel(
-    {child_reference!r}, definition_id="pricing-definition",
-    instance_id="pricing-instance", alias="pricing",
-)
+pipeline.submodel({child_reference!r}, "pricing")
 """,
         encoding="utf-8",
     )
@@ -295,9 +298,7 @@ def test_dissolve_retains_child_referenced_by_another_pipeline(
 pipeline = haute.Pipeline("other")
 pipeline.submodel(
     "modules/pricing.py",
-    definition_id="pricing-definition",
-    instance_id="pricing-instance",
-    alias="pricing",
+    "pricing",
 )
 """,
         encoding="utf-8",
@@ -326,9 +327,7 @@ def test_dissolve_retains_child_when_sibling_audit_is_incomplete(
 pipeline = haute.Pipeline("broken")
 pipeline.submodel(
     "modules/missing.py",
-    definition_id="missing-definition",
-    instance_id="missing-instance",
-    alias="missing",
+    "missing",
 )
 """,
         encoding="utf-8",

@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from haute import _env
+from tests._source_files import source_files
 
 
 class TestEnvHelpers:
@@ -88,20 +89,9 @@ class TestEnvHelpers:
 # (accessor, env var, override string, expected parsed value, default) for every
 # knob that used to be captured at import. Setting the env var AFTER import must
 # change the accessor's result — that is exactly the frozen-constant regression.
+# The time limits are pipeline settings, read from the settings file per call
+# (tests/test_pipeline_settings.py), not environment variables.
 _ACCESSOR_CASES = [
-    ("haute.routes.pipeline", "_trace_timeout", "HAUTE_TRACE_TIMEOUT", "5", 5.0, 120.0),
-    ("haute.routes.pipeline", "_preview_timeout", "HAUTE_PREVIEW_TIMEOUT", "5", 5.0, 120.0),
-    ("haute.routes.pipeline", "_sink_timeout", "HAUTE_SINK_TIMEOUT", "5", 5.0, 300.0),
-    ("haute.routes.json_cache", "_build_timeout", "HAUTE_BUILD_TIMEOUT", "5", 5.0, 1800.0),
-    (
-        "haute.routes.output_assemble",
-        "_dry_run_timeout",
-        "HAUTE_OUTPUT_DRY_RUN_TIMEOUT",
-        "5",
-        5.0,
-        120.0,
-    ),
-    ("haute.routes.input_cache", "_build_timeout", "HAUTE_BUILD_TIMEOUT", "5", 5.0, 1800.0),
     (
         "haute.routes.input_cache",
         "_max_concurrent_builds",
@@ -112,35 +102,19 @@ _ACCESSOR_CASES = [
     ),
     (
         "haute.routes._optimiser_service",
-        "_default_auto_range_timeout",
-        "HAUTE_AUTO_RANGE_TIMEOUT",
-        "60",
-        60,
-        1800,
+        "_default_reducer_budget_mb",
+        "HAUTE_OPTIMISER_REDUCER_BUDGET_MB",
+        "64",
+        64,
+        512,
     ),
     (
-        "haute.routes._optimiser_service",
-        "_default_auto_range_chunk_size",
-        "HAUTE_AUTO_RANGE_CHUNK_SIZE",
-        "111",
-        111,
-        2_000_000,
-    ),
-    (
-        "haute.routes._optimiser_service",
-        "_default_auto_range_partitions",
-        "HAUTE_AUTO_RANGE_PARTITIONS",
-        "8",
-        8,
-        16,
-    ),
-    (
-        "haute.routes._train_service",
-        "_default_train_timeout",
-        "HAUTE_TRAIN_TIMEOUT",
-        "60",
-        60,
-        3600,
+        "haute.routes._optimiser_solver",
+        "_max_ratebook_cd_trace",
+        "HAUTE_OPTIMISER_CD_TRACE_LIMIT",
+        "10",
+        10,
+        1000,
     ),
     (
         "haute.routes._train_service",
@@ -191,62 +165,19 @@ def test_accessor_malformed_value_fails_loudly(
         fn()
 
 
-def test_solver_timeout_optional_semantics(monkeypatch):
-    """The optional timeout is absent by default and strict when configured."""
-    from haute.routes import _optimiser_service as opt
-
-    monkeypatch.delenv("HAUTE_SOLVER_TIMEOUT", raising=False)
-    assert opt._default_solver_timeout() is None
-    monkeypatch.setenv("HAUTE_SOLVER_TIMEOUT", "42")
-    assert opt._default_solver_timeout() == 42
-    # Malformed must not silently remove the timeout.
-    monkeypatch.setenv("HAUTE_SOLVER_TIMEOUT", "not-an-int")
-    with pytest.raises(RuntimeError, match="HAUTE_SOLVER_TIMEOUT.*positive integer"):
-        opt._default_solver_timeout()
-
-
-@pytest.mark.parametrize(
-    ("module_name", "accessor", "env_var"),
-    [
-        ("haute.routes.json_cache", "_build_timeout", "HAUTE_BUILD_TIMEOUT"),
-        ("haute.routes.input_cache", "_build_timeout", "HAUTE_BUILD_TIMEOUT"),
-    ],
-)
-@pytest.mark.parametrize("raw", ["0", "-1", "nan", "inf"])
-def test_build_timeout_has_one_positive_finite_policy(
-    module_name, accessor, env_var, raw, monkeypatch
-):
-    fn = _resolve(module_name, accessor)
-    monkeypatch.setenv(env_var, raw)
-    with pytest.raises(RuntimeError, match=env_var):
-        fn()
-
-
-@pytest.mark.parametrize(
-    ("module_name", "accessor"),
-    [
-        ("haute.routes.json_cache", "_build_timeout"),
-        ("haute.routes.input_cache", "_build_timeout"),
-    ],
-)
-def test_build_timeout_accepts_positive_values_below_old_clamp(module_name, accessor, monkeypatch):
-    fn = _resolve(module_name, accessor)
-    monkeypatch.setenv("HAUTE_BUILD_TIMEOUT", "0.0005")
-    assert fn() == 0.0005
-
-
 def test_auto_range_context_default_reflects_env(monkeypatch):
-    """The frozen dataclass default is a ``default_factory``, so a per-test
-    env override reaches ``FrontierAutoRangeContext()`` — proving the fix also
+    """The frozen dataclass defaults are ``default_factory``s, so a per-test
+    override reaches ``FrontierAutoRangeContext()`` — proving the fix also
     covers the dataclass-default capture, not just the direct accessor call.
+    The batch rows follow the pipeline's streaming chunk size setting.
     """
+    import polars as pl
+
     from haute.routes._optimiser_service import FrontierAutoRangeContext
 
-    monkeypatch.setenv("HAUTE_AUTO_RANGE_CHUNK_SIZE", "333")
-    monkeypatch.setenv("HAUTE_AUTO_RANGE_PARTITIONS", "9")
+    pl.Config.set_streaming_chunk_size(333)
     ctx = FrontierAutoRangeContext()
     assert ctx.chunk_size == 333
-    assert ctx.partition_count == 9
 
 
 DirectEnvRead = tuple[str, str, str, str]
@@ -419,6 +350,14 @@ other = os.environ.get(key)
 # in haute._env; these exceptions are strings, booleans, credentials, mappings,
 # or custom non-negative/readiness policies with deliberately different semantics.
 _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
+    # The CUDA runtime's own device-visibility variable: the VRAM admission
+    # check sizes the GPU CUDA will train on (MOD-F06).
+    (
+        "src/haute/_host_memory.py",
+        "<module>.available_vram_bytes",
+        "CUDA_VISIBLE_DEVICES",
+        "os.environ.get",
+    ),
     # Credentials and external integration endpoints.
     (
         "src/haute/assistant/_config.py",
@@ -474,23 +413,74 @@ _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
         "DATABRICKS_RATING_TOKEN",
         "os.environ.get",
     ),
+    # Tracking-destination resolution: each read happens per resolve call so
+    # the selected backend always reflects the current environment.
     (
-        "src/haute/modelling/_mlflow_log.py",
-        "<module>.build_run_url",
+        "src/haute/_mlflow_utils.py",
+        "<module>.tracking_uri_from_environment",
+        "MLFLOW_TRACKING_URI",
+        "os.environ.get",
+    ),
+    (
+        "src/haute/_mlflow_utils.py",
+        "<module>.set_tracking_uri_preserving_env",
+        "MLFLOW_TRACKING_URI",
+        "os.environ.get",
+    ),
+    # Per-destination resolution (MLF-D01): the Databricks resolver reads the
+    # dedicated MLflow host/token pair per call, and the SDK-mode guard reads the
+    # MLflow flag per call so an operator's explicit setting is honoured (and
+    # rejected loudly) at every resolution, never cached from process start.
+    (
+        "src/haute/modelling/_mlflow_settings.py",
+        "<module>._resolve_databricks",
+        "DATABRICKS_MLFLOW_HOST",
+        "os.getenv",
+    ),
+    (
+        "src/haute/modelling/_mlflow_settings.py",
+        "<module>._resolve_databricks",
+        "DATABRICKS_MLFLOW_TOKEN",
+        "os.getenv",
+    ),
+    (
+        "src/haute/modelling/_mlflow_settings.py",
+        "<module>._reject_databricks_sdk_mode",
+        "MLFLOW_ENABLE_DB_SDK",
+        "os.environ.get",
+    ),
+    # Read per resolution so a profile variable set after start still rejects the pair form.
+    (
+        "src/haute/modelling/_mlflow_settings.py",
+        "<module>._reject_ambient_databricks_profile",
+        "DATABRICKS_CONFIG_PROFILE",
+        "os.environ.get",
+    ),
+    # Presence-only reads per resolution, so the unconfigured detail tracks the current .env.
+    (
+        "src/haute/modelling/_mlflow_settings.py",
+        "<module>._general_pair_hint",
         "DATABRICKS_HOST",
         "os.getenv",
     ),
     (
-        "src/haute/modelling/_mlflow_log.py",
-        "<module>.resolve_tracking_backend",
-        "DATABRICKS_HOST",
-        "os.getenv",
-    ),
-    (
-        "src/haute/modelling/_mlflow_log.py",
-        "<module>.resolve_tracking_backend",
+        "src/haute/modelling/_mlflow_settings.py",
+        "<module>._general_pair_hint",
         "DATABRICKS_TOKEN",
         "os.getenv",
+    ),
+    # MLflow's bound credential provider reads the pair per request, so a repoint needs no reset.
+    (
+        "src/haute/_mlflow_utils.py",
+        "<module>._binding_replacements.MlflowPairConfigProvider.get_config",
+        "DATABRICKS_MLFLOW_HOST",
+        "os.environ.get",
+    ),
+    (
+        "src/haute/_mlflow_utils.py",
+        "<module>._binding_replacements.MlflowPairConfigProvider.get_config",
+        "DATABRICKS_MLFLOW_TOKEN",
+        "os.environ.get",
     ),
     # Hosted durable storage: deployment identity and credential locations,
     # each read per call so a container can be reconfigured without a rebuild.
@@ -536,7 +526,6 @@ _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
         "HAUTE_GIT_ALLOWED_HOSTS",
         "os.environ.get",
     ),
-    ("src/haute/routes/modelling.py", "<module>.mlflow_check", "DATABRICKS_HOST", "os.getenv"),
     # String, boolean, mapping, or custom validation semantics.
     (
         "src/haute/_execution_admission.py",
@@ -613,7 +602,7 @@ _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
         "os.environ.get",
     ),
     (
-        "src/haute/routes/_optimiser_service.py",
+        "src/haute/routes/_optimiser_artifacts.py",
         "<module>._artifact_stale_seconds",
         "HAUTE_ARTIFACT_STALE_SECONDS",
         "os.environ.get",
@@ -626,7 +615,7 @@ _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
 def test_production_direct_environment_reads_match_reviewed_exceptions():
     root = Path(__file__).parents[1]
     discovered: set[DirectEnvRead] = set()
-    for source_path in (root / "src" / "haute").rglob("*.py"):
+    for source_path in source_files(root / "src" / "haute"):
         if source_path.name == "_env.py":
             continue
         relative_path = source_path.relative_to(root).as_posix()

@@ -11,10 +11,19 @@
  * wires up store selectors and API functions for each job type.
  */
 import { useCallback, useEffect, useRef } from "react"
-import { getExplorePivotStatus, getExploreStatus, getOptimiserStatus, getTrainStatus } from "../api/client"
+import {
+  getExplorePivotStatus,
+  getNodeDataStatus,
+  getOptimiserStatus,
+  getTrainStatus,
+} from "../api/client"
 import { FAILED_JOB_STATUSES } from "../api/types"
+import type { NodeDataStatusResponse } from "../api/types"
+import { ApiResponseValidationError } from "../api/responseValidation"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
-import type { ExplorePivotProgress, ExploreProgress, SolveProgress, TrainProgress } from "../stores/useNodeResultsStore"
+import type { ExplorePivotProgress, SolveProgress, TrainProgress } from "../stores/useNodeResultsStore"
+import useNodeDataStore from "../stores/useNodeDataStore"
+import type { NodeDataSlotJob } from "../stores/useNodeDataStore"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import useToastStore from "../stores/useToastStore"
 import { buildExecutionFailureMessage } from "../utils/executionDiagnostics"
@@ -41,10 +50,33 @@ function getMissingJobPollErrorMessage(error: unknown): string | undefined {
   return "Job not found"
 }
 
+// An ApiResponseValidationError is deterministic — the same payload fails the
+// same way on every poll — so it ends the job with a visible error instead of
+// leaving stale progress behind a retry loop. Transport failures stay retryable.
+function getJobPollErrorMessage(error: unknown): string | undefined {
+  if (error instanceof ApiResponseValidationError) return error.message
+  return getMissingJobPollErrorMessage(error)
+}
+
+// What a training status shows moving: its state, phase, message, bar, round
+// and fit counts. `elapsed_seconds` is left out because it moves on every poll.
+function trainProgressKey(status: TrainProgress): string {
+  return JSON.stringify([
+    status.status,
+    status.phase ?? null,
+    status.message,
+    status.progress,
+    status.iteration,
+    status.trial_index ?? null,
+    status.fold_index ?? null,
+    status.completed_fits ?? null,
+  ])
+}
+
 export default function useBackgroundJobs() {
   const addToast = useToastStore((s) => s.addToast)
   const documentSourceFile = useDocumentStatusStore((s) => s.sourceFile)
-  const documentSourceRevision = useDocumentStatusStore((s) => s.sourceRevision)
+  const documentExecutionGeneration = useDocumentStatusStore((s) => s.executionGeneration)
   const documentLoadStatus = useDocumentStatusStore((s) => s.loadStatus)
   const documentCanExecute = useDocumentStatusStore(
     (s) => s.capabilities?.can_execute === true,
@@ -53,9 +85,10 @@ export default function useBackgroundJobs() {
     (s) => s.graphSynchronized,
   )
   const discardActiveJobs = useNodeResultsStore((s) => s.discardActiveJobs)
+  const resetNodeData = useNodeDataStore((s) => s.reset)
   const documentFenceKey = JSON.stringify([
     documentSourceFile,
-    documentSourceRevision,
+    documentExecutionGeneration,
     documentLoadStatus,
     documentCanExecute,
     documentGraphSynchronized,
@@ -65,9 +98,13 @@ export default function useBackgroundJobs() {
   useEffect(() => {
     if (previousDocumentFenceKey.current !== documentFenceKey) {
       discardActiveJobs()
+      // Shared data points belong to one document and source: a new fence
+      // invalidates every slot, so consumers ask again instead of showing the
+      // previous document's generations.
+      resetNodeData()
       previousDocumentFenceKey.current = documentFenceKey
     }
-  }, [discardActiveJobs, documentFenceKey])
+  }, [discardActiveJobs, documentFenceKey, resetNodeData])
 
   // ── Optimiser job polling ──
 
@@ -77,7 +114,7 @@ export default function useBackgroundJobs() {
   const failSolveJob = useNodeResultsStore((s) => s.failSolveJob)
 
   const solvePollFn = useCallback(
-    (jobId: string, signal: AbortSignal) => getOptimiserStatus<SolveProgress>(jobId, { signal }),
+    (jobId: string, signal: AbortSignal) => getOptimiserStatus(jobId, { signal }),
     [],
   )
   const solveOnComplete = useCallback(
@@ -104,7 +141,7 @@ export default function useBackgroundJobs() {
       status: s.status,
       terminalReason: s.terminal_reason,
     }),
-    getTerminalPollErrorMessage: getMissingJobPollErrorMessage,
+    getTerminalPollErrorMessage: getJobPollErrorMessage,
     addToast,
     successLabel: "Optimisation complete",
     failLabel: "Optimisation failed",
@@ -118,7 +155,7 @@ export default function useBackgroundJobs() {
   const failTrainJob = useNodeResultsStore((s) => s.failTrainJob)
 
   const trainPollFn = useCallback(
-    (jobId: string, signal: AbortSignal) => getTrainStatus<TrainProgress>(jobId, { signal }),
+    (jobId: string, signal: AbortSignal) => getTrainStatus(jobId, { signal }),
     [],
   )
   const trainOnComplete = useCallback(
@@ -134,6 +171,9 @@ export default function useBackgroundJobs() {
     pollFn: trainPollFn,
     onProgress: updateTrainProgress,
     progressThrottleMs: VISIBLE_PROGRESS_INTERVAL_MS,
+    // A training's rounds advance quickly, so it polls about once a second
+    // while they do instead of backing off to five seconds.
+    progressKey: trainProgressKey,
     onComplete: trainOnComplete,
     onFail: failTrainJob,
     labelFn: (job) => job.nodeLabel,
@@ -145,51 +185,10 @@ export default function useBackgroundJobs() {
       status: s.status,
       terminalReason: s.terminal_reason,
     }),
-    getTerminalPollErrorMessage: getMissingJobPollErrorMessage,
+    getTerminalPollErrorMessage: getJobPollErrorMessage,
     addToast,
     successLabel: "Training complete",
     failLabel: "Training failed",
-  })
-
-  // ── Explore job polling ──
-
-  const exploreJobs = useNodeResultsStore((s) => s.exploreJobs)
-  const updateExploreProgress = useNodeResultsStore((s) => s.updateExploreProgress)
-  const completeExploreJob = useNodeResultsStore((s) => s.completeExploreJob)
-  const failExploreJob = useNodeResultsStore((s) => s.failExploreJob)
-
-  const explorePollFn = useCallback(
-    (jobId: string, signal: AbortSignal) => getExploreStatus<ExploreProgress>(jobId, { signal }),
-    [],
-  )
-  const exploreOnComplete = useCallback(
-    (nodeId: string, status: ExploreProgress) => {
-      if (!status.result) return
-      completeExploreJob(nodeId, status.result, status)
-    },
-    [completeExploreJob],
-  )
-
-  useJobPolling<(typeof exploreJobs)[string], ExploreProgress>({
-    jobs: exploreJobs,
-    pollFn: explorePollFn,
-    onProgress: updateExploreProgress,
-    progressThrottleMs: VISIBLE_PROGRESS_INTERVAL_MS,
-    onComplete: exploreOnComplete,
-    onFail: failExploreJob,
-    labelFn: (job) => job.nodeLabel,
-    jobIdFn: (job) => job.jobId,
-    isComplete: (s) => s.status === "completed",
-    isError: (s) => FAILED_JOB_STATUSES.has(s.status),
-    getResult: (s) => (s.result ? s : undefined),
-    getErrorMessage: (s) => buildExecutionFailureMessage(s.message || "Unknown error", s.execution_metrics, {
-      status: s.status,
-      terminalReason: s.terminal_reason,
-    }),
-    getTerminalPollErrorMessage: getMissingJobPollErrorMessage,
-    addToast,
-    successLabel: "Explore complete",
-    failLabel: "Explore failed",
   })
 
   // ── Explore pivot job polling ──
@@ -217,7 +216,7 @@ export default function useBackgroundJobs() {
     progressThrottleMs: VISIBLE_PROGRESS_INTERVAL_MS,
     onComplete: pivotOnComplete,
     onFail: failExplorePivotJob,
-    labelFn: (job) => `${job.nodeLabel} — ${job.pivotName}`,
+    labelFn: (job) => `${job.nodeLabel} - ${job.pivotName}`,
     jobIdFn: (job) => job.jobId,
     isComplete: (s) => s.status === "completed",
     isError: (s) => FAILED_JOB_STATUSES.has(s.status),
@@ -230,9 +229,96 @@ export default function useBackgroundJobs() {
         terminalReason: s.terminal_reason,
       },
     ),
-    getTerminalPollErrorMessage: getMissingJobPollErrorMessage,
+    getTerminalPollErrorMessage: getJobPollErrorMessage,
     addToast,
     successLabel: "Pivot complete",
     failLabel: "Pivot failed",
+  })
+
+  // ── Shared node-data build polling, keyed by slot ──
+  //
+  // One build serves every consumer of a data point, so it is polled once here
+  // and each consumer reads its progress from the slot entry.
+
+  const nodeDataJobs = useNodeDataStore((s) => s.jobs)
+  const updateNodeDataProgress = useNodeDataStore((s) => s.updateJobProgress)
+  const finishNodeDataJob = useNodeDataStore((s) => s.finishJob)
+  const nodeDataPollFn = useCallback(
+    (jobId: string, signal: AbortSignal) => getNodeDataStatus(jobId, { signal }),
+    [],
+  )
+  const nodeDataOnComplete = useCallback(
+    (slotKey: string, status: NodeDataStatusResponse) => finishNodeDataJob(slotKey, status),
+    [finishNodeDataJob],
+  )
+  const nodeDataOnFail = useCallback(
+    (slotKey: string, _message: string, status?: NodeDataStatusResponse) => {
+      void _message
+      finishNodeDataJob(slotKey, status ?? null)
+    },
+    [finishNodeDataJob],
+  )
+
+  useJobPolling<NodeDataSlotJob, NodeDataStatusResponse>({
+    jobs: nodeDataJobs,
+    pollFn: nodeDataPollFn,
+    onProgress: updateNodeDataProgress,
+    progressThrottleMs: VISIBLE_PROGRESS_INTERVAL_MS,
+    onComplete: nodeDataOnComplete,
+    onFail: nodeDataOnFail,
+    labelFn: (job) => job.startedByLabel,
+    jobIdFn: (job) => job.jobId,
+    isComplete: (s) => s.status === "completed",
+    isError: (s) => FAILED_JOB_STATUSES.has(s.status),
+    getResult: (s) => s,
+    getErrorMessage: (s) => buildExecutionFailureMessage(
+      s.error || s.message || "Unknown error",
+      s.execution_metrics,
+      { status: s.status, terminalReason: s.terminal_reason },
+    ),
+    getTerminalPollErrorMessage: getJobPollErrorMessage,
+    addToast,
+    successLabel: "Data cached",
+    failLabel: "Data caching failed",
+  })
+
+  // ── Shared data-profile polling, keyed by slot ──
+
+  const profileJobs = useNodeDataStore((s) => s.profileJobs)
+  const updateProfileProgress = useNodeDataStore((s) => s.updateProfileProgress)
+  const finishProfileJob = useNodeDataStore((s) => s.finishProfileJob)
+  const profileOnComplete = useCallback(
+    (slotKey: string, status: NodeDataStatusResponse) => finishProfileJob(slotKey, status),
+    [finishProfileJob],
+  )
+  const profileOnFail = useCallback(
+    (slotKey: string, _message: string, status?: NodeDataStatusResponse) => {
+      void _message
+      finishProfileJob(slotKey, status ?? null)
+    },
+    [finishProfileJob],
+  )
+
+  useJobPolling<NodeDataSlotJob, NodeDataStatusResponse>({
+    jobs: profileJobs,
+    pollFn: nodeDataPollFn,
+    onProgress: updateProfileProgress,
+    progressThrottleMs: VISIBLE_PROGRESS_INTERVAL_MS,
+    onComplete: profileOnComplete,
+    onFail: profileOnFail,
+    labelFn: (job) => job.startedByLabel,
+    jobIdFn: (job) => job.jobId,
+    isComplete: (s) => s.status === "completed",
+    isError: (s) => FAILED_JOB_STATUSES.has(s.status),
+    getResult: (s) => s,
+    getErrorMessage: (s) => buildExecutionFailureMessage(
+      s.error || s.message || "Unknown error",
+      s.execution_metrics,
+      { status: s.status, terminalReason: s.terminal_reason },
+    ),
+    getTerminalPollErrorMessage: getJobPollErrorMessage,
+    addToast,
+    successLabel: "Data profile ready",
+    failLabel: "Data profile failed",
   })
 }

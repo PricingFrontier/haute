@@ -23,10 +23,16 @@ import pytest
 
 from haute._api_input_schema import _RESERVED_LEAF as _SCALAR_VALUE_LEAF
 from haute._api_input_schema import ApiInputSchemaError
-from haute._execution_context import ExecutionContext, ExecutionProfile
-from haute._json_shred._cache import build_per_port_cache, read_per_port_cache_meta
+from haute._execution_context import ExecutionProfile
+from haute._json_shred._cache import load_v2_api_source
 from haute._json_shred._inference import infer_v2_schema_from_data
-from haute._json_shred._shred import _buffer_to_frame, shred_to_buffers
+from haute._json_shred._shred import _rows_to_frame, shred_to_buffers
+from haute._json_shred._snapshots import api_input_snapshot_source
+from haute._json_shred._writer import _write_tables_streaming
+from haute._sandbox import _get_project_root, set_project_root
+from haute._source_cache import SourceCacheStore
+from tests._execution_faults import FaultInjectingExecutionContext
+from tests.conftest import build_test_api_input_snapshots
 
 
 def _write(tmp_path: Path, records: list[Any], name: str = "data.json") -> Path:
@@ -116,7 +122,7 @@ def test_shred_loop_checkpoints_active_execution_context(
 ) -> None:
     monkeypatch.setattr("haute._json_shred._records._SHRED_EXECUTION_CHECKPOINT_ROWS", 2)
     points: list[str] = []
-    context = ExecutionContext(
+    context = FaultInjectingExecutionContext(
         operation="preview",
         profile=ExecutionProfile.PREVIEW_EAGER,
         memory_sampler=lambda: 1,
@@ -138,7 +144,7 @@ def test_shred_frame_conversion_checkpoints_active_execution_context(
 ) -> None:
     monkeypatch.setattr("haute._json_shred._records._SHRED_EXECUTION_CHECKPOINT_ROWS", 2)
     points: list[str] = []
-    context = ExecutionContext(
+    context = FaultInjectingExecutionContext(
         operation="preview",
         profile=ExecutionProfile.PREVIEW_EAGER,
         memory_sampler=lambda: 1,
@@ -146,15 +152,20 @@ def test_shred_frame_conversion_checkpoints_active_execution_context(
     )
 
     with context.stage("api_input"):
-        frame = _buffer_to_frame(
-            [{"id": 1}, {"id": 2}, {"id": 3}],
-            [("id", "$[:].id", "int")],
+        frame = _rows_to_frame(
+            [(1, "a"), (2, "b"), (3, "c")],
+            [("id", "$[:].id", "int"), ("name", "$[:].name", "str")],
         )
 
-    assert frame["id"].to_list() == [1, 2, 3]
-    assert points[0] == "json_shred_frame_before"
-    assert "json_shred_frame_values" in points
-    assert points[-1] == "json_shred_frame_after"
+    assert frame.to_dict(as_series=False) == {"id": [1, 2, 3], "name": ["a", "b", "c"]}
+    # One checkpoint per converted column bounds the work between checks by
+    # one bounded buffer's column, whatever the column count.
+    assert points == [
+        "json_shred_frame_before",
+        "json_shred_frame_column",
+        "json_shred_frame_column",
+        "json_shred_frame_after",
+    ]
 
 
 # ─── F103 — empty array must not poison a later concrete element type ─
@@ -186,14 +197,27 @@ def test_build_conserves_root_rows_and_accounts_skips(tmp_path: Path) -> None:
     # A root array with two real objects and one non-object element: the two
     # objects each emit a row; the non-object is counted as a skipped record.
     p = _write(tmp_path, [{"id": 1}, "junk", {"id": 2}])
-    cache_dir = tmp_path / "cache"
-    config = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id", "int")])]}
+    config = {
+        "path": str(p),
+        "contract": "opaque",
+        "tables": [_table("$[:]", "root", [_col("id", "$[:].id", "int")])],
+    }
 
-    summary = build_per_port_cache(p, config, cache_dir)
+    # Skip accounting: shred directly and inspect the returned stats.
+    source = api_input_snapshot_source(config, p)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    skip_stats = _write_tables_streaming(p, config, (source.tables[0].spec,), scratch).skip_stats
+    assert skip_stats.skipped_records == 1
 
-    root = next(t for t in summary["tables"] if t["label"] == "root")
-    assert root["row_count"] == 2  # both objects emitted, the string skipped
-    assert summary["skipped"]["records"] == 1
-    meta = read_per_port_cache_meta(cache_dir)
-    assert meta is not None
-    assert meta["skipped"]["records"] == 1
+    # Row conservation: build the table into the store and read it back.
+    original_root = _get_project_root()
+    set_project_root(tmp_path)
+    try:
+        build_test_api_input_snapshots(p, config)
+        frames = load_v2_api_source(
+            str(p), config, read_snapshots=True, store=SourceCacheStore(tmp_path)
+        )
+        assert frames["root"].collect().height == 2  # both objects emitted, the string skipped
+    finally:
+        set_project_root(original_root)

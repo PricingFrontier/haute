@@ -1,6 +1,20 @@
 {
   "operations": [
     {
+      "op": "update_node",
+      "node": "response",
+      "config": {
+        "outputMapping": [
+          {
+            "source_port": "audited_derived",
+            "source_column": "derived_value",
+            "output_path": "$[:].derived_value",
+            "enabled": true
+          }
+        ]
+      }
+    },
+    {
       "op": "rename_node",
       "node": "derived",
       "new_name": "audited_derived"

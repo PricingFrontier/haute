@@ -389,7 +389,7 @@ describe("ScenarioExpanderEditor", () => {
       <ScenarioExpanderEditor
         {...DEFAULT_PROPS}
         onUpdate={onUpdate}
-        config={{ column_name: "sv", min_value: 0, max_value: 10, steps: 6 }}
+        config={{ column_name: "sv", min_value: 0, max_value: 10, stepCount: 6 }}
       />,
     )
     const minInput = screen.getByDisplayValue("0") as HTMLInputElement
@@ -404,7 +404,7 @@ describe("ScenarioExpanderEditor", () => {
 
   it("commits steps on blur with value clamped to min 1", () => {
     const onUpdate = vi.fn()
-    render(<ScenarioExpanderEditor {...DEFAULT_PROPS} onUpdate={onUpdate} config={{ steps: 21 }} />)
+    render(<ScenarioExpanderEditor {...DEFAULT_PROPS} onUpdate={onUpdate} config={{ stepCount: 21 }} />)
     const stepsInput = screen.getByDisplayValue("21")
 
     // Normal value — buffered until blur, then committed once.
@@ -412,30 +412,30 @@ describe("ScenarioExpanderEditor", () => {
     expect(onUpdate).not.toHaveBeenCalled()
     fireEvent.blur(stepsInput)
     expect(onUpdate).toHaveBeenCalledTimes(1)
-    expect(onUpdate).toHaveBeenCalledWith("steps", 10)
+    expect(onUpdate).toHaveBeenCalledWith("stepCount", 10)
 
     // Zero should clamp to 1
     fireEvent.change(stepsInput, { target: { value: "0" } })
     fireEvent.blur(stepsInput)
-    expect(onUpdate).toHaveBeenCalledWith("steps", 1)
+    expect(onUpdate).toHaveBeenCalledWith("stepCount", 1)
 
     // Negative should clamp to 1
     fireEvent.change(stepsInput, { target: { value: "-5" } })
     fireEvent.blur(stepsInput)
-    expect(onUpdate).toHaveBeenCalledWith("steps", 1)
+    expect(onUpdate).toHaveBeenCalledWith("stepCount", 1)
   })
 
   it("step size shows calculated interval", () => {
-    render(<ScenarioExpanderEditor {...DEFAULT_PROPS} config={{ column_name: "sv", min_value: 0.8, max_value: 1.2, steps: 21 }} />)
+    render(<ScenarioExpanderEditor {...DEFAULT_PROPS} config={{ column_name: "sv", min_value: 0.8, max_value: 1.2, stepCount: 21 }} />)
     const stepSize = screen.getByTestId("step-size")
     // (1.2 - 0.8) / (21 - 1) = 0.02
     expect(stepSize.textContent).toBe("0.02")
   })
 
   it("step size shows dash when steps is 1", () => {
-    render(<ScenarioExpanderEditor {...DEFAULT_PROPS} config={{ column_name: "sv", steps: 1 }} />)
+    render(<ScenarioExpanderEditor {...DEFAULT_PROPS} config={{ column_name: "sv", stepCount: 1 }} />)
     const stepSize = screen.getByTestId("step-size")
-    expect(stepSize.textContent).toBe("—")
+    expect(stepSize.textContent).toBe("-")
   })
 
   it("InputSourcesBar renders when inputSources provided", () => {
@@ -498,7 +498,7 @@ describe("ScenarioExpanderEditor", () => {
       column_name: "custom_col",
       min_value: 0.5,
       max_value: 2.0,
-      steps: 11,
+      stepCount: 11,
       step_column: "my_step",
     }
     render(<ScenarioExpanderEditor {...DEFAULT_PROPS} config={config} />)
@@ -515,5 +515,20 @@ describe("ScenarioExpanderEditor", () => {
     expect(text).not.toContain("Polars Code")
     expect(text).not.toContain("expanded data")
     expect(screen.queryByTestId("code-editor")).not.toBeInTheDocument()
+  })
+})
+
+describe("ScenarioExpanderEditor saved quote id", () => {
+  afterEach(cleanup)
+
+  it("marks a saved quote id the upstream columns lack", () => {
+    render(
+      <ScenarioExpanderEditor
+        {...DEFAULT_PROPS}
+        config={{ quote_id: "old_id" }}
+        upstreamColumns={[{ name: "quote_id", dtype: "Utf8" }]}
+      />,
+    )
+    expect(screen.getByDisplayValue("old_id (not in input)")).toBeInTheDocument()
   })
 })

@@ -3,8 +3,9 @@ import { useState } from "react"
 import { setWorkingBranch } from "../api/client"
 import useGitStore from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
-import { gitErrorMessage } from "../utils/gitError"
+import { apiErrorMessage } from "../api/errors"
 import useUIStore from "../stores/useUIStore"
+import { ModalFormActions, ModalFormHeader } from "./ModalForm"
 import ModalShell from "./ModalShell"
 
 interface DivergenceModalProps {
@@ -51,7 +52,7 @@ export default function DivergenceModal({ onConfirmed, onClose }: DivergenceModa
       addToast("success", `Working branch set to ${target}`)
       onConfirmed()
     } catch (err: unknown) {
-      const detail = gitErrorMessage(err, "unknown error")
+      const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Could not switch working branch: ${detail}`)
     } finally {
       setBusy(false)
@@ -94,15 +95,10 @@ export default function DivergenceModal({ onConfirmed, onClose }: DivergenceModa
       width="w-[460px]"
       testId="divergence-modal"
     >
-      <div className="px-4 py-3" style={{ borderBottom: "1px solid var(--border)" }}>
-        <h2 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
-          You've moved off your working branch
-        </h2>
-        <p className="text-[12px] mt-0.5" style={{ color: "var(--text-muted)" }}>
-          Your working branch is <span className="font-mono">{recorded}</span>, but the repo is
-          currently on <span className="font-mono">{current}</span>.
-        </p>
-      </div>
+      <ModalFormHeader title="You've moved off your working branch">
+        Your working branch is <span className="font-mono">{recorded}</span>, but the repo is
+        currently on <span className="font-mono">{current}</span>.
+      </ModalFormHeader>
 
       <form
         className="p-4 flex flex-col gap-2"
@@ -122,25 +118,14 @@ export default function DivergenceModal({ onConfirmed, onClose }: DivergenceModa
         )}
         {option("manager", "Open the branch manager", "Decide in the Git panel.")}
 
-        <div className="flex justify-end gap-2 pt-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-3 py-1.5 text-[12px] font-medium rounded-md transition-colors"
-            style={{ color: "var(--text-secondary)" }}
-          >
-            Cancel
-          </button>
-          <button
-            type="submit"
-            data-testid="divergence-confirm"
-            disabled={busy || (choice === "stay" && !stayEligible)}
-            className="px-4 py-1.5 text-[12px] font-semibold rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[var(--structure-action-hover)] disabled:hover:bg-[var(--structure-action)]"
-            style={{ background: "var(--structure-action)", color: "var(--text-on-accent)" }}
-          >
-            {busy ? "Working…" : "Continue"}
-          </button>
-        </div>
+        <ModalFormActions
+          onCancel={onClose}
+          submitLabel="Continue"
+          busyLabel="Working…"
+          busy={busy}
+          disabled={busy || (choice === "stay" && !stayEligible)}
+          submitTestId="divergence-confirm"
+        />
       </form>
     </ModalShell>
   )

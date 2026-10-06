@@ -1,0 +1,87 @@
+{
+  "node_type": "polars",
+  "authorable": true,
+  "fields": {
+    "steps": "The node's logic as step cards run in order. New logic is [source, free_code]: a source step binds df to one incoming edge, then a free_code step transforms df.",
+    "steps[kind=source].input": "The name of the input that becomes df.",
+    "input names": "An input is named after its incoming edge: the upstream node's name, except that an edge from a Quote Input frame, which `add_edge`'s `source_handle` selects, is named by that frame, and an edge from a submodel output by its port.",
+    "steps[kind=free_code].code": "Polars code that starts with a one-line `# intent` comment and assigns the transformed frame to df. Other inputs are available by their edge names; pl is imported.",
+    "steps[].id": "A stable id unique within the node; keep existing ids when editing."
+  },
+  "inputs": [
+    {
+      "edge": "policies",
+      "columns": {
+        "policy_id": "String",
+        "vehicle_year": "Int64",
+        "ncd_years": "Int64",
+        "exposure": "Float64"
+      }
+    },
+    {
+      "edge": "ncd_scale",
+      "columns": {
+        "ncd_years": "Int64",
+        "ncd_discount": "Float64"
+      }
+    }
+  ],
+  "configs": [
+    {
+      "name": "minimal",
+      "intent": "Derive vehicle age from the vehicle year.",
+      "config": {
+        "steps": [
+          {"id": "start", "kind": "source", "input": "policies"},
+          {
+            "id": "logic",
+            "kind": "free_code",
+            "code": "# Derive vehicle age from the vehicle year\ndf = df.with_columns(vehicle_age=2026 - pl.col(\"vehicle_year\"))"
+          }
+        ]
+      },
+      "produces": ["policy_id", "vehicle_age"]
+    },
+    {
+      "name": "realistic",
+      "intent": "Attach each policy's no-claims discount from a second input read by its edge name, and derive vehicle age.",
+      "config": {
+        "steps": [
+          {"id": "start", "kind": "source", "input": "policies"},
+          {
+            "id": "logic",
+            "kind": "free_code",
+            "code": "# Attach the no-claims discount and derive vehicle age\ndf = df.join(ncd_scale, on=\"ncd_years\", how=\"left\").with_columns(\n    vehicle_age=2026 - pl.col(\"vehicle_year\"),\n    ncd_discount=pl.col(\"ncd_discount\").fill_null(0.0),\n)"
+          }
+        ]
+      },
+      "produces": ["policy_id", "exposure", "vehicle_age", "ncd_discount"]
+    }
+  ],
+  "fixture": {
+    "frames": {
+      "policies": {
+        "rows": [
+          {"policy_id": "p1", "vehicle_year": 2019, "ncd_years": 3, "exposure": 1.0},
+          {"policy_id": "p2", "vehicle_year": 2012, "ncd_years": 9, "exposure": 0.5}
+        ]
+      },
+      "ncd_scale": {
+        "rows": [
+          {"ncd_years": 0, "ncd_discount": 0.0},
+          {"ncd_years": 3, "ncd_discount": 0.3}
+        ]
+      }
+    },
+    "expect": {
+      "minimal": [
+        {"policy_id": "p1", "vehicle_age": 7},
+        {"policy_id": "p2", "vehicle_age": 14}
+      ],
+      "realistic": [
+        {"policy_id": "p1", "vehicle_age": 7, "ncd_discount": 0.3},
+        {"policy_id": "p2", "vehicle_age": 14, "ncd_discount": 0.0}
+      ]
+    }
+  }
+}

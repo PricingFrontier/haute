@@ -500,7 +500,7 @@ class TestItem3SilentEnrichmentExcepts:
 
 
 class TestItem4SwallowErrorsRegexHeuristic:
-    """``execute_trace`` currently retries ``_execute_eager_core`` with
+    """``execute_trace`` used to retry its eager execution with
     ``swallow_errors=True`` when:
 
       * ``str(exc)`` contains ``"unable to find column"`` AND
@@ -572,20 +572,20 @@ class TestItem4SwallowErrorsRegexHeuristic:
         (e.g. via a ``swallow_errors=True`` kwarg on ``execute_trace``).
 
         We make this provable by counting how many times
-        ``_execute_eager_core`` is invoked — before the fix it's called
+        the trace's graph walk is invoked — before the fix it's called
         twice (original + retry); after the fix it is called exactly
         once for a genuine column-not-found error.
         """
         import haute.trace as tmod
 
         call_count = {"n": 0}
-        real_fn = tmod._execute_eager_core
+        real_fn = tmod.walk_graph
 
         def _counting(*args: Any, **kwargs: Any) -> Any:
             call_count["n"] += 1
             return real_fn(*args, **kwargs)
 
-        monkeypatch.setattr("haute.trace._execute_eager_core", _counting)
+        monkeypatch.setattr("haute.trace.walk_graph", _counting)
 
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1]}).write_parquet(p)

@@ -2,24 +2,281 @@
 
 from __future__ import annotations
 
+import functools
+import hashlib
 import os
 import shutil
 import sys
 import tempfile
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
+from typing import Any
 
+import polars as pl
 import pytest
 from click.testing import CliRunner
+from hypothesis import settings as hypothesis_settings
 
 from haute._config_io import config_path_for_node
 from haute._execution_context import ExecutionProfile
+from haute._pipeline_settings import PipelineSettings
+from haute._ram_estimate import RamEstimate
 from haute._sandbox import _get_project_root, set_project_root
 from haute.executor import _preview_cache
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.trace import _cache as _trace_cache
+from tests import _ci_shards
 from tests import _write_sandbox as _ws
+from tests._source_files import REPO_ROOT, SourceTreeGuard
 
 _TEST_LOCAL_SESSION_TOKEN = "pytest-haute-local-session-token"
+
+
+# Hypothesis' 200ms per-example deadline measures wall clock, so a property
+# that touches the filesystem can miss it on a loaded machine and pass on the
+# retry, which Hypothesis reports as FlakyFailure ("Unreliable test timings!").
+# Every deliberate budget in this suite already sets deadline=None (see
+# tests/_property_budget.pr_budget); making that the default means a property
+# need not restate it. A test that wants a deadline still gets one by passing
+# it to its own @settings.
+hypothesis_settings.register_profile("haute", deadline=None)
+hypothesis_settings.load_profile("haute")
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _keep_package_bytecode() -> Iterator[None]:
+    """Stop server startup deleting the package's bytecode caches during the suite.
+
+    The app lifespan removes every ``__pycache__`` under ``src/haute``; with
+    several workers that races any test walking the source tree. The stub keeps
+    the real function as ``__wrapped__`` for the test that exercises it.
+    """
+    import haute.server as server
+
+    @functools.wraps(server._clear_bytecache)
+    def keep_bytecode() -> None:
+        return None
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(server, "_clear_bytecache", keep_bytecode)
+        yield
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _verified_price_contour() -> None:
+    """Verify the real ``price_contour`` once, before any test patches it.
+
+    The guard caches its verdict per process. Warming it here means a test
+    that patches ``price_contour.X`` with a stub never becomes the build the
+    guard inspects, and an incompatible install fails the session up front.
+    """
+    from haute._price_contour import price_contour
+
+    price_contour()
+
+
+@pytest.fixture
+def released_price_contour(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Present the verified price-contour to the container build as a released wheel.
+
+    A container build refuses an editable or direct-URL price-contour, the
+    usual developer install. Tests of everything else a build does opt into
+    this fixture so they do not depend on how the developer installed it;
+    ``tests/test_price_contour_guard.py`` covers the refusal itself.
+    """
+    from importlib.metadata import version
+
+    from haute._price_contour import PriceContourInstall
+
+    released = PriceContourInstall(version("price-contour"), "wheel", None)
+    monkeypatch.setattr("haute.deploy._container.price_contour_install", lambda: released)
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _isolate_repository_source_cache(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[None]:
+    """Keep the suite's source snapshots out of the working tree.
+
+    A test that never sets its own project root inherits the repository root,
+    so ``SourceCacheStore`` publishes its snapshots into
+    ``<repo>/.haute_cache/inputs``. That store is shared by every xdist
+    worker and is never cleaned between runs. Isolating it prevents tests from
+    accumulating cached data in the working tree or reading an earlier run's
+    snapshots.
+
+    Stores opened against the repository root are redirected to a per-session
+    directory — the same redirect ``_widen_sandbox_root`` applies to the
+    widened root. A store opened against a test's own tmp_path is untouched.
+    The session also owns its coordination table so process-owner files close
+    before an embedded mutation runner removes the temporary directory.
+    """
+    from haute._source_cache import SourceCacheStore
+
+    repository_root = Path(__file__).resolve().parents[1]
+    session_cache_root = tmp_path_factory.mktemp("source-cache")
+    original_init = SourceCacheStore.__init__
+
+    def init_off_the_working_tree(
+        self: SourceCacheStore,
+        root: str | Path,
+        **kwargs: Any,
+    ) -> None:
+        resolved = Path(root).resolve()
+        original_init(
+            self,
+            session_cache_root if resolved == repository_root else resolved,
+            **kwargs,
+        )
+
+    patch = pytest.MonkeyPatch()
+    patch.setattr(SourceCacheStore, "__init__", init_off_the_working_tree)
+    coordination_by_root: dict[Any, Any] = {}
+    patch.setattr(SourceCacheStore, "_coordination_by_root", coordination_by_root)
+    try:
+        yield
+    finally:
+        try:
+            for coordination in coordination_by_root.values():
+                handle = coordination.token_handle
+                if handle is not None:
+                    handle.close()
+                coordination.token = None
+                coordination.token_handle = None
+            coordination_by_root.clear()
+        finally:
+            patch.undo()
+
+
+@pytest.fixture(autouse=True)
+def _restore_mlflow_databricks_binding() -> Iterator[None]:
+    """Undo the process-global MLflow Databricks credential binding after each test.
+
+    Any Databricks destination resolution binds MLflow's credential provider and
+    artifact repository globals for the rest of the process; restoring them keeps
+    every test independent of execution order.
+    """
+    yield
+    from haute._mlflow_utils import _restore_mlflow_databricks_credentials
+
+    _restore_mlflow_databricks_credentials()
+
+
+@pytest.fixture(autouse=True)
+def _restore_streaming_chunk_size() -> Iterator[None]:
+    """Put back the process-wide Polars streaming chunk size after each test.
+
+    ``set_streaming_chunk_size`` (directly or through ``PATCH
+    /api/pipeline-settings``) sets it for the whole process, so a test's tiny
+    chunk size would otherwise reach whichever test runs next on the same
+    worker. Polars caches the value and rereads ``POLARS_STREAMING_CHUNK_SIZE``
+    only through its ``Config`` API, so editing the environment (as
+    ``monkeypatch.delenv`` does) cannot restore it.
+    """
+    before = os.environ.get("POLARS_STREAMING_CHUNK_SIZE")
+    yield
+    pl.Config.set_streaming_chunk_size(None if before is None else int(before))
+
+
+@pytest.fixture()
+def pipeline_settings(monkeypatch: pytest.MonkeyPatch) -> Callable[..., PipelineSettings]:
+    """Set the pipeline settings ``project_pipeline_settings()`` returns in this test.
+
+    For a test about something the settings drive (a preview's memory budget,
+    a route's time limit) rather than the settings file: whichever project an
+    execution runs in, admission and the time limits read these. A test of the
+    file itself, of caching off, or of the cache size writes a real file into
+    its own project root instead, because those read the store's project.
+    """
+    from haute import _pipeline_settings
+
+    def apply(**values: object) -> PipelineSettings:
+        settings = _pipeline_settings.validated_pipeline_settings(values)
+        monkeypatch.setattr(_pipeline_settings, "read_pipeline_settings", lambda _root: settings)
+        return settings
+
+    return apply
+
+
+@pytest.fixture(autouse=True)
+def _open_dedicated_workers() -> Iterator[None]:
+    """Start every test with the dedicated-worker registry open, as a fresh server is.
+
+    A test that runs the server lifespan fences the process-wide registry at
+    shutdown (a real server exits then); without this, every later test in the
+    same process would find new solver sessions refused.
+    """
+    from haute._dedicated_workers import open_dedicated_workers
+
+    open_dedicated_workers()
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _patient_preparation_join(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Wait longer for a preparation thread than a production shutdown does.
+
+    ``TrainService._join_preparation``'s 10s default bounds a graceful
+    shutdown. Under ``-n auto`` the suite runs one worker per core against a
+    single CPU pool, and a preparation thread that finishes well inside a
+    second can still miss that bound, failing the test with "Training
+    preparation for job ... is still running" for a reason the code under test
+    is not answerable for. Only the default moves: a test that pins the
+    timeout itself (the expiry case passes 0.01s) is handed through unchanged.
+    """
+    from haute.routes._training_lifecycle import TrainService
+
+    original = TrainService._join_preparation
+
+    def join_patiently(self: TrainService, job_id: str, *, timeout: float = 120.0) -> None:
+        original(self, job_id, timeout=timeout)
+
+    monkeypatch.setattr(TrainService, "_join_preparation", join_patiently)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_mlflow_fluent_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Give every test fresh MLflow fluent globals.
+
+    ``set_tracking_uri``, ``set_registry_uri`` and ``set_experiment`` write
+    process-global state, so a test that resolves a destination or starts a run
+    would otherwise hand its URI or experiment ID to whichever test runs next on
+    the worker (seen as "Could not find experiment with ID ..." against a fresh
+    local store). monkeypatch restores the originals after the test.
+
+    ``set_tracking_uri`` also exports ``MLFLOW_TRACKING_URI``, so a test that
+    restores MLflow's default URI in a ``finally`` leaves that default in the
+    environment, where a fresh checkout's ``sqlite:///mlflow.db`` fails the next
+    destination resolution on the worker ("Unsupported MLflow tracking URI
+    scheme 'sqlite'"). The URI variables are restored exactly after the test.
+    """
+    monkeypatch.setattr("mlflow.tracking._tracking_service.utils._tracking_uri", None)
+    monkeypatch.setattr("mlflow.tracking._model_registry.utils._registry_uri", None)
+    monkeypatch.setattr("mlflow.tracking.fluent._active_experiment_id", None)
+    # set_experiment also exports the ID; monkeypatch unsets it again afterwards.
+    monkeypatch.delenv("MLFLOW_EXPERIMENT_ID", raising=False)
+    exported = {
+        name: os.environ.get(name) for name in ("MLFLOW_TRACKING_URI", "MLFLOW_REGISTRY_URI")
+    }
+    yield
+    for name, value in exported.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+
+
+@pytest.fixture(autouse=True)
+def _no_mlflow_telemetry(monkeypatch: pytest.MonkeyPatch):
+    """Keep the suite hermetic: MLflow must not phone home from a test.
+
+    MLflow 3 posts usage telemetry to its own endpoint the first time a client
+    is created in a process. That is an outbound request the suite never asked
+    for, and it lands in whichever test happens to be recording requests at the
+    time — which is how `test_tracking_requests_reach_only_the_mlflow_host_with
+    _the_mlflow_token` saw a telemetry POST ahead of its own.
+    """
+    monkeypatch.setenv("MLFLOW_DISABLE_TELEMETRY", "true")
 
 
 @pytest.fixture(autouse=True)
@@ -29,16 +286,33 @@ def _interactive_execution_test_mode(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def _one_training_thread_per_test(monkeypatch: pytest.MonkeyPatch):
+    """Give each training job one engine thread, so parallel test workers don't oversubscribe.
+
+    A training job's allotment defaults to every logical CPU. CI runs four xdist
+    workers on a four-vCPU runner, so concurrent training tests each started
+    XGBoost/CatBoost/LightGBM with all cores, and OpenMP's spinning threads
+    slowed a five-trial XGBoost study past the 60-second timeout. Tests that
+    exercise the allotment set ``HAUTE_TRAINING_THREADS`` themselves.
+    """
+    monkeypatch.setenv("HAUTE_TRAINING_THREADS", "1")
+
+
+@pytest.fixture(autouse=True)
 def _clear_trace_caches():
-    """Invalidate the global trace and preview caches between tests.
+    """Invalidate global trace, preview and inference caches between tests.
 
     The preview and trace caches are module-level singletons. Without clearing them,
     a prior test's cached DataFrames can bleed into the next test if they
     happen to share the same fingerprint (e.g., same node ids, same code).
     """
+    from haute._json_shred._inference_cache import _INFERENCE_CACHE
+
+    _INFERENCE_CACHE.clear()
     _trace_cache.clear()
     _preview_cache.clear()
     yield
+    _INFERENCE_CACHE.clear()
     _trace_cache.clear()
     _preview_cache.clear()
 
@@ -182,22 +456,37 @@ def _clear_git_content_caches():
 
 
 @pytest.fixture(autouse=True)
-def _clear_dual_cache_session():
-    """Reset the dual-cache consulted-hashes set between tests.
+def _clear_source_signatures():
+    """Forget memoised source content proofs between tests.
 
-    The set is module-level in ``haute._json_flatten`` — once a test builds
-    a per-port JSON cache for a data file, the hash persists across subsequent
-    tests in the same process. That would let
-    one test's working-layer state spill into another's emitter precedence
-    check, masking regressions or producing flaky failures. Clearing
-    before AND after each test gives the same per-process isolation the
-    other module-level singletons in this conftest get.
+    The memo is process-wide and keyed by a file's freshness token, which a
+    reused temporary path can repeat across tests.
     """
-    from haute._json_flatten import _clear_session
+    from haute._json_shred._source_proof import clear_file_signatures
 
-    _clear_session()
+    clear_file_signatures()
     yield
-    _clear_session()
+    clear_file_signatures()
+
+
+@pytest.fixture(autouse=True)
+def source_proof_records(
+    request: pytest.FixtureRequest,
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    """Keep durable source-proof records in this test's own directory.
+
+    Records otherwise land under the project root, which for many tests is the
+    repository. The directory sits outside ``tmp_path`` (a test may list that)
+    and is created only when a record is written.
+    """
+    from haute._json_shred import _source_proof
+
+    test_key = hashlib.sha256(request.node.nodeid.encode("utf-8")).hexdigest()[:16]
+    root = tmp_path_factory.getbasetemp() / "source-proofs" / test_key
+    monkeypatch.setattr(_source_proof, "_proof_record_root", lambda: root)
+    return root
 
 
 @pytest.fixture()
@@ -226,22 +515,32 @@ def _widen_sandbox_root(
     def init_with_writable_cache(
         self: SourceCacheStore,
         root: str | Path,
-        *,
-        max_bytes: int | None = None,
-        max_generations: int | None = None,
+        **kwargs: object,
     ) -> None:
+        # Every keyword the store takes is forwarded, so a subclass that passes
+        # its own options (a node-output store's retirement grace, for example)
+        # still constructs under the widened root.
         resolved_root = Path(root).resolve()
         original_store_init(
             self,
             cache_root if resolved_root == widened_root else resolved_root,
-            max_bytes=max_bytes,
-            max_generations=max_generations,
+            **kwargs,
         )
 
     monkeypatch.setattr(SourceCacheStore, "__init__", init_with_writable_cache)
     set_project_root(widened_root)
     yield
     set_project_root(original)
+
+
+@pytest.fixture()
+def training_artifact_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Keep job-owned training artifact directories in this test's scratch space."""
+    from haute.routes import _training_artifacts
+
+    root = (tmp_path / "training-artifacts").resolve()
+    monkeypatch.setattr(_training_artifacts, "training_artifact_root", lambda: root)
+    return root
 
 
 @pytest.fixture(autouse=True)
@@ -312,6 +611,27 @@ def build_test_input_snapshot(
         store=SourceCacheStore(_get_project_root()),
         base_dir=base_dir if base_dir is not None else _configured_pipeline_dir(),
         profile=profile,
+    )
+
+
+def build_test_api_input_snapshots(
+    data_path: str | Path,
+    config: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build every emitting table of a structured API Input into the project store.
+
+    *data_path* is the source file exactly as execution anchors it. Returns
+    the published generations keyed by table identity digest.
+    """
+    from haute._json_shred._snapshots import api_input_snapshot_source, build_api_input_tables
+    from haute._source_cache import SourceCacheStore
+
+    source = api_input_snapshot_source(config, data_path)
+    return build_api_input_tables(
+        source,
+        [table.label for table in source.tables],
+        store=SourceCacheStore(_get_project_root()),
+        profile=ExecutionProfile.LAZY_SINK,
     )
 
 
@@ -459,6 +779,16 @@ def make_output_node(nid: str, fields: list[str] | None = None) -> GraphNode:
     )
 
 
+def current_source_revision(path: str | Path, project_root: str | Path) -> str | None:
+    """Return the on-disk document revision a save must name, or None when the file is absent."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    target = Path(path)
+    if not target.is_file():
+        return None
+    return load_pipeline_editor_document(target, project_root=Path(project_root)).source_revision
+
+
 def make_edge(
     src: str,
     tgt: str,
@@ -479,6 +809,22 @@ def make_edge(
 def make_node(d: dict) -> GraphNode:
     """Build a GraphNode from a raw dict (model_validate shorthand)."""
     return GraphNode.model_validate(d)
+
+
+def make_ram_estimate(
+    *, total_rows: int = 100, probe_columns: int = 3, safe_row_limit: int | None = None
+) -> RamEstimate:
+    """A sized training RAM estimate, for tests that stub ``TrainService._estimate_ram``."""
+    return RamEstimate(
+        safe_row_limit=safe_row_limit,
+        total_rows=total_rows,
+        estimated_bytes=total_rows * 10,
+        available_bytes=10**12,
+        bytes_per_row=10.0,
+        was_downsampled=False,
+        warning=None,
+        probe_columns=probe_columns,
+    )
 
 
 def make_graph(d: dict) -> PipelineGraph:
@@ -610,6 +956,23 @@ _TESTS_DIR = Path(__file__).resolve().parent
 _WS_REPO_ROOT = _TESTS_DIR.parent
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _project_root_baseline():
+    """Pin the sandbox project root before any test moves the working directory.
+
+    ``_get_project_root()`` lazily captures ``Path.cwd()`` on its first call.
+    Without an eager baseline, that first call happens inside
+    ``_restore_project_root`` — which sets up *after* ``_haute_write_sandbox``
+    has already chdir'd into the first strict test's tmp dir — so every later
+    test in the process inherits that tmp dir as the project root. That stays
+    invisible until the first test on a worker also writes a ``haute.toml``
+    into its tmp dir (e.g. the malformed-toml regression), which then poisons
+    unrelated executor and route tests.
+    """
+    set_project_root(_WS_REPO_ROOT)
+    yield
+
+
 @pytest.fixture(autouse=True)
 def _haute_write_sandbox(
     request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -670,7 +1033,19 @@ def haute_scratch(tmp_path: Path) -> Path:
     return tmp_path
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    _ci_shards.add_options(parser)
+
+
 def pytest_configure(config: pytest.Config) -> None:
+    # Every process registers the shard selection, xdist workers included:
+    # workers are the processes that collect.
+    _ci_shards.register(config)
+    # A test that leaves a file under src/ fails the session (the guard
+    # compares the controller's snapshots; see tests/_source_files.py).
+    config.pluginmanager.register(
+        SourceTreeGuard(REPO_ROOT / "src", label="src"), "haute-source-tree-guard"
+    )
     # Aggregate the write-sandbox census across xdist workers: the controller
     # allocates a shared spool dir before workers spawn; workers inherit it via
     # the environment and dump their in-process records at session finish. The

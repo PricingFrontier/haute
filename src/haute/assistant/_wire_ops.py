@@ -20,12 +20,51 @@ from pydantic import (
     field_validator,
 )
 
-from haute._types import NodeType
+from haute._types import NodeType, PipelineGraph
 from haute.errors import HauteError
 
 
-class OpValidationError(HauteError):
-    """Raised when an operation cannot be parsed or applied to a graph."""
+class LocatedPlanError(HauteError):
+    """A plan failure that says where it happened and how to correct it.
+
+    ``where`` holds any of ``op_index``, ``node``, ``field`` and ``step``;
+    ``fix`` is one concrete correction; ``graph`` is the graph the failure was
+    judged against, from which the tool boundary resolves the located node's
+    input columns. The operation layer stamps ``op_index`` and ``graph`` when
+    the raise site cannot know them. ``did_you_mean`` holds close names the
+    failure itself found, such as node ids near an unknown node reference.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        where: Mapping[str, object] | None = None,
+        fix: str | None = None,
+        did_you_mean: Sequence[str] = (),
+    ) -> None:
+        super().__init__(message)
+        self.where: dict[str, object] = dict(where or {})
+        self.fix = fix
+        self.did_you_mean: tuple[str, ...] = tuple(did_you_mean)
+        self.graph: PipelineGraph | None = None
+
+
+class OpValidationError(LocatedPlanError):
+    """Raised when an operation cannot be parsed or applied to a graph.
+
+    Every such failure is one the model can correct, so ``fix`` is required.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        fix: str,
+        where: Mapping[str, object] | None = None,
+        did_you_mean: Sequence[str] = (),
+    ) -> None:
+        super().__init__(message, where=where, fix=fix, did_you_mean=did_you_mean)
 
 
 class _OpModel(BaseModel):
@@ -40,6 +79,12 @@ def _reject_blank(value: str) -> str:
     return value
 
 
+#: Operations one plan may hold. Each adds or updates at most one node, so a
+#: plan also seals at most this many ``node_config`` postconditions.
+MAX_PLAN_OPERATIONS = 100
+#: Postconditions a caller (the model or a recipe) may declare for one plan.
+MAX_DECLARED_POSTCONDITIONS = 100
+
 _NODE_REFERENCE_DESCRIPTION = "Node id, or a batch-local $ref declared by an earlier add_node."
 _SOURCE_HANDLE_DESCRIPTION = (
     "Output port on the source node, exactly as get_pipeline reports it under "
@@ -51,15 +96,34 @@ _TARGET_HANDLE_DESCRIPTION = (
     "Input port on the target node, exactly as get_pipeline reports it under "
     "an edge's 'target_handle'. Only nodes with named input roles use it: an "
     "edgeJoin requires 'base' or 'join'. Omit it for an ordinary node such as "
-    "polars, which binds inputs by source name and has no input ports."
+    "polars, which names each input after its incoming edge and has no input ports."
+)
+_NODE_TYPE_DESCRIPTION = "Node type id, exactly as the prompt's node index lists it."
+# The compatible provider projection flattens the operation union into one
+# object and joins distinct descriptions, so each text names its operation.
+_ADD_CONFIG_DESCRIPTION = (
+    "Config keys, as the node type's descriptor config schema lists them. "
+    "add_node starts the node from the palette's config for its type and writes "
+    "these keys over it."
+)
+_UPDATE_CONFIG_DESCRIPTION = (
+    "update_node merges shallowly: each key written replaces that key's whole "
+    "value, so send a nested object or list complete; keys not written keep their "
+    "saved values; a JSON null removes the key."
 )
 
 
 class AddNodeOp(_OpModel):
     op: Literal["add_node"] = "add_node"
-    node_type: NodeType
-    name: str
-    config: dict[str, Any] = Field(default_factory=dict)
+    node_type: NodeType = Field(description=_NODE_TYPE_DESCRIPTION)
+    name: str = Field(
+        description=(
+            "add_node: the new node's name, which becomes its id. When the analyst names "
+            'the node ("add X", "as X", "called X", "named X"), use exactly that name, '
+            "with no suffix such as _node or _input."
+        )
+    )
+    config: dict[str, Any] = Field(default_factory=dict, description=_ADD_CONFIG_DESCRIPTION)
     ref: str | None = Field(
         default=None,
         description=(
@@ -84,7 +148,52 @@ class AddNodeOp(_OpModel):
 class UpdateNodeOp(_OpModel):
     op: Literal["update_node"] = "update_node"
     node: str = Field(description=_NODE_REFERENCE_DESCRIPTION)
-    config: dict[str, Any]
+    config: dict[str, Any] = Field(description=_UPDATE_CONFIG_DESCRIPTION)
+
+    _node_not_blank = field_validator("node")(_reject_blank)
+
+
+_EDIT_STEP_DESCRIPTION = (
+    'edit_steps: the whole step, in the shape the step_grammar of the "guide" '
+    "reference gives its kind. Omit id to have one assigned: a replacement keeps the id "
+    "it replaces, an insertion gets <kind>_<n>."
+)
+
+
+class StepInsert(_OpModel):
+    insert_after: str | None = Field(
+        description=(
+            "edit_steps: the id of the step the new step follows; null inserts it at the start."
+        )
+    )
+    step: dict[str, Any] = Field(description=_EDIT_STEP_DESCRIPTION)
+
+
+class StepReplace(_OpModel):
+    replace: str = Field(description="edit_steps: the id of the step to replace whole.")
+    step: dict[str, Any] = Field(description=_EDIT_STEP_DESCRIPTION)
+
+
+class StepRemove(_OpModel):
+    remove: str = Field(description="edit_steps: the id of the step to remove.")
+
+
+StepEdit: TypeAlias = StepInsert | StepReplace | StepRemove
+
+
+class EditStepsOp(_OpModel):
+    op: Literal["edit_steps"] = "edit_steps"
+    node: str = Field(description=_NODE_REFERENCE_DESCRIPTION)
+    edits: list[StepEdit] = Field(
+        min_length=1,
+        description=(
+            "edit_steps changes an existing steps list by step id: each edit inserts "
+            "a step after one ({insert_after, step}), replaces one whole ({replace, "
+            "step}) or removes one ({remove}), applied in order. Steps not named stay "
+            "as saved, so a free-code step you cannot read is kept, replaced or "
+            "removed, never edited in place."
+        ),
+    )
 
     _node_not_blank = field_validator("node")(_reject_blank)
 
@@ -161,6 +270,7 @@ class UpdatePreambleOp(_OpModel):
 GraphEditOp: TypeAlias = Annotated[
     AddNodeOp
     | UpdateNodeOp
+    | EditStepsOp
     | RenameNodeOp
     | DeleteNodeOp
     | AddEdgeOp
@@ -174,6 +284,7 @@ _OP_ADAPTER: TypeAdapter[GraphEditOp] = TypeAdapter(GraphEditOp)
 _OPERATION_MODELS = (
     AddNodeOp,
     UpdateNodeOp,
+    EditStepsOp,
     RenameNodeOp,
     DeleteNodeOp,
     AddEdgeOp,
@@ -183,14 +294,19 @@ _OPERATION_MODELS = (
 
 
 def _inline_local_references(schema: object, definitions: Mapping[str, object]) -> object:
-    """Expand the local definitions emitted by Pydantic's JSON-schema generator."""
+    """Expand the local definitions emitted by Pydantic's JSON-schema generator.
+
+    A field's own description, which Pydantic emits beside the ``$ref``, replaces
+    the definition's: a definition's description is its Python class docstring,
+    written for maintainers rather than the model.
+    """
 
     if isinstance(schema, list):
         return [_inline_local_references(item, definitions) for item in schema]
     if not isinstance(schema, dict):
         return schema
     if "$ref" in schema:
-        if set(schema) != {"$ref"}:
+        if not set(schema) <= {"$ref", "description"}:
             raise RuntimeError("Pydantic emitted a $ref with unsupported sibling keywords")
         reference = schema["$ref"]
         if not isinstance(reference, str) or not reference.startswith("#/$defs/"):
@@ -198,7 +314,14 @@ def _inline_local_references(schema: object, definitions: Mapping[str, object]) 
         definition_name = reference.removeprefix("#/$defs/")
         if not definition_name or "/" in definition_name or definition_name not in definitions:
             raise RuntimeError(f"Pydantic emitted an unknown local schema reference: {reference!r}")
-        return _inline_local_references(deepcopy(definitions[definition_name]), definitions)
+        inlined = _inline_local_references(deepcopy(definitions[definition_name]), definitions)
+        if not isinstance(inlined, dict):
+            raise RuntimeError(f"Pydantic emitted a non-object definition: {reference!r}")
+        if "description" in schema:
+            inlined["description"] = schema["description"]
+        else:
+            inlined.pop("description", None)
+        return inlined
     return {key: _inline_local_references(value, definitions) for key, value in schema.items()}
 
 
@@ -248,36 +371,52 @@ def graph_edit_operations_schema() -> dict[str, object]:
     return {
         "type": "array",
         "items": {"oneOf": branches},
-        "maxItems": 100,
+        "maxItems": MAX_PLAN_OPERATIONS,
     }
 
 
-def _invalid(message: str) -> NoReturn:
-    raise OpValidationError(message)
+def _invalid(message: str, *, fix: str) -> NoReturn:
+    raise OpValidationError(message, fix=fix)
 
 
-def parse_ops(raw_ops: Sequence[Mapping[str, Any]]) -> list[GraphEditOp]:
+def parse_ops(
+    raw_ops: Sequence[Mapping[str, Any]], positions: Sequence[int] | None = None
+) -> list[GraphEditOp]:
     """Validate wire-shaped operation dictionaries.
 
     Parsing is intentionally separate from graph-dependent validation.  For
     example, whether a node id exists can only be checked while applying the
-    ordered batch to its evolving graph.
+    ordered batch to its evolving graph. *positions*, when given, holds each
+    operation's index in the batch the model sent, which a failure names.
     """
 
     if isinstance(raw_ops, (str, bytes)) or not isinstance(raw_ops, Sequence):
-        _invalid("Graph edit operations must be a list of operation objects")
-    if len(raw_ops) > 100:
-        _invalid("A graph edit plan may contain at most 100 operations")
+        _invalid(
+            "Graph edit operations must be a list of operation objects",
+            fix="Send ops as a JSON array of operation objects.",
+        )
+    if len(raw_ops) > MAX_PLAN_OPERATIONS:
+        _invalid(
+            f"A graph edit plan may contain at most {MAX_PLAN_OPERATIONS} operations",
+            fix=f"Split the work into plans of at most {MAX_PLAN_OPERATIONS} operations.",
+        )
 
     parsed: list[GraphEditOp] = []
-    for index, raw_op in enumerate(raw_ops):
+    for offset, raw_op in enumerate(raw_ops):
+        index = offset if positions is None else positions[offset]
         if not isinstance(raw_op, Mapping):
-            _invalid(f"Operation {index} must be an object")
+            raise OpValidationError(
+                f"Operation {index} must be an object",
+                where={"op_index": index},
+                fix=f"Send operation {index} as a JSON object with an op field.",
+            )
         try:
             parsed.append(_OP_ADAPTER.validate_python(raw_op))
         except ValidationError as exc:
             raise OpValidationError(
-                f"Invalid graph edit operation at index {index}: {exc}"
+                f"Invalid graph edit operation at index {index}: {exc}",
+                where={"op_index": index},
+                fix=f"Correct operation {index} against the dry_run_graph_edits schema.",
             ) from exc
     return parsed
 
@@ -287,9 +426,17 @@ __all__ = [
     "AddNodeOp",
     "DeleteEdgeOp",
     "DeleteNodeOp",
+    "EditStepsOp",
     "GraphEditOp",
+    "LocatedPlanError",
+    "MAX_DECLARED_POSTCONDITIONS",
+    "MAX_PLAN_OPERATIONS",
     "OpValidationError",
     "RenameNodeOp",
+    "StepEdit",
+    "StepInsert",
+    "StepRemove",
+    "StepReplace",
     "UpdateNodeOp",
     "UpdatePreambleOp",
     "graph_edit_operations_schema",

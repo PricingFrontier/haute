@@ -4,7 +4,7 @@
 
 [project]
 name = "main"
-pipeline = "rating/main.py"
+pipeline = "examples/reference/main.py"
 
 # ─────────────────────────────────────────────────────────────────
 # Deployment - Databricks MLflow Model Serving
@@ -41,3 +41,4 @@ max_sensitivity = "restricted"
 allow_project_knowledge = true
 allow_executable_source = true
 allow_row_samples = false
+allow_aggregate_statistics = true

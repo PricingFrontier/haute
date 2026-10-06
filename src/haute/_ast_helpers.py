@@ -10,9 +10,17 @@ from __future__ import annotations
 
 import ast
 import re
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
-from haute._types import DECORATOR_TO_NODE_TYPE, NodeType
+from haute._global_constants import module_binding_lines
+from haute._types import (
+    DECORATOR_TO_NODE_TYPE,
+    GLOBAL_CONSTANTS_FILE,
+    GLOBAL_CONSTANTS_NAME,
+    NodeType,
+)
 from haute.errors import ParseError
 
 __all__ = [
@@ -319,13 +327,51 @@ def _extract_function_bodies(
     bodies: dict[str, str] = {}
 
     for node in ast.iter_child_nodes(tree):
-        if isinstance(node, ast.FunctionDef):
-            if node.body:
-                start = node.body[0].lineno - 1
-                end = node.body[-1].end_lineno or (start + 1)
-                bodies[node.name] = "\n".join(source_lines[start:end])
+        if isinstance(node, ast.FunctionDef) and node.body:
+            bodies[node.name] = _function_body_source(source_lines, node)
 
     return bodies
+
+
+def _function_body_source(
+    source_lines: list[str],
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> str:
+    """The source text of *function*'s body, without any of its header.
+
+    Whole lines, except when the body starts on the header's last line
+    (``def f(): ...``): that line is sliced from the first statement's column,
+    which ``ast`` reports in UTF-8 bytes.
+
+    Comment lines above the first statement belong to the body: ``ast`` starts
+    the body at its first statement, so they are recovered by walking back
+    over the comment-only and blank lines indented at least as far as that
+    statement. The walk stops at the first line holding code, which is at the
+    latest the header's last line (the one with the signature's closing
+    ``:``), so it never enters the signature; blank lines before the first
+    recovered comment stay out.
+    """
+    first = function.body[0]
+    start = first.lineno - 1
+    end = function.body[-1].end_lineno or first.lineno
+    head = source_lines[start].encode("utf-8")
+    if head[: first.col_offset].strip():
+        lines = source_lines[start:end]
+        lines[0] = head[first.col_offset :].decode("utf-8")
+        return "\n".join(lines)
+    indent = first.col_offset
+    cursor = start
+    while cursor - 1 >= function.lineno:
+        line = source_lines[cursor - 1]
+        stripped = line.lstrip()
+        if not stripped:
+            cursor -= 1
+            continue
+        if not stripped.startswith("#") or len(line) - len(stripped) < indent:
+            break
+        cursor -= 1
+        start = cursor
+    return "\n".join(source_lines[start:end])
 
 
 def _eval_connect_value(receiver: str, role: str, node: ast.expr) -> Any:
@@ -513,6 +559,92 @@ def _extract_submodel_meta(tree: ast.Module) -> tuple[str, str]:
     return _extract_meta(tree, "submodel", "unnamed")
 
 
+def _constructor_call(tree: ast.Module, var_name: str) -> ast.Call | None:
+    """The first ``<var_name> = <call>`` at module level, as ``_extract_meta`` finds it."""
+    for node in ast.iter_child_nodes(tree):
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == var_name
+            and isinstance(node.value, ast.Call)
+        ):
+            return node.value
+    return None
+
+
+def _extract_global_constants_declaration(tree: ast.Module, *, receiver: str) -> bool:
+    """Whether the ``<receiver>`` constructor names the global constants file.
+
+    A pipeline constructor may name exactly ``config/global_constants.json``;
+    any other value is a ``ParseError`` naming that path. A submodel's
+    constants are its pipeline's, so a submodel constructor that names one
+    is a ``ParseError`` too.
+    """
+    call = _constructor_call(tree, receiver)
+    if call is None:
+        return False
+    for kw in call.keywords:
+        if kw.arg != GLOBAL_CONSTANTS_NAME:
+            continue
+        if receiver != "pipeline":
+            raise ParseError(
+                "A submodel does not declare global constants: it reads the constants of "
+                "the pipeline that registers it. Remove the global_constants= keyword.",
+                line=kw.value.lineno,
+            )
+        value = _eval_meta_value(receiver, GLOBAL_CONSTANTS_NAME, kw.value)
+        if value != GLOBAL_CONSTANTS_FILE:
+            raise ParseError(
+                f"pipeline global_constants must be {GLOBAL_CONSTANTS_FILE!r}, the one place "
+                f"a pipeline's global constants live: got {value!r}.",
+                line=kw.value.lineno,
+            )
+        return True
+    return False
+
+
+def _is_receiver_node_def(statement: ast.stmt, receiver: str) -> bool:
+    """Whether *statement* defines a node: a function decorated ``@<receiver>.<kind>``."""
+    if not isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef):
+        return False
+    for decorator in statement.decorator_list:
+        target = decorator.func if isinstance(decorator, ast.Call) else decorator
+        if (
+            isinstance(target, ast.Attribute)
+            and isinstance(target.value, ast.Name)
+            and target.value.id == receiver
+        ):
+            return True
+    return False
+
+
+def _reject_reserved_global_constants_bindings(tree: ast.Module, *, receiver: str) -> None:
+    """Raise ``ParseError`` for a module-level binding of the reserved name.
+
+    Only the generated ``global_constants = <receiver>.global_constants``
+    may bind it; any other assignment, import alias or definition, a node
+    function named ``global_constants`` and one in the preamble included,
+    would shadow the pipeline's global constants.
+    """
+    # A node function named ``global_constants`` is refused by the naming rule
+    # (codegen), which the editor reports as a renameable violation instead of
+    # failing the whole parse.
+    statements = [stmt for stmt in tree.body if not _is_receiver_node_def(stmt, receiver)]
+    lines = module_binding_lines(statements, receiver=receiver)
+    if lines:
+        where = (
+            f"line {lines[0]} binds"
+            if len(lines) == 1
+            else "lines " + ", ".join(str(line) for line in lines) + " bind"
+        )
+        raise ParseError(
+            f"{GLOBAL_CONSTANTS_NAME!r} is reserved for the pipeline's global constants, but "
+            f"{where} it. Rename the binding.",
+            line=lines[0],
+        )
+
+
 # ---------------------------------------------------------------------------
 # Preamble extraction
 # ---------------------------------------------------------------------------
@@ -557,35 +689,25 @@ def _slice_without_module_preserve_spans(
     return [lines[index] for index in range(start, stop) if index not in excluded]
 
 
-# Pipelines emit ``.parent``; submodels emit ``.parents[N]`` with N derived
-# from the recorded registration path depth (see codegen).
-_CONFIG_BASE_ASSIGNMENT = re.compile(
-    r"^_HAUTE_CONFIG_BASE=_HautePath\(__file__\)\.resolve\(\)\.(?:parent|parents\[\d+\])$"
-)
-_CONFIG_BASE_IMPORT = "frompathlibimportPathas_HautePath"
+@dataclass(frozen=True)
+class _ModuleBoundaries:
+    """Where a pipeline or submodel module's authored and generated regions meet."""
+
+    #: Last line of the ``haute``/``polars`` imports; 0 when the module has none.
+    last_standard_line: int
+    #: First line codegen owns: the constructor, or the first node decorator.
+    generated_start_line: int
+    is_constructor: Callable[[ast.expr], bool]
+    is_node_decorator: Callable[[ast.expr], bool]
 
 
-def _without_config_base_scaffold(lines: list[str]) -> list[str]:
-    """Remove exact generated config-base lines from authored preamble text."""
-    compacted = ["".join(line.split()) for line in lines]
-    if not any(_CONFIG_BASE_ASSIGNMENT.fullmatch(line) for line in compacted):
-        return lines
-    return [
-        line
-        for line, compact in zip(lines, compacted, strict=True)
-        if compact != _CONFIG_BASE_IMPORT and not _CONFIG_BASE_ASSIGNMENT.fullmatch(compact)
-    ]
-
-
-def _extract_preamble_from_ast(
-    source: str,
+def _module_boundaries(
     tree: ast.Module,
     *,
+    line_count: int,
     receiver: str,
     constructor_name: str,
-) -> str:
-    """Extract a valid module's preamble from AST source boundaries."""
-    lines = source.splitlines()
+) -> _ModuleBoundaries:
     haute_module_aliases: set[str] = {"haute"}
     constructor_aliases: set[str] = set()
     last_standard_line = 0
@@ -602,18 +724,14 @@ def _extract_preamble_from_ast(
                     statement.end_lineno or statement.lineno,
                 )
         elif isinstance(statement, ast.ImportFrom) and statement.module == "haute":
-            imported_names = {alias.name for alias in statement.names}
             for alias in statement.names:
                 if alias.name == constructor_name:
                     constructor_aliases.add(alias.asname or alias.name)
-            if imported_names and imported_names <= {constructor_name}:
+            if _is_standard_import(statement, constructor_name):
                 last_standard_line = max(
                     last_standard_line,
                     statement.end_lineno or statement.lineno,
                 )
-
-    if last_standard_line == 0:
-        return ""
 
     def is_constructor(expr: ast.expr) -> bool:
         if not isinstance(expr, ast.Call):
@@ -628,28 +746,14 @@ def _extract_preamble_from_ast(
             and func.value.id in haute_module_aliases
         )
 
-    generated_start_line = len(lines) + 1
+    generated_start_line = line_count + 1
     is_node_decorator = (
         _is_pipeline_authored_decorator
         if receiver == "pipeline"
         else _is_submodel_authored_decorator
     )
     for statement in tree.body:
-        value: ast.expr | None = None
-        target_is_receiver = False
-        if isinstance(statement, ast.Assign):
-            target_is_receiver = any(
-                isinstance(target, ast.Name) and target.id == receiver
-                for target in statement.targets
-            )
-            value = statement.value
-        elif isinstance(statement, ast.AnnAssign):
-            target_is_receiver = (
-                isinstance(statement.target, ast.Name) and statement.target.id == receiver
-            )
-            value = statement.value
-
-        if target_is_receiver and value is not None and is_constructor(value):
+        if _is_receiver_construction(statement, receiver, is_constructor):
             generated_start_line = min(generated_start_line, statement.lineno)
             continue
 
@@ -662,18 +766,167 @@ def _extract_preamble_from_ast(
                 if is_node_decorator(decorator)
             ]
             generated_start_line = min(generated_start_line, *decorator_lines)
+    return _ModuleBoundaries(
+        last_standard_line=last_standard_line,
+        generated_start_line=generated_start_line,
+        is_constructor=is_constructor,
+        is_node_decorator=is_node_decorator,
+    )
+
+
+def _is_receiver_construction(
+    statement: ast.stmt, receiver: str, is_constructor: Callable[[ast.expr], bool]
+) -> bool:
+    value: ast.expr | None = None
+    target_is_receiver = False
+    if isinstance(statement, ast.Assign):
+        target_is_receiver = any(
+            isinstance(target, ast.Name) and target.id == receiver for target in statement.targets
+        )
+        value = statement.value
+    elif isinstance(statement, ast.AnnAssign):
+        target_is_receiver = (
+            isinstance(statement.target, ast.Name) and statement.target.id == receiver
+        )
+        value = statement.value
+    return target_is_receiver and value is not None and is_constructor(value)
+
+
+def _extract_preamble_from_ast(
+    source: str,
+    tree: ast.Module,
+    *,
+    receiver: str,
+    constructor_name: str,
+) -> str:
+    """Extract a valid module's preamble from AST source boundaries."""
+    lines = source.splitlines()
+    boundaries = _module_boundaries(
+        tree, line_count=len(lines), receiver=receiver, constructor_name=constructor_name
+    )
+    if boundaries.last_standard_line == 0:
+        return ""
 
     preamble_lines = _slice_without_module_preserve_spans(
         lines,
-        last_standard_line,
-        generated_start_line - 1,
+        boundaries.last_standard_line,
+        boundaries.generated_start_line - 1,
     )
-    preamble_lines = _without_config_base_scaffold(preamble_lines)
     while preamble_lines and not preamble_lines[0].strip():
         preamble_lines.pop(0)
     while preamble_lines and not preamble_lines[-1].strip():
         preamble_lines.pop()
     return "\n".join(preamble_lines)
+
+
+def _is_generated_call(statement: ast.stmt, receiver: str) -> bool:
+    """``<receiver>.connect(...)`` chains, and ``pipeline.submodel(...)`` registrations."""
+    if not isinstance(statement, ast.Expr) or not isinstance(statement.value, ast.Call):
+        return False
+    methods: list[str] = []
+    expr: ast.expr = statement.value
+    while isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute):
+        methods.append(expr.func.attr)
+        expr = expr.func.value
+    if not isinstance(expr, ast.Name) or expr.id != receiver or not methods:
+        return False
+    if receiver == "pipeline" and methods == ["submodel"]:
+        return True
+    return all(method == "connect" for method in methods)
+
+
+def _is_docstring(statement: ast.stmt) -> bool:
+    return (
+        isinstance(statement, ast.Expr)
+        and isinstance(statement.value, ast.Constant)
+        and isinstance(statement.value.value, str)
+    )
+
+
+def _is_standard_import(statement: ast.stmt, constructor_name: str) -> bool:
+    """An import codegen's ``import haute`` / ``import polars as pl`` stands in for.
+
+    ``from haute import <constructor>`` qualifies, because codegen spells the
+    constructor ``haute.<constructor>``; any other ``from haute import`` binds a
+    name the regenerated imports do not, so it is kept only as preamble.
+    """
+    if isinstance(statement, ast.Import):
+        return all(alias.name in {"haute", "polars"} for alias in statement.names)
+    if isinstance(statement, ast.ImportFrom) and statement.module == "haute":
+        imported_names = {alias.name for alias in statement.names}
+        return bool(imported_names) and imported_names <= {constructor_name}
+    return False
+
+
+def _is_global_constants_binding(statement: ast.stmt, receiver: str) -> bool:
+    """``global_constants = <receiver>.global_constants``, which codegen writes."""
+    return (
+        isinstance(statement, ast.Assign)
+        and len(statement.targets) == 1
+        and isinstance(statement.targets[0], ast.Name)
+        and statement.targets[0].id == GLOBAL_CONSTANTS_NAME
+        and isinstance(statement.value, ast.Attribute)
+        and statement.value.attr == GLOBAL_CONSTANTS_NAME
+        and isinstance(statement.value.value, ast.Name)
+        and statement.value.value.id == receiver
+    )
+
+
+def unkept_module_statements(
+    source: str,
+    tree: ast.Module | None = None,
+    *,
+    receiver: str = "pipeline",
+    constructor_name: str = "Pipeline",
+) -> list[tuple[int, int]]:
+    """One-based, inclusive line spans of module statements a save would drop.
+
+    Codegen rewrites the whole module from the parsed graph. Above the
+    constructor it keeps the docstring, the ``haute``/``polars`` imports and
+    the preamble (what lies between those imports and the constructor); from
+    the constructor on it re-emits only the constructor, the
+    ``global_constants`` binding, node functions, submodel registrations and
+    ``connect`` chains; and it keeps preserved blocks wherever they sit. Any
+    other statement (an import above ``import haute``, a constant or helper
+    after the constructor, trailing code) is reported.
+    """
+    if tree is None:
+        tree = ast.parse(source)
+    lines = source.splitlines()
+    boundaries = _module_boundaries(
+        tree, line_count=len(lines), receiver=receiver, constructor_name=constructor_name
+    )
+    if boundaries.generated_start_line > len(lines):
+        return []  # no constructor or node function: not a module codegen writes
+    preserved = _module_preserve_spans(lines)
+    spans: list[tuple[int, int]] = []
+    for index, statement in enumerate(tree.body):
+        decorators = getattr(statement, "decorator_list", [])
+        start = min([statement.lineno, *(decorator.lineno for decorator in decorators)])
+        end = statement.end_lineno or statement.lineno
+        if any(first <= start - 1 and end - 1 <= last for first, last in preserved):
+            continue
+        if statement.lineno < boundaries.generated_start_line:
+            if not (
+                (index == 0 and _is_docstring(statement))
+                or _is_standard_import(statement, constructor_name)
+                # Preamble: after the standard imports; there is none without them.
+                or 0 < boundaries.last_standard_line < start
+            ):
+                spans.append((start, end))
+            continue
+        if (
+            _is_receiver_construction(statement, receiver, boundaries.is_constructor)
+            or _is_global_constants_binding(statement, receiver)
+            or _is_generated_call(statement, receiver)
+            or (
+                isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and any(boundaries.is_node_decorator(decorator) for decorator in decorators)
+            )
+        ):
+            continue
+        spans.append((start, end))
+    return spans
 
 
 def _extract_preamble(
@@ -776,7 +1029,6 @@ def _extract_preamble_textual(
         last_standard_idx + 1,
         generated_start_idx,
     )
-    preamble_lines = _without_config_base_scaffold(preamble_lines)
 
     # Strip leading/trailing blank lines
     while preamble_lines and not preamble_lines[0].strip():

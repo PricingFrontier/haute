@@ -12,13 +12,19 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as metadata_version
 from pathlib import Path
 
+from haute._git_core import _run_git_ok, git_binary_available
 from haute._logging import get_logger
+from haute._model_flavors import XGBOOST_DISTRIBUTION, family_for_suffix
+from haute._price_contour import DISTRIBUTION as PRICE_CONTOUR_DISTRIBUTION
+from haute._price_contour import PriceContourCompatibilityError, price_contour_install
+from haute._types import NodeType
 from haute.deploy._config import ResolvedDeploy
 from haute.deploy._mlflow import DeployResult
+from haute.deploy._project_modules import UTILITY_PACKAGE
 from haute.deploy._request_limits import (
     DEFAULT_DEPLOY_QUOTE_REQUEST_BODY_LIMIT_BYTES,
 )
-from haute.deploy._utils import build_manifest
+from haute.deploy._utils import build_manifest, model_source_line
 from haute.errors import DeployError
 
 logger = get_logger(component="deploy.container")
@@ -27,11 +33,27 @@ _VALID_BASE_IMAGE_RE = re.compile(r"^[a-zA-Z0-9._:/@-]+$")
 _VALID_MODEL_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 DEFAULT_QUOTE_REQUEST_BODY_LIMIT_BYTES = DEFAULT_DEPLOY_QUOTE_REQUEST_BODY_LIMIT_BYTES
 DEFAULT_QUOTE_RESPONSE_ROW_LIMIT = 1_000
-_CORE_DOCKERFILE_DEPENDENCIES: tuple[tuple[str, str], ...] = (
-    ("haute", "haute"),
+# The scoring runtime a deployed pricing API imports, as (distribution, pip
+# install name). The Dockerfile installs these pinned, then ``haute`` itself
+# with ``--no-deps``: haute's own dependencies bring the editor, assistant,
+# training, tuning and MLflow stacks, which a scoring container never runs.
+# ``pip install haute`` is unchanged.
+_SCORING_RUNTIME_DEPENDENCIES: tuple[tuple[str, str], ...] = (
     ("polars", "polars"),
+    ("pyarrow", "pyarrow"),
+    ("numpy", "numpy"),
+    ("pydantic", "pydantic"),
     ("fastapi", "fastapi"),
     ("uvicorn", "uvicorn[standard]"),
+    ("structlog", "structlog"),
+    ("xxhash", "xxhash"),
+    ("psutil", "psutil"),
+    ("orjson", "orjson"),
+    ("msgspec", "msgspec"),
+    ("joblib", "joblib"),
+    # The price-contour compatibility guard checks the installed version with it.
+    ("packaging", "packaging"),
+    (PRICE_CONTOUR_DISTRIBUTION, PRICE_CONTOUR_DISTRIBUTION),
 )
 
 
@@ -59,6 +81,105 @@ class ContainerBuildResult:
     build_dir: Path
     model_name: str
     model_version: int
+
+
+def prepare_build_directory(
+    resolved: ResolvedDeploy,
+    build_dir: Path,
+    *,
+    haute_requirement: str | None = None,
+) -> Path:
+    """Prepare the container build directory with manifest, artifacts, app.py, and Dockerfile.
+
+    Steps:
+        1. Create build directory and artifacts subdirectory
+        2. Build deployment manifest JSON
+        3. Copy artifacts into build directory
+        4. Copy the bundled utility package, if any, beside app.py
+        5. Generate FastAPI app source
+        6. Generate Dockerfile (and copy wheel if haute_requirement is a wheel path)
+
+    Args:
+        resolved: Fully resolved deployment config (from ``resolve_config()``).
+        build_dir: Destination directory for the build artefacts.
+        haute_requirement: Optional override for the ``haute`` dependency in the Dockerfile.
+            When it names a local wheel file (*.whl), the wheel is copied into ``build_dir``
+            and the Dockerfile gains ``COPY <wheel name> .`` before ``pip install ./<wheel name>``.
+
+    Returns:
+        Path to the written ``deploy_manifest.json``.
+    """
+    config = resolved.config
+    model_name = config.model_name
+    ct = config.container
+
+    _validate_base_image(ct.base_image)
+    _validate_model_name(model_name)
+
+    build_dir = Path(build_dir)
+    build_dir.mkdir(parents=True, exist_ok=True)
+    artifacts_dir = build_dir / "artifacts"
+    artifacts_dir.mkdir(exist_ok=True)
+
+    manifest = build_manifest(resolved)
+    container_artifacts: dict[str, str] = {}
+    for artifact_name in resolved.artifacts:
+        container_artifacts[artifact_name] = f"artifacts/{artifact_name}"
+
+    wheel_name: str | None = None
+    haute_pip_dep: str | None = None
+    if haute_requirement is not None:
+        if haute_requirement.lower().endswith(".whl"):
+            wheel_path = Path(haute_requirement)
+            wheel_name = wheel_path.name
+            dest_wheel = build_dir / wheel_name
+            if wheel_path.resolve() != dest_wheel.resolve():
+                shutil.copy2(wheel_path, dest_wheel)
+            haute_pip_dep = f"./{wheel_name}"
+        else:
+            haute_pip_dep = haute_requirement
+
+    manifest["artifacts"] = container_artifacts
+    manifest["container_dependencies"] = _pinned_dockerfile_deps(
+        resolved,
+        haute_requirement=haute_pip_dep,
+    )
+
+    manifest_path = build_dir / "deploy_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+    for artifact_name, artifact_path in resolved.artifacts.items():
+        dest = artifacts_dir / artifact_name
+        shutil.copy2(artifact_path, dest)
+
+    # A reused build directory must not keep an earlier build's utility code:
+    # a stale package would shadow the module this build validated.
+    if (build_dir / UTILITY_PACKAGE).is_dir():
+        shutil.rmtree(build_dir / UTILITY_PACKAGE)
+    (build_dir / f"{UTILITY_PACKAGE}.py").unlink(missing_ok=True)
+    utility = resolved.project_modules.utility
+    if utility is not None and utility.is_dir():
+        shutil.copytree(
+            utility,
+            build_dir / UTILITY_PACKAGE,
+            ignore=shutil.ignore_patterns("__pycache__"),
+        )
+    elif utility is not None:
+        shutil.copy2(utility, build_dir / f"{UTILITY_PACKAGE}.py")
+
+    app_source = _generate_app_source(config.model_name, ct.port)
+    (build_dir / "app.py").write_text(app_source, encoding="utf-8")
+
+    dockerfile = _generate_dockerfile(
+        ct.base_image,
+        ct.port,
+        resolved,
+        haute_pip_dep=haute_pip_dep,
+        wheel_name=wheel_name,
+    )
+    (build_dir / "Dockerfile").write_text(dockerfile, encoding="utf-8")
+
+    return manifest_path
 
 
 def build_and_push_image(
@@ -99,43 +220,14 @@ def build_and_push_image(
     build_dir.mkdir(exist_ok=True)
 
     try:
-        artifacts_dir = build_dir / "artifacts"
-        artifacts_dir.mkdir(exist_ok=True)
-
-        # 2. Build deployment manifest
         _log("Building deployment manifest...")
-        manifest = build_manifest(resolved)
-
-        # Remap artifact paths to container-relative paths
-        container_artifacts: dict[str, str] = {}
-        for artifact_name, artifact_path in resolved.artifacts.items():
-            container_artifacts[artifact_name] = f"artifacts/{artifact_name}"
-
-        manifest["artifacts"] = container_artifacts
-        # The exact ``pip install`` pins the image is built against, so a
-        # reader of the container knows which model runtime it carries.
-        manifest["container_dependencies"] = _pinned_dockerfile_deps(resolved)
-
-        manifest_path = build_dir / "deploy_manifest.json"
-        manifest_path.write_text(json.dumps(manifest, indent=2))
+        manifest_path = prepare_build_directory(resolved, build_dir)
         _log(f"  Manifest: {manifest_path}")
-
-        # 3. Copy artifacts
+        for node_id, source in resolved.model_sources.items():
+            _log(f"  {model_source_line(node_id, source)}")
         _log(f"Copying {len(resolved.artifacts)} artifacts...")
-        for artifact_name, artifact_path in resolved.artifacts.items():
-            dest = artifacts_dir / artifact_name
-            shutil.copy2(artifact_path, dest)
-            _log(f"  {artifact_name} → {dest}")
-
-        # 4. Generate FastAPI app
         _log("Generating FastAPI app...")
-        app_source = _generate_app_source(config.model_name, ct.port)
-        (build_dir / "app.py").write_text(app_source)
-
-        # 5. Generate Dockerfile
         _log("Generating Dockerfile...")
-        dockerfile = _generate_dockerfile(ct.base_image, ct.port, resolved)
-        (build_dir / "Dockerfile").write_text(dockerfile)
 
         # 6. Determine image tag
         git_sha = _git_sha_short()
@@ -195,47 +287,31 @@ def deploy_to_platform_container(
     resolved: ResolvedDeploy,
     progress: Callable[[str], None] | None = None,
 ) -> DeployResult:
-    """Platform container target - build, push, then update the running service.
+    """Platform container target (azure-container-apps, aws-ecs, gcp-run): build and push.
 
-    Shared entry point for azure-container-apps, aws-ecs, gcp-run.
-    After building and pushing the image, calls the platform-specific
-    SDK to create a new revision / update the service.
+    These targets are build and push only: no platform SDK adapter updates the
+    running service yet. The image must reach a registry for anyone to deploy it,
+    so a missing ``container.registry`` fails before the build; after the push the
+    deploy succeeds and reports which image to point the service at.
     """
-    result = build_and_push_image(resolved, progress)
-
-    def _log(msg: str) -> None:
-        if progress:
-            progress(msg)
-
     target = resolved.config.target
-    _log(f"Updating service on {target}...")
-    endpoint_url = _update_service(target, result.image_tag, resolved)
-    _log(f"  ✓ Service updated: {endpoint_url or '(no URL returned)'}")
-
+    if not resolved.config.container.registry:
+        raise DeployError(
+            f"Target '{target}' pushes the scoring image for a manual service update, "
+            "so it needs a registry: set [deploy.container] registry in haute.toml."
+        )
+    result = build_and_push_image(resolved, progress)
+    if progress:
+        progress(
+            f"Service not updated: updating {target} is not implemented yet. "
+            f"Point the service at {result.image_tag}."
+        )
     return DeployResult(
         model_name=result.model_name,
         model_version=result.model_version,
         model_uri=result.image_tag,
-        endpoint_url=endpoint_url,
+        endpoint_url=None,
         manifest_path=result.manifest_path,
-    )
-
-
-def _update_service(
-    target: str,
-    image_tag: str,
-    resolved: ResolvedDeploy,
-) -> str | None:
-    """Call the platform SDK to update the running service with the new image.
-
-    Each platform target will have its own implementation module
-    (e.g. ``_azure_container_apps.py``) once the SDK integration is built.
-    """
-    raise NotImplementedError(
-        f"Service update for '{target}' is not yet implemented. "
-        f"The image has been built and pushed as {image_tag}. "
-        f"You can update the service manually, or wait for the "
-        f"'{target}' SDK integration to be completed."
     )
 
 
@@ -272,7 +348,28 @@ from haute.deploy._request_limits import (
     deploy_quote_request_body_limit_bytes,
     read_limited_json_body,
 )
+from haute._worker_isolation import (
+    IsolatedWorkerCrashedError,
+    IsolatedWorkerError,
+    IsolatedWorkerMemoryLimitExceededError,
+    IsolatedWorkerMemoryLimitUnsupportedError,
+    IsolatedWorkerRemoteError,
+    IsolatedWorkerTimeoutError,
+    isolated_worker_failure_is_memory,
+    isolated_worker_memory_detail,
+    process_memory_caps_supported,
+    resolve_worker_memory_enforcement,
+)
+from haute.deploy._batch_scoring import (
+    BatchScoreCleanupError,
+    BatchScoreError,
+    accept_batch_outcome,
+    deploy_batch_timeout_seconds,
+    prepare_batch_scoring,
+    score_batch_worker,
+)
 from haute.deploy._scorer import admit_deploy_execution, score_graph, score_graph_lazy
+from haute.routes._isolated_worker_async import run_isolated_worker_async
 
 # ── Load manifest at startup ────────────────────────────────────────
 
@@ -296,6 +393,50 @@ _artifact_paths = {{
     for name, path in _manifest["artifacts"].items()
 }}
 _output_fields = _manifest.get("output_fields")
+_execution_policy = _manifest.get("execution_policy") or {{}}
+
+
+def _require_fail_closed_batch_enforcement(policy):
+    """Refuse to start when a cap-dependent policy has no enforced cap.
+
+    A ``warned`` / ``full-width-conservative`` policy is a promise the bundle
+    could only make because the batch worker runs under a hard memory cap. In
+    ``best_effort`` mode a host that cannot install the cap silently starts a
+    child with no native backend, where the planner rejects the unavailable
+    estimate on every batch request. Failing at startup names the real problem
+    once instead of turning every batch into an unexplained 422.
+    """
+    if policy.get("status") != "warned":
+        return
+    enforcement = resolve_worker_memory_enforcement()
+    if enforcement == "required":
+        if process_memory_caps_supported():
+            return
+        raise RuntimeError(
+            "This deployment's batch execution policy is "
+            f"{{policy.get('status')!r}} / {{policy.get('strategy')!r}} "
+            f"({{policy.get('reason_code')!r}}) at node "
+            f"{{policy.get('blocking_node_id')!r}} (operator "
+            f"{{policy.get('blocking_operator')!r}}), which is only valid while the "
+            "batch worker runs under an enforced hard memory cap. This host "
+            "cannot install a native memory cap, so HAUTE_WORKER_MEMORY_ENFORCEMENT"
+            "=required would fail every batch request. Serve this image on a host "
+            "that supports native memory caps."
+        )
+    raise RuntimeError(
+        "This deployment's batch execution policy is "
+        f"{{policy.get('status')!r}} / {{policy.get('strategy')!r}} "
+        f"({{policy.get('reason_code')!r}}) at node "
+        f"{{policy.get('blocking_node_id')!r}} (operator "
+        f"{{policy.get('blocking_operator')!r}}), which is only valid while the "
+        "batch worker runs under an enforced hard memory cap. This host is "
+        f"configured as HAUTE_WORKER_MEMORY_ENFORCEMENT={{enforcement}}. Set "
+        "HAUTE_WORKER_MEMORY_ENFORCEMENT=required (on a host that supports "
+        "native memory caps) before serving this image."
+    )
+
+
+_require_fail_closed_batch_enforcement(_execution_policy)
 _QUOTE_REQUEST_BODY_LIMIT_BYTES = deploy_quote_request_body_limit_bytes()
 _QUOTE_RESPONSE_ROW_LIMIT = {DEFAULT_QUOTE_RESPONSE_ROW_LIMIT}
 _DEPLOY_STREAM_CHUNK_SIZE = 50_000
@@ -320,7 +461,11 @@ def health() -> dict:
         "nodes_deployed": _manifest.get("nodes_deployed", 0),
         "input_schema": _manifest.get("input_schema", {{}}),
         "output_schema": _manifest.get("output_schema", {{}}),
+        # Describes single-row live scoring, which runs in this process.
         "memory_enforcement": "admission_rss_best_effort",
+        # Multi-row batches run in a spawn worker with a hard RSS cap.
+        "batch_memory_enforcement": resolve_worker_memory_enforcement(),
+        "execution_policy": _manifest.get("execution_policy"),
     }}
 
 
@@ -384,6 +529,225 @@ def _quote_ndjson_chunks(spool):
         spool.close()
 
 
+def _batch_response_content(result):
+    row_count = result.row_count
+    returned_rows = min(row_count, _QUOTE_RESPONSE_ROW_LIMIT)
+    frame = pl.scan_parquet(result.result_path).head(returned_rows).collect()
+    return {{
+        "rows": render_output_document(frame),
+        "row_count": row_count,
+        "returned_rows": returned_rows,
+        "truncated": row_count > _QUOTE_RESPONSE_ROW_LIMIT,
+        "limit": _QUOTE_RESPONSE_ROW_LIMIT,
+        "execution_metrics": result.execution_metrics,
+    }}
+
+
+def _materialize_batch_ndjson(plan, result):
+    spool = tempfile.SpooledTemporaryFile(
+        max_size=_DEPLOY_STREAM_SPOOL_MAX_SIZE,
+        mode="w+b",
+    )
+    try:
+        for batch in bounded_collect_batches(
+            pl.scan_parquet(result.result_path),
+            chunk_size=_DEPLOY_STREAM_CHUNK_SIZE,
+            maintain_order=True,
+            execution_context=plan.execution_context,
+            stage_name="deploy_batch_stream",
+            node_id=_output_node_id,
+        ):
+            if batch.height == 0:
+                continue
+            text = batch.write_ndjson()
+            if text and not text.endswith("\\n"):
+                text += "\\n"
+            spool.write(text.encode("utf-8"))
+        spool.seek(0)
+        return spool
+    except BaseException:
+        spool.close()
+        raise
+
+
+def _batch_error_response(exc):
+    if exc.kind in {{"contract", "bounded"}}:
+        if exc.payload is not None:
+            return JSONResponse(status_code=422, content=exc.payload)
+        return JSONResponse(
+            status_code=422,
+            content={{
+                "error_code": "bounded_streaming_unsupported",
+                "error": "Bounded streaming unsupported",
+                "detail": exc.detail,
+            }},
+        )
+    if exc.kind == "memory":
+        return JSONResponse(status_code=507, content=exc.payload)
+    if exc.kind == "cancelled":
+        return JSONResponse(
+            status_code=499,
+            content={{
+                "error_code": "execution_cancelled",
+                "operation": "deploy_quote",
+                "job_id": None,
+                "reason": exc.detail,
+            }},
+        )
+    logger.exception("deploy_quote_batch_failed")
+    return JSONResponse(
+        status_code=500,
+        content={{"error_code": "deploy_internal_error", "error": exc.detail}},
+    )
+
+
+async def _quote_batch(request: Request, rows: list):
+    """Score a multi-row request inside one hard-capped spawn worker."""
+    plan = None
+    response = None
+    # Only an UNHANDLED failure counts as a primary error. A handled branch has
+    # already produced its response, so a cleanup failure there is the only
+    # unreported problem left and must win.
+    primary_error = None
+    try:
+        plan = await run_in_threadpool(
+            prepare_batch_scoring,
+            rows,
+            graph=_pruned_graph,
+            input_node_ids=_input_node_ids,
+            output_node_id=_output_node_id,
+            artifact_paths=_artifact_paths,
+            output_fields=_output_fields,
+        )
+        outcome = await run_isolated_worker_async(
+            score_batch_worker,
+            plan.request,
+            plan.budget,
+            config=plan.worker_config,
+        )
+        result = accept_batch_outcome(plan, outcome)
+        if _wants_ndjson(request):
+            # The spool is fully materialised here, so removing the parquet in
+            # the finally below cannot truncate the streamed body.
+            spool = await run_in_threadpool(_materialize_batch_ndjson, plan, result)
+            response = StreamingResponse(
+                _quote_ndjson_chunks(spool),
+                media_type="application/x-ndjson",
+            )
+        else:
+            response = JSONResponse(
+                content=await run_in_threadpool(_batch_response_content, result)
+            )
+    except ExecutionAdmissionError as exc:
+        response = JSONResponse(status_code=507, content=exc.to_payload())
+    except ExecutionCancelledError as exc:
+        response = JSONResponse(
+            status_code=499,
+            content={{
+                "error_code": "execution_cancelled",
+                "operation": exc.operation,
+                "job_id": exc.job_id,
+                "reason": str(exc),
+            }},
+        )
+    except ExecutionMemoryLimitExceededError as exc:
+        response = JSONResponse(status_code=507, content=exc.to_payload())
+    except BoundedMemoryUnsupportedError as exc:
+        if is_public_contract_error(exc):
+            response = JSONResponse(status_code=422, content=exc.to_payload())
+        else:
+            response = JSONResponse(
+                status_code=422,
+                content={{
+                    "error_code": "bounded_streaming_unsupported",
+                    "error": "Bounded streaming unsupported",
+                    "detail": str(exc),
+                }},
+            )
+    except HauteError as exc:
+        if is_public_contract_error(exc):
+            response = JSONResponse(status_code=422, content=exc.to_payload())
+        else:
+            logger.exception("deploy_quote_batch_failed")
+            response = JSONResponse(
+                status_code=500,
+                content={{"error_code": "deploy_internal_error", "error": str(exc)}},
+            )
+    except BatchScoreError as exc:
+        response = _batch_error_response(exc)
+    except (
+        IsolatedWorkerMemoryLimitExceededError,
+        IsolatedWorkerMemoryLimitUnsupportedError,
+    ) as exc:
+        response = JSONResponse(
+            status_code=507,
+            content=isolated_worker_memory_detail(
+                exc,
+                operation="deploy_quote",
+                memory_limit_bytes=plan.budget.memory_limit_bytes,
+            ),
+        )
+    except IsolatedWorkerTimeoutError:
+        logger.exception("deploy_quote_batch_timed_out")
+        response = JSONResponse(
+            status_code=504,
+            content={{
+                "error_code": "deploy_batch_timeout",
+                "operation": "deploy_quote",
+                "timeout_seconds": deploy_batch_timeout_seconds(),
+            }},
+        )
+    except (IsolatedWorkerCrashedError, IsolatedWorkerRemoteError) as exc:
+        if isolated_worker_failure_is_memory(exc):
+            response = JSONResponse(
+                status_code=507,
+                content=isolated_worker_memory_detail(
+                    exc,
+                    operation="deploy_quote",
+                    memory_limit_bytes=plan.budget.memory_limit_bytes,
+                ),
+            )
+        else:
+            logger.exception("deploy_quote_batch_failed")
+            response = JSONResponse(
+                status_code=500,
+                content={{"error_code": "deploy_internal_error", "error": str(exc)}},
+            )
+    except IsolatedWorkerError as exc:
+        logger.exception("deploy_quote_batch_failed")
+        response = JSONResponse(
+            status_code=500,
+            content={{"error_code": "deploy_internal_error", "error": str(exc)}},
+        )
+    except Exception as exc:
+        # Same contract as the live path: an unexpected parent-side failure is
+        # logged and reported as the internal-error envelope, never a bare 500.
+        logger.exception("deploy_quote_batch_failed")
+        response = JSONResponse(
+            status_code=500,
+            content={{"error_code": "deploy_internal_error", "error": str(exc)}},
+        )
+    except BaseException as exc:
+        primary_error = exc
+        raise
+    finally:
+        if plan is not None:
+            try:
+                plan.cleanup(primary_error=primary_error)
+            except BatchScoreCleanupError as cleanup_error:
+                # The request rows and the scored parquet are still on disk;
+                # that is a data-retention defect even after a good score.
+                logger.exception("deploy_quote_batch_cleanup_failed")
+                response = JSONResponse(
+                    status_code=500,
+                    content={{
+                        "error_code": "deploy_internal_error",
+                        "error": str(cleanup_error),
+                    }},
+                )
+    return response
+
+
 @app.post("/quote")
 async def quote(request: Request) -> JSONResponse:
     """Score one or more quotes.
@@ -414,6 +778,11 @@ async def quote(request: Request) -> JSONResponse:
             status_code=400,
             content={{"error": "Expected a JSON object or array of objects."}},
         )
+
+    # Multi-row batches are the only request shape that can materialise, so
+    # they run in a hard-capped worker instead of this service process.
+    if len(rows) > 1:
+        return await _quote_batch(request, rows)
 
     try:
         row_count = len(rows)
@@ -504,9 +873,21 @@ def _generate_dockerfile(
     base_image: str,
     port: int,
     resolved: ResolvedDeploy,
+    *,
+    haute_pip_dep: str | None = None,
+    wheel_name: str | None = None,
 ) -> str:
     """Generate a Dockerfile for the scoring container."""
-    deps_line = " ".join(_pinned_dockerfile_deps(resolved))
+    haute_dep, *runtime_deps = _pinned_dockerfile_deps(resolved, haute_requirement=haute_pip_dep)
+    runtime_line = " ".join(runtime_deps)
+    copy_wheel = f"COPY {wheel_name} .\n" if wheel_name else ""
+    utility = resolved.project_modules.utility
+    if utility is None:
+        copy_utility = ""
+    elif utility.is_dir():
+        copy_utility = f"COPY {UTILITY_PACKAGE}/ {UTILITY_PACKAGE}/\n"
+    else:
+        copy_utility = f"COPY {UTILITY_PACKAGE}.py .\n"
 
     return f"""\
 FROM {base_image}
@@ -517,36 +898,69 @@ WORKDIR /app
 # enforcement; the hosting platform owns any outer hard container cap.
 ENV HAUTE_EXECUTION_MEMORY_POLICY=strict_server
 
-# Install Python dependencies
-RUN pip install --no-cache-dir {deps_line}
+# Install the pinned scoring runtime, then haute itself without its
+# dependencies: they include the editor, assistant, training and tuning
+# stacks, which a scoring container never runs.
+RUN pip install --no-cache-dir {runtime_line}
+{copy_wheel}RUN pip install --no-cache-dir --no-deps {haute_dep}
 
 # Copy application code and artifacts
 COPY deploy_manifest.json .
 COPY app.py .
 COPY artifacts/ artifacts/
-
+{copy_utility}
 EXPOSE {port}
 
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "{port}"]
 """
 
 
-def _pinned_dockerfile_deps(resolved: ResolvedDeploy) -> list[str]:
-    """Every ``pip install`` requirement of the scoring container, pinned.
+def _pinned_dockerfile_deps(
+    resolved: ResolvedDeploy,
+    *,
+    haute_requirement: str | None = None,
+) -> list[str]:
+    """Every ``pip install`` requirement of the scoring container, pinned: ``haute`` first.
 
-    Core runtime and model runtime alike are pinned to the version installed
+    Scoring runtime and model runtime alike are pinned to the version installed
     in the deploying environment: the container unpickles the model, and a
     model loaded under a different scikit-learn (or LightGBM, ...) than the
     one that wrote it is silently wrong premiums, not an error.
     """
-    return [*_pinned_core_dockerfile_deps(), *_pinned_extra_dockerfile_deps(resolved)]
-
-
-def _pinned_core_dockerfile_deps() -> list[str]:
+    haute = (
+        haute_requirement
+        if haute_requirement is not None
+        else _pinned_dockerfile_dependency("haute", "haute")
+    )
     return [
-        _pinned_dockerfile_dependency(distribution_name, install_name)
-        for distribution_name, install_name in _CORE_DOCKERFILE_DEPENDENCIES
+        haute,
+        *(
+            _pinned_price_contour_dependency()
+            if distribution_name == PRICE_CONTOUR_DISTRIBUTION
+            else _pinned_dockerfile_dependency(distribution_name, install_name)
+            for distribution_name, install_name in _SCORING_RUNTIME_DEPENDENCIES
+        ),
+        *_pinned_graph_dockerfile_deps(resolved),
+        *_pinned_extra_dockerfile_deps(resolved),
     ]
+
+
+def _pinned_graph_dockerfile_deps(resolved: ResolvedDeploy) -> list[str]:
+    """Pin the runtime the served graph needs beyond the scoring runtime.
+
+    An optimiser apply sourced from an MLflow run or registered model loads its
+    artefact from MLflow when the container runs (such artefacts are not
+    bundled), so the image needs ``mlflow``.
+    """
+    nodes = [
+        node.id
+        for node in resolved.pruned_graph.nodes
+        if node.data.nodeType == NodeType.OPTIMISER_APPLY
+        and node.data.config.get("sourceType") in {"run", "registered"}
+    ]
+    if not nodes:
+        return []
+    return [_pinned_dockerfile_dependency("mlflow", "mlflow", required_by=sorted(nodes))]
 
 
 def _pinned_extra_dockerfile_deps(resolved: ResolvedDeploy) -> list[str]:
@@ -566,7 +980,7 @@ def _pinned_dockerfile_dependency(
     try:
         package_version = metadata_version(distribution_name)
     except PackageNotFoundError as exc:
-        needed_by = f" (needed by artifact {', '.join(required_by)})" if required_by else ""
+        needed_by = f" (needed by {', '.join(required_by)})" if required_by else ""
         raise DeployError(
             f"Cannot pin Dockerfile dependency {install_name!r}{needed_by}: "
             f"installed distribution {distribution_name!r} was not found. The "
@@ -576,17 +990,53 @@ def _pinned_dockerfile_dependency(
     return f"{install_name}=={package_version}"
 
 
-# Artifact extension -> distribution name of the runtime that loads it.  Every
-# entry is also the ``pip install`` name, and every entry is pinned through
-# ``_pinned_dockerfile_dependency`` -- catboost included, even though haute's
-# own ``catboost<2`` cap would happen to constrain a bare name.
-_ARTIFACT_EXT_TO_DEP: dict[str, str] = {
-    ".cbm": "catboost",
-    ".pkl": "scikit-learn",
-    ".pickle": "scikit-learn",
-    ".lgb": "lightgbm",
-    ".xgb": "xgboost",
-    ".onnx": "onnxruntime",
+def _pinned_price_contour_dependency() -> str:
+    """Pin the verified price-contour; refuse a build the container cannot reproduce.
+
+    The container installs ``price-contour==<version>`` from the package index,
+    so the deploying environment must run a released build: an editable
+    checkout or a direct-URL install of the same version number may hold
+    different solver code, and the deployed prices would silently differ from
+    the ones reviewed here.
+    """
+    try:
+        install = price_contour_install()
+    except PriceContourCompatibilityError as exc:
+        raise DeployError(f"Cannot pin price-contour for the scoring container.\n{exc}") from exc
+    if install.kind != "wheel":
+        raise DeployError(
+            f"Cannot pin price-contour for the scoring container: version {install.version} "
+            f"is installed from {install.description}, which the container cannot "
+            "reproduce from the package index. Install the released build with "
+            "`uv sync --locked` and deploy again."
+        )
+    return f"{PRICE_CONTOUR_DISTRIBUTION}=={install.version}"
+
+
+# A pickle or joblib artifact may hold an object of any third-party package
+# haute's restricted unpickler allows (``_sandbox._ALLOWED_PICKLE_CLASSES`` and
+# ``_ALLOWED_PICKLE_GLOBALS``) beyond the scoring runtime, so the image installs
+# all of them, as a full haute install would.
+_PICKLE_RUNTIME_DEPENDENCIES: tuple[str, ...] = (
+    "catboost",
+    "interpret-core",
+    "pandas",
+    "scikit-learn",
+)
+
+# Load File artifact extension -> distribution names of the runtime that
+# loads it. A Model Scoring artifact's runtime is its registered model
+# family's ``distributions`` instead. Every entry is also the ``pip install``
+# name, and every entry is pinned through ``_pinned_dockerfile_dependency``:
+# haute is installed without its own dependencies, so each engine comes from
+# here or from the family registry.
+_LOAD_FILE_EXT_TO_DEPS: dict[str, tuple[str, ...]] = {
+    ".pkl": _PICKLE_RUNTIME_DEPENDENCIES,
+    ".pickle": _PICKLE_RUNTIME_DEPENDENCIES,
+    ".joblib": _PICKLE_RUNTIME_DEPENDENCIES,
+    ".lgb": ("lightgbm",),
+    ".xgb": (XGBOOST_DISTRIBUTION,),
+    ".onnx": ("onnxruntime",),
 }
 
 
@@ -601,8 +1051,12 @@ def _extra_deps_by_artifact(resolved: ResolvedDeploy) -> dict[str, list[str]]:
     needed: dict[str, list[str]] = {}
     for artifact_name in sorted(resolved.artifacts):
         suffix = Path(artifact_name).suffix.lower()
-        if suffix in _ARTIFACT_EXT_TO_DEP:
-            needed.setdefault(_ARTIFACT_EXT_TO_DEP[suffix], []).append(artifact_name)
+        family = family_for_suffix(suffix)
+        dependencies = (
+            family.distributions if family is not None else _LOAD_FILE_EXT_TO_DEPS.get(suffix, ())
+        )
+        for dependency in dependencies:
+            needed.setdefault(dependency, []).append(artifact_name)
     return dict(sorted(needed.items()))
 
 
@@ -659,18 +1113,11 @@ def _docker_push(image_tag: str) -> None:
 
 
 def _git_sha_short() -> str:
-    """Get the short git SHA of HEAD, or 'local' if not in a repo."""
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=True,
-        )
-        return result.stdout.strip()
-    except (FileNotFoundError, subprocess.CalledProcessError):
+    """Get the short git SHA of HEAD, or 'local' without git or outside a repo."""
+    if not git_binary_available():
         return "local"
+    ok, sha = _run_git_ok("rev-parse", "--short", "HEAD")
+    return sha if ok else "local"
 
 
 def _next_version() -> int:

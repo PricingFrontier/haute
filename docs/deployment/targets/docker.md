@@ -14,7 +14,7 @@ This guide covers packaging a Haute pipeline as a **Docker container** - a self-
     Choose Docker if your company **doesn't use Databricks** and your IT team has asked you for a container image, or if they've said they'll handle the hosting and just need a package from you. This is also the right choice if your IT team uses Kubernetes, Docker Compose, or any other container platform you haven't heard of - you don't need to know what those are.
 
 !!! note "This target involves your IT team"
-    As an analyst, your role is to **configure `haute.toml`** and **merge to main**. CI builds and pushes the Docker image automatically. Your IT team handles everything else - the registry, the hosting, the infrastructure. The sections below are split: **Steps 1-3 are for you**, and the "For your IT team" section at the bottom is reference material for IT.
+    As an analyst, your role is to **configure `haute.toml`** and **merge to main**. CI builds and pushes the Docker image automatically. Your IT team handles everything else - the registry, the hosting, the infrastructure. The sections below are split: **Steps 1-5 are for you**, and the "For your IT team" section at the bottom is reference material for IT.
 
 ---
 
@@ -24,7 +24,7 @@ This guide covers packaging a Haute pipeline as a **Docker container** - a self-
 2. **You merge to main** - CI automatically builds a Docker image containing your pipeline and pushes it to a container registry when `registry` is configured
 3. **Your IT team** (or an automated platform) runs the image as a service, exposing the API
 
-The generated CI workflow can run the build and push; IT handles the infrastructure and must provide the endpoint before smoke or impact commands can use it.
+The generated CI workflow can run the build and push once you add a registry login step ([Step 1](#step-1-add-registry-credentials-to-ci)); IT handles the infrastructure and must provide the endpoints before the smoke and impact steps can use them ([Step 3](#step-3-give-smoke-and-impact-their-endpoints)).
 
 ---
 
@@ -61,6 +61,18 @@ CI needs credentials to push the Docker image to your registry. Add these as enc
 
 How to add them depends on your CI provider - see [GitHub Actions](../ci/github-actions.md#step-1-add-your-credentials-as-github-secrets), [GitLab](../ci/gitlab.md#step-1-add-your-credentials-as-cicd-variables), or [Azure DevOps](../ci/azure-devops.md#step-1-create-a-variable-group-for-credentials).
 
+### Log in to the registry before the deploy
+
+`haute deploy` pushes with a plain `docker push`, and the generated workflows pass these secrets to the deploy steps but do not log in with them. Until they do, add a login line before `haute deploy` in both the staging and the production deploy step of your workflow file, for example on GitHub Actions:
+
+```yaml
+        run: |
+          echo "$DOCKER_PASSWORD" | docker login ghcr.io --username "$DOCKER_USERNAME" --password-stdin
+          uv run haute deploy --endpoint-suffix "-staging"
+```
+
+Use your registry's host in place of `ghcr.io` (`docker.io` for Docker Hub, `myregistry.azurecr.io` for Azure Container Registry). Amazon ECR issues short-lived passwords instead; see [AWS ECS](aws.md#step-2-add-credentials-to-ci).
+
 ---
 
 ## Step 2: Configure `haute.toml`
@@ -93,13 +105,29 @@ dir = "tests/quotes"
 | `model_name` | Used as the Docker image name | `"motor-pricing"` |
 | `registry` | Where to push the image. Leave empty for local-only. | `"ghcr.io/myorg"` or `""` |
 | `port` | The [port](../before-you-start.md#quick-glossary) the API server listens on inside the container (like an extension number on a phone system) | `8080` |
-| `base_image` | The base Docker image to build from | `"python:3.11.9-slim"` |
+| `base_image` | The base Docker image to build from. It must name an exact patch version (`python:3.11.9-slim`) or a digest (`python@sha256:…`); a floating tag such as `python:3.11-slim` is refused before the build | `"python:3.11.9-slim"` |
 
 The `registry` value is the address your IT team gave you for where Docker images are stored. If you don't know it, ask them: *"What's our container registry URL?"* They'll give you something like `ghcr.io/yourorg` or `myregistry.azurecr.io`. Put that value in `haute.toml`.
 
 ---
 
-## Step 3: Deploy by merging to main
+## Step 3: Give smoke and impact their endpoints
+
+The smoke and impact steps call the running staging and production services, so they need their addresses. Once IT runs them, add them to `haute.toml`:
+
+```toml
+[ci.staging]
+endpoint_url = "https://motor-pricing-staging.example.com"
+
+[ci.production]
+endpoint_url = "https://motor-pricing.example.com"
+```
+
+Without a production address, the impact step reports a first deployment instead of a comparison. The generated smoke and impact steps also pass `--endpoint-suffix "-staging"`, which `haute smoke` and `haute impact` accept only for Databricks, so they fail for this target until you remove that option from those two steps in your workflow file.
+
+---
+
+## Step 4: Deploy by merging to main
 
 You don't run any deploy command. When you merge to main, CI automatically:
 
@@ -114,15 +142,15 @@ Once the image is in the registry, your IT team (or a separate platform workflow
 !!! success "What does success look like?"
     After the `haute deploy` job succeeds, you should see:
 
-    1. **In the CI logs** - a successful image build, plus `Pushed ...` when `registry` is configured
+    1. **In the CI logs** - `✓ Deployed: motor-pricing v1`, followed by `Image:` and the image tag, such as `ghcr.io/yourorg/motor-pricing:a1b2c3d`
     2. **From your IT team** - confirmation that the image is running and the endpoint URL to test
-    3. **In the CI workflow** - smoke and impact jobs can pass only after your hosting process has created the configured staging and production endpoints
+    3. **In the CI workflow** - smoke and impact jobs can pass only after your hosting process runs the staging service and you have set its address ([Step 3](#step-3-give-smoke-and-impact-their-endpoints)); the impact report compares against production once its address is set too
 
     The deploy job's success confirms only validation and image packaging/push. It does not make the later smoke and impact jobs green by itself, and the pipeline is live only after your hosting process has started the image and its health checks pass.
 
 ---
 
-## Step 4: Test the deployed API
+## Step 5: Test the deployed API
 
 Once your IT team has the container running, you can test it with Python:
 
@@ -141,14 +169,14 @@ print(response.json())
 
 # Check the service is alive
 health = requests.get(f"{url}/health")
-print(health.json())  # {"status": "ok"}
+print(health.json())  # {"status": "ok", "model": "motor-pricing", ...}
 ```
 
 ---
 
 ## For your IT team
 
-As an analyst, **you can stop reading here** - your job is done after Step 4 above. The sections below are reference material for whoever manages the container registry and hosting infrastructure.
+As an analyst, **you can stop reading here** - your job is done after Step 5 above. The sections below are reference material for whoever manages the container registry and hosting infrastructure.
 
 ??? note "What Haute generates (click to expand)"
 
@@ -160,6 +188,7 @@ As an analyst, **you can stop reading here** - your job is done after Step 4 abo
     | `Dockerfile` | Instructions for building the Docker image |
     | `deploy_manifest.json` | Metadata about what was deployed (version, schemas, artifacts) |
     | `artifacts/` | Copies of model files |
+    | `utility/` | Your project's utility package, when the pipeline imports it |
 
     These are generated fresh on every deploy.
 
@@ -170,9 +199,9 @@ As an analyst, **you can stop reading here** - your job is done after Step 4 abo
     | Endpoint | Method | Purpose |
     |---|---|---|
     | `/quote` | `POST` | Send quote data (JSON object or array), receive premium results in a stable envelope |
-    | `/health` | `GET` | Returns `{"status": "ok"}` - used by infrastructure to check the service is alive |
+    | `/health` | `GET` | Returns a JSON object with `"status": "ok"`, the model name, the Haute version and the input and output schemas - used by infrastructure to check the service is alive |
 
-    The `/quote` endpoint accepts a JSON object or array of quote objects and returns `{ "rows": [...], "row_count": n, "returned_rows": n, "truncated": false, "limit": 1000 }`. For larger results, `rows` is capped at `limit`, `row_count` reports the full result size, and `truncated` is `true`. No MLflow, no pandas - just JSON in, JSON out.
+    The `/quote` endpoint accepts a JSON object or array of quote objects and returns `{ "rows": [...], "row_count": n, "returned_rows": n, "truncated": false, "limit": 1000, "execution_metrics": {...} }`. For larger results, `rows` is capped at `limit`, `row_count` reports the full result size, and `truncated` is `true`. Send `Accept: application/x-ndjson` to receive every row as newline-delimited JSON instead. A request body over the size limit gets HTTP 413. No MLflow, no pandas - just JSON in, JSON out.
 
 ??? note "Registry options (click to expand)"
 
@@ -186,17 +215,17 @@ As an analyst, **you can stop reading here** - your job is done after Step 4 abo
 
 ??? note "Handing off the image (click to expand)"
 
-    The Docker image is pushed to the registry configured in `haute.toml`. You can also export it as a `.tar` file:
+    The Docker image is pushed to the registry configured in `haute.toml`. On the machine that built it, you can also export it as a `.tar` file, using its full tag (which includes the registry when one is configured):
 
     ```bash
-    docker save motor-pricing:a1b2c3d > motor-pricing.tar
+    docker save ghcr.io/yourorg/motor-pricing:a1b2c3d > motor-pricing.tar
     ```
 
     The image can run on any platform that supports Docker containers - Kubernetes, Docker Compose, AWS ECS, Azure Container Apps, or others. It requires:
 
     - `POST /quote` on the configured port (default 8080)
     - `GET /health` on the same port
-    - No environment variables required at runtime
+    - No environment variables required at runtime, unless an Apply Optimisation node loads its result from an MLflow run or registered model; that container needs MLflow credentials
 
 ---
 
@@ -204,13 +233,13 @@ As an analyst, **you can stop reading here** - your job is done after Step 4 abo
 
 ### CI fails with "authentication required" on push
 
-The registry credentials in your CI secrets are missing or incorrect. Check that `DOCKER_USERNAME` and `DOCKER_PASSWORD` are set correctly in your CI provider.
+The deploy step has not logged in to the registry, or the credentials are wrong. Check that the deploy steps run the login line from [Step 1](#log-in-to-the-registry-before-the-deploy), and that `DOCKER_USERNAME` and `DOCKER_PASSWORD` are set correctly in your CI provider.
 
 ### CI fails during image build
 
 Check the CI logs for the build step. Common causes:
 
-- Missing Python dependencies - check your `pyproject.toml` includes all required packages
+- Missing Python dependencies - the image installs Haute's scoring runtime and the packages your model files need, not your `pyproject.toml`, so a package your pipeline code imports beyond those is not in the image
 - Model file not found - ensure all model files referenced in your pipeline are committed to the repository
 
 ### Container crashes on startup (reported by IT)

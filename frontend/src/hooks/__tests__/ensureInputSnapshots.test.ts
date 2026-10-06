@@ -1,5 +1,5 @@
 import type { Node } from "@xyflow/react"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type {
   InputCacheBuildResponse,
   InputCacheJobStatusResponse,
@@ -13,6 +13,7 @@ vi.mock("../../api/client", async (importOriginal) => {
   return {
     ...actual,
     buildInputCache: vi.fn(),
+    cancelInputCacheJob: vi.fn(),
     getInputCacheJob: vi.fn(),
     getInputCacheStatus: vi.fn(),
   }
@@ -21,6 +22,7 @@ vi.mock("../../api/client", async (importOriginal) => {
 import {
   ApiError,
   buildInputCache,
+  cancelInputCacheJob,
   getInputCacheJob,
   getInputCacheStatus,
 } from "../../api/client"
@@ -61,7 +63,7 @@ function buildResponse(joined = false): InputCacheBuildResponse {
     job_id: "job-1",
     identity_digest: "identity",
     status: "running",
-    joined,
+    joined, forced: false, build_class: "bounded",
   }
 }
 
@@ -94,8 +96,256 @@ describe("ensureInputSnapshots", () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
+  afterEach(() => vi.useRealTimers())
 
-  it("builds a missing snapshot with the lazy profile and waits for completion", async () => {
+  function quoteInput(path = "quotes.jsonl"): Node {
+    return {
+      id: "quote", position: { x: 0, y: 0 },
+      data: { nodeType: NODE_TYPES.API_INPUT, config: { path, tables: [] } },
+    }
+  }
+
+  it("waits for a build it may not join without cancelling it, then starts its own", async () => {
+    vi.useFakeTimers()
+    vi.mocked(buildInputCache)
+      .mockResolvedValueOnce({ ...buildResponse(), job_id: "ordinary", status: "blocked" })
+      .mockResolvedValueOnce({ ...buildResponse(), job_id: "forced", forced: true })
+    vi.mocked(getInputCacheJob).mockImplementation(async (jobId: string) => ({
+      ...job("completed"),
+      job_id: jobId,
+    }))
+    const controller = new AbortController()
+
+    const pending = ensureInputSnapshots([dataInput("source")], { force: true, signal: controller.signal })
+    await vi.runAllTimersAsync()
+    await pending
+
+    expect(buildInputCache).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(buildInputCache).mock.calls.every(([body]) => body.refresh === true)).toBe(true)
+    expect(getInputCacheJob).toHaveBeenCalledWith("ordinary", expect.anything())
+    expect(getInputCacheJob).toHaveBeenCalledWith("forced", expect.anything())
+    expect(cancelInputCacheJob).not.toHaveBeenCalled()
+  })
+
+  it("stops waiting for a blocking build on abort without cancelling it", async () => {
+    vi.mocked(buildInputCache).mockResolvedValue({ ...buildResponse(), job_id: "ordinary", status: "blocked" })
+    vi.mocked(getInputCacheJob).mockImplementation(async () => job("running"))
+    const controller = new AbortController()
+
+    const pending = ensureInputSnapshots([dataInput("source")], { force: true, signal: controller.signal })
+    await vi.waitFor(() => expect(getInputCacheJob).toHaveBeenCalled())
+    controller.abort()
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" })
+    expect(cancelInputCacheJob).not.toHaveBeenCalled()
+  })
+
+  it("asks again when a build it joined is stopped by its owner", async () => {
+    vi.useFakeTimers()
+    vi.mocked(getInputCacheStatus).mockResolvedValue(snapshot("missing"))
+    vi.mocked(buildInputCache)
+      .mockResolvedValueOnce({ ...buildResponse(true), job_id: "theirs" })
+      .mockResolvedValueOnce({ ...buildResponse(), job_id: "mine" })
+    vi.mocked(getInputCacheJob).mockImplementation(async (jobId: string) =>
+      jobId === "theirs" ? { ...job("cancelled"), job_id: jobId } : { ...job("completed"), job_id: jobId },
+    )
+
+    const pending = ensureInputSnapshots([dataInput("source")])
+    await vi.runAllTimersAsync()
+    await pending
+
+    expect(buildInputCache).toHaveBeenCalledTimes(2)
+  })
+
+  it("fails a build it started that was cancelled rather than asking again", async () => {
+    vi.useFakeTimers()
+    vi.mocked(getInputCacheStatus).mockResolvedValue(snapshot("missing"))
+    vi.mocked(buildInputCache).mockResolvedValue(buildResponse())
+    vi.mocked(getInputCacheJob).mockResolvedValue(job("cancelled", "Build cancelled."))
+
+    const pending = ensureInputSnapshots([dataInput("source")])
+    const outcome = expect(pending).rejects.toThrow("Build cancelled.")
+    await vi.runAllTimersAsync()
+    await outcome
+
+    expect(buildInputCache).toHaveBeenCalledTimes(1)
+  })
+
+  it("reports each running status of the build it waits for", async () => {
+    vi.useFakeTimers()
+    vi.mocked(getInputCacheStatus).mockResolvedValue(snapshot("missing"))
+    vi.mocked(buildInputCache).mockResolvedValue(buildResponse())
+    const running = job("running")
+    vi.mocked(getInputCacheJob)
+      .mockResolvedValueOnce({ ...running, progress: { ...running.progress, rows: 1200 } })
+      .mockResolvedValueOnce(job("completed"))
+    const onBuildProgress = vi.fn()
+
+    const pending = ensureInputSnapshots([dataInput("source")], { onBuildProgress })
+    await vi.runAllTimersAsync()
+    await pending
+
+    expect(onBuildProgress).toHaveBeenCalledWith(
+      expect.objectContaining({ progress: expect.objectContaining({ rows: 1200 }) }),
+    )
+  })
+
+  it("names every build whose cancellation failed, not only the first", async () => {
+    vi.mocked(getInputCacheStatus).mockResolvedValue(snapshot("missing"))
+    vi.mocked(buildInputCache)
+      .mockResolvedValueOnce({ ...buildResponse(), job_id: "build-a" })
+      .mockResolvedValueOnce({ ...buildResponse(), job_id: "build-b" })
+    vi.mocked(getInputCacheJob).mockImplementation(async () => job("running"))
+    vi.mocked(cancelInputCacheJob).mockRejectedValue(new Error("cancel route unreachable"))
+    const controller = new AbortController()
+
+    const pending = ensureInputSnapshots([dataInput("a"), dataInput("b")], { signal: controller.signal })
+    await vi.waitFor(() => expect(buildInputCache).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(getInputCacheJob).toHaveBeenCalledTimes(2))
+    controller.abort()
+
+    const failure = await pending.catch((error: unknown) => error)
+    expect(failure).toMatchObject({ name: "CancellationFailed" })
+    expect((failure as { jobIds: string[] }).jobIds.sort()).toEqual(["build-a", "build-b"])
+  })
+
+  it("checks the live Quote Input status and awaits its full cache build", async () => {
+    const node = quoteInput()
+    vi.mocked(getInputCacheStatus).mockResolvedValue(snapshot("missing"))
+    vi.mocked(buildInputCache).mockResolvedValue(buildResponse())
+    let finish!: (value: InputCacheJobStatusResponse) => void
+    vi.mocked(getInputCacheJob).mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    const onProgress = vi.fn()
+    const onBuildStart = vi.fn()
+    let completed = false
+    const pending = ensureInputSnapshots([node], { onProgress, onBuildStart })
+      .then(() => { completed = true })
+    await vi.waitFor(() => expect(buildInputCache).toHaveBeenCalledOnce())
+    expect(completed).toBe(false)
+    expect(getInputCacheStatus).toHaveBeenCalledWith({
+      schema_version: 1, node_type: "apiInput", config: node.data.config,
+    })
+    expect(buildInputCache).toHaveBeenCalledWith({
+      schema_version: 1, node_type: "apiInput", config: node.data.config,
+      refresh: false,
+    })
+    expect(onBuildStart).toHaveBeenCalledOnce()
+    expect(onProgress).toHaveBeenCalledWith(expect.stringContaining("Caching Quote Input"))
+    finish(job("completed"))
+    await pending
+    expect(onProgress).toHaveBeenLastCalledWith(null)
+  })
+
+  it.each(["quotes.JSON", "quotes.jsonl", "quotes.ndjson", "quotes.xml"])(
+    "reuses a matching ready+fresh Quote Input cache for %s", async (path) => {
+      vi.mocked(getInputCacheStatus).mockResolvedValue(snapshot("ready", "fresh"))
+      await ensureInputSnapshots([quoteInput(path)])
+      expect(getInputCacheStatus).toHaveBeenCalledOnce()
+      expect(buildInputCache).not.toHaveBeenCalled()
+    },
+  )
+
+  it("rebuilds a ready but stale Quote Input cache", async () => {
+    vi.mocked(getInputCacheStatus).mockResolvedValue(snapshot("ready", "stale"))
+    vi.mocked(buildInputCache).mockResolvedValue(buildResponse())
+    vi.mocked(getInputCacheJob).mockResolvedValue(job("completed"))
+
+    await ensureInputSnapshots([quoteInput()])
+
+    expect(getInputCacheStatus).toHaveBeenCalledOnce()
+    expect(buildInputCache).toHaveBeenCalledOnce()
+  })
+
+  it("does not cache flat-file Quote Inputs", async () => {
+    await ensureInputSnapshots([quoteInput("quotes.parquet")])
+    expect(getInputCacheStatus).not.toHaveBeenCalled()
+    expect(buildInputCache).not.toHaveBeenCalled()
+  })
+
+  it("skips path-only Quote Inputs while preparing configured Quote Inputs", async () => {
+    const unfinished = quoteInput("unfinished.json")
+    unfinished.data.config = { path: "unfinished.json" }
+    const configured = quoteInput("configured.json")
+    vi.mocked(getInputCacheStatus).mockResolvedValue(snapshot("ready", "fresh"))
+
+    await ensureInputSnapshots([unfinished, configured])
+
+    expect(getInputCacheStatus).toHaveBeenCalledOnce()
+    expect(getInputCacheStatus).toHaveBeenCalledWith({
+      schema_version: 1, node_type: "apiInput", config: configured.data.config,
+    })
+    expect(buildInputCache).not.toHaveBeenCalled()
+  })
+
+  it("propagates cache build errors and clears progress", async () => {
+    vi.mocked(getInputCacheStatus).mockResolvedValue(snapshot("missing"))
+    vi.mocked(buildInputCache).mockRejectedValue(new Error("Cache disk quota exceeded"))
+    const onProgress = vi.fn()
+    await expect(ensureInputSnapshots([quoteInput()], { onProgress }))
+      .rejects.toThrow("Cache disk quota exceeded")
+    expect(onProgress).toHaveBeenLastCalledWith(null)
+  })
+
+  it("cancels a build the server admitted while its request was pending", async () => {
+    vi.mocked(getInputCacheStatus).mockResolvedValue(snapshot("missing"))
+    let admit!: (value: InputCacheBuildResponse) => void
+    vi.mocked(buildInputCache).mockImplementation(() => new Promise((resolve) => { admit = resolve }))
+    vi.mocked(cancelInputCacheJob).mockResolvedValue({
+      schema_version: 1, job_id: "job-1", cancellation_requested: true, status: "cancelled",
+    })
+    const controller = new AbortController()
+    const onProgress = vi.fn()
+    const pending = ensureInputSnapshots([quoteInput()], { signal: controller.signal, onProgress })
+    const rejection = expect(pending).rejects.toMatchObject({ name: "AbortError" })
+    await vi.waitFor(() => expect(buildInputCache).toHaveBeenCalledOnce())
+    // The build request carries no abort signal: the job it admits is cancelled by id.
+    expect(vi.mocked(buildInputCache).mock.calls[0]).toHaveLength(1)
+    controller.abort()
+    const reportedBeforeAbort = onProgress.mock.calls.length
+    admit(buildResponse())
+    await rejection
+    expect(cancelInputCacheJob).toHaveBeenCalledWith("job-1")
+    expect(getInputCacheJob).not.toHaveBeenCalled()
+    expect(onProgress).toHaveBeenCalledTimes(reportedBeforeAbort)
+  })
+
+  it("emits progress messages in order and ends with null", async () => {
+    vi.mocked(getInputCacheStatus).mockResolvedValue(snapshot("missing"))
+    vi.mocked(buildInputCache).mockResolvedValue(buildResponse())
+    vi.mocked(getInputCacheJob).mockResolvedValue(job("completed"))
+    const onProgress = vi.fn()
+
+    await ensureInputSnapshots([quoteInput()], { onProgress })
+
+    expect(onProgress.mock.calls.map((call) => call[0])).toEqual([
+      "Checking Quote Input cache…",
+      "Caching Quote Input tables as Parquet…",
+      null,
+    ])
+  })
+
+  it.each([null, { unexpected: true }])(
+    "propagates status failures for Quote Inputs with a declared invalid tables value: %j",
+    async (tables) => {
+      vi.mocked(getInputCacheStatus).mockRejectedValue(new Error("Invalid table schema"))
+      const input = quoteInput()
+      input.data.config = { path: "quotes.jsonl", tables }
+      await expect(ensureInputSnapshots([input])).rejects.toThrow("Invalid table schema")
+      expect(getInputCacheStatus).toHaveBeenCalledOnce()
+      expect(buildInputCache).not.toHaveBeenCalled()
+    },
+  )
+
+  it("does not build after a pre-cancelled request", async () => {
+    const controller = new AbortController()
+    controller.abort()
+    await expect(ensureInputSnapshots([quoteInput()], { signal: controller.signal }))
+      .rejects.toMatchObject({ name: "AbortError" })
+    expect(getInputCacheStatus).not.toHaveBeenCalled()
+    expect(buildInputCache).not.toHaveBeenCalled()
+  })
+
+  it("builds a missing snapshot the way the server chooses and waits for completion", async () => {
     vi.mocked(getInputCacheStatus).mockResolvedValue(snapshot("missing"))
     vi.mocked(buildInputCache).mockResolvedValue(buildResponse())
     vi.mocked(getInputCacheJob).mockResolvedValue(job("completed"))
@@ -108,9 +358,8 @@ describe("ensureInputSnapshots", () => {
         path: "quotes.csv",
       }),
       refresh: false,
-      profile: "lazy_sink",
     })
-    expect(getInputCacheJob).toHaveBeenCalledWith("job-1")
+    expect(getInputCacheJob).toHaveBeenCalledWith("job-1", { signal: expect.any(AbortSignal) })
   })
 
   it("uses ready snapshots without refreshing either fresh or stale data", async () => {
@@ -132,32 +381,22 @@ describe("ensureInputSnapshots", () => {
     await ensureInputSnapshots([dataInput("quotes")])
 
     expect(buildInputCache).toHaveBeenCalledOnce()
-    expect(getInputCacheJob).toHaveBeenCalledWith("job-1")
+    expect(getInputCacheJob).toHaveBeenCalledWith("job-1", { signal: expect.any(AbortSignal) })
   })
 
-  it("retries an unsupported lazy build once with the eager profile", async () => {
+  it("asks once and surfaces a build the server refuses, choosing no profile itself", async () => {
     vi.mocked(getInputCacheStatus).mockResolvedValue(snapshot("missing"))
-    vi.mocked(buildInputCache)
-      .mockRejectedValueOnce(
-        new ApiError(
-          "Unsupported snapshot build",
-          400,
-          "snapshot_build_unsupported: use preview eager",
-        ),
-      )
-      .mockResolvedValueOnce(buildResponse())
-    vi.mocked(getInputCacheJob).mockResolvedValue(job("completed"))
-
-    await ensureInputSnapshots([dataInput("quotes")])
-
-    expect(buildInputCache).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({ profile: "lazy_sink" }),
+    const refused = new ApiError(
+      "Unsupported snapshot build",
+      400,
+      "snapshot_build_unsupported: This Data Input cannot build a snapshot.",
     )
-    expect(buildInputCache).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({ profile: "preview_eager" }),
-    )
+    vi.mocked(buildInputCache).mockRejectedValue(refused)
+
+    await expect(ensureInputSnapshots([dataInput("quotes")])).rejects.toBe(refused)
+
+    expect(buildInputCache).toHaveBeenCalledOnce()
+    expect(vi.mocked(buildInputCache).mock.calls[0][0]).not.toHaveProperty("profile")
   })
 
   it("rejects with the server message when the build is not completed", async () => {

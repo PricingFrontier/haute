@@ -29,7 +29,7 @@ from haute.projection import (
     with_api_input_port_projection_boundaries,
     with_runtime_inferred_streaming_edges,
 )
-from tests._projection_helpers import edge_keys_for_pair
+from tests._projection_helpers import adjacency_edges, edge_keys_for_pair
 from tests.conftest import make_graph, make_output_config
 
 
@@ -607,11 +607,14 @@ def test_api_projection_boundaries_are_added_only_for_unproven_ports() -> None:
     assert bounded.diagnostics.node_reasons["api"].rule == "unprojected_streaming_boundary"
 
 
-def test_legacy_projection_edges_are_filtered_and_uniquely_ordinalled() -> None:
+def test_projection_edges_keep_only_edges_between_planned_nodes() -> None:
     edges = _projection_edges(
         ["source", "target"],
-        {"source": ["missing", "target", "target"]},
-        None,
+        [
+            GraphEdge(id="e_source_missing", source="source", target="missing"),
+            GraphEdge(id="e_source_target", source="source", target="target"),
+            GraphEdge(id="e_source_target_1", source="source", target="target"),
+        ],
     )
 
     assert [edge.id for edge in edges] == ["e_source_target", "e_source_target_1"]
@@ -848,6 +851,7 @@ def test_schema_all_except_seed_without_exact_schema_stays_full_width() -> None:
                 excluded_columns=frozenset({"unused"}),
             )
         },
+        relevant_edges=adjacency_edges(["training"], {"training": []}),
     )
 
     assert projection.needed_by_node["training"] is None
@@ -930,3 +934,58 @@ def test_projection_explain_handles_empty_node_and_edge_collections() -> None:
         edge_demands={},
     )
     assert explain(node_only) == ("source: projection_demand: projection demand [a]",)
+
+
+@pytest.mark.parametrize("node_type", ["modelling", "polars"])
+@pytest.mark.parametrize(
+    ("config", "expected", "boundary"),
+    [
+        ({"column_renames": {"a": "value"}}, {"value", "sort_key", "unused"}, True),
+        (
+            {"selected_columns": ["a", "a", "missing"], "column_renames": {"a": "value"}},
+            {"value"},
+            True,
+        ),
+        (
+            {"selected_columns": ["missing"], "column_renames": {"missing": "value"}},
+            {"a", "sort_key", "unused"},
+            True,
+        ),
+        ({"column_renames": {"a": "sort_key", "sort_key": "a"}}, {"a", "sort_key", "unused"}, True),
+        ({"column_renames": {"a": "unused"}}, None, True),
+        ({"selected_columns": ["a"], "column_renames": {"a": "unused"}}, {"unused"}, True),
+        ({"selected_columns": ["a"]}, {"a"}, False),
+        ({"selected_columns": [], "column_renames": {}}, {"a", "sort_key", "unused"}, False),
+        ({"column_renames": {"a": "a"}}, {"a", "sort_key", "unused"}, False),
+    ],
+)
+def test_configured_output_schema_and_projection_boundary(
+    node_type: str, config: dict, expected: set[str] | None, boundary: bool
+) -> None:
+    subject = _polars_node("subject", "df = rows" if node_type == "polars" else "")
+    subject["data"]["nodeType"] = node_type
+    subject["data"]["config"].update(config)
+    graph = make_graph(
+        {
+            "nodes": [_api_node(), subject],
+            "edges": [{"id": "rows", "source": "api", "target": "subject", "sourceHandle": "rows"}],
+        }
+    )
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="subject",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+        )
+    )
+    assert projection.needed_by_node["subject"] == (
+        None if expected is None else frozenset(expected)
+    )
+    if boundary:
+        assert projection.demand_for_edge(graph.edges[0]) is None
+        assert (
+            projection.diagnostics.edge_reasons[ProjectionEdgeKey.from_edge(graph.edges[0])].rule
+            == "configured_column_renames"
+        )
+    else:
+        assert projection.demand_for_edge(graph.edges[0]) == frozenset(expected)

@@ -365,19 +365,19 @@ def test_housekeeping_refuses_windows_reparse_point_root(
 def test_optimiser_artifact_creators_write_owner_markers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from haute.routes import _optimiser_service as service
+    from haute.routes import _optimiser_artifacts as artifacts
 
     apply_root = tmp_path / "apply"
     factors_root = tmp_path / "factors"
     apply_root.mkdir()
     factors_root.mkdir()
-    monkeypatch.setattr(service, "_prepare_apply_artifact_root", lambda: apply_root)
-    monkeypatch.setattr(service, "_prepare_ratebook_factors_artifact_root", lambda: factors_root)
+    monkeypatch.setattr(artifacts, "_prepare_apply_artifact_root", lambda: apply_root)
+    monkeypatch.setattr(artifacts, "_prepare_ratebook_factors_artifact_root", lambda: factors_root)
 
-    apply_handle = service._persist_apply_result_artifact(
+    apply_handle = artifacts._persist_apply_result_artifact(
         SimpleNamespace(dataframe=pl.DataFrame({"value": [1]}))
     )
-    factors_handle = service._persist_ratebook_factors_artifact(
+    factors_handle = artifacts._persist_ratebook_factors_artifact(
         pl.DataFrame({"factor": ["a"], "value": [1.0]})
     )
 
@@ -396,34 +396,42 @@ def test_optimiser_artifact_creators_write_owner_markers(
 def test_optimiser_reaper_targets_only_owned_marked_roots(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from haute.routes import _optimiser_service as service
+    from haute.routes import _optimiser_artifacts as artifacts
 
     apply_root = tmp_path / "apply"
     factors_root = tmp_path / "factors"
+    analysis_root = tmp_path / "analysis"
     apply_root.mkdir()
     factors_root.mkdir()
+    analysis_root.mkdir()
     _marker(apply_root / "stale", owner="optimiser_apply")
     _marker(factors_root / "stale", owner="optimiser_ratebook_factors")
+    _marker(analysis_root / "stale", owner="optimiser_quote_analysis")
+    # A marker owned by another family is not this root's to reap.
+    _marker(analysis_root / "foreign", owner="optimiser_apply")
     unrelated = apply_root / "unrelated"
     unrelated.mkdir()
-    monkeypatch.setattr(service, "_apply_artifact_root", lambda: apply_root)
-    monkeypatch.setattr(service, "_ratebook_factors_artifact_root", lambda: factors_root)
-    reports = service.reap_stale_optimiser_artifacts(0)
+    monkeypatch.setattr(artifacts, "_apply_artifact_root", lambda: apply_root)
+    monkeypatch.setattr(artifacts, "_ratebook_factors_artifact_root", lambda: factors_root)
+    monkeypatch.setattr(artifacts, "_quote_analysis_artifact_root", lambda: analysis_root)
+    reports = artifacts.reap_stale_optimiser_artifacts(0)
 
     assert reports["apply"]["removed"] == 1
     assert reports["ratebook_factors"]["removed"] == 1
+    assert reports["quote_analysis"]["removed"] == 1
     assert unrelated.exists()
+    assert (analysis_root / "foreign").exists()
 
 
 def test_optimiser_reaper_rejects_invalid_stale_configuration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from haute.routes import _optimiser_service as service
+    from haute.routes import _optimiser_artifacts as artifacts
 
     monkeypatch.setenv("HAUTE_ARTIFACT_STALE_SECONDS", "1.5")
 
     with pytest.raises(ValueError, match="non-negative integer"):
-        service._artifact_stale_seconds()
+        artifacts._artifact_stale_seconds()
 
 
 def test_server_lifespan_reaps_artifacts_without_delaying_readiness(
@@ -548,7 +556,7 @@ def test_server_lifespan_cleans_partial_interactive_startup(
     )
     monkeypatch.setattr(server.asyncio, "create_task", create_task)
     server._watcher_task = None
-    server._optimiser_reaper_task = None
+    server._artifact_reaper_task = None
 
     async def exercise_lifespan() -> None:
         with pytest.raises(RuntimeError, match=f"task {fail_on_task} failed"):
@@ -560,4 +568,4 @@ def test_server_lifespan_cleans_partial_interactive_startup(
     assert lifecycle == ["started", "stopped"]
     assert all(task.cancelled for task in created)
     assert server._watcher_task is None
-    assert server._optimiser_reaper_task is None
+    assert server._artifact_reaper_task is None

@@ -2,25 +2,25 @@
 
 from __future__ import annotations
 
-import gc
 import math
-import os
 import shutil
 import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
+from dataclasses import replace
+from functools import partial
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import polars as pl
 from fastapi import HTTPException
-from pydantic import ValidationError
 
-from haute._env import int_env
 from haute._execution_admission import (
     ExecutionAdmissionError,
+    IsolatedExecutionBudget,
     create_admitted_execution_context,
+    isolated_execution_budget,
 )
 from haute._execution_context import (
     ExecutionCancellationToken,
@@ -30,33 +30,60 @@ from haute._execution_context import (
     ExecutionProfile,
 )
 from haute._logging import get_logger
+from haute._native_memory_limit import model_thread_address_space_allowance
+from haute._pipeline_settings import project_pipeline_settings
+from haute._sandbox import _get_project_root
+from haute._seed_plans import open_seed_plan
 from haute._types import PipelineGraph
-from haute._worker_isolation import worker_config_for_memory_policy
+from haute._worker_isolation import (
+    IsolatedWorkerConfig,
+    IsolatedWorkerError,
+    IsolatedWorkerStoppedError,
+    IsolatedWorkerTimeoutError,
+    isolated_worker_failure_is_memory,
+    isolated_worker_memory_detail,
+    run_isolated_worker,
+    worker_config_for_memory_policy,
+)
 from haute._worker_protocol import (
     WorkerProgressEvent,
     WorkerProtocolError,
     WorkerRequest,
     WorkerResultManifest,
 )
-from haute.errors import BoundedMemoryUnsupportedError, HauteValidationError
+from haute.errors import (
+    BoundedMemoryUnsupportedError,
+    ConfigError,
+    ContractMismatchError,
+    HauteValidationError,
+    ParseError,
+    SchemaMismatchError,
+)
 from haute.execution import (
     AllExceptColumns,
-    build_dataframe_execution_cache_request,
-    dataframe_graph_input_fingerprint,
     execute_lazy_graph,
 )
-from haute.modelling._algorithms import ALGORITHM_REGISTRY, resolve_loss_function
+from haute.modelling._algorithms import ALGORITHM_REGISTRY
+from haute.modelling._candidate_run import capture_provenance
+from haute.modelling._descriptors import algorithm_descriptor
 from haute.modelling._evaluation import (
     EvaluationConfig,
     generate_evaluation_plan,
 )
+from haute.modelling._glm_terms import validate_glm_model_columns
 from haute.modelling._train_config import (
     TrainingConfigError,
     build_train_params,
     build_training_job_kwargs,
+    feature_selection_issue,
+    is_glm_config,
     parse_evaluation_config,
     parse_tuning_config,
+    reject_removed_evaluation_fields,
+    role_column_reasons,
     training_objective_issue,
+    validate_modelling_config_values,
+    validate_training_device,
 )
 from haute.routes._background_jobs import (
     CancellableJobRegistry,
@@ -66,30 +93,41 @@ from haute.routes._background_jobs import (
 from haute.routes._contract_errors import (
     PUBLIC_CONTRACT_ERROR_TYPES,
     contract_error_http_exception,
-    contract_error_job_fields,
 )
 from haute.routes._job_lifecycle import (
     JobLifecycle,
     TerminalReason,
     bind_running_execution_metrics_publisher,
 )
-from haute.routes._job_store import JobSnapshot, JobStore, RunningJobFields
+from haute.routes._job_store import (
+    JobSnapshot,
+    JobStore,
+    RunningJobFields,
+    register_artifact_cleaner,
+)
 from haute.routes._training_artifacts import (
     _EVALUATION_ARTIFACT_PATHS,
     _TRAINING_ARTIFACT_KINDS,
     _TUNING_ARTIFACT_PATHS,
+    TRAINING_ARTIFACTS_HANDLE_KEY,
+    TRAINING_ARTIFACTS_HANDLE_KIND,
     _max_training_artifact_bytes,
-    _publish_training_artifacts,
+    _validate_training_artifacts,
+    cleanup_training_artifacts,
+    create_training_artifact_directory,
+    release_training_artifacts_unless_held,
+    training_artifacts_handle,
 )
 from haute.routes._training_evaluation import (
     _DISPERSION_ESTIMATE_ROW_CAP,
     _DISPERSION_PARAM_FAMILIES,
     _DISPERSION_PARAM_STUBS,
     _evaluation_preview_payload,
-    _validate_glm_family_link,
+    _validate_glm_config_values,
 )
 from haute.routes._training_preparation import (
-    _build_training_feature_selection,
+    TrainingPreparationOutcome,
+    TrainingPreparationRequest,
     _check_gpu_vram,
     _clamp_row_limit,
     _declared_categorical_levels_for_training,
@@ -97,16 +135,23 @@ from haute.routes._training_preparation import (
     _gpu_vram_http_exception,
     _http_failure_job_parts,
     _memory_limit_http_exception,
+    _remove_prepared_parquet,
     _seeded_training_sample,
     _training_projection_keep_columns,
     _training_required_columns_by_node,
+    create_training_parquet_path,
+    estimate_training_memory,
+    preparation_failure_outcome,
+    prepare_training_data_worker,
+    resolve_training_input_schema,
+    training_seed_plan_request,
 )
 from haute.routes._training_worker import (
+    _append_live_loss_row,
     _assert_json_finite,
     _friendly_error,
     _job_elapsed_seconds,
-    _max_train_loss_history,
-    _remove_gated_temp_parquet,
+    _require_consistent_completed_response,
     _run_dispersion_process_job,
     _run_training_process_job,
     _training_context_phrase,
@@ -122,19 +167,34 @@ from haute.schemas import (
     TrainStatusResponse,
 )
 
+if TYPE_CHECKING:
+    from haute._ram_estimate import RamEstimate
+
 logger = get_logger(component="server.modelling.train")
 
 
 _TRAINING_JOB_TYPE: Literal["training"] = "training"
 _DISPERSION_JOB_TYPE: Literal["dispersion_estimate"] = "dispersion_estimate"
 _JOB_TYPE_KEY = "job_type"
+# An estimate's evaluation preview is short and superseded by every edit, and the
+# server finishes a preview the browser has abandoned. A user's training work
+# waits these out rather than being refused because the estimate was refreshing.
+_EVALUATION_PREVIEW_HOLDERS = frozenset({"training_prep:training_evaluation_preview"})
+_EVALUATION_PREVIEW_WAIT_SECONDS = 30.0
+
+
+def _engine_module(config: Mapping[str, Any]) -> str:
+    """The model library a fit imports, loaded before its worker's memory cap."""
+    return algorithm_descriptor(str(config.get("algorithm", "catboost"))).engine_module
 
 
 class _TrainingRunningJob(RunningJobFields):
     job_type: Literal["training"]
     progress: float
     config: dict[str, Any]
+    node_id: str
     node_label: str
+    pipeline_source: str
     start_time: float
     timeout: int | float
 
@@ -153,8 +213,52 @@ class _DispersionRunningJob(RunningJobFields):
 # same sampler as training's RAM downsample) rather than paying full-data
 
 
-def _default_train_timeout() -> int:
-    return int_env("HAUTE_TRAIN_TIMEOUT", 3600)
+def _finite_numbers(values: Mapping[str, Any]) -> bool:
+    """Whether every value is a finite int or float (a bool is not a number here)."""
+    return all(
+        not isinstance(value, bool)
+        and isinstance(value, int | float)
+        and math.isfinite(float(value))
+        for value in values.values()
+    )
+
+
+def _parquet_rows(path: str) -> int:
+    """The row count of a prepared training Parquet file, from its metadata."""
+    from haute._polars_utils import read_parquet_metadata
+
+    return int(read_parquet_metadata(Path(path))["row_count"])
+
+
+def _downsampling_warning(
+    graph: PipelineGraph, estimate: RamEstimate, prepared_rows: int
+) -> str | None:
+    """The job warning when the RAM row limit sampled the prepared input, else None.
+
+    The sample keeps at most the limit, so a file holding exactly that many rows
+    was sampled (one that had exactly that many rows is indistinguishable).
+    """
+    limit = estimate.safe_row_limit
+    if limit is None or prepared_rows < limit:
+        return None
+    if not estimate.unbounded_join_node_ids:
+        return estimate.warning
+    joins = [
+        f"'{graph.node_map[join].data.label}'" if join in graph.node_map else f"'{join}'"
+        for join in estimate.unbounded_join_node_ids
+    ]
+    subject = joins[0] if len(joins) == 1 else f"{', '.join(joins[:-1])} and {joins[-1]}"
+    verb = "has" if len(joins) == 1 else "have"
+    return (
+        f"Dataset downsampled to {limit:,} rows to fit in available RAM "
+        f"({estimate.available_bytes / 1024**3:.1f} GB). Its row count is not proven: "
+        f"{subject} {verb} no key contract, so up to {estimate.total_rows:,} rows could arrive."
+    )
+
+
+def _default_train_timeout() -> float:
+    """The modelling time limit in seconds, for a job whose node config sets no ``timeout``."""
+    return project_pipeline_settings().modelling_time_limit_seconds
 
 
 def _worker_timing(job: Mapping[str, Any], *, job_id: str) -> tuple[float, float]:
@@ -171,8 +275,8 @@ def _worker_timing(job: Mapping[str, Any], *, job_id: str) -> tuple[float, float
     return float(raw_start), float(raw_timeout)
 
 
-_WINDOWS_ARTIFACT_REPLACE_RETRIES = 3
-_WINDOWS_ARTIFACT_REPLACE_RETRY_DELAY_SECONDS = 0.1
+# The job store owns cleanup of each completed job's artifact directory.
+register_artifact_cleaner(TRAINING_ARTIFACTS_HANDLE_KIND, cleanup_training_artifacts)
 
 
 class TrainService:
@@ -223,6 +327,10 @@ class TrainService:
             config = {**config, "categorical_levels": declared_categorical_levels}
 
         self._validate_config(config)
+        # Cheap pre-check so a busy server does not run the schema build first;
+        # the authoritative check repeats under the start lock.
+        self._check_no_concurrent_jobs()
+        self._validate_glm_input_schema(body, config)
 
         with self._start_lock:
             self._check_no_concurrent_jobs()
@@ -233,7 +341,9 @@ class TrainService:
                 "progress": 0.0,
                 "message": "Preparing training data...",
                 "config": dict(config),
+                "node_id": body.node_id,
                 "node_label": node.data.label,
+                "pipeline_source": str(body.graph.source_file or ""),
                 "start_time": start_time,
                 "timeout": config.get("timeout", _default_train_timeout()),
             }
@@ -342,70 +452,63 @@ class TrainService:
                 profile=ExecutionProfile.TRAINING_PREP,
             )
             preamble_ns = self._compile_preamble(body.graph)
-            required_columns_by_node = _training_required_columns_by_node(
-                body.node_id,
-                config,
-            )
+            # The plan reads only the target and the evaluation key, so the
+            # preview demands nothing else: an unfinished GLM term or feature
+            # setting must not fail the estimate.
+            required_columns_by_node: dict[str, frozenset[str] | AllExceptColumns] = {
+                body.node_id: frozenset(selected_columns)
+            }
             from haute._polars_utils import (
-                DEFAULT_STREAMING_CHUNK_SIZE,
                 streaming_collect,
             )
             from haute.executor import _build_node_fn
 
-            cache_request = build_dataframe_execution_cache_request(
-                body.graph,
-                node_ids=[body.node_id],
-                namespace="training_evaluation_preview",
-                source=body.source,
-                profile=execution_context.profile,
-                input_fingerprint=dataframe_graph_input_fingerprint(
-                    body.graph,
-                    target_node_id=body.node_id,
-                    source=body.source,
+            # Seeded from and captured into shared snapshots: a training run
+            # after this preview reads what the preview computed, and vice versa.
+            with open_seed_plan(
+                training_seed_plan_request(
+                    body.graph, body.node_id, body.source, required_columns_by_node
                 ),
-                target_node_id=body.node_id,
-                required_columns_by_node=required_columns_by_node,
-                enforce_contracts=True,
-                preamble_ns_supplied=preamble_ns is not None,
-                streaming_chunk_size=DEFAULT_STREAMING_CHUNK_SIZE,
-            )
-            lazy_outputs, *_ = execute_lazy_graph(
-                body.graph,
-                _build_node_fn,
-                target_node_id=body.node_id,
-                preamble_ns=preamble_ns,
-                source=body.source,
-                enforce_contracts=True,
-                required_columns_by_node=required_columns_by_node,
                 execution_context=execution_context,
-                dataframe_cache_request=cache_request,
-            )
-            evaluation_lf = lazy_outputs.get(body.node_id)
-            if evaluation_lf is None:
-                raise HauteValidationError("No training data arrived at the modelling node.")
-            if row_limit is not None:
-                evaluation_lf = _seeded_training_sample(
-                    evaluation_lf,
-                    row_limit,
+            ) as seed_plan:
+                lazy_outputs, *_ = execute_lazy_graph(
+                    body.graph,
+                    _build_node_fn,
+                    target_node_id=body.node_id,
+                    preamble_ns=preamble_ns,
+                    source=body.source,
+                    enforce_contracts=True,
+                    required_columns_by_node=required_columns_by_node,
+                    execution_context=execution_context,
+                    prepare_inputs=False,
+                    snapshot_plan=seed_plan,
                 )
-            available_columns = set(evaluation_lf.collect_schema().names())
-            missing_columns = sorted(set(selected_columns) - available_columns)
-            if missing_columns:
-                raise HauteValidationError(
-                    f"evaluation preview is missing required column(s): {missing_columns}"
+                evaluation_lf = lazy_outputs.get(body.node_id)
+                if evaluation_lf is None:
+                    raise HauteValidationError("No training data arrived at the modelling node.")
+                if row_limit is not None:
+                    evaluation_lf = _seeded_training_sample(
+                        evaluation_lf,
+                        row_limit,
+                    )
+                available_columns = set(evaluation_lf.collect_schema().names())
+                missing_columns = sorted(set(selected_columns) - available_columns)
+                if missing_columns:
+                    raise HauteValidationError(
+                        f"evaluation preview is missing required column(s): {missing_columns}"
+                    )
+                projection = [
+                    (
+                        pl.col(column).cast(pl.String).alias(column)
+                        if column == evaluation.date_column
+                        else pl.col(column)
+                    )
+                    for column in selected_columns
+                ]
+                frame = streaming_collect(
+                    evaluation_lf.filter(pl.col(target).is_not_null()).select(projection),
+                    execution_context=execution_context,
                 )
-            projection = [
-                (
-                    pl.col(column).cast(pl.String).alias(column)
-                    if column == evaluation.date_column
-                    else pl.col(column)
-                )
-                for column in selected_columns
-            ]
-            frame = streaming_collect(
-                evaluation_lf.filter(pl.col(target).is_not_null()).select(projection),
-                execution_context=execution_context,
-            )
             if frame.height < 1:
                 raise HauteValidationError(f"Target column {target!r} contains only null values")
             target_values = frame[target].to_list() if task == "classification" else None
@@ -432,6 +535,9 @@ class TrainService:
                 plan,
                 date_values=date_values,
             )
+        except PUBLIC_CONTRACT_ERROR_TYPES as exc:
+            # First: a node config the builder rejects is also a ValueError.
+            raise contract_error_http_exception(exc) from None
         except (TypeError, ValueError) as exc:
             raise HTTPException(
                 status_code=422,
@@ -439,12 +545,27 @@ class TrainService:
             ) from exc
         except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
             raise _memory_limit_http_exception(exc) from None
-        except PUBLIC_CONTRACT_ERROR_TYPES as exc:
-            raise contract_error_http_exception(exc) from None
         except BoundedMemoryUnsupportedError as exc:
             raise HTTPException(
                 status_code=422,
                 detail=f"Evaluation preview cannot run in bounded mode: {exc}",
+            ) from exc
+        except (
+            ContractMismatchError,
+            SchemaMismatchError,
+            ParseError,
+            ConfigError,
+            pl.exceptions.PolarsError,
+        ) as exc:
+            # Graph-shape and schema failures raised while the bounded
+            # projection executes are the user's to fix, exactly like the
+            # data-dependent validation failures above: name the cause. A
+            # Polars failure here comes from planning or collecting the
+            # pipeline's own code and data — the preview shows the same
+            # failure as a node error — so it is reported, never a 500.
+            raise HTTPException(
+                status_code=422,
+                detail=f"Evaluation preview failed: {exc}",
             ) from exc
         finally:
             if execution_context is not None:
@@ -475,24 +596,29 @@ class TrainService:
             cancellation_token.throw_if_cancelled("training_preparation", job_id=job_id)
             preamble_ns = self._compile_preamble(body.graph)
             cancellation_token.throw_if_cancelled("training_preamble", job_id=job_id)
-            ram_warning, row_limit, total_source_rows, probe_columns = self._estimate_ram(
+            ram_est = self._estimate_ram(
                 body.graph, node_id, preamble_ns, job_id, source=body.source
             )
             cancellation_token.throw_if_cancelled("training_memory_estimate", job_id=job_id)
+            total_source_rows = ram_est.total_rows
             user_limit = config.get("row_limit")
-            row_limit = _clamp_row_limit(row_limit, user_limit)
-            if (
-                ram_warning
-                and user_limit
+            row_limit = _clamp_row_limit(ram_est.safe_row_limit, user_limit)
+            # The user's own limit is their choice, never a RAM downsample.
+            ram_limit_binds = ram_est.safe_row_limit is not None and not (
+                user_limit
                 and isinstance(user_limit, (int, float))
                 and int(user_limit) > 0
                 and row_limit == int(user_limit)
-            ):
-                ram_warning = None
-                self._store.update_job(job_id, warning=None)
+            )
             train_params = build_train_params(config)
-            ram_warning = self._check_gpu_vram_before_launch(
-                train_params, row_limit, total_source_rows, probe_columns, ram_warning, job_id
+            self._check_gpu_vram_before_launch(
+                train_params,
+                row_limit,
+                total_source_rows,
+                ram_est.probe_columns,
+                job_id,
+                algorithm=str(config.get("algorithm", "catboost")).lower(),
+                device=str(config.get("device") or "cpu"),
             )
             cancellation_token.throw_if_cancelled("training_preparation", job_id=job_id)
             execution_context = create_admitted_execution_context(
@@ -500,6 +626,8 @@ class TrainService:
                 profile=ExecutionProfile.TRAINING_PREP,
                 job_id=job_id,
                 cancellation_token=cancellation_token,
+                wait_out_holders=_EVALUATION_PREVIEW_HOLDERS,
+                wait_seconds=_EVALUATION_PREVIEW_WAIT_SECONDS,
             )
             bind_running_execution_metrics_publisher(self._store, job_id, execution_context)
             execution_context.checkpoint(label="training_preparation")
@@ -508,31 +636,28 @@ class TrainService:
                 preamble_ns,
                 row_limit,
                 job_id,
-                exclude=config.get("exclude") or None,
+                project_to_keep_columns=not is_glm_config(config),
                 keep_columns=_training_projection_keep_columns(config),
                 required_columns_by_node=_training_required_columns_by_node(node_id, config),
                 execution_context=execution_context,
             )
-            self._validate_target_task_pairing(
-                tmp_parquet,
-                config,
-                execution_context=execution_context,
-            )
             execution_context.checkpoint(label="training_preparation_complete")
+            ram_warning = (
+                _downsampling_warning(body.graph, ram_est, _parquet_rows(tmp_parquet))
+                if ram_limit_binds
+                else None
+            )
+            if ram_warning:
+                gpu_warning = self._store.require_job(job_id).get("gpu_warning")
+                self._store.update_job(
+                    job_id,
+                    warning=f"{ram_warning}\n{gpu_warning}" if gpu_warning else ram_warning,
+                )
             feature_selection = self._store.require_job(job_id).get("feature_selection")
-            launch_config = config
-            if "output_dir" not in launch_config:
-                from haute.executor import _pipeline_dir
-
-                pipeline_dir = _pipeline_dir(body.graph)
-                launch_config = {
-                    **launch_config,
-                    "output_dir": str(pipeline_dir / "outputs") if pipeline_dir else "outputs",
-                }
             self._launch_background(
                 job_id,
                 node_id,
-                launch_config,
+                config,
                 train_params,
                 tmp_parquet,
                 ram_warning,
@@ -566,58 +691,6 @@ class TrainService:
                 if execution_context is not None:
                     execution_context.release_admission(preserve_primary_error=True)
                 self._training_jobs.release(job_id)
-
-    @staticmethod
-    def _validate_target_task_pairing(
-        tmp_parquet: str,
-        config: dict[str, Any],
-        *,
-        execution_context: ExecutionContext,
-    ) -> None:
-        """Gate a target whose materialised values cannot serve the task/metrics.
-
-        Runs on the sunk training parquet, after materialisation but before
-        the fit worker is dispatched, so a config/data mismatch (a continuous
-        target under a classification task, or under objective-implied
-        AUC/log-loss defaults — e.g. a binomial family with
-        ``task="regression"``) fails with the target column, task, and metrics
-        named instead of surfacing a context-free library error from inside
-        the child. The gate keys on the effective metric set
-        (``effective_metrics`` — explicit config metrics or the
-        objective-implied defaults), the same derivation
-        ``build_training_job_kwargs`` uses. Removes the temp parquet before
-        raising — no later owner exists for it on this path.
-        """
-        from haute._polars_utils import streaming_collect
-        from haute.modelling._target_check import training_target_task_issue
-        from haute.modelling._train_config import TrainingConfigError, effective_metrics
-
-        # Derive the effective metrics before the data scan: it is a pure
-        # config computation, and a malformed metrics config (normally caught
-        # by the route's upfront validation) must map to the same
-        # 422/contract_error taxonomy as the gate itself, not fall through
-        # the scan-failure path below.
-        try:
-            metrics = effective_metrics(config)
-        except TrainingConfigError as exc:
-            _remove_gated_temp_parquet(tmp_parquet)
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        try:
-            issue = training_target_task_issue(
-                pl.scan_parquet(tmp_parquet),
-                target=str(config.get("target", "")),
-                task=str(config.get("task", "regression")),
-                metrics=metrics,
-                collect=lambda lf: streaming_collect(lf, execution_context=execution_context),
-            )
-        except BaseException:
-            # A failure inside the scan itself (corrupt parquet, cancellation,
-            # memory pressure) must not orphan the multi-GB temp input either.
-            _remove_gated_temp_parquet(tmp_parquet)
-            raise
-        if issue is not None:
-            _remove_gated_temp_parquet(tmp_parquet)
-            raise HTTPException(status_code=422, detail=issue)
 
     def _persist_preparation_http_failure(self, job_id: str, exc: HTTPException) -> None:
         message, fields = _http_failure_job_parts(exc, job_id=job_id)
@@ -689,11 +762,14 @@ class TrainService:
         a profile-likelihood search in a supervised spawn worker. The estimate is
         an explicit user action: the resolved value lands in the node config
         where the training-objective gate requires it — never as a hidden
-        default (RustyStats fits silently at theta=1.0 / var_power=1.5).
+        default (RustyStats refuses to fit Negative Binomial without theta and
+        fits Tweedie at var_power=1.5 when unset).
         """
         node = _find_modelling_node(body.graph, body.node_id)
         config = dict(node.data.config)
         self._validate_dispersion_config(config, body.param)
+        self._check_no_concurrent_jobs()
+        preamble_ns = self._validate_glm_input_schema(body, config)
 
         with self._start_lock:
             self._check_no_concurrent_jobs()
@@ -713,18 +789,18 @@ class TrainService:
         execution_context: ExecutionContext | None = None
         launch_started = False
         try:
-            preamble_ns = self._compile_preamble(body.graph)
-            _ram_warning, row_limit, _total_rows, _probe_cols = self._estimate_ram(
+            ram_est = self._estimate_ram(
                 body.graph,
                 body.node_id,
                 preamble_ns,
                 job_id,
                 source=body.source,
             )
-            row_limit = _clamp_row_limit(row_limit, config.get("row_limit"))
+            if ram_est.warning:
+                self._store.update_job(job_id, warning=ram_est.warning)
+            row_limit = _clamp_row_limit(ram_est.safe_row_limit, config.get("row_limit"))
             row_limit = min(row_limit or _DISPERSION_ESTIMATE_ROW_CAP, _DISPERSION_ESTIMATE_ROW_CAP)
 
-            excluded = config.get("exclude", [])
             keep_cols = _training_projection_keep_columns(config)
             required_columns_by_node = _training_required_columns_by_node(
                 body.node_id,
@@ -734,6 +810,8 @@ class TrainService:
                 operation="dispersion_estimate",
                 profile=ExecutionProfile.TRAINING_PREP,
                 job_id=job_id,
+                wait_out_holders=_EVALUATION_PREVIEW_HOLDERS,
+                wait_seconds=_EVALUATION_PREVIEW_WAIT_SECONDS,
             )
             bind_running_execution_metrics_publisher(self._store, job_id, execution_context)
             train_body = TrainRequest(
@@ -746,7 +824,7 @@ class TrainService:
                 preamble_ns,
                 row_limit,
                 job_id,
-                exclude=excluded or None,
+                project_to_keep_columns=not is_glm_config(config),
                 keep_columns=keep_cols,
                 required_columns_by_node=required_columns_by_node,
                 execution_context=execution_context,
@@ -826,15 +904,13 @@ class TrainService:
                     f"parameters: {', '.join(_DISPERSION_PARAM_FAMILIES)}."
                 ),
             )
-        if str(config.get("algorithm", "catboost")).lower() != "glm":
+        if not is_glm_config(config):
             raise HTTPException(
                 status_code=400,
                 detail="Dispersion estimation applies to GLM modelling nodes only.",
             )
-        train_params = build_train_params(config)
-        family = str(train_params.get("family", "") or "")
-        link = str(train_params.get("link", "") or "")
-        _validate_glm_family_link(family, link)
+        _validate_glm_config_values(config)
+        family = str(build_train_params(config).get("family", "") or "")
         if family != expected_family:
             raise HTTPException(
                 status_code=400,
@@ -973,7 +1049,10 @@ class TrainService:
                 "value": value,
                 "llf": llf,
                 "n_fits": n_fits,
-                "execution_metrics": execution_metrics,
+                # Preparation's evidence stays on the job's metrics.
+                "execution_metrics": execution_context.metrics_with_worker_evidence(
+                    execution_metrics
+                ),
                 "progress": 1.0,
             }
             _assert_json_finite(fields)
@@ -985,6 +1064,8 @@ class TrainService:
                 timeout_seconds=remaining,
                 stop_reason=lambda: self._training_jobs.cancellation_reason(job_id),
                 process_name=f"haute-dispersion-{job_id}",
+                address_space_allowance_bytes=model_thread_address_space_allowance(),
+                preload_modules=(_engine_module(config),),
             )
             return self._supervisor.launch_protocol(
                 job_id,
@@ -998,6 +1079,8 @@ class TrainService:
                 completed_fields=completed_fields,
                 on_finished=cleanup,
                 start_time=start_time,
+                # A failed worker's metrics keep preparation's evidence too.
+                failure_metrics=execution_context.metrics_with_worker_evidence,
             )
         except Exception as exc:
             cleanup()
@@ -1029,6 +1112,41 @@ class TrainService:
             tmp_parquet,
             execution_context=execution_context,
         )
+
+    def _release_superseded_training_artifacts(self, completed: JobSnapshot) -> None:
+        """Release earlier completed runs' artifacts for the same pipeline node.
+
+        Their records stay (status and results remain readable); exporting them
+        reports that the files are gone. A job an export currently holds keeps its
+        directory until eviction.
+        """
+        node_id = completed.get("node_id")
+        pipeline_source = completed.get("pipeline_source")
+        completed_at = completed.get("completed_at")
+        if not isinstance(node_id, str) or not isinstance(completed_at, int | float):
+            return
+        for other_id, other in self._store.list_jobs().items():
+            if (
+                other.get("job_type") != _TRAINING_JOB_TYPE
+                or other.get("status") != "completed"
+                or other.get("node_id") != node_id
+                or other.get("pipeline_source") != pipeline_source
+                or TRAINING_ARTIFACTS_HANDLE_KEY not in (other.get("artifact_handles") or {})
+            ):
+                continue
+            other_completed_at = other.get("completed_at")
+            if not isinstance(other_completed_at, int | float):
+                continue
+            if other_completed_at >= completed_at:
+                continue
+            release_training_artifacts_unless_held(
+                other_id,
+                partial(
+                    self._store.detach_artifact_handle,
+                    other_id,
+                    TRAINING_ARTIFACTS_HANDLE_KEY,
+                ),
+            )
 
     def _parent_worker_cleanup(
         self,
@@ -1065,7 +1183,12 @@ class TrainService:
                     "artifact_root",
                     lambda: (
                         shutil.rmtree(artifact_root)
-                        if artifact_root is not None and artifact_root.exists()
+                        if artifact_root is not None
+                        and artifact_root.exists()
+                        and not (
+                            artifact_publication_committed is not None
+                            and artifact_publication_committed()
+                        )
                         else None
                     ),
                 ),
@@ -1121,26 +1244,15 @@ class TrainService:
                 ),
             )
 
-        # Validity checks first, so a wrong value beats an incomplete one:
-        # GLM family/link combination (unknown family, bad link); CatBoost
-        # loss-vs-task. _validate_glm_family_link also raises on an empty
-        # family, and an absent loss is caught by the completeness gate below.
-        if algorithm == "glm":
-            train_params = build_train_params(config)
-            family = str(train_params.get("family", "") or "")
-            link = str(train_params.get("link", "") or "")
-            _validate_glm_family_link(family, link)
-        else:
-            loss_function = config.get("loss_function")
-            if loss_function:
-                try:
-                    resolve_loss_function(
-                        loss_function,
-                        str(config.get("task", "regression")),
-                        config.get("variance_power"),
-                    )
-                except ValueError as exc:
-                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # Validity checks first, so a wrong value beats an incomplete one: the
+        # one malformed-value check save validation also runs (GLM values, or
+        # the loss against the chosen family's own losses, not CatBoost's, and
+        # a target that is not also a feature). Absent values are caught by the
+        # completeness gate below.
+        try:
+            validate_modelling_config_values(config)
+        except TrainingConfigError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         # Then require a complete training objective. An unset loss/family, or
         # an unset objective parameter (Tweedie variance power, elastic-net L1
@@ -1151,13 +1263,12 @@ class TrainService:
         if objective_issue is not None:
             raise HTTPException(status_code=400, detail=objective_issue)
         try:
-            legacy_fields = [key for key in ("split", "cross_validation") if key in config]
-            if legacy_fields:
-                raise TrainingConfigError(
-                    "Invalid legacy modelling config: public split/cross_validation "
-                    "fields were replaced by the canonical versioned evaluation object."
-                )
+            reject_removed_evaluation_fields(config)
+            feature_issue = feature_selection_issue(config)
+            if feature_issue is not None:
+                raise TrainingConfigError(feature_issue)
             evaluation = parse_evaluation_config(config.get("evaluation"))
+            validate_training_device(config)
             metrics = config.get("metrics") or []
             if not metrics:
                 # The builder derives objective-aware defaults. Reuse it rather
@@ -1173,6 +1284,93 @@ class TrainService:
                 )
         except TrainingConfigError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    def _validate_glm_input_schema(
+        self,
+        body: TrainRequest | DispersionEstimateRequest,
+        config: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """Reject GLM term/column mismatches against the exact input schema.
+
+        Runs synchronously before a job exists so the caller gets a 422 rather
+        than a job that fails during preparation. The schema is resolved
+        unprojected, so an expression keyed by an upstream column the model
+        never reads is still caught; role columns and dtype classes are
+        validated too. The schema build runs the pipeline's own code inside an
+        admitted execution context. Returns the compiled preamble so callers
+        can reuse it.
+        """
+        if not is_glm_config(config):
+            return None
+        params = build_train_params(config)
+        terms = params.get("terms")
+        if not terms:
+            return None
+        execution_context: ExecutionContext | None = None
+        try:
+            execution_context = create_admitted_execution_context(
+                operation="training_glm_schema",
+                profile=ExecutionProfile.TRAINING_PREP,
+                wait_out_holders=_EVALUATION_PREVIEW_HOLDERS,
+                wait_seconds=_EVALUATION_PREVIEW_WAIT_SECONDS,
+            )
+            preamble_ns = self._compile_preamble(body.graph)
+            schema = resolve_training_input_schema(
+                body.graph,
+                body.node_id,
+                preamble_ns,
+                body.source,
+                execution_context=execution_context,
+            )
+            validate_glm_model_columns(
+                terms,
+                params.get("interactions") or [],
+                schema,
+                role_columns=role_column_reasons(config),
+            )
+            return preamble_ns
+        except PUBLIC_CONTRACT_ERROR_TYPES as exc:
+            # First: a node config the builder rejects is also a
+            # HauteValidationError.
+            raise contract_error_http_exception(exc) from None
+        except HauteValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
+            raise _memory_limit_http_exception(exc) from None
+        except (ParseError, ConfigError, pl.exceptions.PolarsError, ValueError) as exc:
+            # A graph shape the engine cannot resolve (an unfed modelling node
+            # raises a bare ValueError before the resolver's own guard) is the
+            # user's to fix, exactly like a parse or schema failure: name the
+            # cause in a 422 rather than let it escape as a 500. Same reasoning
+            # as evaluation_preview's (TypeError, ValueError) branch above.
+            raise HTTPException(
+                status_code=422,
+                detail=f"Training input schema could not be resolved: {exc}",
+            ) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            # The schema-only build runs the user's own transform code, which
+            # can raise anything at all — an undefined name is a NameError, an
+            # empty transform a NotImplementedError. Those are the user's to
+            # fix exactly like a parse failure, so name the class and the node
+            # in a 422 rather than let an arbitrary exception become a 500.
+            logger.warning(
+                "glm_input_schema_unresolvable",
+                node_id=body.node_id,
+                error=str(exc),
+                exc_info=True,
+            )
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Training input schema could not be resolved at modelling node "
+                    f"{body.node_id!r}: {type(exc).__name__}: {exc}"
+                ),
+            ) from exc
+        finally:
+            if execution_context is not None:
+                execution_context.release_admission(preserve_primary_error=True)
 
     def _check_no_concurrent_jobs(self) -> None:
         """Reject if a training job is already running."""
@@ -1201,34 +1399,19 @@ class TrainService:
         preamble_ns: dict[str, Any] | None,
         job_id: str,
         source: str = "live",
-    ) -> tuple[str | None, int | None, int | None, int]:
-        """Estimate safe row limit from available RAM.
+    ) -> RamEstimate:
+        """Estimate the RAM row limit; the caller decides what it records.
 
-        Returns (ram_warning, row_limit, total_source_rows, probe_columns).
+        A training run records a downsampling warning only once its prepared
+        input shows the limit removed rows (``_downsampling_warning``).
         """
-        from haute.executor import _build_node_fn
-
-        ram_warning: str | None = None
-        total_source_rows: int | None = None
-        probe_columns: int = 0
-
         try:
-            from haute._ram_estimate import estimate_safe_training_rows
-
             self._store.update_job(job_id, message="Estimating memory requirements")
-            ram_est = estimate_safe_training_rows(
+            ram_est = estimate_training_memory(
                 graph,
                 node_id,
-                _build_node_fn,
-                preamble_ns=preamble_ns,
                 source=source,
             )
-            row_limit = ram_est.safe_row_limit
-            ram_warning = ram_est.warning
-            total_source_rows = ram_est.total_rows
-            probe_columns = ram_est.probe_columns
-            if ram_warning:
-                self._store.update_job(job_id, warning=ram_warning)
         except Exception as exc:
             logger.warning("ram_estimate_failed", error=str(exc), exc_info=True)
             detail = {
@@ -1247,7 +1430,7 @@ class TrainService:
                 detail=detail,
             ) from None
 
-        return ram_warning, row_limit, total_source_rows, probe_columns
+        return ram_est
 
     def _check_gpu_vram_before_launch(
         self,
@@ -1255,12 +1438,16 @@ class TrainService:
         row_limit: int | None,
         total_source_rows: int | None,
         probe_columns: int,
-        ram_warning: str | None,
         job_id: str,
-    ) -> str | None:
+        *,
+        algorithm: str = "catboost",
+        device: str = "cpu",
+    ) -> None:
         """Check GPU VRAM and refuse a job that cannot fit on the selected GPU."""
-        if str(train_params.get("task_type", "")).upper() != "GPU":
-            return ram_warning
+        catboost_gpu = str(train_params.get("task_type", "")).upper() == "GPU"
+        xgboost_gpu = algorithm == "xgboost" and device == "gpu"
+        if not (catboost_gpu or xgboost_gpu):
+            return
 
         try:
             effective_rows = row_limit or (total_source_rows or 0)
@@ -1268,6 +1455,7 @@ class TrainService:
                 effective_rows,
                 probe_columns,
                 train_params,
+                algorithm="xgboost" if xgboost_gpu else "catboost",
             )
             if vram_check.insufficient:
                 gpu_warning = (
@@ -1279,11 +1467,7 @@ class TrainService:
                     estimated_mb=vram_check.estimated_mb,
                     available_mb=vram_check.available_mb,
                 )
-                self._store.update_job(
-                    job_id,
-                    gpu_warning=gpu_warning,
-                    warning=f"{ram_warning}\n{gpu_warning}" if ram_warning else gpu_warning,
-                )
+                self._store.update_job(job_id, gpu_warning=gpu_warning, warning=gpu_warning)
                 raise _gpu_vram_http_exception(
                     warning=gpu_warning,
                     estimated_mb=vram_check.estimated_mb,
@@ -1298,13 +1482,7 @@ class TrainService:
                     estimated_mb=vram_check.estimated_mb,
                 )
                 self._store.update_job(
-                    job_id,
-                    gpu_warning=vram_check.warning,
-                    warning=(
-                        f"{ram_warning}\n{vram_check.warning}"
-                        if ram_warning
-                        else vram_check.warning
-                    ),
+                    job_id, gpu_warning=vram_check.warning, warning=vram_check.warning
                 )
         except HTTPException:
             raise
@@ -1314,13 +1492,7 @@ class TrainService:
                 "GPU VRAM feasibility could not be checked before launch; "
                 "GPU training may fail or exhaust GPU memory."
             )
-            self._store.update_job(
-                job_id,
-                gpu_warning=check_failed,
-                warning=f"{ram_warning}\n{check_failed}" if ram_warning else check_failed,
-            )
-
-        return ram_warning
+            self._store.update_job(job_id, gpu_warning=check_failed, warning=check_failed)
 
     def _execute_and_sink(
         self,
@@ -1329,266 +1501,283 @@ class TrainService:
         row_limit: int | None,
         job_id: str,
         *,
-        exclude: list[str] | None = None,
+        project_to_keep_columns: bool = False,
         keep_columns: list[str] | None = None,
         required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None = None,
         execution_context: ExecutionContext | None = None,
     ) -> str:
-        """Execute the pipeline lazily and sink to a temp parquet file.
+        """Supervise one hard-capped preparation worker and own its parquet.
 
-        If *exclude* and *keep_columns* are provided, projects down to
-        only the needed columns before sinking.  This reduces peak memory
-        by dropping columns that won't be used for training.
+        The parent creates the destination path, hands the child a picklable
+        request plus the admitted budget envelope, and converts the child's
+        single outcome (or a typed worker failure) into exactly the terminal
+        job state and HTTP shape the former in-thread path produced. Admission
+        is released by the caller, never here, so it is released exactly once.
 
         Returns the path to the temp parquet file.
-        Raises ``HTTPException`` on failure (cleans up temp file first).
+        Raises ``HTTPException`` on failure (no parquet is left behind).
         """
-        from haute.executor import _build_node_fn
-        from haute.modelling._algorithms import _mem_checkpoint, _mem_log_path
+        if execution_context is None:
+            raise ValueError("training preparation requires an admitted execution context")
+        budget = isolated_execution_budget(execution_context)
 
-        mem_log = _mem_log_path()
-        mem_log.parent.mkdir(parents=True, exist_ok=True)
-        mem_log.write_text("")
-        _mem_checkpoint("train_model endpoint START")
+        # Every fallible setup step runs before the temp path exists, so a
+        # setup failure cannot orphan one; from creation onward the try/except
+        # below owns it on every exit that is not a successful hand-off.
+        self._store.update_job(job_id, message="Executing pipeline")
+        stored_job = self._store.require_job(job_id)
+        start_time, timeout_seconds = _worker_timing(stored_job, job_id=job_id)
+        remaining = timeout_seconds - (time.monotonic() - start_time)
+        if remaining <= 0:
+            self.timeout(job_id, timeout=int(timeout_seconds), start_time=start_time)
+            raise ExecutionCancelledError("training_preparation", job_id=job_id)
+        worker_config = worker_config_for_memory_policy(
+            memory_limit_bytes=budget.memory_limit_bytes,
+            timeout_seconds=remaining,
+            stop_reason=lambda: self._training_jobs.cancellation_reason(job_id),
+            process_name="haute-training-prep",
+        )
 
-        # Free the preview cache to reclaim memory
-        from haute.executor import _preview_cache
-
-        _preview_cache.clear()
-        from haute.trace import _cache as _trace_cache
-
-        _trace_cache.clear()
-        gc.collect()
-        _mem_checkpoint("cleared preview cache")
-
-        tmp_fd, tmp_parquet = tempfile.mkstemp(suffix=".parquet", prefix="haute_train_")
-        os.close(tmp_fd)
-
-        checkpoint_dir: Path | None = None
+        tmp_parquet = create_training_parquet_path()
         try:
-            self._store.update_job(job_id, message="Executing pipeline")
-            _mem_checkpoint("before _execute_lazy")
-
-            checkpoint_dir = Path(tempfile.mkdtemp(prefix="haute_train_ckpt_"))
-            from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE
-
-            chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
-            dataframe_cache_request = build_dataframe_execution_cache_request(
-                body.graph,
-                node_ids=[body.node_id],
-                namespace="training_prep",
-                source=body.source,
-                profile=(
-                    execution_context.profile
-                    if execution_context is not None
-                    else ExecutionProfile.LAZY_SINK
-                ),
-                input_fingerprint=dataframe_graph_input_fingerprint(
-                    body.graph,
-                    target_node_id=body.node_id,
-                    source=body.source,
-                ),
-                target_node_id=body.node_id,
+            return self._supervise_preparation_worker(
+                body,
+                preamble_ns,
+                row_limit,
+                job_id,
+                project_to_keep_columns=project_to_keep_columns,
+                keep_columns=keep_columns,
                 required_columns_by_node=required_columns_by_node,
-                enforce_contracts=True,
-                preamble_ns_supplied=preamble_ns is not None,
-                streaming_chunk_size=chunk_size,
-            )
-
-            lazy_outputs, _order, _parents, _id_to_name = execute_lazy_graph(
-                body.graph,
-                _build_node_fn,
-                target_node_id=body.node_id,
-                preamble_ns=preamble_ns,
-                source=body.source,
-                checkpoint_dir=checkpoint_dir,
-                enforce_contracts=True,
-                required_columns_by_node=required_columns_by_node,
+                budget=budget,
+                worker_config=worker_config,
+                tmp_parquet=tmp_parquet,
+                start_time=start_time,
+                timeout_seconds=timeout_seconds,
                 execution_context=execution_context,
-                dataframe_cache_request=dataframe_cache_request,
             )
-
-            target_lf = lazy_outputs.get(body.node_id)
-            if target_lf is None:
-                raise HauteValidationError(
-                    "No training data arrived at the modelling node. "
-                    "Make sure an upstream data source is connected and producing data."
-                )
-
-            if row_limit:
-                target_lf = _seeded_training_sample(target_lf, row_limit)
-
-            schema_cols = (
-                target_lf.collect_schema().names()
-                if hasattr(target_lf, "collect_schema")
-                else target_lf.columns
-            )
-            schema_set = set(schema_cols)
-            try:
-                feature_selection = _build_training_feature_selection(
-                    body.graph.node_map[body.node_id].data.config,
-                    schema_cols,
-                )
-            except ValueError as exc:
-                http_exc = HTTPException(status_code=422, detail=str(exc))
-                message, fields = _http_failure_job_parts(http_exc, job_id=job_id)
-                self._lifecycle.transition(
-                    job_id,
-                    to="contract_error",
-                    message=message,
-                    fields=fields,
-                )
-                raise http_exc from None
-            self._store.update_job(job_id, feature_selection=feature_selection)
-            required_training_columns = set(keep_columns or [])
-            node_demand = (
-                required_columns_by_node.get(body.node_id)
-                if required_columns_by_node is not None
-                else None
-            )
-            if isinstance(node_demand, AllExceptColumns):
-                required_training_columns.update(node_demand.required_columns)
-            elif node_demand is not None:
-                required_training_columns.update(str(column) for column in node_demand)
-            missing_training_columns = sorted(required_training_columns - schema_set)
-            if missing_training_columns:
-                http_exc = HTTPException(
-                    status_code=422,
-                    detail=(
-                        "Training input is missing required column(s): "
-                        f"{missing_training_columns}. Available columns: {schema_cols}"
-                    ),
-                )
-                message, fields = _http_failure_job_parts(http_exc, job_id=job_id)
-                self._lifecycle.transition(
-                    job_id,
-                    to="contract_error",
-                    message=message,
-                    fields=fields,
-                )
-                raise http_exc
-
-            # Project down to only the columns needed for training.
-            # This reduces peak memory during sink and all subsequent
-            # phases (evaluation partitions, pool construction, diagnostics).
-            if exclude and keep_columns:
-                all_cols = schema_cols
-                drop_cols = [c for c in all_cols if c in exclude and c not in keep_columns]
-                if drop_cols:
-                    target_lf = target_lf.drop(drop_cols)
-                    _mem_checkpoint(f"projected: dropped {len(drop_cols)} excluded columns")
-
-            from haute._polars_utils import (
-                _malloc_trim,
-                bounded_sink,
-            )
-
-            _mem_checkpoint("before sink_parquet")
-            if execution_context is not None:
-                execution_context.checkpoint(
-                    label="before_training_sink_write",
-                    node_id=body.node_id,
-                )
-                with execution_context.stage("training_sink_write", node_id=body.node_id):
-                    bounded_sink(
-                        target_lf,
-                        tmp_parquet,
-                        streaming_chunk_size=chunk_size,
-                    )
-                execution_context.checkpoint(
-                    label="after_training_sink_write",
-                    node_id=body.node_id,
-                )
-            else:
-                bounded_sink(
-                    target_lf,
-                    tmp_parquet,
-                    streaming_chunk_size=chunk_size,
-                )
-
-            del lazy_outputs, target_lf
-            gc.collect()
-            _malloc_trim()
-            _mem_checkpoint("sunk to temp parquet")
-        except ExecutionCancelledError:
-            if Path(tmp_parquet).exists():
-                os.unlink(tmp_parquet)
+        except BaseException:
+            # Ownership backstop: no exit from supervision may leave the
+            # parent-owned temp parquet behind.
+            self._discard_prepared_parquet(job_id, tmp_parquet)
             raise
-        except ExecutionMemoryLimitExceededError as exc:
-            if Path(tmp_parquet).exists():
-                os.unlink(tmp_parquet)
-            logger.warning(
-                "pipeline_exec_memory_limited",
+
+    def _discard_prepared_parquet(self, job_id: str, tmp_parquet: str) -> None:
+        """Remove the parent-owned parquet, failing the job loudly if it survives.
+
+        A removal failure is never swallowed: a surviving partial training file
+        contradicts every terminal state this path can record, so it becomes a
+        500 ``error`` naming the cleanup failure.
+        """
+        try:
+            _remove_prepared_parquet(tmp_parquet)
+        except OSError as exc:
+            logger.error(
+                "training_preparation_temp_cleanup_failed",
+                job_id=job_id,
+                path=tmp_parquet,
                 error=str(exc),
-                node_id=body.node_id,
             )
-            http_exc = _memory_limit_http_exception(exc)
-            message, fields = _http_failure_job_parts(http_exc, job_id=job_id)
-            self._lifecycle.transition(
+            raise self._fail_preparation_worker(
                 job_id,
-                to="memory_limited",
-                message=message,
-                fields=fields,
+                message=f"Training preparation cleanup failed: {exc}",
+            ) from exc
+
+    def _supervise_preparation_worker(
+        self,
+        body: TrainRequest,
+        preamble_ns: dict[str, Any] | None,
+        row_limit: int | None,
+        job_id: str,
+        *,
+        project_to_keep_columns: bool,
+        keep_columns: list[str] | None,
+        required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None,
+        budget: IsolatedExecutionBudget,
+        worker_config: IsolatedWorkerConfig,
+        tmp_parquet: str,
+        start_time: float,
+        timeout_seconds: float,
+        execution_context: ExecutionContext,
+    ) -> str:
+        """Run the preparation child and map its single outcome onto the job.
+
+        Inputs are prepared and the seed plan resolved here, under the parent's
+        admitted context, because a node's signature signs its prepared inputs;
+        the plan's seed leases are held until the child has exited, and the
+        child adopts the same generations.
+        """
+        request = TrainingPreparationRequest(
+            graph=body.graph,
+            node_id=body.node_id,
+            job_id=job_id,
+            source=body.source,
+            parquet_path=tmp_parquet,
+            config=dict(body.graph.node_map[body.node_id].data.config),
+            project_root=str(_get_project_root()),
+            row_limit=row_limit,
+            project_to_keep_columns=project_to_keep_columns,
+            keep_columns=list(keep_columns) if keep_columns else None,
+            required_columns_by_node=(
+                None
+                if required_columns_by_node is None
+                else {
+                    node_id: (
+                        demand
+                        if isinstance(demand, AllExceptColumns)
+                        else frozenset(str(column) for column in demand)
+                    )
+                    for node_id, demand in required_columns_by_node.items()
+                }
+            ),
+            preamble_supplied=preamble_ns is not None,
+        )
+
+        def timed_out() -> ExecutionCancelledError:
+            self._discard_prepared_parquet(job_id, tmp_parquet)
+            self.timeout(job_id, timeout=int(timeout_seconds), start_time=start_time)
+            return ExecutionCancelledError("training_preparation", job_id=job_id)
+
+        outcome: object
+        try:
+            # The job's deadline bounds the parent's input preparation too.
+            plan = open_seed_plan(
+                training_seed_plan_request(
+                    body.graph, body.node_id, body.source, request.required_columns_by_node
+                ),
+                execution_context=execution_context,
+                deadline=start_time + timeout_seconds,
             )
-            raise http_exc from None
-        except PUBLIC_CONTRACT_ERROR_TYPES as exc:
-            if Path(tmp_parquet).exists():
-                os.unlink(tmp_parquet)
-            self._lifecycle.transition(
-                job_id,
-                to="contract_error",
-                message=str(exc),
-                fields=contract_error_job_fields(exc),
-            )
-            raise contract_error_http_exception(exc) from None
-        except BoundedMemoryUnsupportedError as exc:
-            if Path(tmp_parquet).exists():
-                os.unlink(tmp_parquet)
-            error_msg = f"Pipeline cannot run in bounded streaming mode: {exc}"
-            logger.warning(
-                "pipeline_bounded_streaming_unsupported",
-                error=str(exc),
-                node_id=body.node_id,
-            )
-            http_exc = HTTPException(status_code=422, detail=error_msg)
-            message, fields = _http_failure_job_parts(http_exc, job_id=job_id)
-            self._lifecycle.transition(
-                job_id,
-                to="contract_error",
-                message=message,
-                fields=fields,
-            )
-            raise http_exc from None
-        except HTTPException:
-            if Path(tmp_parquet).exists():
-                os.unlink(tmp_parquet)
+        except ExecutionCancelledError:
+            self._discard_prepared_parquet(job_id, tmp_parquet)
             raise
         except Exception as exc:
-            if Path(tmp_parquet).exists():
-                os.unlink(tmp_parquet)
-            logger.error("pipeline_exec_failed", error=str(exc), node_id=body.node_id)
-            http_exc = HTTPException(
-                status_code=500,
-                detail="Pipeline execution failed. Check the server logs for details.",
+            if time.monotonic() - start_time >= timeout_seconds:
+                # Whatever stopped preparation, the job had run out of time.
+                raise timed_out() from exc
+            # Preparation and plan resolution fail exactly as the child would.
+            # The parent's own metrics are recorded below.
+            outcome = preparation_failure_outcome(exc, request, execution_metrics=None)
+        else:
+            with plan:
+                request = replace(request, seed_plan=plan.handoff())
+                # The child gets what preparation has left of the job's budget.
+                remaining = timeout_seconds - (time.monotonic() - start_time)
+                if remaining <= 0:
+                    raise timed_out()
+                try:
+                    outcome = run_isolated_worker(
+                        prepare_training_data_worker,
+                        request,
+                        budget,
+                        config=replace(worker_config, timeout_seconds=remaining),
+                    )
+                except IsolatedWorkerStoppedError:
+                    self._discard_prepared_parquet(job_id, tmp_parquet)
+                    raise ExecutionCancelledError("training_preparation", job_id=job_id) from None
+                except IsolatedWorkerTimeoutError:
+                    raise timed_out() from None
+                except IsolatedWorkerError as exc:
+                    self._discard_prepared_parquet(job_id, tmp_parquet)
+                    if isolated_worker_failure_is_memory(exc):
+                        http_exc = HTTPException(
+                            status_code=507,
+                            detail=isolated_worker_memory_detail(
+                                exc,
+                                operation=budget.operation,
+                                memory_limit_bytes=budget.memory_limit_bytes,
+                            ),
+                        )
+                        message, fields = _http_failure_job_parts(http_exc, job_id=job_id)
+                        self._lifecycle.transition(
+                            job_id,
+                            to="memory_limited",
+                            message=message,
+                            fields=fields,
+                        )
+                        raise http_exc from None
+                    logger.error(
+                        "training_preparation_worker_failed",
+                        job_id=job_id,
+                        node_id=body.node_id,
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    )
+                    raise self._fail_preparation_worker(job_id) from None
+
+        if not isinstance(outcome, TrainingPreparationOutcome):
+            self._discard_prepared_parquet(job_id, tmp_parquet)
+            logger.error(
+                "training_preparation_worker_failed",
+                job_id=job_id,
+                node_id=body.node_id,
+                error="worker returned an invalid outcome",
+                error_type=type(outcome).__name__,
             )
-            message, fields = _http_failure_job_parts(http_exc, job_id=job_id)
+            raise self._fail_preparation_worker(job_id)
+
+        # The job records the child's metrics carrying the parent's preparation
+        # and plan evidence ahead of the child's own, or the parent's metrics
+        # when the child reported none.
+        self._store.update_job(
+            job_id,
+            execution_metrics=(
+                execution_context.metrics_payload()
+                if outcome.execution_metrics is None
+                else execution_context.metrics_with_worker_evidence(outcome.execution_metrics)
+            ),
+        )
+
+        failure = outcome.failure
+        if failure is not None:
+            self._discard_prepared_parquet(job_id, tmp_parquet)
             self._lifecycle.transition(
                 job_id,
-                to="error",
-                message=message,
-                fields=fields,
+                to=failure.terminal_reason,
+                message=failure.message,
+                fields=dict(failure.fields),
             )
-            raise http_exc
-        finally:
-            if execution_context is not None:
-                self._store.update_job(
-                    job_id,
-                    execution_metrics=execution_context.metrics_payload(),
-                )
-            if checkpoint_dir and checkpoint_dir.exists():
-                shutil.rmtree(checkpoint_dir, ignore_errors=True)
+            raise HTTPException(
+                status_code=failure.http_status_code,
+                detail=failure.http_detail,
+            )
 
+        prepared_path = Path(tmp_parquet)
+        if (
+            outcome.parquet_path != tmp_parquet
+            or not prepared_path.exists()
+            or prepared_path.stat().st_size == 0
+        ):
+            self._discard_prepared_parquet(job_id, tmp_parquet)
+            raise self._fail_preparation_worker(
+                job_id,
+                message="Training preparation worker did not produce its prepared data.",
+            )
+
+        if outcome.feature_selection is not None:
+            self._store.update_job(
+                job_id,
+                feature_selection=TrainingFeatureSelectionDiagnosticPayload.model_validate(
+                    outcome.feature_selection
+                ),
+            )
         return tmp_parquet
+
+    def _fail_preparation_worker(
+        self,
+        job_id: str,
+        *,
+        message: str = "Training preparation failed. Check the server logs for details.",
+    ) -> HTTPException:
+        """Record a supervisor-side preparation failure and return its 500."""
+        http_exc = HTTPException(status_code=500, detail=message)
+        job_message, fields = _http_failure_job_parts(http_exc, job_id=job_id)
+        self._lifecycle.transition(
+            job_id,
+            to="error",
+            message=job_message,
+            fields=fields,
+        )
+        return http_exc
 
     def _launch_training_protocol(
         self,
@@ -1625,14 +1814,13 @@ class TrainService:
                 default_name=node_id,
             )
             job_kwargs["params"] = train_params
-            output_root = Path(str(job_kwargs.pop("output_dir"))).expanduser().resolve()
-            output_root.mkdir(parents=True, exist_ok=True)
-            artifact_root = Path(
-                tempfile.mkdtemp(
-                    prefix=f".haute-training-{job_id}-",
-                    dir=output_root,
-                )
+            job_kwargs["mlflow_experiment"] = (
+                None  # GUI logging is manual: the post-training button logs.
             )
+            # Canvas training artifacts are job-owned server state; the node's
+            # output_dir only applies to scripted TrainingJob runs.
+            job_kwargs.pop("output_dir")
+            artifact_root = create_training_artifact_directory()
         except Exception:
             launch_cleanup()
             raise
@@ -1745,6 +1933,7 @@ class TrainService:
             iteration = event.fields.get("iteration")
             total = event.fields.get("total")
             metrics = event.fields.get("metrics")
+            row = event.fields.get("history")
             if (
                 isinstance(iteration, bool)
                 or not isinstance(iteration, int)
@@ -1753,11 +1942,15 @@ class TrainService:
                 or not isinstance(total, int)
                 or total < 0
                 or not isinstance(metrics, dict)
-                or any(
-                    isinstance(value, bool)
-                    or not isinstance(value, int | float)
-                    or not math.isfinite(float(value))
-                    for value in metrics.values()
+                or not _finite_numbers(metrics)
+                or "history" not in event.fields
+                or not (
+                    row is None
+                    or (
+                        isinstance(row, dict)
+                        and _finite_numbers(row)
+                        and row.get("iteration") == iteration
+                    )
                 )
             ):
                 raise WorkerProtocolError("Training iteration event fields are malformed")
@@ -1765,16 +1958,14 @@ class TrainService:
             if current_job is None:
                 raise KeyError(f"Training job {job_id!r} disappeared during progress")
             history = list(current_job.get("train_loss_history") or [])
-            history.append({"iteration": float(iteration), **metrics})
             truncated = bool(current_job.get("train_loss_history_truncated"))
-            if len(history) > _max_train_loss_history():
-                history = history[-_max_train_loss_history() :]
-                truncated = True
+            if row is not None:
+                history, truncated = _append_live_loss_row(history, truncated, row, total)
+            # The fit's own round readout and loss rows; the job's progress and
+            # message come from its progress events, which span every fit.
             self._store.atomic_update(
                 job_id,
                 {
-                    "progress": event.progress,
-                    "message": event.message,
                     "iteration": iteration,
                     "total_iterations": total,
                     "train_loss": metrics,
@@ -1811,6 +2002,11 @@ class TrainService:
             execution_metrics = result.metadata.get("execution_metrics")
             if not isinstance(execution_metrics, dict):
                 raise WorkerProtocolError("Training execution metrics must be an object")
+            # Preparation's evidence stays on the job's metrics.
+            execution_metrics = execution_context.metrics_with_worker_evidence(execution_metrics)
+            identity = result.metadata.get("training_identity_sha256")
+            if not isinstance(identity, str) or len(identity) != 64:
+                raise WorkerProtocolError("Training identity digest must be a SHA-256 hex string")
             response_fields = dict(raw_response)
             response_fields.update(
                 {
@@ -1825,7 +2021,8 @@ class TrainService:
             )
             try:
                 staged_response = TrainResponse.model_validate(response_fields)
-            except ValidationError as exc:
+                _require_consistent_completed_response(staged_response)
+            except ValueError as exc:
                 raise WorkerProtocolError(f"Training response is malformed: {exc}") from exc
             _assert_json_finite(staged_response)
             artifacts_by_kind = {artifact.kind: artifact for artifact in result.artifacts}
@@ -1860,16 +2057,13 @@ class TrainService:
             # cancellation that wins first suppresses publication; one that
             # arrives afterwards observes the paired completed record.
             def publish_completion_fields() -> Mapping[str, Any]:
-                published = _publish_training_artifacts(
+                published = _validate_training_artifacts(
                     result,
                     artifact_root=artifact_root,
-                    output_root=output_root,
-                    job_id=job_id,
                     expected_model_name=str(job_kwargs["name"]),
                     expected_evaluation=staged_evaluation,
                     expected_tuning=staged_response.tuning,
                 )
-                artifact_publication_committed.set()
                 response_fields["model_path"] = str(published["model"])
                 evaluation_fields = staged_evaluation.model_dump(
                     mode="json",
@@ -1902,19 +2096,37 @@ class TrainService:
                         "total_fits": response.tuning.total_fit_count,
                         "best_objective": response.tuning.winner_objective,
                     }
+                handle = training_artifacts_handle(artifact_root, published)
+                # Ownership passes to the job record in this critical section;
+                # parent cleanup must no longer remove the directory.
+                artifact_publication_committed.set()
                 return {
                     "result": response,
+                    "provenance": provenance.to_plain_data(),
+                    "artifact_handles": {TRAINING_ARTIFACTS_HANDLE_KEY: handle},
                     "execution_metrics": execution_metrics,
                     "progress": 1.0,
                     "elapsed_seconds": time.monotonic() - start_time,
                     **completed_progress_fields,
                 }
 
-            self._lifecycle.publish_completion(
+            # Git state is read outside the store lock the publication holds.
+            stored = self._store.require_job(job_id)
+            provenance = capture_provenance(
+                job_id=job_id,
+                node_label=str(stored.get("node_label", "")),
+                training_identity_sha256=identity,
+                project_root=_get_project_root(),
+                node_id=stored.get("node_id"),
+                pipeline_source=stored.get("pipeline_source") or None,
+            )
+            completed = self._lifecycle.publish_completion(
                 job_id,
                 publish=publish_completion_fields,
                 message="Training completed",
             )
+            if completed is not None:
+                self._release_superseded_training_artifacts(completed)
             # The supervisor will make its normal terminal write after this
             # callback; it is intentionally a no-op because the committed
             # result is already durable alongside its artifacts.
@@ -1926,6 +2138,8 @@ class TrainService:
                 timeout_seconds=remaining,
                 stop_reason=lambda: self._training_jobs.cancellation_reason(job_id),
                 process_name=f"haute-training-{job_id}",
+                address_space_allowance_bytes=model_thread_address_space_allowance(),
+                preload_modules=(_engine_module(config),),
             )
             return self._supervisor.launch_protocol(
                 job_id,
@@ -1939,6 +2153,8 @@ class TrainService:
                 completed_fields=completed_fields,
                 on_finished=cleanup,
                 start_time=start_time,
+                # A failed worker's metrics keep preparation's evidence too.
+                failure_metrics=execution_context.metrics_with_worker_evidence,
             )
         except Exception as exc:
             cleanup()

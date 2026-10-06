@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from haute._json_shred._cache import build_per_port_cache
+from haute._json_shred import _shred, _writer
 from scripts.memory_smoke import StdlibMemorySampler
 
 
@@ -61,15 +61,18 @@ def main() -> int:
     sampler = StdlibMemorySampler()
     gc.collect()
     rss_before = sampler.process_rss_bytes(os.getpid())
+    args.cache.mkdir(parents=True, exist_ok=True)
+    config = _config()
+    table_specs = _shred._emitting_table_specs(config)
     started = time.perf_counter()
-    summary = build_per_port_cache(args.source, _config(), args.cache)
+    _writer._write_tables_streaming(args.source, config, table_specs, args.cache)
     elapsed_seconds = time.perf_counter() - started
     rss_after = sampler.process_rss_bytes(os.getpid())
-    table = summary["tables"][0]
-    if table["row_count"] != args.rows:
-        raise RuntimeError(
-            f"cache row count {table['row_count']} did not match expected {args.rows}"
-        )
+    import polars as pl
+
+    row_count = pl.scan_parquet(args.cache / "records.parquet").select(pl.len()).collect().item()
+    if row_count != args.rows:
+        raise RuntimeError(f"cache row count {row_count} did not match expected {args.rows}")
     _write_evidence(
         args.output,
         {

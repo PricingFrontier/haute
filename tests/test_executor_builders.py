@@ -14,13 +14,13 @@ import pytest
 
 import haute._builders as builders
 from haute._builders import NodeBuildContext, _build_node_fn
+from haute._execute_lazy import _apply_selected_columns
 from haute._execution_context import ExecutionProfile
 from haute._output_assembler import OutputMappingSchemaError
 from haute.errors import (
     BoundedMemoryUnsupportedError,
     ConfigError,
     LiveSwitchScenarioError,
-    SchemaMismatchError,
 )
 from haute.graph_utils import GraphNode, NodeData
 from tests.conftest import make_node as _n
@@ -309,7 +309,7 @@ class TestBuildOutput:
 class TestBuildBanding:
     """Tests for the banding node builder."""
 
-    def test_continuous_single_factor(self) -> None:
+    def test_breakpoints_single_factor(self) -> None:
         _, fn, is_source = _build(
             "banding",
             {
@@ -317,24 +317,13 @@ class TestBuildBanding:
                     {
                         "column": "age",
                         "outputColumn": "age_band",
-                        "banding": "continuous",
+                        "banding": "breakpoints",
                         "rules": [
-                            {"op1": ">=", "val1": 0, "op2": "<", "val2": 25, "assignment": "young"},
-                            {
-                                "op1": ">=",
-                                "val1": 25,
-                                "op2": "<",
-                                "val2": 65,
-                                "assignment": "adult",
-                            },
-                            {
-                                "op1": ">=",
-                                "val1": 65,
-                                "op2": "<=",
-                                "val2": 200,
-                                "assignment": "senior",
-                            },
+                            {"boundary": "25", "label": "young"},
+                            {"boundary": "65", "label": "adult"},
+                            {"boundary": "", "label": "senior"},
                         ],
+                        "rightClosed": False,
                     }
                 ],
             },
@@ -377,23 +366,12 @@ class TestBuildBanding:
                     {
                         "column": "age",
                         "outputColumn": "age_band",
-                        "banding": "continuous",
+                        "banding": "breakpoints",
                         "rules": [
-                            {
-                                "op1": ">=",
-                                "val1": 0,
-                                "op2": "<",
-                                "val2": 50,
-                                "assignment": "under50",
-                            },
-                            {
-                                "op1": ">=",
-                                "val1": 50,
-                                "op2": "<=",
-                                "val2": 200,
-                                "assignment": "50plus",
-                            },
+                            {"boundary": "50", "label": "under50"},
+                            {"boundary": "", "label": "50plus"},
                         ],
+                        "rightClosed": False,
                     },
                     {
                         "column": "region",
@@ -440,10 +418,8 @@ class TestBuildBanding:
                     {
                         "column": "",
                         "outputColumn": "out",
-                        "banding": "continuous",
-                        "rules": [
-                            {"op1": ">=", "val1": 0, "op2": "<", "val2": 10, "assignment": "low"},
-                        ],
+                        "banding": "breakpoints",
+                        "rules": [{"boundary": "10", "label": "low"}],
                     }
                 ],
             },
@@ -462,7 +438,7 @@ class TestBuildBanding:
                     {
                         "column": "age",
                         "outputColumn": "age_band",
-                        "banding": "continuous",
+                        "banding": "breakpoints",
                         "rules": [],
                     }
                 ],
@@ -473,7 +449,7 @@ class TestBuildBanding:
         result = fn(input_df).collect()
         assert "age_band" not in result.columns
 
-    def test_continuous_with_default(self) -> None:
+    def test_breakpoints_with_default(self) -> None:
         _, fn, _ = _build(
             "banding",
             {
@@ -481,11 +457,9 @@ class TestBuildBanding:
                     {
                         "column": "age",
                         "outputColumn": "age_band",
-                        "banding": "continuous",
+                        "banding": "breakpoints",
                         "default": "unknown",
-                        "rules": [
-                            {"op1": ">=", "val1": 0, "op2": "<", "val2": 25, "assignment": "young"},
-                        ],
+                        "rules": [{"boundary": "25", "label": "young"}],
                     }
                 ],
             },
@@ -513,7 +487,7 @@ class TestBuildScenarioExpander:
     def test_is_not_a_source_node(self) -> None:
         _, _, is_source = _build(
             "scenarioExpander",
-            {"column_name": "sv", "min_value": 0.9, "max_value": 1.1, "steps": 3},
+            {"column_name": "sv", "min_value": 0.9, "max_value": 1.1, "stepCount": 3},
             source_names=["upstream"],
         )
         assert is_source is False
@@ -522,7 +496,7 @@ class TestBuildScenarioExpander:
         """Expanding an empty input should yield 0 rows but correct columns."""
         _, fn, _ = _build(
             "scenarioExpander",
-            {"column_name": "sv", "min_value": 0.9, "max_value": 1.1, "steps": 3},
+            {"column_name": "sv", "min_value": 0.9, "max_value": 1.1, "stepCount": 3},
             source_names=["upstream"],
         )
         input_df = pl.DataFrame({"id": pl.Series([], dtype=pl.Int32)}).lazy()
@@ -533,7 +507,7 @@ class TestBuildScenarioExpander:
     def test_single_step(self) -> None:
         _, fn, _ = _build(
             "scenarioExpander",
-            {"column_name": "val", "min_value": 1.0, "max_value": 1.0, "steps": 1},
+            {"column_name": "val", "min_value": 1.0, "max_value": 1.0, "stepCount": 1},
             source_names=["upstream"],
         )
         input_df = pl.DataFrame({"x": [100]}).lazy()
@@ -548,7 +522,7 @@ class TestBuildScenarioExpander:
                 "column_name": "sv",
                 "min_value": 0.5,
                 "max_value": 1.5,
-                "steps": 3,
+                "stepCount": 3,
                 "step_column": "my_idx",
             },
             source_names=["upstream"],
@@ -562,7 +536,7 @@ class TestBuildScenarioExpander:
         """Empty column_name produces index column only, no value column."""
         _, fn, _ = _build(
             "scenarioExpander",
-            {"column_name": "", "steps": 3, "step_column": "idx"},
+            {"column_name": "", "stepCount": 3, "step_column": "idx"},
             source_names=["upstream"],
         )
         input_df = pl.DataFrame({"x": [1]}).lazy()
@@ -581,7 +555,7 @@ class TestBuildScenarioExpander:
                 "column_name": "sv",
                 "min_value": 0.8,
                 "max_value": 1.2,
-                "steps": 3,
+                "stepCount": 3,
                 "code": 'df = df.filter(pl.col("sv") >= 1.0)',
             },
             source_names=["upstream"],
@@ -600,7 +574,7 @@ class TestBuildScenarioExpander:
                 "column_name": "sv",
                 "min_value": 0.8,
                 "max_value": 1.2,
-                "steps": 3,
+                "stepCount": 3,
                 "code": "",
             },
             source_names=["upstream"],
@@ -617,7 +591,7 @@ class TestBuildScenarioExpander:
                 "column_name": "sv",
                 "min_value": 0.5,
                 "max_value": 1.5,
-                "steps": 3,
+                "stepCount": 3,
                 "code": 'df = df.with_columns(pl.col("sv").alias("factor"))',
             },
             source_names=["upstream"],
@@ -683,7 +657,7 @@ class TestBuildApiInput:
         )
         _, fn, _ = _build_node_fn(
             node,
-            execution_profile=ExecutionProfile.AUTO_RANGE.value,
+            execution_profile=ExecutionProfile.OPTIMISER_SOLVE.value,
         )
 
         with pytest.raises(BoundedMemoryUnsupportedError, match="CSV sources require"):
@@ -714,7 +688,7 @@ class TestBuildApiInput:
         )
         _, fn, _ = _build_node_fn(
             node,
-            execution_profile=ExecutionProfile.AUTO_RANGE.value,
+            execution_profile=ExecutionProfile.OPTIMISER_SOLVE.value,
         )
 
         result = fn().collect()
@@ -746,12 +720,12 @@ class TestBuildApiInput:
             base_dir=None,
             profile=None,
             columns=None,
-            validate_columns=None,
             port_columns=None,
+            read_snapshots=False,
+            schema_tier_node=None,
         ):
             captured["profile"] = profile
             captured["columns"] = columns
-            captured["validate_columns"] = validate_columns
             captured["port_columns"] = port_columns
             return pl.DataFrame({"quote_id": ["001"], "premium_raw": [10.5]}).lazy()
 
@@ -776,13 +750,12 @@ class TestBuildApiInput:
         _, fn, _ = _build_node_fn(
             node,
             required_output_columns=frozenset({"quote_id", "premium"}),
-            execution_profile=ExecutionProfile.AUTO_RANGE.value,
+            execution_profile=ExecutionProfile.OPTIMISER_SOLVE.value,
         )
 
         fn()
 
         assert captured["columns"] == frozenset({"quote_id", "premium_raw"})
-        assert captured["validate_columns"] == frozenset({"quote_id", "premium_raw", "unused"})
         assert captured["port_columns"] is None
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
@@ -801,11 +774,11 @@ class TestBuildApiInput:
             base_dir=None,
             profile=None,
             columns=None,
-            validate_columns=None,
             port_columns=None,
+            read_snapshots=False,
+            schema_tier_node=None,
         ):
             captured["columns"] = columns
-            captured["validate_columns"] = validate_columns
             captured["port_columns"] = port_columns
             return pl.DataFrame({"a": [1], "b": [2]}).lazy()
 
@@ -829,43 +802,49 @@ class TestBuildApiInput:
         _, fn, _ = _build_node_fn(
             node,
             required_output_columns=frozenset({"x"}),
-            execution_profile=ExecutionProfile.AUTO_RANGE.value,
+            execution_profile=ExecutionProfile.OPTIMISER_SOLVE.value,
         )
 
         fn()
 
         assert captured["columns"] is None
-        assert captured["validate_columns"] == frozenset()
         assert captured["port_columns"] is None
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_source_projection_validates_stale_selected_columns(
+    def test_stale_selected_column_is_absent_not_fatal_in_every_profile(
         self,
         tmp_path: Path,
     ) -> None:
+        from haute._execute_lazy import _apply_selected_columns
+
         data_file = tmp_path / "input.parquet"
         pl.DataFrame({"quote_id": [1], "premium": [10.5]}).write_parquet(data_file)
+        config = {
+            "path": str(data_file),
+            "selected_columns": ["quote_id", "stale_column"],
+        }
         node = _n(
             {
                 "id": "api",
-                "data": {
-                    "label": "api",
-                    "nodeType": "apiInput",
-                    "config": {
-                        "path": str(data_file),
-                        "selected_columns": ["quote_id", "stale_column"],
-                    },
-                },
+                "data": {"label": "api", "nodeType": "apiInput", "config": config},
             }
         )
-        _, fn, _ = _build_node_fn(
-            node,
-            required_output_columns=frozenset({"quote_id"}),
-            execution_profile=ExecutionProfile.AUTO_RANGE.value,
-        )
 
-        with pytest.raises(SchemaMismatchError, match="selected_columns"):
-            fn()
+        columns_by_profile = {}
+        for profile in (
+            ExecutionProfile.PREVIEW_EAGER.value,
+            ExecutionProfile.OPTIMISER_SOLVE.value,
+        ):
+            _, fn, _ = _build_node_fn(
+                node,
+                required_output_columns=frozenset({"quote_id"}),
+                execution_profile=profile,
+            )
+            frame = _apply_selected_columns(fn(), config)
+            columns_by_profile[profile] = frame.collect_schema().names()
+
+        assert columns_by_profile[ExecutionProfile.OPTIMISER_SOLVE.value] == ["quote_id"]
+        assert columns_by_profile[ExecutionProfile.PREVIEW_EAGER.value] == ["quote_id"]
 
     def test_source_projection_rejects_demand_excluded_by_selected_columns(
         self,
@@ -890,11 +869,99 @@ class TestBuildApiInput:
         _, fn, _ = _build_node_fn(
             node,
             required_output_columns=frozenset({"premium"}),
-            execution_profile=ExecutionProfile.AUTO_RANGE.value,
+            execution_profile=ExecutionProfile.OPTIMISER_SOLVE.value,
         )
 
         with pytest.raises(ValueError, match="excluded by selected_columns"):
             fn()
+
+
+# ---------------------------------------------------------------------------
+# dataInput selected_columns
+# ---------------------------------------------------------------------------
+
+
+class TestBuildDataInputSelectedColumns:
+    """``selected_columns`` is interpreted once, after the node's code runs."""
+
+    @staticmethod
+    def _node(data_file: Path) -> GraphNode:
+        return _n(
+            {
+                "id": "din",
+                "data": {
+                    "label": "din",
+                    "nodeType": "dataInput",
+                    "config": {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "mode": "scan",
+                        "path": str(data_file),
+                        "arguments": {},
+                        "code": "df = df.with_columns(SaleFlag = pl.lit(1))",
+                        "selected_columns": ["quote_id", "SaleFlag"],
+                    },
+                },
+            }
+        )
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_post_load_code_may_produce_a_selected_column(self, tmp_path: Path) -> None:
+        data_file = tmp_path / "quotes.parquet"
+        pl.DataFrame({"quote_id": ["001"], "sale_date": ["2024-01-01"]}).write_parquet(data_file)
+
+        _, fn, _ = _build_node_fn(
+            self._node(data_file),
+            required_output_columns=frozenset({"quote_id", "SaleFlag"}),
+            execution_profile=ExecutionProfile.TRAINING_PREP.value,
+        )
+
+        assert "SaleFlag" in fn().collect_schema().names()
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_code_produced_selection_matches_across_profiles(self, tmp_path: Path) -> None:
+        """The executor's shared post-call filter yields one output in every profile.
+
+        A bounded profile narrows the physical scan to planner demand carried
+        back through the post-load code, so ``sale_date`` is never read, while
+        preview scans full width.  The selection, applied once after the code
+        runs, is identical either way.
+        """
+        data_file = tmp_path / "quotes.parquet"
+        pl.DataFrame({"quote_id": ["001"], "sale_date": ["2024-01-01"]}).write_parquet(data_file)
+
+        builder_columns_by_profile: dict[str, set[str]] = {}
+        selected_by_profile: dict[str, list[str]] = {}
+        for profile in (
+            ExecutionProfile.TRAINING_PREP.value,
+            ExecutionProfile.PREVIEW_EAGER.value,
+        ):
+            node = self._node(data_file)
+            _, fn, _ = _build_node_fn(
+                node,
+                required_output_columns=frozenset({"quote_id", "SaleFlag"}),
+                execution_profile=profile,
+            )
+            frame = fn()
+            builder_columns_by_profile[profile] = set(frame.collect_schema().names())
+            selected_by_profile[profile] = (
+                _apply_selected_columns(frame, node.data.config).collect_schema().names()
+            )
+
+        assert builder_columns_by_profile[ExecutionProfile.TRAINING_PREP.value] == {
+            "quote_id",
+            "SaleFlag",
+        }
+        assert builder_columns_by_profile[ExecutionProfile.PREVIEW_EAGER.value] == {
+            "quote_id",
+            "sale_date",
+            "SaleFlag",
+        }
+        assert (
+            selected_by_profile[ExecutionProfile.TRAINING_PREP.value]
+            == selected_by_profile[ExecutionProfile.PREVIEW_EAGER.value]
+            == ["quote_id", "SaleFlag"]
+        )
 
 
 # ---------------------------------------------------------------------------

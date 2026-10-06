@@ -123,9 +123,39 @@ def test_store_terminal_race_path_applies_strict_precedence_in_both_directions()
     assert upgraded is not None
     assert upgraded["status"] == "cancelled"
 
-    assert store.transition_terminal(reject_id, to="cancelled", now=1.0) is not None
-    assert store.transition_terminal(reject_id, to="error", now=2.0) is None
-    assert store.require_job(reject_id)["status"] == "cancelled"
+    assert (
+        store.transition_terminal(reject_id, to="cancelled", now=1.0, message="Cancelled")
+        is not None
+    )
+    assert store.transition_terminal(reject_id, to="error", now=2.0, message="It failed") is None
+    rejected = store.require_job(reject_id)
+    assert rejected["status"] == "cancelled"
+    # The rejected transition leaves no trace: a job cancelled by its owner must
+    # not end up wearing a later failure's message.
+    assert rejected["message"] == "Cancelled"
+
+
+def test_store_terminal_race_path_rejects_a_repeat_of_the_same_reason() -> None:
+    """Equal reasons do not overwrite, which is what the ``<=`` in the rule buys.
+
+    A cancellation reaches the store twice: the endpoint marks the job when the
+    user asks, and the worker's own outcome arrives afterwards carrying the same
+    reason. Only strictly outranking reasons replace what is there, so the job
+    keeps the message and timing of the moment it was actually cancelled.
+    """
+    store = JobStore()
+    job_id = store.create_job({"status": "running"})
+
+    assert (
+        store.transition_terminal(job_id, to="cancelled", now=1.0, message="Cancelled") is not None
+    )
+    assert (
+        store.transition_terminal(job_id, to="cancelled", now=2.0, message="Cancelled later")
+        is None
+    )
+    settled = store.require_job(job_id)
+    assert settled["status"] == "cancelled"
+    assert settled["message"] == "Cancelled"
 
 
 def test_store_terminal_race_path_recognises_dynamic_completed_destination() -> None:

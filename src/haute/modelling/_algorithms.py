@@ -4,11 +4,8 @@ from __future__ import annotations
 
 import gc
 import os
-import sys
 import time
-from abc import ABC, abstractmethod
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +15,9 @@ import polars as pl
 from haute._host_memory import available_ram_bytes
 from haute._logging import get_logger
 from haute._polars_utils import _malloc_trim
+from haute._process_memory import current_process_rss_bytes
 from haute.errors import HauteValidationError
+from haute.modelling._algorithm_base import BaseAlgorithm, FitResult, IterationCallback
 
 logger = get_logger(component="algorithms")
 
@@ -44,68 +43,16 @@ def _mem_log_path() -> Path:
 
 
 def _get_rss_mb() -> float:
-    """Return current-process RSS in MB.  Returns 0.0 if unavailable.
-
-    - **Linux**: reads ``/proc/self/status`` (current RSS, most accurate).
-    - **macOS**: ``resource.getrusage`` (reports max RSS in bytes).
-    - **Windows**: ``GetProcessMemoryInfo`` via ctypes (WorkingSetSize).
-    """
-    # Linux — /proc/self/status gives current (not peak) RSS
-    if sys.platform == "linux":
-        try:
-            with open("/proc/self/status", encoding="utf-8") as f:
-                for line in f:
-                    if line.startswith("VmRSS:"):
-                        return int(line.split()[1]) / 1024  # kB → MB
-        except OSError:
-            pass
-
-    # macOS — resource module reports max RSS in bytes
-    elif sys.platform == "darwin":
-        try:
-            import resource
-
-            return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024 * 1024)
-        except (ImportError, AttributeError, ValueError):
-            pass
-
-    # Windows — kernel32 / psapi
-    elif sys.platform == "win32":
-        try:
-            import ctypes
-            import ctypes.wintypes
-
-            class ProcessMemoryCounters(ctypes.Structure):
-                _fields_ = [
-                    ("cb", ctypes.wintypes.DWORD),
-                    ("PageFaultCount", ctypes.wintypes.DWORD),
-                    ("PeakWorkingSetSize", ctypes.c_size_t),
-                    ("WorkingSetSize", ctypes.c_size_t),
-                    ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
-                    ("QuotaPagedPoolUsage", ctypes.c_size_t),
-                    ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
-                    ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
-                    ("PagefileUsage", ctypes.c_size_t),
-                    ("PeakPagefileUsage", ctypes.c_size_t),
-                ]
-
-            pmc = ProcessMemoryCounters()
-            pmc.cb = ctypes.sizeof(ProcessMemoryCounters)
-            handle = ctypes.windll.kernel32.GetCurrentProcess()
-            if ctypes.windll.psapi.GetProcessMemoryInfo(handle, ctypes.byref(pmc), pmc.cb):
-                return float(pmc.WorkingSetSize) / (1024 * 1024)  # bytes → MB
-        except (OSError, AttributeError, ImportError):
-            pass
-
-    return 0.0
+    """Return current-process RSS in MB.  Returns 0.0 if unavailable."""
+    rss = current_process_rss_bytes()
+    return rss / (1024 * 1024) if rss is not None else 0.0
 
 
 def _get_available_mb() -> float:
     """Return available system RAM in MB.  Returns 0.0 if unavailable.
 
-    Delegates to :func:`haute._host_memory.available_ram_bytes` for
-    cross-platform detection (Linux ``/proc``, macOS Mach VM counters,
-    Windows ``GlobalMemoryStatusEx``; no fabricated fallback).
+    Delegates to :func:`haute._host_memory.available_ram_bytes` (no fabricated
+    fallback).
     """
     available_bytes = available_ram_bytes()
     return 0.0 if available_bytes is None else available_bytes / (1024 * 1024)
@@ -134,94 +81,69 @@ def _mem_checkpoint(label: str) -> None:
             pass  # exotic Windows builds may not support fsync on all handles
 
 
-# Callback type: (iteration, total_iterations, metrics_dict) -> None
-IterationCallback = Callable[[int, int, dict[str, float]], None]
-
-# CatBoost model-metadata key recording the offset/baseline column a model
-# was trained with.  The .cbm format has no native baseline memory, so the
-# column name is stamped into the model's metadata at fit time and read back
-# by every loader — making the artifact self-describing the same way a
-# RustyStats model's ``required_columns`` carries its offset spec.
+# CatBoost model-metadata keys recording the offset/baseline column a model
+# was trained with and how it enters the raw score.  The .cbm format has no
+# native baseline memory, so both are stamped into the model's metadata at fit
+# time and read back by every loader — making the artifact self-describing the
+# same way a RustyStats model carries its exposure or offset spec.
 CATBOOST_OFFSET_METADATA_KEY = "haute_offset_column"
+CATBOOST_OFFSET_LINK_METADATA_KEY = "haute_offset_link"
+#: JSON ``[negative, positive]`` for a binary classifier Haute trained.
+CATBOOST_CLASS_LABELS_METADATA_KEY = "haute_class_labels"
+OFFSET_LINKS: frozenset[str] = frozenset({"log", "identity"})
+# CatBoost losses whose raw score is on the log scale, so an offset column is an
+# exposure multiplier that enters the baseline as log(offset).
+_LOG_LINK_CATBOOST_LOSSES: frozenset[str] = frozenset({"Poisson", "Tweedie"})
+
+
+def catboost_offset_link(loss_function: str | None) -> str:
+    """How a CatBoost loss applies an offset: ``log`` multiplies, ``identity`` adds."""
+    name = str(loss_function or "").partition(":")[0]
+    return "log" if name in _LOG_LINK_CATBOOST_LOSSES else "identity"
+
+
+def offset_baseline(values: Any, *, column: str, link: str, context: str) -> np.ndarray:
+    """Transform offset column values into a raw-score baseline.
+
+    Under a log link the offset is a positive exposure multiplier and enters
+    as ``log(offset)``; null, zero, or negative values are refused rather than
+    producing an infinite or undefined baseline. Other links add it verbatim.
+    """
+    array = np.asarray(values, dtype=np.float64)
+    if link == "identity":
+        return array
+    if link != "log":
+        raise HauteValidationError(f"{context}: unknown offset link {link!r}")
+    with np.errstate(invalid="ignore"):
+        invalid = int(np.count_nonzero(~np.isfinite(array) | (array <= 0)))
+    if invalid:
+        raise HauteValidationError(
+            f"{context}: offset column {column!r} must be positive under a log link, but "
+            f"{invalid:,} rows are null, zero, or negative."
+        )
+    return np.log(array)
 
 
 def _extract_offset_baseline(
     df: pl.DataFrame,
     offset: str,
     *,
+    link: str,
     context: str,
 ) -> np.ndarray:
-    """Return the offset column as a float baseline array, loud when absent."""
+    """Return the offset column as a raw-score baseline, loud when absent."""
     if offset not in df.columns:
         raise HauteValidationError(
             f"{context}: offset column {offset!r} is missing from the input "
             f"data. The model was trained with this offset and predictions "
-            f"without it would be silently mis-scaled. Available columns: "
-            f"{df.columns}"
+            f"without it would be silently mis-scaled."
         )
-    return df[offset].cast(pl.Float64).to_numpy()
-
-
-@dataclass
-class FitResult:
-    """Result of algorithm.fit() — model plus training artifacts."""
-
-    model: Any
-    best_iteration: int | None = None
-    loss_history: list[dict[str, float]] = field(default_factory=list)
-
-
-class BaseAlgorithm(ABC):
-    """Abstract base class for training algorithms."""
-
-    @abstractmethod
-    def fit(
-        self,
-        train_df: pl.DataFrame | None,
-        features: list[str],
-        cat_features: list[str],
-        target: str,
-        weight: str | None,
-        params: dict[str, Any],
-        task: str,
-        on_iteration: IterationCallback | None = None,
-        eval_df: pl.DataFrame | None = None,
-        offset: str | None = None,
-        monotone_constraints: dict[str, int] | None = None,
-        feature_weights: dict[str, float] | None = None,
-        **kwargs: Any,
-    ) -> FitResult:
-        """Train a model and return a FitResult.
-
-        *train_df* may be ``None`` when a pre-built pool is passed
-        via the ``pool`` keyword argument (CatBoost path).
-        """
-
-    @abstractmethod
-    def predict(
-        self,
-        model: Any,
-        df: pl.DataFrame,
-        features: list[str],
-        offset: str | None = None,
-    ) -> np.ndarray:
-        """Generate predictions from a fitted model.
-
-        When *offset* names the column the model was trained with, the
-        prediction re-applies it exactly as the fit did (GLM: the model
-        extracts and transforms its offset column; CatBoost: the baseline
-        is re-supplied through a ``Pool``).  A missing offset column in
-        *df* raises — predictions are never silently produced on an
-        offset-absent basis.
-        """
-
-    @abstractmethod
-    def feature_importance(self, model: Any) -> list[dict[str, Any]]:
-        """Return feature importances as [{feature, importance}, ...]."""
-
-    @abstractmethod
-    def save(self, model: Any, path: Path) -> None:
-        """Save the model to disk."""
+    return offset_baseline(
+        df[offset].cast(pl.Float64).to_numpy(),
+        column=offset,
+        link=link,
+        context=context,
+    )
 
 
 class _CatBoostProgressCallback:
@@ -242,7 +164,8 @@ class _CatBoostProgressCallback:
 
     def after_iteration(self, info: Any) -> bool:
         # Log memory every 50 iterations to track growth during training
-        it = info.iteration + 1
+        # CatBoost's callback reports completed iterations, starting at one.
+        it = info.iteration
         if it <= 5 or it % 50 == 0:
             _mem_checkpoint(f"  iteration {it}/{self._total}")
         metrics: dict[str, float] = {}
@@ -261,16 +184,12 @@ class _CatBoostProgressCallback:
                         history_entry[f"{prefix}_{metric_name}"] = values[-1]
         self._loss_history.append(history_entry)
         if self._on_iteration:
-            self._on_iteration(info.iteration + 1, self._total, metrics)
+            self._on_iteration(it, self._total, metrics, history_entry)
         return True  # True = continue training
 
 
 # User-friendly loss name → CatBoost loss_function string.
 # For Tweedie, the caller appends `:variance_power=X` via resolve_loss_function().
-REGRESSION_LOSSES = {"RMSE", "MAE", "Poisson", "Tweedie"}
-CLASSIFICATION_LOSSES = {"Logloss", "CrossEntropy"}
-
-
 def resolve_loss_function(
     loss_name: str | None,
     task: str,
@@ -283,11 +202,9 @@ def resolve_loss_function(
     if not loss_name:
         return None
 
-    valid = REGRESSION_LOSSES if task == "regression" else CLASSIFICATION_LOSSES
-    if loss_name not in valid:
-        raise HauteValidationError(
-            f"Loss '{loss_name}' is not valid for task '{task}'. Choose from: {sorted(valid)}"
-        )
+    from haute.modelling._descriptors import CATBOOST
+
+    CATBOOST.native_loss(task, loss_name)
 
     if loss_name == "Tweedie":
         vp = variance_power if variance_power is not None else 1.5
@@ -304,6 +221,7 @@ def _build_pool(
     target: str | None = None,
     weight: str | None = None,
     offset: str | None = None,
+    offset_link: str | None = None,
     y: np.ndarray | None = None,
     w: np.ndarray | None = None,
     baseline: np.ndarray | None = None,
@@ -319,6 +237,8 @@ def _build_pool(
     When the caller pre-extracts ``y``/``w``/``baseline`` arrays and passes
     a features-only DataFrame, it can ``del`` the original full DataFrame
     before this function runs — avoiding triple copies (Polars + Pandas + Pool).
+    A pre-extracted ``baseline`` is already on the raw-score scale; an
+    ``offset`` column is transformed by ``offset_link``.
     """
     from catboost import Pool
 
@@ -358,8 +278,17 @@ def _build_pool(
         y = df[target].cast(pl.Float64).to_numpy()
     if w is None and weight and weight in df.columns:
         w = df[weight].cast(pl.Float64).to_numpy()
-    if baseline is None and offset and offset in df.columns:
-        baseline = df[offset].cast(pl.Float64).to_numpy()
+    if baseline is None and offset:
+        if offset_link is None:
+            raise HauteValidationError(
+                "CatBoost pool: an offset column needs its link to build the baseline"
+            )
+        baseline = _extract_offset_baseline(
+            df,
+            offset,
+            link=offset_link,
+            context="CatBoost pool",
+        )
 
     # Always pass feature names explicitly: the numeric-only fast path hands
     # CatBoost a bare numpy array, and without names the saved model reports
@@ -474,7 +403,7 @@ def _run_gpu_fit_with_metric_polling(
                 continue
             # Outside the parse guard: a cancellation raised by the
             # callback must propagate, never be swallowed as a bad line.
-            on_iteration(iteration, total_iterations, {})
+            on_iteration(iteration, total_iterations, {}, None)
         last_seen = len(data_lines)
 
     try:
@@ -513,6 +442,19 @@ def _run_gpu_fit_with_metric_polling(
         raise fit_error
 
 
+def _defined_importances(importances: Any) -> np.ndarray:
+    """Score features CatBoost cannot normalise as contributing nothing.
+
+    PredictionValuesChange normalises by the model's total prediction change.
+    A model whose few trees leave that total at zero (e.g. a one-tree refit at
+    the validation-selected iteration) yields 0/0 = NaN for every split
+    feature, although no feature moves the prediction. Infinities are left in
+    place so a genuinely broken result still fails the finite-result check.
+    """
+    values = np.asarray(importances, dtype=float)
+    return np.where(np.isnan(values), 0.0, values)
+
+
 class CatBoostAlgorithm(BaseAlgorithm):
     """CatBoost gradient boosting implementation."""
 
@@ -536,6 +478,7 @@ class CatBoostAlgorithm(BaseAlgorithm):
 
         pool = kwargs.get("pool")
         eval_pool = kwargs.get("eval_pool")
+        offset_link = catboost_offset_link(params.get("loss_function"))
 
         if pool is None:
             assert train_df is not None, "Either train_df or pool must be provided"
@@ -546,6 +489,7 @@ class CatBoostAlgorithm(BaseAlgorithm):
                 target=target,
                 weight=weight,
                 offset=offset,
+                offset_link=offset_link,
             )
 
         if eval_pool is None and eval_df is not None:
@@ -556,9 +500,13 @@ class CatBoostAlgorithm(BaseAlgorithm):
                 target=target,
                 weight=weight,
                 offset=offset,
+                offset_link=offset_link,
             )
 
         model_params = {**params}
+        threads = kwargs.get("threads")
+        if threads is not None:
+            model_params["thread_count"] = threads
         is_gpu = str(model_params.get("task_type", "")).upper() == "GPU"
         # Suppress verbose output and training log files by default
         # GPU needs verbose > 0 to record eval metrics (no callback support)
@@ -593,7 +541,9 @@ class CatBoostAlgorithm(BaseAlgorithm):
             fw_list = [feature_weights.get(f, 1.0) for f in features]
             model_params["feature_weights"] = fw_list
 
-        total_iterations = model_params.get("iterations", 1000)
+        from haute.modelling._descriptors import CATBOOST, round_ceiling
+
+        total_iterations = round_ceiling(CATBOOST, model_params, 1000)
 
         if task == "classification":
             model = CatBoostClassifier(**model_params)
@@ -627,10 +577,30 @@ class CatBoostAlgorithm(BaseAlgorithm):
             model.fit(pool, **fit_kwargs)
         _mem_checkpoint("catboost model.fit() END")
 
-        # Record the offset column on the model so saved .cbm artifacts are
-        # self-describing: predict/serve must re-supply this baseline.
+        # Record the offset column and its link on the model so saved .cbm
+        # artifacts are self-describing: predict/serve must re-supply this
+        # baseline exactly as it was built for the fit. An empty column
+        # declares that the fit used no offset; an absent key declares nothing.
+        metadata = model.get_metadata()
+        metadata[CATBOOST_OFFSET_METADATA_KEY] = offset or ""
         if offset:
-            model.get_metadata()[CATBOOST_OFFSET_METADATA_KEY] = offset
+            metadata[CATBOOST_OFFSET_LINK_METADATA_KEY] = offset_link
+        # The job trains on the target encoded as positive = 1; record which
+        # original labels those codes stand for so served labels are original.
+        class_labels = kwargs.get("class_labels")
+        if task == "classification" and class_labels is not None:
+            import json
+
+            fitted = [float(value) for value in getattr(model, "classes_", [])]
+            if fitted != [0.0, 1.0]:
+                raise HauteValidationError(
+                    "CatBoost did not fit the encoded classes in order (negative 0, positive 1); "
+                    f"it reported {fitted}. Remove any class-order parameters and retrain."
+                )
+
+            model.get_metadata()[CATBOOST_CLASS_LABELS_METADATA_KEY] = json.dumps(
+                list(class_labels)
+            )
 
         # Capture best iteration if early stopping was active
         best_iteration: int | None = None
@@ -653,10 +623,24 @@ class CatBoostAlgorithm(BaseAlgorithm):
                             loss_history.append({"iteration": i})
                         loss_history[i][f"train_{metric_name}"] = v
 
+        rounds_fitted = getattr(model, "tree_count_", None)
+        rounds_fitted = rounds_fitted if isinstance(rounds_fitted, int) else None
+        rounds_configured = total_iterations if isinstance(total_iterations, int) else None
+        stopping_reason = (
+            "validation"
+            if eval_pool is not None
+            and rounds_fitted is not None
+            and rounds_configured is not None
+            and rounds_fitted < rounds_configured
+            else "none"
+        )
         return FitResult(
             model=model,
             best_iteration=best_iteration,
             loss_history=loss_history,
+            rounds_configured=rounds_configured,
+            rounds_fitted=rounds_fitted,
+            stopping_reason=stopping_reason,
         )
 
     def predict(
@@ -684,9 +668,18 @@ class CatBoostAlgorithm(BaseAlgorithm):
             # a bare matrix predict silently scores from baseline 0.
             from catboost import Pool
 
+            from haute._mlflow_io import _catboost_offset_link
+
+            link = _catboost_offset_link(model)
+            if link is None:
+                raise HauteValidationError(
+                    f"CatBoost predict: the model records no offset, but offset column "
+                    f"{offset!r} was supplied"
+                )
             baseline = _extract_offset_baseline(
                 df,
                 offset,
+                link=link,
                 context="CatBoost predict",
             )
             cat_indices = [i for i, f in enumerate(features) if f in cat_cols]
@@ -706,7 +699,7 @@ class CatBoostAlgorithm(BaseAlgorithm):
 
     def feature_importance(self, model: Any) -> list[dict[str, Any]]:
         names = model.feature_names_
-        importances = model.get_feature_importance()
+        importances = _defined_importances(model.get_feature_importance())
         pairs = sorted(
             zip(names, importances),
             key=lambda x: x[1],
@@ -725,7 +718,7 @@ class CatBoostAlgorithm(BaseAlgorithm):
         Supported types: PredictionValuesChange, LossFunctionChange, ShapValues.
         """
         names = model.feature_names_
-        importances = model.get_feature_importance(data=pool, type=type_name)
+        importances = _defined_importances(model.get_feature_importance(data=pool, type=type_name))
         pairs = sorted(
             zip(names, importances),
             key=lambda x: x[1],
@@ -733,21 +726,15 @@ class CatBoostAlgorithm(BaseAlgorithm):
         )
         return [{"feature": name, "importance": float(imp)} for name, imp in pairs]
 
-    def shap_summary(
+    def shap_values(
         self,
         model: Any,
         df: pl.DataFrame,
         features: list[str],
         cat_features: list[str] | None = None,
-        max_rows: int = 1000,
-    ) -> list[dict[str, Any]]:
-        """Compute mean |SHAP| per feature using CatBoost's native SHAP.
-
-        Subsamples to max_rows for performance. Returns
-        [{feature, mean_abs_shap}, ...] sorted by importance desc.
-        """
-        sample = df.sample(min(len(df), max_rows), seed=42) if len(df) > max_rows else df
-        pool = _build_pool(sample, features, cat_features)
+    ) -> np.ndarray:
+        """CatBoost's native SHAP values for every row of *df*, one column per feature."""
+        pool = _build_pool(df, features, cat_features)
 
         # CatBoost ShapValues returns shape (n_samples, n_features + 1), last col is base value
         shap_values = model.get_feature_importance(data=pool, type="ShapValues")
@@ -755,11 +742,7 @@ class CatBoostAlgorithm(BaseAlgorithm):
         # Ensure 2D and drop the base value column
         if shap_values.ndim == 1:
             shap_values = shap_values.reshape(1, -1)
-        shap_values = shap_values[:, :-1]
-
-        mean_abs = np.abs(shap_values).mean(axis=0)
-        pairs = sorted(zip(features, mean_abs), key=lambda x: x[1], reverse=True)
-        return [{"feature": name, "mean_abs_shap": float(val)} for name, val in pairs]
+        return np.asarray(shap_values[:, :-1], dtype=np.float64)
 
     def save(self, model: Any, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -769,6 +752,23 @@ class CatBoostAlgorithm(BaseAlgorithm):
 ALGORITHM_REGISTRY: dict[str, type[BaseAlgorithm]] = {
     "catboost": CatBoostAlgorithm,
 }
+
+# The XGBoost adapter imports the engine only inside fit/predict/load.
+from haute.modelling._xgboost import XGBoostAlgorithm  # noqa: E402
+
+ALGORITHM_REGISTRY["xgboost"] = XGBoostAlgorithm
+
+from haute.modelling._lightgbm import LightGBMAlgorithm  # noqa: E402
+
+ALGORITHM_REGISTRY["lightgbm"] = LightGBMAlgorithm
+
+from haute.modelling._ebm import EBMAlgorithm  # noqa: E402
+
+ALGORITHM_REGISTRY["ebm"] = EBMAlgorithm
+
+from haute.modelling._tboost import TBoostAlgorithm  # noqa: E402
+
+ALGORITHM_REGISTRY["tboost"] = TBoostAlgorithm
 
 # Register GLM if RustyStats is installed (lazy import keeps it optional)
 try:

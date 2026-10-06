@@ -1,7 +1,7 @@
 """Comprehensive tests for haute.routes._helpers.
 
 Covers:
-  - validate_safe_path  — valid paths, traversal attempts, absolute paths
+  - contained_path  — valid paths, traversal attempts, absolute paths
   - raise_node_not_found / raise_node_type_error / raise_pipeline_not_found / raise_validation_error
   - mark_self_write / is_self_write — timing-based self-write detection
   - load_sidecar / load_sidecar_positions — valid JSON, corrupt JSON, missing file
@@ -21,7 +21,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi import HTTPException
 
+from haute._sandbox import contained_path
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
+from haute.errors import PathOutsideProjectError
 from haute.routes._helpers import (
     _SELF_WRITE_COOLDOWN,
     _WATCHER_PAUSE_SETTLE_SECONDS,
@@ -37,55 +39,52 @@ from haute.routes._helpers import (
     raise_pipeline_not_found,
     raise_validation_error,
     save_sidecar,
-    validate_safe_path,
     watcher_is_paused,
     ws_clients,
 )
 
 # ===========================================================================
-# validate_safe_path
+# contained_path
 # ===========================================================================
 
 
-class TestValidateSafePath:
+class TestContainedPath:
     def test_valid_relative_path(self, tmp_path):
         sub = tmp_path / "subdir"
         sub.mkdir()
-        result = validate_safe_path(tmp_path, "subdir")
+        result = contained_path(tmp_path, "subdir")
         assert result == sub
 
     def test_valid_file_path(self, tmp_path):
         f = tmp_path / "file.txt"
         f.write_text("hello")
-        result = validate_safe_path(tmp_path, "file.txt")
+        result = contained_path(tmp_path, "file.txt")
         assert result == f
 
     def test_traversal_attempt_raises_403(self, tmp_path):
-        with pytest.raises(HTTPException) as exc_info:
-            validate_safe_path(tmp_path, "../../../etc/passwd")
-        assert exc_info.value.status_code == 403
-        assert "outside the project root" in exc_info.value.detail
+        with pytest.raises(PathOutsideProjectError) as exc_info:
+            contained_path(tmp_path, "../../../etc/passwd")
+        assert "outside the project root" in exc_info.value.message
 
     def test_double_traversal(self, tmp_path):
-        with pytest.raises(HTTPException) as exc_info:
-            validate_safe_path(tmp_path, "foo/../../..")
-        assert exc_info.value.status_code == 403
+        with pytest.raises(PathOutsideProjectError):
+            contained_path(tmp_path, "foo/../../..")
 
     def test_absolute_path_within_base(self, tmp_path):
         """Absolute path that happens to be inside base should work."""
         f = tmp_path / "inner.txt"
         f.write_text("ok")
-        result = validate_safe_path(tmp_path, str(f))
+        result = contained_path(tmp_path, str(f))
         assert result == f
 
     def test_nested_path(self, tmp_path):
         nested = tmp_path / "a" / "b" / "c"
         nested.mkdir(parents=True)
-        result = validate_safe_path(tmp_path, "a/b/c")
+        result = contained_path(tmp_path, "a/b/c")
         assert result == nested
 
     def test_path_object_input(self, tmp_path):
-        result = validate_safe_path(tmp_path, Path("subdir"))
+        result = contained_path(tmp_path, Path("subdir"))
         # The path may not exist but should be resolved
         assert str(result).startswith(str(tmp_path))
 
@@ -98,9 +97,8 @@ class TestValidateSafePath:
             link.symlink_to(outside)
         except OSError:
             pytest.skip("Cannot create symlinks in this environment")
-        with pytest.raises(HTTPException) as exc_info:
-            validate_safe_path(tmp_path, "sneaky_link")
-        assert exc_info.value.status_code == 403
+        with pytest.raises(PathOutsideProjectError):
+            contained_path(tmp_path, "sneaky_link")
 
 
 # ===========================================================================
@@ -174,9 +172,11 @@ class TestSelfWriteTracking:
         fake_time = [100.0]
         monkeypatch.setattr(time, "monotonic", lambda: fake_time[0])
         path = tmp_path / "pipeline.py"
+        content = b"print('hello')"
+        path.write_bytes(content)
 
         try:
-            mark_self_write(path)
+            mark_self_write(path, content=content)
             fake_time[0] += _SELF_WRITE_COOLDOWN + 5.0
 
             assert is_self_write() is False
@@ -189,9 +189,11 @@ class TestSelfWriteTracking:
 
         helpers._self_write_paths.clear()
         path = tmp_path / "pipeline.py"
+        content = b"print('hello')"
+        path.write_bytes(content)
 
         try:
-            mark_self_write(path)
+            mark_self_write(path, content=content)
             assert is_self_write(path, consume=True) is True
             assert is_self_write(path) is False
         finally:
@@ -210,16 +212,88 @@ class TestSelfWriteTracking:
         monkeypatch.setattr(time, "monotonic", lambda: fake_time[0])
         stale_path = tmp_path / "stale.py"
         fresh_path = tmp_path / "fresh.py"
+        stale_content = b"stale"
+        fresh_content = b"fresh"
+        stale_path.write_bytes(stale_content)
+        fresh_path.write_bytes(fresh_content)
 
         try:
-            mark_self_write(stale_path)
+            mark_self_write(stale_path, content=stale_content)
             fake_time[0] += helpers._SELF_WRITE_RETENTION + 1.0
-            mark_self_write(fresh_path)
+            mark_self_write(fresh_path, content=fresh_content)
 
             assert is_self_write(stale_path) is False
             assert is_self_write(fresh_path) is True
         finally:
             helpers._self_write_paths.clear()
+
+    def test_content_mismatch_returns_false_and_discards_marker(self, tmp_path: Path) -> None:
+        """(a) mismatch: mark content X, write Y externally to same path, False and marker gone."""
+        import haute.routes._helpers as helpers
+
+        helpers._self_write_paths.clear()
+        path = tmp_path / "pipeline.py"
+        path.write_bytes(b"content_y")
+        try:
+            mark_self_write(path, content=b"content_x")
+            assert is_self_write(path) is False
+            key = helpers._self_write_key(path)
+            assert key not in helpers._self_write_paths
+        finally:
+            helpers._self_write_paths.clear()
+
+    def test_deletion_marker_matches_unlinked_file(self, tmp_path: Path) -> None:
+        """(b) deletion: mark deleted=True, unlink, is_self_write(path, consume=True) is True."""
+        import haute.routes._helpers as helpers
+
+        helpers._self_write_paths.clear()
+        path = tmp_path / "deleted.py"
+        path.write_bytes(b"to be deleted")
+        try:
+            mark_self_write(path, deleted=True)
+            path.unlink()
+            assert is_self_write(path, consume=True) is True
+            assert is_self_write(path) is False
+        finally:
+            helpers._self_write_paths.clear()
+
+    def test_deletion_marker_returns_false_when_file_exists(self, tmp_path: Path) -> None:
+        """(c) deletion marker but the file exists again: False."""
+        import haute.routes._helpers as helpers
+
+        helpers._self_write_paths.clear()
+        path = tmp_path / "recreated.py"
+        try:
+            mark_self_write(path, deleted=True)
+            path.write_bytes(b"recreated externally")
+            assert is_self_write(path) is False
+        finally:
+            helpers._self_write_paths.clear()
+
+    def test_failed_write_returns_false_when_file_holds_old_bytes(self, tmp_path: Path) -> None:
+        """(d) failed write: marker X while file still holds old bytes O: False."""
+        import haute.routes._helpers as helpers
+
+        helpers._self_write_paths.clear()
+        path = tmp_path / "old.py"
+        path.write_bytes(b"old bytes")
+        try:
+            mark_self_write(path, content=b"new bytes")
+            assert is_self_write(path) is False
+        finally:
+            helpers._self_write_paths.clear()
+
+    def test_mark_self_write_argument_validation(self, tmp_path: Path) -> None:
+        """(e) argument validation on mark_self_write."""
+        path = tmp_path / "test.py"
+        with pytest.raises(ValueError, match="exactly one of content or deleted"):
+            mark_self_write(path)
+        with pytest.raises(ValueError, match="exactly one of content or deleted"):
+            mark_self_write(path, content=b"x", deleted=True)
+        with pytest.raises(ValueError, match="content and deleted require a path"):
+            mark_self_write(content=b"x")
+        with pytest.raises(ValueError, match="content and deleted require a path"):
+            mark_self_write(deleted=True)
 
 
 # ===========================================================================
@@ -393,6 +467,31 @@ class TestSaveSidecar:
         data = json.loads(sidecar.read_text())
         assert "positions" in data
         assert data["positions"]["A"] == {"x": 100.0, "y": 200.0}
+
+    def test_node_order_does_not_change_the_sidecar(self, tmp_path):
+        """A graph reloaded in its source file's order saves the same bytes.
+
+        Codegen places each source just before its first consumer, so the
+        reloaded graph can list nodes in another order than the canvas did;
+        re-saving it must not rewrite the layout sidecar.
+        """
+        nodes = [
+            GraphNode(
+                id=name,
+                position={"x": float(index), "y": 0.0},
+                data=NodeData(label=name, nodeType=NodeType.DATA_INPUT),
+            )
+            for index, name in enumerate(["b_source", "a_source", "consumer"])
+        ]
+        py_path = tmp_path / "pipeline.py"
+        sidecar = tmp_path / "pipeline.haute.json"
+
+        save_sidecar(py_path, PipelineGraph(nodes=nodes, edges=[]))
+        first = sidecar.read_bytes()
+        save_sidecar(py_path, PipelineGraph(nodes=list(reversed(nodes)), edges=[]))
+
+        assert sidecar.read_bytes() == first
+        assert list(json.loads(first)["positions"]) == ["a_source", "b_source", "consumer"]
 
     def test_submodel_node_keyed_by_parser_id(self, tmp_path):
         """Submodel placeholder positions must be keyed by ``submodel__<name>``.
@@ -859,10 +958,11 @@ class TestScenarioNormalization:
         py_path = tmp_path / "pipeline.py"
         py_path.write_text(
             "import haute\n"
+            "import polars as pl\n"
             "pipeline = haute.Pipeline('test')\n"
             "@pipeline.polars\n"
-            "def transform(df):\n"
-            "    return df\n"
+            "def transform():\n"
+            "    return pl.LazyFrame({'x': [1]})\n"
         )
 
         # Write sidecar with "live" NOT in first position
@@ -958,6 +1058,51 @@ class TestPipelineDir:
         with pytest.raises(ConfigError, match="outside the project root"):
             pipeline_dir()
 
+        pipeline_dir.cache_clear()
+
+    def test_agrees_with_the_builders_configured_pipeline_dir(self, tmp_path, monkeypatch):
+        """The routes and the engine read ``[project].pipeline`` through one reader."""
+        from haute._builders import _configured_pipeline_dir
+        from haute.routes._helpers import pipeline_dir
+
+        pipeline_dir.cache_clear()
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("haute._sandbox._PROJECT_ROOT", tmp_path.resolve())
+        (tmp_path / "pipelines").mkdir()
+        (tmp_path / "pipelines" / "main.py").write_text("")
+        (tmp_path / "haute.toml").write_text('[project]\npipeline = "pipelines/main.py"\n')
+
+        configured = _configured_pipeline_dir()
+        assert configured is not None
+        assert pipeline_dir() == configured.resolve() == (tmp_path / "pipelines").resolve()
+        pipeline_dir.cache_clear()
+
+    def test_raises_config_error_when_project_is_not_a_table(self, tmp_path, monkeypatch):
+        """``project = "main.py"`` is a malformed configuration, not a crash."""
+        import pytest
+
+        from haute.errors import ConfigError
+        from haute.routes._helpers import pipeline_dir
+
+        pipeline_dir.cache_clear()
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "haute.toml").write_text('project = "main.py"\n')
+        with pytest.raises(ConfigError, match=r"\[project\] must be a table"):
+            pipeline_dir()
+        pipeline_dir.cache_clear()
+
+    def test_raises_config_error_when_pipeline_is_not_a_path(self, tmp_path, monkeypatch):
+        """``pipeline = [...]`` must not silently resolve (and cache) cwd."""
+        import pytest
+
+        from haute.errors import ConfigError
+        from haute.routes._helpers import pipeline_dir
+
+        pipeline_dir.cache_clear()
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "haute.toml").write_text('[project]\npipeline = ["rating/main.py"]\n')
+        with pytest.raises(ConfigError, match="must be a path string"):
+            pipeline_dir()
         pipeline_dir.cache_clear()
 
     def test_raises_config_error_when_toml_is_corrupt(self, tmp_path, monkeypatch):
@@ -1136,10 +1281,11 @@ class TestParsePipelineToGraph:
         py_path = tmp_path / "pipeline.py"
         py_path.write_text(
             "import haute\n"
+            "import polars as pl\n"
             "pipeline = haute.Pipeline('test')\n"
             "@pipeline.polars\n"
-            "def my_node(df):\n"
-            "    return df\n"
+            "def my_node():\n"
+            "    return pl.LazyFrame({'x': [1]})\n"
         )
         sidecar = py_path.with_suffix(".haute.json")
         sidecar.write_text(json.dumps({"positions": {"my_node": {"x": 42.0, "y": 99.0}}}))
@@ -1195,10 +1341,11 @@ class TestParsePipelineToGraph:
         py_path = tmp_path / "pipeline.py"
         py_path.write_text(
             "import haute\n"
+            "import polars as pl\n"
             "pipeline = haute.Pipeline('test')\n"
             "@pipeline.polars\n"
-            "def node(df):\n"
-            "    return df\n"
+            "def node():\n"
+            "    return pl.LazyFrame({'x': [1]})\n"
         )
         sidecar = py_path.with_suffix(".haute.json")
         sidecar.write_text(json.dumps({"sources": ["batch_a", "batch_b"]}))
@@ -1215,10 +1362,11 @@ class TestParsePipelineToGraph:
         py_path = tmp_path / "pipeline.py"
         py_path.write_text(
             "import haute\n"
+            "import polars as pl\n"
             "pipeline = haute.Pipeline('test')\n"
             "@pipeline.polars\n"
-            "def node(df):\n"
-            "    return df\n"
+            "def node():\n"
+            "    return pl.LazyFrame({'x': [1]})\n"
         )
         sidecar = py_path.with_suffix(".haute.json")
         sidecar.write_text(
@@ -1236,10 +1384,11 @@ class TestParsePipelineToGraph:
         py_path = tmp_path / "pipeline.py"
         py_path.write_text(
             "import haute\n"
+            "import polars as pl\n"
             "pipeline = haute.Pipeline('test')\n"
             "@pipeline.polars\n"
-            "def node(df):\n"
-            "    return df\n"
+            "def node():\n"
+            "    return pl.LazyFrame({'x': [1]})\n"
         )
 
         graph = parse_pipeline_to_graph(py_path)

@@ -16,7 +16,8 @@ from pathlib import Path
 import pytest
 import structlog.testing
 
-from haute.assistant._session import MAX_PERSISTED_SESSIONS, SessionStore
+from haute.assistant._session import MAX_PERSISTED_SESSIONS, AssistantMessage, SessionStore
+from haute.schemas import ASSISTANT_RECEIPT_TEXT_LIMIT, AssistantChangeRecord
 
 
 def _store(tmp_path: Path, **kwargs: object) -> SessionStore:
@@ -28,7 +29,9 @@ def _turn(text: str = "hi", reply: str = "hello") -> dict:
         "messages": [
             {"role": "user", "content": text},
             {"role": "assistant", "content": reply},
-        ]
+        ],
+        "outcome": {"kind": "answered", "detail": None, "changes": []},
+        "undone": [],
     }
 
 
@@ -55,7 +58,7 @@ class TestWriteThrough:
                         "tool_calls": [
                             {
                                 "id": "t1",
-                                "name": "get_node_config",
+                                "name": "inspect_node",
                                 "arguments": {"node": "rating"},
                             }
                         ],
@@ -63,14 +66,16 @@ class TestWriteThrough:
                     {
                         "role": "tool",
                         "tool_call_id": "t1",
-                        "name": "get_node_config",
+                        "name": "inspect_node",
                         "content": {
                             "config": {"customer_name": "Ada", "api_token": "secret-value"},
                             "base_revision": "a" * 64,
                         },
                         "is_error": False,
                     },
-                ]
+                ],
+                "outcome": None,
+                "undone": [],
             },
         )
 
@@ -142,7 +147,9 @@ class TestWriteThrough:
                         },
                         "is_error": True,
                     },
-                ]
+                ],
+                "outcome": None,
+                "undone": [],
             },
         )
 
@@ -180,6 +187,213 @@ class TestWriteThrough:
         assert "provider-secret-canary" not in raw
         assert "<redacted>" in raw
 
+    def test_an_outcome_detail_is_redacted_like_assistant_text(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "provider-secret-canary")
+        store = _store(tmp_path)
+        session = store.create("rating/main.py")
+        turn = _turn("go", "NEEDS_INPUT: is provider-secret-canary the key?")
+        turn["outcome"] = {
+            "kind": "needs_input",
+            "detail": "is provider-secret-canary the key?",
+            "changes": ["a" * 64],
+        }
+        store.append(session, turn)
+
+        raw = (tmp_path / "sessions" / f"{session.id}.json").read_text(encoding="utf-8")
+        assert "provider-secret-canary" not in raw
+        stored = json.loads(raw)["history"][0]["outcome"]
+        assert stored["kind"] == "needs_input"
+        assert "<redacted>" in stored["detail"]
+        assert stored["changes"] == ["a" * 64]
+
+    def test_an_apply_change_record_revives_with_its_text_redacted(
+        self, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setenv("OPENAI_API_KEY", "provider-secret-canary")
+        change = {
+            "id": "a" * 64,
+            "summary": "Use provider-secret-canary as the band label.",
+            "assumptions": ["provider-secret-canary is safe to show."],
+            "changes": {
+                "nodes": [{"id": "age_band", "type": "Banding", "change": "added"}],
+                "edges_added": [{"source": "quotes", "target": "age_band"}],
+            },
+            "git_sha": "c" * 40,
+            "parent_sha": "d" * 40,
+            "revision": "e" * 64,
+        }
+        store = _store(tmp_path)
+        session = store.create("rating/main.py")
+        store.append(
+            session,
+            {
+                "messages": [
+                    {"role": "user", "content": "go"},
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{"id": "c1", "name": "apply_graph_plan", "arguments": {}}],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "c1",
+                        "name": "apply_graph_plan",
+                        "content": {
+                            "plan_hash": "a" * 64,
+                            "applied_operations": 2,
+                            "change": change,
+                        },
+                        "is_error": False,
+                    },
+                ],
+                "outcome": {"kind": "applied", "detail": None, "changes": ["a" * 64]},
+                "undone": [],
+            },
+        )
+
+        raw = (tmp_path / "sessions" / f"{session.id}.json").read_text(encoding="utf-8")
+        assert "provider-secret-canary" not in raw
+        revived = _store(tmp_path).lookup(session.id)
+        assert revived is not None
+        content = revived.history[0].messages[-1].content
+        assert isinstance(content, dict)
+        record = AssistantChangeRecord.model_validate(content["change"])
+        assert "<redacted>" in record.summary and "<redacted>" in record.assumptions[0]
+        assert record.changes == AssistantChangeRecord.model_validate(change).changes
+        assert (record.id, record.git_sha, record.parent_sha) == ("a" * 64, "c" * 40, "d" * 40)
+        assert content["applied_operations"] == 2
+        assert revived.history[0].outcome.changes == ["a" * 64]
+
+        # An undo of that change is noted after the latest turn and revives redacted.
+        store.record_undo(session, AssistantChangeRecord.model_validate(change))
+        raw = (tmp_path / "sessions" / f"{session.id}.json").read_text(encoding="utf-8")
+        assert "provider-secret-canary" not in raw
+        revived = _store(tmp_path).lookup(session.id)
+        assert revived is not None
+        (undone,) = revived.history[-1].undone
+        assert undone.id == "a" * 64 and "<redacted>" in undone.summary
+        assert undone.revision == "e" * 64
+
+    def test_a_change_summary_lengthened_by_redaction_still_revives(
+        self, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setenv("OPENAI_API_KEY", "abc123")
+        summary = "x" * (ASSISTANT_RECEIPT_TEXT_LIMIT - 7) + " abc123"
+        assert len(summary) == ASSISTANT_RECEIPT_TEXT_LIMIT
+        store = _store(tmp_path)
+        session = store.create("rating/main.py")
+        store.append(
+            session,
+            {
+                "messages": [
+                    {"role": "user", "content": "go"},
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{"id": "c1", "name": "apply_graph_plan", "arguments": {}}],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "c1",
+                        "name": "apply_graph_plan",
+                        "content": {
+                            "change": {
+                                "id": "a" * 64,
+                                "summary": summary,
+                                "changes": {"nodes": []},
+                                "git_sha": None,
+                                "parent_sha": None,
+                                "revision": "e" * 64,
+                            }
+                        },
+                        "is_error": False,
+                    },
+                ],
+                "outcome": {"kind": "applied", "detail": None, "changes": ["a" * 64]},
+                "undone": [],
+            },
+        )
+
+        revived = _store(tmp_path).lookup(session.id)
+        assert revived is not None
+        content = revived.history[0].messages[-1].content
+        assert isinstance(content, dict)
+        revived_summary = AssistantChangeRecord.model_validate(content["change"]).summary
+        assert len(revived_summary) > ASSISTANT_RECEIPT_TEXT_LIMIT and revived_summary.endswith(
+            "<redacted>"
+        )
+
+    def test_a_change_cards_data_check_revives_and_an_older_card_has_none(self, tmp_path: Path):
+        data_check = {
+            "visibility": "earlier_inputs",
+            "outcome": "checked",
+            "scenario": "live",
+            "findings": [
+                {
+                    "severity": "advisory",
+                    "node": "age_band",
+                    "text": "All 1,204 rows fell into the default band of age_band.",
+                }
+            ],
+            "findings_omitted": 0,
+            "not_checked": "Not checked: rates (preview the input quotes first).",
+        }
+
+        def applied(change_id: str, **extra: object) -> dict[str, object]:
+            change = {
+                "id": change_id,
+                "summary": "Band ages.",
+                "changes": {"nodes": []},
+                "git_sha": None,
+                "parent_sha": None,
+                "revision": "e" * 64,
+                **extra,
+            }
+            return {
+                "messages": [
+                    {"role": "user", "content": "go"},
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{"id": "c1", "name": "apply_graph_plan", "arguments": {}}],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "c1",
+                        "name": "apply_graph_plan",
+                        "content": {"change": change},
+                        "is_error": False,
+                    },
+                ],
+                "outcome": {"kind": "applied", "detail": None, "changes": [change_id]},
+                "undone": [],
+            }
+
+        store = _store(tmp_path)
+        session = store.create("rating/main.py")
+        # A card saved before data checks existed has no data_check key at all.
+        store.append(session, applied("a" * 64))
+        store.append(session, applied("b" * 64, data_check=data_check))
+
+        revived = _store(tmp_path).lookup(session.id)
+        assert revived is not None
+        older, checked = (
+            AssistantChangeRecord.model_validate(turn.messages[-1].content["change"])
+            for turn in revived.history
+        )
+        assert older.data_check is None
+        assert checked.data_check is not None
+        assert checked.data_check.model_dump(mode="json") == data_check
+
+    def test_a_malformed_change_record_fails_when_the_message_is_built(self):
+        with pytest.raises(ValueError):
+            AssistantMessage(
+                role="tool",
+                tool_call_id="c1",
+                name="apply_graph_plan",
+                content={"change": {"summary": "x", "changes": {"nodes": "age_band"}}},
+            )
+
     def test_no_storage_dir_means_no_files(self, tmp_path: Path):
         store = SessionStore()
         session = store.create(tmp_path / "main.py")
@@ -199,7 +413,82 @@ class TestRevival:
         assert revived.id == session.id
         assert revived.source_file == "rating/main.py"
         assert [m.content for m in revived.history[0].messages] == ["hi", "hello"]
+        assert revived.history[0].outcome is not None
+        assert revived.history[0].outcome.model_dump() == {
+            "kind": "answered",
+            "detail": None,
+            "changes": [],
+        }
         assert not revived.lock.locked()
+
+    def test_the_build_plan_and_each_turn_s_plan_revive_with_titles_redacted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from haute.assistant._session import AssistantTurn
+
+        monkeypatch.setenv("OPENAI_API_KEY", "provider-secret-canary")
+        first = _store(tmp_path)
+        session = first.create("rating/main.py")
+        session.build_plan.update(
+            items=[
+                {"id": "bands", "title": "Bands for provider-secret-canary"},
+                {"id": "rating", "title": "Rating"},
+            ],
+            complete=None,
+        )
+        session.build_plan.record_change("bands", "a" * 64)
+        turn = AssistantTurn.from_mapping(_turn())
+        first.append(
+            session,
+            AssistantTurn.from_messages(
+                turn.messages, outcome=turn.outcome, build_plan=session.build_plan.current
+            ),
+        )
+
+        raw = (tmp_path / "sessions" / f"{session.id}.json").read_text(encoding="utf-8")
+        assert "provider-secret-canary" not in raw
+        second = _store(tmp_path)  # simulated server restart
+        revived = second.lookup(session.id)
+        assert revived is not None
+        plan = revived.build_plan.current
+        assert plan is not None
+        assert "<redacted>" in plan.items[0].title
+        assert [(item.id, item.complete, len(item.changes)) for item in plan.items] == [
+            ("bands", False, 1),
+            ("rating", False, 0),
+        ]
+        assert revived.history[0].build_plan == plan
+        record = second.provider_history(revived)[1]["content"]
+        assert "- Build plan as this turn left it: 0 of 2 items complete; open: `bands`" in str(
+            record
+        )
+
+    def test_a_session_saved_before_build_plans_revives_with_none(self, tmp_path: Path):
+        first = _store(tmp_path)
+        session = first.create("rating/main.py")
+        first.append(session, _turn())
+        path = tmp_path / "sessions" / f"{session.id}.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        del payload["build_plan"]
+        del payload["history"][0]["build_plan"]
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        revived = _store(tmp_path).lookup(session.id)
+
+        assert revived is not None
+        assert revived.build_plan.current is None
+        assert revived.history[0].build_plan is None
+
+    def test_a_turn_record_without_an_outcome_key_is_invalid(self, tmp_path: Path):
+        first = _store(tmp_path)
+        session = first.create("rating/main.py")
+        first.append(session, _turn())
+        path = tmp_path / "sessions" / f"{session.id}.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        del payload["history"][0]["outcome"]
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        assert _store(tmp_path).lookup(session.id) is None
 
     def test_controller_continuation_survives_restart(self, tmp_path: Path):
         first = _store(tmp_path)
@@ -215,7 +504,9 @@ class TestRevival:
                         "content": "Continue the mutation workflow.",
                     },
                     {"role": "assistant", "content": "BLOCKED: invalid request."},
-                ]
+                ],
+                "outcome": None,
+                "undone": [],
             },
         )
 
@@ -318,7 +609,7 @@ class TestCorruption:
             "id": session_id,
             "source_file": "rating/main.py",
             # A turn must begin with a user message; this one violates that.
-            "history": [{"messages": [{"role": "assistant", "content": "x"}]}],
+            "history": [{"messages": [{"role": "assistant", "content": "x"}], "outcome": None}],
             "created_at": 1.0,
             "last_used": 2.0,
         }
@@ -439,7 +730,9 @@ class TestBounds:
                         "content": {"error": {"code": "failed"}},
                         "is_error": True,
                     },
-                ]
+                ],
+                "outcome": None,
+                "undone": [],
             },
         )
 
@@ -448,9 +741,64 @@ class TestBounds:
 
         assert revived is not None
         tool_message = next(
-            message for message in restarted.history_window(revived) if message["role"] == "tool"
+            message for message in revived.history[0].messages if message.role == "tool"
         )
-        assert tool_message["is_error"] is True
+        assert tool_message.as_dict()["is_error"] is True
+
+    def test_a_revived_chat_compacts_to_the_same_records_with_an_empty_ledger(self, tmp_path: Path):
+        """Records read only what persistence keeps: the request and final text,
+        the outcome and each saved change record. The ledger is never stored."""
+
+        from haute.assistant._ops import ProjectSourceEvidence
+
+        change = {
+            "id": "a" * 64,
+            "summary": "Add an age band after quotes.",
+            "changes": {"nodes": [{"id": "age_band", "type": "Banding", "change": "added"}]},
+            "git_sha": None,
+            "parent_sha": None,
+            "revision": "e" * 16,
+        }
+        store = _store(tmp_path)
+        session = store.create("rating/main.py")
+        session.evidence.observe(
+            ("schema", "data/quotes.parquet"),
+            ProjectSourceEvidence(path=tmp_path / "quotes.parquet", digest="f" * 64, kind="schema"),
+        )
+        store.append(
+            session,
+            {
+                "messages": [
+                    {"role": "user", "content": "Add an age band."},
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{"id": "c1", "name": "apply_graph_plan", "arguments": {}}],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "c1",
+                        "name": "apply_graph_plan",
+                        "content": {"applied_operations": 2, "change": change},
+                        "is_error": False,
+                    },
+                    {"role": "assistant", "content": "Saved the band."},
+                ],
+                "outcome": {"kind": "applied", "detail": None, "changes": ["a" * 64]},
+                "undone": [],
+            },
+        )
+        live = store.provider_history(session)
+
+        restarted = _store(tmp_path)
+        revived = restarted.lookup(session.id)
+
+        assert revived is not None
+        assert restarted.provider_history(revived) == live
+        assert f"- Saved `{'a' * 64}` at revision `{'e' * 16}`" in str(live[1]["content"])
+        assert "redacted" not in json.dumps(live)
+        assert revived.evidence.sources() == ()
+        assert "evidence" not in revived.as_dict()
 
 
 class TestDegradation:
@@ -550,7 +898,9 @@ class TestSessionListing:
             {
                 "id": "1" * 32,
                 "source_file": "rating/main.py",
-                "history": [{"messages": [{"role": "assistant", "content": "invalid"}]}],
+                "history": [
+                    {"messages": [{"role": "assistant", "content": "invalid"}], "outcome": None}
+                ],
                 "created_at": 1.0,
                 "last_used": 2.0,
             },

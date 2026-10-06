@@ -4,7 +4,8 @@
 
 | File | Responsibility |
 | --- | --- |
-| `frontend/src/panels/TracePanel.tsx` | Ready/loading/error panel shell, trace header, focused/full story state, omissions, correlation diagnostics, export controls, and card list. |
+| `frontend/src/panels/TracePanel.tsx` | Ready panel: trace header, focused/full story state, omissions, correlation diagnostics, export controls, and card list. `App.tsx` loads it lazily (its chunk kept out of startup preloads by `check-bundle-size.mjs` and guarded by `frontend/src/__tests__/App.tracePanelLazy.test.ts`) and fetches the chunk when a trace request starts. |
+| `frontend/src/panels/TraceStatePanel.tsx` | The request's loading/error surface, eager so a request's progress and errors never wait for the panel's chunk. |
 | `frontend/src/panels/trace/traceGrouping.ts`, `frontend/src/panels/trace/traceStoryView.ts` | Target selection, pass-through collapsing and dependency/default-expansion sets. |
 | `frontend/src/hooks/useTracing.ts` | Semantic-context-bound trace request state (`idle/loading/ready/error`), delayed progress, cancellation/recovery, and canvas trace/hover projection. |
 | `frontend/src/trace/traceExport.ts` | Lazily loaded deterministic projection of a validated `TraceResult` into Markdown and CSV, reused by download, clipboard, and print without adding export-only code to the initial application bundle. |
@@ -15,10 +16,11 @@
 | `frontend/src/trace/NodeDetailBlock.tsx` | Detail-type dispatcher and generic detail fallback. |
 | `frontend/src/trace/BandingDetail.tsx`, `frontend/src/trace/bandingRows.ts` | Banding detail renderer and normalised display rows/ranges. |
 | `frontend/src/trace/RatingStepDetail.tsx`, `frontend/src/trace/ratingStepHelpers.ts` | Rating detail renderer and table/output normalisers. |
-| `frontend/src/trace/ModelScoreDetail.tsx`, `frontend/src/trace/modelScoreHelpers.ts` | Score/contribution view and typed model-score field extraction. |
-| `frontend/src/trace/OptimiserApplyDetail.tsx`, `frontend/src/trace/optimiserApplyHelpers.ts` | Online/ratebook/error optimiser detail and candidate/chart/score helpers. |
+| `frontend/src/trace/ModelScoreDetail.tsx`, `frontend/src/trace/modelScoreHelpers.ts` | Score/contribution view and typed model-score field extraction. The contribution ladder of a model with a non-identity `link` ends with a row for what the contributions sum to (base plus contributions), labelled by the explanation's `output_space`: "Raw score" (`raw_formula_val`, CatBoost), "Log-odds" (`log_odds`), "Log scale" (`log`), else "Linear predictor"; then a "Prediction" row naming the inverse link (for example "inverse logit", "exp") with the explanation's response-scale value (`model_prediction_value`, else `prediction_value`). For a classifier (`prediction_space` "probability") that row reads "Probability" without the column name, because the column holds the class label. Any other ladder ends with a single "Prediction" row. |
+| `frontend/src/trace/OptimiserApplyDetail.tsx`, `frontend/src/trace/optimiserApplyHelpers.ts` | Online/ratebook/error optimiser detail and candidate/chart/score helpers. Below the online score line, "How the score's inputs were calculated" shows a derivation tree for the objective and each constraint column (a ratio constraint's numerator and denominator), from where the apply read it. The ratebook ladder ends with a "Combined factor collar" row: the `[min, max]` bounds, the product before the collar, the deployed value after it, and a "clipped" chip when the collar applied. |
 | `frontend/src/trace/ScenarioExpanderDetail.tsx`, `frontend/src/trace/scenarioExpanderHelpers.ts` | Scenario expansion view and shape guards/row helpers. |
 | `frontend/src/trace/LiveSwitchDetail.tsx`, `frontend/src/trace/liveSwitchHelpers.ts` | Live-switch detail and typed extraction. |
+| `frontend/src/trace/DerivationTree.tsx`, `frontend/src/trace/derivationTreeHelpers.ts`, `frontend/src/trace/traceContext.ts` | How a value was calculated, followed across steps: `buildDerivationTree` builds a tree from the steps' `derivations` (a formula, a load, a rule such as a model or an optimiser, a value generated before its node's code rewrote it, a node not in the trace, or no source found, each labelled with the step number its card shows), cut off with a note on a repeat within one path or beyond 12 levels; `DerivationTree` renders it with the expression-chain row view, formulas open and rules collapsed; `ComputedHere` lists a step's own formulas. `traceContext.ts` holds `TraceStepsContext` (every step of the trace, for details inside the panel) and `TraceNavigationContext` (`focusStep`, `hoverStep`; inert outside a panel). A row's step label is a link ("Go to fill_na, step 9"), and pointing at a row rings its node. |
 | `frontend/src/trace/traceHelpers.ts`, `frontend/src/trace/traceFormatting.ts`, `frontend/src/trace/traceOrigins.ts` | Waterfall/chain/source transformations, trace value formatting and origin classification. |
 
 ## Key types and data structures
@@ -35,26 +37,110 @@
 ## Control flow
 
 1. `frontend/src/hooks/useTracing.ts` captures graph `structuralVersion`, active
-   source, row limit, streaming chunk size, target, row, column, and clicked
-   values with each request. A semantic change aborts and clears the state;
-   requests resolving within the 500 ms progress delay show no loading
-   chrome, while a request still pending after that delay enables compact
+   source, row limit, target, the explained preview's
+   `seed_plan` (node, identity digest, and generation of each entry), the
+   node-data epoch, row, column, and clicked values with each request, and
+   sends that `seed_plan` so the trace reads the generations the preview did.
+   A snapshot published, refreshed, or cleared therefore hides a displayed
+   trace and aborts an in-flight one like any other semantic change. A 409
+   refreshes the preview and asks for the row again. For
+   `preview_seed_plan_expired` it says the cached data the preview read has
+   changed. That notice belongs to the context without the seed plan and the
+   epoch, so it outlives the refresh it started — which replaces the seed plan
+   and may raise the epoch — and is hidden only by a change of node, graph,
+   source, or row limit. `useTracing` also takes `traceFocusNodeId` from `useUIStore`:
+   while a trace shows, the canvas node showing that step (resolved from the runtime id
+   through the hook's `resolveTraceNodeId`, as for trace activity: a submodel's card or a
+   boundary) is projected with `_traceFocused` and drawn with an accent ring. `TracePanel` sets it while a card or derivation row is pointed at (and
+   clears it on unmount), except for a second after a link's click, while the scroll to the
+   card moves content under a still pointer; a derivation row's step link calls `focusStep`, which shows the
+   full trace when the focused one hides the step, opens and scrolls to its card and
+   flashes it (`data-trace-focused`, also for a card that mounts with the request; a later
+   link to another card ends the flash), rings
+   the node and asks `useUIStore.requestTraceCentre` to centre it. `TraceViewFit`, inside
+   the editor's `<ReactFlow>`, fits the canvas to the lineage steps (`column_relevant`)
+   once per trace result and centres each requested node at the current zoom.
+   On the canvas a step on the traced value's lineage
+   (`column_relevant`) is active and shows the traced column's value, or in a column
+   trace whose step does not hold it, the value of its first `contributed_columns`
+   entry — a step that only carries the value's inputs (a join) shows none; a kept
+   step off the lineage is neither active nor dimmed. A node the trace could not
+   follow above a
+   shared snapshot (an omission whose diagnostic names `seed_node_ids`) stays on the
+   trace path — not dimmed, its connecting edges highlighted — without the
+   active styling or value of a traced step; other omissions are dimmed like
+   unrelated nodes. Requests require document execution capability
+   (`capabilities?.can_execute === true`) and graph synchronisation
+   (`graphSynchronized`); if either is missing, the trace does not start. In-flight
+   requests verify document currency (`sourceFile`, `sourceRevision`, `loadStatus`,
+   `graphSynchronized`, `can_execute`); a change in document identity mid-flight
+   silently clears the trace state back to `idle`. A semantic change aborts and
+   clears the state; requests resolving within the 500 ms progress delay show no
+   loading chrome, while a request still pending after that delay enables compact
    progress/cancel UI.
 2. `frontend/src/panels/TracePanel.tsx` derives the story key used for card
-   identity, finds the last applicable producer for the traced column,
+   identity, finds the last applicable producer for the traced column (the last step
+   whose `contributed_columns` name it, so a joined-in table that also adds a shared key
+   is never named; without one, the last step adding or modifying it),
    calculates dependency-preservation/default-expansion sets, and chooses a
-   focused or full sequence. It interleaves typed omissions by topological
-   rank. With no traced column, it leaves the steps uncollapsed.
+   focused or full sequence. The focused story keeps the producer and every step
+   whose `contributed_columns` is non-empty — every step computing a column the
+   traced value depends on, however far upstream — and hides steps that only carry
+   those columns; default expansion covers the producer and the non-bulk steps
+   creating its direct inputs. The correlation-warning banner lists the diagnostics
+   no omission card shows whose `severity` is not `info`: an informational diagnostic
+   (a join that found no row, an aggregate, identical rows) appears only as its
+   omission note or step label, and not at all for a node off the traced value's
+   lineage. It interleaves typed omissions by topological
+   rank: an omission that is a fact about the data is a neutral `role="note"` card —
+   `join_no_match` (the join found no row) labelled "no match", and `aggregated_rows`
+   (the row aggregates several input rows) labelled "aggregated" with its diagnostic's
+   group keys and row count, and the snapshot reasons `seed_inputs_changed`,
+   `seed_recompute_refused`, `seed_row_not_reproduced` and `seed_row_ambiguous` (a node
+   not traced above the snapshot its diagnostic's message names) labelled "snapshot";
+   every other omission, `seed_recompute_failed` and `ancestor_row_conflict` included,
+   is a warning "trace gap" alert. With no traced column, it leaves the steps uncollapsed.
+   The story opens on the clicked node: each new story key scrolls the story, instantly and
+   without moving any other scroll container, so the card of `target_node_id` starts at the
+   top of the view, or the last card shown when the focused story hides that node (a node
+   that only carries the traced column). The clicked node is the last step, so the view
+   opens at the end of the story; showing or hiding the full trace keeps the position.
+   A new story key drops the step-link request, so a trace that arrives in the open panel,
+   a return to an earlier one included, neither flashes nor scrolls to the card a link in
+   an earlier story asked for.
 3. `collapsePassthroughs` groups hidden runs. If a focused target exists the UI removes the
    collapsed markers until the user asks for the full trace; otherwise the marker is a button that
    reveals the full trace.
-4. `frontend/src/trace/StepCard.tsx` renders schema/value context and routes its expanded body to
+4. `frontend/src/trace/StepCard.tsx` renders schema/value context — collapsed, the traced
+   column's value, else the first two `contributed_columns`, else the first added and
+   modified columns — dims a step whose `column_relevant` is false, labels a step whose
+   `identical_row_count` is set "One of N identical rows" (the panel does not repeat its
+   `identical_row_match` diagnostic as a correlation warning), and routes its expanded body to
    a calculation hero, expression/source view, `NodeDetailBlock`, or value table according to the
-   data present.
+   data present. A node detail (a model, an optimiser, a rating step, banding, a scenario expander
+   or a live switch) takes the place of the calculation unless the node's own code computed the
+   traced column, which its `derivations` say by giving that column a formula: a transform step
+   in a Model Score or Scenario Expander, say. The card then shows the node detail first and that
+   formula after it (the hero on the clicked column's step, the calculation line elsewhere), in
+   the order the node ran them, so it reads top to bottom; the steps that computed the columns
+   the formula reads open by default. A formula the step carries
+   for a column a later step rewrote has no derivation, so the node detail still stands alone.
+   The expanded body also lists, under "Computed here", the step's formulas for the other
+   columns the traced value depends on (the traced column's own formula is shown
+   above it when the step has one), leaving out a substituted line that only restates the
+   value (a formula copying a column). Its value table lists what the step did, not every
+   column of its row: the traced column and the columns it added or modified, except one
+   already under "Computed here"; a source, which adds every column it loads, lists in a
+   column trace only the columns the traced value uses. The added/modified/passed-through
+   counts still say what is not listed, and exports keep the full rows.
 5. `frontend/src/trace/NodeDetailBlock.tsx` dispatches on `detail_type` (and optimiser status/mode).
    Detail components call their matching helpers before rendering; an unknown type is shown as
    formatted generic detail instead of disappearing.
-6. `frontend/src/trace/CalculationHero.tsx` prefers backend waterfall entries.
+6. `frontend/src/trace/CalculationHero.tsx` prefers backend waterfall entries. A calculation,
+   chain entry or input source carrying `not_computable_reason` shows a note: "From the traced
+   run: …" when `result_source` is `trace_execution`, otherwise "Not computed from this row: …",
+   with the reason described by `describeNotComputable`. A value that was not computed is never
+   replaced by the row's input value.
    `StepCard` owns the single backend-waterfall-error alert and never passes an
    error payload into the hero. The hero builds a local arithmetic waterfall
    only when backend entries are absent. It renders client-parsed conditional
@@ -71,6 +157,12 @@
 
 - The traced column's `schema_diff` is the evidence used to select/retain steps; a trace with all
   pass-through steps preserves endpoints so the story does not collapse entirely.
+- A card's relation badge says what the step did with the traced value: "creates",
+  "modifies", or "value unchanged" for a step that only carries it (which may still expand or
+  aggregate rows, so no badge speaks for rows in a column trace). A step off the value's
+  lineage has none.
+- The online optimiser's score line reads as arithmetic: each lambda term's sign is its
+  operator, followed by the term's magnitude.
 - An opaque/missing primary creator may be replaced by a later usable pass-through expression.
   Source-like/bulk origins are treated specially so a broad import does not dominate the default
   story.
@@ -90,13 +182,19 @@
 ## Error handling
 
 Missing calculation data for an expression that should explain a value, backend waterfall errors,
-typed omissions, request failures, and banding/model-score/optimiser/scenario/live-switch errors
-render persistent `role="alert"` UI. A banding or model-score root `error`
+typed omissions other than the notes (`join_no_match`, `aggregated_rows`, and the snapshot reasons), request failures, and
+banding/model-score/optimiser/scenario/live-switch errors render persistent `role="alert"` UI. When the document lacks execution capability or the graph is
+unsynchronised, trace requests do not start; a mid-flight document identity change silently resets
+trace state to `idle` without raising an alert. A banding or model-score root `error`
 suppresses all normal summary/result rows so placeholder nulls cannot look like
 valid evidence. A 409 invalidates the preview and requires a new row selection
 rather than retrying the same identity. Unknown node detail falls back to
-generic JSON. Pure parsers intentionally throw on invalid required numerical
-contracts instead of silently showing a plausible-but-wrong calculation.
+generic JSON. Nothing in `frontend/src/trace/` or `frontend/src/panels/trace/` throws on a
+malformed detail: `asBandingDetail` and `asModelScoreDetail` are plain casts, and the
+extractors return null or absent markers instead (`bandingRowFromDetail` and
+`formatBandingRange` return `null`, `modelScorePrediction` reports
+`hasPrediction: false`, `buildWaterfallSteps` returns `null` for fewer than three or
+non-numeric factors), so the renderers show an explicit alert or omission.
 
 ## Testing
 
@@ -106,9 +204,29 @@ behaviour, alerts and detail variants. `frontend/src/panels/trace/__tests__/trac
 tests grouping and preservation rules. Focused helper/error suites are under
 `frontend/src/trace/__tests__/` for calculations, formatting, banding, model score and rating.
 `frontend/src/hooks/__tests__/useTracing.test.ts` covers semantic request binding,
-abort/clear races, progress, and recovery. `frontend/src/trace/__tests__/traceExport.test.ts`
-covers the deterministic Markdown/CSV projection and filesystem-safe names used
-by clipboard, download, and print.
+abort/clear races, progress, and recovery, including a node not traced above a snapshot kept on the
+canvas trace path while other omissions dim, a completed trace hidden and an in-flight
+one aborted with its late response discarded when the node-data epoch changes, a trace hidden
+when the explained preview reads other generations, and `preview_seed_plan_expired` refreshing
+the preview with a notice that survives that refresh and its captures until the node changes. `frontend/src/trace/__tests__/traceExport.test.ts`
+covers the deterministic Markdown/CSV projection (each step's `derivations` included) and
+filesystem-safe names used by clipboard, download, and print.
+`frontend/src/trace/__tests__/derivationTreeHelpers.test.ts` covers the derivation tree: an
+optimiser objective followed to the loaded values, a model's prediction as a rule, a node not
+in the trace, a read with no source, several possible sources, unfollowed reads, a value
+generated before its node's code, and the depth limit;
+`frontend/src/panels/__tests__/TracePanel.test.tsx` renders it in the
+online optimiser card and the "Computed here" list, shows a model's and an expander's transform
+formula for the traced column after the node detail (and not a formula a later step rewrote),
+follows a row's step link to its card and the canvas focus, shows the full trace for a link
+to a card the focused one hides,
+rings a hovered card's node, and opens scrolled to the clicked node's card, or to the last
+card shown when the focused trace hides it, without replaying a link followed in an
+earlier trace. `frontend/src/components/__tests__/TraceViewFit.test.tsx` pins
+one lineage fit per trace and centring at the current zoom;
+`frontend/src/hooks/__tests__/useTracing.test.ts` and
+`frontend/src/nodes/__tests__/PipelineNode.test.tsx` pin the `_traceFocused` projection and
+ring.
 Some presentational primitives (`ExpressionChain`, `InputSourceTree`, `WaterfallChart`, and the
 detail dispatcher) are principally covered through integration rendering rather than one test file
 per module.

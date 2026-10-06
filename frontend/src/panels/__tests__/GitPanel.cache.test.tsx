@@ -4,6 +4,7 @@ import GitPanel from "../GitPanel"
 import { clearGitPanelCaches } from "../gitPanelCache"
 import useGitStore, { resetGitStoreForTests } from "../../stores/useGitStore"
 import type { GitWorkingBranchResponse } from "../../api/types"
+import { makeGitWorkingBranch } from "../../test-utils/factories"
 
 // Perf behaviours of the Version Control panel:
 //  (a) a byte-identical refresh applies NO state (row/rail identity preserved,
@@ -65,7 +66,7 @@ class MockResizeObserver {
   disconnect() {}
 }
 
-const readyStatus: GitWorkingBranchResponse = {
+const readyStatus: GitWorkingBranchResponse = makeGitWorkingBranch({
   working_branch: "pricing-dev",
   current_branch: "pricing-dev-save",
   state: "ready",
@@ -75,7 +76,7 @@ const readyStatus: GitWorkingBranchResponse = {
   user_email: "n@example.com",
   last_save_sha: "abc12345",
   errors: [],
-}
+})
 
 // Frozen timestamps so structuredClone copies stay byte-identical across calls.
 const T = "2026-07-08T10:00:00.000Z"

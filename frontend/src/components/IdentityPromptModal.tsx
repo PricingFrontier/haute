@@ -4,8 +4,8 @@ import { setGitIdentity } from "../api/client"
 import { dismissIdentityPrompt } from "../stores/identityPrompt"
 import useGitStore from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
-import { gitErrorMessage } from "../utils/gitError"
-import ConfigCheckbox from "./form/ConfigCheckbox"
+import { apiErrorMessage } from "../api/errors"
+import { GitIdentityFields, ModalFormActions, ModalFormHeader } from "./ModalForm"
 import ModalShell from "./ModalShell"
 
 interface IdentityPromptModalProps {
@@ -51,7 +51,7 @@ export default function IdentityPromptModal({ onSaved, onClose }: IdentityPrompt
       onClose()
       onSaved()
     } catch (err: unknown) {
-      addToast("error", `Could not set your git identity: ${gitErrorMessage(err, "unknown error")}`)
+      addToast("error", `Could not set your git identity: ${apiErrorMessage(err, "unknown error")}`)
     } finally {
       setBusy(false)
     }
@@ -64,15 +64,10 @@ export default function IdentityPromptModal({ onSaved, onClose }: IdentityPrompt
       width="w-[420px]"
       testId="identity-prompt-modal"
     >
-      <div className="px-4 py-3" style={{ borderBottom: "1px solid var(--border)" }}>
-        <h2 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
-          Set your name and email
-        </h2>
-        <p className="text-[12px] mt-0.5" style={{ color: "var(--text-muted)" }}>
-          Your changes are saved, but version history needs a name and email to record who made
-          them.
-        </p>
-      </div>
+      <ModalFormHeader title="Set your name and email">
+        Your changes are saved, but version history needs a name and email to record who made
+        them.
+      </ModalFormHeader>
 
       <form
         className="p-4 flex flex-col gap-2"
@@ -81,59 +76,26 @@ export default function IdentityPromptModal({ onSaved, onClose }: IdentityPrompt
           void submit()
         }}
       >
-        <input
-          data-testid="identity-prompt-name"
-          value={userName}
-          onChange={(e) => setUserName(e.target.value)}
+        <GitIdentityFields
+          testIdPrefix="identity-prompt"
+          name={userName}
+          email={userEmail}
+          setGlobal={setGlobal}
+          onNameChange={setUserName}
+          onEmailChange={setUserEmail}
+          onSetGlobalChange={setSetGlobal}
           autoFocus
-          placeholder="Your name"
-          className="w-full px-3 py-1.5 text-[13px] rounded-md focus:outline-none focus:ring-2"
-          style={{
-            background: "var(--bg-input)",
-            border: "1px solid var(--border)",
-            color: "var(--text-primary)",
-            caretColor: "var(--accent)",
-          }}
-        />
-        <input
-          data-testid="identity-prompt-email"
-          type="email"
-          value={userEmail}
-          onChange={(e) => setUserEmail(e.target.value)}
-          placeholder="you@example.com"
-          className="w-full px-3 py-1.5 text-[13px] rounded-md focus:outline-none focus:ring-2"
-          style={{
-            background: "var(--bg-input)",
-            border: "1px solid var(--border)",
-            color: "var(--text-primary)",
-            caretColor: "var(--accent)",
-          }}
-        />
-        <ConfigCheckbox
-          checked={setGlobal}
-          onChange={setSetGlobal}
-          label="Use this identity for all my projects (global git config)"
         />
 
-        <div className="flex justify-end gap-2 pt-1">
-          <button
-            type="button"
-            onClick={dismiss}
-            className="px-3 py-1.5 text-[12px] font-medium rounded-md transition-colors"
-            style={{ color: "var(--text-secondary)" }}
-          >
-            Not now
-          </button>
-          <button
-            type="submit"
-            data-testid="identity-prompt-confirm"
-            disabled={!canSubmit}
-            className="px-4 py-1.5 text-[12px] font-semibold rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[var(--structure-action-hover)] disabled:hover:bg-[var(--structure-action)]"
-            style={{ background: "var(--structure-action)", color: "var(--text-on-accent)" }}
-          >
-            {busy ? "Saving…" : "Save and capture version"}
-          </button>
-        </div>
+        <ModalFormActions
+          cancelLabel="Not now"
+          onCancel={dismiss}
+          submitLabel="Save and capture version"
+          busyLabel="Saving…"
+          busy={busy}
+          disabled={!canSubmit}
+          submitTestId="identity-prompt-confirm"
+        />
       </form>
     </ModalShell>
   )

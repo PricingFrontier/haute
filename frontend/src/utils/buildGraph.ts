@@ -1,24 +1,44 @@
 import type { Node, Edge } from "@xyflow/react"
 import type { SimpleNode, SimpleEdge } from "../panels/editors/_shared"
+import type { PipelineEdge } from "../types/node"
+import { toCanonicalGraphPayload } from "./graphSnapshot"
+import { isPlainObject } from "../types/guards"
+import useGraphStore from "../stores/useGraphStore"
+import { constantsPayload } from "./globalConstants"
 
-/** Build the graph payload expected by backend API calls. */
+/**
+ * The global constants every execution graph carries, read from the graph
+ * store when the graph is built, so no caller can leave them out.
+ */
+function storeGlobalConstants() {
+  const { globalConstants, globalConstantsError } = useGraphStore.getState()
+  return {
+    global_constants: globalConstantsError === null ? constantsPayload(globalConstants) : [],
+    global_constants_error: globalConstantsError,
+  }
+}
+
+/**
+ * Build the graph payload expected by backend API calls. The preamble, like the
+ * global constants, is read from the graph store, so no request can leave it out.
+ */
 export function buildGraph(
   allNodes: SimpleNode[],
   edges: SimpleEdge[],
   submodels?: Record<string, unknown>,
-  preamble?: string,
 ) {
-  return {
+  return toCanonicalGraphPayload({
     nodes: allNodes.map((n) => ({
       id: n.id,
       type: n.type || n.data.nodeType,
       data: n.data,
       position: { x: 0, y: 0 },
     })),
-    edges,
+    edges: edges as PipelineEdge[],
     submodels,
-    preamble,
-  }
+    preamble: useGraphStore.getState().preamble,
+    ...storeGlobalConstants(),
+  })
 }
 
 const VOLATILE_NODE_DATA_KEYS = new Set([
@@ -26,21 +46,20 @@ const VOLATILE_NODE_DATA_KEYS = new Set([
   "_availableColumns",
   "_schemaWarnings",
   "_columnsSource",
+  "_columnsStructuralVersion",
   "_status",
   "_traceActive",
   "_traceDimmed",
   "_hoverDimmed",
+  "_traceFocused",
+  "_changeFocused",
   "_traceValue",
   "_traceMotionDisabled",
   "_diffStatus",
 ])
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-}
-
 function nodeForRequestIdentity(node: unknown): unknown {
-  if (!isRecord(node) || !isRecord(node.data)) return node
+  if (!isPlainObject(node) || !isPlainObject(node.data)) return node
   return {
     ...node,
     data: Object.fromEntries(
@@ -50,10 +69,10 @@ function nodeForRequestIdentity(node: unknown): unknown {
 }
 
 function submodelsForRequestIdentity(submodels: unknown): unknown {
-  if (!isRecord(submodels)) return submodels
+  if (!isPlainObject(submodels)) return submodels
   return Object.fromEntries(
     Object.entries(submodels).map(([name, definition]) => {
-      if (!isRecord(definition) || !isRecord(definition.graph)) {
+      if (!isPlainObject(definition) || !isPlainObject(definition.graph)) {
         return [name, definition]
       }
       return [
@@ -97,7 +116,12 @@ export function resolveGraphFromRefs(
   submodelsRef: React.MutableRefObject<Record<string, unknown>>,
   preambleRef: React.MutableRefObject<string>,
 ) {
-  return parentGraphRef.current
+  const graph = parentGraphRef.current
     ? { nodes: parentGraphRef.current.nodes, edges: parentGraphRef.current.edges, submodels: parentGraphRef.current.submodels, preamble: preambleRef.current }
     : { nodes: graphRef.current.nodes, edges: graphRef.current.edges, submodels: submodelsRef.current, preamble: preambleRef.current }
+  return toCanonicalGraphPayload({
+    ...graph,
+    edges: graph.edges as PipelineEdge[],
+    ...storeGlobalConstants(),
+  })
 }

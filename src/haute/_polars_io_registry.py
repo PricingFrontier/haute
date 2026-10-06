@@ -35,7 +35,11 @@ from __future__ import annotations
 import importlib.util
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
+
+if TYPE_CHECKING:
+    from haute._chunked_writes import WriteRecipe
+    from haute._execution_context import ExecutionContext
 
 import polars as pl
 
@@ -61,6 +65,10 @@ _IO_UNIVERSAL_KEYS = {
     "categorical_levels",
     "contract",
 }
+#: Editor-state keys a stepped Data Input carries in memory (never persisted
+#: to its sidecar): the node data model's render failure and the parser's
+#: discard reason.
+_STEPPED_EDITOR_STATE_KEYS = {"_steps_error", "_steps_discarded"}
 
 
 def format_group(fmt: IoFormat) -> IoGroup:
@@ -95,6 +103,8 @@ class IoFormat:
     # True → bounded reads additionally require a full declared ``schema``
     # argument (the generic form of the CSV declared-dtypes rule).
     needs_schema_when_bounded: bool = False
+    # True -> the source is a table folder, not a file, so pickers select a folder.
+    source_is_folder: bool = False
     unstable: bool = False
     # Engine packages (import names): reading/writing needs at least one
     # importable. Empty = polars-native, always available.
@@ -251,6 +261,7 @@ FORMATS: tuple[IoFormat, ...] = (
         writer="write_delta",
         sinker="sink_delta",
         bounded_read=True,
+        source_is_folder=True,
         read_engines=("deltalake",),
         write_engines=("deltalake",),
         source_owned_args=frozenset({"source", "target"}),
@@ -289,7 +300,13 @@ REMOTE_IO_ARGUMENTS: frozenset[str] = frozenset(
     {"storage_options", "credential_provider", "retries", "file_cache_ttl"}
 )
 _OBJECT_VALUED_ARGUMENTS: frozenset[str] = frozenset(
-    {"with_column_names", "delta_merge_options", "pyarrow_options", "credentials"}
+    {
+        "with_column_names",
+        "delta_merge_options",
+        "pyarrow_options",
+        "credentials",
+        "sinked_paths_callback",
+    }
 )
 _SINK_EXECUTION_OWNED: frozenset[str] = frozenset({"lazy", "engine", "optimizations"})
 
@@ -298,14 +315,37 @@ _DTYPE_MAPPING_ARGUMENTS: frozenset[str] = frozenset(
 )
 
 
+def _declares_full_schema(arguments: Mapping[str, Any]) -> bool:
+    """Whether validated arguments declare the whole schema, so no type inference runs.
+
+    Only a non-null ``schema`` does: Polars reads ``schema=None`` as no declared
+    schema, and ``schema_overrides`` still leaves the other columns to inference.
+    """
+    return arguments.get("schema") is not None
+
+
 class PolarsIoConfigError(ValueError):
     """A dataInput/dataOutput config does not describe a valid invocation."""
 
 
-def _require_nonempty_string(config: Mapping[str, Any], field: str, *, subject: str) -> None:
+class IoCompletenessGap(NamedTuple):
+    """A required value that is absent or empty — completeness, not structure."""
+
+    path: str
+    code: str
+    message: str
+
+
+def _locator_gap(
+    config: Mapping[str, Any], field: str, *, subject: str
+) -> IoCompletenessGap | None:
+    """Absent or empty is a completeness gap; a non-string value is structural."""
     value = config.get(field)
-    if not isinstance(value, str) or not value.strip():
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return IoCompletenessGap(field, "required", f"{subject} requires a non-empty {field!r}.")
+    if not isinstance(value, str):
         raise PolarsIoConfigError(f"{subject} requires a non-empty {field!r}.")
+    return None
 
 
 def _validate_raw_uri(uri: str) -> None:
@@ -320,17 +360,23 @@ def _validate_raw_uri(uri: str) -> None:
         raise PolarsIoConfigError("Raw database 'uri' must not contain credentials.") from exc
 
 
-def _validate_exactly_one_locator(config: Mapping[str, Any], *, subject: str) -> None:
+def _database_locator_gap(config: Mapping[str, Any], *, subject: str) -> IoCompletenessGap | None:
+    """Both locators set (or a non-string) is structural; neither is a gap."""
     connection = config.get("connection")
     uri = config.get("uri")
+    message = f"{subject} requires exactly one non-empty 'connection' or 'uri'."
+    for value in (connection, uri):
+        if value is not None and not isinstance(value, str):
+            raise PolarsIoConfigError(message)
     has_connection = isinstance(connection, str) and bool(connection.strip())
     has_uri = isinstance(uri, str) and bool(uri.strip())
-    if has_connection == has_uri:
-        raise PolarsIoConfigError(
-            f"{subject} requires exactly one non-empty 'connection' or 'uri'."
-        )
+    if has_connection and has_uri:
+        raise PolarsIoConfigError(message)
+    if not has_connection and not has_uri:
+        return IoCompletenessGap("connection", "required", message)
     if has_uri:
         _validate_raw_uri(cast(str, uri))
+    return None
 
 
 def _reject_inactive_fields(
@@ -358,24 +404,58 @@ def data_input_is_direct(config: Mapping[str, Any]) -> bool:
     )
 
 
-def validate_data_input_config(config: Mapping[str, Any]) -> dict[str, Any]:
+def validate_data_input_config(
+    config: Mapping[str, Any], *, require_complete: bool = True
+) -> dict[str, Any]:
     """Strictly validate one persisted canonical ``dataInput`` config.
+
+    Structural, branch, mode, and argument rules always raise. Presence of
+    required locator values is a separate completeness concern: with
+    ``require_complete=False`` absent or empty locators are tolerated and
+    reported by :func:`data_input_completeness` instead; the default keeps
+    strict presence behaviour for execution-facing callers.
 
     The removed ``cacheMode`` field has no compatibility path: direct-versus-
     snapshot execution is derived by :func:`data_input_is_direct`, so a config
     still carrying the field is rejected as an inactive field.
     """
+    result, gaps = _validated_data_input(config)
+    if require_complete and gaps:
+        raise PolarsIoConfigError(gaps[0].message)
+    return result
+
+
+def data_input_completeness(config: Mapping[str, Any]) -> list[IoCompletenessGap]:
+    """Completeness gaps for a structurally valid Data Input config."""
+    return _validated_data_input(config)[1]
+
+
+def _validated_data_input(
+    config: Mapping[str, Any],
+) -> tuple[dict[str, Any], list[IoCompletenessGap]]:
     result = dict(config)
+    gaps: list[IoCompletenessGap] = []
     input_type = result.get("inputType")
-    if input_type not in {"file", "database", "lakehouse", "databricks", "inline"}:
+    if not isinstance(input_type, str) or input_type not in {
+        "file",
+        "database",
+        "lakehouse",
+        "databricks",
+        "inline",
+    }:
         raise PolarsIoConfigError(f"Unknown inputType {input_type!r}.")
 
-    common = {
-        "inputType",
-        "format",
-        "arguments",
-        "code",
-    } | _IO_UNIVERSAL_KEYS
+    common = (
+        {
+            "inputType",
+            "format",
+            "arguments",
+            "code",
+            "steps",
+        }
+        | _IO_UNIVERSAL_KEYS
+        | _STEPPED_EDITOR_STATE_KEYS
+    )
     polars_common = common | {"mode"}
     if input_type == "databricks":
         _reject_inactive_fields(
@@ -387,13 +467,17 @@ def validate_data_input_config(config: Mapping[str, Any]) -> dict[str, Any]:
                 "query",
                 "arguments",
                 "code",
+                "steps",
             }
-            | _IO_UNIVERSAL_KEYS,
+            | _IO_UNIVERSAL_KEYS
+            | _STEPPED_EDITOR_STATE_KEYS,
             discriminant="inputType",
             value=input_type,
         )
-        _require_nonempty_string(result, "http_path", subject="Databricks input")
-        _require_nonempty_string(result, "table", subject="Databricks input")
+        for field in ("http_path", "table"):
+            gap = _locator_gap(result, field, subject="Databricks input")
+            if gap is not None:
+                gaps.append(gap)
         query = result.get("query")
         if query is not None and (not isinstance(query, str) or not query.strip()):
             raise PolarsIoConfigError(
@@ -413,7 +497,7 @@ def validate_data_input_config(config: Mapping[str, Any]) -> dict[str, Any]:
             or arguments["batch_size"] <= 0
         ):
             raise PolarsIoConfigError("Databricks input 'batch_size' must be a positive integer.")
-        return result
+        return result, gaps
 
     fmt = format_for_config(result)
     group = format_group(fmt)
@@ -426,12 +510,16 @@ def validate_data_input_config(config: Mapping[str, Any]) -> dict[str, Any]:
         _reject_inactive_fields(
             result, allowed=polars_common | {"path"}, discriminant="inputType", value=input_type
         )
-        _require_nonempty_string(result, "path", subject=f"Format {fmt.name!r}")
+        gap = _locator_gap(result, "path", subject=f"Format {fmt.name!r}")
+        if gap is not None:
+            gaps.append(gap)
     elif input_type == "lakehouse":
         _reject_inactive_fields(
             result, allowed=polars_common | {"path"}, discriminant="inputType", value=input_type
         )
-        _require_nonempty_string(result, "path", subject=f"Format {fmt.name!r}")
+        gap = _locator_gap(result, "path", subject=f"Format {fmt.name!r}")
+        if gap is not None:
+            gaps.append(gap)
     elif input_type == "database":
         _reject_inactive_fields(
             result,
@@ -439,8 +527,12 @@ def validate_data_input_config(config: Mapping[str, Any]) -> dict[str, Any]:
             discriminant="inputType",
             value=input_type,
         )
-        _validate_exactly_one_locator(result, subject="Database input")
-        _require_nonempty_string(result, "query", subject="Database input")
+        locator = _database_locator_gap(result, subject="Database input")
+        if locator is not None:
+            gaps.append(locator)
+        gap = _locator_gap(result, "query", subject="Database input")
+        if gap is not None:
+            gaps.append(gap)
         arguments = result.get("arguments", {})
         if not isinstance(arguments, Mapping):
             raise PolarsIoConfigError("Database input 'arguments' must be an object.")
@@ -462,23 +554,52 @@ def validate_data_input_config(config: Mapping[str, Any]) -> dict[str, Any]:
             discriminant="inputType",
             value=input_type,
         )
-        if not isinstance(result.get("records"), list):
+        records = result.get("records")
+        if records is None:
+            gaps.append(
+                IoCompletenessGap(
+                    "records", "required", "Inline input requires 'records' as a list."
+                )
+            )
+        elif not isinstance(records, list):
             raise PolarsIoConfigError("Inline input requires 'records' as a list.")
-        if not all(isinstance(record, Mapping) for record in result["records"]):
+        elif not all(isinstance(record, Mapping) for record in records):
             raise PolarsIoConfigError("Inline input 'records' must contain objects.")
 
     if input_type != "database":
         assert mode is not None
         owner, callable_name = input_callable_key(fmt, mode)
         validate_arguments(fmt, owner, callable_name, result.get("arguments") or {})
+    return result, gaps
+
+
+def validate_data_output_config(
+    config: Mapping[str, Any], *, require_complete: bool = True
+) -> dict[str, Any]:
+    """Strictly validate one persisted canonical ``dataOutput`` config.
+
+    Structural, branch, mode, and argument rules always raise. Destination
+    locator presence is completeness: ``require_complete=False`` tolerates
+    absent or empty locators, reported by :func:`data_output_completeness`.
+    """
+    result, gaps = _validated_data_output(config)
+    if require_complete and gaps:
+        raise PolarsIoConfigError(gaps[0].message)
     return result
 
 
-def validate_data_output_config(config: Mapping[str, Any]) -> dict[str, Any]:
-    """Strictly validate one persisted canonical ``dataOutput`` config."""
+def data_output_completeness(config: Mapping[str, Any]) -> list[IoCompletenessGap]:
+    """Completeness gaps for a structurally valid Data Output config."""
+    return _validated_data_output(config)[1]
+
+
+def _validated_data_output(
+    config: Mapping[str, Any],
+) -> tuple[dict[str, Any], list[IoCompletenessGap]]:
     result = dict(config)
+    gaps: list[IoCompletenessGap] = []
     output_type = result.get("outputType")
-    if output_type not in {"file", "database", "lakehouse"}:
+    if not isinstance(output_type, str) or output_type not in {"file", "database", "lakehouse"}:
         raise PolarsIoConfigError(f"Unknown outputType {output_type!r}.")
     fmt = format_for_config(result)
     group = format_group(fmt)
@@ -496,17 +617,23 @@ def validate_data_output_config(config: Mapping[str, Any]) -> dict[str, Any]:
             discriminant="outputType",
             value=output_type,
         )
-        _validate_exactly_one_locator(result, subject="Database output")
-        _require_nonempty_string(result, "table", subject="Database output")
+        locator = _database_locator_gap(result, subject="Database output")
+        if locator is not None:
+            gaps.append(locator)
+        gap = _locator_gap(result, "table", subject="Database output")
+        if gap is not None:
+            gaps.append(gap)
     else:
         _reject_inactive_fields(
             result, allowed=common | {"path"}, discriminant="outputType", value=output_type
         )
-        _require_nonempty_string(result, "path", subject=f"Format {fmt.name!r} output")
+        gap = _locator_gap(result, "path", subject=f"Format {fmt.name!r} output")
+        if gap is not None:
+            gaps.append(gap)
     mode = resolve_output_mode(fmt, result)
     owner, callable_name = output_callable_key(fmt, mode)
     validate_arguments(fmt, owner, callable_name, result.get("arguments") or {})
-    return result
+    return result, gaps
 
 
 def format_for_config(config: Mapping[str, Any]) -> IoFormat:
@@ -735,7 +862,7 @@ def read_polars_input(
                     format=fmt.name,
                     profile=str(profile),
                 )
-        if fmt.needs_schema_when_bounded and "schema" not in arguments:
+        if fmt.needs_schema_when_bounded and not _declares_full_schema(arguments):
             raise BoundedMemoryUnsupportedError(
                 f"Format {fmt.name!r} requires a full declared 'schema' argument for "
                 "bounded-memory execution profiles (schema inference reads the data).",
@@ -743,6 +870,16 @@ def read_polars_input(
                 profile=str(profile),
             )
 
+    return _invoke_polars_input(fmt, callable_name, config, arguments)
+
+
+def _invoke_polars_input(
+    fmt: IoFormat,
+    callable_name: str,
+    config: Mapping[str, Any],
+    arguments: Mapping[str, Any],
+) -> pl.LazyFrame:
+    """Invoke one validated polars input callable and normalise its result."""
     _require_engines(fmt, fmt.read_engines, operation="read")
 
     source_args = _resolve_input_source(fmt, config)
@@ -765,6 +902,111 @@ def read_polars_input(
     )
 
 
+# A scanner can accept an argument *name* the reader accepts while admitting
+# fewer values for it: ``scan_csv`` decodes only UTF-8, ``read_csv`` any codec.
+# Preferring the scanner on names alone planned a scan that then failed raw.
+_SCANNER_VALUE_DOMAINS: Mapping[str, Mapping[str, frozenset[str]]] = {
+    "csv": {"encoding": frozenset({"utf8", "utf8-lossy"})},
+}
+
+
+def scanner_rejected_arguments(fmt: IoFormat, config: Mapping[str, Any]) -> list[str]:
+    """Configured argument names the format's scanner does not accept.
+
+    An argument is rejected when the scanner's argument surface lacks its name
+    or its value lies outside the scanner's value domain. This is the one
+    check of whether a configuration only the eager reader supports; *fmt*
+    must have a scanner.
+    """
+    owner, scanner_name = input_callable_key(fmt, "scan")
+    allowed = allowed_arguments(fmt, owner, scanner_name)
+    domains = _SCANNER_VALUE_DOMAINS.get(fmt.name, {})
+    return sorted(
+        name
+        for name, value in (config.get("arguments") or {}).items()
+        if name not in allowed or (name in domains and str(value) not in domains[name])
+    )
+
+
+def snapshot_input_plan(
+    fmt: IoFormat,
+    config: Mapping[str, Any],
+) -> tuple[InputMode, Literal["bounded", "admitted_eager", "unsupported"], str | None]:
+    """Effective mode, build class, and warning code for one snapshot build.
+
+    A configured eager ``read`` is built through the scanner whenever the
+    format has one and every configured argument is scanner-accepted by name
+    and by value; only a genuinely reader-only argument keeps the eager read
+    (and its
+    ``admitted_eager`` class, which the hard-capped worker then contains).
+    """
+    base = _snapshot_build(fmt)
+    if base == "unsupported":
+        return resolve_input_mode(fmt, config), base, None
+    mode = resolve_input_mode(fmt, config)
+    if mode == "read" and fmt.scanner is not None:
+        if not scanner_rejected_arguments(fmt, config):
+            return "scan", "bounded", "eager_read_mode_scanned"
+        return "read", "admitted_eager", None
+    return mode, base, None
+
+
+def read_polars_input_for_snapshot(
+    config: Mapping[str, Any],
+) -> tuple[pl.LazyFrame, str | None]:
+    """Build-only read: inspect the source completely, never sample.
+
+    Returns the frame and the plan's warning code. Unlike
+    :func:`read_polars_input` this never applies the bounded-profile refusals:
+    a snapshot build is contained by its own hard memory cap, and a format
+    needing a declared schema in bounded profiles is inferred from the whole
+    file (``infer_schema_length=None``) when the config declares none, so a
+    late row cannot be mis-typed by sample-limited inference.
+    """
+    fmt = format_for_config(config)
+    mode, _build_class, warning_code = snapshot_input_plan(fmt, config)
+    owner, callable_name = input_callable_key(fmt, mode)
+    arguments = dict(validate_arguments(fmt, owner, callable_name, config.get("arguments") or {}))
+    if fmt.needs_schema_when_bounded and not _declares_full_schema(arguments):
+        arguments["infer_schema_length"] = None
+    return _invoke_polars_input(fmt, callable_name, config, arguments), warning_code
+
+
+# Rows a schema-only resolution reads to infer column types when an input has
+# no snapshot yet. A snapshot build inspects the whole file; this tier never does.
+INFERRED_SCHEMA_ROWS = 10_000
+
+
+def scan_polars_input_for_schema(config: Mapping[str, Any]) -> tuple[pl.LazyFrame, int | None]:
+    """Open a file input's scanner for schema resolution, with bounded type inference.
+
+    The caller has established that the format has a scanner and that
+    :func:`scanner_rejected_arguments` is empty. Returns the uncollected scan
+    and the ``infer_schema_length`` it passed: the configured value capped at
+    :data:`INFERRED_SCHEMA_ROWS` (the cap when unset or ``None``), or ``None``
+    when no type inference runs because the scanner reads file metadata or
+    the configuration declares a full ``schema`` or ``infer_schema: false``.
+    """
+    fmt = format_for_config(config)
+    owner, scanner_name = input_callable_key(fmt, "scan")
+    arguments = dict(validate_arguments(fmt, owner, scanner_name, config.get("arguments") or {}))
+    inference_rows: int | None = None
+    if (
+        "infer_schema_length" in allowed_arguments(fmt, owner, scanner_name)
+        and not _declares_full_schema(arguments)
+        and arguments.get("infer_schema") is not False
+    ):
+        configured = arguments.get("infer_schema_length")
+        inference_rows = (
+            INFERRED_SCHEMA_ROWS
+            if configured is None
+            or (isinstance(configured, int) and configured > INFERRED_SCHEMA_ROWS)
+            else configured
+        )
+        arguments["infer_schema_length"] = inference_rows
+    return _invoke_polars_input(fmt, scanner_name, config, arguments), inference_rows
+
+
 def _resolve_output_target(fmt: IoFormat, config: Mapping[str, Any]) -> dict[str, Any]:
     """Target fields for an output invocation (validated, not resolved to disk)."""
     if fmt.source_kind == "database":
@@ -780,12 +1022,71 @@ def _resolve_output_target(fmt: IoFormat, config: Mapping[str, Any]) -> dict[str
     return {"path": path}
 
 
+def _sliced_sink_taken(
+    lf: pl.LazyFrame,
+    *,
+    callable_name: str,
+    arguments: Mapping[str, Any],
+    resolved_path: Any,
+    recipe: WriteRecipe | None,
+    execution_context: ExecutionContext | None,
+    node_id: str | None,
+) -> bool:
+    """Write a Parquet sink a slice at a time, or say why it was not.
+
+    The native sink's peak grows with the input; the chunked writer's does not.
+    The seam is here rather than at the caller because this function validates
+    the user's own ``arguments`` against ``sink_parquet`` and forwards them,
+    and the chunked writer is pyarrow's, which takes different names and
+    different values for the same ideas. Rather than translate them and risk
+    quietly writing a different file than the user asked for, the bounded path
+    is taken only when there are none to translate; anything else keeps today's
+    write and records that as the reason. Which arguments are worth translating
+    should be decided by seeing which ones are actually used.
+    """
+    from pathlib import Path
+
+    from haute._chunked_writes import write_file
+
+    def record(strategy: str, reason: str | None, slices: int | None) -> None:
+        if execution_context is not None:
+            execution_context.record_data_output_write(
+                strategy=strategy, native_reason=reason, input_slices=slices
+            )
+
+    if callable_name != "sink_parquet":
+        record("native", "output_format_not_sliceable", None)
+        return False
+    if arguments:
+        # Name them. Which arguments are worth translating is a question about
+        # which ones people actually set, and a bare reason gives whoever asks
+        # it nothing to count.
+        named = ",".join(sorted(str(name) for name in arguments))
+        record("native", f"output_arguments_not_translatable:{named}", None)
+        return False
+    written = write_file(
+        Path(resolved_path),
+        lf,
+        recipe=recipe,
+        execution_context=execution_context,
+        node_id=node_id,
+        # The executor already writes to a staging generation it renames or
+        # discards, so a second temporary would leave a sibling it never sweeps.
+        atomic=False,
+    )
+    record(written.strategy, written.native_reason, written.input_slices)
+    return True
+
+
 def write_polars_output(
     lf: pl.LazyFrame,
     config: Mapping[str, Any],
     *,
     resolved_path: Any = None,
     profile: ExecutionProfile | str = ExecutionProfile.LAZY_SINK,
+    recipe: WriteRecipe | None = None,
+    execution_context: ExecutionContext | None = None,
+    node_id: str | None = None,
 ) -> int | None:
     """Execute the polars output invocation a dataOutput config describes.
 
@@ -818,6 +1119,16 @@ def write_polars_output(
                 f"Format {fmt.name!r} output requires a resolved filesystem path."
             )
         if mode == "sink":
+            if _sliced_sink_taken(
+                lf,
+                callable_name=callable_name,
+                arguments=arguments,
+                resolved_path=resolved_path,
+                recipe=recipe,
+                execution_context=execution_context,
+                node_id=node_id,
+            ):
+                return None
             getattr(lf, callable_name)(resolved_path, **arguments)
             return None
         df = streaming_collect(lf)
@@ -873,7 +1184,9 @@ def registry_capabilities() -> dict[str, Any]:
             "output_available": True,
             "cache_modes": ["direct", "snapshot"],
             "input_fields": [{"name": "path", "label": "Path", "kind": "path", "required": True}],
-            "output_fields": [{"name": "path", "label": "Path", "kind": "path", "required": True}],
+            "output_fields": [
+                {"name": "path", "label": "Filename or path", "kind": "path", "required": True}
+            ],
             "formats": [],
         },
         "database": {
@@ -999,6 +1312,7 @@ def registry_capabilities() -> dict[str, Any]:
             ),
             "direct_bounded": fmt.bounded_read,
             "needs_schema_when_bounded": fmt.needs_schema_when_bounded,
+            "source_is_folder": fmt.source_is_folder,
             "snapshot_build": _snapshot_build(fmt),
             "cached_read": _snapshot_build(fmt) != "unsupported",
         }

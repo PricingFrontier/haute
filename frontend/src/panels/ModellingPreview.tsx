@@ -9,21 +9,24 @@ import { useEffect, useState } from "react"
 import type { TrainProgress, TrainResult } from "../stores/useNodeResultsStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useGraphStore from "../stores/useGraphStore"
-import useSettingsStore from "../stores/useSettingsStore"
-import { MODEL_COLORS } from "../theme/colors"
+import useUIStore from "../stores/useUIStore"
 import { nodeData } from "../types/node"
 import { NODE_TYPES } from "../utils/nodeTypes"
 import { AveTab } from "./modelling/AveTab"
 import { FeaturesTab } from "./modelling/FeaturesTab"
 import { GLMCoefficientsTab } from "./modelling/GLMCoefficientsTab"
 import { GLMRelativitiesTab } from "./modelling/GLMRelativitiesTab"
+import { EBMTermsTab } from "./modelling/EBMTermsTab"
+import { TBoostTablesTab } from "./modelling/TBoostTablesTab"
 import { LiftTab } from "./modelling/LiftTab"
 import { LossTab } from "./modelling/LossTab"
 import { PdpTab } from "./modelling/PdpTab"
 import { ResidualsTab } from "./modelling/ResidualsTab"
+import { ShapCurvesTab } from "./modelling/ShapCurvesTab"
 import { SummaryTab } from "./modelling/SummaryTab"
-import PreviewPanelFrame from "./PreviewPanelFrame"
-import PreviewPanelTabs from "./PreviewPanelTabs"
+import { diagnosticsRowCount, diagnosticsSetLabel, headlineMetrics } from "./modelling/diagnosticsSet"
+import { shownFit } from "./modelling/lossHistory"
+import ResultsWorkspace from "./ResultsWorkspace"
 
 export type ModellingPreviewData = {
   result: TrainResult
@@ -35,129 +38,218 @@ export type ModellingPreviewData = {
 interface ModellingPreviewProps {
   data: ModellingPreviewData
   nodeId: string
+  onRefresh?: () => void
 }
 
-const TAB_KEYS = ["summary", "coefficients", "relativities", "loss", "lift", "residuals", "features", "ave", "pdp"] as const
+const TAB_KEYS = [
+  "summary",
+  "coefficients",
+  "relativities",
+  "terms",
+  "tables",
+  "loss",
+  "lift",
+  "residuals",
+  "features",
+  "ave",
+  "pdp",
+  "shap_curves",
+] as const
 type TabKey = (typeof TAB_KEYS)[number]
 
 const TAB_LABELS: Record<TabKey, string> = {
   summary: "Summary",
   coefficients: "Coefficients",
   relativities: "Relativities",
+  terms: "Terms",
+  tables: "Tables",
   loss: "Loss",
   lift: "Lift",
   residuals: "Residuals",
   features: "Features",
   ave: "AvE",
   pdp: "PDP",
+  shap_curves: "SHAP curves",
 }
 
-export function ModellingPreview({ data, nodeId }: ModellingPreviewProps) {
+const VIEW_TITLES: Record<Exclude<TabKey, "summary">, string> = {
+  coefficients: "GLM coefficients",
+  relativities: "GLM relativities",
+  terms: "EBM terms",
+  tables: "t-boost tables",
+  loss: "Training loss",
+  lift: "Lift and discrimination",
+  residuals: "Residual diagnostics",
+  features: "Feature importance",
+  ave: "Actual vs expected",
+  pdp: "Partial dependence",
+  shap_curves: "SHAP curves",
+}
+
+export function ModellingPreview({ data, nodeId, onRefresh }: ModellingPreviewProps) {
   const { result } = data
   const [tab, setTab] = useState<TabKey>("summary")
+  const [selectedFeature, setSelectedFeature] = useState<string | null>(null)
+  const [featureSearch, setFeatureSearch] = useState("")
+  const initialHeight = useUIStore((s) => s.modellingPreviewHeight)
+  const rememberHeight = useUIStore((s) => s.setModellingPreviewHeight)
 
-  // eslint-disable-next-line react-hooks/set-state-in-effect -- reset tab on new training result
-  useEffect(() => setTab("summary"), [result])
+  useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect -- a new result starts a new diagnostic review */
+    setTab("summary")
+    setSelectedFeature(null)
+    setFeatureSearch("")
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, [nodeId, result])
 
-  const trainProgress: TrainProgress | null = useNodeResultsStore((s) => s.trainJobs[nodeId]?.progress ?? null)
-  const modellingNode = useGraphStore((s) => s.nodes.find(node => node.id === nodeId))
-  const mlflow = useSettingsStore((s) => s.mlflow)
-  const mlflowBackend = mlflow.status === "connected" ? { installed: true, backend: mlflow.backend, host: mlflow.host } : null
+  const importance = new Map(
+    result.feature_importance.map((item) => [item.feature, item.importance]),
+  )
+  const featureNames = [
+    ...new Set([
+      ...result.ave_per_feature.map((item) => item.feature),
+      ...result.pdp_data.map((item) => item.feature),
+      ...result.shap_curves.map((item) => item.feature),
+    ]),
+  ]
+  const featureBrowser = {
+    features: featureNames.map((feature) => ({
+      feature,
+      importance: importance.get(feature) ?? 0,
+    })),
+    selected: selectedFeature ?? featureNames[0] ?? null,
+    onSelect: setSelectedFeature,
+    search: featureSearch,
+    onSearch: setFeatureSearch,
+  }
 
-  const availableTabs = TAB_KEYS.filter(t => {
+  const trainProgress: TrainProgress | null = useNodeResultsStore(
+    (s) => s.trainJobs[nodeId]?.progress ?? null,
+  )
+
+  const availableTabs = TAB_KEYS.filter((t) => {
     switch (t) {
-      case "summary": return true
-      case "coefficients": return result.glm_coefficients && result.glm_coefficients.length > 0
-      case "relativities": return result.glm_relativities && result.glm_relativities.length > 0
-      case "loss": return result.loss_history && result.loss_history.length > 1
-      case "lift": return (result.double_lift && result.double_lift.length > 0) || (result.lorenz_curve && result.lorenz_curve.length > 0)
-      case "residuals": return (result.residuals_histogram && result.residuals_histogram.length > 0) || (result.actual_vs_predicted && result.actual_vs_predicted.length > 0)
-      case "features": return result.feature_importance.length > 0
-      case "ave": return result.ave_per_feature && result.ave_per_feature.length > 0
-      case "pdp": return result.pdp_data && result.pdp_data.length > 0
-      default: return false
+      case "summary":
+        return true
+      case "coefficients":
+        return result.glm_coefficients && result.glm_coefficients.length > 0
+      case "relativities":
+        return result.glm_relativities && result.glm_relativities.length > 0
+      case "terms":
+        return (result.ebm_terms ?? []).length > 0
+      case "tables":
+        return result.tboost_tables != null
+      case "loss":
+        // The fit the tab draws: after a holdout refit, the validation fit.
+        return shownFit(result).history.length > 1
+      case "lift":
+        return (
+          (result.double_lift && result.double_lift.length > 0) ||
+          (result.lorenz_curve && result.lorenz_curve.length > 0)
+        )
+      case "residuals":
+        return (
+          (result.residuals_histogram && result.residuals_histogram.length > 0) ||
+          (result.actual_vs_predicted && result.actual_vs_predicted.length > 0)
+        )
+      case "features":
+        return result.feature_importance.length > 0
+      case "ave":
+        return result.ave_per_feature && result.ave_per_feature.length > 0
+      case "pdp":
+        return result.pdp_data && result.pdp_data.length > 0
+      case "shap_curves":
+        return result.shap_curves.length > 0
+      default:
+        return false
     }
   })
   const activeTab = availableTabs.includes(tab) ? tab : "summary"
-  const collapsedMetrics = Object.keys(result.final_test_metrics).length > 0
-    ? result.final_test_metrics
-    : result.diagnostic_metrics
-  const metricsSummary = Object.entries(collapsedMetrics)
+  const metricsSummary = Object.entries(headlineMetrics(result))
     .slice(0, 2)
-    .map(([k, v]) => `${k}: ${typeof v === "number" && Number.isFinite(v) ? v.toFixed(4) : String(v)}`)
+    .map(
+      ([k, v]) => `${k}: ${typeof v === "number" && Number.isFinite(v) ? v.toFixed(4) : String(v)}`,
+    )
     .join(" | ")
   const tabs = availableTabs.map((key) => ({ key, label: TAB_LABELS[key] }))
-  const config = modellingNode ? nodeData(modellingNode).config ?? {} : {}
+  const introduction = activeTab === "summary" ? null : { title: VIEW_TITLES[activeTab] }
 
   const useBestAsFixedParameters = (params: Record<string, unknown>) => {
-    if (!window.confirm(
-      "Use the winning parameters as fixed parameters and disable tuning?",
-    )) {
+    if (!window.confirm("Use the winning parameters as fixed parameters and disable tuning?")) {
       return
     }
 
-    useGraphStore.getState().setNodes(nodes => nodes.map(node => {
-      if (node.id !== nodeId) return node
-      const data = nodeData(node)
-      const { tuning: _tuning, ...configWithoutTuning } = data.config ?? {}
-      void _tuning
-      return {
-        ...node,
-        data: {
-          ...data,
-          config: {
-            ...configWithoutTuning,
-            params: { ...params },
+    useGraphStore.getState().setNodes((nodes) =>
+      nodes.map((node) => {
+        if (node.id !== nodeId) return node
+        const data = nodeData(node)
+        const { tuning: _tuning, ...configWithoutTuning } = data.config ?? {}
+        void _tuning
+        return {
+          ...node,
+          data: {
+            ...data,
+            config: {
+              ...configWithoutTuning,
+              params: { ...params },
+            },
           },
-        },
-      }
-    }))
+        }
+      }),
+    )
   }
 
   return (
-    <PreviewPanelFrame
+    <ResultsWorkspace
+      ariaLabel="Model validation"
+      idPrefix="modelling-preview"
+      tabsAriaLabel="Model result panes"
+      tabs={tabs}
+      activeTab={activeTab}
+      onTabChange={setTab}
       nodeLabel={data.nodeLabel}
       nodeType={NODE_TYPES.MODELLING}
+      onRefresh={onRefresh}
       collapsedMeta={result.status === "error" ? "Error" : metricsSummary}
       data-testid="modelling-preview-frame"
+      height={initialHeight}
+      onHeightChange={rememberHeight}
+      progress={trainProgress ? trainProgress.progress : null}
+      provenance={
+        <>
+          <span>
+            Diagnostics: {diagnosticsSetLabel(result.diagnostics_set)} ·{" "}
+            {diagnosticsRowCount(result).toLocaleString()} rows
+          </span>
+          {result.diagnostics_set === "development" && (
+            <span style={{ color: "var(--warning)" }}>
+              Training diagnostics are in-sample performance.
+            </span>
+          )}
+        </>
+      }
+      intro={introduction}
     >
-      {trainProgress && (
-        <div className="h-1 w-full shrink-0" style={{ background: MODEL_COLORS.accentSoft }}>
-          <div
-            className="h-full transition-all duration-300"
-            style={{ width: `${Math.max(trainProgress.progress * 100, 2)}%`, background: MODEL_COLORS.accent }}
-          />
-        </div>
+      {activeTab === "summary" && (
+        <SummaryTab
+          result={result}
+          onUseBestParameters={useBestAsFixedParameters}
+          elapsedSeconds={trainProgress?.elapsed_seconds}
+        />
       )}
-
-      <PreviewPanelTabs
-        tabs={tabs}
-        activeTab={activeTab}
-        onChange={setTab}
-        ariaLabel="Model result panes"
-        accentColor={MODEL_COLORS.accent}
-      />
-
-      <div className="flex-1 overflow-auto px-4 py-3">
-        {activeTab === "summary" && (
-          <SummaryTab
-            result={result}
-            jobId={data.jobId}
-            mlflowBackend={mlflowBackend}
-            config={config}
-            onUseBestParameters={useBestAsFixedParameters}
-            elapsedSeconds={trainProgress?.elapsed_seconds}
-          />
-        )}
-        {activeTab === "coefficients" && <GLMCoefficientsTab result={result} />}
-        {activeTab === "relativities" && <GLMRelativitiesTab result={result} />}
-        {activeTab === "loss" && <LossTab result={result} />}
-        {activeTab === "lift" && <LiftTab result={result} />}
-        {activeTab === "residuals" && <ResidualsTab result={result} />}
-        {activeTab === "features" && <FeaturesTab result={result} />}
-        {activeTab === "ave" && <AveTab result={result} />}
-        {activeTab === "pdp" && <PdpTab result={result} />}
-      </div>
-    </PreviewPanelFrame>
+      {activeTab === "coefficients" && <GLMCoefficientsTab result={result} />}
+      {activeTab === "relativities" && <GLMRelativitiesTab result={result} />}
+      {activeTab === "terms" && <EBMTermsTab result={result} />}
+      {activeTab === "tables" && <TBoostTablesTab result={result} />}
+      {activeTab === "loss" && <LossTab result={result} />}
+      {activeTab === "lift" && <LiftTab result={result} />}
+      {activeTab === "residuals" && <ResidualsTab result={result} />}
+      {activeTab === "features" && <FeaturesTab result={result} />}
+      {activeTab === "ave" && <AveTab result={result} featureBrowser={featureBrowser} />}
+      {activeTab === "pdp" && <PdpTab result={result} featureBrowser={featureBrowser} />}
+      {activeTab === "shap_curves" && (
+        <ShapCurvesTab result={result} featureBrowser={featureBrowser} />
+      )}
+    </ResultsWorkspace>
   )
 }

@@ -44,6 +44,8 @@ import { readFileSync, readdirSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import useToastStore from "../../stores/useToastStore"
+import { makeSolveResult } from "../../test-utils/factories"
+import { makeOnlineFrontier } from "../optimiser/__tests__/fixtures"
 
 // ═══════════════════════════════════════════════════════════════════
 //  Source walker (shared by all structural tests)
@@ -72,10 +74,6 @@ const DEBUG_ONLY_ALLOWLIST: readonly string[] = [
   // Fallback UI is already rendered when this fires; console is for devs
   // diagnosing the crash in their own DevTools.
   "components/ErrorBoundary.tsx",
-  // Cache status / progress polling / cancellation are best-effort
-  // background operations — "not yet cached" is the common case, not an
-  // error the user needs to be notified about.
-  "components/CacheFetchButton.tsx",
   // MLflow check is an optional capability probe on app startup; the
   // failure is already surfaced via the `mlflow.status === "error"` badge.
   "stores/useSettingsStore.ts",
@@ -164,7 +162,7 @@ function hasWhyComment(call: FoundCall): boolean {
 //  Structural tests
 // ═══════════════════════════════════════════════════════════════════
 
-describe("Phase 2 Package 3D — console.* usage is disciplined (#83)", () => {
+describe("Phase 2 Package 3D - console.* usage is disciplined (#83)", () => {
   it("enumerates at least one console.warn/error site (smoke)", () => {
     // Sanity: if the walker finds zero sites the rest of the suite is
     // silently passing.  The current codebase has several legitimate
@@ -217,7 +215,7 @@ describe("Phase 2 Package 3D — console.* usage is disciplined (#83)", () => {
         .map((o) => `  ${o.file}:${o.line}  ${o.text}`)
         .join("\n")
       throw new Error(
-        `Found ${doubled.length} line(s) where console.warn and addToast fire on the same statement — the console is redundant and should be removed:\n${summary}`,
+        `Found ${doubled.length} line(s) where console.warn and addToast fire on the same statement - the console is redundant and should be removed:\n${summary}`,
       )
     }
     expect(doubled).toEqual([])
@@ -243,7 +241,7 @@ describe("Phase 2 Package 3D — console.* usage is disciplined (#83)", () => {
       const src = readFileSync(abs, "utf8")
       expect(
         src.includes(anchor),
-        `${file} should route user-facing errors through ${anchor}(...) — the reference is missing entirely.`,
+        `${file} should route user-facing errors through ${anchor}(...) - the reference is missing entirely.`,
       ).toBe(true)
     }
   })
@@ -344,17 +342,44 @@ vi.mock("../../hooks/useDragResize", () => ({
     onDragStart: vi.fn(),
   }),
 }))
-vi.mock("../../stores/useNodeResultsStore", () => ({
+vi.mock("../../stores/useNodeResultsStore", async (importOriginal) => ({
+  // Keep the module's pure helpers (e.g. effectiveConstraintBounds); only the
+  // store hook is replaced.
+  ...(await importOriginal<typeof import("../../stores/useNodeResultsStore")>()),
   default: (selector: (s: Record<string, unknown>) => unknown) =>
     selector({
+      solveResults: {},
+      solveJobs: {},
       getOptimiserPreview: () => null,
       selectFrontierPoint: H.storeSelectPoint,
       updateFrontierAfterSelect: H.storeUpdateAfterSelect,
     }),
 }))
+/** A local-only inventory, so every node can log and nothing is probed. */
+const MLFLOW_INVENTORY = vi.hoisted(() => ({
+  status: "ready" as const,
+  installed: true,
+  importable: true,
+  auto: "local" as const,
+  destinations: [
+    {
+      key: "local" as const,
+      configured: true,
+      destination: "C:/proj/mlruns",
+      config_source: "default" as const,
+      detail: "",
+      probed: false,
+      ok: false,
+      category: "" as const,
+    },
+  ],
+  detail: "",
+}))
+
 vi.mock("../../stores/useSettingsStore", () => ({
   default: (selector: (s: Record<string, unknown>) => unknown) =>
-    selector({ mlflow: { status: "connected", backend: "local", host: "" } }),
+    selector({ mlflow: MLFLOW_INVENTORY }),
+  useMlflowDestinations: () => MLFLOW_INVENTORY,
 }))
 
 // UtilityPanel-only support mocks
@@ -400,33 +425,25 @@ describe("OptimiserPreview frontier-point switching stays local", () => {
   afterEach(cleanup)
 
   function makeData(): OptimiserPreviewData {
+    const result = makeSolveResult({
+      total_objective: 1234567,
+      baseline_objective: 1200000,
+      constraints: { loss_ratio: 0.65 },
+      baseline_constraints: { loss_ratio: 0.60 },
+      effective_bounds: { loss_ratio: { kind: "max", bound: 1.05 } },
+      lambdas: { loss_ratio: 0.005 },
+      converged: true,
+      iterations: 15,
+      n_quotes: 50000,
+      history: null,
+    })
     return {
-      result: {
-        total_objective: 1234567,
-        baseline_objective: 1200000,
-        constraints: { loss_ratio: 0.65 },
-        baseline_constraints: { loss_ratio: 0.60 },
-        lambdas: { loss_ratio: 0.005 },
-        converged: true,
-        iterations: 15,
-        n_quotes: 50000,
-        history: null,
-      },
+      result,
+      solvedResult: result,
       jobId: "job_123",
       constraints: { loss_ratio: { max: 1.05 } },
       nodeLabel: "My Optimiser",
-      frontier: {
-        points: Array.from({ length: 5 }, (_, i) => ({
-          total_objective: 1200000 + i * 10000,
-          total_loss_ratio: 0.55 + i * 0.02,
-          lambda_loss_ratio: 0.001 + i * 0.001,
-        })),
-        n_points: 5,
-        points_returned: 5,
-        constraint_names: ["loss_ratio"],
-        points_limit: 2000,
-        points_truncated: false,
-      },
+      frontier: makeOnlineFrontier(5),
       selectedPointIndex: null,
     }
   }
@@ -513,7 +530,7 @@ describe("#83 behavioral: UtilityPanel file load failure surfaces a toast", () =
     })
     H.readUtilityFile.mockRejectedValueOnce(new Error("disk read failure"))
 
-    render(<UtilityPanel onClose={vi.fn()} onImportAdded={vi.fn()} />)
+    render(<UtilityPanel onClose={vi.fn()} onImportAdded={vi.fn()} preamble="" onPreambleChange={vi.fn()} />)
 
     await waitFor(() => {
       const toasts = useToastStore.getState().toasts

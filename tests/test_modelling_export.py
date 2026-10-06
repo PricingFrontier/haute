@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
 import pytest
 
+from haute.modelling import TrainingJob
 from haute.modelling._export import generate_training_script
 from haute.modelling._train_config import TrainingConfigError
 
@@ -14,12 +18,17 @@ STRICT_RANDOM_EVALUATION = {
     "validation": {"method": "single", "size": 0.2},
 }
 
+NO_FEATURES_MESSAGE = (
+    "Modelling config has no features. Tick at least one feature on the Features pane."
+)
+
 MINIMAL_CONFIG = {
     "name": "freq",
     "target": "ClaimCount",
     "algorithm": "catboost",
     "task": "regression",
     "loss_function": "Poisson",
+    "feature_columns": ["age", "region", "risk_score"],
     "evaluation": STRICT_RANDOM_EVALUATION,
 }
 
@@ -80,9 +89,9 @@ class TestParameterRepr:
         assert "params={'iterations': 100, 'depth': 4}" in script
 
     def test_list_params_are_repr_formatted(self):
-        config = {**MINIMAL_CONFIG, "exclude": ["IDpol", "PolicyID"]}
+        config = {**MINIMAL_CONFIG, "feature_columns": ["DrivAge", "Region"]}
         script = generate_training_script(config, "d.parquet")
-        assert "exclude=['IDpol', 'PolicyID']" in script
+        assert "feature_columns=['DrivAge', 'Region']" in script
 
     def test_int_params_are_repr_formatted(self):
         # Use offset (a simple string config) as the integer-adjacent
@@ -104,7 +113,8 @@ class TestParameterRepr:
 class TestLossFunction:
     @pytest.mark.parametrize("loss", ["RMSE", "MAE", "Poisson", "Logloss", "CrossEntropy"])
     def test_loss_function_included(self, loss):
-        config = {**MINIMAL_CONFIG, "loss_function": loss}
+        task = "classification" if loss in {"Logloss", "CrossEntropy"} else "regression"
+        config = {**MINIMAL_CONFIG, "loss_function": loss, "task": task}
         script = generate_training_script(config, "d.parquet")
         assert f"loss_function='{loss}'" in script
         compile(script, "<test>", "exec")
@@ -183,21 +193,45 @@ class TestOffsetColumn:
         assert "offset" not in script
 
 
-class TestExcludeList:
-    def test_exclude_list_properly_formatted(self):
-        config = {**MINIMAL_CONFIG, "exclude": ["IDpol", "PolicyID", "Date"]}
+class TestFeatureColumnsList:
+    def test_feature_columns_list_properly_formatted(self):
+        config = {**MINIMAL_CONFIG, "feature_columns": ["DrivAge", "VehPower", "Region"]}
         script = generate_training_script(config, "d.parquet")
-        assert "exclude=['IDpol', 'PolicyID', 'Date']" in script
-
-    def test_empty_exclude_list_omitted(self):
-        config = {**MINIMAL_CONFIG, "exclude": []}
-        script = generate_training_script(config, "d.parquet")
+        assert "feature_columns=['DrivAge', 'VehPower', 'Region']" in script
         assert "exclude" not in script
 
-    def test_single_item_exclude_list(self):
-        config = {**MINIMAL_CONFIG, "exclude": ["IDpol"]}
+    @pytest.mark.parametrize(
+        "selection",
+        [
+            pytest.param({}, id="absent"),
+            pytest.param({"feature_columns": None}, id="none"),
+            pytest.param({"feature_columns": []}, id="empty"),
+        ],
+    )
+    def test_missing_or_empty_feature_columns_fails_loud(self, selection):
+        """Features are opt-in: a tree-model script with no selected feature
+        must gate, not train on every column of the data."""
+        config = {key: value for key, value in MINIMAL_CONFIG.items() if key != "feature_columns"}
+        with pytest.raises(TrainingConfigError) as raised:
+            generate_training_script({**config, **selection}, "d.parquet")
+        assert str(raised.value) == NO_FEATURES_MESSAGE
+
+    def test_single_item_feature_columns_list(self):
+        config = {**MINIMAL_CONFIG, "feature_columns": ["DrivAge"]}
         script = generate_training_script(config, "d.parquet")
-        assert "exclude=['IDpol']" in script
+        assert "feature_columns=['DrivAge']" in script
+
+    def test_role_columns_listed_as_features_are_not_written(self):
+        """A role column ticked as a feature is dormant: the script carries only
+        the selected features, exactly as live training fits them."""
+        config = {
+            **MINIMAL_CONFIG,
+            "weight": "Exposure",
+            "feature_columns": ["DrivAge", "ClaimCount", "Exposure", "Region"],
+        }
+        script = generate_training_script(config, "d.parquet")
+        assert "feature_columns=['DrivAge', 'Region']" in script
+        assert "weight='Exposure'" in script
 
 
 class TestMetricsList:
@@ -282,21 +316,57 @@ class TestMLflow:
         script = generate_training_script(config, "d.parquet")
         assert "mlflow_experiment='/Shared/test'" in script
 
-    def test_model_name_included(self):
-        config = {**MINIMAL_CONFIG, "model_name": "my_model"}
-        script = generate_training_script(config, "d.parquet")
-        assert "model_name='my_model'" in script
-
     def test_mlflow_excluded_when_absent(self):
         script = generate_training_script(MINIMAL_CONFIG, "d.parquet")
         assert "mlflow_experiment" not in script
         assert "model_name" not in script
 
     def test_mlflow_excluded_when_none(self):
-        config = {**MINIMAL_CONFIG, "mlflow_experiment": None, "model_name": None}
+        config = {**MINIMAL_CONFIG, "mlflow_experiment": None}
         script = generate_training_script(config, "d.parquet")
         assert "mlflow_experiment" not in script
         assert "model_name" not in script
+
+
+class TestRefitOnDevelopment:
+    @staticmethod
+    def _constructed_kwargs(script: str) -> dict[str, Any]:
+        """Execute the script against a recording ``TrainingJob`` stub."""
+        from unittest.mock import patch
+
+        captured: dict[str, Any] = {}
+
+        class _RecordingTrainingJob:
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+        with patch("haute.modelling.TrainingJob", _RecordingTrainingJob):
+            exec(compile(script, "<export>", "exec"), {"__name__": "export_harness"})
+        return captured
+
+    def test_default_refit_is_left_to_the_training_job_default(self):
+        script = generate_training_script(MINIMAL_CONFIG, "d.parquet")
+        kwargs = self._constructed_kwargs(script)
+        assert "refit_on_development" not in kwargs
+        # The job's default lets the family decide: a refitting family refits.
+        assert TrainingJob(**kwargs).refit_on_development is True
+
+    def test_skipped_refit_reaches_the_exported_training_job(self):
+        config = {**MINIMAL_CONFIG, "refit_on_development": False}
+        script = generate_training_script(config, "d.parquet")
+        assert self._constructed_kwargs(script)["refit_on_development"] is False
+
+    def test_skipped_refit_without_holdout_validation_fails_loud(self):
+        config = {
+            **MINIMAL_CONFIG,
+            "refit_on_development": False,
+            "evaluation": {
+                **STRICT_RANDOM_EVALUATION,
+                "validation": {"method": "cross_validation", "fold_count": 3},
+            },
+        }
+        with pytest.raises(TrainingConfigError, match="holdout validation"):
+            generate_training_script(config, "d.parquet")
 
 
 class TestMonotoneConstraints:
@@ -509,21 +579,23 @@ class TestPreviouslyDroppedTrainingKwargs:
 
     def test_absent_optional_kwargs_stay_absent(self):
         script = generate_training_script(MINIMAL_CONFIG, "d.parquet")
-        for param in ["feature_columns", "fold_column", "id_columns", "categorical_levels"]:
+        for param in ["fold_column", "id_columns", "categorical_levels"]:
             assert param not in script
+        # Tree-model features are opt-in, so the selection is always written.
+        assert "feature_columns=['age', 'region', 'risk_score']" in script
 
 
 class TestByteStableExportForExistingConfigs:
-    """Charter pin: configs that were already exported correctly (clean
-    CatBoost, no GLM keys, no newly-supported kwargs) must produce a
-    byte-identical script after the shared-builder refactor."""
+    """Charter pin: a clean CatBoost config (its selected features, no GLM
+    keys) must produce a byte-identical script after the shared-builder
+    refactor."""
 
     def test_clean_catboost_script_is_byte_stable(self):
         config = {
             "name": "freq",
             "target": "ClaimCount",
             "weight": "Exposure",
-            "exclude": ["IDpol"],
+            "feature_columns": ["DrivAge", "VehPower"],
             "algorithm": "catboost",
             "task": "regression",
             "params": {"iterations": 100, "depth": 4},
@@ -547,7 +619,7 @@ job = TrainingJob(
     data='output/freq.parquet',
     target='ClaimCount',
     weight='Exposure',
-    exclude=['IDpol'],
+    feature_columns=['DrivAge', 'VehPower'],
     algorithm='catboost',
     task='regression',
     params={'iterations': 100, 'depth': 4},
@@ -602,10 +674,10 @@ class TestFullConfig:
             "name": "severity",
             "target": "ClaimAmount",
             "weight": "Exposure",
-            "exclude": ["IDpol", "PolicyID"],
-            "algorithm": "lightgbm",
+            "feature_columns": ["age", "risk", "region"],
+            "algorithm": "catboost",
             "task": "regression",
-            "params": {"num_leaves": 31, "learning_rate": 0.05},
+            "params": {"depth": 6, "learning_rate": 0.05},
             "evaluation": STRICT_RANDOM_EVALUATION,
             "metrics": ["gini", "rmse", "mae"],
             "loss_function": "Tweedie",
@@ -614,7 +686,6 @@ class TestFullConfig:
             "monotone_constraints": {"age": 1, "risk": -1},
             "feature_weights": {"age": 2.0},
             "mlflow_experiment": "/Shared/severity",
-            "model_name": "severity_prod",
             "output_dir": "artifacts",
         }
         script = generate_training_script(config, "output/severity.parquet")
@@ -623,13 +694,219 @@ class TestFullConfig:
         assert "data='output/severity.parquet'" in script
         assert "target='ClaimAmount'" in script
         assert "weight='Exposure'" in script
-        assert "exclude=['IDpol', 'PolicyID']" in script
-        assert "algorithm='lightgbm'" in script
+        assert "feature_columns=['age', 'risk', 'region']" in script
+        assert "exclude" not in script
+        assert "algorithm='catboost'" in script
         assert "task='regression'" in script
-        assert "'num_leaves': 31" in script
+        assert "'depth': 6" in script
         assert "loss_function='Tweedie'" in script
         assert "variance_power=1.5" in script
         assert "offset='log_exposure'" in script
         assert "mlflow_experiment='/Shared/severity'" in script
-        assert "model_name='severity_prod'" in script
         assert "output_dir='artifacts'" in script
+
+
+class TestMlflowDestinationExport:
+    def test_mlflow_destination_rendered_when_set(self):
+        config = {
+            **MINIMAL_CONFIG,
+            "mlflow_destination": "server",
+        }
+        script = generate_training_script(config, "d.parquet")
+        assert "mlflow_destination='server'" in script
+        compile(script, "<test>", "exec")
+
+    def test_mlflow_destination_omitted_for_the_local_folder(self):
+        config_empty = {
+            **MINIMAL_CONFIG,
+            "mlflow_destination": "",
+        }
+        script_empty = generate_training_script(config_empty, "d.parquet")
+        assert "mlflow_destination" not in script_empty
+        compile(script_empty, "<test>", "exec")
+
+        script_absent = generate_training_script(MINIMAL_CONFIG, "d.parquet")
+        assert "mlflow_destination" not in script_absent
+        compile(script_absent, "<test>", "exec")
+
+
+class TestExecutedExportMlflowDestinations:
+    @pytest.fixture
+    def tiny_training_data(self, tmp_path: Path) -> Path:
+        import polars as pl
+
+        df = pl.DataFrame(
+            {
+                "ClaimCount": [1.0, 2.0, 1.5, 3.0, 2.5, 4.0, 1.0, 2.0],
+                "feature_a": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
+            }
+        )
+        data_path = tmp_path / "data.parquet"
+        df.write_parquet(data_path)
+        return data_path
+
+    def test_executed_export_without_destination_logs_locally_despite_databricks_env(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        tiny_training_data: Path,
+    ) -> None:
+        from haute._sandbox import set_project_root
+
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb-fake.example.com")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "dapi-fake-token")
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+        monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+        monkeypatch.chdir(tmp_path)
+        set_project_root(tmp_path)
+
+        output_dir = tmp_path / "outputs"
+        config = {
+            **MINIMAL_CONFIG,
+            "params": {"iterations": 2},
+            "feature_columns": ["feature_a"],
+            "output_dir": str(output_dir),
+            "mlflow_experiment": "/Shared/test_local",
+        }
+        script = generate_training_script(config, str(tiny_training_data))
+        assert "mlflow_destination" not in script
+
+        namespace: dict[str, Any] = {"__name__": "__main__"}
+        exec(compile(script, "<exported_training_script>", "exec"), namespace)
+
+        assert (tmp_path / "mlruns").exists()
+        import mlflow
+
+        client = mlflow.tracking.MlflowClient(tracking_uri=(tmp_path / "mlruns").as_uri())
+        exp = client.get_experiment_by_name("/Shared/test_local")
+        assert exp is not None
+        runs = client.search_runs([exp.experiment_id])
+        assert len(runs) >= 1
+
+    def test_executed_export_local_folder_follows_the_execution_environment(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        tiny_training_data: Path,
+    ) -> None:
+        from haute._sandbox import set_project_root
+
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+        monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+
+        gen_root = tmp_path / "gen"
+        gen_root.mkdir()
+        (gen_root / "haute.toml").write_text('[mlflow]\nfolder = "store_a"\n', encoding="utf-8")
+        exec_root = tmp_path / "exec"
+        exec_root.mkdir()
+        (exec_root / "haute.toml").write_text('[mlflow]\nfolder = "store_b"\n', encoding="utf-8")
+
+        # Generation environment: the local folder is store_a here.
+        monkeypatch.chdir(gen_root)
+        set_project_root(gen_root)
+
+        config = {
+            **MINIMAL_CONFIG,
+            "params": {"iterations": 2},
+            "feature_columns": ["feature_a"],
+            "output_dir": str(exec_root / "outputs"),
+            "mlflow_experiment": "/Shared/test_auto",
+        }
+        script = generate_training_script(config, str(tiny_training_data))
+        assert "mlflow_destination" not in script
+
+        # Execution environment: the local folder resolves here, to store_b.
+        monkeypatch.chdir(exec_root)
+        set_project_root(exec_root)
+
+        namespace: dict[str, Any] = {"__name__": "__main__"}
+        exec(compile(script, "<exported_training_script>", "exec"), namespace)
+
+        import mlflow
+
+        store_b = exec_root / "store_b"
+        assert store_b.exists()
+        client = mlflow.tracking.MlflowClient(tracking_uri=store_b.as_uri())
+        exp = client.get_experiment_by_name("/Shared/test_auto")
+        assert exp is not None
+        assert len(client.search_runs([exp.experiment_id])) == 1
+
+        # The generation environment's store was never touched.
+        assert not (gen_root / "store_a").exists()
+
+    def test_executed_export_unavailable_server_destination_raises_config_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        tiny_training_data: Path,
+    ) -> None:
+        from haute._sandbox import set_project_root
+        from haute.errors import MlflowConfigError
+
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+        monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+        monkeypatch.chdir(tmp_path)
+        set_project_root(tmp_path)
+
+        output_dir = tmp_path / "outputs"
+        config = {
+            **MINIMAL_CONFIG,
+            "params": {"iterations": 2},
+            "feature_columns": ["feature_a"],
+            "output_dir": str(output_dir),
+            "mlflow_experiment": "/Shared/test_server",
+            "mlflow_destination": "server",
+        }
+        script = generate_training_script(config, str(tiny_training_data))
+        assert "mlflow_destination='server'" in script
+
+        namespace: dict[str, Any] = {"__name__": "<not_main>"}
+        exec(compile(script, "<exported_training_script>", "exec"), namespace)
+        job = namespace["job"]
+
+        with pytest.raises(MlflowConfigError):
+            job.run()
+
+        assert not (tmp_path / "mlruns").exists()
+
+    def test_executed_export_destination_without_experiment_logs_nothing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        tiny_training_data: Path,
+    ) -> None:
+        from haute._sandbox import set_project_root
+
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+        monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+        monkeypatch.chdir(tmp_path)
+        set_project_root(tmp_path)
+
+        output_dir = tmp_path / "outputs"
+        config = {
+            **MINIMAL_CONFIG,
+            "params": {"iterations": 2},
+            "feature_columns": ["feature_a"],
+            "output_dir": str(output_dir),
+            "mlflow_destination": "server",
+        }
+        script = generate_training_script(config, str(tiny_training_data))
+        assert "mlflow_destination='server'" in script
+        assert "mlflow_experiment" not in script
+
+        namespace: dict[str, Any] = {"__name__": "__main__"}
+        exec(compile(script, "<exported_training_script>", "exec"), namespace)
+
+        assert not (tmp_path / "mlruns").exists()

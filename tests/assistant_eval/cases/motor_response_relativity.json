@@ -1,0 +1,74 @@
+{
+  "schema_version": 5,
+  "id": "motor_response_relativity",
+  "fixture_version": "2",
+  "project_fixture": "motor_pricing",
+  "area": "outputs",
+  "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
+  "turns": [
+    {
+      "request": "Also return the age relativity in the quote response, under pricing.factors.age_relativity next to the age band.",
+      "expectations": {
+        "outcome": "applied",
+        "saves": true,
+        "required_node_types": [
+          "output"
+        ],
+        "forbidden_node_types": [],
+        "required_edges": [],
+        "require_connected_graph": false,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [
+          "quote_response"
+        ],
+        "node_configs": {
+          "quote_response": {
+            "outputMapping": [
+              {
+                "source_port": "base_premium",
+                "source_column": "quote_id",
+                "output_path": "$[:].quote_id",
+                "enabled": true
+              },
+              {
+                "source_port": "base_premium",
+                "source_column": "premium",
+                "output_path": "$[:].pricing.premium",
+                "enabled": true
+              },
+              {
+                "source_port": "base_premium",
+                "source_column": "expected_frequency",
+                "output_path": "$[:].pricing.expected_frequency",
+                "enabled": true
+              },
+              {
+                "source_port": "base_premium",
+                "source_column": "age_band",
+                "output_path": "$[:].pricing.factors.age_band",
+                "enabled": true
+              },
+              {
+                "source_port": "base_premium",
+                "source_column": "region",
+                "output_path": "$[:].pricing.factors.region",
+                "enabled": true
+              },
+              {
+                "source_port": "base_premium",
+                "source_column": "age_relativity",
+                "output_path": "$[:].pricing.factors.age_relativity",
+                "enabled": true
+              }
+            ]
+          }
+        },
+        "execution": [],
+        "efficiency": null,
+        "data_findings": null
+      }
+    }
+  ]
+}

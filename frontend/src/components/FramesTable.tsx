@@ -122,7 +122,7 @@ export default function FramesTable({
                   {row.path || "(no path)"}
                 </span>
                 <span className="shrink-0" style={{ color: "var(--text-muted)" }}>
-                  {row.emit ? "emit" : "—"}
+                  {row.emit ? "emit" : "-"}
                 </span>
                 <span
                   className="shrink-0"

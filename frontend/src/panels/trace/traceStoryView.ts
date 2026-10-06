@@ -61,6 +61,18 @@ export function hasPrimaryNodeDetail(step: TraceStep | null | undefined): boolea
     detailType === "live_switch"
 }
 
+/**
+ * Whether the step's own code computed *column* with a formula. A model, an
+ * optimiser or an expander may also run transform steps; the backend gives a
+ * derivation a formula only when the node's code assigned the column for the
+ * traced value, so a formula the step carries for a column a later step
+ * rewrote does not count.
+ */
+export function stepCodeComputesColumn(step: TraceStep, column: string | null | undefined): boolean {
+  if (!column) return false
+  return step.derivations.some((derivation) => derivation.column === column && Boolean(derivation.expression_text))
+}
+
 export function isOptimiserApplyErrorDetail(
   detail: OptimiserApplyNodeDetail,
 ): detail is Extract<OptimiserApplyNodeDetail, { status: "error" }> {
@@ -98,9 +110,14 @@ export function hasStructuredDependencyDetail(detail: TraceNodeDetail | null | u
     detail?.detail_type === "optimiser_apply"
 }
 
-export function directInputSourceNodeNames(step: TraceStep | null): Set<string> {
+/** Whether the step's formula, not its node detail, explains the traced column. */
+function formulaExplainsColumn(step: TraceStep, tracedColumn: string | null): boolean {
+  return !hasStructuredDependencyDetail(step.node_detail) || stepCodeComputesColumn(step, tracedColumn)
+}
+
+export function directInputSourceNodeNames(step: TraceStep | null, tracedColumn: string | null): Set<string> {
   const names = new Set<string>()
-  if (!step?.calculation?.input_sources || hasStructuredDependencyDetail(step.node_detail)) return names
+  if (!step?.calculation?.input_sources || !formulaExplainsColumn(step, tracedColumn)) return names
 
   for (const source of Object.values(step.calculation.input_sources)) {
     if (source?.node_name) {
@@ -115,7 +132,7 @@ export function targetStepDependencyColumns(step: TraceStep, tracedColumn: strin
   const dependencyColumns = new Set<string>()
   const detail = step.node_detail
 
-  if (!hasStructuredDependencyDetail(detail)) {
+  if (formulaExplainsColumn(step, tracedColumn)) {
     for (const col of step.expression?.referenced_columns ?? []) {
       dependencyColumns.add(col)
     }
@@ -202,42 +219,6 @@ export function targetStepDependencyColumns(step: TraceStep, tracedColumn: strin
   return dependencyColumns
 }
 
-export function targetDependencyStepIds(steps: TraceStep[], targetStep: TraceStep | null, column: string | null): Set<string> {
-  const ids = new Set<string>()
-  if (!targetStep) return ids
-
-  const targetIndex = steps.findIndex((step) => step.node_id === targetStep.node_id)
-  const dependencyColumns = targetStepDependencyColumns(targetStep, column)
-  if (dependencyColumns.size === 0) return ids
-
-  steps.forEach((step, index) => {
-    if (step.node_id === targetStep.node_id) return
-    if (targetIndex >= 0 && index > targetIndex) return
-    for (const dependencyColumn of dependencyColumns) {
-      if (stepCreatesOrModifiesColumn(step, dependencyColumn)) {
-        ids.add(step.node_id)
-        return
-      }
-    }
-  })
-
-  return ids
-}
-
-export function directInputSourceStepIds(steps: TraceStep[], targetStep: TraceStep | null): Set<string> {
-  const ids = new Set<string>()
-  const sourceNodeNames = directInputSourceNodeNames(targetStep)
-  if (sourceNodeNames.size === 0) return ids
-
-  for (const step of steps) {
-    if (sourceNodeNames.has(step.node_name)) {
-      ids.add(step.node_id)
-    }
-  }
-
-  return ids
-}
-
 export function defaultExpandedStepIds(steps: TraceStep[], targetStep: TraceStep | null, column: string | null): Set<string> {
   const ids = new Set<string>()
   if (!targetStep) return ids
@@ -247,7 +228,7 @@ export function defaultExpandedStepIds(steps: TraceStep[], targetStep: TraceStep
   }
 
   const targetIndex = steps.findIndex((step) => step.node_id === targetStep.node_id)
-  const sourceNodeNames = directInputSourceNodeNames(targetStep)
+  const sourceNodeNames = directInputSourceNodeNames(targetStep, column)
   const dependencyColumns = targetStepDependencyColumns(targetStep, column)
 
   steps.forEach((step, index) => {
@@ -272,10 +253,17 @@ export function defaultExpandedStepIds(steps: TraceStep[], targetStep: TraceStep
   return ids
 }
 
-export function traceStoryPreserveStepIds(steps: TraceStep[], targetStep: TraceStep | null, column: string | null): Set<string> {
-  const ids = targetDependencyStepIds(steps, targetStep, column)
-  for (const sourceStepId of directInputSourceStepIds(steps, targetStep)) {
-    ids.add(sourceStepId)
+/**
+ * The focused story: the producing step and every step that computes a column
+ * the traced value depends on, however far upstream. Steps that only carry
+ * those columns (joins, switches) stay hidden until the full trace is shown.
+ */
+export function traceStoryPreserveStepIds(steps: TraceStep[], targetStep: TraceStep | null): Set<string> {
+  const ids = new Set<string>()
+  for (const step of steps) {
+    if (step.contributed_columns.length > 0) {
+      ids.add(step.node_id)
+    }
   }
   if (targetStep) {
     ids.add(targetStep.node_id)

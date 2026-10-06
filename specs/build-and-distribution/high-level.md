@@ -31,6 +31,7 @@ In scope:
   and TypeScript project configuration needed to create that embedded client.
 - MkDocs configuration and the GitHub Pages workflow that validates and publishes
   the public documentation site.
+- The Release workflow that publishes the package to PyPI and tags the release.
 
 Out of scope:
 
@@ -75,6 +76,15 @@ Out of scope:
   authoring/example resources are explicit Hatch artifacts, so installed
   distributions carry both the browser client and the complete discoverable
   assistant bundle portfolio.
+- The published node reference (`docs/building-models/nodes/`) has exactly one
+  page for every node type a user can add; a submodel port, created with its
+  submodel, is documented on the submodel page. The navigation lists those pages
+  and the feature pages (the index and Instances) and nothing else, a page's
+  "In the pipeline file" reference (the node's editor settings mapped to config
+  keys) names only keys the config validator accepts for its node type,
+  and no published page uses the vocabulary of a removed node type. A test
+  enforces all four, so adding a node type without a page, or keeping a page for
+  a removed type or key, fails CI.
 - A push to `main` that changes any `docs/**` path or `mkdocs.yml` builds MkDocs
   in strict mode and deploys the resulting `site/` artifact to GitHub Pages.
   The internal engineering documents named in `exclude_docs` (engineering
@@ -83,6 +93,25 @@ Out of scope:
   root-level `specs/`, outside the site source tree, so changes there neither
   publish nor trigger a docs deployment. A newer docs run queues behind an
   active Pages deployment instead of cancelling it.
+- A release publishes the version `pyproject.toml` declares on `main`. The version
+  is bumped like any other change, in a reviewed pull request; the Release
+  workflow is then run by hand from the Actions tab and never edits or commits
+  to the repository. It runs only from `main`, and only once `main`'s own CI run
+  for that exact commit has passed. The version must be `X.Y.Z`, must not already
+  be on PyPI, must be newer than every `X.Y.Z` release PyPI has, and must not
+  already be tagged, so an unbumped `main` cannot be released twice. The run
+  builds the wheel and sdist with `HAUTE_BUILD_FRONTEND=1` exactly as CI's
+  package smoke does, checks their file names carry the version, installs each
+  into a clean environment for the package smoke check, publishes both to PyPI
+  through trusted publishing (no stored token; the `pypi` environment), skipping
+  any file PyPI already has, waits until PyPI lists exactly those two files with
+  the built SHA-256 digests, and only then tags `vX.Y.Z` at the released commit
+  and creates a GitHub release with generated notes and the two files attached.
+  A dry run stops after the build and smoke checks. Two runs never overlap.
+- PyPI's trusted publisher names the repository, workflow file, and environment
+  but cannot restrict the branch, so the `pypi` environment allows deployments
+  from `main` only. Without that rule a copy of the workflow on another branch,
+  with its checks removed, could publish.
 
 ## Design rationale
 
@@ -149,3 +178,30 @@ Out of scope:
 - A strict MkDocs build failure prevents the documentation artifact from being
   uploaded or deployed. GitHub Pages deployment only runs after that build job
   succeeds.
+- The Release workflow stops before building when it runs outside `main`, when
+  `main`'s CI for the commit is missing, still running, or not successful, when
+  PyPI cannot be read, or when the version is malformed, already released, not
+  newer than the latest release, or already tagged, and when the tag lookup
+  itself fails; each failure says what to do. A failed build or smoke check
+  publishes nothing. Publishing precedes tagging, so a failed or partial upload
+  leaves no tag: re-running the failed jobs uploads only the files PyPI does not
+  have yet from the same built artifact, and the tag waits for PyPI to serve
+  exactly this run's files. A different file under the same name, or a file
+  this run did not build, stops the run before tagging. A failed tag or GitHub
+  release after a verified publish is repaired by re-running that job alone.
+
+## Model-family engine dependencies
+
+XGBoost is a core dependency: `xgboost-cpu>=3.2,<3.3` on non-macOS platforms and
+`xgboost>=3.2,<3.3` on macOS, locked exactly. The cap keeps Python 3.11, because XGBoost 3.3
+and later require Python 3.12. The full `xgboost` wheel and its NVIDIA dependency are not used
+on Linux or Windows. Both distributions install the same `xgboost` import package, so
+`scripts/package_smoke_check.py` fails unless exactly one of them is installed. macOS needs
+Homebrew `libomp`. `lightgbm>=4.7,<5` (also needing `libomp` on macOS) and
+`interpret-core>=0.7.8,<0.8` are core dependencies too; an `.ebm` model loads only under the
+exact `interpret-core` version its contract records, so a minor bump is a retrain boundary.
+`t-boost>=0.8.0,<0.9` is a core dependency with abi3 wheels for every supported platform; a
+`.tboost` model is t-boost's own JSON document, which t-boost versions read by its envelope
+`schema_version` (a release refuses a newer one), so a t-boost upgrade that cannot read a
+saved model fails to load it by name.
+

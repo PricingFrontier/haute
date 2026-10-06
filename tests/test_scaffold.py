@@ -1,12 +1,17 @@
 """Tests for haute._scaffold - template generation for ``haute init``."""
 
+import os
+import subprocess
 import tomllib
+from pathlib import Path
 
 import pytest
 import yaml
 
 from haute._scaffold import (
+    BUILD_AND_PUSH_ONLY_TARGETS,
     TARGETS,
+    _release_tag_script,
     azure_devops_yml,
     env_example,
     github_ci_yml,
@@ -21,6 +26,20 @@ from haute._scaffold import (
 )
 
 
+def _posix_shell() -> str:
+    """The bash a CI runner would use: Git for Windows' own on Windows.
+
+    A bare ``bash`` on Windows may be WSL's, which sees neither the Windows
+    paths nor the Windows git.
+    """
+    if os.name != "nt":
+        return "bash"
+    exec_path = subprocess.run(
+        ["git", "--exec-path"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    return str(Path(exec_path).parents[2] / "bin" / "bash.exe")
+
+
 class TestHauteToml:
     """haute_toml() generates target-specific config with no leaking sections."""
 
@@ -28,25 +47,15 @@ class TestHauteToml:
         result = haute_toml("motor", "databricks", "github")
         assert "[deploy.databricks]" in result
         assert "[deploy.docker]" not in result
-        assert "[deploy.sagemaker]" not in result
-        assert "[deploy.azure-ml]" not in result
+        assert "[deploy.aws-ecs]" not in result
+        assert "[deploy.gcp-run]" not in result
 
     def test_container_only_contains_container_section(self) -> None:
         result = haute_toml("motor", "container", "github")
         assert "[deploy.container]" in result
         assert "[deploy.databricks]" not in result
-        assert "[deploy.sagemaker]" not in result
-        assert "[deploy.azure-ml]" not in result
-
-    def test_sagemaker_only_contains_sagemaker_section(self) -> None:
-        result = haute_toml("motor", "sagemaker", "gitlab")
-        assert "[deploy.sagemaker]" in result
-        assert "[deploy.databricks]" not in result
-
-    def test_azure_ml_only_contains_azure_section(self) -> None:
-        result = haute_toml("motor", "azure-ml", "github")
-        assert "[deploy.azure-ml]" in result
-        assert "[deploy.databricks]" not in result
+        assert "[deploy.aws-ecs]" not in result
+        assert "[deploy.gcp-run]" not in result
 
     def test_project_name_substituted(self) -> None:
         result = haute_toml("my_pipeline", "databricks", "github")
@@ -106,20 +115,26 @@ class TestEnvExample:
         assert "DATABRICKS_TOKEN" in result
         assert "DATABRICKS_RATING_HOST" in result
         assert "DATABRICKS_RATING_TOKEN" in result
+
+    def test_databricks_env_example_separates_the_three_credential_spaces(self) -> None:
+        """Data access, MLflow and serving each get their own pair, in that order."""
+        result = env_example("databricks")
+        lines = [
+            line.split("=", 1)[0]
+            for line in result.splitlines()
+            if "=" in line and not line.startswith("#")
+        ]
+        assert lines == [
+            "DATABRICKS_HOST",
+            "DATABRICKS_TOKEN",
+            "DATABRICKS_MLFLOW_HOST",
+            "DATABRICKS_MLFLOW_TOKEN",
+            "DATABRICKS_RATING_HOST",
+            "DATABRICKS_RATING_TOKEN",
+        ]
+        assert "MLflow never uses the data access" in result
         assert "AWS_ACCESS_KEY" not in result
         assert "AZURE_" not in result
-
-    def test_sagemaker_creds_only(self) -> None:
-        result = env_example("sagemaker")
-        assert "AWS_ACCESS_KEY_ID" in result
-        assert "SAGEMAKER_ROLE_ARN" in result
-        assert "DATABRICKS_" not in result
-
-    def test_azure_creds_only(self) -> None:
-        result = env_example("azure-ml")
-        assert "AZURE_SUBSCRIPTION_ID" in result
-        assert "DATABRICKS_" not in result
-        assert "AWS_" not in result
 
     def test_container_creds_only(self) -> None:
         result = env_example("container")
@@ -179,12 +194,18 @@ class TestGithubDeployYml:
         result = github_deploy_yml("databricks")
         assert "secrets.DATABRICKS_RATING_HOST" in result
         assert "secrets.DATABRICKS_RATING_TOKEN" in result
+        # Deploy registers the model through MLflow with its own credentials.
+        assert "secrets.DATABRICKS_MLFLOW_HOST" in result
+        assert "secrets.DATABRICKS_MLFLOW_TOKEN" in result
+        # The data access pair is never a deploy secret.
+        assert "secrets.DATABRICKS_HOST " not in result
+        assert "secrets.DATABRICKS_TOKEN " not in result
         assert "secrets.AWS_ACCESS_KEY_ID" not in result
 
-    def test_sagemaker_secrets(self) -> None:
-        result = github_deploy_yml("sagemaker")
+    def test_aws_ecs_secrets(self) -> None:
+        result = github_deploy_yml("aws-ecs")
         assert "secrets.AWS_ACCESS_KEY_ID" in result
-        assert "secrets.SAGEMAKER_ROLE_ARN" in result
+        assert "secrets.DOCKER_USERNAME" in result
         assert "secrets.DATABRICKS_RATING_HOST" not in result
 
     def test_contains_staging_and_impact(self) -> None:
@@ -458,6 +479,8 @@ class TestAzureDevopsYml:
         )
         env = deploy_script["env"]
         assert env == {
+            "DATABRICKS_MLFLOW_HOST": "$(DATABRICKS_MLFLOW_HOST)",
+            "DATABRICKS_MLFLOW_TOKEN": "$(DATABRICKS_MLFLOW_TOKEN)",
             "DATABRICKS_RATING_HOST": "$(DATABRICKS_RATING_HOST)",
             "DATABRICKS_RATING_TOKEN": "$(DATABRICKS_RATING_TOKEN)",
         }
@@ -565,12 +588,12 @@ class TestYamlStructure:
         assert "$(DATABRICKS_RATING_HOST)" in result
         assert "$(DATABRICKS_RATING_TOKEN)" in result
 
-    def test_sagemaker_secrets(self) -> None:
+    def test_aws_ecs_secrets(self) -> None:
         from haute._scaffold import azure_devops_yml
 
-        result = azure_devops_yml("sagemaker")
+        result = azure_devops_yml("aws-ecs")
         assert "$(AWS_ACCESS_KEY_ID)" in result
-        assert "$(SAGEMAKER_ROLE_ARN)" in result
+        assert "$(DOCKER_USERNAME)" in result
         assert "$(DATABRICKS_RATING_HOST)" not in result
 
 
@@ -612,13 +635,17 @@ class TestCompleteYamlParity:
         assert _github_trigger(deploy)["push"]["branches"] == ["main"]
         assert "workflow_dispatch" in _github_trigger(deploy)
         jobs = deploy["jobs"]
-        assert set(jobs) == {"validate", "deploy-staging", "smoke-test", "impact-analysis"}
+        verifies = target not in BUILD_AND_PUSH_ONLY_TARGETS
+        verification = {"smoke-test", "impact-analysis"} if verifies else set()
+        assert set(jobs) == {"validate", "deploy-staging"} | verification
         expected = _target_secrets(target, "${{{{ secrets.{secret} }}}}")
-        for job_name, step_name in (
-            ("deploy-staging", "Deploy to staging"),
-            ("smoke-test", "Score test quotes against staging endpoint"),
-            ("impact-analysis", "Compare staging vs production predictions"),
-        ):
+        secret_steps = [("deploy-staging", "Deploy to staging")]
+        if verifies:
+            secret_steps += [
+                ("smoke-test", "Score test quotes against staging endpoint"),
+                ("impact-analysis", "Compare staging vs production predictions"),
+            ]
+        for job_name, step_name in secret_steps:
             step = next(step for step in jobs[job_name]["steps"] if step.get("name") == step_name)
             assert step["env"] == expected
 
@@ -636,15 +663,17 @@ class TestCompleteYamlParity:
     def test_gitlab_release_structure_and_secret_consumers(self, target: str) -> None:
         document = yaml.safe_load(gitlab_ci_yml(target))
         assert isinstance(document, dict)
+        verification = (
+            ["smoke-test", "impact-analysis"] if target not in BUILD_AND_PUSH_ONLY_TARGETS else []
+        )
         assert document["stages"] == [
             "validate",
             "deploy-staging",
-            "smoke-test",
-            "impact-analysis",
+            *verification,
             "deploy-production",
         ]
         expected = _target_secrets(target, "${secret}")
-        for job_name in ("deploy-staging", "smoke-test", "impact-analysis", "deploy-production"):
+        for job_name in ("deploy-staging", *verification, "deploy-production"):
             job = document[job_name]
             assert job["variables"] == expected
             assert job["rules"] == [{"if": "$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH"}]
@@ -657,21 +686,16 @@ class TestCompleteYamlParity:
         assert document["trigger"]["branches"]["include"] == ["main"]
         assert document["pr"]["branches"]["include"] == ["main"]
         stages = {stage["stage"]: stage for stage in document["stages"]}
-        assert set(stages) == {
-            "Validate",
-            "DeployStaging",
-            "SmokeTest",
-            "ImpactAnalysis",
-            "DeployProduction",
-        }
+        verifies = target not in BUILD_AND_PUSH_ONLY_TARGETS
+        verification = {"SmokeTest", "ImpactAnalysis"} if verifies else set()
+        assert set(stages) == {"Validate", "DeployStaging", "DeployProduction"} | verification
         assert "refs/heads/main" in stages["DeployStaging"]["condition"]
         assert stages["DeployProduction"]["jobs"][0]["environment"] == "production"
         expected = _target_secrets(target, "$({secret})")
-        for stage_name, display_name in (
-            ("DeployStaging", "Deploy staging"),
-            ("SmokeTest", "Smoke test"),
-            ("ImpactAnalysis", "Impact analysis"),
-        ):
+        secret_steps = [("DeployStaging", "Deploy staging")]
+        if verifies:
+            secret_steps += [("SmokeTest", "Smoke test"), ("ImpactAnalysis", "Impact analysis")]
+        for stage_name, display_name in secret_steps:
             steps = stages[stage_name]["jobs"][0]["steps"]
             step = next(step for step in steps if step.get("displayName") == display_name)
             assert step["env"] == expected
@@ -707,18 +731,6 @@ class TestTomlStructure:
         assert "deploy" in doc
         assert "container" in doc["deploy"]
         assert "databricks" not in doc["deploy"]
-
-    def test_sagemaker_toml_parses(self) -> None:
-        raw = haute_toml("motor", "sagemaker", "gitlab")
-        doc = tomllib.loads(raw)
-        assert "deploy" in doc
-        assert "sagemaker" in doc["deploy"]
-
-    def test_azure_ml_toml_parses(self) -> None:
-        raw = haute_toml("motor", "azure-ml", "github")
-        doc = tomllib.loads(raw)
-        assert "deploy" in doc
-        assert "azure-ml" in doc["deploy"]
 
     def test_azure_container_apps_toml_parses(self) -> None:
         raw = haute_toml("motor", "azure-container-apps", "github")
@@ -763,6 +775,7 @@ class TestTomlStructure:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("released_price_contour")
 class TestDockerfileStructure:
     """Validate that generated Dockerfiles have valid structure."""
 
@@ -771,6 +784,7 @@ class TestDockerfileStructure:
 
         from haute.deploy._config import DeployConfig, ResolvedDeploy
         from haute.deploy._container import _generate_dockerfile
+        from haute.deploy._project_modules import ProjectModules
         from haute.graph_utils import PipelineGraph
 
         resolved = ResolvedDeploy(
@@ -782,6 +796,7 @@ class TestDockerfileStructure:
             artifacts={},
             input_schema={},
             output_schema={},
+            project_modules=ProjectModules(utility=None, unbundled_imports=()),
         )
         df = _generate_dockerfile("python:3.11-slim", 8080, resolved)
         lines = df.strip().splitlines()
@@ -1032,3 +1047,133 @@ class TestStarterPipelineContent:
         result = starter_pipeline("test")
         assert "import haute" in result
         assert "import polars" not in result
+
+
+class TestOfferedTargets:
+    """``haute init`` offers only targets that deploy, or labels them build and push only."""
+
+    def test_offered_targets_are_the_targets_deploy_accepts(self) -> None:
+        from haute.deploy import _CONTAINER_PLATFORM_TARGETS, _SUPPORTED_TARGETS
+
+        assert set(TARGETS) == _SUPPORTED_TARGETS | _CONTAINER_PLATFORM_TARGETS
+        assert set(BUILD_AND_PUSH_ONLY_TARGETS) == _CONTAINER_PLATFORM_TARGETS
+
+    @staticmethod
+    def _generated_files(target: str) -> dict[str, str]:
+        return {
+            "haute.toml": haute_toml("motor", target, "github"),
+            ".env.example": env_example(target),
+            "deploy.yml": github_deploy_yml(target),
+            "deploy-production.yml": github_deploy_prod_yml(target),
+            ".gitlab-ci.yml": gitlab_ci_yml(target),
+            "azure-pipelines.yml": azure_devops_yml(target),
+        }
+
+    @pytest.mark.parametrize("target", BUILD_AND_PUSH_ONLY_TARGETS)
+    def test_build_and_push_only_targets_are_labelled_in_every_generated_file(
+        self, target: str
+    ) -> None:
+        label = TARGETS[target]["label"]
+        for name, content in self._generated_files(target).items():
+            assert f"# Build and push only: for {label}," in content, name
+            assert "[deploy.container] names (required)" in content, name
+            assert "finishes without updating the service" in content, name
+            assert "the deploy output names the image tag" in content, name
+
+    @pytest.mark.parametrize("target", BUILD_AND_PUSH_ONLY_TARGETS)
+    def test_build_and_push_only_pipelines_stop_after_the_push(self, target: str) -> None:
+        # No service runs the pushed image yet, so a smoke test or impact
+        # analysis would check the old service.
+        github = yaml.safe_load(github_deploy_yml(target))
+        gitlab = yaml.safe_load(gitlab_ci_yml(target))
+        azure = yaml.safe_load(azure_devops_yml(target))
+
+        assert list(github["jobs"]) == ["validate", "deploy-staging"]
+        assert gitlab["stages"] == ["validate", "deploy-staging", "deploy-production"]
+        assert "smoke-test" not in gitlab and "impact-analysis" not in gitlab
+        assert [(stage["stage"], stage.get("dependsOn")) for stage in azure["stages"]] == [
+            ("Validate", None),
+            ("DeployStaging", "Validate"),
+            ("DeployProduction", "DeployStaging"),
+        ]
+        for content in self._generated_files(target).values():
+            assert "haute smoke" not in content.split("# `haute impact` once it does.")[-1]
+
+    def test_container_releases_are_tagged_by_commit_and_a_redeploy_keeps_its_tag(
+        self, tmp_path: Path
+    ) -> None:
+        # ``haute status`` reads MLflow, so a container-based target has no
+        # registered version: every release used to be tagged deploy/vunknown
+        # and the second release failed on the existing tag.
+        script = _release_tag_script("gcp-run", "")
+        assert all(
+            _release_tag_script(target, "") == script
+            for target in ("container", *BUILD_AND_PUSH_ONLY_TARGETS)
+        )
+        assert _release_tag_script("databricks", "") != script
+
+        def git(*arguments: str) -> str:
+            return subprocess.run(
+                ["git", "-c", "user.email=t@example.com", "-c", "user.name=t", *arguments],
+                cwd=tmp_path / "work",
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+
+        (tmp_path / "work").mkdir()
+        git("init", "-q", "--bare", str(tmp_path / "remote.git"))
+        git("init", "-q")
+        git("remote", "add", "origin", str(tmp_path / "remote.git"))
+        heads = []
+        for release in ("first", "second"):
+            (tmp_path / "work" / "release.txt").write_text(release, encoding="utf-8")
+            git("add", "release.txt")
+            git("commit", "-q", "-m", release)
+            heads.append(git("rev-parse", "--short", "HEAD").strip())
+            for _ in range(2):  # the second run is a redeploy of the same commit
+                subprocess.run(
+                    [_posix_shell(), "-c", "set -euo pipefail\n" + script],
+                    cwd=tmp_path / "work",
+                    check=True,
+                    capture_output=True,
+                )
+
+        remote_tags = git("ls-remote", "--tags", "origin").splitlines()
+        assert sorted(line.split("refs/tags/")[1] for line in remote_tags) == sorted(
+            f"deploy/{head}" for head in heads
+        )
+
+    @pytest.mark.parametrize("target", ["databricks", "container"])
+    def test_end_to_end_pipelines_smoke_test_and_compare_staging(self, target: str) -> None:
+        github = yaml.safe_load(github_deploy_yml(target))
+        gitlab = yaml.safe_load(gitlab_ci_yml(target))
+        azure = yaml.safe_load(azure_devops_yml(target))
+
+        assert list(github["jobs"]) == [
+            "validate",
+            "deploy-staging",
+            "smoke-test",
+            "impact-analysis",
+        ]
+        assert gitlab["stages"] == [
+            "validate",
+            "deploy-staging",
+            "smoke-test",
+            "impact-analysis",
+            "deploy-production",
+        ]
+        assert azure["stages"][-1]["dependsOn"] == "ImpactAnalysis"
+
+    @pytest.mark.parametrize("target", ["databricks", "container"])
+    def test_end_to_end_targets_carry_no_label(self, target: str) -> None:
+        for name, content in self._generated_files(target).items():
+            assert "Build and push only" not in content, name
+
+    @pytest.mark.parametrize("target", BUILD_AND_PUSH_ONLY_TARGETS)
+    def test_the_labelled_files_still_parse(self, target: str) -> None:
+        files = self._generated_files(target)
+        assert target in tomllib.loads(files["haute.toml"])["deploy"]
+        for name in ("deploy.yml", "deploy-production.yml", ".gitlab-ci.yml"):
+            assert isinstance(yaml.safe_load(files[name]), dict), name
+        assert isinstance(yaml.safe_load(files["azure-pipelines.yml"]), dict)

@@ -14,6 +14,7 @@
  * valid submodel-exported target while still flagging genuinely-absent ones.
  */
 import type { Node } from "@xyflow/react"
+import { isPlainObject } from "../types/guards"
 
 /** Config keys that store node ID references. */
 const NODE_REF_FIELDS = ["instanceOf"] as const
@@ -25,10 +26,6 @@ export interface ConfigRefWarning {
   referencedId: string
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-}
-
 /**
  * Collect the ids of nodes inside a single submodel's graph metadata.
  *
@@ -38,12 +35,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * never crash a save.
  */
 function submodelNodeIds(metadata: unknown): string[] {
-  if (!isRecord(metadata) || !isRecord(metadata.graph)) return []
+  if (!isPlainObject(metadata) || !isPlainObject(metadata.graph)) return []
   const graph = metadata.graph
   if (!Array.isArray(graph.nodes)) return []
   const ids: string[] = []
   for (const node of graph.nodes) {
-    if (isRecord(node) && typeof node.id === "string" && node.id) ids.push(node.id)
+    if (isPlainObject(node) && typeof node.id === "string" && node.id) ids.push(node.id)
   }
   return ids
 }

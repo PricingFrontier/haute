@@ -641,6 +641,8 @@ class TestPipelineStructureEdgeCases:
         step = _step_by_id(result, "t")
         assert step.output_values["x"] == 5
         assert step.expression is None
+        assert _step_by_id(result, "src").output_values == {"x": 5, "y": 10}
+        assert result.omissions == []
 
     def test_multiple_sources_feeding_join(self, tmp_path):
         """Two source nodes feeding into a join — verify both in trace."""

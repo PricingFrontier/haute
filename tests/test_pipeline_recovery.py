@@ -97,8 +97,7 @@ def _legacy_explore_source(name: str = "legacy") -> str:
                 "sort_by": None,
             }},
         }}])
-        def explore(aggregate):
-            return aggregate
+        def explore(aggregate): ...
 
         @pipeline.polars
         def model_input(aggregate):
@@ -110,9 +109,11 @@ def _legacy_explore_source(name: str = "legacy") -> str:
     '''
 
 
-def test_strict_parser_rejects_syntax_while_recovery_preserves_healthy_nodes(
+def test_syntax_invalid_source_is_source_only_with_the_located_parse_error(
     tmp_path: Path,
 ) -> None:
+    """A file that is not valid Python has no canvas: the document carries the
+    syntax error's location and the instruction to fix it in an editor."""
     from haute._pipeline_recovery import load_pipeline_editor_document
 
     pipeline_file = _write(
@@ -136,10 +137,17 @@ def test_strict_parser_rejects_syntax_while_recovery_preserves_healthy_nodes(
         parse_pipeline_source(pipeline_file.read_text(encoding="utf-8"), source_file="main.py")
 
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
-    assert document.load_status == "degraded"
-    assert [node.authored_id for node in document.nodes] == ["healthy"]
-    assert document.nodes[0].availability == "ready"
-    assert any(diagnostic.code == "python_syntax_error" for diagnostic in document.diagnostics)
+    assert document.load_status == "source_only"
+    assert document.nodes == []
+    assert document.edges == []
+    [diagnostic] = document.diagnostics
+    assert diagnostic.code == "python_syntax_error"
+    assert diagnostic.source_span is not None
+    assert diagnostic.source_span.start_line == 9
+    assert diagnostic.remediation == (
+        "Open the source at this location in your editor and correct the syntax."
+    )
+    assert document.capabilities.can_preview is False
 
 
 def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
@@ -159,22 +167,20 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                     "node_id": "ordinary",
                     "label": "class",
                     "node_type": "polars",
-                    "submodel_alias": None,
                     "source_handles": [],
                 },
                 {
                     "node_id": "api",
                     "label": "Café request",
                     "node_type": "apiInput",
-                    "submodel_alias": None,
                     "source_handles": ["quotes", "vehicles"],
                 },
                 {
                     "node_id": "pricing",
                     "label": "Pricing",
                     "node_type": "submodel",
-                    "submodel_alias": "pricing_secondary",
-                    "source_handles": ["out__written-premium"],
+                    "alias": "pricing",
+                    "source_handles": ["out__written_premium"],
                 },
             ]
         },
@@ -189,6 +195,9 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
     ]
     assert payload["identities"][0] == {
         "node_id": "ordinary",
+        "label": "class",
+        "alias": None,
+        "collision": None,
         "function_name": "node_class",
         "config_reference": None,
         "default_input_name": "node_class",
@@ -200,7 +209,7 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
     }
     assert payload["identities"][1]["config_reference"].startswith("config/quote_input/")
     assert payload["identities"][2]["source_handle_input_names"] == {
-        "out__written-premium": "pricing_secondary__written_premium"
+        "out__written_premium": "written_premium"
     }
 
 
@@ -212,7 +221,6 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "node_id": "node",
                 "label": "Node",
                 "node_type": "polars",
-                "submodel_alias": None,
                 "source_handles": [],
                 "unexpected": True,
             }
@@ -222,14 +230,12 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "node_id": "same",
                 "label": "First",
                 "node_type": "polars",
-                "submodel_alias": None,
                 "source_handles": [],
             },
             {
                 "node_id": "same",
                 "label": "Second",
                 "node_type": "polars",
-                "submodel_alias": None,
                 "source_handles": [],
             },
         ],
@@ -238,7 +244,6 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "node_id": "api",
                 "label": "Request",
                 "node_type": "apiInput",
-                "submodel_alias": None,
                 "source_handles": ["quotes", "quotes"],
             }
         ],
@@ -247,7 +252,6 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "node_id": "api",
                 "label": "Request",
                 "node_type": "apiInput",
-                "submodel_alias": None,
                 "source_handles": [""],
             }
         ],
@@ -256,7 +260,6 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "node_id": "api",
                 "label": "Request",
                 "node_type": "apiInput",
-                "submodel_alias": None,
                 "source_handles": ["class"],
             }
         ],
@@ -265,7 +268,6 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "node_id": "api",
                 "label": "Request",
                 "node_type": "apiInput",
-                "submodel_alias": None,
                 "source_handles": ["café"],
             }
         ],
@@ -274,7 +276,6 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "node_id": "pricing",
                 "label": "Pricing",
                 "node_type": "submodel",
-                "submodel_alias": None,
                 "source_handles": ["out__result"],
             }
         ],
@@ -283,7 +284,24 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "node_id": "pricing",
                 "label": "Pricing",
                 "node_type": "submodel",
-                "submodel_alias": "pricing",
+                "alias": "pricing",
+                "source_handles": ["out__Result "],
+            }
+        ],
+        [
+            {
+                "node_id": "pricing_port",
+                "label": "Pricing port",
+                "node_type": "submodelPort",
+                "source_handles": ["out__Result "],
+            }
+        ],
+        [
+            {
+                "node_id": "pricing",
+                "label": "Pricing",
+                "node_type": "submodel",
+                "alias": "pricing",
                 "source_handles": ["out__"],
             }
         ],
@@ -292,8 +310,8 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "node_id": "ordinary",
                 "label": "Ordinary",
                 "node_type": "polars",
-                "submodel_alias": "pricing",
                 "source_handles": [],
+                "source_handle_labels": {"out__result": "Result"},
             }
         ],
         [
@@ -301,7 +319,6 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "node_id": "ordinary",
                 "label": "Ordinary",
                 "node_type": "polars",
-                "submodel_alias": None,
                 "source_handles": ["unexpected"],
             }
         ],
@@ -331,16 +348,15 @@ def test_capabilities_reject_unsorted_or_duplicate_reserved_api_input_labels(
 
 
 @pytest.mark.parametrize(
-    ("input_ports", "input_names"),
+    "input_ports",
     [
-        ([{}], {}),
-        ([{"portId": ""}], {}),
-        ([{"portId": "input"}], {"extra": "input_name"}),
-        ([{"portId": "input"}], {"input": ""}),
+        [{}],
+        [{"name": ""}],
+        [{"name": " input "}],
     ],
 )
 def test_recovery_submodel_definition_validates_input_port_identities(
-    input_ports: list[dict[str, object]], input_names: dict[str, str]
+    input_ports: list[dict[str, object]],
 ) -> None:
     with pytest.raises(ValidationError):
         RecoverySubmodelDefinition(
@@ -349,13 +365,15 @@ def test_recovery_submodel_definition_validates_input_port_identities(
             availability="ready",
             graph=RecoveryGraphSnapshot(),
             input_ports=input_ports,
-            input_port_input_names=input_names,
         )
 
 
 def test_editor_identities_response_rejects_duplicate_node_ids() -> None:
     identity = EditorIdentityResponseNode(
         node_id="same",
+        label="same",
+        alias=None,
+        collision=None,
         function_name="same",
         config_reference=None,
         default_input_name="same",
@@ -384,7 +402,6 @@ def test_editor_identity_route_translates_resolver_value_error(
                     "node_id": "ordinary",
                     "label": "Ordinary",
                     "node_type": "polars",
-                    "submodel_alias": None,
                     "source_handles": [],
                 }
             ]
@@ -423,8 +440,7 @@ def test_ready_document_carries_all_server_owned_api_input_identities(
         pipeline = haute.Pipeline("identity-document")
 
         @pipeline.api_input(config="config/quote_input/request.json")
-        def request():
-            return None
+        def request(): ...
 
         @pipeline.polars
         def consume(quotes):
@@ -489,8 +505,7 @@ def test_ready_document_keeps_incomplete_api_input_config_repairable(
         pipeline = haute.Pipeline("identity-document")
 
         @pipeline.api_input(config="config/quote_input/request.json")
-        def request():
-            return None
+        def request(): ...
         """,
     )
 
@@ -538,6 +553,57 @@ def test_legacy_explore_failure_is_localised_without_writing_project_bytes(
     assert diagnostic.code == "node_config_invalid"
     assert "value_order" in diagnostic.message
     assert diagnostic.source_span is not None
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+def test_undeclared_sidecar_key_fails_the_parse_and_localises_to_its_node(
+    tmp_path: Path,
+) -> None:
+    """A key the node type does not declare is never silently ignored on load:
+    the strict parse names it, and the editor opens only that node for repair."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    sidecar = tmp_path / "config" / "constant" / "rates.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text(
+        '{"values": [{"name": "base_rate", "value": "1.0"}], "legacyScale": 2}',
+        encoding="utf-8",
+    )
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+
+        pipeline = haute.Pipeline("stale_key")
+
+        @pipeline.constant(config="config/constant/rates.json")
+        def rates(): ...
+
+        @pipeline.polars
+        def priced(rates):
+            return rates
+
+        @pipeline.polars
+        def unrelated():
+            return None
+        """,
+    )
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ConfigError, match=r"'rates'.*'legacyScale'"):
+        parse_pipeline_file(pipeline_file)
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert document.load_status == "degraded"
+    availability = {node.authored_id: node.availability for node in document.nodes}
+    assert availability == {"rates": "unavailable", "priced": "blocked", "unrelated": "ready"}
+    rates = next(node for node in document.nodes if node.authored_id == "rates")
+    diagnostic = next(
+        item for item in document.diagnostics if item.diagnostic_id in rates.diagnostic_ids
+    )
+    assert diagnostic.code == "node_config_invalid"
+    assert "legacyScale" in diagnostic.message
     assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
@@ -619,7 +685,6 @@ def test_recovery_nodes_are_not_canonical_graph_nodes(tmp_path: Path) -> None:
         "TraceRequest",
         "OutputDestinationRequest",
         "WriteOutputRequest",
-        "ExploreRunRequest",
         "ExplorePivotRunRequest",
         "ExplorePivotMembersRequest",
         "CreateSubmodelRequest",
@@ -837,7 +902,6 @@ def test_canonical_snapshot_rejects_unavailable_nodes_and_submodels() -> None:
         file="models/pricing.py",
         availability="unavailable",
         graph=RecoveryGraphSnapshot(),
-        input_port_input_names={},
     )
     cases = [
         ([node("broken", "unavailable")], None, "node_unavailable"),
@@ -874,8 +938,7 @@ def test_recovery_revision_tracks_malformed_config_and_missing_sidecar(
         pipeline = haute.Pipeline("revision")
 
         @pipeline.data_input(config="config/data_input/source.json")
-        def source():
-            return None
+        def source(): ...
         """,
     )
 
@@ -960,6 +1023,7 @@ def test_ready_document_revision_authenticates_strictly_parsed_child_bytes(
             definition_id="child-definition",
             input_ports=[],
             output_ports=[],
+            pipeline_dir="..",
         )
 
         @submodel.polars
@@ -979,9 +1043,7 @@ def test_ready_document_revision_authenticates_strictly_parsed_child_bytes(
 
         pipeline.submodel(
             "modules/child.py",
-            definition_id="child-definition",
-            instance_id="child__one",
-            alias="child_one",
+            "child_one",
         )
         """,
     )
@@ -1021,6 +1083,73 @@ def test_ready_document_revision_authenticates_strictly_parsed_child_bytes(
     assert document.source_revision != changed_on_disk
 
 
+def test_ready_document_exposes_submodel_output_port_as_executable_name(
+    tmp_path: Path,
+) -> None:
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    modules = tmp_path / "modules"
+    modules.mkdir()
+    _write(
+        modules / "child.py",
+        """
+        import haute
+        submodel = haute.Submodel(
+            "child",
+            definition_id="child-definition",
+            input_ports=[{
+                "name": "input_1",
+                "targets": [{"nodeId": "transform", "handleId": None}],
+            }],
+            output_ports=[{
+                "name": "output_1",
+                "source": {"nodeId": "transform", "handleId": None},
+            }],
+            pipeline_dir="..",
+        )
+
+        @submodel.polars
+        def transform(input_1):
+            return input_1
+        """,
+    )
+    parent = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+        pipeline = haute.Pipeline("public-label-recovery")
+
+        @pipeline.polars
+        def source():
+            return None
+
+        @pipeline.polars
+        def consumer(output_1):
+            return output_1
+
+        pipeline.submodel(
+            "modules/child.py",
+            "unrelated_alias",
+        )
+        pipeline.connect("source", "unrelated_alias", target_port="input_1")
+        pipeline.connect("unrelated_alias", "consumer", source_port="output_1")
+        """,
+    )
+
+    document = load_pipeline_editor_document(parent, project_root=tmp_path)
+
+    assert document.load_status == "ready"
+    occurrence = next(node for node in document.nodes if node.authored_id == "unrelated_alias")
+    assert occurrence.source_handle_input_names == {"out__output_1": "output_1"}
+    output_edge = next(
+        edge for edge in document.edges if edge.source_recovery_id == occurrence.recovery_id
+    )
+    assert output_edge.input_name == "output_1"
+    assert document.submodels is not None
+    child_ports = document.submodels["child-definition"].input_ports
+    assert [port["name"] for port in child_ports] == ["input_1"]
+
+
 def test_recovery_revision_authenticates_child_bytes_the_document_presents(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1041,6 +1170,7 @@ def test_recovery_revision_authenticates_child_bytes_the_document_presents(
             definition_id="child-definition",
             input_ports=[],
             output_ports=[],
+            pipeline_dir="..",
         )
 
         @submodel.polars
@@ -1060,9 +1190,7 @@ def test_recovery_revision_authenticates_child_bytes_the_document_presents(
 
         pipeline.submodel(
             "modules/child.py",
-            definition_id="child-definition",
-            instance_id="child__one",
-            alias="child_one",
+            "child_one",
         )
         """,
     )
@@ -1128,9 +1256,7 @@ def test_submodel_failure_codes_classify_by_exception_type_not_message(
 
         pipeline.submodel(
             "modules/child.py",
-            definition_id="child-definition",
-            instance_id="child__one",
-            alias="child_one",
+            "child_one",
         )
         """,
     )
@@ -1174,11 +1300,11 @@ def test_recovery_revision_tracks_child_config_from_parent_config_base(
             definition_id="child",
             input_ports=[],
             output_ports=[],
+            pipeline_dir="..",
         )
 
         @submodel.data_input(config="{config_ref}")
-        def child_source():
-            return None
+        def child_source(): ...
         ''',
     )
     pipeline_file = _write(
@@ -1189,9 +1315,7 @@ def test_recovery_revision_tracks_child_config_from_parent_config_base(
 
         pipeline.submodel(
             "modules/child.py",
-            definition_id="child",
-            instance_id="child__one",
-            alias="child_one",
+            "child_one",
         )
         """,
     )
@@ -1217,6 +1341,7 @@ def test_recovery_revision_tracks_child_config_from_parent_config_base(
             {
                 "name": "replacement",
                 "source_file": "main.py",
+                "base_revision": "posted-ready-revision",
                 "graph": {"nodes": [], "edges": []},
             },
         ),
@@ -1233,7 +1358,7 @@ def test_recovery_revision_tracks_child_config_from_parent_config_base(
         (
             "/api/submodel/dissolve",
             {
-                "instance_id": "submodel__group",
+                "instance_id": "group",
                 "source_file": "main.py",
                 "base_revision": "posted-ready-revision",
                 "graph": {"nodes": [], "edges": []},
@@ -1383,8 +1508,7 @@ def test_explore_shape_failure_is_local_and_blocks_only_downstream(
             return None
 
         @pipeline.explore(pivots=[])
-        def inspect(source):
-            return source
+        def inspect(source): ...
 
         @pipeline.polars
         def downstream(inspect):
@@ -1422,9 +1546,7 @@ def test_missing_submodel_preserves_occurrence_and_unrelated_root_nodes(
 
         pipeline.submodel(
             "models/missing.py",
-            definition_id="pricing",
-            instance_id="pricing__one",
-            alias="pricing_one",
+            "pricing_one",
         )
         pipeline.connect("healthy", "pricing_one", target_port="input")
         """,
@@ -1435,9 +1557,9 @@ def test_missing_submodel_preserves_occurrence_and_unrelated_root_nodes(
 
     assert document.load_status == "degraded"
     assert by_id["healthy"].availability == "ready"
-    assert by_id["pricing__one"].availability == "unavailable"
+    assert by_id["pricing_one"].availability == "unavailable"
     assert document.submodels is not None
-    assert document.submodels["pricing"].availability == "unavailable"
+    assert document.submodels["models/missing.py"].availability == "unavailable"
     assert any(diagnostic.code == "submodel_file_missing" for diagnostic in document.diagnostics)
     assert document.edges == []
     assert len(document.unresolved_connections) == 1
@@ -1461,6 +1583,7 @@ def test_unknown_submodel_decorator_is_rejected_strictly_and_conserved(
             definition_id="child",
             input_ports=[],
             output_ports=[],
+            pipeline_dir="..",
         )
 
         @submodel.removed_node
@@ -1476,9 +1599,7 @@ def test_unknown_submodel_decorator_is_rejected_strictly_and_conserved(
 
         pipeline.submodel(
             "modules/child.py",
-            definition_id="child",
-            instance_id="child__one",
-            alias="child_one",
+            "child_one",
         )
         """,
     )
@@ -1490,7 +1611,7 @@ def test_unknown_submodel_decorator_is_rejected_strictly_and_conserved(
 
     assert document.load_status == "degraded"
     assert document.submodels is not None
-    definition = document.submodels["child"]
+    definition = document.submodels["modules/child.py"]
     assert definition.availability == "unavailable"
     assert [(node.authored_id, node.availability) for node in definition.graph.nodes] == [
         ("old_child", "unavailable")
@@ -1510,6 +1631,7 @@ def test_duplicate_submodel_definition_paths_mark_every_occurrence_unavailable(
             definition_id="shared",
             input_ports=[],
             output_ports=[],
+            pipeline_dir="..",
         )
     """
     (tmp_path / "models").mkdir()
@@ -1523,15 +1645,11 @@ def test_duplicate_submodel_definition_paths_mark_every_occurrence_unavailable(
 
         pipeline.submodel(
             "models/one.py",
-            definition_id="shared",
-            instance_id="shared__one",
-            alias="shared_one",
+            "shared_one",
         )
         pipeline.submodel(
             "models/two.py",
-            definition_id="shared",
-            instance_id="shared__two",
-            alias="shared_two",
+            "shared_two",
         )
         """,
     )
@@ -1540,8 +1658,8 @@ def test_duplicate_submodel_definition_paths_mark_every_occurrence_unavailable(
 
     assert document.load_status == "degraded"
     by_authored_id = {node.authored_id: node for node in document.nodes}
-    assert by_authored_id["shared__one"].availability == "unavailable"
-    assert by_authored_id["shared__two"].availability == "unavailable"
+    assert by_authored_id["shared_one"].availability == "unavailable"
+    assert by_authored_id["shared_two"].availability == "unavailable"
     assert document.submodels is not None
     assert document.submodels["shared"].availability == "unavailable"
     duplicate_diagnostics = [
@@ -1567,6 +1685,7 @@ def test_duplicate_submodel_alias_stays_degraded_while_revision_is_computed(
             definition_id="shared",
             input_ports=[],
             output_ports=[],
+            pipeline_dir="..",
         )
         """,
     )
@@ -1578,15 +1697,11 @@ def test_duplicate_submodel_alias_stays_degraded_while_revision_is_computed(
 
         pipeline.submodel(
             "models/shared.py",
-            definition_id="shared",
-            instance_id="shared__one",
-            alias="same_alias",
+            "same_alias",
         )
         pipeline.submodel(
             "models/shared.py",
-            definition_id="shared",
-            instance_id="shared__two",
-            alias="same_alias",
+            "same_alias",
         )
         """,
     )
@@ -1646,8 +1761,7 @@ def test_recovery_preview_plans_only_the_ready_ancestor_closure(
             return source
 
         @pipeline.explore(pivots=[{"version": 1}])
-        def broken(source):
-            return source
+        def broken(source): ...
         """,
     )
     monkeypatch.chdir(tmp_path)
@@ -1655,7 +1769,7 @@ def test_recovery_preview_plans_only_the_ready_ancestor_closure(
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     captured: dict[str, object] = {}
 
-    async def execute(body: object) -> PreviewNodeResponse:
+    async def execute(body: object, _http_request: object) -> PreviewNodeResponse:
         captured["body"] = body
         return PreviewNodeResponse(node_id="clean", status="ok")
 
@@ -1710,8 +1824,7 @@ def test_recovery_preview_closure_shares_canonical_cache_identity(
             return source
 
         @pipeline.explore(pivots=[{"version": 1}])
-        def broken(source):
-            return source
+        def broken(source): ...
         """,
     )
     monkeypatch.chdir(tmp_path)
@@ -1719,7 +1832,7 @@ def test_recovery_preview_closure_shares_canonical_cache_identity(
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     captured: dict[str, object] = {}
 
-    async def execute(body: object) -> PreviewNodeResponse:
+    async def execute(body: object, _http_request: object) -> PreviewNodeResponse:
         captured["body"] = body
         return PreviewNodeResponse(node_id="clean", status="ok")
 
@@ -1889,7 +2002,7 @@ def test_unexpected_strict_parser_defect_is_not_laundered_as_authored_input(
         raise RuntimeError("private strict parser implementation detail")
 
     monkeypatch.setattr(
-        "haute._pipeline_recovery.parse_pipeline_source",
+        "haute._pipeline_recovery.parse_pipeline_source_with_name_violations",
         fail_strict_parse,
     )
 
@@ -1903,53 +2016,6 @@ def test_unexpected_strict_parser_defect_is_not_laundered_as_authored_input(
     diagnostic = document.diagnostics[0]
     assert diagnostic.incident_id
     assert "private strict parser implementation detail" not in diagnostic.message
-
-
-def test_unexpected_syntax_fragment_recovery_defect_has_visible_incident(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from haute._pipeline_recovery import (
-        load_pipeline_editor_document,
-        recover_pipeline_fragments,
-    )
-
-    pipeline_file = _write(
-        tmp_path / "main.py",
-        """
-        import haute
-        pipeline = haute.Pipeline("fragment-incident")
-
-        @pipeline.polars
-        def broken(:
-            return None
-        """,
-    )
-
-    calls = 0
-
-    def fail_fragment_recovery_once(source: str) -> object:
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            raise RuntimeError("private fragment recovery implementation detail")
-        return recover_pipeline_fragments(source)
-
-    monkeypatch.setattr(
-        "haute._pipeline_recovery.recover_pipeline_fragments",
-        fail_fragment_recovery_once,
-    )
-
-    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
-
-    assert document.load_status == "source_only"
-    assert [diagnostic.code for diagnostic in document.diagnostics] == [
-        "python_syntax_error",
-        "pipeline_recovery_internal_error",
-    ]
-    diagnostic = document.diagnostics[1]
-    assert diagnostic.incident_id
-    assert "private fragment recovery implementation detail" not in diagnostic.message
 
 
 def test_unexpected_submodel_parser_defect_is_localised_with_incident(
@@ -1968,6 +2034,7 @@ def test_unexpected_submodel_parser_defect_is_localised_with_incident(
             definition_id="shared",
             input_ports=[],
             output_ports=[],
+            pipeline_dir="..",
         )
         """,
     )
@@ -1983,9 +2050,7 @@ def test_unexpected_submodel_parser_defect_is_localised_with_incident(
 
         pipeline.submodel(
             "models/shared.py",
-            definition_id="shared",
-            instance_id="shared__one",
-            alias="shared_one",
+            "shared_one",
         )
         """,
     )
@@ -2002,7 +2067,7 @@ def test_unexpected_submodel_parser_defect_is_localised_with_incident(
 
     assert document.load_status == "degraded"
     assert document.submodels is not None
-    assert document.submodels["shared"].availability == "unavailable"
+    assert document.submodels["models/shared.py"].availability == "unavailable"
     internal = [
         diagnostic
         for diagnostic in document.diagnostics
@@ -2013,7 +2078,7 @@ def test_unexpected_submodel_parser_defect_is_localised_with_incident(
     assert "private submodel parser implementation detail" not in internal[0].message
 
 
-def test_remove_unavailable_node_dry_run_is_no_write_and_enumerates_exact_edits(
+def test_remove_unavailable_node_apply_reports_the_exact_edits_it_made(
     tmp_path: Path,
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -2030,10 +2095,9 @@ def test_remove_unavailable_node_dry_run_is_no_write_and_enumerates_exact_edits(
     monkeypatch.chdir(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     target = next(node for node in document.nodes if node.authored_id == "explore")
-    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
 
     response = client.post(
-        "/api/pipeline/repair/remove/dry-run",
+        "/api/pipeline/repair/remove/apply",
         json={
             "source_file": document.source_file,
             "source_revision": document.source_revision,
@@ -2044,25 +2108,19 @@ def test_remove_unavailable_node_dry_run_is_no_write_and_enumerates_exact_edits(
     )
 
     assert response.status_code == 200, response.text
-    plan = response.json()
-    assert plan["repair_kind"] == "remove_unavailable_node"
-    assert plan["source_revision"] == document.source_revision
-    assert plan["target_recovery_id"] == target.recovery_id
-    assert plan["target_authored_id"] == "explore"
-    assert plan["delete_config"] is False
-    assert len(plan["plan_hash"]) == 64
-    assert plan["predicted_load_status"] == "ready"
-    assert [change["path"] for change in plan["changes"]] == [
+    applied = response.json()
+    assert applied["repair_kind"] == "remove_unavailable_node"
+    assert "plan_hash" not in applied
+    assert [change["path"] for change in applied["changes"]] == [
         "main.py",
         "main.haute.json",
     ]
-    source_change = plan["changes"][0]
+    source_change = applied["changes"][0]
     assert source_change["operation"] == "update"
     assert "@pipeline.explore" in source_change["diff"]
     assert 'pipeline.connect("aggregate", "explore")' in source_change["diff"]
     assert source_change["diff_truncated"] is False
-    assert plan["retained_artifacts"] == []
-    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+    assert applied["document"]["load_status"] == "ready"
 
 
 def test_remove_unavailable_node_apply_commits_confirmed_plan_and_returns_document(
@@ -2089,22 +2147,15 @@ def test_remove_unavailable_node_apply_commits_confirmed_plan_and_returns_docume
         "target_recovery_id": target.recovery_id,
         "delete_config": False,
     }
-    plan_response = client.post(
-        "/api/pipeline/repair/remove/dry-run",
-        json=request,
-    )
-    assert plan_response.status_code == 200, plan_response.text
-    plan = plan_response.json()
 
     response = client.post(
         "/api/pipeline/repair/remove/apply",
-        json={**request, "plan_hash": plan["plan_hash"]},
+        json=request,
     )
 
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["repair_kind"] == "remove_unavailable_node"
-    assert payload["plan_hash"] == plan["plan_hash"]
     assert payload["applied_artifacts"] == ["main.py", "main.haute.json"]
     assert payload["document"]["load_status"] == "ready"
     assert payload["document"]["source_revision"] != document.source_revision
@@ -2127,163 +2178,22 @@ def test_remove_unavailable_node_apply_commits_confirmed_plan_and_returns_docume
     assert parse_pipeline_file(pipeline_file).pipeline_name == "legacy"
 
 
-def test_remove_unavailable_node_repairs_syntax_broken_source_completely(
+def test_repair_refuses_syntax_broken_source() -> None:
+    """Repairs work on valid Python only; a syntax-broken file is fixed in an editor."""
+    from haute._pipeline_repair import PipelineRepairError, _extract_skeletons
+
+    for receiver in ("pipeline", "submodel"):
+        with pytest.raises(PipelineRepairError) as raised:
+            _extract_skeletons("def broken(:\n    pass\n", receiver=receiver)
+        assert raised.value.code == "repair_syntax_unsupported"
+
+
+def test_remove_unavailable_node_is_ready_when_only_target_connections_block(
     tmp_path: Path,
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Regex-recovered spans are decorator-inclusive, so no decorator dangles.
-
-    Regression: fragment spans used to start at the ``def`` line, so removing
-    a node from a syntax-broken source left its (multi-line) decorator behind
-    and committed a corrupted file.
-    """
-    from haute._pipeline_recovery import load_pipeline_editor_document
-
-    pipeline_file = _write(
-        tmp_path / "main.py",
-        """\
-        import haute
-
-        pipeline = haute.Pipeline("syntax-broken")
-
-        @pipeline.polars
-        def source():
-            return None
-
-        @pipeline.polars(
-        )
-        def broken(source):
-            return source +
-
-        @pipeline.polars
-        def tail(source):
-            return source
-        """,
-    )
-    monkeypatch.chdir(tmp_path)
-    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
-    assert document.load_status == "degraded"
-    assert [(node.authored_id, node.availability) for node in document.nodes] == [
-        ("source", "ready"),
-        ("broken", "unavailable"),
-        ("tail", "ready"),
-    ]
-    target = next(node for node in document.nodes if node.authored_id == "broken")
-
-    request = {
-        "source_file": document.source_file,
-        "source_revision": document.source_revision,
-        "target_source_file": target.source_file,
-        "target_recovery_id": target.recovery_id,
-        "delete_config": False,
-    }
-    plan_response = client.post("/api/pipeline/repair/remove/dry-run", json=request)
-    assert plan_response.status_code == 200, plan_response.text
-    plan = plan_response.json()
-    assert "@pipeline.polars(" in plan["changes"][0]["diff"]
-    assert plan["predicted_load_status"] == "ready"
-
-    response = client.post(
-        "/api/pipeline/repair/remove/apply",
-        json={**request, "plan_hash": plan["plan_hash"]},
-    )
-
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    assert payload["document"]["load_status"] == "ready"
-    assert [node["authored_id"] for node in payload["document"]["nodes"]] == [
-        "source",
-        "tail",
-    ]
-    assert pipeline_file.read_text(encoding="utf-8") == textwrap.dedent(
-        """\
-        import haute
-
-        pipeline = haute.Pipeline("syntax-broken")
-
-        @pipeline.polars
-        def source():
-            return None
-
-
-        @pipeline.polars
-        def tail(source):
-            return source
-        """
-    )
-    assert parse_pipeline_file(pipeline_file).pipeline_name == "syntax-broken"
-
-
-def test_remove_unavailable_node_repairs_trailing_syntax_broken_node(
-    tmp_path: Path,
-    client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A dangling decorator at end-of-file would make every later load raise."""
-    from haute._pipeline_recovery import load_pipeline_editor_document
-
-    pipeline_file = _write(
-        tmp_path / "main.py",
-        """\
-        import haute
-
-        pipeline = haute.Pipeline("syntax-broken-tail")
-
-        @pipeline.polars
-        def source():
-            return None
-
-        @pipeline.polars()
-        def broken(source):
-            return source +
-        """,
-    )
-    monkeypatch.chdir(tmp_path)
-    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
-    target = next(node for node in document.nodes if node.authored_id == "broken")
-    assert target.availability == "unavailable"
-
-    request = {
-        "source_file": document.source_file,
-        "source_revision": document.source_revision,
-        "target_source_file": target.source_file,
-        "target_recovery_id": target.recovery_id,
-        "delete_config": False,
-    }
-    plan = client.post("/api/pipeline/repair/remove/dry-run", json=request)
-    assert plan.status_code == 200, plan.text
-
-    response = client.post(
-        "/api/pipeline/repair/remove/apply",
-        json={**request, "plan_hash": plan.json()["plan_hash"]},
-    )
-
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    assert payload["document"]["load_status"] == "ready"
-    assert [node["authored_id"] for node in payload["document"]["nodes"]] == ["source"]
-    assert pipeline_file.read_text(encoding="utf-8") == textwrap.dedent(
-        """\
-        import haute
-
-        pipeline = haute.Pipeline("syntax-broken-tail")
-
-        @pipeline.polars
-        def source():
-            return None
-
-        """
-    )
-    assert parse_pipeline_file(pipeline_file).pipeline_name == "syntax-broken-tail"
-
-
-def test_remove_unavailable_node_predicts_ready_when_only_target_connections_block(
-    tmp_path: Path,
-    client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Diagnostics on connections naming the target do not degrade the prediction."""
+    """Diagnostics on connections naming the target do not survive its removal."""
     from haute._pipeline_recovery import load_pipeline_editor_document
 
     pipeline_file = _write(
@@ -2304,14 +2214,10 @@ def test_remove_unavailable_node_predicts_ready_when_only_target_connections_blo
         "target_recovery_id": target.recovery_id,
         "delete_config": False,
     }
-    plan_response = client.post("/api/pipeline/repair/remove/dry-run", json=request)
-    assert plan_response.status_code == 200, plan_response.text
-    plan = plan_response.json()
-    assert plan["predicted_load_status"] == "ready"
 
     response = client.post(
         "/api/pipeline/repair/remove/apply",
-        json={**request, "plan_hash": plan["plan_hash"]},
+        json=request,
     )
 
     assert response.status_code == 200, response.text
@@ -2339,6 +2245,7 @@ def test_remove_unavailable_node_repairs_a_child_submodel_source(
             definition_id="scoring",
             input_ports=[],
             output_ports=[],
+            pipeline_dir="..",
         )
 
         @submodel.removed_node
@@ -2362,9 +2269,7 @@ def test_remove_unavailable_node_repairs_a_child_submodel_source(
 
         pipeline.submodel(
             "modules/scoring.py",
-            definition_id="scoring",
-            instance_id="scoring__one",
-            alias="scoring",
+            "scoring",
         )
         """,
     )
@@ -2372,7 +2277,9 @@ def test_remove_unavailable_node_repairs_a_child_submodel_source(
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     assert document.submodels is not None
     target = next(
-        node for node in document.submodels["scoring"].graph.nodes if node.authored_id == "obsolete"
+        node
+        for node in document.submodels["modules/scoring.py"].graph.nodes
+        if node.authored_id == "obsolete"
     )
     request = {
         "source_file": document.source_file,
@@ -2383,19 +2290,16 @@ def test_remove_unavailable_node_repairs_a_child_submodel_source(
     }
     parent_before = pipeline_file.read_bytes()
 
-    dry_run = client.post("/api/pipeline/repair/remove/dry-run", json=request)
-    assert dry_run.status_code == 200, dry_run.text
-    assert [change["path"] for change in dry_run.json()["changes"]] == [
-        "modules/scoring.py",
-        "modules/scoring.haute.json",
-    ]
-
     applied = client.post(
         "/api/pipeline/repair/remove/apply",
-        json={**request, "plan_hash": dry_run.json()["plan_hash"]},
+        json=request,
     )
 
     assert applied.status_code == 200, applied.text
+    assert [change["path"] for change in applied.json()["changes"]] == [
+        "modules/scoring.py",
+        "modules/scoring.haute.json",
+    ]
     assert applied.json()["document"]["load_status"] == "ready"
     assert pipeline_file.read_bytes() == parent_before
     assert "@submodel.removed_node" not in child_file.read_text(encoding="utf-8")
@@ -2445,7 +2349,7 @@ def test_remove_unavailable_node_rejects_implicit_consumers_without_writing(
     before = pipeline_file.read_bytes()
 
     response = client.post(
-        "/api/pipeline/repair/remove/dry-run",
+        "/api/pipeline/repair/remove/apply",
         json=_remove_repair_request(document, "obsolete"),
     )
 
@@ -2455,10 +2359,15 @@ def test_remove_unavailable_node_rejects_implicit_consumers_without_writing(
     assert detail["consumers"] == [
         {"function": "downstream", "parameter": "obsolete"},
     ]
+    # The refusal names the blocker, so the author knows what to remove first.
+    assert detail["message"] == (
+        "'obsolete' is an input parameter of 'downstream'. Remove those nodes first, "
+        "or recover 'obsolete' instead."
+    )
     assert pipeline_file.read_bytes() == before
 
 
-def test_remove_unavailable_node_apply_rejects_revision_and_plan_drift(
+def test_remove_unavailable_node_apply_rejects_a_stale_revision(
     tmp_path: Path,
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -2469,26 +2378,13 @@ def test_remove_unavailable_node_apply_rejects_revision_and_plan_drift(
     monkeypatch.chdir(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     request = _remove_repair_request(document, "explore")
-    plan_response = client.post(
-        "/api/pipeline/repair/remove/dry-run",
-        json=request,
-    )
-    assert plan_response.status_code == 200, plan_response.text
     original = pipeline_file.read_bytes()
-
-    wrong_plan = client.post(
-        "/api/pipeline/repair/remove/apply",
-        json={**request, "plan_hash": "0" * 64},
-    )
-    assert wrong_plan.status_code == 409
-    assert wrong_plan.json()["detail"]["code"] == "repair_plan_conflict"
-    assert pipeline_file.read_bytes() == original
 
     _write_bytes(pipeline_file, original + b"\n# concurrent external edit\n")
     externally_edited = pipeline_file.read_bytes()
     stale_revision = client.post(
         "/api/pipeline/repair/remove/apply",
-        json={**request, "plan_hash": plan_response.json()["plan_hash"]},
+        json=request,
     )
     assert stale_revision.status_code == 409
     assert stale_revision.json()["detail"]["code"] == "repair_revision_conflict"
@@ -2529,28 +2425,74 @@ def test_remove_unavailable_node_retains_config_unless_separately_approved(
         "delete_config": delete_config,
     }
 
-    dry_run = client.post(
-        "/api/pipeline/repair/remove/dry-run",
-        json=request,
-    )
-    assert dry_run.status_code == 200, dry_run.text
-    plan = dry_run.json()
-    if delete_config:
-        assert plan["retained_artifacts"] == []
-        assert plan["changes"][-1]["path"] == "config/obsolete.json"
-        assert plan["changes"][-1]["operation"] == "delete"
-        assert plan["changes"][-1]["diff"] == ""
-    else:
-        assert plan["retained_artifacts"] == ["config/obsolete.json"]
-        assert "will be retained" in plan["warnings"][0]
-
     applied = client.post(
         "/api/pipeline/repair/remove/apply",
-        json={**request, "plan_hash": plan["plan_hash"]},
+        json=request,
     )
     assert applied.status_code == 200, applied.text
+    changes = applied.json()["changes"]
+    if delete_config:
+        assert changes[-1]["path"] == "config/obsolete.json"
+        assert changes[-1]["operation"] == "delete"
+        assert changes[-1]["diff"] == ""
+    else:
+        assert all(change["path"] != "config/obsolete.json" for change in changes)
     assert config.exists() is (not delete_config)
     assert applied.json()["document"]["load_status"] == "ready"
+
+
+def test_remove_unavailable_node_refuses_a_config_edited_while_planning(
+    tmp_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An external edit between the planner's revision check and its artifact
+    reads is refused, never deleted: the confirmed revision is re-checked before
+    anything is staged."""
+    import haute._pipeline_repair as repair
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    config = tmp_path / "config" / "obsolete.json"
+    config.parent.mkdir()
+    config.write_text('{"legacy":true}\n', encoding="utf-8")
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+        pipeline = haute.Pipeline("config-race")
+
+        @pipeline.removed_node(config="config/obsolete.json")
+        def obsolete():
+            return None
+
+        @pipeline.polars
+        def healthy():
+            return None
+        """,
+    )
+    monkeypatch.chdir(tmp_path)
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+    request = {**_remove_repair_request(document, "obsolete"), "delete_config": True}
+    original_source = pipeline_file.read_bytes()
+    concurrent = b'{"edited":"by another program"}\n'
+    real_load = repair.load_pipeline_editor_document
+    loads = 0
+
+    def edit_after_the_revision_check(path, *, project_root):
+        nonlocal loads
+        loads += 1
+        loaded = real_load(path, project_root=project_root)
+        if loads == 1:
+            config.write_bytes(concurrent)
+        return loaded
+
+    monkeypatch.setattr(repair, "load_pipeline_editor_document", edit_after_the_revision_check)
+    response = client.post("/api/pipeline/repair/remove/apply", json=request)
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "repair_revision_conflict"
+    assert config.read_bytes() == concurrent
+    assert pipeline_file.read_bytes() == original_source
 
 
 def test_remove_unavailable_node_rejects_deleting_a_shared_config(
@@ -2582,7 +2524,7 @@ def test_remove_unavailable_node_rejects_deleting_a_shared_config(
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
 
     response = client.post(
-        "/api/pipeline/repair/remove/dry-run",
+        "/api/pipeline/repair/remove/apply",
         json={
             **_remove_repair_request(document, "obsolete"),
             "delete_config": True,
@@ -2624,7 +2566,7 @@ def test_remove_unavailable_node_rejects_config_deletion_of_a_document_artifact(
     }
 
     response = client.post(
-        "/api/pipeline/repair/remove/dry-run",
+        "/api/pipeline/repair/remove/apply",
         json={
             **_remove_repair_request(document, "obsolete"),
             "delete_config": True,
@@ -2662,7 +2604,7 @@ def test_remove_unavailable_node_rejects_duplicate_identity_and_mixed_chain(
     duplicate_document = load_pipeline_editor_document(duplicate_file, project_root=tmp_path)
     duplicate_target = duplicate_document.nodes[0]
     duplicate = client.post(
-        "/api/pipeline/repair/remove/dry-run",
+        "/api/pipeline/repair/remove/apply",
         json={
             "source_file": duplicate_document.source_file,
             "source_revision": duplicate_document.source_revision,
@@ -2697,7 +2639,7 @@ def test_remove_unavailable_node_rejects_duplicate_identity_and_mixed_chain(
     )
     mixed_document = load_pipeline_editor_document(mixed_file, project_root=tmp_path)
     mixed = client.post(
-        "/api/pipeline/repair/remove/dry-run",
+        "/api/pipeline/repair/remove/apply",
         json=_remove_repair_request(mixed_document, "obsolete"),
     )
     assert mixed.status_code == 409
@@ -2733,7 +2675,7 @@ def test_remove_unavailable_node_rejects_connection_sharing_a_source_line(
     before = pipeline_file.read_bytes()
 
     response = client.post(
-        "/api/pipeline/repair/remove/dry-run",
+        "/api/pipeline/repair/remove/apply",
         json=_remove_repair_request(document, "obsolete"),
     )
 
@@ -2771,7 +2713,7 @@ def test_remove_unavailable_node_does_not_delete_a_trailing_connection_comment(
     before = pipeline_file.read_bytes()
 
     response = client.post(
-        "/api/pipeline/repair/remove/dry-run",
+        "/api/pipeline/repair/remove/apply",
         json=_remove_repair_request(document, "obsolete"),
     )
 
@@ -2805,13 +2747,10 @@ def test_remove_unavailable_node_can_leave_independent_degraded_error(
     monkeypatch.chdir(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     request = _remove_repair_request(document, "obsolete")
-    dry_run = client.post("/api/pipeline/repair/remove/dry-run", json=request)
-    assert dry_run.status_code == 200, dry_run.text
-    assert dry_run.json()["predicted_load_status"] == "degraded"
 
     applied = client.post(
         "/api/pipeline/repair/remove/apply",
-        json={**request, "plan_hash": dry_run.json()["plan_hash"]},
+        json=request,
     )
 
     assert applied.status_code == 200, applied.text
@@ -2837,8 +2776,6 @@ def test_remove_unavailable_node_rolls_back_every_staged_artifact_on_write_failu
     monkeypatch.chdir(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     request = _remove_repair_request(document, "explore")
-    dry_run = client.post("/api/pipeline/repair/remove/dry-run", json=request)
-    assert dry_run.status_code == 200, dry_run.text
     before = {pipeline_file: pipeline_file.read_bytes(), sidecar: sidecar.read_bytes()}
     real_stage = _save_pipeline._stage_artifact_write_bytes
 
@@ -2854,7 +2791,7 @@ def test_remove_unavailable_node_rolls_back_every_staged_artifact_on_write_failu
 
     response = client.post(
         "/api/pipeline/repair/remove/apply",
-        json={**request, "plan_hash": dry_run.json()["plan_hash"]},
+        json=request,
     )
 
     assert response.status_code == 409
@@ -2903,3 +2840,147 @@ def test_remove_position_entry_rejects_duplicate_json_identity(sidecar: bytes) -
         _remove_position_entry(sidecar, "explore")
 
     assert raised.value.code == "repair_sidecar_ambiguous"
+
+
+def test_editor_identity_route_requires_an_alias_for_submodel_nodes(client: TestClient) -> None:
+    """An occurrence's input name is its own name, so a submodel node without an alias is a 422."""
+    response = client.post(
+        "/api/pipeline/editor-identities",
+        json={
+            "nodes": [
+                {
+                    "node_id": "pricing",
+                    "label": "Pricing",
+                    "node_type": "submodel",
+                    "source_handles": ["out__written_premium"],
+                }
+            ]
+        },
+    )
+    assert response.status_code == 422
+    assert "alias" in response.text
+
+
+def _constants_source(name: str = "legacy") -> str:
+    return _legacy_explore_source(name).replace(
+        f'pipeline = haute.Pipeline("{name}")',
+        f'pipeline = haute.Pipeline("{name}", global_constants="config/global_constants.json")\n'
+        "        global_constants = pipeline.global_constants",
+    )
+
+
+@pytest.mark.parametrize("strict", [True, False], ids=["ready", "recovered"])
+def test_an_editor_document_carries_the_constants_and_the_load_error(
+    tmp_path: Path,
+    strict: bool,
+) -> None:
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    source = _constants_source()
+    if strict:
+        source = textwrap.dedent(
+            """\
+            import haute
+            import polars as pl
+
+            pipeline = haute.Pipeline("p", global_constants="config/global_constants.json")
+            global_constants = pipeline.global_constants
+
+            @pipeline.polars
+            def quotes():
+                return pl.LazyFrame({"a": [global_constants.rate]})
+            """
+        )
+    pipeline_file = _write(tmp_path / "main.py", source)
+    constants = tmp_path / "config" / "global_constants.json"
+    constants.parent.mkdir()
+    constants.write_text(
+        '{"constants": [{"name": "rate", "type": "float", "value": 1.5}]}', encoding="utf-8"
+    )
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert document.load_status == ("ready" if strict else "degraded")
+    assert [(constant.name, constant.value) for constant in document.global_constants] == [
+        ("rate", 1.5)
+    ]
+    assert document.global_constants_error is None
+
+    constants.write_text('{"constants": [{"name": "rate"}]}', encoding="utf-8")
+    broken = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert broken.global_constants == []
+    assert broken.global_constants_error is not None
+    assert "constant 1 ('rate')" in broken.global_constants_error
+
+
+_UNKEPT_STATEMENTS_SOURCE = """\
+import haute
+
+pipeline = haute.Pipeline("kept")
+RATE = 1.05
+
+@pipeline.polars
+def source():
+    return None
+
+THRESHOLD = 10
+
+def helper(x):
+    return x
+
+@pipeline.polars
+def transform(source):
+    return helper(source)
+
+print("trailing")
+"""
+
+
+def test_statements_after_the_constructor_degrade_the_document_line_by_line(
+    tmp_path: Path,
+) -> None:
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    pipeline_file = _write(tmp_path / "main.py", _UNKEPT_STATEMENTS_SOURCE)
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    unkept = [d for d in document.diagnostics if d.code == "unkept_module_statement"]
+    assert document.load_status == "degraded"
+    assert document.capabilities.can_save is False
+    assert [
+        (d.source_span.start_line, d.source_span.end_line) for d in unkept if d.source_span
+    ] == [
+        (4, 4),
+        (10, 10),
+        (12, 13),
+        (19, 19),
+    ]
+    assert all(d.remediation and "preserve-start" in d.remediation for d in unkept)
+
+
+def test_saving_over_statements_a_save_would_drop_is_refused_naming_them(
+    tmp_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipeline_file = _write(tmp_path / "main.py", _UNKEPT_STATEMENTS_SOURCE)
+    monkeypatch.chdir(tmp_path)
+    before = pipeline_file.read_bytes()
+
+    response = client.post(
+        "/api/pipeline/save",
+        json={
+            "name": "kept",
+            "source_file": "main.py",
+            "base_revision": "posted-ready-revision",
+            "graph": {"nodes": [], "edges": []},
+        },
+    )
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert "main.py:4" in detail and "main.py:19" in detail
+    assert "preserve-start" in detail
+    assert pipeline_file.read_bytes() == before

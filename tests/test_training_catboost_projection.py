@@ -137,6 +137,10 @@ def test_glm_partition_projection_stays_limited_to_terms_and_aux_columns(tmp_pat
         weight="weight",
         offset="offset",
         algorithm="glm",
+        params={
+            "family": "gaussian",
+            "terms": {"term_a": {"type": "linear"}, "term_b": {"type": "linear"}},
+        },
     )
 
     projected = job._scan_with_columns(

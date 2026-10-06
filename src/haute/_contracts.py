@@ -37,6 +37,13 @@ OPAQUE_CONTRACT_SENTINEL = "opaque"
 #: MLflow source.
 _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY = "__haute_deploy_model_input_columns"
 
+#: Private config key used only on the scorer's copied deploy graph. It carries
+#: the input columns of the bundled artifact a file-sourced optimiserApply
+#: serves (an empty list: keep the generic rules), so projection plans from the
+#: artifact the deployed apply reads. It holds column names, never a path, so
+#: a client-supplied value cannot make planning open a file.
+_DEPLOY_OPTIMISER_INPUT_COLUMNS_CONFIG_KEY = "__haute_deploy_optimiser_input_columns"
+
 
 @dataclass(frozen=True, slots=True)
 class Contract:
@@ -58,6 +65,21 @@ class Contract:
         inputs = _freeze(referenced)
         outputs = _freeze(produced)
         return cls(inputs=inputs, outputs=outputs)
+
+    def fill_opaque_sides(self, declared: Contract) -> Contract:
+        """Return this builder contract with its opaque sides taken from *declared*.
+
+        A side the builder derives from the node's configuration is
+        authoritative.  A declared value for that side is either identical
+        (the parse-time check enforces it) or stale: parsing carries the
+        previously generated annotation onto the config, and editing the
+        config afterwards does not rewrite it.  A declaration therefore only
+        supplies the sides the builder cannot derive.
+        """
+        return Contract(
+            inputs=self.inputs if self.inputs is not None else declared.inputs,
+            outputs=self.outputs if self.outputs is not None else declared.outputs,
+        )
 
     def to_tuple(self) -> ColumnContract:
         """Return the ``(produced, referenced)`` tuple form."""

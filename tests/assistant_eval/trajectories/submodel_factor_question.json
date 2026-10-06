@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": "submodel_factor_question",
+  "case": "submodel_factor_question",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "vehicle_factors adds vehicle_age and vehicle_factor to the policies; premium multiplies base_rate by vehicle_factor.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

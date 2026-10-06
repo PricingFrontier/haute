@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 
 from haute._logging import get_logger
+from haute._sandbox import contained_path
 from haute._submodel_paths import (
     MalformedSubmodelPathError,
     SubmodelPathOutsideProjectError,
@@ -22,7 +23,6 @@ from haute.routes._helpers import (
     load_sidecar_positions,
     parse_pipeline_to_graph,
     pipeline_dir,
-    validate_safe_path,
 )
 from haute.schemas import (
     CreateSubmodelRequest,
@@ -48,7 +48,7 @@ def _require_parent_source_file(source_file: str) -> None:
 def _load_parent_document(source_file: str) -> tuple[Path, Path, PipelineGraph]:
     _require_parent_source_file(source_file)
     project_root = Path.cwd().resolve()
-    parent_path = validate_safe_path(project_root, source_file)
+    parent_path = contained_path(project_root, source_file)
     if not parent_path.is_file():
         raise HTTPException(status_code=404, detail="Parent pipeline file not found.")
     editor_document = load_pipeline_editor_document(
@@ -121,6 +121,40 @@ def _apply_sidecar_positions(graph: PipelineGraph, source_path: Path) -> Pipelin
     return graph.model_copy(update={"nodes": updated_nodes})
 
 
+def _refuse_new_name_violations(
+    before: PipelineGraph, after: PipelineGraph, name: str, project_root: Path
+) -> None:
+    """Refuse a grouping whose result breaks the naming rule where its input did not.
+
+    The submodel's name becomes its occurrence alias, which may not be
+    reserved, a built-in or another node's name (a selected child's
+    included), and grouping must not add any other violation. Violations the
+    graph already had are the editor's to fix and do not block grouping.
+    """
+    from haute._executable_names import NameViolation
+    from haute._support_code_names import name_violations, utility_reader
+
+    def identity(violation: NameViolation) -> tuple[object, ...]:
+        # Grouping moves nodes into the new definition, which changes the
+        # module a violation names but not the violation itself.
+        labels = sorted(party.label for party in violation.parties)
+        return (violation.kind, violation.name, tuple(labels))
+
+    read_utility = utility_reader(pipeline_dir(), project_root)
+    existing = {identity(violation) for violation in name_violations(before, read_utility)}
+    added = [
+        violation.message()
+        for violation in name_violations(after, read_utility)
+        if identity(violation) not in existing
+    ]
+    if added:
+        raise HTTPException(
+            status_code=400,
+            detail=f"A submodel named {name!r} would break the pipeline's names. "
+            "Nothing was changed. " + " ".join(added),
+        )
+
+
 @router.post("/create", response_model=CreateSubmodelResponse)
 async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse:
     """Group selected nodes in memory and return the transformed graph.
@@ -186,6 +220,8 @@ async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse
                 exc_info=True,
             )
             raise HTTPException(status_code=400, detail=_INTERNAL_ERROR_DETAIL) from None
+
+        _refuse_new_name_violations(submitted_graph, result.graph, body.name, project_root)
 
         svc = SavePipelineService(project_root=project_root, pipeline_root=pipeline_dir())
         try:

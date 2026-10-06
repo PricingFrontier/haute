@@ -36,7 +36,7 @@ function requireNodeType(node: Node): NodeTypeValue {
 function submodelDefinition(
   node: Node,
   submodels: SubmodelRegistry,
-): { definition: SubmodelDefinition; alias: string } {
+): SubmodelDefinition {
   if (!isSubmodelInstanceConfig(node.data.config)) {
     throw new Error(`Cannot resolve editor identity for submodel ${node.id}: malformed occurrence`)
   }
@@ -46,7 +46,7 @@ function submodelDefinition(
       `Cannot resolve editor identity for submodel ${node.id}: definition ${node.data.config.definitionId} is unavailable`,
     )
   }
-  return { definition, alias: node.data.config.alias }
+  return definition
 }
 
 function submodelPortHandles(node: Node): string[] {
@@ -76,17 +76,20 @@ function requestNode(
   if (typeof label !== "string" || label.length === 0) {
     throw new Error(`Cannot resolve editor identity for node ${node.id}: label is missing`)
   }
-  let submodelAlias: string | null = null
   let sourceHandles: string[] = []
+  let alias: string | undefined
   if (nodeType === NODE_TYPES.API_INPUT) {
     sourceHandles = apiInputFrameLabels(
       node.data.config as Record<string, unknown> | undefined,
       reservedApiInputFrameLabels,
     )
   } else if (nodeType === NODE_TYPES.SUBMODEL) {
-    const { definition, alias } = submodelDefinition(node, submodels)
-    submodelAlias = alias
-    sourceHandles = definition.outputPorts.map((port) => `out__${port.portId}`)
+    if (!isSubmodelInstanceConfig(node.data.config)) {
+      throw new Error(`Cannot resolve editor identity for submodel ${node.id}: malformed occurrence`)
+    }
+    alias = node.data.config.alias
+    const definition = submodelDefinition(node, submodels)
+    sourceHandles = definition.outputPorts.map((port) => `out__${port.name}`)
   } else if (nodeType === NODE_TYPES.SUBMODEL_PORT) {
     sourceHandles = submodelPortHandles(node)
   }
@@ -97,8 +100,31 @@ function requestNode(
     node_id: node.id,
     label,
     node_type: nodeType,
-    submodel_alias: submodelAlias,
     source_handles: sourceHandles,
+    ...(alias !== undefined ? { alias } : {}),
+  }
+}
+
+/**
+ * The document's naming context for an identity request: the whole graph as
+ * save would receive it, and whether the server allocates free names (node
+ * creation) or reports a collision (rename).
+ */
+export interface EditorNamingContext {
+  graph: NonNullable<EditorIdentityBatchRequest["graph"]>
+  allocate: boolean
+  /** The submodel definition the nodes belong to (a drilled view), or null at the root. */
+  scope: string | null
+}
+
+/** A name the naming rule refuses; nothing was applied. */
+export class EditorNameCollisionError extends Error {
+  readonly nodeId: string
+
+  constructor(nodeId: string, message: string) {
+    super(message)
+    this.name = "EditorNameCollisionError"
+    this.nodeId = nodeId
   }
 }
 
@@ -106,22 +132,30 @@ export function buildEditorIdentityRequest(
   nodes: readonly Node[],
   submodels: SubmodelRegistry,
   reservedApiInputFrameLabels: ReadonlySet<string>,
+  naming?: EditorNamingContext,
 ): EditorIdentityBatchRequest {
   if (new Set(nodes.map((node) => node.id)).size !== nodes.length) {
     throw new Error("Cannot resolve editor identities: node ids are duplicated")
   }
   return {
-    nodes: nodes.map((node) => requestNode(
-      node,
-      submodels,
-      reservedApiInputFrameLabels,
-    )),
+    nodes: nodes.map((node) => {
+      const request = requestNode(node, submodels, reservedApiInputFrameLabels)
+      return naming?.scope ? { ...request, submodel: naming.scope } : request
+    }),
+    ...(naming ? { graph: naming.graph, allocate: naming.allocate } : {}),
   }
 }
 
 function attachIdentity(node: Node, identity: EditorNodeIdentity): Node {
+  // The server's name: the node's own, or the one allocation gave it. An
+  // occurrence's label is its alias.
+  const config = identity.alias === null
+    ? node.data.config
+    : { ...(node.data.config as Record<string, unknown> | undefined), alias: identity.alias }
   const data: Record<string, unknown> = {
     ...node.data,
+    label: identity.label,
+    ...(config === undefined ? {} : { config }),
     _functionName: identity.function_name,
     _defaultInputName: identity.default_input_name,
     _sourceHandleInputNames: structuredClone(identity.source_handle_input_names),
@@ -143,6 +177,10 @@ export function applyEditorIdentityResponse(
     || response.identities.some((identity, index) => identity.node_id !== nodes[index]?.id)
   ) {
     throw new Error("Cannot attach editor identities: response does not match node order")
+  }
+  const collision = response.identities.find((identity) => identity.collision !== null)
+  if (collision?.collision) {
+    throw new EditorNameCollisionError(collision.node_id, collision.collision)
   }
   return nodes.map((node, index) => attachIdentity(node, response.identities[index]))
 }
@@ -208,6 +246,57 @@ export async function resolveEditorGraphIdentities({
   edges,
   submodels,
   reservedApiInputFrameLabels,
+  naming,
+  resolve = resolveEditorNodeIdentities,
+}: {
+  nodes: readonly Node[]
+  edges: readonly Edge[]
+  submodels: SubmodelRegistry
+  reservedApiInputFrameLabels: ReadonlySet<string>
+  /** With a naming context the nodes are named against the whole document. */
+  naming?: EditorNamingContext
+  resolve?: IdentityResolver
+}): Promise<{ nodes: Node[]; edges: PipelineEdge[] }> {
+  const request = buildEditorIdentityRequest(nodes, submodels, reservedApiInputFrameLabels, naming)
+  const response = await resolve(request)
+  const resolvedNodes = applyEditorIdentityResponse(nodes, response)
+  return {
+    nodes: resolvedNodes,
+    edges: attachEditorEdgeIdentities(edges, resolvedNodes),
+  }
+}
+
+function syntheticSubmodelPortNode(definition: SubmodelDefinition): Node {
+  const childIds = new Set(definition.graph.nodes.map((node) => node.id))
+  const baseId = "__submodel_input_ports__"
+  let id = baseId
+  let suffix = 1
+  while (childIds.has(id)) {
+    id = `${baseId}_${suffix}`
+    suffix += 1
+  }
+  return {
+    id,
+    type: NODE_TYPES.SUBMODEL_PORT,
+    position: { x: 0, y: 0 },
+    data: {
+      label: "Submodel inputs",
+      nodeType: NODE_TYPES.SUBMODEL_PORT,
+      portDirection: "input",
+      ports: definition.inputPorts.map((port) => ({ id: port.name, label: port.name })),
+    },
+  }
+}
+
+/**
+ * Resolves server-owned identities for a root graph and every canonical submodel definition.
+ * Each definition is resolved in its own identity scope with a transient input-boundary node.
+ */
+export async function resolveCanonicalGraphIdentities({
+  nodes,
+  edges,
+  submodels,
+  reservedApiInputFrameLabels,
   resolve = resolveEditorNodeIdentities,
 }: {
   nodes: readonly Node[]
@@ -215,12 +304,43 @@ export async function resolveEditorGraphIdentities({
   submodels: SubmodelRegistry
   reservedApiInputFrameLabels: ReadonlySet<string>
   resolve?: IdentityResolver
-}): Promise<{ nodes: Node[]; edges: PipelineEdge[] }> {
-  const request = buildEditorIdentityRequest(nodes, submodels, reservedApiInputFrameLabels)
-  const response = await resolve(request)
-  const resolvedNodes = applyEditorIdentityResponse(nodes, response)
-  return {
-    nodes: resolvedNodes,
-    edges: attachEditorEdgeIdentities(edges, resolvedNodes),
+}): Promise<{ nodes: Node[]; edges: PipelineEdge[]; submodels: Record<string, SubmodelDefinition> }> {
+  const definitions = Object.entries(submodels).map(([definitionId, definition]) => {
+    if (!isSubmodelDefinition(definition, definitionId)) {
+      throw new Error(`Cannot resolve canonical submodel ${definitionId}: definition is malformed`)
+    }
+    return [definitionId, definition] as const
+  })
+
+  const root = await resolveEditorGraphIdentities({
+    nodes,
+    edges,
+    submodels,
+    reservedApiInputFrameLabels,
+    resolve,
+  })
+  const resolvedSubmodels: Record<string, SubmodelDefinition> = {}
+  for (const [definitionId, definition] of definitions) {
+    const boundary = syntheticSubmodelPortNode(definition)
+    const graph = await resolveEditorGraphIdentities({
+      nodes: [...definition.graph.nodes, boundary],
+      edges: definition.graph.edges,
+      submodels,
+      reservedApiInputFrameLabels,
+      resolve,
+    })
+    const resolvedBoundary = graph.nodes.at(-1)
+    if (!resolvedBoundary) {
+      throw new Error(`Cannot resolve canonical submodel ${definitionId}: boundary node is missing`)
+    }
+    resolvedSubmodels[definitionId] = {
+      ...definition,
+      graph: {
+        ...definition.graph,
+        nodes: graph.nodes.slice(0, -1),
+        edges: graph.edges,
+      },
+    }
   }
+  return { ...root, submodels: resolvedSubmodels }
 }

@@ -89,15 +89,20 @@ The token looks like: `dapi_your_token_here`
 
 Since deployment runs in CI (not on your laptop), your credentials need to be stored as **encrypted secrets** in your CI provider. This is a one-time setup.
 
-The two values you need are:
+The four values you need are:
 
 | Secret name | Value |
 |---|---|
+| `DATABRICKS_MLFLOW_HOST` | The workspace URL that hosts your MLflow experiments and Unity Catalog models |
+| `DATABRICKS_MLFLOW_TOKEN` | A personal access token whose scopes cover MLflow and the model registry |
 | `DATABRICKS_RATING_HOST` | Your workspace URL from Step 1 |
-| `DATABRICKS_RATING_TOKEN` | Your personal access token from Step 2 |
+| `DATABRICKS_RATING_TOKEN` | A personal access token whose scopes cover Model Serving |
 
-!!! note "Why the `RATING` in the name?"
-    The deploy pipeline uses these `DATABRICKS_RATING_*` names for the production serving credentials, keeping them separate from the general `DATABRICKS_HOST`/`DATABRICKS_TOKEN` pair the editor uses for data access and MLflow. The values can be the same workspace URL and token - only the names differ, and the deploy will fail with a clear error if the `RATING` names are missing.
+!!! note "Why separate MLflow and `RATING` credentials?"
+    Databricks token scopes can be narrow, so three credential spaces stay separate. The deploy logs and registers the model through MLflow with the `DATABRICKS_MLFLOW_*` pair, then creates or updates the serving endpoint with the `DATABRICKS_RATING_*` pair. The general `DATABRICKS_HOST`/`DATABRICKS_TOKEN` pair is for data access in the editor and is never used by MLflow or by the deploy. The values can be the same workspace URL and token when one token's scopes cover everything - only the names differ, and the deploy fails with a clear error naming any missing variable before it contacts Databricks.
+
+!!! warning "Smoke and impact need the general pair for now"
+    The generated smoke and impact steps reach the staging and production endpoints through the Databricks SDK's default credentials, `DATABRICKS_HOST` and `DATABRICKS_TOKEN`, which the four secrets above do not provide, so those two steps fail to authenticate as generated. Until they read the `DATABRICKS_RATING_*` pair themselves, add `DATABRICKS_HOST` and `DATABRICKS_TOKEN` (the same values as your `RATING` pair) to the smoke and impact steps in your workflow file: their `env:` block on GitHub Actions and Azure DevOps, their `variables:` block on GitLab.
 
 How to add them depends on your CI provider:
 
@@ -173,6 +178,8 @@ experiment_name = "/Shared/haute/motor-pricing"
 3. Set the name to `/Shared/haute/motor-pricing` (or whatever matches your pipeline)
 4. Click **Create**
 
+Staging deploys log to the same path with the staging suffix, `/Shared/haute/motor-pricing-staging`: create that one too, or let Haute create both.
+
 !!! tip "Naming convention"
     We recommend `/Shared/haute/<your-model-name>` so all team members can access it:
     ```
@@ -192,7 +199,7 @@ Databricks Model Serving is the feature that actually hosts your pipeline as an 
 3. If not, ask your workspace admin - Model Serving requires a **Premium** tier workspace
 
 !!! note "Cost"
-    Model Serving is billed per compute-second. With `serving_scale_to_zero = true` in your config, you only pay when the endpoint is actually receiving requests. For a `Small` workload with occasional traffic, expect **less than £5/month** for dev/test.
+    Model Serving is billed per compute-second. With `serving_scale_to_zero = true` in your config, you only pay when the endpoint is actually receiving requests. A `Small` workload with occasional dev/test traffic costs little; check your Databricks pricing for the rate.
 
 ---
 
@@ -219,6 +226,18 @@ serving_scale_to_zero = true
 
 [test_quotes]
 dir = "tests/quotes"
+
+[safety]
+impact_dataset = "data/portfolio_sample.parquet"
+
+[safety.approval]
+min_approvers = 2
+
+[ci]
+provider = "github"
+
+[ci.staging]
+endpoint_suffix = "-staging"
 ```
 
 ### What each setting means
@@ -233,6 +252,11 @@ dir = "tests/quotes"
 | `schema` | Unity Catalog schema | `"pricing"` |
 | `serving_workload_size` | How much compute to allocate - `Small`, `Medium`, or `Large` | `"Small"` |
 | `serving_scale_to_zero` | Whether the endpoint shuts down when idle (saves money) | `true` |
+| `dir` (`[test_quotes]`) | Where the [test quotes](../index.md#test-quotes) are | `"tests/quotes"` |
+| `impact_dataset` | The Parquet portfolio sample the impact step scores. CI can read only files in the repository, and `haute init` gitignores `data/`, so commit a sample you are allowed to share somewhere else (for example `tests/impact/portfolio_sample.parquet`) and point this at it | `"tests/impact/portfolio_sample.parquet"` |
+| `min_approvers` | A record of how many approvals your team expects; your CI provider's settings enforce it | `2` |
+| `provider` | The CI provider `haute init` generated workflows for | `"github"` |
+| `endpoint_suffix` | Added to the endpoint, model and experiment names for staging deploys | `"-staging"` |
 
 ---
 
@@ -246,14 +270,14 @@ Once your configuration is set up and CI secrets are in place, you can deploy th
 4. **Review the impact report** - download it from CI if the impact job ran, and check the premium changes make sense
 5. **Promote deliberately** - use the separate production workflow and any CI-provider approval rule your team configured
 
-The first deploy creates the serving endpoint, but `haute deploy` returns after Databricks accepts the create or update request. Provisioning can take **5–10 minutes**. The generated workflow does not wait for readiness before it invokes `haute smoke`, so add a Databricks readiness wait/retry to that workflow (or rerun smoke and impact after the endpoint is **Ready**) before treating the sequence as a release gate.
+The first deploy creates the serving endpoint, but `haute deploy` returns after Databricks accepts the create or update request. Provisioning can take **5–10 minutes**. `haute smoke` waits for the endpoint to report **Ready**, but the generated smoke job stops after 10 minutes, so raise that job's timeout or rerun smoke and impact once the endpoint is **Ready**.
 
 !!! success "What does success look like?"
     After Databricks reports the endpoint **Ready** and the corresponding smoke and impact commands have run, you should see:
 
     1. **In your CI provider** - green validation and deploy jobs; smoke and impact can be green only after endpoint readiness and valid endpoint configuration
-    2. **In Databricks** - click **Serving** in the left sidebar and you'll see your endpoint (e.g. `motor-pricing`) with status **Ready** and a green indicator
-    3. **In MLflow** - click **Experiments** in the left sidebar, navigate to your experiment (e.g. `/Shared/haute/motor-pricing`), and you'll see a new run logged with the deployment details
+    2. **In Databricks** - click **Serving** in the left sidebar and you'll see your endpoint with status **Ready** and a green indicator: `motor-pricing-staging` after a merge, and `motor-pricing` once the production workflow has run
+    3. **In MLflow** - click **Experiments** in the left sidebar, navigate to your experiment (`/Shared/haute/motor-pricing-staging` for staging, `/Shared/haute/motor-pricing` for production), and you'll see a new run logged with the deployment details. The staging model is registered as `main.pricing.motor-pricing-staging`
 
     If you see all three, your pipeline is live and serving premiums.
 
@@ -336,24 +360,18 @@ curl -X POST `
 Your token needs these permissions:
 
 - **Can Manage** on the MLflow experiment
-- **USE CATALOG** and **USE SCHEMA** on Unity Catalog
+- **USE CATALOG** and **USE SCHEMA** on Unity Catalog, and **CREATE MODEL** on the schema to register the model
 - **Can Manage** on serving endpoints (or ask an admin to create the endpoint first)
 
 Ask your Databricks admin to grant these if you see permission errors. This is usually someone in your IT or data engineering team - the person who set up the Databricks workspace.
 
 ### "Endpoint not found" when calling the API
 
-After deploying, the serving endpoint can take 5–10 minutes to provision. Check its status:
-
-```powershell
-haute status
-```
-
-Or in the Databricks UI: click **Serving** in the left sidebar and look for your endpoint.
+After deploying, the serving endpoint can take 5–10 minutes to provision. To check its status, click **Serving** in the Databricks left sidebar and look for your endpoint: it is ready to call once it shows **Ready**.
 
 ### Token expired
 
-Tokens have a lifetime (default 90 days). If your deploy suddenly fails with an authentication error, generate a new token (Step 2) and update the `DATABRICKS_RATING_TOKEN` secret in your CI provider.
+Tokens have a lifetime (default 90 days). If your deploy suddenly fails with an authentication error, generate a new token (Step 2) and update the `DATABRICKS_MLFLOW_TOKEN` or `DATABRICKS_RATING_TOKEN` secret in your CI provider (the error names which step failed: model registration uses the MLflow token, the serving endpoint the rating token).
 
 ### Slow first request (cold start)
 
@@ -361,7 +379,7 @@ With `serving_scale_to_zero = true`, the endpoint shuts down when it's idle. The
 
 ### Missing dependency error on the endpoint
 
-The deployed model needs the `haute` package. If you see `No module named 'haute'` in the endpoint logs, make sure `haute` is published and accessible from your Databricks workspace.
+The serving environment installs the exact Haute version CI deployed with (`haute==<version>`, on Python 3.11). If you see `No module named 'haute'` in the endpoint logs, make sure that version is published and can be installed from your Databricks workspace.
 
 ---
 
@@ -371,10 +389,11 @@ Before your first deploy, confirm:
 
 - [ ] You have your Databricks workspace URL
 - [ ] You have a Personal Access Token
-- [ ] Both are added as CI secrets (`DATABRICKS_RATING_HOST`, `DATABRICKS_RATING_TOKEN`)
+- [ ] All four are added as CI secrets (`DATABRICKS_MLFLOW_HOST`, `DATABRICKS_MLFLOW_TOKEN`, `DATABRICKS_RATING_HOST`, `DATABRICKS_RATING_TOKEN`)
 - [ ] Unity Catalog is enabled with a catalog and schema
 - [ ] `haute.toml` has the correct `experiment_name`, `catalog`, and `schema`
 - [ ] Model Serving is available in your workspace
-- [ ] You have at least one test quote JSON file in `tests/quotes/`
-- [ ] CI/CD workflows are committed to your repository
+- [ ] You have at least one test quote JSON file in `tests/quotes/`, in the [test quote format](../index.md#test-quotes)
+- [ ] `impact_dataset` points at a portfolio sample committed to the repository
+- [ ] CI/CD workflows are committed to your repository, with `pyproject.toml` and `uv.lock`
 - [ ] CI validation passes on a pull request

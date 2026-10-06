@@ -1,119 +1,152 @@
 import { describe, it, expect } from "vitest"
-import { formatAxisLabel, yTicks } from "../chartHelpers"
+import {
+  chartAxisLabel,
+  chartDomain,
+  chartLabelIndices,
+  chartTicks,
+  formatChartNumber,
+  formatChartTicks,
+} from "../chartHelpers"
 
-// ---------------------------------------------------------------------------
-// formatAxisLabel
-// ---------------------------------------------------------------------------
-
-describe("formatAxisLabel", () => {
-  it("formats 1000000 with M suffix", () => {
-    expect(formatAxisLabel(1_000_000)).toBe("1.0M")
+describe("formatChartNumber", () => {
+  it("keeps three significant digits below ten thousand", () => {
+    expect(formatChartNumber(0)).toBe("0")
+    expect(formatChartNumber(999)).toBe("999")
+    expect(formatChartNumber(1234.5)).toBe("1,230")
+    expect(formatChartNumber(-0.12345)).toBe("-0.123")
   })
 
-  it("formats -1000000 with M suffix", () => {
-    expect(formatAxisLabel(-1_000_000)).toBe("-1.0M")
+  it("uses compact notation from ten thousand", () => {
+    expect(formatChartNumber(12_345)).toBe("12.3K")
+    expect(formatChartNumber(1_234_567)).toBe("1.23M")
+    expect(formatChartNumber(-2_500_000)).toBe("-2.5M")
   })
 
-  it("formats 1500000 with M suffix", () => {
-    expect(formatAxisLabel(1_500_000)).toBe("1.5M")
-  })
-
-  it("formats 1000 with K suffix", () => {
-    expect(formatAxisLabel(1_000)).toBe("1.0K")
-  })
-
-  it("formats 1500 with K suffix", () => {
-    expect(formatAxisLabel(1_500)).toBe("1.5K")
-  })
-
-  it("formats 999 as plain integer", () => {
-    expect(formatAxisLabel(999)).toBe("999")
-  })
-
-  it("formats very small numbers in exponential notation", () => {
-    expect(formatAxisLabel(0.001)).toBe("1.0e-3")
-  })
-
-  it("formats 0 as '0'", () => {
-    expect(formatAxisLabel(0)).toBe("0")
-  })
-
-  it("formats 42 as plain integer", () => {
-    expect(formatAxisLabel(42)).toBe("42")
-  })
-
-  it("formats 3.14 with two decimal places", () => {
-    expect(formatAxisLabel(3.14)).toBe("3.14")
-  })
-
-  it("handles NaN gracefully", () => {
-    expect(formatAxisLabel(NaN)).toBe("NaN")
-  })
-
-  it("handles Infinity", () => {
-    expect(formatAxisLabel(Infinity)).toBe("InfinityM")
-  })
-
-  it("handles -Infinity", () => {
-    expect(formatAxisLabel(-Infinity)).toBe("-InfinityM")
-  })
-
-  it("formats negative thousands with K suffix", () => {
-    expect(formatAxisLabel(-2_500)).toBe("-2.5K")
-  })
-
-  it("formats a float below 0.01 with exponential notation", () => {
-    expect(formatAxisLabel(0.005)).toBe("5.0e-3")
-  })
-
-  it("formats a negative small number with exponential notation", () => {
-    expect(formatAxisLabel(-0.005)).toBe("-5.0e-3")
+  it("uses exponential notation for tiny non-zero values", () => {
+    expect(formatChartNumber(0.00005)).toBe("5.0e-5")
   })
 })
 
-// ---------------------------------------------------------------------------
-// yTicks
-// ---------------------------------------------------------------------------
-
-describe("yTicks", () => {
-  it("generates 5 evenly-spaced ticks for count=4", () => {
-    const ticks = yTicks(0, 10, 4)
-    expect(ticks).toEqual([0, 2.5, 5, 7.5, 10])
+describe("formatChartTicks", () => {
+  it("keeps near-constant padded axes distinct without rejecting their float spacing", () => {
+    // A series that barely moves: the axis pads it and spaces ticks below the
+    // values' last significant digit, where floating point is uneven.
+    for (const values of [[100, 100.0000001], [107, 107.00000001]]) {
+      const labels = formatChartTicks(chartTicks(...chartDomain(values), 5))
+      expect(new Set(labels).size).toBe(labels.length)
+    }
   })
 
-  it("returns [min] when min equals max", () => {
-    expect(yTicks(5, 5)).toEqual([5])
+  it("never asks for more digits than a double holds when ticks differ only by float noise", () => {
+    // Ticks a few ulps apart, as an unpadded domain over float-noise values
+    // gives: Intl refuses more than 21 significant digits, and labelling
+    // used to raise its RangeError. Standard, compact and exponential axes.
+    for (const value of [0.5, 1_424_952.8829840268, 0.00001234]) {
+      const ticks = [value, nextDouble(value), nextDouble(nextDouble(value))]
+      const labels = formatChartTicks(ticks)
+      expect(labels).toHaveLength(3)
+      for (const label of labels) {
+        expect(label.replace(/[^0-9]/g, "").replace(/^0+/, "").length).toBeLessThanOrEqual(16)
+      }
+    }
   })
 
-  it("defaults count to 4", () => {
-    const ticks = yTicks(0, 100)
-    expect(ticks).toHaveLength(5)
-    expect(ticks[0]).toBe(0)
-    expect(ticks[4]).toBe(100)
+  it("labels a narrow range with distinct numbers at one precision", () => {
+    // formatChartNumber labels each of these ticks "107".
+    expect(formatChartTicks(chartTicks(107, 107.3, 5))).toEqual(["107.00", "107.08", "107.15", "107.23", "107.30"])
   })
 
-  it("handles a negative range", () => {
-    const ticks = yTicks(-10, -2, 4)
-    expect(ticks).toHaveLength(5)
-    expect(ticks[0]).toBe(-10)
-    expect(ticks[4]).toBe(-2)
+  it("labels a range that three significant figures already tell apart as formatChartNumber does", () => {
+    expect(formatChartTicks(chartTicks(0, 1_250, 5))).toEqual(["0", "313", "625", "938", "1,250"])
+    expect(formatChartTicks(chartTicks(0.0001, 0.0005, 5))).toEqual(["0.0001", "0.0002", "0.0003", "0.0004", "0.0005"])
+    expect(formatChartTicks(chartTicks(1_092_000, 1_208_000, 5))).toEqual(["1.09M", "1.12M", "1.15M", "1.18M", "1.21M"])
+    expect(formatChartTicks(chartTicks(0, 1_000_000, 5))).toEqual(["0", "250K", "500K", "750K", "1M"])
+    expect(formatChartTicks(chartTicks(0.00001, 0.00005, 5))).toEqual(["1.0e-5", "2.0e-5", "3.0e-5", "4.0e-5", "5.0e-5"])
   })
 
-  it("first element is min and last is max", () => {
-    const ticks = yTicks(3, 27, 3)
-    expect(ticks[0]).toBe(3)
-    expect(ticks[ticks.length - 1]).toBe(27)
+  it("gives every label the same decimals, dropping only trailing zeros every tick shares", () => {
+    expect(formatChartTicks(chartTicks(8.4, 31.6, 5))).toEqual(["8.4", "14.2", "20.0", "25.8", "31.6"])
+    expect(formatChartTicks(chartTicks(0, 1, 5))).toEqual(["0.00", "0.25", "0.50", "0.75", "1.00"])
+    expect(formatChartTicks(chartTicks(0, 40, 5))).toEqual(["0", "10", "20", "30", "40"])
   })
 
-  it("generates correct count+1 ticks", () => {
-    const ticks = yTicks(0, 20, 2)
-    expect(ticks).toEqual([0, 10, 20])
+  it("keeps compact notation and tells large neighbouring ticks apart", () => {
+    expect(formatChartTicks(chartTicks(12_300_000, 12_500_000, 5))).toEqual(["12.3M", "12.35M", "12.4M", "12.45M", "12.5M"])
   })
 
-  it("handles fractional boundaries", () => {
-    const ticks = yTicks(0.5, 1.5, 2)
-    expect(ticks).toHaveLength(3)
-    expect(ticks[0]).toBe(0.5)
-    expect(ticks[2]).toBe(1.5)
+  it("never labels a tick that rounds to zero as negative", () => {
+    expect(formatChartTicks(chartTicks(-0.3, 0.3, 5))).toEqual(["-0.30", "-0.15", "0.00", "0.15", "0.30"])
+  })
+
+  it("formats a lone tick as a single value", () => {
+    expect(formatChartTicks([0.5])).toEqual(["0.5"])
+  })
+
+  it("refuses ticks that are not evenly spaced, such as a log axis's decades", () => {
+    expect(() => formatChartTicks([0.001, 0.01, 0.1, 1])).toThrow(/evenly spaced/)
+  })
+})
+
+describe("chartDomain", () => {
+  it("pads a range by eight percent on each side", () => {
+    const [low, high] = chartDomain([0, 100])
+    expect(low).toBeCloseTo(-8)
+    expect(high).toBeCloseTo(108)
+  })
+
+  it("gives a constant or single-point series a finite scale", () => {
+    const [low, high] = chartDomain([5])
+    expect(low).toBeLessThan(5)
+    expect(high).toBeGreaterThan(5)
+    const [zeroLow, zeroHigh] = chartDomain([0, 0])
+    expect(zeroHigh - zeroLow).toBeGreaterThan(0)
+  })
+
+  it("can include zero", () => {
+    expect(chartDomain([10, 20], true)[0]).toBeLessThan(0)
+  })
+
+  it("pads a series whose spread is float noise like a constant one", () => {
+    const value = 1_424_952.8829840268
+    const flat = chartDomain([value, nextDouble(value), nextDouble(nextDouble(value))])
+    const [constantLow, constantHigh] = chartDomain([value])
+    expect(flat[0]).toBeCloseTo(constantLow, 6)
+    expect(flat[1]).toBeCloseTo(constantHigh, 6)
+    // Its padded axis labels at an ordinary precision.
+    expect(formatChartTicks(chartTicks(...flat, 5))).toEqual(["1.31M", "1.37M", "1.42M", "1.48M", "1.54M"])
+  })
+})
+
+/** The next representable double above a positive value. */
+function nextDouble(value: number): number {
+  const buffer = new Float64Array([value])
+  const bits = new BigInt64Array(buffer.buffer)
+  bits[0] += 1n
+  return buffer[0]
+}
+
+describe("chartTicks", () => {
+  it("spaces ticks evenly and includes both ends", () => {
+    expect(chartTicks(0, 100, 5)).toEqual([0, 25, 50, 75, 100])
+    expect(chartTicks(-1, 1, 3)).toEqual([-1, 0, 1])
+  })
+
+  it("yields one tick for a degenerate range", () => {
+    expect(chartTicks(5, 5, 5)).toEqual([5])
+  })
+})
+
+describe("chartLabelIndices", () => {
+  it("keeps both ends and thins labels to the available width", () => {
+    expect(chartLabelIndices(10, 168, 84)).toEqual(new Set([0, 9]))
+    expect(chartLabelIndices(3, 1000, 84)).toEqual(new Set([0, 1, 2]))
+    expect(chartLabelIndices(1, 1000)).toEqual(new Set([0]))
+  })
+})
+
+describe("chartAxisLabel", () => {
+  it("truncates a long label to the plot width", () => {
+    expect(chartAxisLabel("short", 700)).toBe("short")
+    expect(chartAxisLabel("a very long feature name", 70)).toBe("a very lo…")
   })
 })

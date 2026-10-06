@@ -1,0 +1,113 @@
+{
+  "node_type": "explore",
+  "authorable": true,
+  "fields": {
+    "overview": "Which overview cards the node shows: dataset_snapshot, data_quality, numeric_summary, categorical_summary, schema, each true or false.",
+    "pivots": "Pivot tables over the input; each is a complete version-1 pivot: version 1, a unique id and name, enabled, and lists of filters, columns, rows and values placements, formula ids, value_order and options.",
+    "pivots[].rows[] / columns[]": "Placements {id, field, number_format, decimal_places, use_grouping}; a row placement also has sort \"ascending\" or \"descending\".",
+    "pivots[].values[]": "Aggregations {id, field, aggregation (sum, count, average, min, max, median, distinct_count), reference (always <field>_<aggregation>, such as premium_sum), display_name, sort_rows, color_scale, color_scale_split_by, number_format, decimal_places, use_grouping}.",
+    "pivots[].value_order": "The ids of the pivot's values and formulas in display order.",
+    "steps": "Optional step cards that shape the frame before it is explored; df is already the input. A pivot table the analyst asks for is a pivots entry, never a step. An Explore node has no output and ends its branch."
+  },
+  "inputs": [
+    {
+      "edge": "priced",
+      "columns": {
+        "policy_id": "String",
+        "region": "String",
+        "premium": "Float64"
+      }
+    }
+  ],
+  "configs": [
+    {
+      "name": "minimal",
+      "intent": "Show the overview cards for the priced policies.",
+      "config": {
+        "overview": {
+          "dataset_snapshot": true,
+          "data_quality": true,
+          "numeric_summary": true,
+          "categorical_summary": true,
+          "schema": true
+        },
+        "steps": []
+      },
+      "produces": ["policy_id", "region", "premium"]
+    },
+    {
+      "name": "realistic",
+      "intent": "Pivot total premium and policy count by region.",
+      "config": {
+        "steps": [],
+        "pivots": [
+          {
+            "version": 1,
+            "id": "pivot_1",
+            "name": "Premium by region",
+            "enabled": true,
+            "filters": [],
+            "columns": [],
+            "rows": [
+              {
+                "id": "row_1",
+                "field": "region",
+                "sort": "ascending",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              }
+            ],
+            "values": [
+              {
+                "id": "value_1",
+                "field": "premium",
+                "aggregation": "sum",
+                "reference": "premium_sum",
+                "display_name": "Total premium",
+                "sort_rows": "none",
+                "color_scale": "none",
+                "color_scale_split_by": null,
+                "number_format": "currency_gbp",
+                "decimal_places": 0,
+                "use_grouping": true
+              },
+              {
+                "id": "value_2",
+                "field": "policy_id",
+                "aggregation": "count",
+                "reference": "policy_id_count",
+                "display_name": "Policies",
+                "sort_rows": "none",
+                "color_scale": "none",
+                "color_scale_split_by": null,
+                "number_format": "general",
+                "decimal_places": 0,
+                "use_grouping": true
+              }
+            ],
+            "formulas": [],
+            "value_order": ["value_1", "value_2"],
+            "options": {
+              "row_grand_totals": true,
+              "column_grand_totals": false,
+              "sort_by": null
+            }
+          }
+        ]
+      },
+      "produces": ["policy_id", "region", "premium"]
+    }
+  ],
+  "fixture": {
+    "frames": {
+      "priced": {
+        "rows": [
+          {"policy_id": "p1", "region": "North", "premium": 812.5},
+          {"policy_id": "p2", "region": "South", "premium": 402.0},
+          {"policy_id": "p3", "region": "North", "premium": 390.0}
+        ]
+      }
+    }
+  }
+}

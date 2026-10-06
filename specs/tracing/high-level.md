@@ -85,10 +85,19 @@ Out of scope (owned elsewhere, linked where relevant):
 ## Behaviour
 
 - **Pure observation layer.** Tracing never modifies pipeline execution or its
-  outputs. It either reuses the exact DataFrames a preview execution already
-  produced, or (on a cache miss) runs the same eager-execution path the preview
-  uses. Either way, the trace shows exactly the data the user sees in the preview
-  table.
+  outputs. It either reuses the frames of an earlier trace of the same lineage
+  (its own trace cache), or runs the same eager-execution path the preview uses.
+  Either way, the trace shows exactly the data the user sees in the preview table.
+- **Trace follows the limited preview.** A preview limits the previewed node's output
+  rather than its sources, so the rows it shows depend on uncapped joins, filters, and
+  aggregations. Trace locates the clicked row in the previewed node's limited output (or,
+  when it is absent there, in the node's uncapped plan) and follows its real lineage:
+  ancestors on an order-preserving path are read as their own limited outputs, and every
+  other ancestor is looked up by the values its child provably carried through unchanged,
+  keeping enough candidates to report duplicates as ambiguous. A step whose carried values
+  cannot be proven is an explicit `row_scope_unproven` omission; trace never substitutes a
+  sampled frame for a lineage lookup. An online optimiser apply explanation reads the
+  apply's complete input wherever its decision depends on rows beyond the clicked quote.
 - **Row identity is verified, not assumed.** When the frontend supplies the
   clicked row's values, the trace checks that the target node's row at
   `row_index` still matches them. A mismatch (e.g. because a Polars join
@@ -105,10 +114,45 @@ Out of scope (owned elsewhere, linked where relevant):
   (multiple equally-good candidate rows) or a transform whose behaviour cannot be
   verified leaves that node's step unresolved — it is omitted from the trace
   rather than shown with a wrong row — and is recorded as a non-fatal entry in
-  `correlation_diagnostics`.
+  `correlation_diagnostics`. The one tie that is not ambiguous is candidates identical in
+  every column: the step shows their values as one of N identical rows
+  (`identical_row_count`) without choosing a physical row, and correlation above it
+  continues by value only.
   The reorder guard reads exact structured Python method-call sites, so words
   inside comments or string literals cannot disable positional correlation and
   an unreadable transform is conservatively treated as potentially reordering.
+- **An online optimiser apply's parent row is the scenario the apply chose.** An
+  online apply collapses each quote's scenario rows into one row, which names the
+  chosen scenario by its quote id, its scenario index (`optimal_step`), and its
+  scenario value (the optimised value column), each in the dtype the apply decided
+  in. Correlation identifies the parent row by whichever of these the node's output
+  keeps, comparing each parent column cast to that dtype, so the step above the
+  apply shows the scenario row the optimiser picked. An output that keeps the quote
+  id but neither the step nor the value cannot name one scenario, and stays an
+  ambiguous omission.
+- **A node is traced through any child that proves its row.** A node read by
+  several traced children is correlated through the first that proves its row —
+  children reading it from head frames first, then the child nearest the target —
+  so an aggregating child (a claims count) does not hide the row a join's base
+  proves. The order is fixed by the graph, never by hash order. A multi-frame
+  source's row comes from one frame, so it is shown as the input only of the
+  children that read that frame.
+- **A join that found no row is a fact, not a gap.** When an Edge Join that keeps
+  unmatched base rows (`left`, `full`, `anti`) found no join-side row for the traced
+  row — no join-side row has the base row's key values, or (for `left` and `anti`,
+  where every base row survives) a key is null — the join
+  side is reported as an informational `join_no_match` omission (an unsold quote's
+  policy, a quote with no claims) rather than as a correlation failure.
+- **A grouped row is an aggregate, not a gap.** Code whose one grouping reads every
+  input row (nothing before it filters, slices, deduplicates, selects, or joins) and
+  keeps every group key unchanged summarises exactly the input rows sharing its keys.
+  When several do, the input is reported as an informational `aggregated_rows` omission
+  naming the keys and how many input rows share them; a group of one input row resolves
+  to that row. Any other grouping leaves the ambiguity a gap.
+- **Head frames are matched on carried values too.** A parent matched in its head
+  frame is matched on the values its child provably carried through unchanged, as a
+  lookup is, so a column the child's code rewrote (`fill_null`) is left out of the
+  match instead of being relaxed around.
 - **Multi-frame sources correlate per edge, not per node pair.** A multi-frame
   source (e.g. a ≥2-table `apiInput`) stores `dict[label, DataFrame]`; each edge
   out of it carries a `sourceHandle` naming the frame that edge consumes, and the
@@ -137,13 +181,84 @@ Out of scope (owned elsewhere, linked where relevant):
   an output of `200.0`). The same pre-assignment-value discipline applies to
   multi-entry expression chains: each chain entry evaluates in order against
   values fed forward from prior entries, seeded from pre-node input values rather
-  than the node's final output values.
+  than the node's final output values. More generally, every expression in one
+  `with_columns` call reads the frame from before that call, so a formula reads
+  any column its own call or a later one assigns at its earlier value — a sibling
+  (`x=cast(x), y=x * 2`) sees the input `x`, never the node's output.
+- **Formulas are computed by Polars on the traced row.** Each step carries its input and
+  output rows as one-row frames sliced from the frames the trace read them in — in the
+  pipeline's own dtypes, and only when the slice is exactly the row the trace shows. Its
+  formulas are evaluated on that row with the names the node code ran with (the compiled
+  preamble). A formula one row cannot determine (a window, aggregation, shift, or an operation
+  not known to be row-local) is never evaluated on one row. Where it assigns the step's column,
+  the step shows that column's value from the trace's own execution, which is the full-context
+  value, marked as coming from that execution. Anywhere else the value is shown as not computed
+  from this row, with the reason, and never replaced by the row's input value.
+- **A pass-through value borrows only a proven formula.** A target that passes the traced
+  column through shows the formula of the step that provably supplied its value: the value is
+  followed back through the single parent holding it with that same value to the step that
+  added or last modified it, and evaluated on the value from before that assignment. A join
+  whose sides both hold the value, a parent whose row is unknown, or a snapshot on the way
+  that no recompute reproduced leaves no formula rather than another branch's.
+- **A trace reads what its preview read.** A trace request carries the `seed_plan` of the
+  preview it explains, possibly empty: every snapshot generation that preview read, whether it
+  seeded it or captured it itself. Each listed generation is checked against the signature the
+  trace's graph produces at its point and leased; a retired generation or a mismatched
+  signature answers HTTP 409 `preview_seed_plan_expired`, and the preview is refreshed. The
+  trace then reads exactly those generations and captures nothing, so it shows the preview's
+  rows even for a preview that computed and captured a join for the first time. A listed
+  generation lacking columns the trace reads there is recomputed instead, with every listed
+  seed built from it, and a plan that ends up seeding nothing runs the trace as without one.
+  At and below each seeded point the trace reads the generation: the seeded step's row comes
+  from the snapshot and carries its `snapshot_generation_id`. A preview whose lineage was
+  not admitted carries an empty plan, and its traces seed nothing.
+- **Above a snapshot, the trace proves before it traces.** For each seed whose row
+  resolved, the trace recomputes that point on the real graph, in the same request and
+  execution context: it prepares the inputs above the seed, checks that the seed's identity
+  has not moved, admits the recompute of the seed and its ancestors, and looks the recompute
+  up by every value of the snapshot row. Only when exactly one recomputed row equals the
+  snapshot row are the seed's ancestors correlated, as steps like any other, and the seeded
+  step gains its input row and formula. Otherwise every ancestor the seed would have explained
+  is an omission naming the seed and why: informational `seed_inputs_changed`,
+  `seed_recompute_refused`, `seed_row_not_reproduced` (a sample, a shuffle, changed data), or
+  `seed_row_ambiguous`; a recompute that errors is a `seed_recompute_failed` gap, and an
+  ancestor two paths give different rows is an `ancestor_row_conflict` gap. Cancellation and
+  the memory limit still abort the trace. A seeded step whose snapshot was not reproduced is
+  where provenance ends: it is never given a calculation reconstructed from its own output,
+  and downstream provenance ends there with the value it held. A node that still executed for
+  another branch stays traceable through that branch. An equal recomputed row proves the
+  lineage of that row; the seed's identity signs its lineage and inputs, so for a
+  deterministic pipeline that lineage is the one the snapshot was computed from.
 - **Column-scoped traces prune to relevance.** When a `column` is supplied, the
-  trace tags every step by whether it touches that column, then keeps: (a) for a
-  pass-through column, only the nodes whose output actually carries it; (b) for a
-  calculated/modified column, the node(s) that assign it plus every ancestor that
-  contributes a column its formula actually references (falling back to keeping
-  all ancestors if no expression info is available).
+  trace keeps: (a) for a pass-through column, only the nodes whose output actually
+  carries it; (b) for a calculated/modified column, the node(s) that assign it plus
+  every ancestor that contributes a column its formula actually references (falling
+  back to keeping all ancestors if no expression info is available).
+- **Relevance follows the value's whole lineage.** Walking back from the target, the
+  trace asks of each node which of its output columns the traced value depends on,
+  starting from the traced column. A node that computes such a column — its row shows
+  it changed, its code assigns it, or a rule of the node generates it — passes on what
+  that column was computed from: every column its formula names (a formula reading a
+  column its own node assigned earlier reads that assignment), a model's features, an
+  online optimiser apply's objective, constraints (a ratio's numerator and
+  denominator), quote id and scenario columns, a ratebook apply's factor columns, a
+  rating table's factors, a banding factor's input, and nothing for a scenario
+  expander's generated columns or a source's own columns. A node that only carries a
+  column passes the column on to the parent it came from, judged by the frame that
+  parent's edge reads: an Edge Join routes it to the side whose value the output holds
+  (an inner or left join's keys to the base; a full or right join's to both sides), so
+  a joined-in table whose columns the value never reads is not on the lineage. A column
+  whose derivation cannot be read (an opaque formula, a column read by an unstated
+  name, an assignment the formula may or may not have seen, an enrichment error) makes
+  every input column relevant. A step is `column_relevant` when it is on this lineage —
+  it computes or carries a column the value depends on — and its `contributed_columns`
+  name the columns it computes for the value. Its `derivations` explain each of those
+  columns: the step's formula evaluated on the traced row (none for a column a model,
+  an optimiser or a scenario grid computed, or a source loaded) and, for every column
+  that formula or rule read, the nodes that computed the value it read, so a value can
+  be followed down to what was loaded. A kept step off the lineage (an ancestor
+  whose data never reaches the value) is not relevant, and an unresolved node is
+  reported as an omission only when the lineage reaches it.
 - **Enrichment is best-effort per step.** Expression parsing/evaluation, chain
   analysis, input-source derivation, rename detection, node-type enrichment, and
   row-lineage classification are each wrapped independently; a failure in one
@@ -153,8 +268,10 @@ Out of scope (owned elsewhere, linked where relevant):
 - **Enrichment observes; it never repairs rows.** Rating, banding, model-score,
   lineage, and schema-diff detail is derived from the complete rows selected by
   correlation and the same immutable runtime contracts the engine consumes.
-  Continuous banding enrichment uses the rating runtime's shared rule-eligibility
-  parser, so a rule with no usable operator/value pair cannot be credited.
+  Breakpoint banding enrichment uses the rating runtime's shared interval-eligibility
+  parser, so a rule with no usable operator/value pair cannot be credited, and
+  compares a date or date-and-time band the way the runtime does: by calendar date
+  or wall-clock time in the column's own time zone.
   Enrichment never patches an individual output cell or invents model features.
   A row that cannot be selected atomically remains unresolved.
 - **Relevant correlation gaps remain first-class evidence.** A node on the
@@ -177,8 +294,8 @@ Out of scope (owned elsewhere, linked where relevant):
   node, row limit, source, and runtime-input state are fingerprinted; identical
   fingerprints reuse the same materialized per-node DataFrames so switching
   row/column on the same pipeline is near-instant after the first click. The
-  cache is invalidated by model retraining (`routes/_training_lifecycle.py` calls
-  `haute.trace._cache.invalidate()`) and is bounded by both entry count and
+  cache is cleared on model retraining (`src/haute/routes/_training_preparation.py`
+  calls `haute.trace._cache.clear()`) and is bounded by both entry count and
   retained bytes, evicting least-recently-used entries first. `execute_trace`
   accepts an optional caller-supplied `GraphFingerprintMemo`; the trace route
   passes in the same memo it already used to compute its supersession key, so a
@@ -190,7 +307,7 @@ Out of scope (owned elsewhere, linked where relevant):
   serialise and send to the frontend.
 - **Generation provenance is explicit and narrow.** Every response carries a UTC
   `generated_at`, the pipeline/source identity available to the server, and an
-  `execution_origin` of `fresh_execution`, `preview_cache`, or `trace_cache`.
+  `execution_origin` of `fresh_execution` or `trace_cache`.
   These fields describe how the trace snapshot was assembled; they do not claim
   that an external data source is fresh.
   Provider group, safe source identity, selected snapshot generation, and
@@ -206,19 +323,30 @@ Out of scope (owned elsewhere, linked where relevant):
   because it guarantees byte-for-byte agreement with what the preview already
   computed and requires no changes to user-authored node code, at the cost of
   needing careful, node-type-aware matching logic (see the edge-join
-  provenance rules below).
-- **Preview-cache decoupling via a `PreviewReader` protocol.** Rather than
-  reaching into `haute.executor`'s private preview-cache singleton, the trace
-  module accepts anything exposing `get(fingerprint) -> dict | None` (a
-  reader) or a pre-materialised snapshot dict. This keeps the trace module
-  testable in isolation and leaves room for a future non-in-process preview
-  store, at the cost of the caller (the HTTP route) being responsible for
-  wiring the executor's cache in explicitly.
-  The current HTTP preview route publishes target-only cache entries, while a
-  truthful trace requires full ancestor materialisation. Those shapes
-  deliberately do not share a key, so the first trace after an ordinary HTTP
-  preview executes cold; the trace layer never accepts a partial snapshot to
-  manufacture the appearance of reuse.
+  provenance rules below). The choice was re-examined on 24 September 2026
+  against a row identity carried only where user code cannot see it (through
+  Haute-built nodes, or outside the frame for provably row- and
+  order-preserving nodes), and value matching was kept. Measured by tracing
+  clicked rows as the route does: the 15 bundled examples (82 traces, 283
+  lineage-node rows) resolved every row with no ambiguity diagnostic, and nine
+  synthetic pricing-shaped pipelines of 1,000 quotes each resolved every row
+  whenever the rows carried a unique key. Ambiguity arose only in two shapes:
+  keyless rows whose matched columns are exact duplicates after a step that
+  moves rows (sort, filter, `unique()` without a subset), and a traced node
+  above an aggregate, where a summary row has no single source row by design
+  (now an informational `aggregated_rows` omission rather than an ambiguity).
+  In the duplicate case every candidate is value-identical, so the omission
+  is conservative, never wrong. An injected identity cannot be invisible to
+  all-column selectors, `unique()` or schema-reading user code, so its cost
+  would buy almost no observable gain.
+- **Trace does not read the preview cache.** A truthful trace needs every
+  head-framed ancestor materialised, while the HTTP preview route publishes
+  target-only cache entries. The two shapes deliberately never share a key, so a
+  preview entry could never satisfy a trace, and the first trace after a preview
+  executes cold. `execute_trace` therefore takes no preview input at all; its
+  only prior results are its own trace cache, keyed by the full-lineage
+  fingerprint. The trace never accepts a partial snapshot to manufacture the
+  appearance of reuse.
 - **Edge-join-aware parent projection.** A generic "keep the child's columns that
   exist in the parent" projection is provably wrong for the JOIN-role (right)
   parent of an edge-join, because Polars renames the right frame's copy of every
@@ -267,7 +395,7 @@ Out of scope (owned elsewhere, linked where relevant):
 
 - Depends on [execution-engine](../execution-engine/high-level.md) for
   `PipelineGraph`/`GraphNode` types, topological ordering, the eager execution
-  core (`_execute_eager_core`, `_build_node_fn`), preamble compilation, and the
+  path (display walks of `walk_graph`, `_build_node_fn`), preamble compilation, and the
   shared preview-lineage cache-key factory the trace calls so its fingerprints
   use the executor's canonical identity contract.
 - Depends on [expression-parsing](../expression-parsing/high-level.md) for
@@ -276,7 +404,7 @@ Out of scope (owned elsewhere, linked where relevant):
   its own public facade from `sys.modules`, so importing the enrichment module
   independently cannot fail on a hidden import-order cycle.
 - Depends on [rating](../rating/high-level.md) for rating-table normalisation
-  (`normalise_rating_tables`, `_normalise_combined_outputs`) and the canonical
+  (`normalise_rating_tables`, `normalise_combined_outputs`) and the canonical
   rating-key comparison (`normalise_rating_key(value, dtype)`). The rating-step
   dispatch resolves each factor's originating dtype from the exact consumed
   parent frame and supplies it to the enricher, so JSON/Python scalar widening
@@ -285,15 +413,14 @@ Out of scope (owned elsewhere, linked where relevant):
   model-score explanation (`haute._model_explainability`, imported lazily inside
   `enrich_model_score`) and on [optimiser](../optimiser/high-level.md) for
   optimiser-apply explanation (`haute._optimiser_apply_explainability`).
-- Depends on [caching](../caching/high-level.md) for `LRUCache`,
-  `GraphFingerprintMemo`, and the shared `preview_lineage_cache_key(...)`
-  factory, which back the trace's own execution-result cache.
-- Depended on by [server-api](../server-api/high-level.md): `routes/pipeline.py`
-  is the sole production caller of `execute_trace()`, wrapping it in a response
-  timeout, request-supersession coordinator, and concurrency semaphore, and
-  mapping its exceptions to HTTP status codes. `routes/_training_lifecycle.py`
-  reaches into `haute.trace._cache` to invalidate trace results after a model
-  retrain.
+- Depends on [caching](../caching/high-level.md) for `LRUCache` and
+  `GraphFingerprintMemo`, which back the trace's own execution-result cache.
+- Depended on by [server-api](../server-api/high-level.md): `src/haute/routes/pipeline.py`
+  is the HTTP caller of `execute_trace()`, wrapping it in a response timeout,
+  request-supersession coordinator, and concurrency semaphore, and mapping its
+  exceptions to HTTP status codes; `src/haute/assistant/_assets.py` is a second
+  in-process caller. `src/haute/routes/_training_preparation.py` reaches into
+  `haute.trace._cache` to clear trace results after a model retrain.
 - Depended on by [frontend-trace-ui](../frontend-trace-ui/high-level.md), which
   consumes the `TraceResponse` JSON shape (`trace_result_to_dict()`'s output,
   validated against `haute.schemas.TraceResultResponse`) to render the trace
@@ -311,12 +438,8 @@ Out of scope (owned elsewhere, linked where relevant):
   -matches to choose a specific status code (404 for missing target node, 400 for
   out-of-range row or a multi-frame target, 409 for a genuine or ambiguous row
   mismatch).
-- **A malformed `preview` argument fails loudly as `TypeError`.** `execute_trace`
-  only accepts `None`, a `PreviewReader`-shaped reader, or a snapshot dict; any
-  other type, or a reader whose `get` returns something other than
-  `dict | None`, raises immediately rather than being coerced.
 - **Underlying execution errors propagate unchanged.** If a cold execution (no
-  usable preview cache) fails — a bad node config, a contract mismatch — the
+  usable trace cache entry) fails — a bad node config, a contract mismatch — the
   original exception (including `ContractMismatchError`) propagates out of
   `execute_trace` unmodified. Nothing catches and reinterprets it.
 - **Unsupported target correlation dtypes fail as a public typed error.**

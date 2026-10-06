@@ -157,7 +157,16 @@ class _LoadSpy:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
 
-    def __call__(self, path: str, task: str = "regression") -> ScoringModel:
+    def __call__(
+        self,
+        path: str,
+        task: str = "regression",
+        *,
+        contract_path: str | None = None,
+        source: str | None = None,
+    ) -> ScoringModel:
+        # The bundled contract reaches the loader (an EBM needs it to load).
+        del contract_path, source
         self.calls.append((path, task))
         return _doubling_scoring_model()
 
@@ -333,77 +342,33 @@ class TestStatGateInvalidation:
 
 
 class TestDeployArtifactPathFingerprints:
-    def test_batch_cache_request_uses_stat_gated_artifact_fingerprint(self, tmp_path: Path) -> None:
-        import haute.execution as execution_mod
-        from haute._execution_context import ExecutionContext, ExecutionProfile
-        from haute.deploy import _scorer
+    def test_artifact_identity_fingerprint_uses_stat_gated_fingerprint(
+        self, tmp_path: Path
+    ) -> None:
+        """``artifact_identity_fingerprint`` still stat-gates artifact paths for the
 
+        model-artifact ``StatGatedCache`` key, independent of graph execution —
+        deployed scoring itself never builds a dataframe execution cache request.
+        """
+        from haute._json_shred import _source_proof
+        from haute.deploy._scorer import artifact_identity_fingerprint
+
+        _source_proof.clear_file_signatures()
         artifact_path = tmp_path / "artifact.parquet"
         artifact_path.write_bytes(b"stable artifact bytes")
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "src",
-                        "data": {
-                            "label": "src",
-                            "nodeType": "apiInput",
-                            "config": {"path": ""},
-                        },
-                    },
-                    {
-                        "id": "out",
-                        "data": {
-                            "label": "out",
-                            "nodeType": "output",
-                            "config": make_output_config(["x"]),
-                        },
-                    },
-                ],
-                "edges": [
-                    {
-                        "id": "e1",
-                        "source": "src",
-                        "target": "out",
-                        "sourceHandle": "src",
-                    }
-                ],
-            }
-        )
-        real_content_hash = execution_mod.content_hash
+        real_hash_file = _source_proof._hash_file
         hash_calls: list[Path] = []
 
-        def counting_content_hash(path: Path) -> str:
+        def counting_hash_file(path: Path) -> str:
             hash_calls.append(Path(path))
-            return real_content_hash(path)
+            return real_hash_file(path)
 
-        with (
-            patch.object(execution_mod, "content_hash", side_effect=counting_content_hash),
-            patch.object(
-                _scorer,
-                "execute_lazy_graph",
-                return_value=(
-                    {"out": pl.DataFrame({"x": [1.0, 2.0]}).lazy()},
-                    ["src", "out"],
-                    {},
-                    {},
-                ),
-            ),
-        ):
+        with patch.object(_source_proof, "_hash_file", side_effect=counting_hash_file):
             for _ in range(2):
-                plan = _scorer.score_graph_lazy(
-                    graph=graph,
-                    input_df=pl.DataFrame({"x": [1.0, 2.0]}),
-                    input_node_ids=["src"],
-                    output_node_id="out",
-                    artifact_paths={"artifact": str(artifact_path)},
-                    execution_context=ExecutionContext(
-                        operation="deploy_score_graph",
-                        profile=ExecutionProfile.DEPLOY_BATCH,
-                    ),
-                )
-                plan.cleanup(preserve_primary_error=False)
+                artifact_identity_fingerprint({"artifact": str(artifact_path)})
 
+        # The stat-gated fingerprint caches on unchanged (mtime_ns, size), so a
+        # second call with the same stat never re-hashes the file's bytes.
         assert hash_calls == [artifact_path.resolve()]
 
 
@@ -414,15 +379,15 @@ class TestDeployArtifactPathFingerprints:
 
 class TestArtifactCacheUnit:
     def test_cache_keyed_by_resolved_path_and_task(self, tmp_path: Path) -> None:
-        from haute.deploy._scorer import _load_local_model_cached
+        from haute._mlflow_io import load_local_model_cached
 
         cbm_path, _ = _write_bundle(tmp_path)
         spy = _LoadSpy()
 
         with patch("haute._mlflow_io.load_local_model", side_effect=spy):
-            regression = _load_local_model_cached(str(cbm_path), "regression")
-            classification = _load_local_model_cached(str(cbm_path), "classification")
-            again = _load_local_model_cached(str(cbm_path), "regression")
+            regression = load_local_model_cached(str(cbm_path), "regression")
+            classification = load_local_model_cached(str(cbm_path), "classification")
+            again = load_local_model_cached(str(cbm_path), "regression")
 
         assert spy.count == 2, "distinct tasks must load distinct entries"
         assert {task for _, task in spy.calls} == {"regression", "classification"}
@@ -430,7 +395,7 @@ class TestArtifactCacheUnit:
         assert classification is not regression
 
     def test_distinct_paths_cached_independently(self, tmp_path: Path) -> None:
-        from haute.deploy._scorer import _load_local_model_cached
+        from haute._mlflow_io import load_local_model_cached
 
         path_a = tmp_path / "a.cbm"
         path_a.write_bytes(b"model a")
@@ -439,17 +404,17 @@ class TestArtifactCacheUnit:
         spy = _LoadSpy()
 
         with patch("haute._mlflow_io.load_local_model", side_effect=spy):
-            first_a = _load_local_model_cached(str(path_a), "regression")
-            first_b = _load_local_model_cached(str(path_b), "regression")
-            assert _load_local_model_cached(str(path_a), "regression") is first_a
-            assert _load_local_model_cached(str(path_b), "regression") is first_b
+            first_a = load_local_model_cached(str(path_a), "regression")
+            first_b = load_local_model_cached(str(path_b), "regression")
+            assert load_local_model_cached(str(path_a), "regression") is first_a
+            assert load_local_model_cached(str(path_b), "regression") is first_b
 
         assert spy.count == 2
 
     def test_concurrent_first_load_is_single_flight(self, tmp_path: Path) -> None:
         """Concurrent quotes during the first load: one disk load, the rest
         wait for it and reuse the same object."""
-        from haute.deploy._scorer import _load_local_model_cached
+        from haute._mlflow_io import load_local_model_cached
 
         cbm_path, _ = _write_bundle(tmp_path)
         started = threading.Event()
@@ -457,7 +422,7 @@ class TestArtifactCacheUnit:
         calls: list[str] = []
         loaded_model = _doubling_scoring_model()
 
-        def gated_load(path: str, task: str = "regression") -> ScoringModel:
+        def gated_load(path: str, task: str = "regression", **_loader_kwargs: Any) -> ScoringModel:
             calls.append(path)
             started.set()
             assert release.wait(timeout=10), "test deadlock: release never set"
@@ -468,7 +433,7 @@ class TestArtifactCacheUnit:
 
         def worker() -> None:
             try:
-                results.append(_load_local_model_cached(str(cbm_path), "regression"))
+                results.append(load_local_model_cached(str(cbm_path), "regression"))
             except BaseException as exc:  # pragma: no cover - failure diagnostics
                 errors.append(exc)
 
@@ -490,29 +455,29 @@ class TestArtifactCacheUnit:
         assert all(result is loaded_model for result in results)
 
     def test_missing_model_file_fails_loud_and_is_not_cached(self, tmp_path: Path) -> None:
-        from haute.deploy._scorer import _load_local_model_cached
+        from haute._mlflow_io import load_local_model_cached
 
         missing = tmp_path / "missing.cbm"
         spy = _LoadSpy()
 
         with patch("haute._mlflow_io.load_local_model", side_effect=spy):
             with pytest.raises(FileNotFoundError):
-                _load_local_model_cached(str(missing), "regression")
+                load_local_model_cached(str(missing), "regression")
             assert spy.count == 0, "stat must fail before any loader call"
 
             missing.write_bytes(b"now present")
-            _load_local_model_cached(str(missing), "regression")
+            load_local_model_cached(str(missing), "regression")
 
         assert spy.count == 1
 
     def test_loader_failure_is_not_cached(self, tmp_path: Path) -> None:
-        from haute.deploy._scorer import _load_local_model_cached
+        from haute._mlflow_io import load_local_model_cached
 
         cbm_path, _ = _write_bundle(tmp_path)
         attempts: list[int] = []
         good_model = _doubling_scoring_model()
 
-        def flaky_load(path: str, task: str = "regression") -> ScoringModel:
+        def flaky_load(path: str, task: str = "regression", **_loader_kwargs: Any) -> ScoringModel:
             attempts.append(1)
             if len(attempts) == 1:
                 raise RuntimeError("corrupt artifact")
@@ -520,40 +485,44 @@ class TestArtifactCacheUnit:
 
         with patch("haute._mlflow_io.load_local_model", side_effect=flaky_load):
             with pytest.raises(RuntimeError, match="corrupt artifact"):
-                _load_local_model_cached(str(cbm_path), "regression")
-            assert _load_local_model_cached(str(cbm_path), "regression") is good_model
+                load_local_model_cached(str(cbm_path), "regression")
+            assert load_local_model_cached(str(cbm_path), "regression") is good_model
 
         assert len(attempts) == 2
 
     def test_artifact_changed_while_loading_fails_loud(self, tmp_path: Path) -> None:
         """A file whose stat gate keeps moving during the load is a torn
         read — never cached, never served."""
-        from haute.deploy._scorer import _load_local_model_cached
+        from haute._mlflow_io import load_local_model_cached
 
         cbm_path, _ = _write_bundle(tmp_path)
         calls: list[int] = []
 
-        def mutating_load(path: str, task: str = "regression") -> ScoringModel:
+        def mutating_load(
+            path: str, task: str = "regression", **_loader_kwargs: Any
+        ) -> ScoringModel:
             calls.append(1)
             _bump_mtime(cbm_path)
             return _doubling_scoring_model()
 
         with patch("haute._mlflow_io.load_local_model", side_effect=mutating_load):
             with pytest.raises(RuntimeError, match="changed on disk while loading"):
-                _load_local_model_cached(str(cbm_path), "regression")
+                load_local_model_cached(str(cbm_path), "regression")
 
         assert len(calls) == 2, "one retry, then fail loud"
 
     def test_artifact_changed_once_while_loading_retries_and_caches(self, tmp_path: Path) -> None:
         """A gate that moves during the first load but holds on the retry
         means the second read was clean — cached under the fresh gate."""
-        from haute.deploy._scorer import _load_local_model_cached
+        from haute._mlflow_io import load_local_model_cached
 
         cbm_path, _ = _write_bundle(tmp_path)
         calls: list[int] = []
         stable_model = _doubling_scoring_model()
 
-        def mutating_once_load(path: str, task: str = "regression") -> ScoringModel:
+        def mutating_once_load(
+            path: str, task: str = "regression", **_loader_kwargs: Any
+        ) -> ScoringModel:
             calls.append(1)
             if len(calls) == 1:
                 _bump_mtime(cbm_path)
@@ -561,28 +530,28 @@ class TestArtifactCacheUnit:
             return stable_model
 
         with patch("haute._mlflow_io.load_local_model", side_effect=mutating_once_load):
-            first = _load_local_model_cached(str(cbm_path), "regression")
-            second = _load_local_model_cached(str(cbm_path), "regression")
+            first = load_local_model_cached(str(cbm_path), "regression")
+            second = load_local_model_cached(str(cbm_path), "regression")
 
         assert len(calls) == 2, "torn first read retried exactly once"
         assert first is stable_model, "the clean retry result is served"
         assert second is stable_model, "the clean retry result is cached"
 
     def test_clear_resets_both_caches(self, tmp_path: Path) -> None:
+        from haute._mlflow_io import load_local_model_cached
         from haute.deploy._scorer import (
             _clear_deploy_artifact_caches,
             _load_feature_contract_cached,
-            _load_local_model_cached,
         )
 
         cbm_path, contract_path = _write_bundle(tmp_path)
         spy = _LoadSpy()
 
         with patch("haute._mlflow_io.load_local_model", side_effect=spy):
-            _load_local_model_cached(str(cbm_path), "regression")
+            load_local_model_cached(str(cbm_path), "regression")
             first_contract = _load_feature_contract_cached(str(contract_path))
             _clear_deploy_artifact_caches()
-            _load_local_model_cached(str(cbm_path), "regression")
+            load_local_model_cached(str(cbm_path), "regression")
             second_contract = _load_feature_contract_cached(str(contract_path))
 
         assert spy.count == 2
@@ -616,7 +585,7 @@ class TestArtifactCacheKeyCanonicalisation:
     def test_model_cache_key_folds_case_via_normcase(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from haute.deploy import _scorer
+        from haute import _mlflow_io
 
         model_dir = tmp_path / "Models"
         model_dir.mkdir()
@@ -625,10 +594,10 @@ class TestArtifactCacheKeyCanonicalisation:
         spy = _LoadSpy()
 
         with patch("haute._mlflow_io.load_local_model", side_effect=spy):
-            _scorer._load_local_model_cached(str(cbm_path), "regression")
+            _mlflow_io.load_local_model_cached(str(cbm_path), "regression")
 
         expected_key = str(cbm_path.resolve()).lower()
-        assert list(_scorer._local_model_cache._entries) == [(expected_key, "regression")]
+        assert list(_mlflow_io._local_model_cache._entries) == [(expected_key, "regression", None)]
 
     def test_contract_cache_key_folds_case_via_normcase(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -648,15 +617,15 @@ class TestArtifactCacheKeyCanonicalisation:
     def test_relative_and_absolute_spellings_share_one_model_slot(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from haute.deploy._scorer import _load_local_model_cached
+        from haute._mlflow_io import load_local_model_cached
 
         cbm_path, _ = _write_bundle(tmp_path)
         monkeypatch.chdir(tmp_path)
         spy = _LoadSpy()
 
         with patch("haute._mlflow_io.load_local_model", side_effect=spy):
-            first = _load_local_model_cached("./model.cbm", "regression")
-            assert _load_local_model_cached(str(cbm_path), "regression") is first
+            first = load_local_model_cached("./model.cbm", "regression")
+            assert load_local_model_cached(str(cbm_path), "regression") is first
 
         assert spy.count == 1
 

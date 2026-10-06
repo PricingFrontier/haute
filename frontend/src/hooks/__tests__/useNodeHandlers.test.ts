@@ -21,6 +21,8 @@ function makeParams() {
     setSelectedNode: vi.fn(),
     setPreviewData: vi.fn(),
     fitView: vi.fn(),
+    getInternalNode: vi.fn(),
+    submodels: {} as Record<string, unknown>,
     resolveNodeIdentities: vi.fn(async (nodes: readonly Node[]) => [...nodes]),
   }
 }
@@ -88,11 +90,68 @@ describe("useNodeHandlers", () => {
     expect(params.setPreviewData).not.toHaveBeenCalled()
   })
 
+  it("defers cleanup of a pending shared deletion until the identity commit lands", () => {
+    const params = makeParams()
+    params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
+    let settle: ((committed: boolean) => void) | undefined
+    const commitSharedNodeDeletion = vi.fn(
+      (
+        _ids: ReadonlySet<string>,
+        _edges?: ReadonlySet<string>,
+        _changes?: unknown,
+        onSettled?: (committed: boolean) => void,
+      ) => {
+        settle = onSettled
+        return "pending" as const
+      },
+    )
+    const { result } = renderHook(() => useNodeHandlers({
+      ...params,
+      commitSharedNodeDeletion,
+    }))
+    act(() => result.current.handleDeleteNode("n1"))
+    // Nothing is cleaned up while parent identities are still resolving.
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).not.toHaveBeenCalled()
+    expect(params.setPreviewData).not.toHaveBeenCalled()
+
+    act(() => settle?.(true))
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).toHaveBeenCalledOnce()
+    expect(params.setPreviewData).toHaveBeenCalledOnce()
+  })
+
+  it("keeps a pending shared deletion's state when the identity commit fails", () => {
+    const params = makeParams()
+    params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
+    let settle: ((committed: boolean) => void) | undefined
+    const commitSharedNodeDeletion = vi.fn(
+      (
+        _ids: ReadonlySet<string>,
+        _edges?: ReadonlySet<string>,
+        _changes?: unknown,
+        onSettled?: (committed: boolean) => void,
+      ) => {
+        settle = onSettled
+        return "pending" as const
+      },
+    )
+    const { result } = renderHook(() => useNodeHandlers({
+      ...params,
+      commitSharedNodeDeletion,
+    }))
+    act(() => result.current.handleDeleteNode("n1"))
+    act(() => settle?.(false))
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).not.toHaveBeenCalled()
+    expect(params.setPreviewData).not.toHaveBeenCalled()
+  })
+
   it("refuses raw deletion of a submodel definition owner", () => {
     const params = makeParams()
-    const owner = makeNode("submodel_10", "submodel", {
+    const owner = makeNode("scoring", "submodel", {
       data: {
-        label: "Scoring",
+        label: "scoring",
         nodeType: "submodel",
         config: { definitionId: "definition_scoring", alias: "scoring" },
       },
@@ -110,7 +169,7 @@ describe("useNodeHandlers", () => {
 
   it("refuses raw deletion of a submodel occurrence with malformed identity", () => {
     const params = makeParams()
-    const malformed = makeNode("submodel_10", "submodel", {
+    const malformed = makeNode("broken", "submodel", {
       data: {
         label: "Scoring",
         nodeType: "submodel",
@@ -130,14 +189,14 @@ describe("useNodeHandlers", () => {
 
   it("deletes a submodel instance copy and its edges directly", () => {
     const params = makeParams()
-    const copy = makeNode("submodel_11", "submodel", {
+    const copy = makeNode("scoring_2", "submodel", {
       data: {
-        label: "Scoring instance",
+        label: "scoring_2",
         nodeType: "submodel",
         config: {
           definitionId: "definition_scoring",
           alias: "scoring_2",
-          instanceOf: "submodel_10",
+          instanceOf: "scoring",
         },
       },
     })
@@ -254,9 +313,9 @@ describe("useNodeHandlers", () => {
 
   it("refuses generic duplication of a submodel occurrence", () => {
     const params = makeParams()
-    const submodel = makeNode("instance_a", "submodel", {
+    const submodel = makeNode("scoring", "submodel", {
       data: {
-        label: "Scoring",
+        label: "scoring",
         nodeType: "submodel",
         config: { definitionId: "definition_scoring", alias: "scoring" },
       },
@@ -331,7 +390,7 @@ describe("useNodeHandlers", () => {
   // An instance is a second node like any other, so the singleton rule that
   // handleDuplicateNode and the paste path enforce has to hold here too — the
   // toolbar's Instance button reaches every node type, not just submodels.
-  it.each(["apiInput", "output", "liveSwitch"])(
+  it.each(["apiInput", "output"])(
     "handleCreateInstance refuses singleton node type %s",
     (nodeType) => {
       const params = makeParams()
@@ -346,6 +405,20 @@ describe("useNodeHandlers", () => {
       expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/only one node of this type/)
     },
   )
+
+  // A Source Switch routes by its own input names, which an instance's inputs do not share.
+  it("handleCreateInstance refuses a Source Switch", () => {
+    const params = makeParams()
+    const sourceSwitch = makeNode("switch_1")
+    sourceSwitch.data = { ...sourceSwitch.data, nodeType: "liveSwitch" }
+    params.graphRef.current = { nodes: [sourceSwitch], edges: [] }
+    const { result } = renderHook(() => useNodeHandlers(params))
+    act(() => {
+      result.current.handleCreateInstance("switch_1")
+    })
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/add another Source Switch instead/)
+  })
 
   // Instancing an instance must produce a SIBLING, not a chain: resolveInstanceOriginal
   // does no chain-walking, so a chained instanceOf would resolve the "original" to
@@ -412,10 +485,10 @@ describe("useNodeHandlers", () => {
 
   it("creates a SUBMODEL occurrence without copying its shared definition", async () => {
     const params = makeParams()
-    const source = makeNode("submodel_10", "submodel", {
+    const source = makeNode("scoring", "submodel", {
       position: { x: 100, y: 200 },
       data: {
-        label: "Scoring",
+        label: "scoring",
         nodeType: "submodel",
         config: {
           definitionId: "definition_scoring",
@@ -426,9 +499,9 @@ describe("useNodeHandlers", () => {
         },
       },
     })
-    const existing = makeNode("submodel_11", "submodel", {
+    const existing = makeNode("scoring_2", "submodel", {
       data: {
-        label: "Scoring 2",
+        label: "scoring_2",
         nodeType: "submodel",
         config: {
           definitionId: "definition_scoring",
@@ -448,8 +521,10 @@ describe("useNodeHandlers", () => {
     expect(params.setSelectedNode).toHaveBeenCalledOnce()
     const created = params.setSelectedNode.mock.calls[0][0] as Node
     expect([source.id, existing.id]).not.toContain(created.id)
+    expect(created.id).toBe("scoring_3")
     expect(created.type).toBe("submodel")
     expect(created.data.nodeType).toBe("submodel")
+    expect(created.data.label).toBe("scoring_3")
     expect(created.data.config).toEqual({
       definitionId: "definition_scoring",
       alias: "scoring_3",
@@ -461,24 +536,63 @@ describe("useNodeHandlers", () => {
     expect(created.data.config).not.toHaveProperty("childNodeIds")
   })
 
+  it("refuses to instance a submodel definition containing a singleton", async () => {
+    const params = makeParams()
+    const source = makeNode("inputs", "submodel", {
+      data: {
+        label: "inputs",
+        nodeType: "submodel",
+        config: { definitionId: "definition_inputs", alias: "inputs" },
+      },
+    })
+    params.graphRef.current = { nodes: [source], edges: [] }
+    params.submodels = {
+      definition_inputs: {
+        definitionId: "definition_inputs",
+        file: "modules/inputs.py",
+        graph: {
+          nodes: [makeNode("quote_input", "apiInput", {
+            data: { label: "Quote Input", nodeType: "apiInput", config: {} },
+          })],
+          edges: [],
+        },
+        inputPorts: [],
+        outputPorts: [],
+      },
+    }
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    await act(async () => {
+      await result.current.handleCreateInstance(source.id)
+    })
+
+    expect(params.resolveNodeIdentities).not.toHaveBeenCalled()
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.at(-1)).toMatchObject({
+      type: "info",
+      text: expect.stringMatching(/contains.*Quote Input.*only one/i),
+    })
+  })
+
   it("continues copy numbering past nine instead of nesting suffixes", async () => {
     const params = makeParams()
-    const owner = makeNode("instance_owner", "submodel", {
+    const owner = makeNode("scoring", "submodel", {
       data: {
-        label: "Scoring",
+        label: "scoring",
         nodeType: "submodel",
         config: { definitionId: "definition_scoring", alias: "scoring" },
       },
     })
     const copies = Array.from({ length: 9 }, (_, index) =>
-      makeNode(`instance_copy_${index + 2}`, "submodel", {
+      makeNode(`scoring_${index + 2}`, "submodel", {
         data: {
-          label: `Scoring ${index + 2}`,
+          label: `scoring_${index + 2}`,
           nodeType: "submodel",
           config: {
             definitionId: "definition_scoring",
             alias: `scoring_${index + 2}`,
-            instanceOf: "instance_owner",
+            instanceOf: "scoring",
           },
         },
       }))
@@ -486,7 +600,7 @@ describe("useNodeHandlers", () => {
     const { result } = renderHook(() => useNodeHandlers(params))
 
     await act(async () => {
-      await result.current.handleCreateInstance("instance_copy_10")
+      await result.current.handleCreateInstance("scoring_10")
     })
 
     const created = params.setNodes.mock.calls[0][0](params.graphRef.current.nodes)
@@ -496,18 +610,18 @@ describe("useNodeHandlers", () => {
 
   it("allocates occurrence ids and aliases across the combined identity namespace", async () => {
     const params = makeParams()
-    const source = makeNode("instance_source", "submodel", {
+    const source = makeNode("scoring", "submodel", {
       data: {
-        label: "Scoring",
+        label: "scoring",
         nodeType: "submodel",
         config: { definitionId: "definition_scoring", alias: "scoring" },
       },
     })
-    const aliasOccupier = makeNode("instance_existing", "submodel", {
+    const aliasOccupier = makeNode("other_submodel", "submodel", {
       data: {
-        label: "Existing",
+        label: "other_submodel",
         nodeType: "submodel",
-        config: { definitionId: "definition_other", alias: "submodel_11" },
+        config: { definitionId: "definition_other", alias: "other_submodel" },
       },
     })
     const nodeIdOccupier = makeNode("scoring_2")
@@ -522,7 +636,7 @@ describe("useNodeHandlers", () => {
     })
 
     const created = params.setSelectedNode.mock.calls[0][0] as Node
-    expect(created.id).toBe("submodel_12")
+    expect(created.id).toBe("scoring_3")
     expect(created.data.config).toEqual({
       definitionId: "definition_scoring",
       alias: "scoring_3",
@@ -530,11 +644,38 @@ describe("useNodeHandlers", () => {
     })
   })
 
+  it("mints the node id equal to its alias and never a submodel_<n> id", async () => {
+    const params = makeParams()
+    const source = makeNode("scoring", "submodel", {
+      data: {
+        label: "scoring",
+        nodeType: "submodel",
+        config: { definitionId: "definition_scoring", alias: "scoring" },
+      },
+    })
+    params.graphRef.current = { nodes: [source], edges: [] }
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    await act(async () => {
+      await result.current.handleCreateInstance(source.id)
+    })
+
+    const created = params.setSelectedNode.mock.calls[0][0] as Node
+    expect(created.id).toBe("scoring_2")
+    expect(created.id).not.toMatch(/^submodel_\d+$/)
+    expect(created.data.label).toBe("scoring_2")
+    expect(created.data.config).toEqual({
+      definitionId: "definition_scoring",
+      alias: "scoring_2",
+      instanceOf: "scoring",
+    })
+  })
+
   it("rejects a partial reusable-submodel identity", () => {
     const params = makeParams()
-    const source = makeNode("instance_source", "submodel", {
+    const source = makeNode("scoring", "submodel", {
       data: {
-        label: "Broken scoring",
+        label: "scoring",
         nodeType: "submodel",
         config: { alias: "scoring" },
       },
@@ -552,9 +693,9 @@ describe("useNodeHandlers", () => {
 
   it("rejects an occurrence whose editable definition owner is missing", () => {
     const params = makeParams()
-    const source = makeNode("instance_copy", "submodel", {
+    const source = makeNode("scoring_2", "submodel", {
       data: {
-        label: "Scoring copy",
+        label: "scoring_2",
         nodeType: "submodel",
         config: {
           definitionId: "definition_scoring",
@@ -578,9 +719,9 @@ describe("useNodeHandlers", () => {
 
   it("normalises a suffixed source alias before choosing the next occurrence alias", async () => {
     const params = makeParams()
-    const base = makeNode("submodel_10", "submodel", {
+    const base = makeNode("scoring", "submodel", {
       data: {
-        label: "Scoring",
+        label: "scoring",
         nodeType: "submodel",
         config: {
           definitionId: "definition_scoring",
@@ -588,9 +729,9 @@ describe("useNodeHandlers", () => {
         },
       },
     })
-    const source = makeNode("submodel_11", "submodel", {
+    const source = makeNode("scoring_2", "submodel", {
       data: {
-        label: "Scoring 2",
+        label: "scoring_2",
         nodeType: "submodel",
         config: {
           definitionId: "definition_scoring",
@@ -607,6 +748,7 @@ describe("useNodeHandlers", () => {
     })
 
     const created = params.setSelectedNode.mock.calls[0][0] as Node
+    expect(created.id).toBe("scoring_3")
     expect(created.data.config).toEqual({
       definitionId: "definition_scoring",
       alias: "scoring_3",
@@ -630,6 +772,19 @@ describe("useNodeHandlers", () => {
     act(() => { vi.advanceTimersByTime(100) })
     expect(params.fitView).toHaveBeenCalledWith({ padding: 0.15 })
     vi.useRealTimers()
+  })
+
+  it("forwards React Flow's internal-node lookup to the layout utility", async () => {
+    const params = makeParams()
+    const n1 = makeNode("n1")
+    params.graphRef.current = { nodes: [n1], edges: [] }
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    await act(async () => {
+      await result.current.handleAutoLayout()
+    })
+
+    expect(getLayoutedElements).toHaveBeenCalledWith([n1], [], params.getInternalNode)
   })
 
   it("exposes pending auto-layout state while ELK is loading", async () => {

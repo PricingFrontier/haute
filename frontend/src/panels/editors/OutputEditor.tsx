@@ -4,15 +4,15 @@ import {
   useCallback,
   useLayoutEffect,
   useRef,
-  type CSSProperties,
 } from "react"
 import { ChevronRight, ChevronDown, Plus, X, Wand2, Pencil, Check, AlertTriangle } from "lucide-react"
 import type { OnUpdateConfig, SimpleNode, SimpleEdge } from "./_shared"
-import { EditorLabel } from "../../components/form"
+import { EditorLabel, ValidatedTextField } from "../../components/form"
 import { useGraph } from "../useGraph"
 import { buildGraph } from "../../utils/buildGraph"
 import useSettingsStore from "../../stores/useSettingsStore"
 import { outputAssembleDryRun, previewNode, ApiError } from "../../api/client"
+import { apiErrorMessage } from "../../api/errors"
 import { FrameTableActions } from "./FrameTableActions"
 import { JsonPreview } from "./JsonPreview"
 import {
@@ -279,6 +279,10 @@ export default function OutputEditor({
     return emptyV2()
   }, [shape])
 
+  // An OUTPUT level takes one frame (the backend rejects two), so frames that
+  // emit at the same array level are flagged before a run or save fails.
+  const sharedLevels = useMemo(() => framesSharingALevel(v2.outputMapping), [v2.outputMapping])
+
   // Editor-only row status (Inferred pill). Never persisted. Keyed by ABSOLUTE
   // index into v2.outputMapping.
   const [rowStatus, setRowStatus] = useState<RowStatusMap>({})
@@ -320,10 +324,12 @@ export default function OutputEditor({
   const outputReqSeq = useRef(0)
 
   const runOutputPreview = useCallback(() => {
+    // buildGraph reads the preamble from the store; listing it renews this callback.
+    void preamble
     const reqId = ++outputReqSeq.current
     setOutputLoading(true)
     setOutputError(null)
-    const graph = buildGraph(allNodes, edges, submodels, preamble)
+    const graph = buildGraph(allNodes, edges, submodels)
     outputAssembleDryRun({
       graph,
       nodeId,
@@ -355,12 +361,7 @@ export default function OutputEditor({
         if (outputReqSeq.current !== reqId) return
         // The route returns structured 422/400/404/503/504/500 — surface the
         // detail message (ApiError carries it) rather than a bare status.
-        const message =
-          err instanceof ApiError
-            ? err.detail || err.message
-            : err instanceof Error
-              ? err.message
-              : "Output preview failed"
+        const message = apiErrorMessage(err, "Output preview failed")
         setOutputDoc(null)
         setOutputError(message)
         setOutputLoading(false)
@@ -396,9 +397,11 @@ export default function OutputEditor({
       edge: SimpleEdge,
       columns: string[],
     ): Promise<{ rows: Record<string, unknown>[]; total: number }> => {
+      // buildGraph reads the preamble from the store; listing it renews this callback.
+      void preamble
       const sourceNode = nodeById[edge.source]
       if (!sourceNode) throw new ApiError("Frame source node not found", 404)
-      const graph = buildGraph(allNodes, edges, submodels, preamble)
+      const graph = buildGraph(allNodes, edges, submodels)
       const res = await previewNode({
         graph,
         nodeId: edge.source,
@@ -660,6 +663,27 @@ export default function OutputEditor({
         </div>
       )}
 
+      {sharedLevels.length > 0 && (
+        <div
+          data-testid="output-same-level-banner"
+          className="px-2.5 py-2 rounded-md text-[11px] leading-relaxed space-y-1"
+          style={{
+            background: "var(--danger-soft)",
+            border: "1px solid var(--danger-border-strong)",
+            color: "var(--danger-text)",
+          }}
+        >
+          {sharedLevels.map(({ level, ports }) => (
+            <p key={level}>
+              Frames {listNames(ports)} emit at the same array level (
+              <span className="font-mono">{level}</span>). An output level takes one frame: join
+              them upstream (for example with a Join node) or map one of them to a different
+              level.
+            </p>
+          ))}
+        </div>
+      )}
+
       {incomingEdges.length === 0 ? (
         <div
           data-testid="output-empty-state"
@@ -673,8 +697,8 @@ export default function OutputEditor({
           {/* Top-level FRAMES table: one row per frame, EXPANDABLE to show each
               frame's read-only INPUT SCHEMA (columns + types). The chevron/label
               toggles the schema view; the shared table-actions strip still does
-              Copy/Share/Save of the whole frame set. Read-only here — editing
-              happens per-frame below — so no Paste-in. */}
+              Copy/Share/Save of the whole frame set. Read-only here - editing
+              happens per-frame below - so no Paste-in. */}
           <div
             data-testid="output-frames-table"
             className="rounded-md"
@@ -961,12 +985,7 @@ function FrameBlock({
       })
       .catch((err: unknown) => {
         if (dataReqSeq.current !== reqId) return
-        const message =
-          err instanceof ApiError
-            ? err.detail || err.message
-            : err instanceof Error
-              ? err.message
-              : "Frame data preview failed"
+        const message = apiErrorMessage(err, "Frame data preview failed")
         setDataRows(null)
         setDataError(message)
         setDataLoading(false)
@@ -1274,6 +1293,40 @@ function prefixComparable(a: string, b: string): boolean {
   return true
 }
 
+/**
+ * The array levels more than one frame emits at, mirroring the backend's
+ * one-frame-per-level rule (`validate_v2_output_mapping`). Over ACTIVE rows
+ * (enabled, with a column and a grammatical path), a path's level is the names
+ * of its `[:]` segments and a frame emits at its deepest one. A frame whose
+ * levels do not form one chain is rejected for that on its own, so it takes no
+ * part here. Each shared level is returned as a path (`$[:]`, `$[:].a[:]`) with
+ * its frames in mapping order.
+ */
+function framesSharingALevel(mapping: OutputMappingEntryV2[]): { level: string; ports: string[] }[] {
+  const levelsByPort = new Map<string, string[][]>()
+  for (const entry of mapping) {
+    if (!entry.enabled || !entry.source_column.trim() || !entry.output_path.trim()) continue
+    if (validateOutputPath(entry.output_path) !== null) continue
+    const level = parsePath(entry.output_path).segments.filter((s) => s.isArray).map((s) => s.name)
+    levelsByPort.set(entry.source_port, [...(levelsByPort.get(entry.source_port) ?? []), level])
+  }
+  const portsByLevel = new Map<string, string[]>()
+  for (const [port, levels] of levelsByPort) {
+    const deepest = levels.reduce((a, b) => (b.length > a.length ? b : a))
+    if (!levels.every((level) => level.every((name, i) => deepest[i] === name))) continue
+    const path = `$[:]${deepest.map((name) => `.${name}[:]`).join("")}`
+    portsByLevel.set(path, [...(portsByLevel.get(path) ?? []), port])
+  }
+  return [...portsByLevel]
+    .filter(([, ports]) => ports.length > 1)
+    .map(([level, ports]) => ({ level, ports }))
+}
+
+/** "a and b", "a, b and c". */
+function listNames(names: string[]): string {
+  return names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`
+}
+
 // ─── MappingRow ───────────────────────────────────────────────────
 
 function MappingRow({
@@ -1325,7 +1378,7 @@ function MappingRow({
           className="w-full text-[11px] px-1 py-0.5 rounded font-mono"
           style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
         >
-          <option value="">— column —</option>
+          <option value="">- column -</option>
           {columnOptions.map((c) => (
             <option key={c} value={c}>
               {c}
@@ -1333,22 +1386,23 @@ function MappingRow({
           ))}
         </select>
       </div>
-      <CommittedTextInput
+      <ValidatedTextField
         dataTestId={`${testIdPrefix}-path`}
         value={entry.output_path}
         onCommit={onPath}
         validate={validatePathInput}
+        placeholder="$[:].field"
         containerClassName="flex-1 min-w-0"
         className="w-full text-[11px] px-1.5 py-0.5 rounded font-mono"
         style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-muted)" }}
-        conflictNote={pathConflict ? "Conflicts with another field's path in this frame (best-effort)." : null}
+        warning={pathConflict ? "Conflicts with another field's path in this frame (best-effort)." : null}
       />
       {status === "Inferred" && (
         <span
           data-testid={`${testIdPrefix}-pill`}
           className="mt-1 text-[10px] font-semibold px-1.5 py-0.5 rounded shrink-0"
           style={{ background: "var(--warning-soft)", color: "var(--warning-strong)" }}
-          title="Auto-mapped — edit the column or path to confirm"
+          title="Auto-mapped - edit the column or path to confirm"
         >
           Inferred
         </span>
@@ -1377,92 +1431,4 @@ function validatePathInput(candidate: string): string | null {
   const trimmed = candidate.trim()
   if (!trimmed) return "An output path is required."
   return validateOutputPath(trimmed)
-}
-
-// ─── CommittedTextInput ───────────────────────────────────────────
-//
-// Mirrors the apiInput editor's committed-input pattern: a path buffers locally
-// and commits on blur/Enter, refusing invalid candidates (keeping the draft +
-// a visible error). This avoids per-keystroke config churn and never lets an
-// invalid path silently reach the backend. The optional `conflictNote` is a
-// non-blocking advisory (the path is grammatically fine but conflicts with a
-// sibling — backend is the authority), shown alongside any hard error.
-
-function CommittedTextInput({
-  value,
-  onCommit,
-  validate,
-  dataTestId,
-  containerClassName,
-  className,
-  style,
-  conflictNote,
-}: {
-  value: string
-  onCommit: (next: string) => void
-  validate: (candidate: string) => string | null
-  dataTestId: string
-  containerClassName: string
-  className: string
-  style: CSSProperties
-  conflictNote?: string | null
-}) {
-  const [draft, setDraft] = useState<string | null>(null)
-  const [lastValue, setLastValue] = useState(value)
-  if (lastValue !== value) {
-    setLastValue(value)
-    setDraft(null)
-  }
-  const shown = draft ?? value
-  const error = validate(shown)
-  const commit = () => {
-    if (draft === null) return
-    if (draft === value) {
-      setDraft(null)
-      return
-    }
-    if (validate(draft) !== null) return
-    onCommit(draft)
-    setDraft(null)
-  }
-  return (
-    <div className={containerClassName}>
-      <input
-        data-testid={dataTestId}
-        type="text"
-        value={shown}
-        aria-invalid={error !== null ? true : undefined}
-        placeholder="$[:].field"
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") commit()
-        }}
-        className={className}
-        style={
-          error !== null
-            ? { ...style, border: "1px solid var(--danger-border-strong)" }
-            : style
-        }
-      />
-      {error !== null && (
-        <div
-          data-testid={`${dataTestId}-error`}
-          className="mt-0.5 px-1.5 py-0.5 rounded text-[10px] leading-snug"
-          style={{ background: "var(--danger-soft)", color: "var(--danger-text)" }}
-        >
-          {error}
-        </div>
-      )}
-      {error === null && conflictNote && (
-        <div
-          data-testid={`${dataTestId}-conflict`}
-          className="mt-0.5 px-1.5 py-0.5 rounded text-[10px] leading-snug"
-          style={{ background: "var(--warning-soft)", color: "var(--warning-strong)" }}
-        >
-          {conflictNote}
-        </div>
-      )}
-    </div>
-  )
 }

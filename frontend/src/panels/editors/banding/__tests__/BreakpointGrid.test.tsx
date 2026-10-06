@@ -240,7 +240,7 @@ describe("BreakpointGrid", () => {
     expect(warning).toHaveAttribute("title", "Breakpoint 3 is out of order; enter a value greater than 30.")
     expect(warning).not.toHaveClass("pointer-events-none")
     expect(screen.getByLabelText("Breakpoint 3 boundary")).toHaveAttribute("aria-invalid", "true")
-    expect(screen.getByLabelText("Breakpoint 3 boundary")).toHaveAttribute("aria-describedby", "breakpoint-3-order-warning")
+    expect(screen.getByLabelText("Breakpoint 3 boundary")).toHaveAttribute("aria-describedby", "breakpoint-3-boundary-warning")
     expect(screen.getByLabelText("Breakpoint 3 boundary")).toHaveAttribute("title", "Breakpoint 3 is out of order; enter a value greater than 30.")
     expect(screen.getByLabelText("Breakpoint 3 boundary").style.border).toBe("1px solid var(--warning-border-emphasis)")
     expect(screen.getByRole("img", {
@@ -285,6 +285,54 @@ describe("BreakpointGrid", () => {
     expect(screen.getByLabelText("Breakpoint 1 boundary")).not.toHaveAttribute("aria-invalid")
     expect(screen.getByLabelText("Breakpoint 2 boundary")).not.toHaveAttribute("aria-invalid")
     expect(screen.getByLabelText("Breakpoint 3 boundary")).not.toHaveAttribute("aria-invalid")
+  })
+
+  describe("on a date column", () => {
+    const renderDates = (boundaries: string[]) =>
+      render(
+        <BreakpointGrid
+          breakpoints={boundaries.map((boundary, i) => ({ boundary, label: `Band ${i + 1}` }))}
+          onUpdate={vi.fn()}
+          accentColor={ACCENT}
+          temporal
+        />,
+      )
+
+    it("takes dates as text, shows the format it expects, and does not flag ordered dates", () => {
+      renderDates(["2024-01-31", "2024-03-31", ""])
+      const second = screen.getByLabelText("Breakpoint 2 boundary")
+      expect(second).toHaveAttribute("type", "text")
+      expect(second).toHaveValue("2024-03-31")
+      expect(screen.getByLabelText("Breakpoint 3 boundary")).toHaveAttribute("placeholder", "YYYY-MM-DD")
+      expect(screen.queryByRole("img", { name: /^Breakpoint/ })).not.toBeInTheDocument()
+    })
+
+    it("flags a boundary it cannot read as a date", () => {
+      renderDates(["2024-02-30", "31/03/2024", "2024-06-30", "10"])
+      for (const n of [1, 2, 4]) {
+        const message = `Breakpoint ${n} is not a date; enter YYYY-MM-DD or YYYY-MM-DD HH:MM.`
+        expect(screen.getByRole("img", { name: message })).toBeInTheDocument()
+        expect(screen.getByLabelText(`Breakpoint ${n} boundary`)).toHaveAttribute("aria-invalid", "true")
+      }
+      expect(screen.getByLabelText("Breakpoint 3 boundary")).not.toHaveAttribute("aria-invalid")
+    })
+
+    it("flags a boundary out of order by when it is, not how it is spelled", () => {
+      // " " sorts before "T", but 09:00 is before 10:00.
+      renderDates(["2024-01-31 10:00", "2024-01-31T09:00", "2024-02-29 00:00"])
+      expect(screen.getByRole("img", {
+        name: "Breakpoint 2 is out of order; enter a date after 2024-01-31 10:00.",
+      })).toBeInTheDocument()
+      expect(screen.getByLabelText("Breakpoint 3 boundary")).not.toHaveAttribute("aria-invalid")
+    })
+
+    it("flags a boundary whose kind differs from the first", () => {
+      renderDates(["2024-01-31", "2024-02-29 12:00", "2024-03-31"])
+      expect(screen.getByRole("img", {
+        name: "Breakpoint 2 is a date and time, but breakpoint 1 is a date; give every breakpoint the same kind.",
+      })).toBeInTheDocument()
+      expect(screen.getByLabelText("Breakpoint 3 boundary")).not.toHaveAttribute("aria-invalid")
+    })
   })
 
   it("match counts display when provided", () => {

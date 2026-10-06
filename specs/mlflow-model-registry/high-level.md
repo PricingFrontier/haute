@@ -2,13 +2,13 @@
 
 ## Purpose
 
-Haute pipelines score data through models that were trained and logged
-outside the pipeline itself — as an MLflow run artifact or as a version of
-an MLflow registered model. This component is the read path for those
-models: given a source description (a run + artifact path, or a
-registered model + version), it resolves that description against the
-configured MLflow tracking server, downloads and caches the underlying
-artifact, loads it with the right flavor-specific loader (CatBoost native,
+Haute pipelines score data through models that were trained outside the
+pipeline itself — an MLflow run artifact, a version of an MLflow registered
+model, or a model file saved in the project. This component is the read path
+for those models: given a source description (a run + artifact path, a
+registered model + version, or a project file), it resolves that description
+against the configured MLflow tracking server or the project, downloads and
+caches the underlying artifact, loads it with the right flavor-specific loader (CatBoost native,
 RustyStats native, or generic MLflow pyfunc), and wraps it behind one
 uniform interface the rest of the codebase scores against without caring
 which flavor it is.
@@ -22,7 +22,18 @@ contribution decomposition for RustyStats) for trace enrichment. A small
 set of read-only discovery HTTP endpoints lets the pipeline-builder GUI
 browse experiments, runs, registered models, and versions to configure a
 MODEL_SCORE node without the user needing to know MLflow identifiers by
-heart.
+heart. The same router also owns the connection surface the GUI uses to
+understand *where* tracking can go: a destinations endpoint reporting the
+inventory of the three destinations (Databricks, MLflow server, Local) with
+optional connection probes, settings endpoints that read and persist the
+`[mlflow]` inventory table of `haute.toml`, and a bounded per-destination
+test-connection probe — credentials stay in `.env` (Databricks MLflow uses its
+own `DATABRICKS_MLFLOW_HOST`/`DATABRICKS_MLFLOW_TOKEN` pair, never the
+data-access pair) or the selected Databricks profile and never pass through this
+surface. Which destination a node uses is
+that node's own choice (`mlflow_destination`, absent = the local folder), never a
+workspace-wide selection: configuring Databricks or a server never retargets a node
+that did not choose it.
 
 ## Scope
 
@@ -31,12 +42,22 @@ In scope:
   registered model version (including `"latest"`) — to a concrete run ID
   and artifact path via the tracking/registry API.
 - Auto-discovering the model artifact within a run when no artifact path
-  is given (CatBoost `.cbm`, then RustyStats `.rsglm`, then a pyfunc
-  model directory).
+  is given (each registered family's suffixes in registration order —
+  CatBoost `.cbm`, RustyStats `.rsglm`, XGBoost `.ubj`, LightGBM `.lgbm`,
+  EBM `.ebm`, t-boost `.tboost` — then a pyfunc model directory).
+- Resolving a project model file (`source_type="file"`) through the
+  runtime sandbox, and the contract it scores under (explicit, or saved
+  beside it), and inspecting such a file for the node editor
+  (`GET /api/model-file`).
+- Binding a loaded model to its feature contract, including the offset
+  declaration a CatBoost model's own file may lack.
 - Downloading and disk-caching native-flavor artifacts, and
   thread-safe in-memory LRU caching of already-loaded models.
-- Flavor detection and flavor-specific loading; the `ModelFlavor` domain
-  is the single source of truth every dispatch site reads from.
+- Family detection and family-specific loading through the model family
+  registry (`_model_flavors.py`), the one place a scoring family is
+  described and the single source every dispatch site reads from. An
+  artifact whose suffix no family registers is refused by name, never
+  defaulted to a family.
 - A uniform `ScoringModel` carrier (`predict`, `predict_proba`,
   `raw_model`) so downstream code never branches on flavor except inside
   this component's own dispatch helpers.
@@ -53,13 +74,27 @@ In scope:
 - Read-only MLflow discovery endpoints (`/api/mlflow/experiments`,
   `/runs`, `/models`, `/model-versions`) that populate the MODEL_SCORE
   node's configuration UI.
+- The MLflow connection surface: `GET /api/mlflow/destinations` (the three
+  destinations with `configured`, human-readable destination, config source,
+  actionable detail, and optional concurrent bounded
+  probes of the configured remotes), `GET`/`PUT /api/mlflow/settings` (the
+  `[mlflow]` inventory table of `haute.toml` — `tracking_uri` and `folder` —
+  written via a layout-preserving tomlkit round trip), and
+  `POST /api/mlflow/test-connection` (a bounded probe of one destination,
+  with categorised, non-secret error reporting).
+- Resolving, once per operation, the backend a node's destination means —
+  tracking and registry URIs plus a secret-free identity — and keying every
+  model/artifact cache, disk-cache path, and I/O lock on that identity, so
+  the same run on two destinations never aliases.
 
 Out of scope (owned elsewhere):
 - Logging *new* MLflow runs — training diagnostics, SHAP summaries, model
   cards, and optimiser artifacts — is a write path owned by
   [modelling](../modelling/high-level.md) (`_mlflow_log.py`) and, for the
   optimiser's own run logging, the [optimiser](../optimiser/high-level.md)
-  component. This component only ever reads.
+  component. Against the tracking backend itself this component only ever
+  reads; the one write it owns is the `[mlflow]` inventory table of
+  `haute.toml` through the settings endpoint.
 - Deriving the train-time feature contract itself (declared features,
   offset column, categorical value domains) — owned by
   [modelling](../modelling/high-level.md) (`_feature_contract.py`); this
@@ -69,21 +104,64 @@ Out of scope (owned elsewhere):
   [deploy](../deploy/high-level.md) (`deploy/_bundler.py`,
   `deploy/_mlflow.py`), which reuses this component's loader primitives
   but owns the packaging/serving concern.
-- The MODEL_SCORE node's place in the pipeline graph, its codegen
-  template, and executor wiring — `score_from_config` in
-  `_model_scorer.py` is codegen's *delegation target*, not the generator;
-  see the execution-engine and codegen components.
+- The MODEL_SCORE node's place in the pipeline graph, its generated
+  declaration, and executor wiring — `score_from_config` in
+  `_model_scorer.py` is what a standalone run's Model Score decorator calls,
+  not the generator; see the execution-engine, codegen and pipeline-config
+  components.
 - General HTTP conventions (auth, response timeout wrapping) beyond the
   discovery routes themselves — see
   [server-api](../server-api/high-level.md).
 
 ## Behaviour
 
-- A model is located one of two ways: `source_type="run"` with a
-  `run_id` (and optional `artifact_path`, auto-discovered if omitted), or
+- A model is located one of three ways: `source_type="run"` with a
+  `run_id` (and optional `artifact_path`, auto-discovered if omitted),
   `source_type="registered"` with a `registered_model` name and a
   `version` (a literal version number, or `"latest"`, which resolves to
-  the highest numeric version currently registered).
+  the highest numeric version currently registered), or `source_type="file"`
+  with a `model_path` naming a model file in the project. A file source
+  resolves its path through the runtime sandbox (a path outside the project is
+  refused), loads it through the family the suffix names, and scores under the
+  feature contract `feature_contract_path` names or, without one, the contract
+  saved beside the file (`<stem>.feature_contract.json`, then
+  `feature_contract.json`).
+- A Model Scoring node's config is parsed once into a typed model source,
+  which owns every source default and validation rule, and is loaded through
+  one entry point. The executor, column planning, a standalone run, the trace
+  explanation and deploy all take that parsed source, so an invalid source
+  fails with the same error everywhere and no context loads a different model
+  for the same config.
+- A loaded model is bound to the feature contract it scores under before
+  anything scores it. A contract that records a model identity must describe
+  the loaded model. A CatBoost file records no baseline of its own, so its
+  offset must be declared: by the `haute_offset_column` metadata Haute stamps
+  at fit (an empty value declares no offset), or by a contract whose
+  `offset_column` names the column and whose `offset_link` (`log` or
+  `identity`) says how it enters the raw score, or whose `offset_column` is
+  null. A model whose metadata and contract disagree is refused. A run or
+  registered CatBoost model without the metadata and without an explicit
+  contract is bound to the contract the run logged beside it. A CatBoost model
+  with no declaration is refused, never scored from baseline zero, and a
+  declared offset column missing from the scoring input fails before
+  prediction.
+- A file-sourced model is cached in memory by its resolved path, `task` and
+  the byte identity of the contract it scores under, gated on the model
+  file's freshness token, in the same cache the deploy scorer serves bundled
+  models from. Replacing the model or only its contract reloads it; a failed
+  load or binding is never cached; a missing model or contract file raises
+  however warm the cache. The model file and its contract are runtime inputs
+  of execution-cache identity: an explicit contract is signed by its path, and
+  without one both sibling-contract candidates are signed (a missing one as
+  missing), so replacing the model, replacing or adding a sibling contract, or
+  deleting either invalidates preview, trace and downstream node-output
+  snapshot freshness. An unchanged path is never freshness evidence.
+- `GET /api/model-file?path=` inspects a project model file for the node
+  editor: its family, recorded task (from the contract, or the model's own
+  record), features, categorical features, offset column and link, and the
+  project-relative contract it would score under. Inspection loads the model
+  and binds the contract exactly as scoring does, so a file the node would
+  refuse is reported with the same error (`400`).
 - Loaded models are cached in two tiers. An in-memory LRU (16 entries)
   holds fully-loaded `ScoringModel` objects keyed by the resolved source
   identity plus `task` plus the byte-identity fingerprint of the locally
@@ -157,7 +235,15 @@ Out of scope (owned elsewhere):
   `predict_proba`; a model whose `predict_proba` returns more than two
   classes' worth of probabilities is rejected rather than silently
   reporting one arbitrary class's probability as "the" positive-class
-  value.
+  value. When a classification Model Score node's feature contract records
+  Haute class labels (every Haute-trained binary classifier scores a
+  probability), its column contract declares that column as produced, so
+  deployed projection and output mappings can use it; a prediction-only
+  classifier declares none.
+- The output column and the `_proba` column replace a same-named column
+  already in the input frame, by design: a pipeline may score over an
+  existing column. Two Model Score nodes that should both survive need
+  distinct output columns.
 - A per-prediction explanation reconstructs the traced prediction from
   its own decomposition (SHAP values for CatBoost, contribution terms for
   RustyStats) and verifies the reconstruction matches the model's actual
@@ -166,6 +252,16 @@ Out of scope (owned elsewhere):
 - The discovery endpoints only ever read from the configured MLflow
   tracking server; they never touch the model cache and have no
   side effects on it.
+- The status endpoint truthfully reports the resolved backend in all three
+  modes (databricks / server / local) including where runs will actually go,
+  and reports a misconfigured selection (for example Databricks chosen with
+  no token in `.env`) as an actionable reason rather than a silent fallback.
+  Saving settings persists the resolved local folder, so a save of an
+  unchanged env-derived local configuration never redirects tracking to
+  `./mlruns`. The test-connection probe is bounded in time and classifies
+  failures (authentication, permission, missing resource, connectivity,
+  configuration) from MLflow's structured error codes and transport errors —
+  never by guessing from exception class alone.
 
 ## Design rationale
 
@@ -216,12 +312,14 @@ Out of scope (owned elsewhere):
   offset presence are all checked before any `predict()` call, and a
   multiclass `predict_proba` output is rejected rather than arbitrarily
   picking one class's column.
-- **The flavor domain lives in its own leaf module.** `_model_flavors.py`
-  has no dependency on the rest of `haute`, specifically so that
-  `_model_scorer.py` and `_mlflow_io.py` — which already have a
-  load-order dependency on each other — can both import the *same*
-  `ModelFlavor` object instead of each hand-maintaining a parallel
-  spelling of `"catboost"` / `"pyfunc"` / `"rustystats"` that could drift.
+- **The model family registry lives in its own leaf module.**
+  `_model_flavors.py` has no dependency on the rest of `haute` (loaders and
+  offset readers are bound lazily by module path), specifically so that
+  `_model_scorer.py`, `_mlflow_io.py`, the explanation, deploy and the MLflow
+  routes — some of which already have a load-order dependency on each other —
+  all read the *same* family adapters instead of each hand-maintaining a
+  parallel chain of flavors and suffixes that could drift. A further family
+  is a single `register_model_family` call.
 - **Array contiguity is benchmark-gated.** Model preparation does not add a
   contiguity conversion unless dedicated performance evidence clears the
   agreed threshold and regression tests prove identical feature order,
@@ -258,12 +356,13 @@ Out of scope (owned elsewhere):
   `_model_scorer.py` loads and enforces at score time.
 - Is consumed by the pipeline
   [execution-engine](../execution-engine/high-level.md): the MODEL_SCORE
-  node calls `ModelScorer.score()` / `score_frame()` directly, and
-  codegen-generated pipeline scripts call `score_from_config` as their
-  delegation target.
+  node calls `ModelScorer.score()` / `score_frame()` directly, and a
+  standalone run of a saved pipeline scores through `score_from_config`
+  from the Model Score decorator.
 - Is consumed by [deploy](../deploy/high-level.md), which loads and
   bundles models via the same `load_mlflow_model` /
-  `resolve_mlflow_source` primitives for its own scorer, and by
+  `resolve_mlflow_source` primitives, bundles a file source's model and
+  contract, and serves bundled models through `load_local_model_cached`, and by
   [optimiser](../optimiser/high-level.md), which loads MLflow-backed
   models to evaluate during optimisation.
 - Feeds the [tracing](../tracing/high-level.md) component: per-prediction
@@ -284,16 +383,32 @@ Out of scope (owned elsewhere):
 - Missing required source arguments (`run_id` for `"run"`,
   `registered_model` for `"registered"`), an invalid `source_type`, or no
   versions found for a registered model: `ValueError`.
-- No matching model artifact found in a run after checking `.cbm`,
-  `.rsglm`, and a pyfunc model directory (top level and one level of
-  subdirectories): an internal `_ArtifactNotFoundError`
+- No matching model artifact found in a run after checking every
+  registered suffix and a pyfunc model directory (top level and one level of
+  subdirectories): an internal `_ArtifactNotFoundError` whose message names
+  them
   (a `FileNotFoundError` subclass). A *different* `FileNotFoundError` or
   an MLflow `MlflowException` raised by the tracking client itself (e.g.
   a credential or network failure) is never caught here — it propagates
   as the real infrastructure error instead of being reported as "no
   model artifact found."
-- Loading a local file with an unsupported extension via
-  `load_local_model`: `NotImplementedError`.
+- A model file or run artifact whose suffix no family registers:
+  `ConfigError` naming the supported suffixes, raised before any download.
+- A CatBoost model whose metadata cannot be read: `ConfigError` naming the
+  model file or run artifact. An unreadable one is never taken to mean the
+  model has no offset, because the model would then score from baseline zero.
+- A CatBoost model whose offset is declared neither by its metadata nor by a
+  contract, a contract that names an offset column without its `offset_link`,
+  or metadata and a contract that disagree on the offset: `ConfigError` naming
+  the model and the remedy (save a contract beside it, or retrain). This holds
+  for file, run and registered sources; a model trained by an earlier Haute
+  without an offset and scored without its contract is refused where it was
+  once scored from baseline zero.
+- A file source whose `model_path` is empty (`IncompleteModelSourceError`),
+  resolves outside the project (`RuntimePathOutsideProjectError`), does not
+  exist, or has a suffix no family registers; an explicit
+  `feature_contract_path` that does not exist; and an EBM without its
+  contract: each a `ConfigError` naming the file.
 - A model artifact that is still corrupt/unloadable after the one bounded
   retry: `RuntimeError` naming the run ID, artifact path, flavor, and the
   last underlying error.
@@ -316,11 +431,25 @@ Out of scope (owned elsewhere):
   doesn't reconstruct the model's own prediction, non-finite values, an
   unsupported multi-output model, or an unexpected result shape):
   `ModelExplanationError`.
-- Discovery-route failures: `mlflow` not installed → `503`; tracking
-  backend resolution failure → `502`; an MLflow search call
-  (`search_experiments` / `search_runs` / `search_registered_models` /
-  `search_model_versions`) failing → `502` with a non-leaking generic
-  detail message (the real error is logged server-side). A registered
+- Connection-surface failures: `GET /api/mlflow/destinations` never raises
+  for an unconfigured destination — that entry reports `configured=false`
+  with the actionable reason, a failed probe keeps the entry configured with
+  its classified reason, and an unreadable `[mlflow]` table reports every
+  entry unconfigured with the parse reason. `PUT /api/mlflow/settings`
+  rejects an invalid update (a non-`http(s)` or credential-bearing server
+  URI) with `400` and a field-naming detail, writing nothing.
+  `POST /api/mlflow/test-connection` reports `ok=false` with a category and
+  non-secret detail rather than raising for expected failures. A node
+  whose explicit destination is not configured where it runs fails loudly
+  with the prerequisite; nothing redirects to another destination.
+- Discovery-route failures: `mlflow` not installed → `503`; a tracking
+  misconfiguration → `502` carrying its own actionable, secret-free
+  reason; an MLflow search call (`search_experiments` / `search_runs` /
+  `search_registered_models` / `search_model_versions`) failing → `502`
+  with a category-mapped, non-leaking detail (authentication naming
+  `.env`, permission, missing resource, connectivity) — the raw error is
+  only logged server-side, and unclassified failures keep the generic
+  detail. A registered
   model version whose backing run has been deleted or is otherwise
   inaccessible does not fail the whole `/model-versions` response — its
   run-derived params are reported as empty and the failure is logged,
@@ -336,3 +465,16 @@ Out of scope (owned elsewhere):
 cache under `.cache/models/`; only CatBoost and RustyStats artifacts do. On each
 Haute cache miss, a pyfunc model is re-resolved through MLflow's
 `pyfunc.load_model` path and its separate local caching behaviour.
+
+## Shared native-model pyfunc
+
+Every native model Haute trains is logged through one pyfunc
+(`src/haute/modelling/_native_pyfunc.py`) over a package of the model file and its feature
+contract. The loader reads the contract's model identity, loads the file with the matching
+flavor, checks it is the model the identity describes, and scores through Haute's own
+scorer: classification returns the original-label `pred_label` and the positive-class
+`pred_proba`, regression the prediction vector. CatBoost is logged this way too, wrapping its
+`.cbm`, because MLflow's CatBoost flavor serves only the native `predict`. A package without a
+model identity, or whose file is not the model it describes, fails at load, and logging loads
+the package once first so a broken artifact never reaches MLflow.
+

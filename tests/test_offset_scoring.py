@@ -26,7 +26,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from haute.errors import FeatureMismatchError
+from haute.errors import ConfigError, FeatureMismatchError, HauteValidationError
 from haute.modelling._feature_contract import (
     build_contract,
     load_contract,
@@ -147,18 +147,99 @@ class TestGLMPredictOffset:
 
 
 class TestCatBoostPredictOffset:
-    def test_predict_reapplies_baseline(self) -> None:
+    def test_catboost_poisson_offset_is_a_multiplier(self) -> None:
         """CatBoost predictions with the offset kwarg must include the
-        baseline: for a Poisson loss the raw-score baseline multiplies the
-        response prediction by exp(baseline)."""
-        pytest.importorskip("catboost", reason="catboost optional dependency not installed")
+        baseline: for a Poisson loss the offset is an exposure multiplier, so
+        the prediction scales exactly with it (baseline log(exposure))."""
         df = _freq_frame()
         algo, model = _fit_catboost(df, offset="exposure")
 
         with_offset = algo.predict(model, df, ["age", "region"], offset="exposure")
         without = algo.predict(model, df, ["age", "region"])
-        expected_ratio = np.exp(df["exposure"].to_numpy())
+        expected_ratio = df["exposure"].to_numpy()
         np.testing.assert_allclose(with_offset / without, expected_ratio, rtol=1e-5)
+
+    def test_catboost_rmse_offset_is_additive(self) -> None:
+        """Under an identity-link loss the offset enters the raw score verbatim."""
+        df = _freq_frame()
+        algo, model = _fit_catboost(df, offset="exposure", loss="RMSE")
+
+        with_offset = algo.predict(model, df, ["age", "region"], offset="exposure")
+        without = algo.predict(model, df, ["age", "region"])
+        np.testing.assert_allclose(with_offset - without, df["exposure"].to_numpy(), rtol=1e-6)
+
+    def test_catboost_model_without_offset_link_metadata_is_refused(
+        self, haute_scratch: Path
+    ) -> None:
+        """A model recording an offset column but not its transform cannot be
+        scored the way it was trained, so loading it asks for a retrain."""
+        from haute._mlflow_io import load_local_model
+        from haute.modelling._algorithms import CATBOOST_OFFSET_LINK_METADATA_KEY
+
+        df = _freq_frame()
+        algo, model = _fit_catboost(df, offset="exposure")
+        del model.get_metadata()[CATBOOST_OFFSET_LINK_METADATA_KEY]
+        model_path = haute_scratch / "freq_without_link.cbm"
+        algo.save(model, model_path)
+
+        with pytest.raises(ConfigError, match="records offset column 'exposure' but not how"):
+            load_local_model(str(model_path), "regression")
+
+    def _save_with_unreadable_metadata(
+        self, haute_scratch: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> Path:
+        from catboost import CatBoostRegressor
+
+        algo, model = _fit_catboost(_freq_frame(), offset="exposure")
+        model_path = haute_scratch / "freq_unreadable_metadata.cbm"
+        algo.save(model, model_path)
+
+        def _unreadable(_model: object) -> object:
+            raise RuntimeError("metadata store unavailable")
+
+        monkeypatch.setattr(CatBoostRegressor, "get_metadata", _unreadable)
+        return model_path
+
+    def test_catboost_model_with_unreadable_metadata_is_refused(
+        self, haute_scratch: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unreadable metadata cannot tell an offset-free model from one
+        trained with an offset, so the model is refused, naming its file,
+        rather than scored from baseline zero."""
+        from haute._mlflow_io import load_local_model
+
+        model_path = self._save_with_unreadable_metadata(haute_scratch, monkeypatch)
+
+        with pytest.raises(ConfigError, match="freq_unreadable_metadata.cbm") as refused:
+            load_local_model(str(model_path), "regression")
+        assert isinstance(refused.value.__cause__, RuntimeError)
+
+    def test_mlflow_catboost_model_with_unreadable_metadata_is_refused_once(
+        self, haute_scratch: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The refusal names the run artifact and is not retried as a corrupt
+        download: re-fetching the same bytes cannot make the metadata readable."""
+        from unittest.mock import MagicMock, patch
+
+        from haute._mlflow_io import _load_with_bounded_retry
+
+        model_path = self._save_with_unreadable_metadata(haute_scratch, monkeypatch)
+
+        with (
+            patch(
+                "haute._mlflow_io._resolve_artifact_local", return_value=str(model_path)
+            ) as resolve,
+            pytest.raises(ConfigError, match=r"run 'run-7'.*artifact 'model\.cbm'"),
+        ):
+            _load_with_bounded_retry(
+                mlflow_mod=MagicMock(),
+                backend=MagicMock(),
+                run_id="run-7",
+                artifact="model.cbm",
+                flavor="catboost",
+                task="regression",
+            )
+        assert resolve.call_count == 1
 
     def test_predict_missing_offset_column_fails_loud(self) -> None:
         pytest.importorskip("catboost", reason="catboost optional dependency not installed")
@@ -311,6 +392,78 @@ class TestTrainingMetricsIncludeOffset:
         assert "exposure" not in result.features
         assert np.isfinite(result.metrics["rmse"])
 
+    @pytest.mark.parametrize(
+        ("loss_function", "params", "link"),
+        [
+            (None, {"loss_function": "Poisson"}, "log"),
+            ("Tweedie", {}, "log"),
+            (None, {}, "identity"),
+            ("RMSE", {"loss_function": "Poisson"}, "identity"),
+        ],
+    )
+    def test_catboost_offset_link_follows_the_loss_the_fit_uses(
+        self, loss_function: str | None, params: dict, link: str
+    ) -> None:
+        """The training baseline and the link stamped on the model both follow
+        the effective loss, whether it is a job setting or a ``params`` key."""
+        from haute.modelling._training_job import TrainingJob
+
+        job = TrainingJob(
+            name="cb_link",
+            data=_freq_frame(n=10),
+            target="claim_count",
+            params=params,
+            loss_function=loss_function,
+            offset="exposure",
+        )
+        assert job._offset_link() == link
+
+    @pytest.mark.parametrize("algorithm", ["glm", "catboost"])
+    def test_non_positive_log_link_offset_is_refused_before_fitting(
+        self, haute_scratch: Path, monkeypatch: pytest.MonkeyPatch, algorithm: str
+    ) -> None:
+        from haute.modelling._training_job import TrainingJob
+
+        def fit_must_not_run(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("the model was fitted with a non-positive exposure")
+
+        algorithm_class = (
+            "haute.modelling._rustystats.GLMAlgorithm.fit"
+            if algorithm == "glm"
+            else "haute.modelling._algorithms.CatBoostAlgorithm.fit"
+        )
+        monkeypatch.setattr(algorithm_class, fit_must_not_run)
+        df = _freq_frame().with_columns(
+            pl.when(pl.int_range(pl.len()) == 0)
+            .then(0.0)
+            .when(pl.int_range(pl.len()) == 1)
+            .then(-1.0)
+            .when(pl.int_range(pl.len()) == 2)
+            .then(None)
+            .otherwise(pl.col("exposure"))
+            .alias("exposure")
+        )
+        params = (
+            {"terms": {"age": {"type": "linear"}}, "family": "poisson"}
+            if algorithm == "glm"
+            else {"iterations": 5, "depth": 2, "verbose": 0, "loss_function": "Poisson"}
+        )
+        job = TrainingJob(
+            name=f"{algorithm}_bad_exposure",
+            data=df,
+            target="claim_count",
+            algorithm=algorithm,
+            params=params,
+            offset="exposure",
+            metrics=["rmse"],
+            output_dir=str(haute_scratch),
+        )
+        with pytest.raises(
+            HauteValidationError,
+            match="'exposure' must be positive under a log link, but 3 training rows",
+        ):
+            job.run()
+
     def test_catboost_metrics_use_offset_inclusive_predictions(
         self, haute_scratch: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -320,10 +473,7 @@ class TestTrainingMetricsIncludeOffset:
         pytest.importorskip("catboost", reason="catboost optional dependency not installed")
         from haute.modelling._training_job import TrainingJob
 
-        monkeypatch.setattr(
-            "haute.modelling._algorithms.CatBoostAlgorithm.shap_summary",
-            lambda *a, **kw: [],
-        )
+        monkeypatch.delattr("haute.modelling._algorithms.CatBoostAlgorithm.shap_values")
         monkeypatch.setattr(
             "haute.modelling._algorithms.CatBoostAlgorithm.feature_importance_typed",
             lambda *a, **kw: [],
@@ -430,8 +580,7 @@ class TestOffsetInSignatureAndContract:
             assert_contracts_match(with_offset, without_offset)
 
     def test_offsetless_contract_hash_is_stable(self) -> None:
-        """Adding the offset field must not change the hash of contracts
-        that have no offset — existing deployed artifacts stay valid."""
+        """An offset-free contract hashes exactly its version-2 canonical payload."""
         contract = build_contract(
             features=["age", "region"],
             feature_types={"age": "Int64", "region": "String"},
@@ -451,6 +600,9 @@ class TestOffsetInSignatureAndContract:
             "target_type": "Int64",
             "task": "regression",
             "offset_column": None,
+            "offset_link": None,
+            "contract_version": 3,
+            "model": None,
         }
         import hashlib
         import json
@@ -512,6 +664,32 @@ class TestCanvasScorerOffset:
                 df.drop("exposure", "claim_count").lazy(),
                 task="regression",
                 output_col="prediction",
+            ).collect()
+
+    @pytest.mark.parametrize("source", ["live", "batch"])
+    def test_scoring_refuses_non_positive_log_link_exposure(
+        self, haute_scratch: Path, source: str
+    ) -> None:
+        from haute._model_scorer import _run_score_pipeline
+
+        df, scoring_model = _glm_scoring_model(haute_scratch)
+        assert scoring_model.offset_link == "log"
+        frame = df.drop("claim_count").with_columns(
+            pl.when(pl.int_range(pl.len()) < 2)
+            .then(0.0)
+            .otherwise(pl.col("exposure"))
+            .alias("exposure")
+        )
+        with pytest.raises(
+            HauteValidationError,
+            match="Scoring: offset column 'exposure' must be positive under a log link, but 2 rows",
+        ):
+            _run_score_pipeline(
+                scoring_model,
+                frame.lazy(),
+                task="regression",
+                output_col="prediction",
+                source=source,
             ).collect()
 
     def test_glm_scoring_applies_offset(self, haute_scratch: Path) -> None:
@@ -588,6 +766,59 @@ class TestCanvasScorerOffset:
                 output_col="prediction",
             ).collect()
 
+    @staticmethod
+    def _score_raw_catboost(model: object, df: pl.DataFrame) -> pl.DataFrame:
+        from haute._model_scorer import score_frame
+
+        return score_frame(
+            model=model,
+            lf=df.drop("claim_count").lazy(),
+            features=["age", "region"],
+            cat_feature_names=frozenset({"region"}),
+            flavor="catboost",
+        ).collect()
+
+    def test_raw_catboost_scoring_propagates_an_unreadable_offset_column(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A raw model's offset is read from its metadata; a failed read is
+        raised, never taken as "no offset" and scored from baseline zero."""
+        from catboost import CatBoostRegressor
+
+        df = _freq_frame()
+        _algo, model = _fit_catboost(df, offset="exposure")
+
+        def _unreadable(_model: object) -> object:
+            raise RuntimeError("offset metadata unavailable")
+
+        monkeypatch.setattr(CatBoostRegressor, "get_metadata", _unreadable)
+
+        with pytest.raises(RuntimeError, match="offset metadata unavailable"):
+            self._score_raw_catboost(model, df)
+
+    def test_raw_catboost_scoring_propagates_an_unreadable_offset_link(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A link read that fails is that failure, not the "retrain" refusal
+        meant for a model that recorded its offset column without a link."""
+        from catboost import CatBoostRegressor
+
+        from haute.modelling._algorithms import CATBOOST_OFFSET_METADATA_KEY
+
+        df = _freq_frame()
+        _algo, model = _fit_catboost(df, offset="exposure")
+
+        class _LinkUnreadable:
+            def get(self, key: str) -> str:
+                if key == CATBOOST_OFFSET_METADATA_KEY:
+                    return "exposure"
+                raise RuntimeError("offset link metadata unavailable")
+
+        monkeypatch.setattr(CatBoostRegressor, "get_metadata", lambda _model: _LinkUnreadable())
+
+        with pytest.raises(RuntimeError, match="offset link metadata unavailable"):
+            self._score_raw_catboost(model, df)
+
 
 class _FakePyfunc:
     """Minimal pyfunc-shaped model: predict multiplies age by the offset.
@@ -644,7 +875,8 @@ class TestPyfuncScorerOffset:
         expected = df["age"].to_numpy() * 0.1 * df["exposure"].to_numpy()
         np.testing.assert_allclose(scored, expected, rtol=1e-10)
 
-    def test_missing_offset_fails_loud(self) -> None:
+    @pytest.mark.parametrize("row_limit", [None, 2])
+    def test_missing_offset_fails_loud(self, row_limit: int | None) -> None:
         from haute._model_scorer import _run_score_pipeline
 
         df = self._frame().drop("exposure")
@@ -654,13 +886,42 @@ class TestPyfuncScorerOffset:
                 df.lazy(),
                 task="regression",
                 output_col="prediction",
+                row_limit=row_limit,
             ).collect()
 
-    def test_contract_offset_overrides_when_model_cannot_self_describe(self) -> None:
-        """When the model carries no offset but the caller passes one (the
-        contract-driven pyfunc path), the offset is applied and required."""
-        from haute._mlflow_io import ScoringModel
+    @pytest.mark.parametrize(
+        "required_output_columns", [None, frozenset({"prediction"})], ids=["all", "narrow"]
+    )
+    def test_limited_preview_scores_with_the_offset(
+        self, required_output_columns: frozenset[str] | None
+    ) -> None:
         from haute._model_scorer import _run_score_pipeline
+
+        df = self._frame().with_columns(unused=pl.lit("x"))
+        scored = (
+            _run_score_pipeline(
+                self._model(),
+                df.lazy(),
+                task="regression",
+                output_col="prediction",
+                row_limit=2,
+                required_output_columns=required_output_columns,
+            )
+            .head(2)
+            .collect()
+        )
+
+        expected = (df["age"].to_numpy() * 0.1 * df["exposure"].to_numpy())[:2]
+        np.testing.assert_allclose(scored["prediction"].to_numpy(), expected, rtol=1e-10)
+        if required_output_columns is not None:
+            assert scored.columns == ["prediction"]
+
+    def test_contract_offset_overrides_when_model_cannot_self_describe(self) -> None:
+        """When the model carries no offset but its contract declares one (the
+        contract-driven pyfunc path), binding applies and requires it."""
+        from haute._mlflow_io import ScoringModel, bind_feature_contract
+        from haute._model_scorer import _run_score_pipeline
+        from haute.modelling._feature_contract import build_contract
 
         model = ScoringModel(
             model=_FakePyfunc(),
@@ -668,14 +929,23 @@ class TestPyfuncScorerOffset:
             flavor="pyfunc",
             offset_column=None,  # model cannot self-describe
         )
+        contract = build_contract(
+            features=["age"],
+            feature_types={"age": "Float64"},
+            categorical_features=[],
+            target_name="y",
+            target_type="Float64",
+            task="regression",
+            offset_column="exposure",
+        )
+        bound = bind_feature_contract(model, contract, model_name="'pyfunc'")
         df = self._frame()
         scored = (
             _run_score_pipeline(
-                model,
+                bound,
                 df.lazy(),
                 task="regression",
                 output_col="prediction",
-                offset_column="exposure",  # supplied by the feature contract
             )
             .collect()["prediction"]
             .to_numpy()

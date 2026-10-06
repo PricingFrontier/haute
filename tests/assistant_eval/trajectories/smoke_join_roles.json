@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "id": "smoke_join_roles",
+  "case": "smoke_join_roles",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "inspect",
+              "tool": "get_pipeline",
+              "arguments": {},
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "dry",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Left-join the competitor insight onto the new-business batch as quote_with_competitor.",
+                "ops": [
+                  {
+                    "op": "recipe",
+                    "recipe": "reference_join",
+                    "arguments": {
+                      "base_source": "nb_batch",
+                      "reference_source": "competitor_insight",
+                      "name": "quote_with_competitor",
+                      "how": "left",
+                      "left_on": [
+                        "quote_id"
+                      ],
+                      "right_on": [
+                        "quote_id"
+                      ],
+                      "output_name": "enriched_quotes",
+                      "output_columns": [
+                        "quote_id",
+                        "premium",
+                        "competitor_price"
+                      ]
+                    }
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "dry.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "Saved the change.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

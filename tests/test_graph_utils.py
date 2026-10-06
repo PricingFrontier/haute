@@ -5,12 +5,12 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
+from haute.execution import execute_lazy_graph
 from haute.graph_utils import (
     GraphNode,
     NodeData,
     PipelineGraph,
     UnknownEdgeEndpointError,
-    _execute_lazy,
     _sanitize_func_name,
     ancestors,
     topo_sort_ids,
@@ -170,7 +170,7 @@ def _make_graph(
 
 
 # ---------------------------------------------------------------------------
-# _execute_lazy
+# execute_lazy_graph
 # ---------------------------------------------------------------------------
 
 
@@ -208,7 +208,7 @@ class TestExecuteLazy:
             edges=g.edges,
         )
 
-        outputs, order, _, _ = _execute_lazy(g, self._simple_build_fn)
+        outputs, order, _, _ = execute_lazy_graph(g, self._simple_build_fn)
         assert "src" in outputs
         assert "t" in outputs
         df = outputs["t"].collect()
@@ -229,7 +229,7 @@ class TestExecuteLazy:
             edges=g.edges,
         )
 
-        outputs, order, _, _ = _execute_lazy(g, self._simple_build_fn, target_node_id="b")
+        outputs, order, _, _ = execute_lazy_graph(g, self._simple_build_fn, target_node_id="b")
         assert "b" in outputs
         assert "c" not in outputs
 
@@ -249,7 +249,7 @@ class TestExecuteLazy:
             edges=[_e("src", "t")],
         )
 
-        outputs, _, _, _ = _execute_lazy(g, build_fn)
+        outputs, _, _, _ = execute_lazy_graph(g, build_fn)
         assert isinstance(outputs["t"], pl.LazyFrame)
 
     def test_non_source_no_input_raises(self):
@@ -260,7 +260,7 @@ class TestExecuteLazy:
 
         g = _make_graph([("lonely", "Lonely")], [])
         with pytest.raises(ValueError, match="No input data available"):
-            _execute_lazy(g, build_fn)
+            execute_lazy_graph(g, build_fn)
 
     def test_no_edge_non_source_raises(self):
         """A non-source with no edges raises even when prior outputs exist."""
@@ -281,7 +281,7 @@ class TestExecuteLazy:
         )
 
         with pytest.raises(ValueError, match="No input data available"):
-            _execute_lazy(g, build_fn)
+            execute_lazy_graph(g, build_fn)
 
 
 class TestExecuteLazyMultiInput:
@@ -309,7 +309,7 @@ class TestExecuteLazyMultiInput:
             edges=[_e("a", "c"), _e("b", "c")],
         )
 
-        outputs, _, _, _ = _execute_lazy(g, build_fn)
+        outputs, _, _, _ = execute_lazy_graph(g, build_fn)
         df = outputs["c"].collect()
         assert set(df.columns) == {"x", "y"}
 
@@ -507,3 +507,66 @@ class TestResolveOrigSourceNames:
                 node_map,
                 {"target": [_e("joined", "target")]},
             )
+
+
+class TestExecutableInputNameSubmodelOccurrence:
+    def test_output_is_named_by_its_port_whatever_the_alias(self):
+        from haute._graph_utils import executable_input_name
+        from haute._types import NodeType
+
+        name = executable_input_name(
+            node_type=NodeType.SUBMODEL,
+            label="pricing",
+            source_handle="out__quotes",
+        )
+        assert name == "quotes"
+
+    def test_every_port_of_a_multi_output_occurrence_keeps_its_own_name(self):
+        from haute._graph_utils import executable_input_name
+        from haute._types import NodeType
+
+        first = executable_input_name(
+            node_type=NodeType.SUBMODEL,
+            label="pricing",
+            source_handle="out__written_premium",
+        )
+        second = executable_input_name(
+            node_type=NodeType.SUBMODEL,
+            label="pricing",
+            source_handle="out__loss_ratio",
+        )
+        assert first == "written_premium"
+        assert second == "loss_ratio"
+
+    def test_port_name_is_sanitised(self):
+        from haute._graph_utils import _sanitize_func_name, executable_input_name
+        from haute._types import NodeType
+
+        name = executable_input_name(
+            node_type=NodeType.SUBMODEL,
+            label="pricing",
+            source_handle="out__written premium",
+        )
+        assert name == _sanitize_func_name("written premium")
+
+    def test_handle_must_use_the_out_prefix(self):
+        from haute._graph_utils import executable_input_name
+        from haute._types import NodeType
+
+        with pytest.raises(ValueError, match="out__<name>"):
+            executable_input_name(
+                node_type=NodeType.SUBMODEL,
+                label="Pricing",
+                source_handle="quotes",
+            )
+
+    def test_ordinary_node_named_like_port_label_is_unaffected(self):
+        from haute._graph_utils import executable_input_name
+        from haute._types import NodeType
+
+        name = executable_input_name(
+            node_type=NodeType.POLARS,
+            label="Quotes Frame",
+            source_handle=None,
+        )
+        assert name == "Quotes_Frame"

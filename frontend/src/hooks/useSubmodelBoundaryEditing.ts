@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from "react"
+import { useCallback, useEffect, useRef } from "react"
 import {
   applyEdgeChanges,
   applyNodeChanges,
@@ -8,15 +8,26 @@ import {
   type Node,
   type NodeChange,
 } from "@xyflow/react"
-import type { PipelineEdge, SubmodelBoundaryEdgeData, SubmodelPortData } from "../types/node"
+import {
+  isSubmodelDefinition,
+  isSubmodelInstanceConfig,
+  type PipelineEdge,
+  type SubmodelBoundaryEdgeData,
+  type SubmodelPortData,
+} from "../types/node"
 import {
   applySubmodelBoundaryConnection,
+  connectSubmodelInputFromParentConnection,
   reconcileSubmodelBoundaryState,
   removeSubmodelBoundaryEdges,
+  removeSubmodelInputPort,
   type SubmodelBoundaryEditResult,
   type SubmodelBoundaryEditState,
 } from "../utils/submodelBoundaryEditing"
 import useToastStore from "../stores/useToastStore"
+import { resolveEditorGraphIdentities } from "../utils/editorIdentities"
+import { structuralFingerprint } from "../utils/structuralFingerprint"
+import { reconcileGraphInputBindings } from "../utils/nodeUpdatePlan"
 
 type GraphRef = React.MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
 type ParentGraphRef = React.MutableRefObject<{ nodes: Node[]; edges: PipelineEdge[]; submodels: Record<string, unknown> } | null>
@@ -33,9 +44,11 @@ export interface UseSubmodelBoundaryEditingParams {
   parentGraphRef: ParentGraphRef
   submodelsRef: React.MutableRefObject<Record<string, unknown>>
   setNodesAndEdgesAndSubmodels: Setter
+  reservedApiInputFrameLabels: ReadonlySet<string>
+  resolveGraphIdentities?: typeof resolveEditorGraphIdentities
 }
 
-export type SharedNodeDeletionResult = "not-applicable" | "committed" | "blocked"
+export type SharedNodeDeletionResult = "not-applicable" | "committed" | "pending" | "blocked"
 
 const isBoundaryNode = (node: Node | undefined) => node?.type === "submodelPort"
 const hasBoundaryCard = (nodes: Node[], direction: "input" | "output") =>
@@ -43,6 +56,56 @@ const hasBoundaryCard = (nodes: Node[], direction: "input" | "output") =>
 const isBoundaryEdge = (edge: Edge) => {
   const data = edge.data as SubmodelBoundaryEdgeData | undefined
   return data?.submodelBoundary?.direction === "input" || data?.submodelBoundary?.direction === "output"
+}
+
+/**
+ * Carry the live canvas presentation onto a candidate's view nodes.
+ *
+ * A pending candidate is kept across selection and position changes made while
+ * parent identities resolve; committing it must not revert those, so the
+ * presentation-only fields are taken from the current view by node id.
+ */
+function mergeViewPresentation<T extends { viewNodes: Node[] }>(result: T, currentNodes: Node[]): T {
+  const byId = new Map(currentNodes.map((node) => [node.id, node]))
+  return {
+    ...result,
+    viewNodes: result.viewNodes.map((node) => {
+      const live = byId.get(node.id)
+      if (!live) return node
+      return {
+        ...node,
+        position: live.position,
+        selected: live.selected,
+        dragging: live.dragging,
+        measured: live.measured,
+        width: live.width,
+        height: live.height,
+      }
+    }),
+  }
+}
+
+function parentOccurrenceHandlesAreResolved(result: SubmodelBoundaryEditResult): boolean {
+  const definition = result.submodels[result.definitionId]
+  if (!isSubmodelDefinition(definition, result.definitionId)) return false
+  const expectedHandles = definition.outputPorts.map((port) => `out__${port.name}`)
+  return result.parentNodes.every((node) => {
+    if (node.data.nodeType !== "submodel") return true
+    const config = node.data.config
+    if (!isSubmodelInstanceConfig(config) || config.definitionId !== result.definitionId) {
+      return true
+    }
+    const mapping = node.data._sourceHandleInputNames
+    if (typeof mapping !== "object" || mapping === null || Array.isArray(mapping)) return false
+    const record = mapping as Record<string, unknown>
+    const keys = Object.keys(record)
+    return keys.length === expectedHandles.length
+      && keys.every((handle) => expectedHandles.includes(handle))
+      && expectedHandles.every((handle) => {
+        const value = record[handle]
+        return typeof value === "string" && value.length > 0
+      })
+  })
 }
 
 export default function useSubmodelBoundaryEditing({
@@ -56,8 +119,32 @@ export default function useSubmodelBoundaryEditing({
   parentGraphRef,
   submodelsRef,
   setNodesAndEdgesAndSubmodels,
+  reservedApiInputFrameLabels,
+  resolveGraphIdentities = resolveEditorGraphIdentities,
 }: UseSubmodelBoundaryEditingParams) {
   const addToast = useToastStore((store) => store.addToast)
+  const identityRequestSerialRef = useRef(0)
+  const activeBoundaryIdentityRef = useRef({
+    submodelName: activeSubmodelName,
+    instanceId: activeSubmodelInstanceId,
+    definitionId: activeSubmodelDefinitionId,
+  })
+  useEffect(() => {
+    activeBoundaryIdentityRef.current = {
+      submodelName: activeSubmodelName,
+      instanceId: activeSubmodelInstanceId,
+      definitionId: activeSubmodelDefinitionId,
+    }
+  }, [activeSubmodelName, activeSubmodelInstanceId, activeSubmodelDefinitionId])
+  const pendingBoundaryCandidateRef = useRef<{
+    result: SubmodelBoundaryEditResult
+    expectedViewFingerprint: string
+    expectedParentFingerprint: string
+    expectedSubmodelsFingerprint: string
+    submodelName: string
+    instanceId: string
+    definitionId: string
+  } | null>(null)
   const reportBoundaryError = useCallback((error: unknown) => {
     addToast(
       "error",
@@ -80,6 +167,19 @@ export default function useSubmodelBoundaryEditing({
     ) {
       throw new Error("The active submodel view requires canonical instance identity")
     }
+    const pending = pendingBoundaryCandidateRef.current
+    if (
+      pending
+      && pending.expectedViewFingerprint === structuralFingerprint(graphRef.current)
+      && pending.expectedParentFingerprint === structuralFingerprint(parentGraphRef.current)
+      && pending.expectedSubmodelsFingerprint
+        === structuralFingerprint({ submodels: submodelsRef.current })
+      && pending.submodelName === activeSubmodelName
+      && pending.instanceId === activeSubmodelInstanceId
+      && pending.definitionId === activeSubmodelDefinitionId
+    ) {
+      return mergeViewPresentation(pending.result, nodes)
+    }
     return {
       submodelName: activeSubmodelName,
       instanceId: activeSubmodelInstanceId,
@@ -98,6 +198,8 @@ export default function useSubmodelBoundaryEditing({
     edges,
     submodels,
     parentGraphRef,
+    graphRef,
+    submodelsRef,
   ])
   const commit = useCallback((result: SubmodelBoundaryEditResult) => {
     graphRef.current = { nodes: result.viewNodes, edges: result.viewEdges }
@@ -105,6 +207,101 @@ export default function useSubmodelBoundaryEditing({
     submodelsRef.current = result.submodels
     setNodesAndEdgesAndSubmodels(result.viewNodes, result.viewEdges, result.submodels)
   }, [graphRef, parentGraphRef, submodelsRef, setNodesAndEdgesAndSubmodels])
+  const commitWithParentIdentities = useCallback((
+    result: SubmodelBoundaryEditResult,
+    onSettled?: (committed: boolean) => void,
+  ): boolean => {
+    const serial = ++identityRequestSerialRef.current
+    if (parentOccurrenceHandlesAreResolved(result)) {
+      pendingBoundaryCandidateRef.current = null
+      commit(result)
+      onSettled?.(true)
+      return true
+    }
+    const expectedViewFingerprint = structuralFingerprint(graphRef.current)
+    const expectedParentFingerprint = structuralFingerprint(parentGraphRef.current)
+    const expectedSubmodelsFingerprint = structuralFingerprint({ submodels: submodelsRef.current })
+    const candidate = {
+      result,
+      expectedViewFingerprint,
+      expectedParentFingerprint,
+      expectedSubmodelsFingerprint,
+      submodelName: result.submodelName,
+      instanceId: result.instanceId,
+      definitionId: result.definitionId,
+    }
+    pendingBoundaryCandidateRef.current = candidate
+    void resolveGraphIdentities({
+      nodes: result.parentNodes,
+      edges: result.parentEdges,
+      submodels: result.submodels,
+      reservedApiInputFrameLabels,
+    }).then((resolved) => {
+      if (
+        identityRequestSerialRef.current !== serial
+      ) {
+        onSettled?.(false)
+        return
+      }
+      if (
+        structuralFingerprint(graphRef.current) !== expectedViewFingerprint
+        || structuralFingerprint(parentGraphRef.current) !== expectedParentFingerprint
+        || structuralFingerprint({ submodels: submodelsRef.current })
+          !== expectedSubmodelsFingerprint
+        || activeBoundaryIdentityRef.current.submodelName !== candidate.submodelName
+        || activeBoundaryIdentityRef.current.instanceId !== candidate.instanceId
+        || activeBoundaryIdentityRef.current.definitionId !== candidate.definitionId
+      ) {
+        if (pendingBoundaryCandidateRef.current === candidate) {
+          pendingBoundaryCandidateRef.current = null
+        }
+        reportBoundaryError(
+          new Error("the workspace changed while parent identities were resolving"),
+        )
+        onSettled?.(false)
+        return
+      }
+      if (pendingBoundaryCandidateRef.current === candidate) {
+        pendingBoundaryCandidateRef.current = null
+      }
+      const merged = mergeViewPresentation(result, graphRef.current.nodes)
+      const previousParent = parentGraphRef.current
+      if (!previousParent) throw new Error("The parent graph is no longer available")
+      const rebound = reconcileGraphInputBindings(previousParent, {
+        nodes: resolved.nodes, edges: resolved.edges, submodels: result.submodels,
+      })
+      if (!rebound.ok) throw new Error(rebound.error)
+      commit({
+        ...merged,
+        parentNodes: rebound.nodes,
+        parentEdges: rebound.edges,
+      })
+      onSettled?.(true)
+    }).catch((error: unknown) => {
+      if (identityRequestSerialRef.current !== serial) {
+        onSettled?.(false)
+        return
+      }
+      if (pendingBoundaryCandidateRef.current === candidate) {
+        pendingBoundaryCandidateRef.current = null
+      }
+      reportBoundaryError(error)
+      onSettled?.(false)
+    })
+    return false
+  }, [
+    commit,
+    graphRef,
+    parentGraphRef,
+    reportBoundaryError,
+    reservedApiInputFrameLabels,
+    resolveGraphIdentities,
+    submodelsRef,
+  ])
+  useEffect(() => () => {
+    identityRequestSerialRef.current += 1
+    pendingBoundaryCandidateRef.current = null
+  }, [])
   const reconcileActiveSubmodel = useCallback(() => {
     try {
       const current = state()
@@ -129,18 +326,43 @@ export default function useSubmodelBoundaryEditing({
   const commitBoundaryConnection = useCallback((connection: Connection): boolean => {
     try {
       const current = state()
-      if (!current) return false
+      if (!current) {
+        if (parentGraphRef.current) return false
+        const created = connectSubmodelInputFromParentConnection({
+          nodes: graphRef.current.nodes,
+          edges: graphRef.current.edges as PipelineEdge[],
+          submodels: submodelsRef.current,
+        }, connection)
+        if (!created) return false
+        graphRef.current = { nodes: created.nodes, edges: created.edges }
+        submodelsRef.current = created.submodels
+        setNodesAndEdgesAndSubmodels(
+          created.nodes,
+          created.edges,
+          created.submodels,
+        )
+        return true
+      }
       const source = nodes.find((node) => node.id === connection.source)
       const target = nodes.find((node) => node.id === connection.target)
       if (!isBoundaryNode(source) && !isBoundaryNode(target)) return false
       const result = applySubmodelBoundaryConnection(current, connection)
-      if (result) commit(result)
+      if (result) commitWithParentIdentities(result)
       return true
     } catch (error: unknown) {
       reportBoundaryError(error)
       return true
     }
-  }, [state, nodes, commit, reportBoundaryError])
+  }, [
+    state,
+    nodes,
+    commitWithParentIdentities,
+    graphRef,
+    parentGraphRef,
+    reportBoundaryError,
+    setNodesAndEdgesAndSubmodels,
+    submodelsRef,
+  ])
 
   const deleteBoundaryEdge = useCallback((id: string): boolean => {
     try {
@@ -149,13 +371,27 @@ export default function useSubmodelBoundaryEditing({
       const edge = edges.find((candidate) => candidate.id === id)
       if (!edge || !isBoundaryEdge(edge)) return false
       const result = removeSubmodelBoundaryEdges(current, [id])
-      if (result) commit(result)
+      if (result) commitWithParentIdentities(result)
       return true
     } catch (error: unknown) {
       reportBoundaryError(error)
       return true
     }
-  }, [state, edges, commit, reportBoundaryError])
+  }, [state, edges, commitWithParentIdentities, reportBoundaryError])
+
+  const deleteBoundaryInputPort = useCallback((portName: string): boolean => {
+    try {
+      const current = state()
+      if (!current) return false
+      const result = removeSubmodelInputPort(current, portName)
+      if (!result) return false
+      commitWithParentIdentities(result)
+      return true
+    } catch (error: unknown) {
+      reportBoundaryError(error)
+      return true
+    }
+  }, [state, commitWithParentIdentities, reportBoundaryError])
 
   const onBoundaryEdgesChange = useCallback((changes: EdgeChange[]): boolean => {
     const removedBoundaryIds = changes
@@ -178,18 +414,19 @@ export default function useSubmodelBoundaryEditing({
         ...removed,
         viewEdges: viewEdges as PipelineEdge[],
       })
-      if (reconciled) commit(reconciled)
+      if (reconciled) commitWithParentIdentities(reconciled)
       return true
     } catch (error: unknown) {
       reportBoundaryError(error)
       return true
     }
-  }, [state, edges, commit, reportBoundaryError])
+  }, [state, edges, commitWithParentIdentities, reportBoundaryError])
 
   const commitSharedNodeDeletion = useCallback((
     nodeIds: ReadonlySet<string>,
     selectedEdgeIds: ReadonlySet<string> = new Set(),
     nodeChanges?: NodeChange[],
+    onSettled?: (committed: boolean) => void,
   ): SharedNodeDeletionResult => {
     if (nodeIds.size === 0) return "not-applicable"
     try {
@@ -208,17 +445,17 @@ export default function useSubmodelBoundaryEditing({
           && !selectedEdgeIds.has(edge.id)),
       })
       if (!reconciled) throw new Error("The shared submodel boundary could not be reconciled")
-      commit(reconciled)
-      return "committed"
+      return commitWithParentIdentities(reconciled, onSettled) ? "committed" : "pending"
     } catch (error: unknown) {
       reportBoundaryError(error)
       return "blocked"
     }
-  }, [state, commit, reportBoundaryError])
+  }, [state, commitWithParentIdentities, reportBoundaryError])
 
   return {
     commitBoundaryConnection,
     deleteBoundaryEdge,
+    deleteBoundaryInputPort,
     onBoundaryEdgesChange,
     commitSharedNodeDeletion,
     reconcileActiveSubmodel,

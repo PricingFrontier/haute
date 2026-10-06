@@ -31,7 +31,7 @@ function renderDialog(overrides: Partial<Parameters<typeof RenameDialog>[0]> = {
   return { ...render(<RenameDialog {...props} />), props }
 }
 
-describe("RenameDialog — controlled input & validation (#36)", () => {
+describe("RenameDialog - controlled input & validation (#36)", () => {
   it("empty name submission is rejected", () => {
     // Baseline regression: existing behaviour that we want to preserve.
     const { props } = renderDialog()

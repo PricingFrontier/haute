@@ -118,7 +118,7 @@ class TestFeatureOrderMismatchAtScore:
             cat_features=cat_features,
         )
 
-        scoring_model: ScoringModel = _wrap_catboost(model)
+        scoring_model: ScoringModel = _wrap_catboost(model, source="test model")
         assert list(scoring_model.feature_names) == train_features, (
             "Pre-check: CatBoost must remember training feature order"
         )
@@ -159,7 +159,7 @@ class TestFeatureOrderMismatchAtScore:
             features=train_features,
             cat_features=["region"],
         )
-        scoring_model = _wrap_catboost(model)
+        scoring_model = _wrap_catboost(model, source="test model")
 
         # Build scoring data with all the right columns but wrong order.
         bad_order = mixed_train_df.select(["vehicle_value", "age", "region"]).head(4)
@@ -185,64 +185,6 @@ class TestMLflowSignatureLogged:
     a signature that agrees with the training feature contract.
     """
 
-    def test_log_experiment_includes_signature_artifact(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """After ``log_experiment`` completes, the run has a non-None
-        ``ModelSignature`` attached that matches the training schema.
-
-        We assert via the mocked mlflow.pyfunc.log_model / mlflow.sklearn.log_model
-        / mlflow.catboost.log_model calls that a *signature* argument was
-        passed, with inputs matching the training feature order.
-        """
-        pytest.importorskip("mlflow", reason="core mlflow dependency is unavailable")
-        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
-        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
-
-        mock_run = MagicMock()
-        mock_run.info.run_id = "run_sig_1"
-
-        model_file = tmp_path / "model.cbm"
-        model_file.write_bytes(b"fake cbm bytes")
-
-        signature_calls: list[Any] = []
-
-        def _capture_signature(*args: Any, **kwargs: Any) -> None:
-            if "signature" in kwargs:
-                signature_calls.append(kwargs["signature"])
-
-        with (
-            patch("mlflow.set_tracking_uri"),
-            patch("mlflow.set_experiment"),
-            patch("mlflow.start_run") as m_run,
-            patch("mlflow.log_params"),
-            patch("mlflow.log_metrics"),
-            patch("mlflow.log_artifact"),
-            patch("mlflow.register_model"),
-            patch("mlflow.catboost.log_model", side_effect=_capture_signature),
-            patch("mlflow.pyfunc.log_model", side_effect=_capture_signature),
-        ):
-            m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
-            m_run.return_value.__exit__ = MagicMock(return_value=False)
-
-            from haute.modelling._mlflow_log import log_experiment
-
-            log_experiment(
-                experiment_name="/test/sig",
-                run_name="sig-run",
-                metrics={"rmse": 0.5},
-                params={"algorithm": "catboost", "task": "regression"},
-                model_path=str(model_file),
-            )
-
-        # At least one of the model-logging functions must have been called
-        # with a signature kwarg; otherwise scoring callers cannot detect
-        # feature-order drift via the logged metadata.
-        assert signature_calls, (
-            "log_experiment did not pass a `signature` to mlflow.*.log_model — "
-            "deploy-time scorers cannot verify the training feature contract."
-        )
-
     def test_training_attaches_signature_matching_contract(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -260,10 +202,9 @@ class TestMLflowSignatureLogged:
         pytest.importorskip("mlflow", reason="core mlflow dependency is unavailable")
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
-        monkeypatch.setattr(
-            "haute.modelling._algorithms.CatBoostAlgorithm.shap_summary",
-            lambda *a, **kw: [],
-        )
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
+        monkeypatch.delattr("haute.modelling._algorithms.CatBoostAlgorithm.shap_values")
         monkeypatch.setattr(
             "haute.modelling._algorithms.CatBoostAlgorithm.feature_importance_typed",
             lambda *a, **kw: [],
@@ -294,12 +235,12 @@ class TestMLflowSignatureLogged:
 
         with (
             patch("mlflow.set_tracking_uri"),
+            patch("mlflow.set_registry_uri"),
             patch("mlflow.set_experiment"),
             patch("mlflow.start_run") as m_run,
             patch("mlflow.log_params"),
             patch("mlflow.log_metrics"),
             patch("mlflow.log_artifact"),
-            patch("mlflow.register_model"),
             patch("mlflow.catboost.log_model", side_effect=_capture),
             patch("mlflow.pyfunc.log_model", side_effect=_capture),
         ):
@@ -313,6 +254,12 @@ class TestMLflowSignatureLogged:
                 weight="Exposure",
                 params={"iterations": 1, "depth": 1, "verbose": 0},
                 mlflow_experiment="/Shared/haute/sig_model",
+                evaluation={
+                    "schema_version": 1,
+                    "strategy": "random",
+                    "seed": 7,
+                    "validation": {"method": "single", "size": 0.2},
+                },
                 output_dir=str(tmp_path),
             )
             result = job.run()
@@ -532,6 +479,80 @@ class TestGLMCategoricalSurvival:
 # ===========================================================================
 
 
+@pytest.mark.parametrize("categorical,with_offset", [(True, False), (False, False), (True, True)])
+def test_pdp_ranking_preserves_native_prediction_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, categorical: bool, with_offset: bool
+) -> None:
+    """Chart ranking cannot swap model inputs, even when swapped types still fit."""
+    import catboost
+
+    from haute.modelling._algorithms import CatBoostAlgorithm
+    from haute.modelling._training_job import TrainingJob
+
+    monkeypatch.chdir(tmp_path)
+    features = ["first", "amount"]
+    display_order = ["amount", "first"]
+    n = 80
+    first = np.arange(n) % 2
+    amount = np.arange(n, dtype=float) % 13 + 10
+    baseline = np.log1p(np.arange(n) % 5)
+    df = pl.DataFrame(
+        {
+            "first": ["a" if value == 0 else "b" for value in first]
+            if categorical
+            else first.astype(float),
+            "amount": amount,
+            "target": 20 * amount + 10 * first + (baseline if with_offset else 0),
+        }
+    )
+    if with_offset:
+        df = df.with_columns(pl.Series("offset", baseline))
+
+    # Force a different presentation order independently of CatBoost's learned
+    # importance, while retaining real fitting, PDP computation and prediction.
+    monkeypatch.setattr(
+        CatBoostAlgorithm,
+        "feature_importance",
+        lambda _self, _model: [
+            {"feature": feature, "importance": float(100 - index)}
+            for index, feature in enumerate(display_order)
+        ],
+    )
+    monkeypatch.delattr(CatBoostAlgorithm, "shap_values")
+    monkeypatch.setattr(CatBoostAlgorithm, "feature_importance_typed", lambda *args, **kwargs: [])
+    monkeypatch.setenv("HAUTE_TRAINING_THREADS", "1")
+    result = TrainingJob(
+        name="pdp_order",
+        data=df,
+        target="target",
+        feature_columns=features,
+        offset="offset" if with_offset else None,
+        params={"iterations": 8, "depth": 2, "verbose": 0},
+        split={"validation_size": 0, "holdout_size": 0},
+        output_dir=str(tmp_path),
+    ).run()
+
+    assert not [error for error in result.diagnostics_errors if error["diagnostic"] == "pdp"]
+    assert [entry["feature"] for entry in result.pdp_data] == display_order
+    native_model = catboost.CatBoostRegressor()
+    native_model.load_model(result.model_path)
+    assert native_model.feature_names_ == features
+    for entry in result.pdp_data:
+        assert entry["grid"] and "error" not in entry
+        for point in entry["grid"]:
+            modified = df.with_columns(pl.lit(point["value"]).alias(entry["feature"]))
+            # Independent native oracle: use a named Pool in training order,
+            # never Haute's prediction adapter or PDP implementation.
+            pool = catboost.Pool(
+                modified.select(features).to_numpy(),
+                feature_names=features,
+                cat_features=[0] if categorical else [],
+                baseline=baseline if with_offset else None,
+            )
+            expected = float(np.mean(native_model.predict(pool)))
+            assert point["avg_prediction"] == pytest.approx(expected, abs=1e-5, rel=0)
+
+
 class TestDiagnosticsFailLoudlySplit:
     """7 sites in ``_training_job.py`` swallow every exception and log a
     warning.  Policy: split into mandatory vs optional.
@@ -573,7 +594,7 @@ class TestDiagnosticsFailLoudlySplit:
         # Patch the *method* used by _compute_metrics.
         with (
             patch(
-                "haute.modelling._algorithms.CatBoostAlgorithm.shap_summary",
+                "haute.modelling._algorithms.CatBoostAlgorithm.shap_values",
                 side_effect=_exploding_shap,
             ),
             patch(
@@ -614,7 +635,6 @@ class TestDiagnosticsFailLoudlySplit:
         # Force compute_pdp to blow up.  It is imported inside
         # ``_compute_metrics`` so we patch the source module.
         with (
-            patch("haute.modelling._algorithms.CatBoostAlgorithm.shap_summary", return_value=[]),
             patch(
                 "haute.modelling._algorithms.CatBoostAlgorithm.feature_importance_typed",
                 return_value=[],

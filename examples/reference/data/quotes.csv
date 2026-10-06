@@ -1,0 +1,7 @@
+quote_id,driver_age,vehicle_year,region,sum_insured
+q1,22,2019,north,18000
+q2,35,2015,south,12000
+q3,47,2021,east,26000
+q4,68,2012,west,8000
+q5,29,2018,north,15000
+q6,53,2020,south,22000

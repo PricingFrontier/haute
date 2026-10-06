@@ -1,0 +1,74 @@
+{
+  "node_type": "externalFile",
+  "authorable": true,
+  "fields": {
+    "path": "The file to load, relative to the project root. The dry-run loads it, so it must exist and load as fileType.",
+    "fileType": "\"json\", \"pickle\" or \"joblib\". A model file Haute trains is scored with a modelScore node instead.",
+    "steps": "Step cards over the first input: df is already the first input (no source step), the loaded object is obj, and further inputs are read by their edge names. With steps [] the node returns its first input unchanged and never uses the file."
+  },
+  "inputs": [
+    {
+      "edge": "policies",
+      "columns": {
+        "policy_id": "String",
+        "region": "String"
+      }
+    }
+  ],
+  "configs": [
+    {
+      "name": "minimal",
+      "intent": "Add the base rate stored in a JSON reference file.",
+      "config": {
+        "path": "reference/tariff.json",
+        "fileType": "json",
+        "steps": [
+          {
+            "id": "logic",
+            "kind": "free_code",
+            "code": "# Add the base rate from the tariff file\ndf = df.with_columns(base_rate=pl.lit(float(obj[\"base_rate\"])))"
+          }
+        ]
+      },
+      "produces": ["policy_id", "base_rate"]
+    },
+    {
+      "name": "realistic",
+      "intent": "Map each policy's region to its relativity from the tariff file, defaulting unknown regions to 1.0.",
+      "config": {
+        "path": "reference/tariff.json",
+        "fileType": "json",
+        "steps": [
+          {
+            "id": "logic",
+            "kind": "free_code",
+            "code": "# Map region relativities from the tariff file\ndf = df.with_columns(\n    base_rate=pl.lit(float(obj[\"base_rate\"])),\n    region_relativity=pl.col(\"region\").replace_strict(obj[\"region_relativities\"], default=1.0, return_dtype=pl.Float64),\n)"
+          }
+        ]
+      },
+      "produces": ["policy_id", "base_rate", "region_relativity"]
+    }
+  ],
+  "fixture": {
+    "frames": {
+      "policies": {
+        "rows": [
+          {"policy_id": "p1", "region": "North"},
+          {"policy_id": "p2", "region": "Wales"}
+        ]
+      }
+    },
+    "files": {
+      "reference/tariff.json": {
+        "base_rate": 350,
+        "region_relativities": {"North": 0.9, "South": 1.1}
+      }
+    },
+    "expect": {
+      "realistic": [
+        {"base_rate": 350.0, "region_relativity": 0.9},
+        {"base_rate": 350.0, "region_relativity": 1.0}
+      ]
+    }
+  }
+}

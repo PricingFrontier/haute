@@ -1,0 +1,33 @@
+{
+  "schema_version": 5,
+  "id": "motor_value_bands_delegated",
+  "fixture_version": "2",
+  "project_fixture": "motor_pricing",
+  "area": "delegation",
+  "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
+  "turns": [
+    {
+      "request": "Add a value_band factor to rating_bands that bands vehicle_value_k into three bands. Pick sensible breakpoints and labels yourself.",
+      "expectations": {
+        "outcome": "applied",
+        "saves": true,
+        "required_node_types": [
+          "banding"
+        ],
+        "forbidden_node_types": [],
+        "required_edges": [],
+        "require_connected_graph": true,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [
+          "rating_bands"
+        ],
+        "node_configs": {},
+        "execution": [],
+        "efficiency": null,
+        "data_findings": null
+      }
+    }
+  ]
+}

@@ -18,7 +18,93 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // contract validators, server-owned editor identities, and extracted graph/job
 // controllers. The merged bundle is 1,322.8 KiB; 1,333 KiB preserves the same
 // ~10 KiB aggregate headroom without weakening the separate vendor caps.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1333
+// Direct node recovery replaced the draft apparatus: the recover action rides
+// the existing repair dialog, the transient summary/scoped-save panel is small,
+// and the draft dialog with its generated validators is deleted. The complete
+// production bundle is 1,338.4 KiB; 1,349 KiB retains the same ~10 KiB
+// aggregate headroom. Startup and vendor caps stay unchanged, and the repair
+// dialog is explicitly prohibited from startup modulepreloads below.
+// The modelling Export pane (model file save, MLflow export receipts, registered
+// aliases, reload restore with training lineage) is almost entirely lazy panel
+// code; only the small training-handle persistence rides the startup results
+// store. The complete production bundle is 1,350.2 KiB; 1,361 KiB retains the
+// same ~10 KiB aggregate headroom with the startup and vendor caps unchanged.
+// The Polars step builder extends the existing lazy TransformEditor without a
+// new dependency. The complete production bundle is 1,374.5 KiB; its ~24.3
+// KiB increase from the 1,350.2 KiB baseline gets 1,385 KiB, restoring the
+// established ~10 KiB aggregate headroom while the startup and vendor caps
+// remain unchanged.
+// The GLM terms pane (term and interaction editors mirroring the backend term
+// contract, regularisation and solver controls, and the inference-aware result
+// views) is lazy modelling-panel code with no new dependency. The complete
+// production bundle is 1,388.8 KiB; its ~14.3 KiB increase from the 1,374.5 KiB
+// baseline gets 1,399 KiB, restoring the ~10 KiB aggregate headroom with the
+// startup and vendor caps unchanged.
+// The shared node-output cache adds the data-point surface every consumer reads
+// through — cache state and its buttons on the node panel, the banding and
+// rating editors' own reads, and the execution-diagnostics indicator — almost
+// all of it lazy panel code. The complete production bundle is 1,400.2 KiB;
+// 1,410 KiB restores about 10 KiB of aggregate headroom.
+// The modelling UI redesign (validation workspace, allocation preview, run
+// summary, column selector and pane readiness) is lazy modelling-panel code and
+// brings the complete production bundle to 1,412.8 KiB; 1,423 KiB restores
+// about 10 KiB of aggregate headroom with the startup and vendor caps unchanged.
+// Generated API response validators (API-R03) replace hand-written guards with
+// lazy standalone Ajv modules, one per converted module group, loaded with the
+// group's first response; the startup bundle shrinks (289.8 KiB). With the
+// utility, Databricks, MLflow, modelling and git groups the complete production
+// bundle is 1,431.7 KiB; 1,442 KiB restores about 10 KiB of aggregate headroom.
+// The training group replaces the hand-written training guards (8.8 KiB) with
+// its validators inside the lazy trainGuards chunk (26.9 KiB); a group compiles
+// each shared definition once, but the train responses carry the evaluation,
+// tuning and execution-metrics contracts. The complete production bundle is
+// 1,453.2 KiB; 1,463 KiB restores about 10 KiB of aggregate headroom.
+// The explore (pivot and profile) and factors (banding and rating) groups add
+// lazy validator modules of 20.4 and 3.7 KiB; about 13 KiB of the explore one
+// is the execution-metrics contract the training chunk also carries. The
+// complete production bundle is 1,476.5 KiB; 1,487 KiB restores about 10 KiB.
+// The io, session and editor groups fit inside that. The optimiser group adds
+// a 21.1 KiB lazy module, about 13 KiB of it the execution-metrics contract
+// again, while its hand guards leave the startup chunk (286.9 KiB). The
+// complete production bundle is 1,500.5 KiB; 1,511 KiB restores about 10 KiB.
+// Optimiser validation adds lazy weight only: the Adjustments, Segments and
+// Quotes panes (OptimiserPreview 10.0 -> 22.8 KiB), the strict per-mode
+// frontier point contracts (optimiser validators 21.6 -> 30.8 KiB) and the
+// shared ResultsWorkspace chunk (6.1 KiB, ModellingPreview 16.2 -> 14.2 KiB).
+// The complete production bundle is 1,536.4 KiB; 1,547 KiB restores about 10 KiB.
+// Polars node clarity grows the lazy step editor chunk (SteppedCodePane
+// 23.2 -> 32.9 KiB: column completion and model, the formula box, generated
+// code highlighting and the add-step menu) and the entry by 1.2 KiB. The
+// complete production bundle is 1,547.4 KiB; 1,558 KiB restores about 10 KiB.
+// The strategy diagnostic's projection cause is part of the execution-metrics
+// contract, so the four validator modules that carry it (execution, explore,
+// training, optimiser) grow together, with the preview warning that names it.
+// The complete production bundle is 1,558.7 KiB; 1,569 KiB restores about 10 KiB.
+// The assistant rework adds lazy panel code (the build checklist, data-check
+// findings on change cards, context chips, the empty state and readiness card),
+// and main's connection drop menu adds its lazy menu. The complete production
+// bundle is 1,571.1 KiB; 1,581 KiB restores about 10 KiB.
+// Global constants add the lazy Constants pane (3.5 KiB), Constant operands
+// and constant completion in the step editor (SteppedCodePane +1.1 KiB) and
+// the eager core counted below. The complete production bundle is
+// 1,586.9 KiB; 1,588 KiB restores about 1 KiB.
+// Name collisions add the name-violations banner and revalidation, allocated
+// node names, the shared rename validator and the naming context. The complete
+// production bundle is 1,589.8 KiB; 1,591 KiB restores about 1.2 KiB.
+// Model Scoring's Model file source adds its lazy editor option and file
+// inspection panel and the generated ModelFileInspectionResponse validator.
+// With both, the complete production bundle is 1,591.3 KiB; 1,593 KiB
+// restores about 1.7 KiB.
+// The t-boost family adds its lazy Tables result tab, the chart components it
+// shares with the EBM Terms tab, and the tboost_tables response parser. The
+// complete production bundle, with main's trace-card formulas, is 1,593.5 KiB; 1,594 KiB
+// restores about 0.5 KiB.
+// Main's bug-fix round (PR #293) and t-boost's validation-fit split pane bring
+// it to 1,594.4 KiB; 1,595 KiB, approved, restores about 0.6 KiB.
+// Showing EBM terms and t-boost tables as tables first, with a chart on request
+// (the shared term view, level table and interaction lines), brings it to
+// 1,595.2 KiB; 1,597 KiB, approved, restores about 1.8 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1597
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All
@@ -76,12 +162,76 @@ const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // ~8.2 KiB of deliberate eager core. The Explore validator and editor surfaces
 // remain lazy. The merged initial bundle is 276.7 KiB; 279 KiB retains ~2.3 KiB
 // headroom while continuing to catch accidental eager imports.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 279
+// Structural staleness fingerprints and deferred shared-node deletion cleanup
+// for the boundary-editing hook add ~2.3 KiB of deliberate eager core: the
+// hook runs on the mounted canvas, so the fingerprint and the settle callbacks
+// cannot be lazy. The merged initial bundle is 279.0 KiB; 281 KiB retains ~2 KiB
+// headroom.
+// The collapsed submodel input socket adds ~2.1 KiB of deliberate eager core:
+// resolving an incoming frame to a canonical public port, retiring one across
+// every occurrence, and projecting the parent bindings and their order so
+// history can restore them all run on the mounted canvas. That consumed the
+// whole 2 KiB allowance, leaving the ceiling no room to catch the accidental
+// eager import it exists for. The merged initial bundle is 281.1 KiB; 283 KiB
+// restores about 2 KiB of headroom.
+// Reorganizing the toolbar into stacked control groups and surfacing full Git
+// error diagnostics with an accessible Tooltip adds ~2.0 KiB of deliberate eager
+// UI core to the always-mounted toolbar. The merged initial bundle is 283.1 KiB;
+// 285 KiB restores ~1.9 KiB of headroom while keeping startup caps tight.
+// The shared node-output cache puts a consumer's data-point state on the always
+// mounted node panel — its cache button and availability, and the diagnostics
+// indicator that names a refused capture — which is eager by design: it reports
+// on data the panel is already showing. The lazy-only preload guard above still
+// passes, so nothing was pulled forward by accident. The merged initial bundle
+// is 290.2 KiB; 292 KiB restores ~1.8 KiB of headroom on the same terms.
+// The modelling validation focus view adds ~0.6 KiB to shared eager components:
+// ModalShell's inline (inactive) mode and closed-disclosure focus trap, the
+// preview frame's focus and remembered-height options, and the results tab
+// appearance. The modelling panes themselves stay lazy. The merged initial
+// bundle is 292.3 KiB; 294 KiB restores ~1.7 KiB of headroom.
+// The modelling-issues fixes add eager code that cannot wait for a lazy chunk:
+// axis ticks formatted together (formatChartTicks, used by the initial
+// histogram's value grid), chunk-load recovery in the root error boundary
+// (it handles a lazy chunk that failed to load), the expired training-result
+// record in the results store, the training poller's progress key and the
+// panel's openNode wiring. The expired-result panel itself stays lazy. The
+// merged initial bundle is 294.2 KiB; 296 KiB restores ~1.8 KiB of headroom.
+// The trace panel (every step card, detail and derivation tree, ~20 KiB) now
+// loads lazily, fetched when a trace request starts; the always-needed request
+// surface (TraceStatePanel), trace store state and canvas projection stay eager.
+// The merged initial bundle is 279.5 KiB; 281 KiB keeps ~1.5 KiB of headroom.
+// Later work brought the initial bundle to 281.6 KiB. The assistant's
+// running-turn chrome then adds 0.9 KiB of deliberate eager code, because it
+// acts while the panel chunk is not loaded: the canvas pill that stops a turn,
+// the toolbar's progress and unseen-outcome states, the data preview's "Ask
+// the assistant to fix" action and their UI-store mirror. The panel, its store
+// and its API module stay lazy (App.assistantLazy.test.ts). The merged initial
+// bundle is 282.5 KiB; 284 KiB restores ~1.5 KiB of headroom.
+// The connection drop menu adds ~0.6 KiB of deliberate eager core: creating the
+// chosen node and its edge runs in the canvas edge handlers on release, beside
+// the empty-canvas hit-test and the menu's type list. The menu itself stays
+// lazy. With both, the merged initial bundle is 283.8 KiB; 285 KiB restores
+// ~1.2 KiB of headroom.
+// Global constants add ~1.7 KiB of deliberate eager core: every build of an
+// execution request carries the valid constants (utils/globalConstants.ts),
+// save refuses invalid drafts, the store holds the drafts and the document
+// parser reads them. The pane's editing helpers and the reads analysis stay
+// lazy (utils/globalConstantsEditing.ts). The merged initial bundle is
+// 285.7 KiB; 287 KiB restores ~1.3 KiB of headroom.
+// Name collisions add eager core: the document's name violations (parser,
+// status store fence, banner, revalidation hook) and the naming context every
+// node creation and rename sends. The merged initial bundle is 287.6 KiB;
+// 289 KiB restores ~1.4 KiB of headroom.
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 289
 
-// Chunks that should only be fetched after a user opens a code/editor-heavy
-// surface. If one appears as a startup modulepreload, the app has likely
+// Chunks that should only be fetched when their preview or editor is needed.
+// If one appears as a startup modulepreload, the app has likely
 // reintroduced an eager import path even if the initial gzip budget still fits.
 export const LAZY_ONLY_MODULEPRELOAD_CHUNK_PREFIXES = [
+  "ensureInputSnapshots",
+  "TracePanel",
+  "ModellingPreview",
+  "PipelineRepairDialog",
   "CodeMirrorEditor",
   "UtilityPanel",
   "vendor-codemirror",
@@ -107,7 +257,6 @@ export const LAZY_ONLY_MODULEPRELOAD_CHUNK_PREFIXES = [
   "_shared",
   "useMlflowBrowser",
   "useStaleConfigEstimate",
-  "CacheFetchButton",
   "ColumnTable",
   "ToggleButtonGroup",
   "EditorLabel",

@@ -54,3 +54,21 @@ def resolve_submodel_reference(
             f"Submodel path {rel_path!r} escapes project directory"
         )
     return submodel_path, active_dir
+
+
+def definition_pipeline_dir(rel_path: str) -> str:
+    """The owning pipeline's directory, relative to a definition file registered at *rel_path*.
+
+    A registration path never climbs (``..`` is rejected), so the answer is one
+    ``..`` per directory the file sits below the pipeline, or ``.`` beside it.
+    Dot and empty segments (``./x.py``, ``a//x.py``) are not directories.
+    """
+    segments = [part for part in rel_path.replace("\\", "/").split("/") if part not in ("", ".")]
+    return "/".join([".."] * (len(segments) - 1)) or "."
+
+
+def is_pipeline_dir(value: object) -> bool:
+    """Whether *value* is a canonical ``pipeline_dir``: ``.`` or ``..`` segments."""
+    return isinstance(value, str) and (
+        value == "." or (bool(value) and all(part == ".." for part in value.split("/")))
+    )

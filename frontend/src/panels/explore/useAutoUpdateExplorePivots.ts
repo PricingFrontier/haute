@@ -1,9 +1,11 @@
 import { useEffect, useRef } from "react"
 
-import type { ExploreCacheReport } from "../../api/types"
+
+import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useNodeResultsStore, {
   explorePivotResultKey,
 } from "../../stores/useNodeResultsStore"
+import type { ExploreDataView } from "./exploreDataView"
 import {
   isPivotResultFresh,
   isPivotConfigured,
@@ -14,11 +16,11 @@ import {
 type UseAutoUpdateExplorePivotsInput = {
   nodeId: string
   pivots: readonly ExplorePivotConfig[]
-  report: ExploreCacheReport | null
+  report: ExploreDataView | null
   submitting: Readonly<Record<string, boolean>>
   updatePivot: (
     pivot: ExplorePivotConfig,
-    requestedDataframeCacheKey?: string | null,
+    requestedDataVersion?: string | null,
     autoClaimToken?: number,
   ) => Promise<void>
 }
@@ -26,14 +28,16 @@ type UseAutoUpdateExplorePivotsInput = {
 function automaticAttemptKey(
   nodeId: string,
   pivotId: string,
-  dataframeCacheKey: string,
+  dataVersion: string,
   calculationIdentity: string,
+  executionGeneration: number,
 ): string {
   return JSON.stringify([
     nodeId,
     pivotId,
-    dataframeCacheKey,
+    dataVersion,
     calculationIdentity,
+    executionGeneration,
   ])
 }
 
@@ -50,11 +54,16 @@ export default function useAutoUpdateExplorePivots({
 }: UseAutoUpdateExplorePivotsInput) {
   const pivotResults = useNodeResultsStore((state) => state.pivotResults)
   const pivotJobs = useNodeResultsStore((state) => state.pivotJobs)
+  const pivotStartClaims = useNodeResultsStore((state) => state.pivotStartClaims)
   const claimAuto = useNodeResultsStore((state) => state.claimExplorePivotAuto)
+  const executionGeneration = useDocumentStatusStore((state) => state.executionGeneration)
+  const canExecute = useDocumentStatusStore((state) =>
+    state.loadStatus === null || (state.capabilities?.can_execute === true && state.graphSynchronized),
+  )
   const attempted = useRef(new Set<string>())
 
   useEffect(() => {
-    if (!report) {
+    if (!report || !canExecute) {
       attempted.current.clear()
       return
     }
@@ -73,21 +82,22 @@ export default function useAutoUpdateExplorePivots({
       const attemptKey = automaticAttemptKey(
         nodeId,
         pivot.id,
-        report.dataframe_cache_key,
+        report.data_version,
         calculationIdentity,
+        executionGeneration,
       )
       currentAttempts.add(attemptKey)
 
       const fresh = isPivotResultFresh(
         cached,
-        report.dataframe_cache_key,
+        report.data_version,
         calculationIdentity,
       )
       const failedCurrentAttempt = Boolean(
         cached?.error
           && cached.lastAttemptedCalculationIdentity === calculationIdentity
           && cached.lastAttemptedDataframeCacheKey
-            === report.dataframe_cache_key,
+            === report.data_version,
       )
       if (fresh || failedCurrentAttempt || attempted.current.has(attemptKey)) {
         continue
@@ -102,7 +112,7 @@ export default function useAutoUpdateExplorePivots({
         useNodeResultsStore.getState().pivotStartClaims[resultKey]
       const supersedesHeldClaim =
         heldClaim !== undefined
-        && (heldClaim.dataframeCacheKey !== report.dataframe_cache_key
+        && (heldClaim.dataVersion !== report.data_version
           || heldClaim.calculationIdentity !== calculationIdentity)
       if (
         (pivotJobs[resultKey] || submitting[pivot.id])
@@ -115,15 +125,15 @@ export default function useAutoUpdateExplorePivots({
       // state, which reruns this effect before its request settles. The
       // per-instance set is only a fast path — the store claim is the
       // authority that serialises concurrently mounted consumers.
-      attempted.current.add(attemptKey)
       const token = claimAuto(
         resultKey,
         nodeId,
-        report.dataframe_cache_key,
+        report.data_version,
         calculationIdentity,
       )
       if (token === null) continue
-      void updatePivot(pivot, report.dataframe_cache_key, token)
+      attempted.current.add(attemptKey)
+      void updatePivot(pivot, report.data_version, token)
     }
 
     for (const attemptKey of attempted.current) {
@@ -132,10 +142,13 @@ export default function useAutoUpdateExplorePivots({
       }
     }
   }, [
+    canExecute,
     claimAuto,
+    executionGeneration,
     nodeId,
     pivotJobs,
     pivotResults,
+    pivotStartClaims,
     pivots,
     report,
     submitting,

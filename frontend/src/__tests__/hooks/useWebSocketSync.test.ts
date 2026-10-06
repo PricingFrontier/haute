@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Tests for useWebSocketSync — WebSocket connection lifecycle, message handling,
  * reconnection with exponential backoff, error handling, and cleanup on unmount.
  *
@@ -59,6 +59,10 @@ vi.mock("../../stores/useUIStore.ts", () => {
     submodelDialog: null,
     setSubmodelDialog: vi.fn((dialog: { nodeIds: string[] } | null) => {
       store.submodelDialog = dialog
+    }),
+    changeFocus: null,
+    setChangeFocus: vi.fn((nodeIds: string[] | null) => {
+      store.changeFocus = nodeIds === null ? null : { nodeIds }
     }),
     // Other fields the hook destructures
     setPaletteOpen: vi.fn(),
@@ -179,6 +183,22 @@ function pipelineDocumentFrame(
 // ── Test suites ──────────────────────────────────────────────────
 
 describe("useWebSocketSync", () => {
+  it("resyncs and applies the authoritative parent document while drilled into a child", async () => {
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({ source_file: "main.py", source_revision: "old" }), true)
+    const onDocumentReload = vi.fn()
+    const params = { ...makeHookParams("modules/pricing.py"), onDocumentReload }
+    renderHook(() => useWebSocketSync(params))
+    act(() => { latestWS().onopen?.(new Event("open")) })
+    expect(JSON.parse(latestWS().send.mock.calls[0][0])).toMatchObject({ source_file: "main.py" })
+    await act(async () => {
+      latestWS().onmessage?.(new MessageEvent("message", { data: JSON.stringify(pipelineDocumentFrame(
+        makePipelineEditorDocument({ source_file: "main.py", source_revision: "new" }),
+      )) }))
+    })
+    expect(onDocumentReload).toHaveBeenCalledOnce()
+    expect(useDocumentStatusStore.getState().sourceRevision).toBe("new")
+  })
+
   let originalWebSocket: typeof globalThis.WebSocket
 
   beforeEach(() => {
@@ -194,6 +214,8 @@ describe("useWebSocketSync", () => {
     vi.mocked(useUIStore.getState().setSubmodelDialog).mockClear()
     useUIStore.getState().renameDialog = null
     useUIStore.getState().submodelDialog = null
+    useUIStore.getState().changeFocus = null
+    vi.mocked(useUIStore.getState().setChangeFocus).mockClear()
     vi.mocked(useGraphStore.getState().loadGraphSnapshot).mockClear()
     useGraphStore.getState().dirty = false
     useGraphStore.getState().nodes = []
@@ -219,7 +241,28 @@ describe("useWebSocketSync", () => {
       const { result } = renderHook(() => useWebSocketSync({ ...params, enabled: false }))
 
       expect(mockWSInstances).toHaveLength(0)
-      expect(result.current).toBe("disconnected")
+      // Idle, not disconnected: an unloaded pipeline says nothing about the
+      // server, so nothing may report it offline.
+      expect(result.current).toBe("idle")
+    })
+
+    it("connects from idle once enabled, then returns to idle when disabled", () => {
+      const params = makeHookParams()
+      const { result, rerender } = renderHook(
+        ({ enabled }) => useWebSocketSync({ ...params, enabled }),
+        { initialProps: { enabled: false } },
+      )
+      expect(result.current).toBe("idle")
+
+      rerender({ enabled: true })
+      expect(result.current).toBe("connecting")
+      act(() => {
+        latestWS().onopen?.(new Event("open"))
+      })
+      expect(result.current).toBe("connected")
+
+      rerender({ enabled: false })
+      expect(result.current).toBe("idle")
     })
 
     it("creates a WebSocket connection when enabled after an initially disabled mount", () => {
@@ -280,8 +323,9 @@ describe("useWebSocketSync", () => {
       const params = makeHookParams()
       const { result } = renderHook(() => useWebSocketSync(params))
 
-      // Initially should be "reconnecting" (the initial useState default)
-      expect(result.current).toBe("reconnecting")
+      // The first attempt is "connecting" — no failure has been observed, so
+      // the server is not reported offline while it is merely being reached.
+      expect(result.current).toBe("connecting")
 
       // Simulate WebSocket opening
       act(() => {
@@ -289,6 +333,17 @@ describe("useWebSocketSync", () => {
       })
 
       expect(result.current).toBe("connected")
+    })
+
+    it("reports reconnecting once the first attempt fails", () => {
+      const params = makeHookParams()
+      const { result } = renderHook(() => useWebSocketSync(params))
+      expect(result.current).toBe("connecting")
+
+      act(() => {
+        latestWS().onclose?.({ code: 1011 } as CloseEvent)
+      })
+      expect(result.current).toBe("reconnecting")
     })
 
     it("surfaces a WebSocket constructor failure and stops reconnecting", () => {
@@ -463,7 +518,7 @@ describe("useWebSocketSync", () => {
       })
 
       expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["local-edit"])
-      expect(useDocumentStatusStore.getState().retainedCanvas?.kind).toBe("local_dirty")
+      expect(useDocumentStatusStore.getState().loadStatus).toBe("source_only")
       expect(useUIStore.getState().setSyncBanner).toHaveBeenCalledWith(
         expect.stringContaining("unsaved changes"),
       )
@@ -501,6 +556,61 @@ describe("useWebSocketSync", () => {
       expect(useUIStore.getState().setSubmodelDialog).toHaveBeenCalledWith(null)
       expect(useGraphStore.getState().edges).toHaveLength(1)
       expect(useToastStore.getState().addToast).toHaveBeenCalledWith(
+        "warning",
+        expect.stringContaining("unresolved synced edge"),
+      )
+    })
+
+    it("accepts synced submodel output handles from the canonical definition registry", async () => {
+      const params = makeHookParams("rating/main.py")
+      const sourceNode: Node = {
+        id: "Inputs",
+        type: "submodel",
+        position: { x: 0, y: 0 },
+        data: {
+          label: "Inputs",
+          nodeType: "submodel",
+          config: { definitionId: "Inputs", alias: "Inputs" },
+        },
+      }
+      const targetNode: Node = {
+        ...readyNode,
+        id: "Polars_3",
+        data: { label: "Polars 3", nodeType: "polars", config: {} },
+      }
+      const document = makePipelineEditorDocument({
+        source_file: "rating/main.py",
+        source_revision: "r2",
+        nodes: [sourceNode, targetNode],
+        edges: [{
+          id: "submodel-output",
+          source: sourceNode.id,
+          target: targetNode.id,
+          sourceHandle: "out__output_1",
+        }],
+        submodels: {
+          Inputs: {
+            definitionId: "Inputs",
+            file: "modules/Inputs.py",
+            graph: { nodes: [], edges: [] },
+            inputPorts: [],
+            outputPorts: [{
+              name: "output_1",
+              source: { nodeId: "live_switch", handleId: null },
+            }],
+          },
+        },
+      })
+      renderHook(() => useWebSocketSync(params))
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify(pipelineDocumentFrame(document)),
+        }))
+      })
+
+      expect(useGraphStore.getState().edges).toHaveLength(1)
+      expect(useToastStore.getState().addToast).not.toHaveBeenCalledWith(
         "warning",
         expect.stringContaining("unresolved synced edge"),
       )
@@ -640,11 +750,6 @@ describe("useWebSocketSync", () => {
         loadStatus: "source_only",
         sourceRevision: "r2",
         sourceText: "this is not recoverable Python",
-        retainedCanvas: {
-          kind: "last_renderable",
-          sourceRevision: "r1",
-          loadStatus: "ready",
-        },
         graphSynchronized: false,
       })
 
@@ -666,11 +771,6 @@ describe("useWebSocketSync", () => {
         loadStatus: "source_only",
         sourceRevision: "r3",
         sourceText: "this is still not recoverable Python",
-        retainedCanvas: {
-          kind: "last_renderable",
-          sourceRevision: "r1",
-          loadStatus: "ready",
-        },
         graphSynchronized: false,
       })
     })
@@ -692,7 +792,7 @@ describe("useWebSocketSync", () => {
         }))
       })
 
-      expect(useDocumentStatusStore.getState().retainedCanvas).toBeNull()
+      expect(useDocumentStatusStore.getState().loadStatus).toBe("source_only")
       expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
     })
 
@@ -775,6 +875,83 @@ describe("useWebSocketSync", () => {
         "error",
         expect.stringContaining("unexpected frame fields"),
       )
+    })
+
+    it("focuses the nodes an assistant change names instead of fitting the view", async () => {
+      const params = makeHookParams("rating/main.py")
+      useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+        source_file: "rating/main.py",
+        source_revision: "r1",
+      }))
+      renderHook(() => useWebSocketSync(params))
+      const document = makePipelineEditorDocument({
+        source_file: "rating/main.py",
+        source_revision: "r2",
+        nodes: [readyNode],
+      })
+      const origin = {
+        kind: "assistant",
+        session_id: "chat",
+        change_id: "a".repeat(64),
+        // A removed node is named too; only nodes the new graph has are focused.
+        node_ids: [readyNode.id, "removed_node"],
+      }
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({ ...pipelineDocumentFrame(document), origin }),
+        }))
+        vi.advanceTimersByTime(100)
+      })
+
+      expect(params.fitView).not.toHaveBeenCalled()
+      expect(useUIStore.getState().changeFocus).toEqual({ nodeIds: [readyNode.id] })
+      expect(useToastStore.getState().addToast).toHaveBeenCalledWith(
+        "info",
+        "Pipeline updated by the assistant",
+      )
+
+      // A later update without an origin clears the focus and fits the graph.
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify(pipelineDocumentFrame({ ...document, source_revision: "r3" })),
+        }))
+        vi.advanceTimersByTime(100)
+      })
+
+      expect(useUIStore.getState().changeFocus).toBeNull()
+      expect(params.fitView).toHaveBeenCalledOnce()
+    })
+
+    it("rejects a document frame whose origin is malformed", async () => {
+      const params = makeHookParams("rating/main.py")
+      useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+        source_file: "rating/main.py",
+        source_revision: "r1",
+      }))
+      renderHook(() => useWebSocketSync(params))
+      const frame = pipelineDocumentFrame(makePipelineEditorDocument({
+        source_file: "rating/main.py",
+        source_revision: "r2",
+      }))
+
+      for (const origin of [
+        { kind: "watcher", session_id: "chat", change_id: "a", node_ids: [] },
+        { kind: "assistant", session_id: "chat", change_id: "a", node_ids: [1] },
+        { kind: "assistant", session_id: "chat", change_id: "a" },
+      ]) {
+        await act(async () => {
+          latestWS().onmessage?.(new MessageEvent("message", {
+            data: JSON.stringify({ ...frame, origin }),
+          }))
+        })
+      }
+
+      expect(useDocumentStatusStore.getState().sourceRevision).toBe("r1")
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
+      expect(vi.mocked(useToastStore.getState().addToast).mock.calls.filter(
+        ([type, text]) => type === "error" && text.includes("invalid origin"),
+      )).toHaveLength(3)
     })
 
     it("rejects each invalid document-envelope identity field", async () => {
@@ -863,6 +1040,50 @@ describe("useWebSocketSync", () => {
       })
 
       expect(useDocumentStatusStore.getState().systemFailure).toBeNull()
+    })
+
+    it("sends the initially loaded document's fingerprint on the first connection", () => {
+      const params = makeHookParams("rating/main.py")
+      useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+        source_file: "rating/main.py",
+        source_revision: "r1",
+        nodes: [readyNode],
+      }), true, "loaded-fp")
+      renderHook(() => useWebSocketSync(params))
+
+      act(() => latestWS().onopen?.(new Event("open")))
+
+      expect(latestWS().send).toHaveBeenCalledWith(JSON.stringify({
+        type: "resync",
+        source_file: "rating/main.py",
+        document_schema_version: 1,
+        document_fingerprint: "loaded-fp",
+      }))
+    })
+
+    it("asks for the current document again after a parse error", async () => {
+      const params = makeHookParams("rating/main.py")
+      useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+        source_file: "rating/main.py",
+        source_revision: "r1",
+        nodes: [readyNode],
+      }), true, "loaded-fp")
+      renderHook(() => useWebSocketSync(params))
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({ type: "parse_error", error: "boom", source_file: "rating/main.py" }),
+        }))
+      })
+
+      act(() => latestWS().onclose?.({} as CloseEvent))
+      act(() => vi.advanceTimersByTime(1000))
+      act(() => latestWS().onopen?.(new Event("open")))
+
+      expect(latestWS().send).toHaveBeenCalledWith(JSON.stringify({
+        type: "resync",
+        source_file: "rating/main.py",
+        document_schema_version: 1,
+      }))
     })
 
     it("resyncs by whole-document fingerprint after the new protocol is applied", async () => {
@@ -1339,6 +1560,53 @@ describe("useWebSocketSync", () => {
         expect(mockWSInstances).toHaveLength(2)
       } finally {
         window.removeEventListener(HAUTE_SESSION_EXPIRED_EVENT, listener)
+        globalThis.fetch = originalFetch
+      }
+    })
+
+    it.each([
+      ["a first attempt fails before opening", { code: 1006, reason: "" }],
+      ["an open connection closes for an expired session", { code: 1008, reason: "Missing or invalid Haute session token" }],
+    ])("reports reconnecting at once when %s, before its session probe settles", async (_label, close) => {
+      const originalFetch = globalThis.fetch
+      // The probe is held unanswered, as a slow server would leave it.
+      let answerProbe: ((response: Response) => void) | undefined
+      const fetchMock = vi.fn(() => new Promise<Response>((resolve) => { answerProbe = resolve }))
+      globalThis.fetch = fetchMock as unknown as typeof fetch
+      const params = makeHookParams()
+      const { result } = renderHook(() => useWebSocketSync(params))
+
+      try {
+        if (close.code === 1008) {
+          act(() => {
+            latestWS().onopen?.(new Event("open"))
+          })
+          expect(result.current).toBe("connected")
+        } else {
+          expect(result.current).toBe("connecting")
+        }
+        act(() => {
+          latestWS().onclose?.(close as CloseEvent)
+        })
+        await act(async () => {
+          await Promise.resolve()
+        })
+        expect(fetchMock).toHaveBeenCalledTimes(1)
+        expect(result.current).toBe("reconnecting")
+      } finally {
+        // Settle the probe: the session bootstrap is shared module state, and
+        // a request left pending would be joined by later tests.
+        await act(async () => {
+          answerProbe?.({
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            json: () => Promise.resolve({ ok: true }),
+          } as Response)
+          await Promise.resolve()
+          await Promise.resolve()
+          await Promise.resolve()
+        })
         globalThis.fetch = originalFetch
       }
     })

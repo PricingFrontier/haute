@@ -1,0 +1,44 @@
+{
+  "schema_version": 5,
+  "id": "smoke_corpus_underwriting_decision",
+  "fixture_version": "1",
+  "project_fixture": "polars_corpus",
+  "area": "steps",
+  "split": "holdout",
+  "egress": "project",
+  "inapplicable_variants": [],
+  "turns": [
+    {
+      "request": "After quotes, add a Transform named underwriting_decision that adds a text column decision: decline when age is below 18; otherwise refer when claims_count is at least 3 or vehicle_value is above 100000; otherwise await_price when premium is null; otherwise accept. Connect quotes to underwriting_decision.",
+      "expectations": {
+        "outcome": "applied",
+        "saves": true,
+        "required_node_types": [
+          "polars"
+        ],
+        "forbidden_node_types": [],
+        "required_edges": [
+          {
+            "source": "quotes",
+            "target": "underwriting_decision",
+            "target_handle": null
+          }
+        ],
+        "require_connected_graph": true,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [],
+        "node_configs": {},
+        "execution": [
+          {
+            "node": "underwriting_decision",
+            "scenario": "live",
+            "golden": "quotes = pl.scan_parquet('data/quotes.parquet')\ndf = quotes.with_columns(pl.when(pl.col('age') < 18).then(pl.lit('decline')).when((pl.col('claims_count') >= 3) | (pl.col('vehicle_value') > 100000)).then(pl.lit('refer')).when(pl.col('premium').is_null()).then(pl.lit('await_price')).otherwise(pl.lit('accept')).alias('decision'))\n",
+            "order_free": false
+          }
+        ],
+        "efficiency": null,
+        "data_findings": null
+      }
+    }
+  ]
+}

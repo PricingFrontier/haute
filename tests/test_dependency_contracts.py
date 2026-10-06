@@ -7,6 +7,7 @@ import tomllib
 from pathlib import Path
 
 from packaging.requirements import Requirement
+from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
 
@@ -66,8 +67,10 @@ def test_pandas_floor_and_cap_cover_the_pyfunc_conversion_boundary() -> None:
     assert _cap(requirement) <= Version("3"), "pandas cap must exclude pandas 3"
 
 
-def test_polars_floor_supports_order_preserving_lazy_joins() -> None:
-    """Rating-table streaming joins rely on LazyFrame.join(maintain_order=...)."""
+def test_polars_floor_supports_ordered_and_sliced_streaming_joins() -> None:
+    """Rating-table streaming joins rely on LazyFrame.join(maintain_order=...),
+    and previews limited at the previewed node rely on a sliced left join
+    streaming its probe side instead of buffering it (fixed by 1.43)."""
     project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     dependencies = project["project"]["dependencies"]
     polars_requirement = next(
@@ -80,24 +83,25 @@ def test_polars_floor_supports_order_preserving_lazy_joins() -> None:
     ]
 
     assert lower_bounds
-    assert max(lower_bounds) >= Version("1.39.2")
+    assert max(lower_bounds) >= Version("1.44.2")
 
 
-def test_price_contour_floor_supports_ratebook_factor_contexts() -> None:
-    """Ratebook frontier materialisation needs the 0.4.1 factor-context API."""
+def test_price_contour_guard_specifier_is_the_declared_dependency() -> None:
+    """The runtime guard enforces exactly the range the package metadata declares.
+
+    The floor is 0.6.0: haute cancels a frontier point's apply or evaluation
+    through the CancelToken that release introduced (OPT-PC02), on top of the
+    0.5.0 per-point factor tables and canonical ratebook evaluation.
+    """
+    from haute._price_contour import REQUIRED_SPECIFIER
+
     project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     dependencies = project["project"]["dependencies"]
-    price_contour_requirement = next(
-        Requirement(dep) for dep in dependencies if Requirement(dep).name == "price-contour"
-    )
-    lower_bounds = [
-        Version(spec.version)
-        for spec in price_contour_requirement.specifier
-        if spec.operator in {">=", "=="}
-    ]
+    declared = next(dep for dep in dependencies if Requirement(dep).name == "price-contour")
 
-    assert lower_bounds
-    assert max(lower_bounds) >= Version("0.4.1")
+    assert declared == f"price-contour{REQUIRED_SPECIFIER}"
+    assert SpecifierSet(REQUIRED_SPECIFIER).contains("0.6.0")
+    assert not SpecifierSet(REQUIRED_SPECIFIER).contains("0.5.9")
 
 
 def _setup_uv_pins(workflow_text: str) -> list[str | None]:

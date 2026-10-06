@@ -24,6 +24,7 @@ class WorkerCancellationGate:
     def __init__(self) -> None:
         self._requested = threading.Event()
         self._publication_lock = threading.Lock()
+        self._on_request: list[Callable[[], None]] = []
 
     def is_set(self) -> bool:
         """Return whether cancellation won before a publication section began."""
@@ -33,6 +34,21 @@ class WorkerCancellationGate:
         """Record cancellation at the same serialization point as publication."""
         with self._publication_lock:
             self._requested.set()
+            callbacks = tuple(self._on_request)
+        for callback in callbacks:
+            callback()
+
+    def on_request(self, callback: Callable[[], None]) -> None:
+        """Call *callback* when cancellation is requested — now, if it already was.
+
+        Work the parent does itself before a worker starts (preparing inputs)
+        stops through its own execution context rather than this gate.
+        """
+        with self._publication_lock:
+            if not self._requested.is_set():
+                self._on_request.append(callback)
+                return
+        callback()
 
     @contextmanager
     def publication_guard(self) -> Iterator[None]:

@@ -17,8 +17,8 @@ what-if scoring path.
 
 In scope:
 
-- Continuous (operator/threshold), categorical (value remap), and breakpoints
-  (ordered boundary list) banding rule evaluation.
+- Breakpoints (ordered boundary list) and categorical (value remap) banding
+  rule evaluation. These are the only two banding types; a factor names one.
 - One-, two-, and three-factor rating-table lookups, including default-value
   fill and a loud/quiet miss policy.
 - Combining multiple rating-table outputs with a required fixed finite numeric
@@ -54,29 +54,48 @@ Out of scope (owned by neighbouring components):
 
 ## Behaviour
 
-**Banding** (`apply_banding_from_config` / `_apply_banding_factors`):
+**Banding** (`apply_banding_from_config` / `apply_banding_factors`):
 
-- Each banding "factor" reads one input column and writes one output column.
-- `continuous` rules define a range via up to two operator/value pairs
-  (`op1`/`val1`, `op2`/`val2` — one of `< <= > >= = ==`); rules are evaluated
-  in order and the first matching rule wins (`when/then` chain semantics), the
-  rest fall to an explicit `default`.
-  An unrecognised operator is rejected before a banding expression is
-  published. Runtime banding and trace enrichment consume the same rule
-  eligibility parser as well as the same immutable supported-operator
-  contract, so a trace cannot credit a rule the engine skipped.
+- Each banding "factor" reads one input column and writes one output column,
+  and its `banding` is `breakpoints` or `categorical`. Any other value, or none,
+  is rejected; there is no default type. (An operator/threshold `continuous`
+  type existed and is removed: the editor never offered it.)
+- `breakpoints` rules are an ordered list of boundaries with labels, closed on
+  the right by default (`(lower, upper]`) or on the left when `rightClosed:
+  false`. At most one boundary may be open-ended (empty), and it anchors the
+  final unbounded range. A boundary is a number, a date (`YYYY-MM-DD`), or a
+  date and time (`YYYY-MM-DD HH:MM`, optionally `:SS` and a fraction, `T` or a
+  space between; no UTC offset), and every bounded breakpoint of one factor is
+  the same kind. Numbers band a numeric column. Dates band a Date column, or a
+  Datetime column by its calendar date in the column's own time zone, so
+  "up to 2024-02-29" includes the whole of that day. Dates and times band a
+  Datetime column by its wall-clock time in the column's own time zone. Any
+  other pairing (numbers on a date column, times on a Date column, dates on a
+  number column) fails when the node runs, naming the output and the column;
+  an unreadable boundary or a factor mixing kinds fails validation. Internally each breakpoint becomes an
+  interval rule (up to two operator/value pairs, `< <= > >=`); intervals are
+  evaluated in order and the first matching one wins (`when/then` chain
+  semantics), the rest falling to an explicit `default`. Runtime banding and
+  trace enrichment consume the same interval-eligibility parser and the same
+  immutable supported-operator contract, so a trace cannot credit a band the
+  engine skipped.
 - `categorical` rules are an exact-match remap from input value to assignment.
-- `breakpoints` rules are converted internally into `continuous` rules: an
-  ordered list of numeric boundaries with labels, closed on the right by default
-  (`(lower, upper]`) or on the left when `rightClosed: false`. At most one
-  boundary may be open-ended (empty), and it anchors the final unbounded range.
 - Float columns have NaN/Infinity sanitised to null before rule matching, so
   they always fall to the default rather than matching an arbitrary rule.
 - A draft factor with no column, no output column, or no rules is a documented
-  no-op (the frame passes through unchanged for that factor). Once a non-empty
+  no-op (the frame passes through unchanged for that factor). The node's column
+  contract leaves a draft factor out too, so a factor that has its columns but no
+  rules yet previews as a pass-through rather than failing the output-column
+  check for a column it does not create. Once a non-empty
   rule list is authored, at least one rule must have a usable key/condition and
   assignment; an all-unusable rule set is rejected rather than silently
   omitting the configured output column.
+- Active factors write distinct output columns. Two active factors naming one
+  `outputColumn` are refused, naming the column and both factors (by position
+  and input column), when the config is validated and again when the node
+  runs, in the executor and a standalone run alike, rather than the later band
+  silently replacing the earlier. A draft factor sharing an active factor's
+  output column does not count, since it writes nothing.
 
 **Rating** (`apply_rating_step_from_config` / `_apply_rating_step_outputs`):
 
@@ -93,6 +112,12 @@ Out of scope (owned by neighbouring components):
   (3) the default policy, `onMissing: "error"`, raises
   `RatingTableMissError` naming the table, the missing key(s), and the
   affected row count.
+- A table the editor creates (the Rating Step node default and **Add table**)
+  has no `defaultValue`, so its misses stop the run until the analyst types a
+  default or sets **On miss** (`onMissing`) to **Leave empty** (`"neutral"`).
+  The editor shows **On miss** beside **Default** and disables it while
+  Default holds a value; clearing Default removes `defaultValue`. Every edit
+  keeps a table's `onMissing` and leaves an absent `defaultValue` absent.
 - Table lookup keys are compared as strings through the factor column's
   originating Polars dtype. Table-entry values are first coerced through that
   dtype, then both the entry and input values use the same Polars expression:
@@ -100,7 +125,9 @@ Out of scope (owned by neighbouring components):
   range collapse to their integer digit string (`25.0` → `"25"`); other floats
   use the originating width's own Polars string form; and exact, categorical,
   string, decimal, and temporal values use Polars' cast for their declared
-  dtype. Null stays null and therefore never matches. Supported factor dtypes
+  dtype. A Duration entry string is the ISO-8601 duration Polars displays
+  (`PT1.5S`, `-P1DT2H`), read exactly into the column's time unit and never
+  rounded. Null stays null and therefore never matches. Supported factor dtypes
   are Float32/64, signed and unsigned integers, Boolean, String,
   Categorical/Enum, Decimal, Date, Datetime, Time, Duration, and Null.
 - Lookup keys are materialised into collision-free temporary columns for the
@@ -108,16 +135,20 @@ Out of scope (owned by neighbouring components):
   need a lossy string-to-original-dtype revert.
 - Multiple entries sharing the same factor key keep the *last* one (matches
   the intent of "later edits win" in the entry list).
-- After the table stage, `combinedOutputs` combine named table output columns
-  with a required fixed finite numeric `baseValue` using `multiply`, `add`,
-  `min`, or `max`. A table that never materialised its output column (because
-  it was incomplete — see Failure model) is omitted from combining, not
-  silently referenced as null.
+- After the table stage, `combinedOutputs` combine every materialised table
+  output column of the step with a required fixed finite numeric `baseValue`
+  using `multiply`, `add`, `min`, or `max`. A table that never materialised its
+  output column (because it was incomplete — see Failure model) is omitted from
+  combining, not silently referenced as null.
 - Every table output column and combined-output column is unique across the
   rating step. Duplicate `tables[].outputColumn` values are rejected with the
   later table index and duplicated column named; the runtime combine boundary
   independently rejects duplicate participant columns so a bypassed
   normaliser cannot square or double-count a surviving factor.
+- A table output or combined-output column replaces a same-named column
+  already in the input frame, by design (apart from a combined output's own
+  participants, which are refused above). Banding output columns replace a
+  same-named input column the same way.
 - A rating table or combined-output definition with a structural problem
   (unsupported operation, non-finite base value, duplicate output column,
   NaN/Infinity/null entry values) fails loudly at config-normalisation or
@@ -130,9 +161,10 @@ Out of scope (owned by neighbouring components):
   independent of *how* the config was authored (GUI node vs. hand-written
   `pipeline.banding(...)` decorator) or *where* it executes (interactive
   preview vs. a saved standalone script). `apply_banding_from_config` /
-  `apply_rating_step_from_config` are the generated-code twins of the
-  executor's node builders specifically so a saved pipeline file reproduces
-  GUI preview behaviour exactly — see
+  `apply_rating_step_from_config` are the standalone twins of the
+  executor's node builders: a saved pipeline file's Banding and Rating Step
+  decorators call them, so running the file reproduces GUI preview behaviour
+  exactly — see
   [execution-engine](../execution-engine/high-level.md).
 - **Fail loud on ambiguous or silently-lossy config**, per project convention:
   a rating-table miss with no default raises rather than quietly rating at a
@@ -169,7 +201,7 @@ Out of scope (owned by neighbouring components):
   out rows even if the config accidentally has two entries for the same
   factor combination.
 - **One banding node holds many factors, rather than one node per factor or
-  separate continuous/categorical node types.** A single pipeline step often
+  separate numeric/categorical node types.** A single pipeline step often
   bands several columns at once (age, vehicle age, property type, ...);
   one-node-per-factor and separate node types per banding kind were both
   rejected for the same graph-clutter reason as the rating-table case below.
@@ -191,24 +223,30 @@ Out of scope (owned by neighbouring components):
 
 - **[execution-engine](../execution-engine/high-level.md)** — `_builders.py`
   registers `BANDING` and `RATING_STEP` node builders that call
-  `_apply_banding_factors` and `_apply_rating_step_outputs` directly, and
+  `apply_banding_factors` and `_apply_rating_step_outputs` directly, and
   `_apply_ratebook` (optimiser scoring) reuses `_apply_rating_table` and
   `_combine_rating_columns` to apply a saved ratebook as a rating lookup.
 - **[pipeline-config](../pipeline-config/high-level.md)** — `_config_io.py`
   routes `BANDING`/`RATING_STEP` sidecar JSON through
   `expand_banding_config_from_sidecar` and `normalise_rating_step_config`
   on load. Rating-step sidecars use the same canonical normaliser on save.
-- **[codegen](../codegen/high-level.md)** — emits `apply_banding_from_config(...)`
-  / `apply_rating_step_from_config(...)` calls into generated standalone
-  pipeline scripts, and `_code_extraction.py` locates the boundary between
-  the generated table/combine scaffold and any user-authored post-processing
-  code in a rating step.
+- **[codegen](../codegen/high-level.md)** — emits Banding and Rating Step
+  nodes as declarations (or, with post-processing code, as a `df` hook) whose
+  decorators apply the sidecar through `apply_banding_from_config` /
+  `apply_rating_step_from_config` in a standalone run
+  ([pipeline-config](../pipeline-config/high-level.md)); `_code_extraction.py`
+  recovers a rating step's post-processing code from the hook body.
 - **[tracing](../tracing/high-level.md)** — `_trace_enrichment.py` imports
   `normalise_rating_key` and `normalise_rating_tables`/`normalise_banding_factors`
   to build the structured `rating_step`/`banding` trace detail payloads shown
   in the Calculation and Nodes tabs. Rating enrichment also receives the exact
   factor dtypes from the consumed parent frame; it does not reimplement lookup
   or rule matching.
+- **[server-api](../server-api/high-level.md)** — `routes/_rating_levels.py`
+  publishes the levels of a Rating Step's raw factor columns over the node's
+  shared data point, keyed by the same `_rating_key_expr` the lookup joins on,
+  so a level offered in the editor is a level a run matches. It reads that
+  module's key expression rather than rendering values its own way.
 - **modelling / optimiser** — the optimiser's ratebook-apply path is a
   downstream consumer, not a peer: it constructs synthetic rating-table specs
   from a saved artifact's factor tables and ordered `factor_dtypes` descriptors,
@@ -228,10 +266,13 @@ Out of scope (owned by neighbouring components):
   The output stays null for those rows (multiply/add fold it to the operation's
   neutral element downstream).
 - **Malformed table entries** (non-finite banding rule value/boundary, NaN/Infinity
-  or null rating entry `value`, more than one open-ended breakpoint, an
+  or null rating entry `value` — an entry without `value` when another entry
+  has one counts as null, wherever it sits in the table — a Duration entry key
+  that names no exact duration of the column's time unit, more than one open-ended breakpoint, an
   open-ended breakpoint with no bounded anchor, a duplicate breakpoint
   boundary, an unsupported combine operation, a non-finite/missing
-  `combinedOutputs[].baseValue`, or a duplicate table/combined output column):
+  `combinedOutputs[].baseValue`, a duplicate table/combined output column, or
+  two active banding factors with one output column):
   raise `ValueError` eagerly, before the frame is touched.
 - **All-null `min`/`max` participants:** raises
   `RatingExtremaUndefinedError(ExecutionError)` at materialisation, naming the

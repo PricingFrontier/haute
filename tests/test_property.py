@@ -19,6 +19,7 @@ from haute._config_io import is_windows_reserved_filename
 from haute._path_resolution import MalformedRuntimePathError, resolve_runtime_file_path
 from haute._rating import _apply_banding
 from haute.codegen import graph_to_code
+from haute.errors import PathOutsideProjectError
 from haute.graph_utils import (
     GraphEdge,
     GraphNode,
@@ -272,14 +273,14 @@ class TestBandingProperties:
         ),
     )
     @settings(max_examples=100)
-    def test_continuous_banding_covers_all_rows(self, values, threshold):
-        """Two complementary rules (<=t, >t) should assign every row."""
+    def test_breakpoint_banding_covers_all_rows(self, values, threshold):
+        """A boundary plus the open-ended band (<=t, >t) should assign every row."""
         lf = pl.DataFrame({"x": values}).lazy()
         rules = [
-            {"op1": "<=", "val1": threshold, "assignment": "low"},
-            {"op1": ">", "val1": threshold, "assignment": "high"},
+            {"boundary": str(threshold), "label": "low"},
+            {"boundary": "", "label": "high"},
         ]
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        result = _apply_banding(lf, "x", "band", "breakpoints", rules).collect()
         assert result["band"].null_count() == 0
         assert set(result["band"].to_list()) <= {"low", "high"}
 
@@ -311,8 +312,8 @@ class TestBandingProperties:
     def test_banding_preserves_row_count(self, values):
         """Banding never changes the number of rows."""
         lf = pl.DataFrame({"x": values}).lazy()
-        rules = [{"op1": "<=", "val1": 0, "assignment": "neg"}]
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        rules = [{"boundary": "0", "label": "neg"}]
+        result = _apply_banding(lf, "x", "band", "breakpoints", rules).collect()
         assert len(result) == len(values)
 
 
@@ -622,11 +623,11 @@ class TestBandingMonotonicity:
         lf = pl.DataFrame({"x": [float(v) for v in values]}).lazy()
         # Non-overlapping ordered bands: (-inf, 10], (10, 20], (20, inf)
         rules = [
-            {"op1": "<=", "val1": 10, "assignment": "A"},
-            {"op1": ">", "val1": 10, "op2": "<=", "val2": 20, "assignment": "B"},
-            {"op1": ">", "val1": 20, "assignment": "C"},
+            {"boundary": "10", "label": "A"},
+            {"boundary": "20", "label": "B"},
+            {"boundary": "", "label": "C"},
         ]
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        result = _apply_banding(lf, "x", "band", "breakpoints", rules).collect()
         bands = result["band"].to_list()
         # Filter out nulls, then check band labels never go backward
         band_order = {"A": 0, "B": 1, "C": 2}
@@ -681,27 +682,35 @@ class TestRatingTableRowCount:
 # ---------------------------------------------------------------------------
 
 
+column_name_strategy = st.one_of(
+    st.sampled_from(["_id", "_prevRules", "__typename", 'quote " and )', "line\nbreak", "Δ"]),
+    st.text(alphabet=string.ascii_letters + string.digits + "_ (){}", min_size=1, max_size=20),
+)
+
+
 class TestConfigRoundtrip:
     @given(
-        # Bundle 2.α — keys must be in the per-node-type allowlist or in
-        # _UNIVERSAL_KEYS to survive `_prepare_config_for_sidecar`.
-        # Using universal keys ensures the property holds across any
-        # node_type. The keys below all appear in _UNIVERSAL_KEYS:
-        # `selected_columns` (list[str]), `column_renames` (dict[str,str]),
-        # `contract` (str). Strategy avoids leading underscores in
-        # nested string values because `_strip_internal_keys` recurses
-        # and strips `_*` keys at every level — those would not
-        # roundtrip (by design).
+        # Keys must be declared for the node type or in _UNIVERSAL_KEYS:
+        # `_prepare_config_for_sidecar` refuses any other key (see the
+        # undeclared-key property below). The keys below all appear in
+        # _UNIVERSAL_KEYS, so the property holds across any node_type.
+        # User dictionary keys are opaque data, including names that look
+        # like editor metadata. Generate those names explicitly.
         config=st.fixed_dictionaries(
             {
                 "selected_columns": st.lists(
-                    st.from_regex(r"[A-Za-z][A-Za-z0-9_]{0,19}", fullmatch=True),
+                    column_name_strategy,
                     max_size=5,
                 ),
                 "column_renames": st.dictionaries(
-                    keys=st.from_regex(r"[A-Za-z][A-Za-z0-9_]{0,19}", fullmatch=True),
-                    values=st.from_regex(r"[A-Za-z][A-Za-z0-9_]{0,19}", fullmatch=True),
+                    keys=column_name_strategy,
+                    values=column_name_strategy,
                     max_size=5,
+                ),
+                "categorical_levels": st.dictionaries(
+                    keys=column_name_strategy,
+                    values=st.lists(st.one_of(st.none(), column_name_strategy), max_size=4),
+                    max_size=4,
                 ),
                 "contract": st.text(
                     alphabet=string.ascii_letters + string.digits + "-",
@@ -713,12 +722,10 @@ class TestConfigRoundtrip:
     )
     @settings(max_examples=80)
     def test_config_roundtrip_preserves_data(self, config, tmp_path_factory):
-        """load(save(config)) == config for allowlisted config keys.
+        """load(save(config)) == config for every declared config key.
 
-        Bundle 2.α restricted the roundtrip contract: keys outside
-        `VALID_KEYS[node_type]` are dropped at write time. The
-        roundtrip property now applies only to allowlisted keys
-        (TypedDict-declared keys + `_UNIVERSAL_KEYS`).
+        A key outside `VALID_KEYS[node_type]` never reaches the round
+        trip: the write refuses it rather than dropping it.
         """
         from haute._config_io import (
             _prepare_config_for_sidecar,
@@ -728,17 +735,14 @@ class TestConfigRoundtrip:
         from haute.graph_utils import NodeType
 
         base_dir = tmp_path_factory.mktemp("cfg")
-        # OUTPUT has a config folder and no per-type compactor —
-        # BANDING and RATING_STEP have compactors that strip universal
-        # keys, POLARS has no folder (transforms store code inline).
-        # OUTPUT is the cleanest target for testing the pure JSON+α
-        # roundtrip of universal keys.
+        # Exercise JSON mapping preservation here; the codegen roundtrip
+        # suite separately covers the same settings across all node types.
         rel = config_path_for_node(NodeType.OUTPUT, "test_node")
         path = base_dir / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             json.dumps(
-                _prepare_config_for_sidecar(NodeType.OUTPUT, config),
+                _prepare_config_for_sidecar(NodeType.OUTPUT, config, node_label="test_node"),
                 indent=2,
                 ensure_ascii=False,
             )
@@ -749,6 +753,25 @@ class TestConfigRoundtrip:
         for k, v in config.items():
             assert k in loaded, f"Key {k!r} missing after roundtrip"
             assert loaded[k] == v, f"Value mismatch for {k}: {v!r} vs {loaded[k]!r}"
+
+    @given(
+        key=st.text(alphabet=string.ascii_letters + string.digits, min_size=1, max_size=20),
+        value=st.one_of(st.integers(), st.text(max_size=10), st.booleans()),
+    )
+    @settings(max_examples=80)
+    def test_an_undeclared_key_is_refused_at_write(self, key, value):
+        """No write drops a key: an undeclared one fails the write, naming it."""
+        from haute._config_io import _prepare_config_for_sidecar
+        from haute._config_validation import CODE_CONFIG_KEYS, VALID_KEYS
+        from haute.errors import ConfigError
+        from haute.graph_utils import NodeType
+
+        assume(key not in VALID_KEYS[NodeType.OUTPUT] and key not in CODE_CONFIG_KEYS)
+        config = {**make_output_config(["premium"]), key: value}
+
+        with pytest.raises(ConfigError) as refused:
+            _prepare_config_for_sidecar(NodeType.OUTPUT, config, node_label="test_node")
+        assert refused.value.context["unrecognized_config_keys"] == [key]
 
 
 # ---------------------------------------------------------------------------
@@ -824,17 +847,17 @@ class TestCodeValidationConsistency:
     @given(
         code=st.sampled_from(
             [
-                "getattr(obj, 'x')",
-                "import os",
-                "class Foo: pass",
-                "obj.__class__",
-                "eval('1+1')",
+                "value = input()",
+                "exit()",
+                "quit(1)",
+                "breakpoint()",
+                "rows = [input() for _ in range(2)]",
             ]
         ),
     )
     @settings(max_examples=30)
-    def test_unsafe_code_always_rejected(self, code: str):
-        """Unsafe code is always rejected, even on repeated calls."""
+    def test_server_stopping_code_always_rejected(self, code: str):
+        """A server-stopping call is always rejected, even on repeated calls."""
         from haute._sandbox import UnsafeCodeError, validate_user_code
 
         for _ in range(3):
@@ -865,7 +888,7 @@ class TestPathValidation:
         path = root.joinpath(*segments)
         resolved = path.resolve()
         if not resolved.is_relative_to(root.resolve()):
-            with pytest.raises(ValueError, match="outside"):
+            with pytest.raises(PathOutsideProjectError, match="outside"):
                 validate_project_path(path)
         else:
             # Should not raise
@@ -888,7 +911,7 @@ class TestPathValidation:
         escaping = nested / Path(*([".."] * (n_dotdots + 3)))  # enough to escape
         resolved = escaping.resolve()
         if not resolved.is_relative_to(nested.resolve()):
-            with pytest.raises(ValueError, match="outside"):
+            with pytest.raises(PathOutsideProjectError, match="outside"):
                 validate_project_path(escaping)
 
 

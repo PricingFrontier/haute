@@ -26,10 +26,17 @@ from haute._config_io import NODE_TYPE_TO_FOLDER
 from haute._edge_join import _ALLOWED_HOW
 from haute._scaffold import TARGETS, haute_toml
 from haute._types import NodeType
+from haute.assistant._config import (
+    ASSISTANT_EGRESS_TOML_KEYS,
+    ASSISTANT_TOML_KEYS,
+    DEFAULT_TURN_TIMEOUT,
+    TURN_TIMEOUT_ENV,
+)
 from haute.cli import cli
 from haute.cli._init_cmd import InitConfig, handle_init
 from haute.parser import parse_pipeline_file
 from scripts.spec_corpus_inventory import load_corpus_manifest
+from tests._source_files import source_files
 
 # Every check here reads repository files — specs, docs, source listings — and
 # compares them to each other. Nothing it asserts can come out differently on a
@@ -44,6 +51,9 @@ EXECUTION_STRATEGY_DOC = ROOT / "docs" / "building-models" / "execution-strategy
 INSTALLING_HAUTE_DOC = ROOT / "docs" / "getting-started" / "installing-haute.md"
 ENVIRONMENT_SETUP_DOC = ROOT / "docs" / "getting-started" / "environment.md"
 EDGE_JOIN_GUIDE = ROOT / "docs" / "building-models" / "nodes" / "edge-join.md"
+ASSISTANT_GUIDE = ROOT / "docs" / "getting-started" / "assistant.md"
+ASSISTANT_CONFIG_SOURCE = ROOT / "src" / "haute" / "assistant" / "_config.py"
+ASSISTANT_READINESS_CARD = ROOT / "frontend" / "src" / "panels" / "assistant" / "ReadinessCard.tsx"
 EDGE_JOIN_RUNTIME_SPEC = ROOT / "specs" / "json-shredding" / "low-level.md"
 EDGE_JOIN_EDITOR_SPEC = ROOT / "specs" / "frontend-node-editors" / "low-level.md"
 SPECS_README = ROOT / "specs" / "README.md"
@@ -80,6 +90,7 @@ _BACKEND_BEHAVIOUR_ASSETS = frozenset(
         "assistant/assets/examples/config/quote_response/joined_priced.json",
         "assistant/assets/examples/config/quote_response/linear_priced.json",
         "assistant/assets/examples/config/quote_response/response.json",
+        "node_defaults.json",
     }
 )
 # These files are deliberately outside behavioral component coverage: ``py.typed``
@@ -107,14 +118,13 @@ _REPOSITORY_PATH_PREFIXES = (
     ".github/",
     "docs/",
     "frontend/",
+    "examples/",
     "mutation/",
-    "rating/",
     "scripts/",
     "specs/",
     "src/",
     "tests/",
     "security/",
-    "repro/",
 )
 _REQUIRED_HIGH_LEVEL_HEADINGS = (
     "## Purpose",
@@ -138,9 +148,27 @@ _REQUIRED_COMPONENT_ROADMAP_HEADINGS = (
     "## Planned improvements",
 )
 _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
+    "assistant",
     "background-jobs-api",
+    "bugs",
+    "caching",
+    "engineering-quality",
     "explore-eda",
-    "optimiser",
+    "frontend-shared",
+    "model-scoring",
+    "name-collisions",
+    "optimiser-validation",
+    "pipeline-config",
+    "polars-node-clarity",
+    "sandbox-security",
+    "server-api",
+    "submodels",
+    "t-boost",
+)
+_ROADMAP_SUPPORTING_REPORTS: tuple[str, ...] = (
+    "codebase-review-2026-09-23.md",
+    "delivery-plan.md",
+    "t-boost-improvements.md",
 )
 _COMPONENT_PACKAGE_HEADING = re.compile(
     r"^###\s+([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\b",
@@ -211,13 +239,84 @@ def test_execution_strategy_guide_is_in_public_navigation_and_states_key_contrac
         "Schema all-except",
         "Streaming boundary",
         "Materialisation boundary",
-        "Haute never generically chunks a group-by.",
-        "`preview_eager`",
-        "`explore_analysis` cache-materialisation",
-        "`deploy_live`",
+        "Global operations (group-by, sort, unique, join, join_asof, top_k, bottom_k,",
+        "are supported in every workflow.",
+        "Haute never computes a global operation independently in each generic chunk.",
+        "strategy `full-width-conservative`",
+        "Data Output writes",
+        "assistant value profiling",
+        "both live and batch",
+        # The capped and uncapped surfaces must match the execution-engine spec:
+        # training preparation and multi-row deploy batches run under a native
+        # cap (EXEC-P06); optimiser stages and live scoring do not.
+        "training preparation, and multi-row batch scoring in a deployed container all run",
+        "inside a worker with a native memory cap",
+        "Optimiser stages and single-row live scoring run without that cap",
         "unavailable or `null`",
     ):
         assert claim in guide
+
+
+def _string_constants(source: str) -> list[str]:
+    """Every string literal in *source*, with f-strings contributing their literal parts."""
+
+    return [
+        node.value
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    ]
+
+
+def _first_column_under(header: str, text: str) -> list[str]:
+    """The first cells of every Markdown table whose first header cell is *header*."""
+
+    table_pattern = rf"^\| {re.escape(header)} \|.*\n\|[-| :]+\|\n((?:\|.*\n)+)"
+    cells: list[str] = []
+    for table in re.findall(table_pattern, text, re.M):
+        cells.extend(row.strip().strip("|").split("|")[0].strip() for row in table.splitlines())
+    return cells
+
+
+def test_assistant_setup_guide_matches_configuration_and_readiness() -> None:
+    nav = MKDOCS_CONFIG.read_text(encoding="utf-8")
+    guide = ASSISTANT_GUIDE.read_text(encoding="utf-8")
+    constants = _string_constants(ASSISTANT_CONFIG_SOURCE.read_text(encoding="utf-8"))
+    readiness_card = ASSISTANT_READINESS_CARD.read_text(encoding="utf-8")
+
+    assert "Setting Up the Assistant: getting-started/assistant.md" in nav
+    example_block = re.search(r"```toml\n(.*?)```", guide, re.S)
+    assert example_block is not None
+    example = tomllib.loads(example_block.group(1))
+    assert set(example["assistant"]) <= ASSISTANT_TOML_KEYS
+    assert set(example["assistant"]["egress"]) == ASSISTANT_EGRESS_TOML_KEYS
+    for key in (ASSISTANT_TOML_KEYS - {"egress"}) | ASSISTANT_EGRESS_TOML_KEYS:
+        assert f"| `{key}` |" in guide, key
+
+    for env_key in (
+        "DATABRICKS_HOST",
+        "DATABRICKS_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "HAUTE_ASSISTANT_MAX_OUTPUT_TOKENS",
+        TURN_TIMEOUT_ENV,
+    ):
+        assert f"`{env_key}`" in guide, env_key
+        assert any(env_key in constant for constant in constants), env_key
+    assert f"({DEFAULT_TURN_TIMEOUT} by default)" in guide
+
+    reasons = _first_column_under("Reason in the panel", guide)
+    assert len(reasons) >= 12
+    unquoted = [
+        reason for reason in reasons if not any(reason in constant for constant in constants)
+    ]
+    assert unquoted == []
+    for heading in (
+        "Assistant is not set up",
+        "Assistant cannot edit this project",
+        "Assistant settings could not be read",
+    ):
+        assert f"**{heading}**" in guide
+        assert f'title="{heading}' in readiness_card, heading
 
 
 def test_managed_windows_setup_uses_the_module_entrypoint_and_approved_python() -> None:
@@ -285,68 +384,47 @@ def test_internal_engineering_docs_are_excluded_from_public_mkdocs_site() -> Non
     assert "\n  - Roadmap:" not in config
 
 
-def test_current_specs_reconcile_the_audited_high_low_contradictions() -> None:
-    hosted_high = (SPECS_ROOT / "hosted-databricks-app/high-level.md").read_text(encoding="utf-8")
-    databricks_high = (SPECS_ROOT / "databricks-io/high-level.md").read_text(encoding="utf-8")
-    databricks_low = (SPECS_ROOT / "databricks-io/low-level.md").read_text(encoding="utf-8")
-    quality_high = (SPECS_ROOT / "engineering-quality/high-level.md").read_text(encoding="utf-8")
-    quality_low = (SPECS_ROOT / "engineering-quality/low-level.md").read_text(encoding="utf-8")
-
-    assert "DRAFT" not in hosted_high
-    assert "Nothing in this spec is implemented" not in hosted_high
-    assert "haute.hosted.create_app()" in hosted_high
-    for document in (databricks_high, databricks_low):
-        for credential in (
-            "DATABRICKS_HOST",
-            "DATABRICKS_TOKEN",
-            "DATABRICKS_CLIENT_ID",
-            "DATABRICKS_CLIENT_SECRET",
-        ):
-            assert credential in document
-    assert "schema 4" in quality_high
-    assert "schema 4" in quality_low
-    assert "schema 3" not in quality_high
-    assert "schema-3" not in quality_low
-    assert '"schema_version": 4' in (ROOT / "scripts/run_perf_suite.py").read_text(encoding="utf-8")
-
-
-def test_execution_engine_spec_has_one_assistant_schema_inspection_contract() -> None:
-    text = (SPECS_ROOT / "execution-engine/high-level.md").read_text(encoding="utf-8")
-    assert text.count("**Assistant schema inspection is plan-only.**") == 1
-
-
-def test_readme_is_the_single_temporary_contract_lifecycle_owner() -> None:
-    readme = SPECS_README.read_text(encoding="utf-8")
-    template = (SPECS_ROOT / "TEMPLATE.md").read_text(encoding="utf-8")
-
-    for required_record in (
-        "**Current limitation.**",
-        "**Unresolved target.**",
-        "**Non-goals.**",
-        "**Failure and compatibility semantics.**",
-        "**Acceptance evidence.**",
-        "**Roadmap package.**",
-    ):
-        assert required_record in readme
-        assert required_record not in template
-    assert "README.md#temporary-change-contract-lifecycle" in template
-
-
 def test_active_component_roadmaps_are_flat_complete_and_self_contained() -> None:
-    expected_markdown = {"README.md"} | {
-        f"{component}.md" for component in _EXPECTED_ACTIVE_COMPONENT_ROADMAPS
-    }
+    expected_markdown = (
+        {"README.md"}
+        | {f"{component}.md" for component in _EXPECTED_ACTIVE_COMPONENT_ROADMAPS}
+        | set(_ROADMAP_SUPPORTING_REPORTS)
+    )
     roadmap_markdown = {
         path.relative_to(ROADMAP_ROOT).as_posix() for path in ROADMAP_ROOT.rglob("*.md")
     }
     assert roadmap_markdown == expected_markdown
 
     component_files = {
-        path.stem: path for path in ROADMAP_ROOT.glob("*.md") if path.name != ROADMAP_INDEX.name
+        path.stem: path
+        for path in ROADMAP_ROOT.glob("*.md")
+        if path.name != ROADMAP_INDEX.name and path.name not in _ROADMAP_SUPPORTING_REPORTS
     }
     assert tuple(sorted(component_files)) == _EXPECTED_ACTIVE_COMPONENT_ROADMAPS
 
     index = ROADMAP_INDEX.read_text(encoding="utf-8")
+    for name in _ROADMAP_SUPPORTING_REPORTS:
+        assert f"({name})" in index
+        report = (ROADMAP_ROOT / name).read_text(encoding="utf-8")
+        assert not _COMPONENT_PACKAGE_HEADING.findall(report), (
+            f"supporting report {name} must not own work packages"
+        )
+
+    for name in sorted(roadmap_markdown):
+        path = ROADMAP_ROOT / name
+        for target in _MARKDOWN_LINK.findall(path.read_text(encoding="utf-8")):
+            if target.startswith(("#", "http://", "https://", "mailto:")):
+                continue
+            local_target = target.split("#", maxsplit=1)[0]
+            assert not Path(local_target).is_absolute() and not re.match(
+                r"^[A-Za-z]:", local_target
+            ), f"{path.relative_to(ROOT)} needs a repository-relative link: {local_target}"
+            resolved = (path.parent / local_target).resolve()
+            assert resolved.is_relative_to(ROOT) and resolved.exists(), (
+                f"{path.relative_to(ROOT)} links outside the repository "
+                f"or to missing {local_target}"
+            )
+
     start_with: dict[str, str] = {}
     for line in index.splitlines():
         match = re.match(
@@ -432,14 +510,6 @@ def test_active_component_roadmaps_are_flat_complete_and_self_contained() -> Non
                 assert field in package_text, (
                     f"{path.relative_to(ROOT)} package {package_id} is missing {field}"
                 )
-
-        for target in _MARKDOWN_LINK.findall(text):
-            if target.startswith(("#", "http://", "https://", "mailto:")):
-                continue
-            local_target = target.split("#", maxsplit=1)[0]
-            assert (path.parent / local_target).resolve().exists(), (
-                f"{path.relative_to(ROOT)} links to missing {local_target}"
-            )
 
     for retired_root in (
         ROOT / "docs" / "fable-Review",
@@ -1510,8 +1580,8 @@ def _unreferenced_sources(paths: list[Path]) -> list[str]:
 def _backend_production_sources() -> list[Path]:
     tracked = _versionable_repo_files()
     sources: list[Path] = []
-    for path in BACKEND_SOURCE_ROOT.rglob("*"):
-        if not path.is_file() or path not in tracked:
+    for path in source_files(BACKEND_SOURCE_ROOT, suffix=None):
+        if path not in tracked:
             continue
         relative = path.relative_to(BACKEND_SOURCE_ROOT)
         if any(part in _BACKEND_COVERAGE_EXCLUDED_DIRS for part in relative.parts):
@@ -1524,6 +1594,10 @@ def _backend_production_sources() -> list[Path]:
         # CSV, TOML, Markdown, and parsed Python members are therefore one
         # manifested resource tree rather than hundreds of module-map rows.
         if relative_name.startswith("assistant/assets/examples/"):
+            continue
+        # Node cards are one JSON file per NodeType, closed and complete by the
+        # loader in assistant/_node_cards.py and executed by its test module.
+        if relative_name.startswith("assistant/assets/node_cards/"):
             continue
         if path.suffix == ".py" or relative_name in _BACKEND_BEHAVIOUR_ASSETS:
             sources.append(path)
@@ -1564,13 +1638,10 @@ def _repository_operational_sources() -> list[Path]:
 
     paths.extend(
         path
-        for path in (ROOT / "rating").rglob("*")
-        if path.is_file()
-        and path in tracked
-        and path.suffix in {".json", ".py", ".rsglm"}
-        and not {"__pycache__", "output", "outputs"}.intersection(
-            path.relative_to(ROOT / "rating").parts
-        )
+        for path in source_files(ROOT / "examples", suffix=None)
+        if path in tracked
+        and path.suffix in {".csv", ".json", ".py"}
+        and not {"output", "outputs"}.intersection(path.relative_to(ROOT / "examples").parts)
     )
 
     missing = [path.relative_to(ROOT).as_posix() for path in paths if not path.is_file()]
@@ -1712,25 +1783,6 @@ def test_live_defect_note_linkage_rule(
 
     assert [violation.rule for violation in violations] == (
         [] if expected_rule is None else [expected_rule]
-    )
-
-
-def test_frontend_git_specs_state_the_transport_ownership_split() -> None:
-    high = (SPECS_ROOT / "frontend-git-ui" / "high-level.md").read_text(encoding="utf-8")
-    low = (SPECS_ROOT / "frontend-git-ui" / "low-level.md").read_text(encoding="utf-8")
-    for text in (high, low):
-        normalised = " ".join(text.split()).casefold()
-        assert "`frontend/src/api/client.ts` and `apierror` are owned by" in normalised
-        assert "the git request/response wire contract is owned by" in normalised
-        assert "backend http routing and status behaviour are owned by" in normalised
-    low_normalised = " ".join(low.split()).casefold()
-    assert (
-        re.search(
-            r"`frontend/src/api/client[.]ts` and `?apierror`?.{0,120}"
-            r"owned by \[server-api",
-            low_normalised,
-        )
-        is None
     )
 
 

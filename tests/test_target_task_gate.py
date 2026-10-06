@@ -37,6 +37,8 @@ from haute.modelling._target_check import training_target_task_issue
 from haute.modelling._training_job import TrainingJob
 from haute.routes._background_jobs import IsolatedJobSupervisor
 from haute.routes._train_service import TrainService, _worker_failure_payload
+from haute.routes._training_preparation import _validate_target_task_pairing
+from tests.conftest import make_ram_estimate
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -451,7 +453,6 @@ class TestMetricStageContext:
             }
         )
         with (
-            patch.object(CatBoostAlgorithm, "shap_summary", return_value=[]),
             patch.object(CatBoostAlgorithm, "feature_importance_typed", return_value=[]),
             patch("haute.modelling._metrics.compute_pdp", return_value=[]),
         ):
@@ -533,7 +534,7 @@ class TestPreDispatchServiceGate:
             profile=ExecutionProfile.TRAINING_PREP,
         )
         with pytest.raises(HTTPException) as excinfo:
-            TrainService._validate_target_task_pairing(
+            _validate_target_task_pairing(
                 str(tmp_parquet),
                 {"target": "sev", "task": "classification"},
                 execution_context=context,
@@ -550,7 +551,7 @@ class TestPreDispatchServiceGate:
             operation="training_pipeline",
             profile=ExecutionProfile.TRAINING_PREP,
         )
-        TrainService._validate_target_task_pairing(
+        _validate_target_task_pairing(
             str(tmp_parquet),
             {"target": "sev", "task": "regression"},
             execution_context=context,
@@ -570,7 +571,7 @@ class TestPreDispatchServiceGate:
             profile=ExecutionProfile.TRAINING_PREP,
         )
         with pytest.raises(HTTPException) as excinfo:
-            TrainService._validate_target_task_pairing(
+            _validate_target_task_pairing(
                 str(tmp_parquet),
                 {
                     "target": "prop",
@@ -600,7 +601,7 @@ class TestPreDispatchServiceGate:
             operation="training_pipeline",
             profile=ExecutionProfile.TRAINING_PREP,
         )
-        TrainService._validate_target_task_pairing(
+        _validate_target_task_pairing(
             str(tmp_parquet),
             {
                 "target": "prop",
@@ -627,7 +628,7 @@ class TestPreDispatchServiceGate:
             profile=ExecutionProfile.TRAINING_PREP,
         )
         with pytest.raises(HTTPException) as excinfo:
-            TrainService._validate_target_task_pairing(
+            _validate_target_task_pairing(
                 str(tmp_parquet),
                 {"target": "sev", "task": "regression", "metrics": "auc"},
                 execution_context=context,
@@ -647,7 +648,7 @@ class TestPreDispatchServiceGate:
             profile=ExecutionProfile.TRAINING_PREP,
         )
         with pytest.raises(pl.exceptions.ComputeError):
-            TrainService._validate_target_task_pairing(
+            _validate_target_task_pairing(
                 str(tmp_parquet),
                 {"target": "sev", "task": "classification"},
                 execution_context=context,
@@ -655,12 +656,11 @@ class TestPreDispatchServiceGate:
         assert not tmp_parquet.exists()
 
     def test_preparation_thread_gates_before_launching_the_fit_worker(self, tmp_path: Path) -> None:
-        """The route wiring: gate runs after sink, before _launch_background."""
+        """The route wiring: the gate runs in the preparation worker, before launch."""
+        from haute.routes import _training_lifecycle
         from haute.routes._job_store import JobStore
         from haute.schemas import TrainRequest
 
-        tmp_parquet = tmp_path / "train_input.parquet"
-        pl.DataFrame({"x1": [0.1, 0.2, 0.3], "sev": [123.45, 6.7, 8.9]}).write_parquet(tmp_parquet)
         graph = {
             "nodes": [
                 {
@@ -682,6 +682,7 @@ class TestPreDispatchServiceGate:
                         "nodeType": "modelling",
                         "config": {
                             "target": "sev",
+                            "feature_columns": ["x1"],
                             "task": "classification",
                             "algorithm": "catboost",
                             "loss_function": "Logloss",
@@ -707,20 +708,38 @@ class TestPreDispatchServiceGate:
         store = JobStore()
         service = TrainService(store)
         body = TrainRequest.model_validate({"graph": graph, "node_id": "train"})
-        context = ExecutionContext(
-            operation="training_pipeline",
-            profile=ExecutionProfile.TRAINING_PREP,
-        )
         launched: list[str] = []
+        prepared_paths: list[str] = []
+
+        def fake_execute_lazy(*_args, **_kwargs):
+            # A continuous target under a classification task: the frame the
+            # real gate must reject once it has been sunk.
+            return (
+                {"train": pl.DataFrame({"x1": [0.1, 0.2, 0.3], "sev": [123.45, 6.7, 8.9]}).lazy()},
+                ["train"],
+                {},
+                {},
+            )
+
+        def inline_worker(function, *args, config=None, **kwargs):
+            # Run the real preparation child in-process: the sink and the
+            # target/task gate both execute exactly as they do in the spawn.
+            prepared_paths.append(args[0].parquet_path)
+            return function(*args, **kwargs)
+
         with (
             patch.object(service, "_compile_preamble", return_value=None),
-            patch.object(service, "_estimate_ram", return_value=(None, None, 3, 2)),
+            patch.object(
+                service,
+                "_estimate_ram",
+                return_value=make_ram_estimate(total_rows=3, probe_columns=2),
+            ),
             patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
             patch(
-                "haute.routes._training_lifecycle.create_admitted_execution_context",
-                return_value=context,
+                "haute.routes._training_preparation.execute_lazy_graph",
+                side_effect=fake_execute_lazy,
             ),
-            patch.object(service, "_execute_and_sink", return_value=str(tmp_parquet)),
+            patch.object(_training_lifecycle, "run_isolated_worker", inline_worker),
             patch.object(
                 service, "_launch_background", side_effect=lambda *a, **k: launched.append("yes")
             ),
@@ -733,7 +752,7 @@ class TestPreDispatchServiceGate:
         assert "'sev'" in job["message"]
         assert "classification" in job["message"]
         assert launched == []
-        assert not tmp_parquet.exists()
+        assert prepared_paths and not Path(prepared_paths[0]).exists()
 
 
 class TestWorkerBoundaryUserMessage:
@@ -767,6 +786,34 @@ class TestWorkerBoundaryUserMessage:
         message = _friendly_error(exc, context="target 'sev'")
         assert "could not convert" not in message
         assert "ValueError" in message
+
+    def test_metric_stage_wrapper_rides_the_validation_channel(self) -> None:
+        """The metric-stage wrap is haute-authored, user-facing wording: it
+        carries the marker type, so the worker promotes it verbatim as a
+        ``contract_error`` instead of hiding it behind the type-only fallback."""
+        from types import SimpleNamespace
+
+        from haute.errors import HauteValidationError
+        from haute.modelling._training_job import TrainingJob
+        from haute.routes._train_service import _known_training_worker_failure
+
+        job = SimpleNamespace(
+            evaluation_plan=None, metrics=["auc"], target="sev", task="regression"
+        )
+        wrapped = TrainingJob._metric_stage_error(
+            job, ValueError("continuous format is not supported"), evaluation_set="validation"
+        )
+        assert isinstance(wrapped, HauteValidationError)
+        assert "Could not evaluate the trained model on the validation data" in str(wrapped)
+        assert "'sev'" in str(wrapped) and "'regression'" in str(wrapped) and "auc" in str(wrapped)
+
+        payload = _known_training_worker_failure(
+            wrapped, bounded_memory_prefix="Training cannot run in bounded streaming mode"
+        )
+        assert payload is not None
+        assert payload.terminal_reason == "contract_error"
+        assert payload.message == str(wrapped)
+        assert payload.fields[WORKER_USER_MESSAGE_FIELD] == payload.message
 
     def test_memory_error_keeps_the_typed_wrapper_surface(self) -> None:
         from haute.routes._train_service import _known_training_worker_failure

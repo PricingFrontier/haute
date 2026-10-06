@@ -239,6 +239,70 @@ class TestDeploy:
         assert "deployed" in result.output.lower() or "v2" in result.output
         assert "invocations" in result.output
 
+    @pytest.mark.parametrize("target", ["azure-container-apps", "aws-ecs", "gcp-run"])
+    def test_build_and_push_only_target_succeeds_and_names_the_image(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        target: str,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        _make_toml(tmp_path)
+        monkeypatch.setenv("CI", "true")
+
+        resolved = _mock_resolved()
+        resolved.config.target = target
+        deploy_result = MagicMock()
+        deploy_result.model_name = "test-model"
+        deploy_result.model_version = 2
+        deploy_result.endpoint_url = None
+        deploy_result.model_uri = "registry.example/test-model:abc"
+
+        with (
+            patch("haute.deploy._config.resolve_config", return_value=resolved),
+            patch("haute.deploy._validators.validate_deploy", return_value=[]),
+            patch("haute.deploy.deploy_resolved", return_value=deploy_result),
+        ):
+            result = runner.invoke(cli, ["deploy"])
+
+        assert result.exit_code == 0, result.output
+        assert "Image pushed: registry.example/test-model:abc" in result.output
+        assert f"The {target} service was not updated" in result.output
+        assert "Point the service at registry.example/test-model:abc" in result.output
+        assert "Deployed:" not in result.output
+        assert "mlflow models serve" not in result.output
+
+    def test_container_target_names_the_image_not_an_mlflow_hint(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        _make_toml(tmp_path)
+        monkeypatch.setenv("CI", "true")
+
+        resolved = _mock_resolved()
+        resolved.config.target = "container"
+        deploy_result = MagicMock()
+        deploy_result.model_name = "test-model"
+        deploy_result.model_version = 2
+        deploy_result.endpoint_url = None
+        deploy_result.model_uri = "test-model:abc"
+
+        with (
+            patch("haute.deploy._config.resolve_config", return_value=resolved),
+            patch("haute.deploy._validators.validate_deploy", return_value=[]),
+            patch("haute.deploy.deploy_resolved", return_value=deploy_result),
+        ):
+            result = runner.invoke(cli, ["deploy"])
+
+        assert result.exit_code == 0, result.output
+        assert "Deployed: test-model v2" in result.output
+        assert "Image: test-model:abc" in result.output
+        assert "mlflow models serve" not in result.output
+
     def test_non_dry_run_resolves_once_and_ships_validated_resolved_deploy(
         self,
         runner: CliRunner,

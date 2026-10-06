@@ -1,0 +1,26 @@
+{
+  "consumer_node_id": "explore",
+  "point": {"producer_node_id": "join", "port_label": null},
+  "slot_key": "join||live",
+  "kind": "node_output",
+  "state": "partial",
+  "demand": "all",
+  "data_version": "b41f0a2c9d5e4f7a",
+  "row_count": 1000,
+  "size_bytes": 40960,
+  "retention": "pinned",
+  "generation": {
+    "generation_id": "b41f0a2c9d5e4f7a",
+    "columns": ["premium", "region"],
+    "row_count": 1000,
+    "column_count": 2,
+    "size_bytes": 40960,
+    "retention": "pinned",
+    "fresh": true,
+    "created_at": 1758134400.0
+  },
+  "job": {"job_id": "node-data-7f2c", "progress": 0.42, "message": "Caching data"},
+  "reads_directly": false,
+  "build_endpoint": null,
+  "clear_endpoint": null
+}

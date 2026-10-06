@@ -39,6 +39,11 @@ _STRUCTURED_INPUT_MAX_RECORD_BYTES_DEFAULT = 64 * 1024 * 1024
 _STRUCTURED_INPUT_PARSE_CHUNK_BYTES = 64 * 1024
 
 
+# Amortize filesystem calls during sequential JSONL scans without retaining
+# whole ranges. Logical record limits are enforced independently of read-ahead.
+_JSONL_READ_BUFFER_BYTES = 64 * 1024  # pragma: no mutate - performance tuning knob
+
+
 @dataclass(slots=True)
 class _ShredExecutionProgress:
     """Bound cancellation/RSS-check distance in Python shred materialisation."""
@@ -82,8 +87,7 @@ class ShredSkipStats:
       object-table array, an object in a scalar-table array). Each one is
       a row that table silently lost before W2.
 
-    The build records these in its summary, in ``meta.json``, and the
-    route surfaces them in the build/status responses.
+    A table build and the standalone shred log them when any are non-zero.
     """
 
     skipped_records: int = 0
@@ -98,13 +102,6 @@ class ShredSkipStats:
     @property
     def total(self) -> int:
         return self.skipped_records + sum(self.skipped_rows_by_table.values())
-
-    def as_meta(self) -> dict[str, Any]:
-        """The ``skipped`` payload shape written to meta.json / build summary."""
-        return {
-            "records": self.skipped_records,
-            "rows_by_table": dict(self.skipped_rows_by_table),
-        }
 
 
 # ---------------------------------------------------------------------------
@@ -433,7 +430,7 @@ def _iter_records(
         yield from _iter_xml_records(data_path)
         return
     if suffix in (".jsonl", ".ndjson"):
-        with data_path.open("rb") as f:
+        with data_path.open("rb", buffering=_JSONL_READ_BUFFER_BYTES) as f:
             while raw_line := f.readline(record_limit + 1):
                 if len(raw_line) > record_limit:
                     raise _record_limit_error("JSONL record", record_limit)
@@ -707,11 +704,14 @@ def _jsonl_byte_ranges(data_path: Path, chunk_bytes: int) -> list[tuple[int, int
         return [(0, size)]
 
     bounds = [0]
+    record_limit = _structured_input_record_limit()
     with data_path.open("rb") as f:
         target = chunk_bytes
         while target < size:
             f.seek(target)
-            f.readline()  # discard the partial line; the next one starts a record
+            partial_line = f.readline(record_limit + 1)
+            if len(partial_line) > record_limit:
+                raise _record_limit_error("JSONL record", record_limit)
             pos = f.tell()
             if pos >= size:
                 break
@@ -721,6 +721,22 @@ def _jsonl_byte_ranges(data_path: Path, chunk_bytes: int) -> list[tuple[int, int
             target = pos + chunk_bytes
     bounds.append(size)
     return [(a, b) for a, b in zip(bounds, bounds[1:]) if b > a]
+
+
+def _iter_range_lines(data_path: Path, start: int, end: int) -> Iterator[bytes]:
+    """Yield bounded raw JSONL lines beginning before the range's end."""
+    record_limit = _structured_input_record_limit()
+    with data_path.open("rb", buffering=_JSONL_READ_BUFFER_BYTES) as f:
+        f.seek(start)
+        remaining = end - start
+        while remaining > 0:
+            raw_line = f.readline(record_limit + 1)
+            if not raw_line:
+                break
+            if len(raw_line) > record_limit:
+                raise _record_limit_error("JSONL record", record_limit)
+            remaining -= len(raw_line)
+            yield raw_line
 
 
 def _iter_range_records(
@@ -736,21 +752,15 @@ def _iter_range_records(
     optional *stats* — but reads bytes so a range can be seeked to directly.
     ``orjson`` validates UTF-8 itself, so decoding stays inside the JSON parse.
     """
-    with data_path.open("rb") as f:
-        f.seek(start)
-        remaining = end - start
-        for raw_line in f:
-            if remaining <= 0:
-                break
-            remaining -= len(raw_line)
-            stripped = raw_line.strip()
-            if not stripped:
-                continue
-            obj = orjson.loads(stripped)
-            if isinstance(obj, dict):
-                yield obj
-            elif stats is not None:
-                stats.count_record_skip()
+    for raw_line in _iter_range_lines(data_path, start, end):
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        obj = orjson.loads(stripped)
+        if isinstance(obj, dict):
+            yield obj
+        elif stats is not None:
+            stats.count_record_skip()
 
 
 @dataclass(frozen=True)  # pragma: no mutate - declaration metadata, not runtime logic

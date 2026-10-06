@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from haute._ast_helpers import unkept_module_statements
 from haute._config_io import collect_node_configs
 from haute.codegen import graph_to_code
 from haute.parser import parse_pipeline_source
@@ -335,3 +336,82 @@ class TestPreservedBlocksRoundTrip:
         assert code1 == code2
         assert "TODAY = date.today()" in code2
         assert "MAX_ROWS = 10_000" in code2
+
+
+_UNKEPT_STATEMENTS = """\
+import haute
+
+pipeline = haute.Pipeline("kept")
+RATE = 1.05
+
+@pipeline.polars
+def source():
+    return None
+
+THRESHOLD = 10
+
+def helper(x):
+    return x
+
+@pipeline.polars
+def transform(source):
+    return helper(source)
+
+print("trailing")
+"""
+
+
+class TestUnkeptModuleStatements:
+    """Statements after the constructor that regeneration would drop."""
+
+    def test_each_statement_codegen_does_not_regenerate_is_reported_with_its_lines(self):
+        source = _UNKEPT_STATEMENTS
+
+        assert unkept_module_statements(source) == [(4, 4), (10, 10), (12, 13), (19, 19)]
+
+    def test_statements_a_save_drops_before_the_constructor_are_reported(self):
+        source = 'import numpy as np\nimport haute\n\nRATE = 2\n\npipeline = haute.Pipeline("p")\n'
+
+        assert unkept_module_statements(source) == [(1, 1)]
+
+    def test_a_haute_import_codegen_cannot_recreate_is_reported_with_what_it_leaves_out(self):
+        # Codegen writes ``import haute``, which binds neither name, and with no
+        # standard import line there is no preamble to keep RATE in.
+        source = (
+            "from haute import Pipeline, Submodel\n\n"
+            "RATE = 2\n\n"
+            'pipeline = Pipeline("p")\n'
+            "LATE = 3\n"
+        )
+
+        assert unkept_module_statements(source) == [(1, 1), (3, 3), (6, 6)]
+
+    def test_a_haute_import_after_import_haute_stays_in_the_preamble(self):
+        source = 'import haute\nfrom haute import HauteError\n\npipeline = haute.Pipeline("p")\n'
+
+        assert parse_pipeline_source(source).preamble == "from haute import HauteError"
+        assert unkept_module_statements(source) == []
+
+    def test_preamble_preserved_blocks_and_generated_statements_are_kept(self):
+        source = _make_pipeline(
+            preamble="RATE = 1.05",
+            preserved="# haute:preserve-start\ndef helper(x):\n    return x\n# haute:preserve-end",
+            node_code=(
+                "@pipeline.polars\n"
+                "def transform(source: pl.LazyFrame) -> pl.LazyFrame:\n"
+                "    return source\n\n\n"
+                'pipeline.connect("source", "transform").connect("source", "transform")\n'
+            ),
+        )
+
+        assert unkept_module_statements(source) == []
+
+    def test_a_generated_file_with_constants_and_submodels_keeps_everything(self):
+        source = (
+            "import haute\n\n"
+            'pipeline = haute.Pipeline("p", global_constants="config/global_constants.json")\n'
+            "global_constants = pipeline.global_constants\n\n\n"
+            'pipeline.submodel("modules/rating.py", "rating")\n'
+        )
+
+        assert unkept_module_statements(source) == []

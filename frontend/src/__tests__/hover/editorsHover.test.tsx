@@ -194,7 +194,7 @@ function readTarget(name: TargetFile): string {
   const abs = path.join(EDITORS_DIR, name)
   if (!existsSync(abs)) {
     throw new Error(
-      `[editorsHover] target file missing: ${abs} — did the dev move or delete it?`,
+      `[editorsHover] target file missing: ${abs} - did the dev move or delete it?`,
     )
   }
   return readFileSync(abs, "utf8")
@@ -427,7 +427,7 @@ describe("editor hover migration (AST)", () => {
         hits,
         `${name} still imports from utils/hoverHandlers at line(s): ` +
           `${hits.map((h) => `${h.line} (${h.source})`).join(", ")}. ` +
-          `The factory helpers are the same hazard in centralised form — ` +
+          `The factory helpers are the same hazard in centralised form - ` +
           `remove the import and spell the hover in CSS instead.`,
       ).toEqual([])
     })
@@ -509,12 +509,10 @@ function makeBandingNode(outputColumn: string, assignments: string[]): SimpleNod
       nodeType: "banding",
       config: {
         factors: [{
-          banding: "continuous",
+          banding: "categorical",
           column: outputColumn,
           outputColumn,
-          rules: assignments.map((a) => ({
-            op1: ">", val1: "0", op2: "", val2: "", assignment: a,
-          })),
+          rules: assignments.map((a) => ({ value: a, assignment: a })),
         }],
       },
     },

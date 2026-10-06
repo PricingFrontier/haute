@@ -2,27 +2,39 @@
 
 from __future__ import annotations
 
+import contextvars
 import math
+import shutil
+import tempfile
 import threading
 import time
-from collections.abc import Collection, Generator, Iterator, Sequence
+import uuid
+from collections.abc import Callable, Collection, Generator, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import IO, Any, Literal, TypeVar, cast
 
 import polars as pl
+from polars.io.plugins import register_io_source
 
 from haute._execution_context import (
     ExecutionContext,
     ExecutionProfile,
     current_execution_context,
 )
+from haute._file_ops import atomic_path, ensure_disk_headroom
+from haute._hashing import HashingWriter
 from haute._logging import get_logger
+from haute._lru_cache import LRUCache
+from haute._pipeline_settings import (
+    DEFAULT_STREAMING_CHUNK_SIZE as DEFAULT_STREAMING_CHUNK_SIZE,
+)
+from haute._pipeline_settings import (
+    MAX_STREAMING_CHUNK_SIZE as MAX_STREAMING_CHUNK_SIZE,
+)
 
 logger = get_logger(component="polars_utils")
-_STREAMING_CHUNK_SIZE_LOCK = threading.RLock()
 
-DEFAULT_STREAMING_CHUNK_SIZE: int = 500_000
 BOUNDED_MEMORY_EXEMPT_PROFILES = frozenset(
     {
         ExecutionProfile.PREVIEW_EAGER,
@@ -49,21 +61,17 @@ def is_bounded_execution_profile(profile: ExecutionProfile | str | None) -> bool
 def projected_or_carrier_columns(
     schema_columns: Sequence[str],
     demanded: Collection[str],
-    *,
-    carrier_candidates: Collection[str] | None = None,
 ) -> list[str]:
     """Return schema-ordered demanded columns, keeping one carrier when empty.
 
     Polars collapses a zero-column select to zero rows. An exact empty logical
-    demand means "rows only", so one physical column — the first schema column,
-    or the first of *carrier_candidates* when supplied — is retained to
+    demand means "rows only", so the first schema column is retained to
     preserve the frame's height.
     """
     selected = [column for column in schema_columns if column in demanded]
     if selected or demanded or not schema_columns:
         return selected
-    candidates = carrier_candidates or schema_columns
-    return [next(column for column in schema_columns if column in candidates)]
+    return [schema_columns[0]]
 
 
 def streaming_collect(
@@ -83,7 +91,7 @@ def _cancellable_collect(
     lf: pl.LazyFrame,
     *,
     execution_context: ExecutionContext,
-    engine: Literal["auto", "streaming"],
+    engine: Literal["auto", "streaming", "in-memory"],
     poll_seconds: float = 0.01,
 ) -> pl.DataFrame:
     """Collect in the background while propagating request cancellation."""
@@ -101,11 +109,14 @@ def _cancellable_collect(
     )
     poll_label = "streaming_collect_poll" if engine == "streaming" else "auto_collect_poll"
     execution_context.checkpoint(label=checkpoint_label)
-    execution_context.fault_point("collect_before_native")
     execution_context.record_collect()
     query = lf.collect(engine=engine, background=True)
     while True:
-        result = query.fetch()
+        try:
+            result = query.fetch()
+        except pl.exceptions.ComputeError as exc:
+            _reraise_python_scan_failure(exc)
+            raise
         if result is not None:
             return result
         try:
@@ -142,15 +153,19 @@ def execution_collect(
     lf: pl.LazyFrame,
     *,
     execution_context: ExecutionContext | None = None,
-    engine: Literal["auto", "streaming"] = "auto",
+    engine: Literal["auto", "streaming", "in-memory"] = "auto",
     poll_seconds: float = 0.01,
 ) -> pl.DataFrame:
     """Collect with native cancellation whenever an execution context is active."""
-    if engine not in {"auto", "streaming"}:
-        raise ValueError("engine must be 'auto' or 'streaming'")
+    if engine not in {"auto", "streaming", "in-memory"}:
+        raise ValueError("engine must be 'auto', 'streaming' or 'in-memory'")
     context = execution_context or current_execution_context()
     if context is None:
-        return lf.collect(engine=engine)
+        try:
+            return lf.collect(engine=engine)
+        except pl.exceptions.ComputeError as exc:
+            _reraise_python_scan_failure(exc)
+            raise
     return _cancellable_collect(
         lf,
         execution_context=context,
@@ -167,38 +182,438 @@ def bounded_collect_batches(
     execution_context: ExecutionContext | None = None,
     stage_name: str = "collect_batches",
     node_id: str | None = None,
-) -> Iterator[pl.DataFrame]:
-    """Yield native streaming batches with execution checkpoints."""
+) -> Generator[pl.DataFrame, None, None]:
+    """Yield batches of at most ``chunk_size`` rows, never more than one ahead.
 
+    Polars applies no backpressure to ``sink_batches``, ``collect_batches``,
+    or a Python source: a consumer slower than the engine let it materialise
+    the whole frame (8 GiB for a 10M-row, 60-column frame). Each batch is
+    therefore its own query, issued only when the consumer asks for it:
+
+    - sliced — ``lf`` can be sliced at its input (``haute._chunked_writes.
+      sliceable``): each batch is ``lf.slice(offset, chunk_size)``. A failure
+      in batch k raises after batches 0..k-1; closing early reads no more.
+    - staged — otherwise ``lf`` is written once, by the chunked writer, into
+      a private temporary directory, and its parts are sliced. A failure
+      raises before any batch; the directory is removed on exhaustion, close,
+      or failure.
+
+    Batches follow the frame's order in every strategy (``maintain_order`` is
+    always honoured). An engine failure always raises; it is never read as
+    the end of the stream.
+    """
+    from haute._chunked_writes import (
+        _budgeted_rows,
+        part_paths,
+        scan_parts,
+        sliceable,
+        write_parts,
+    )
+
+    del maintain_order  # every strategy keeps the frame's order
     if not isinstance(chunk_size, int) or isinstance(chunk_size, bool) or chunk_size <= 0:
         raise ValueError("chunk_size must be a positive integer")
     metrics_context = execution_context or current_execution_context()
-    if metrics_context is not None:
-        metrics_context.fault_point("collect_before_native", node_id=node_id)
-    batches = lf.collect_batches(
-        chunk_size=chunk_size,
-        maintain_order=maintain_order,
-        engine="streaming",
-    )
-    if metrics_context is not None:
-        metrics_context.checkpoint(label="before_collect_batches", node_id=node_id)
-    while True:
-        try:
-            if metrics_context is not None:
-                with metrics_context.stage(
-                    stage_name,
-                    node_id=node_id,
-                    skip_metric_on_exception=(StopIteration,),
-                ):
-                    batch = next(batches)
-                    metrics_context.record_collect()
-            else:
-                batch = next(batches)
-        except StopIteration:
-            break
+    staging: Path | None = None
+    try:
         if metrics_context is not None:
-            metrics_context.checkpoint(label="after_collect_batch", node_id=node_id)
-        yield batch
+            metrics_context.checkpoint(label="before_collect_batches", node_id=node_id)
+        source: pl.LazyFrame
+        if sliceable(lf):
+            source = lf
+        else:
+            staging = Path(tempfile.mkdtemp(prefix="haute-batches-"))
+            write_parts(
+                staging,
+                lf,
+                chunk_rows=chunk_size,
+                fast_checkpoint=True,
+                execution_context=metrics_context,
+                node_id=node_id,
+            )
+            source = scan_parts(part_paths(staging))
+        chunk_size, _, _ = _budgeted_rows(
+            chunk_size,
+            (source,),
+            execution_context=metrics_context,
+        )
+        total = int(
+            execution_collect(source.select(pl.len()), execution_context=metrics_context).item()
+        )
+        for offset in range(0, total, chunk_size):
+            if metrics_context is not None:
+                with metrics_context.stage(stage_name, node_id=node_id):
+                    batch = execution_collect(
+                        source.slice(offset, chunk_size), execution_context=metrics_context
+                    )
+            else:
+                batch = execution_collect(source.slice(offset, chunk_size))
+            if metrics_context is not None:
+                metrics_context.checkpoint(label="after_collect_batch", node_id=node_id)
+            yield batch
+    finally:
+        if staging is not None:
+            shutil.rmtree(staging, ignore_errors=True)
+
+
+# Polars reports an exception raised inside a Python scan source as a
+# ``ComputeError`` carrying only its text, which would turn a typed Haute error
+# (feature mismatch, cancellation, memory limit) into an anonymous engine error.
+# The source parks the original under a token named in the message, and every
+# collect helper above hands the original back to its caller.
+_PYTHON_SCAN_FAILURE_MARKER = "haute-python-scan-failure:"
+_PYTHON_SCAN_FAILURE_LIMIT = 64
+_python_scan_failures: LRUCache[str, BaseException] = LRUCache(max_size=_PYTHON_SCAN_FAILURE_LIMIT)
+
+
+def _park_python_scan_failure(exc: BaseException) -> str:
+    token = uuid.uuid4().hex
+    _python_scan_failures.put(token, exc)
+    return f"{_PYTHON_SCAN_FAILURE_MARKER}{token}"
+
+
+def _reraise_python_scan_failure(exc: pl.exceptions.ComputeError) -> None:
+    """Re-raise the original exception a Python scan source parked, if any."""
+    message = str(exc)
+    start = message.find(_PYTHON_SCAN_FAILURE_MARKER)
+    if start < 0:
+        return
+    token_start = start + len(_PYTHON_SCAN_FAILURE_MARKER)
+    token = message[token_start : token_start + 32]
+    original = _python_scan_failures.pop(token)
+    if original is not None:
+        raise original
+
+
+def row_local_python_scan(
+    input_lf: pl.LazyFrame,
+    transform: Callable[[pl.DataFrame], pl.DataFrame],
+    *,
+    schema: pl.Schema,
+    generated_columns: Collection[str],
+    required_input_columns: Collection[str] | None,
+    input_predicates_allowed: bool,
+    elide_transform_when_unused: bool,
+    input_schema: pl.Schema | None = None,
+    execution_context: ExecutionContext | None = None,
+    node_id: str | None = None,
+) -> pl.LazyFrame:
+    """Expose a row-local Python transform to Polars as a scan source.
+
+    Polars treats a Python UDF (``map_batches``) as opaque: no slice passes
+    below it, so a ``.head(n)`` downstream still computes the transform over
+    every input row. A registered IO source is a scan instead, and the
+    optimiser hands it the row limit, projection, and predicate it could push
+    down — and only where doing so leaves the query result unchanged (a
+    downstream filter, aggregation, window, or join lookup side withholds the
+    limit). Polars' scan contract reads ``n_rows`` source rows, then applies
+    the predicate, then the projection.
+
+    ``transform`` must be row-local: every output row derives only from the
+    input row at the same position, and the output keeps the input's height
+    and order. That makes the first ``n_rows`` input rows exactly the source of
+    the first ``n_rows`` output rows, so the limit always caps ``input_lf``.
+    ``schema`` is the transform's exact output schema and ``generated_columns``
+    the columns the transform adds or replaces; every other output column is an
+    input column carried through unchanged.
+
+    ``required_input_columns`` are the input columns the transform reads
+    (``None``: every input column). A pushed projection narrows the input to
+    the requested carried columns plus these. ``input_predicates_allowed``
+    lets a pushed predicate that references no generated column filter the
+    input before the transform; otherwise every read row is transformed and the
+    predicate filters the transformed rows — required when the transform
+    validates rows that a downstream filter must not hide.
+    ``elide_transform_when_unused`` skips the transform for a read that needs no
+    generated column (a count, or a projection of carried columns only); refuse
+    it when the transform validates rows. ``input_schema`` lets a caller that
+    already threads the input schema avoid re-planning ``input_lf``.
+    """
+    context = execution_context or current_execution_context()
+    caller_context = contextvars.copy_context()
+    generated = frozenset(generated_columns)
+    if input_schema is None:
+        input_schema = input_lf.collect_schema()
+    mismatched_carried = sorted(
+        name
+        for name, dtype in schema.items()
+        if name not in generated and input_schema.get(name) != dtype
+    )
+    if mismatched_carried:
+        raise ValueError(
+            f"non-generated scan columns must be input columns of the same dtype: "
+            f"{mismatched_carried}"
+        )
+    unknown_generated = generated - set(schema.names())
+    if unknown_generated:
+        raise ValueError(
+            f"generated columns are absent from the scan schema: {sorted(unknown_generated)}"
+        )
+    input_names = input_schema.names()
+    required = frozenset(input_names if required_input_columns is None else required_input_columns)
+    unknown_required = required - set(input_names)
+    if unknown_required:
+        raise ValueError(
+            f"required input columns are absent from the input: {sorted(unknown_required)}"
+        )
+
+    def frames(
+        with_columns: list[str] | None,
+        predicate: pl.Expr | None,
+        n_rows: int | None,
+        batch_size: int | None,
+    ) -> Iterator[pl.DataFrame]:
+        source_lf = input_lf if n_rows is None else input_lf.head(n_rows)
+        output_predicate = predicate
+        if (
+            predicate is not None
+            and input_predicates_allowed
+            and generated.isdisjoint(predicate.meta.root_names())
+        ):
+            source_lf = source_lf.filter(predicate)
+            output_predicate = None
+        output_roots = (
+            set() if output_predicate is None else set(output_predicate.meta.root_names())
+        )
+        transform_needed = (
+            not elide_transform_when_unused
+            or with_columns is None
+            or not generated.isdisjoint(with_columns)
+            or not generated.isdisjoint(output_roots)
+        )
+        if with_columns is not None:
+            keep = (set(with_columns) | output_roots) - generated
+            if transform_needed:
+                keep |= required
+            source_lf = source_lf.select(projected_or_carrier_columns(input_names, keep))
+        for batch in bounded_collect_batches(
+            source_lf,
+            chunk_size=batch_size or DEFAULT_STREAMING_CHUNK_SIZE,
+            maintain_order=True,
+            execution_context=context,
+            stage_name="row_local_python_scan",
+            node_id=node_id,
+        ):
+            frame = transform(batch) if transform_needed else batch
+            if output_predicate is not None:
+                frame = frame.filter(output_predicate)
+            if with_columns is not None:
+                frame = frame.select(with_columns)
+            yield frame
+
+    return _register_python_scan(frames, schema=schema, caller_context=caller_context)
+
+
+def fanout_python_scan(
+    input_lf: pl.LazyFrame,
+    expand: Callable[[pl.DataFrame], pl.DataFrame],
+    *,
+    schema: pl.Schema,
+    fanout: int,
+    generated_columns: Collection[str],
+    required_input_columns: Collection[str] | None,
+    input_schema: pl.Schema | None = None,
+    execution_context: ExecutionContext | None = None,
+    node_id: str | None = None,
+) -> pl.LazyFrame:
+    """Expose a fixed fan-out Python expansion to Polars as a scan source.
+
+    Polars pushes no slice below an ``explode``: a ``.head(n)`` above a
+    row-expanding node still expands every input row and keeps the first ``n``
+    of the result, so an interactive preview of a 10M-row frame expanded 11
+    ways builds 110M rows to show 100. A registered IO source is a scan
+    instead, and the optimiser hands it the row limit and projection it could
+    push down — and only where doing so leaves the query result unchanged (a
+    downstream filter, aggregation, window, or join lookup side withholds the
+    limit).
+
+    ``expand`` must turn a batch of input rows into exactly ``fanout`` output
+    rows per input row, in input order, independently of every other row. The
+    first ``ceil(n / fanout)`` input rows are then exactly the source of the
+    first ``n`` output rows, so the limit always caps ``input_lf``.
+    ``schema`` is the expansion's exact output schema and ``generated_columns``
+    the columns it adds or replaces; every other output column is an input
+    column carried through unchanged. ``required_input_columns`` are the input
+    columns ``expand`` reads (``None``: every input column) — a pushed
+    projection narrows the input to the requested carried columns plus these.
+    """
+    if isinstance(fanout, bool) or not isinstance(fanout, int) or fanout < 1:
+        raise ValueError(f"fanout must be a positive integer, got {fanout!r}")
+    context = execution_context or current_execution_context()
+    caller_context = contextvars.copy_context()
+    generated = frozenset(generated_columns)
+    if input_schema is None:
+        input_schema = input_lf.collect_schema()
+    mismatched_carried = sorted(
+        name
+        for name, dtype in schema.items()
+        if name not in generated and input_schema.get(name) != dtype
+    )
+    if mismatched_carried:
+        raise ValueError(
+            f"non-generated scan columns must be input columns of the same dtype: "
+            f"{mismatched_carried}"
+        )
+    unknown_generated = generated - set(schema.names())
+    if unknown_generated:
+        raise ValueError(
+            f"generated columns are absent from the scan schema: {sorted(unknown_generated)}"
+        )
+    input_names = input_schema.names()
+    required = frozenset(input_names if required_input_columns is None else required_input_columns)
+    unknown_required = required - set(input_names)
+    if unknown_required:
+        raise ValueError(
+            f"required input columns are absent from the input: {sorted(unknown_required)}"
+        )
+
+    def frames(
+        with_columns: list[str] | None,
+        predicate: pl.Expr | None,
+        n_rows: int | None,
+        batch_size: int | None,
+    ) -> Iterator[pl.DataFrame]:
+        source_lf = input_lf if n_rows is None else input_lf.head((n_rows + fanout - 1) // fanout)
+        if with_columns is not None:
+            roots = set() if predicate is None else set(predicate.meta.root_names())
+            keep = ((set(with_columns) | roots) - generated) | required
+            source_lf = source_lf.select(projected_or_carrier_columns(input_names, keep))
+        # Every input row becomes ``fanout`` output rows, so read the input in
+        # proportionally smaller batches to keep an expanded batch bounded by
+        # the chunk size the caller asked for.
+        input_chunk = max(1, (batch_size or DEFAULT_STREAMING_CHUNK_SIZE) // fanout)
+        remaining = n_rows
+        for batch in bounded_collect_batches(
+            source_lf,
+            chunk_size=input_chunk,
+            maintain_order=True,
+            execution_context=context,
+            stage_name="fanout_python_scan",
+            node_id=node_id,
+        ):
+            frame = expand(batch)
+            if remaining is not None:
+                frame = frame.head(remaining)
+                remaining -= frame.height
+            if predicate is not None:
+                frame = frame.filter(predicate)
+            if with_columns is not None:
+                frame = frame.select(with_columns)
+            yield frame
+            if remaining is not None and remaining <= 0:
+                return
+
+    return _register_python_scan(frames, schema=schema, caller_context=caller_context)
+
+
+_ScanFrames = Callable[
+    [list[str] | None, pl.Expr | None, int | None, int | None],
+    Iterator[pl.DataFrame],
+]
+
+
+def _register_python_scan(
+    frames: _ScanFrames,
+    *,
+    schema: pl.Schema,
+    caller_context: contextvars.Context,
+) -> pl.LazyFrame:
+    """Register *frames* as a Polars IO source run in the caller's context."""
+
+    def io_source(
+        with_columns: list[str] | None,
+        predicate: pl.Expr | None,
+        n_rows: int | None,
+        batch_size: int | None,
+    ) -> Iterator[pl.DataFrame]:
+        # Polars may call the source on an engine thread; run it with the
+        # caller's context variables (execution context, scenario, temp scope).
+        run_context = caller_context.copy()
+        iterator = run_context.run(frames, with_columns, predicate, n_rows, batch_size)
+        while True:
+            try:
+                frame = run_context.run(next, iterator)
+            except StopIteration:
+                return
+            except BaseException as exc:
+                raise RuntimeError(
+                    f"{_park_python_scan_failure(exc)} {type(exc).__name__}: {exc}"
+                ) from exc
+            yield frame
+
+    return register_io_source(io_source, schema=schema)
+
+
+def limited_python_scan(
+    produce: Callable[[int | None], pl.DataFrame],
+    *,
+    schema: pl.Schema,
+) -> pl.LazyFrame:
+    """Expose a Python computation that can produce just its first rows.
+
+    ``produce(n)`` must return a frame whose first ``n`` rows equal the first
+    ``n`` rows of ``produce(None)``, reading only what those rows need; it may
+    return fewer. Polars passes ``n`` only where a limit above the scan leaves
+    the query result unchanged. Output columns are cast to ``schema``, so a
+    computation that emits different columns or dtypes fails loudly.
+    """
+    caller_context = contextvars.copy_context()
+    declared = [pl.col(name).cast(dtype, strict=True) for name, dtype in schema.items()]
+
+    def frames(
+        with_columns: list[str] | None,
+        predicate: pl.Expr | None,
+        n_rows: int | None,
+        batch_size: int | None,
+    ) -> Iterator[pl.DataFrame]:
+        frame = produce(n_rows).select(declared)
+        if n_rows is not None:
+            frame = frame.head(n_rows)
+        if predicate is not None:
+            frame = frame.filter(predicate)
+        if with_columns is not None:
+            frame = frame.select(with_columns)
+        yield frame
+
+    return _register_python_scan(frames, schema=schema, caller_context=caller_context)
+
+
+def key_prefix_python_scan(
+    input_lf: pl.LazyFrame,
+    apply: Callable[[pl.LazyFrame], pl.DataFrame],
+    *,
+    schema: pl.Schema,
+    key_column: str,
+    execution_context: ExecutionContext | None = None,
+) -> pl.LazyFrame:
+    """Expose a per-key Python computation to Polars as a scan source.
+
+    ``apply`` turns the input rows of any set of keys into exactly one output
+    row per non-null key, independently of every other key, ordered by the key
+    cast to ``Utf8``. A pushed row limit ``n`` therefore reads only the key
+    column to find the first ``n`` keys in that order and applies to the input
+    rows of those keys alone; the key predicate reaches the input's own scans
+    and row-local Python scans. Without a limit ``apply`` sees every input row.
+    """
+    context = execution_context or current_execution_context()
+    key = pl.col(key_column).cast(pl.Utf8)
+
+    def produce(n_rows: int | None) -> pl.DataFrame:
+        if n_rows is None:
+            return apply(input_lf)
+        keys = streaming_collect(
+            input_lf.select(key.alias(key_column))
+            .drop_nulls()
+            .unique()
+            .sort(key_column)
+            .head(n_rows),
+            execution_context=context,
+        )
+        if keys.height == 0:
+            return pl.DataFrame(schema=schema)
+        return apply(input_lf.filter(key.is_in(keys[key_column].to_list())))
+
+    return limited_python_scan(produce, schema=schema)
 
 
 def _checkpoint_compression(fast_checkpoint: bool) -> Literal["lz4", "zstd"]:
@@ -207,7 +622,7 @@ def _checkpoint_compression(fast_checkpoint: bool) -> Literal["lz4", "zstd"]:
 
 def _streaming_sink_to_path(
     lf: pl.LazyFrame,
-    target: Path,
+    target: Path | IO[bytes],
     *,
     fmt: str,
     compression: Literal["lz4", "zstd"],
@@ -242,33 +657,136 @@ def _eager_write_to_path(
         df.write_parquet(target, compression=compression)
 
 
-def _write_atomically_if_possible(path: Path, writer: Any) -> None:
+_T = TypeVar("_T")
+
+
+def _write_atomically_if_possible(path: Path, writer: Callable[[Path], _T]) -> _T:
     if path.parent.exists():
         with atomic_write(path) as tmp:
-            writer(tmp)
-    else:
-        writer(path)
+            return writer(tmp)
+    return writer(path)
+
+
+# Polars reads its streaming chunk size from process-wide configuration. The
+# pipeline setting is the base; an active cap (``streaming_chunk_size_cap``)
+# lowers what Polars sees without changing the setting, and the smallest
+# active cap wins while caps from several threads overlap.
+_streaming_chunk_lock = threading.Lock()
+_streaming_chunk_setting: int | None = None
+_streaming_chunk_caps: dict[object, int] = {}
+# A worker spawned while a cap is active reads its setting from here rather
+# than from ``POLARS_STREAMING_CHUNK_SIZE``, which holds the parent's cap.
+SPAWN_STREAMING_CHUNK_SIZE_ENV = "HAUTE_SPAWN_STREAMING_CHUNK_SIZE"
+
+
+def _configured_streaming_chunk_size() -> int | None:
+    raw = pl.Config.state(if_set=True).get("POLARS_STREAMING_CHUNK_SIZE")
+    try:
+        value = int(raw) if raw else 0
+    except (TypeError, ValueError):
+        value = 0
+    return value if value > 0 else None
+
+
+def _apply_streaming_chunk_size_locked(setting: int | None) -> None:
+    caps = list(_streaming_chunk_caps.values())
+    if not caps:
+        pl.Config.set_streaming_chunk_size(setting)
+        return
+    base = setting if setting is not None else DEFAULT_STREAMING_CHUNK_SIZE
+    pl.Config.set_streaming_chunk_size(min(base, *caps))
+
+
+def set_streaming_chunk_size(chunk_size: int) -> None:
+    """Set the editor's streaming chunk size for this process.
+
+    Polars keeps the value as process-wide configuration: it writes the
+    ``POLARS_STREAMING_CHUNK_SIZE`` environment variable, which a worker
+    spawned afterwards inherits. The value changes memory use and speed, never
+    results. An active :func:`streaming_chunk_size_cap` keeps applying below it.
+    """
+    global _streaming_chunk_setting
+    if (
+        not isinstance(chunk_size, int)
+        or isinstance(chunk_size, bool)
+        or not 1 <= chunk_size <= MAX_STREAMING_CHUNK_SIZE
+    ):
+        raise ValueError(
+            f"streaming_chunk_size must be an integer from 1 to {MAX_STREAMING_CHUNK_SIZE:,}"
+        )
+    with _streaming_chunk_lock:
+        _streaming_chunk_setting = chunk_size
+        _apply_streaming_chunk_size_locked(chunk_size)
+
+
+def current_streaming_chunk_size() -> int:
+    """The process streaming chunk size setting, else the default; never a cap."""
+    with _streaming_chunk_lock:
+        if _streaming_chunk_caps:
+            setting = _streaming_chunk_setting
+        else:
+            setting = _configured_streaming_chunk_size()
+    return setting if setting is not None else DEFAULT_STREAMING_CHUNK_SIZE
 
 
 @contextmanager
-def temporary_streaming_chunk_size(chunk_size: int | None) -> Iterator[None]:
-    """Temporarily set Polars' process-global streaming chunk size.
+def streaming_chunk_size_for_spawn() -> Iterator[dict[str, str]]:
+    """Hold the chunk size steady while a child spawns; yield what it must inherit.
 
-    Polars exposes this as process-global configuration, so production callers
-    must use this locked scope rather than mutating ``pl.Config`` directly.
+    While a cap is active the child inherits the parent's capped
+    ``POLARS_STREAMING_CHUNK_SIZE``, which this process keeps using, so the
+    setting travels under :data:`SPAWN_STREAMING_CHUNK_SIZE_ENV` instead (the
+    default when none was ever configured) and the child applies it with
+    :func:`apply_spawned_streaming_chunk_size`. With no cap there is nothing to
+    add. No cap starts or ends until the block exits.
     """
-    if chunk_size is None:
+    with _streaming_chunk_lock:
+        if not _streaming_chunk_caps:
+            yield {}
+            return
+        setting = (
+            _streaming_chunk_setting
+            if _streaming_chunk_setting is not None
+            else DEFAULT_STREAMING_CHUNK_SIZE
+        )
+        yield {SPAWN_STREAMING_CHUNK_SIZE_ENV: str(setting)}
+
+
+def apply_spawned_streaming_chunk_size() -> None:
+    """In a spawned worker, replace an inherited cap with the setting it capped."""
+    import os
+
+    raw = os.environ.pop(SPAWN_STREAMING_CHUNK_SIZE_ENV, None)
+    if raw is not None:
+        set_streaming_chunk_size(int(raw))
+
+
+@contextmanager
+def streaming_chunk_size_cap(rows: int) -> Iterator[None]:
+    """Cap the streaming chunk Polars uses at *rows* while the block runs.
+
+    A query that multiplies rows (a scenario expansion's ``explode``) turns
+    each chunk of its source into ``fanout`` times as many rows in every
+    thread; reading the source in chunks of ``setting // fanout`` keeps an
+    expanded chunk within the pipeline setting. Only queries started inside
+    the block see the cap. The configuration is process-wide, so a concurrent
+    query in another thread may run with the smaller chunk too: that changes
+    its speed and memory, never its result. A worker spawned meanwhile
+    applies the setting, not the cap (``streaming_chunk_size_for_spawn``).
+    """
+    global _streaming_chunk_setting
+    token = object()
+    with _streaming_chunk_lock:
+        if not _streaming_chunk_caps:
+            _streaming_chunk_setting = _configured_streaming_chunk_size()
+        _streaming_chunk_caps[token] = max(1, int(rows))
+        _apply_streaming_chunk_size_locked(_streaming_chunk_setting)
+    try:
         yield
-        return
-    if not isinstance(chunk_size, int) or isinstance(chunk_size, bool) or chunk_size <= 0:
-        raise ValueError("streaming_chunk_size must be a positive integer")
-    with _STREAMING_CHUNK_SIZE_LOCK:
-        saved_config = pl.Config.save()
-        try:
-            pl.Config.set_streaming_chunk_size(chunk_size)
-            yield
-        finally:
-            pl.Config.load(saved_config)
+    finally:
+        with _streaming_chunk_lock:
+            del _streaming_chunk_caps[token]
+            _apply_streaming_chunk_size_locked(_streaming_chunk_setting)
 
 
 def streaming_sink(
@@ -277,15 +795,40 @@ def streaming_sink(
     *,
     fmt: str = "parquet",
     fast_checkpoint: bool = False,
+    atomic: bool = True,
 ) -> None:
-    """Sink a LazyFrame with Polars streaming and no eager fallback."""
+    """Sink a LazyFrame with Polars streaming and no eager fallback.
+
+    ``atomic=False`` writes straight to ``path``, for a caller already writing
+    to a staging file it will rename or discard itself: a second temporary
+    would leave a hidden sibling in a directory that caller governs and does
+    not sweep.
+    """
     path = Path(path)
     compression = _checkpoint_compression(fast_checkpoint)
 
     def _do_sink(target: Path) -> None:
         _streaming_sink_to_path(lf, target, fmt=fmt, compression=compression)
 
-    _write_atomically_if_possible(path, _do_sink)
+    if atomic:
+        _write_atomically_if_possible(path, _do_sink)
+    else:
+        _do_sink(path)
+
+
+def _bounded_sink_execute(path: Path, writer: Callable[[], _T]) -> _T:
+    directory = path.parent
+    while not directory.exists():
+        parent = directory.parent
+        if parent == directory:
+            break
+        directory = parent
+    ensure_disk_headroom(directory)
+    metrics_context = current_execution_context()
+    result = writer()
+    if metrics_context is not None:
+        metrics_context.record_bytes_written(path.stat().st_size)
+    return result
 
 
 def bounded_sink(
@@ -294,19 +837,56 @@ def bounded_sink(
     *,
     fmt: str = "parquet",
     fast_checkpoint: bool = False,
-    streaming_chunk_size: int | None = None,
+    atomic: bool = True,
 ) -> None:
-    """Sink a LazyFrame through the native streaming API."""
+    """Sink a LazyFrame through the native streaming API at the process chunk size."""
     path = Path(path)
-    metrics_context = current_execution_context()
-    if metrics_context is not None:
-        metrics_context.fault_point("sink_before_native")
-    with temporary_streaming_chunk_size(streaming_chunk_size):
-        streaming_sink(lf, path, fmt=fmt, fast_checkpoint=fast_checkpoint)
-    if metrics_context is not None:
-        metrics_context.fault_point("sink_after_native")
-    if metrics_context is not None:
-        metrics_context.record_bytes_written(path.stat().st_size)
+    _bounded_sink_execute(
+        path,
+        lambda: streaming_sink(lf, path, fmt=fmt, fast_checkpoint=fast_checkpoint, atomic=atomic),
+    )
+
+
+def _sink_parquet_hashing(
+    lf: pl.LazyFrame,
+    target: Path,
+    *,
+    compression: Literal["lz4", "zstd"],
+) -> str:
+    with HashingWriter(open(target, "wb")) as writer:
+        _streaming_sink_to_path(
+            lf, cast("IO[bytes]", writer), fmt="parquet", compression=compression
+        )
+    return writer.hexdigest()
+
+
+def hashed_streaming_sink(
+    lf: pl.LazyFrame,
+    path: str | Path,
+    *,
+    fast_checkpoint: bool = False,
+) -> str:
+    """Sink a LazyFrame with write-time hashing and Polars streaming."""
+    path = Path(path)
+    compression = _checkpoint_compression(fast_checkpoint)
+    return _write_atomically_if_possible(
+        path,
+        lambda target: _sink_parquet_hashing(lf, target, compression=compression),
+    )
+
+
+def bounded_hashed_sink(
+    lf: pl.LazyFrame,
+    path: str | Path,
+    *,
+    fast_checkpoint: bool = False,
+) -> str:
+    """Sink a LazyFrame through the native streaming API, hashing during write."""
+    path = Path(path)
+    return _bounded_sink_execute(
+        path,
+        lambda: hashed_streaming_sink(lf, path, fast_checkpoint=fast_checkpoint),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -318,9 +898,10 @@ def bounded_sink(
 def atomic_write(dest: Path, *, ensure_parent: bool = True) -> Generator[Path, None, None]:
     """Context manager for atomic file writes via temp-then-rename.
 
-    Yields a temporary path (``dest`` with ``.parquet.tmp`` suffix).
-    On successful exit, atomically renames the temp file to *dest*.
-    On exception, cleans up the temp file and re-raises.
+    Yields a unique sibling staging path (see :func:`haute._file_ops.atomic_path`),
+    so concurrent writers to one destination never share a stage and the
+    destination ends as one complete file. On successful exit the staging file
+    is renamed onto *dest*; on exception it is removed and the error re-raised.
     Callers that create a shared parent once before a write loop may pass
     ``ensure_parent=False`` to avoid repeating the directory operation.
 
@@ -332,13 +913,8 @@ def atomic_write(dest: Path, *, ensure_parent: bool = True) -> Generator[Path, N
     """
     if ensure_parent:
         dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_suffix(".parquet.tmp")
-    try:
+    with atomic_path(dest) as tmp:
         yield tmp
-        tmp.replace(dest)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
 
 
 # ---------------------------------------------------------------------------

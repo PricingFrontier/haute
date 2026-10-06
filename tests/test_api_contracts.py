@@ -55,6 +55,12 @@ def _api_contract_fingerprint() -> dict[str, dict[str, dict[str, Any]]]:
 
 
 EXPECTED_API_CONTRACT_FINGERPRINT = {
+    "/api/assistant/changes/undo": {
+        "POST": {
+            "request_ref": "#/components/schemas/AssistantUndoRequest",
+            "success_schema": {"$ref": "#/components/schemas/AssistantUndoResponse"},
+        }
+    },
     "/api/assistant/message": {
         "POST": {
             "request_ref": "#/components/schemas/AssistantMessageRequest",
@@ -81,6 +87,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/AssistantStatusResponse"},
         },
     },
+    "/api/banding/stats": {
+        "POST": {
+            "request_ref": "#/components/schemas/BandingStatsRequest",
+            "success_schema": {"$ref": "#/components/schemas/BandingStatsResponse"},
+        },
+    },
     "/api/databricks/catalogs": {
         "GET": {
             "request_ref": None,
@@ -103,18 +115,6 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
         "GET": {
             "request_ref": None,
             "success_schema": {"$ref": "#/components/schemas/WarehouseListResponse"},
-        },
-    },
-    "/api/explore/cache-status": {
-        "POST": {
-            "request_ref": "#/components/schemas/ExploreRunRequest",
-            "success_schema": {"$ref": "#/components/schemas/ExploreCacheSnapshotResponse"},
-        },
-    },
-    "/api/explore/cancel/{job_id}": {
-        "POST": {
-            "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/ExploreStatusResponse"},
         },
     },
     "/api/explore/pivots/cancel/{job_id}": {
@@ -141,16 +141,10 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/ExplorePivotStatusResponse"},
         },
     },
-    "/api/explore/run": {
+    "/api/explore/relationships": {
         "POST": {
-            "request_ref": "#/components/schemas/ExploreRunRequest",
-            "success_schema": {"$ref": "#/components/schemas/ExploreRunResponse"},
-        },
-    },
-    "/api/explore/status/{job_id}": {
-        "GET": {
-            "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/ExploreStatusResponse"},
+            "request_ref": "#/components/schemas/ExploreRelationshipsRequest",
+            "success_schema": {"$ref": "#/components/schemas/ExploreRelationshipsResponse"},
         },
     },
     "/api/files": {
@@ -191,6 +185,24 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
         "GET": {
             "request_ref": None,
             "success_schema": {"$ref": "#/components/schemas/IoCapabilitiesResponse"},
+        },
+    },
+    "/api/cache/nodes": {
+        "POST": {
+            "request_ref": "#/components/schemas/CacheNodesRequest",
+            "success_schema": {"$ref": "#/components/schemas/CacheNodesResponse"},
+        },
+    },
+    "/api/cache/clear": {
+        "POST": {
+            "request_ref": "#/components/schemas/CacheClearRequest",
+            "success_schema": {"$ref": "#/components/schemas/CacheClearResponse"},
+        },
+    },
+    "/api/cache/usage": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/CacheUsageResponse"},
         },
     },
     "/api/git/archive": {
@@ -361,74 +373,40 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/GitPrefs"},
         },
     },
-    "/api/json-cache": {
-        "DELETE": {
-            "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/JsonCacheStatusResponse"},
-        },
-    },
-    "/api/json-cache/build": {
-        "POST": {
-            "request_ref": "#/components/schemas/JsonCacheBuildRequest",
-            "success_schema": {"$ref": "#/components/schemas/JsonCacheBuildResponse"},
-        },
-    },
     "/api/json-cache/infer": {
         "POST": {
             "request_ref": "#/components/schemas/JsonCacheInferRequest",
             "success_schema": {"$ref": "#/components/schemas/JsonCacheInferResponse"},
         },
     },
-    "/api/json-cache/progress": {
-        "GET": {
-            "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/JsonCacheProgressResponse"},
-        },
-    },
-    "/api/json-cache/status": {
-        "GET": {
-            "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/JsonCacheStatusResponse"},
-        },
-        "POST": {
-            "request_ref": "#/components/schemas/JsonCacheBuildRequest",
-            "success_schema": {"$ref": "#/components/schemas/JsonCacheStatusResponse"},
-        },
-    },
     "/api/mlflow/experiments": {
         "GET": {
             "request_ref": None,
-            "success_schema": {
-                "type": "array",
-                "items": {"$ref": "#/components/schemas/MlflowExperimentSummary"},
-            },
+            "success_schema": {"$ref": "#/components/schemas/MlflowExperimentList"},
         },
     },
     "/api/mlflow/model-versions": {
         "GET": {
             "request_ref": None,
-            "success_schema": {
-                "type": "array",
-                "items": {"$ref": "#/components/schemas/MlflowModelVersionSummary"},
-            },
+            "success_schema": {"$ref": "#/components/schemas/MlflowModelVersionList"},
         },
     },
     "/api/mlflow/models": {
         "GET": {
             "request_ref": None,
-            "success_schema": {
-                "type": "array",
-                "items": {"$ref": "#/components/schemas/MlflowModelSummary"},
-            },
+            "success_schema": {"$ref": "#/components/schemas/MlflowModelList"},
         },
     },
     "/api/mlflow/runs": {
         "GET": {
             "request_ref": None,
-            "success_schema": {
-                "type": "array",
-                "items": {"$ref": "#/components/schemas/MlflowRunSummary"},
-            },
+            "success_schema": {"$ref": "#/components/schemas/MlflowRunList"},
+        },
+    },
+    "/api/model-file": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/ModelFileInspectionResponse"},
         },
     },
     "/api/modelling/dispersion/cancel/{job_id}": {
@@ -461,10 +439,26 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/ExportScriptResponse"},
         },
     },
-    "/api/modelling/mlflow/check": {
+    "/api/mlflow/destinations": {
         "GET": {
             "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/MlflowCheckResponse"},
+            "success_schema": {"$ref": "#/components/schemas/MlflowDestinationsResponse"},
+        },
+    },
+    "/api/mlflow/settings": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/MlflowSettingsResponse"},
+        },
+        "PUT": {
+            "request_ref": "#/components/schemas/MlflowSettingsUpdateRequest",
+            "success_schema": {"$ref": "#/components/schemas/MlflowSettingsResponse"},
+        },
+    },
+    "/api/mlflow/test-connection": {
+        "POST": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/MlflowTestConnectionResponse"},
         },
     },
     "/api/modelling/mlflow/log": {
@@ -479,6 +473,18 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/ModelCacheClearResponse"},
         },
     },
+    "/api/modelling/save": {
+        "POST": {
+            "request_ref": "#/components/schemas/SaveModelRequest",
+            "success_schema": {"$ref": "#/components/schemas/SaveModelResponse"},
+        },
+    },
+    "/api/modelling/save/destination": {
+        "POST": {
+            "request_ref": "#/components/schemas/ModelSaveDestinationRequest",
+            "success_schema": {"$ref": "#/components/schemas/ModelSaveDestinationResponse"},
+        },
+    },
     "/api/modelling/train": {
         "POST": {
             "request_ref": "#/components/schemas/TrainRequest",
@@ -491,10 +497,52 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/TrainStatusResponse"},
         },
     },
+    "/api/modelling/gpu": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/ModellingGpuStatusResponse"},
+        },
+    },
     "/api/modelling/train/status/{job_id}": {
         "GET": {
             "request_ref": None,
             "success_schema": {"$ref": "#/components/schemas/TrainStatusResponse"},
+        },
+    },
+    "/api/node-data/cancel/{job_id}": {
+        "POST": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/NodeDataStatusResponse"},
+        },
+    },
+    "/api/node-data/clear": {
+        "POST": {
+            "request_ref": "#/components/schemas/NodeDataRequest",
+            "success_schema": {"$ref": "#/components/schemas/NodeDataClearResponse"},
+        },
+    },
+    "/api/node-data/point": {
+        "POST": {
+            "request_ref": "#/components/schemas/NodeDataRequest",
+            "success_schema": {"$ref": "#/components/schemas/NodeDataPointResponse"},
+        },
+    },
+    "/api/node-data/profile": {
+        "POST": {
+            "request_ref": "#/components/schemas/NodeDataRequest",
+            "success_schema": {"$ref": "#/components/schemas/NodeDataProfileResponse"},
+        },
+    },
+    "/api/node-data/run": {
+        "POST": {
+            "request_ref": "#/components/schemas/NodeDataRunRequest",
+            "success_schema": {"$ref": "#/components/schemas/NodeDataRunResponse"},
+        },
+    },
+    "/api/node-data/status/{job_id}": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/NodeDataStatusResponse"},
         },
     },
     "/api/optimiser/apply": {
@@ -569,6 +617,18 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/OptimiserSaveResponse"},
         },
     },
+    "/api/optimiser/segments": {
+        "POST": {
+            "request_ref": "#/components/schemas/OptimiserSegmentsRequest",
+            "success_schema": {"$ref": "#/components/schemas/OptimiserSegmentsResponse"},
+        },
+    },
+    "/api/optimiser/segments/index": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/OptimiserSegmentIndexResponse"},
+        },
+    },
     "/api/optimiser/solve": {
         "POST": {
             "request_ref": "#/components/schemas/OptimiserSolveRequest",
@@ -599,10 +659,32 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/PipelineEditorDocument"},
         },
     },
+    "/api/pipeline-settings": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/PipelineSettingsResponse"},
+        },
+        "PATCH": {
+            "request_ref": "#/components/schemas/PipelineSettingsValues",
+            "success_schema": {"$ref": "#/components/schemas/PipelineSettingsResponse"},
+        },
+    },
     "/api/pipeline/editor-identities": {
         "POST": {
             "request_ref": "#/components/schemas/EditorIdentitiesRequest",
             "success_schema": {"$ref": "#/components/schemas/EditorIdentitiesResponse"},
+        },
+    },
+    "/api/pipeline/polars-steps/free-code-columns": {
+        "POST": {
+            "request_ref": "#/components/schemas/PolarsFreeCodeColumnsRequest",
+            "success_schema": {"$ref": "#/components/schemas/PolarsFreeCodeColumnsResponse"},
+        },
+    },
+    "/api/pipeline/polars-steps/render": {
+        "POST": {
+            "request_ref": "#/components/schemas/PolarsStepsRenderRequest",
+            "success_schema": {"$ref": "#/components/schemas/PolarsStepsRenderResponse"},
         },
     },
     "/api/pipeline/read-json": {
@@ -617,22 +699,40 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/PreviewNodeResponse"},
         },
     },
+    "/api/pipeline/preview/inputs": {
+        "POST": {
+            "request_ref": "#/components/schemas/PreviewInputsRequest",
+            "success_schema": {"$ref": "#/components/schemas/PreviewInputsResponse"},
+        },
+    },
+    "/api/pipeline/preview/progress/{request_id}": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/PreviewProgressResponse"},
+        },
+    },
     "/api/pipeline/recovery-preview": {
         "POST": {
             "request_ref": "#/components/schemas/RecoveryPreviewRequest",
             "success_schema": {"$ref": "#/components/schemas/PreviewNodeResponse"},
         },
     },
-    "/api/pipeline/repair/remove/apply": {
+    "/api/pipeline/node/save": {
         "POST": {
-            "request_ref": "#/components/schemas/PipelineRepairApplyRequest",
+            "request_ref": "#/components/schemas/PipelineNodeSaveRequest",
+            "success_schema": {"$ref": "#/components/schemas/PipelineEditorDocument"},
+        },
+    },
+    "/api/pipeline/repair/recover/apply": {
+        "POST": {
+            "request_ref": "#/components/schemas/PipelineRepairRecoverRequest",
             "success_schema": {"$ref": "#/components/schemas/PipelineRepairApplyResponse"},
         },
     },
-    "/api/pipeline/repair/remove/dry-run": {
+    "/api/pipeline/repair/remove/apply": {
         "POST": {
-            "request_ref": "#/components/schemas/PipelineRepairDryRunRequest",
-            "success_schema": {"$ref": "#/components/schemas/PipelineRepairPlanResponse"},
+            "request_ref": "#/components/schemas/PipelineRepairRemoveRequest",
+            "success_schema": {"$ref": "#/components/schemas/PipelineRepairApplyResponse"},
         },
     },
     "/api/pipeline/output-destination": {
@@ -672,6 +772,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
                 "type": "array",
                 "items": {"$ref": "#/components/schemas/PipelineSummary"},
             },
+        },
+    },
+    "/api/rating/levels": {
+        "POST": {
+            "request_ref": "#/components/schemas/RatingLevelsRequest",
+            "success_schema": {"$ref": "#/components/schemas/RatingLevelsResponse"},
         },
     },
     "/api/schema": {

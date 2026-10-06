@@ -1,9 +1,20 @@
-import { useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react"
-import { ChevronDown, ChevronUp, ChevronsDown, ChevronsUp } from "lucide-react"
+import {
+  useEffect,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from "react"
+import { ChevronDown, ChevronUp, ChevronsDown, ChevronsUp, RefreshCw, Square } from "lucide-react"
 
 import NodeTypeIcon from "../components/NodeTypeIcon"
 import { useDragResize } from "../hooks/useDragResize"
-import { DEFAULT_PREVIEW_PANEL_DIMENSIONS, PREVIEW_PANEL_HEADER_HEIGHT_CLASS } from "./previewPanelLayout"
+import {
+  PREVIEW_PANEL_ACTION_BUTTON_CLASS,
+  PREVIEW_PANEL_DIMENSIONS,
+  PREVIEW_PANEL_HEADER_HEIGHT_CLASS,
+} from "./previewPanelLayout"
+import { usePreviewRun } from "./previewRunContext"
 
 const FRAME_ICON_SIZE = 14
 
@@ -14,9 +25,11 @@ type PreviewPanelFrameProps = {
   subtitle?: ReactNode
   collapsedMeta?: ReactNode
   nodeType?: string | null
+  onRefresh?: () => void
+  refreshTitle?: string
   initialHeight?: number
-  minHeight?: number
-  maxHeight?: number
+  onHeightChange?: (height: number) => void
+  focused?: boolean
   "data-testid"?: string
 }
 
@@ -27,41 +40,76 @@ export default function PreviewPanelFrame({
   subtitle,
   collapsedMeta,
   nodeType,
-  initialHeight = DEFAULT_PREVIEW_PANEL_DIMENSIONS.initialHeight,
-  minHeight = DEFAULT_PREVIEW_PANEL_DIMENSIONS.minHeight,
-  maxHeight = DEFAULT_PREVIEW_PANEL_DIMENSIONS.maxHeight,
+  onRefresh,
+  refreshTitle = "Refresh preview",
+  initialHeight = PREVIEW_PANEL_DIMENSIONS.initialHeight,
+  onHeightChange,
+  focused = false,
   "data-testid": testId,
 }: PreviewPanelFrameProps) {
   const [collapsed, setCollapsed] = useState(false)
   const [expandedToTop, setExpandedToTop] = useState(false)
-  const collapsedContainerRef = useRef<HTMLDivElement | null>(null)
-  const restoreHeightRef = useRef(initialHeight)
-  const { height, containerRef, onDragStart, resizeToHeight } = useDragResize({ initialHeight, minHeight, maxHeight })
+  const restoreHeightRef = useRef<number>(initialHeight)
+  const { height, containerRef, onDragStart, resizeToHeight } = useDragResize({
+    initialHeight,
+    minHeight: PREVIEW_PANEL_DIMENSIONS.minHeight,
+  })
+  useEffect(() => {
+    if (!expandedToTop) onHeightChange?.(height)
+  }, [height, expandedToTop, onHeightChange])
   const frameIcon = <NodeTypeIcon nodeType={nodeType} size={FRAME_ICON_SIZE} />
-  const topButtonTitle = expandedToTop ? "Restore preview panel height" : "Expand preview panel to top"
+  const topButtonTitle = expandedToTop
+    ? "Restore preview panel height"
+    : "Expand preview panel to top"
   const TopButtonIcon = expandedToTop ? ChevronDown : collapsed ? ChevronsUp : ChevronUp
   const CollapseButtonIcon = expandedToTop ? ChevronsDown : ChevronDown
-
-  const availablePanelHeight = () => {
-    const source = containerRef.current ?? collapsedContainerRef.current
-    const parent = source?.parentElement
-    const parentHeight = parent?.getBoundingClientRect().height ?? 0
-    if (parentHeight > 0) return Math.floor(parentHeight)
-    const sourceBottom = source?.getBoundingClientRect().bottom ?? 0
-    if (sourceBottom > 0) return Math.floor(sourceBottom)
-    return window.innerHeight
-  }
+  // While the node's work runs, Refresh reads Stop and stops it. Only this
+  // button stops: the Refresh shortcut never does, so pressing it twice cannot
+  // cancel the run it just started.
+  const run = usePreviewRun()
+  const stopping = Boolean(onRefresh && run?.running)
+  const refreshButton = onRefresh && (
+    stopping ? (
+      <button
+        type="button"
+        onClick={run?.onStop}
+        className={`${PREVIEW_PANEL_ACTION_BUTTON_CLASS} shrink-0 transition-opacity hover:opacity-[0.85]`}
+        style={{
+          color: "var(--danger)",
+          background: "var(--danger-soft)",
+          border: "1px solid var(--danger-border)",
+        }}
+        title="Stop this node's work"
+        data-testid="preview-stop"
+      >
+        <Square size={10} aria-hidden="true" />
+        Stop
+      </button>
+    ) : (
+      <button
+        type="button"
+        onClick={onRefresh}
+        className={`${PREVIEW_PANEL_ACTION_BUTTON_CLASS} shrink-0 transition-opacity hover:opacity-[0.85]`}
+        style={{ background: "var(--accent)", color: "var(--text-on-accent)" }}
+        title={refreshTitle}
+      >
+        <RefreshCw size={11} aria-hidden="true" />
+        Refresh
+      </button>
+    )
+  )
 
   const handleToggleTop = () => {
     if (expandedToTop) {
-      resizeToHeight(restoreHeightRef.current, { clampToMax: false })
+      resizeToHeight(restoreHeightRef.current)
       setExpandedToTop(false)
       setCollapsed(false)
       return
     }
 
     restoreHeightRef.current = height
-    resizeToHeight(availablePanelHeight(), { clampToMax: false })
+    // The hook caps every resize at the space the column offers, so this fills it.
+    resizeToHeight(Number.POSITIVE_INFINITY)
     setExpandedToTop(true)
     setCollapsed(false)
   }
@@ -73,7 +121,7 @@ export default function PreviewPanelFrame({
 
   const handleCollapse = () => {
     if (expandedToTop) {
-      resizeToHeight(restoreHeightRef.current, { clampToMax: false })
+      resizeToHeight(restoreHeightRef.current)
       setExpandedToTop(false)
     }
     setCollapsed(true)
@@ -82,13 +130,19 @@ export default function PreviewPanelFrame({
   if (collapsed) {
     return (
       <div
-        ref={collapsedContainerRef}
+        // The collapsed bar shares the container ref so expanding from it measures the same column.
+        ref={containerRef}
         className="h-8 flex items-center gap-2 px-4 shrink-0"
         style={{ borderTop: "1px solid var(--border)", background: "var(--bg-panel)" }}
         data-testid={testId ? `${testId}-collapsed` : undefined}
       >
-        <span className="shrink-0" data-testid="preview-panel-node-icon">{frameIcon}</span>
-        <span className="min-w-0 truncate text-xs font-medium" style={{ color: "var(--text-secondary)" }}>
+        <span className="shrink-0" data-testid="preview-panel-node-icon">
+          {frameIcon}
+        </span>
+        <span
+          className="min-w-0 truncate text-xs font-medium"
+          style={{ color: "var(--text-secondary)" }}
+        >
           {nodeLabel}
         </span>
         {collapsedMeta && (
@@ -96,66 +150,16 @@ export default function PreviewPanelFrame({
             {collapsedMeta}
           </span>
         )}
-        <button
-          type="button"
-          onClick={() => setCollapsed(false)}
-          className="ml-auto p-1 rounded transition-colors hover:bg-[var(--bg-hover)]"
-          style={{ color: "var(--text-muted)" }}
-          aria-label="Expand preview panel"
-        >
-          <ChevronUp size={14} className="shrink-0" />
-        </button>
-        <button
-          type="button"
-          onClick={handleToggleTop}
-          className="p-1 rounded transition-colors hover:bg-[var(--bg-hover)]"
-          style={{ color: "var(--text-muted)" }}
-          aria-label={topButtonTitle}
-        >
-          <TopButtonIcon size={14} className="shrink-0" />
-        </button>
-      </div>
-    )
-  }
-
-  return (
-    <div
-      ref={containerRef}
-      style={{ height, borderTop: "1px solid var(--border)", background: "var(--bg-panel)" }}
-      className="flex flex-col shrink-0 relative"
-      data-testid={testId}
-    >
-      <div
-        onMouseDown={handleDragStart}
-        className="drag-handle-hover absolute top-0 left-0 right-0 h-1 cursor-ns-resize z-10"
-      />
-
-      <div
-        className={`${PREVIEW_PANEL_HEADER_HEIGHT_CLASS} flex items-center gap-2 px-4 py-1.5 shrink-0 overflow-hidden`}
-        style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-elevated)" }}
-        data-testid={testId ? `${testId}-header` : "preview-panel-frame-header"}
-      >
-        <span className="shrink-0" data-testid="preview-panel-node-icon">{frameIcon}</span>
-        <div className="min-w-0 flex items-baseline gap-2">
-          <div className="text-xs font-bold truncate shrink-0 max-w-full" style={{ color: "var(--text-primary)" }}>
-            {nodeLabel}
-          </div>
-          {subtitle && (
-            <div className="min-w-0 text-[10px] tabular-nums truncate" style={{ color: "var(--text-muted)" }}>
-              {subtitle}
-            </div>
-          )}
-        </div>
-        <div className="ml-auto flex min-w-0 shrink-0 items-center gap-1.5">
-          {actions}
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          {refreshButton}
           <button
             type="button"
-            onClick={handleCollapse}
+            onClick={() => setCollapsed(false)}
             className="p-1 rounded transition-colors hover:bg-[var(--bg-hover)]"
             style={{ color: "var(--text-muted)" }}
-            aria-label="Collapse preview panel"
+            aria-label="Expand preview panel"
           >
-            <CollapseButtonIcon size={14} />
+            <ChevronUp size={14} className="shrink-0" />
           </button>
           <button
             type="button"
@@ -164,8 +168,81 @@ export default function PreviewPanelFrame({
             style={{ color: "var(--text-muted)" }}
             aria-label={topButtonTitle}
           >
-            <TopButtonIcon size={14} />
+            <TopButtonIcon size={14} className="shrink-0" />
           </button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div
+      ref={containerRef}
+      style={{
+        height: focused ? "100%" : height,
+        maxHeight: "100%",
+        borderTop: "1px solid var(--border)",
+        background: "var(--bg-panel)",
+      }}
+      className="flex min-h-0 flex-col shrink-0 relative"
+      data-testid={testId}
+    >
+      {!focused && (
+        <div
+          onMouseDown={handleDragStart}
+          className="drag-handle-hover absolute top-0 left-0 right-0 h-1 cursor-ns-resize z-10"
+        />
+      )}
+
+      <div
+        className={`${PREVIEW_PANEL_HEADER_HEIGHT_CLASS} flex items-center gap-2 px-4 py-1.5 shrink-0 overflow-hidden`}
+        style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-elevated)" }}
+        data-testid={testId ? `${testId}-header` : "preview-panel-frame-header"}
+      >
+        <span className="shrink-0" data-testid="preview-panel-node-icon">
+          {frameIcon}
+        </span>
+        <div className="min-w-0 flex items-baseline gap-2">
+          <div
+            className="text-xs font-bold truncate shrink-0 max-w-full"
+            style={{ color: "var(--text-primary)" }}
+          >
+            {nodeLabel}
+          </div>
+          {subtitle && (
+            <div
+              className="min-w-0 text-[10px] tabular-nums truncate"
+              style={{ color: "var(--text-muted)" }}
+            >
+              {subtitle}
+            </div>
+          )}
+        </div>
+        <div className="ml-auto flex min-w-0 shrink-0 items-center gap-1.5">
+          {actions}
+          {refreshButton}
+          {!focused && (
+            <>
+              <button
+                type="button"
+                onClick={handleCollapse}
+                className="p-1 rounded transition-colors hover:bg-[var(--bg-hover)]"
+                style={{ color: "var(--text-muted)" }}
+                aria-label="Collapse preview panel"
+              >
+                <CollapseButtonIcon size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={handleToggleTop}
+                className="p-1 rounded transition-colors hover:bg-[var(--bg-hover)]"
+                style={{ color: "var(--text-muted)" }}
+                aria-label={topButtonTitle}
+              >
+                <TopButtonIcon size={14} />
+              </button>
+            </>
+          )}
         </div>
       </div>
 

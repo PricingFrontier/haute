@@ -85,6 +85,11 @@ jobs:
         with:
           node-version: 22.14.0
 
+      # The macOS XGBoost and LightGBM wheels load libomp from the system.
+      - name: Install libomp (macOS)
+        if: runner.os == 'macOS'
+        run: brew install libomp
+
       - name: Fresh-install smoke
         run: uv run --no-project python scripts/init_smoke.py
 
@@ -171,17 +176,26 @@ jobs:
         run: uv run mypy src/haute/
 
   # Coverage authority: the full suite on the reference interpreter (3.12),
-  # split into 2 balanced shards run in parallel (pytest-split). Each shard
+  # split by test module into 4 shards that run in parallel. Recorded
+  # per-module durations (scripts/test_file_durations.json) balance them, and
+  # each module runs in exactly one shard (tests/_ci_shards.py). Each shard
   # writes its own coverage data file; the gate job below combines them and
   # enforces the 90% global + per-file critical gates ONCE — coverage is
   # interpreter-independent, so it no longer recomputes on every matrix leg.
+  # The matrix must list every shard of `--shard=K/4`: a missing one would
+  # silently drop its modules (tests/test_ci_shards.py holds this and the
+  # gate's combine list).
+  #
+  # Each shard also uploads a JUnit report in the xunit1 family, so every test
+  # case names its file: the input for refreshing the durations with
+  # scripts/refresh_test_durations.py.
   backend-coverage-shard:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
 
@@ -192,20 +206,30 @@ jobs:
 
       - run: uv sync --group dev --locked
 
-      - name: Pytest shard ${{ matrix.shard }}/2 (coverage)
+      - name: Pytest shard ${{ matrix.shard }}/4 (coverage)
         env:
           COVERAGE_FILE: .coverage.shard${{ matrix.shard }}
         run: >
           uv run pytest tests/ -q -n 4 --timeout=60 --timeout-method=signal
-          --splits 2 --group ${{ matrix.shard }}
+          --shard=${{ matrix.shard }}/4
           --cov=src/haute --cov-branch --cov-report= --cov-fail-under=0
+          --junitxml=.cache/junit/coverage-shard${{ matrix.shard }}.xml
+          -o junit_family=xunit1
 
       - uses: actions/upload-artifact@v4
         with:
           name: backend-coverage-${{ matrix.shard }}
           path: .coverage.shard${{ matrix.shard }}
           include-hidden-files: true
+          if-no-files-found: error
           retention-days: 1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-junit-${{ matrix.shard }}
+          path: .cache/junit/
+          retention-days: 14
 
   backend-coverage-gate:
     runs-on: ubuntu-latest
@@ -237,7 +261,7 @@ jobs:
         id: combine
         run: |
           mkdir -p .cache/coverage
-          uv run coverage combine .coverage.shard1 .coverage.shard2
+          uv run coverage combine .coverage.shard1 .coverage.shard2 .coverage.shard3 .coverage.shard4
           uv run coverage json -o .cache/coverage/backend.json
 
       - name: Enforce global coverage floor (90%)
@@ -247,7 +271,7 @@ jobs:
         if: always() && steps.combine.outcome == 'success'
         run: uv run python scripts/check_critical_coverage.py --coverage-json .cache/coverage/backend.json
 
-      - name: Enforce 100% changed execution-code coverage
+      - name: Changed-code coverage (gates the safety-critical modules, reports the rest)
         if: always() && steps.combine.outcome == 'success'
         env:
           HAUTE_COVERAGE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -256,7 +280,9 @@ jobs:
           --coverage-json .cache/coverage/backend.json
           --base-ref "$HAUTE_COVERAGE_BASE"
 
-  # Compatibility: the full suite (no coverage) on the supported version edges.
+  # Compatibility: the full suite (no coverage) on the supported version edges,
+  # split by test module into 3 shards per interpreter exactly as the coverage
+  # shards are (tests/_ci_shards.py); the matrix must list every shard.
   backend-compat:
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -264,6 +290,7 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.13"]
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
 
@@ -284,10 +311,11 @@ jobs:
       # do fail they previously failed identically on 3.11, 3.13 and a coverage
       # shard at once. Run 31129979759 is the worked example: one uncovered
       # frontend source, four red jobs. The shards still run them.
-      - name: Pytest (compat, no coverage)
+      - name: Pytest shard ${{ matrix.shard }}/3 (compat, no coverage)
         run: >
           uv run pytest tests/ -q -n 4 --timeout=60 --timeout-method=signal
           -m "not perf and not meta"
+          --shard=${{ matrix.shard }}/3
 
   # Forward-looking, NON-BLOCKING probe: does haute install + its core test
   # subset pass on Python 3.14? `continue-on-error` keeps it off the required
@@ -341,7 +369,7 @@ jobs:
       - run: uv sync --group dev --locked
 
       - name: Python perf lane
-        run: uv run python scripts/run_perf_suite.py --output-dir .cache/perf
+        run: uv run python scripts/run_perf_suite.py --output-dir .cache/perf --max-test-seconds 180
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -426,7 +454,20 @@ jobs:
           version: "0.8.22"
           python-version: "3.12"
 
+      # The macOS XGBoost and LightGBM wheels load libomp from the system.
+      - name: Install libomp (macOS)
+        if: runner.os == 'macOS'
+        run: brew install libomp
+
       - run: uv sync --group dev --locked
+
+      - name: Model-family native engines (fit, save, reload, score)
+        run: >
+          uv run pytest
+          tests/test_xgboost_family.py
+          tests/test_lightgbm_family.py
+          tests/test_ebm_family.py
+          -q
 
       - name: Cross-platform path, process isolation, spill, cache, and debt smoke
         run: >
@@ -438,11 +479,15 @@ jobs:
           tests/test_write_sandbox_guard.py
           tests/test_data_io_roundtrips.py
           tests/test_process_memory.py
+          tests/test_cpu_performance.py
+          tests/test_cpu_performance_startup.py
+          tests/test_cpu_performance_json_pools.py
+          tests/test_cpu_performance_windows.py
           tests/test_worker_isolation.py
           tests/test_interactive_worker_pool.py
           tests/test_interactive_route_isolation.py
           tests/test_json_direct_spill.py
-          tests/test_json_cache_cross_process.py
+          tests/test_api_input_table_snapshots.py
           tests/test_json_runtime_storage.py
           -q
 
@@ -462,7 +507,53 @@ jobs:
       - name: Validate mutation target plan
         run: uv run python scripts/run_mutation_suite.py --dry-run --output-dir .mutation-plan --run-id ci
 
-  frontend:
+  # The frontend gates run as two parallel jobs that together run exactly the
+  # npm scripts of `scripts/preflight.sh --frontend-only`, the local equivalent
+  # (tests/test_frontend_bundle_budget_ci.py holds that). As in preflight, every
+  # check runs even after another has failed, so one run reports all of them;
+  # only the bundle budget waits for a successful build.
+  frontend-static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.14.0
+
+      - id: install
+        run: npm ci
+
+      - name: Generated API contracts (regenerate with `npm run generate:contracts`)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm run check:contracts
+
+      - name: TypeScript type check
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm run typecheck
+
+      - name: ESLint (fix with `npm run lint -- --fix`)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm run lint
+
+      - id: build
+        name: Frontend build
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm run build
+
+      - name: Frontend bundle budget
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: npm run check:bundle
+
+      - name: Frontend PR benchmark gate
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm run test:benchmark:pr
+
+  frontend-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -476,11 +567,20 @@ jobs:
           node-version: 22.14.0
 
       - run: npm ci
-      - run: cd .. && bash scripts/preflight.sh --frontend-only
 
+      - name: Vitest with coverage thresholds and critical coverage
+        run: npm run test:coverage
+
+  # Two Playwright shards, each with its own server and report. Playwright
+  # splits by test count over whole spec files, so the two shards differ in
+  # duration.
   browser-e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     defaults:
       run:
         working-directory: frontend
@@ -516,13 +616,13 @@ jobs:
             playwright-${{ runner.os }}-
 
       - run: ./node_modules/.bin/playwright install --with-deps chromium firefox
-      - run: npm run test:e2e
+      - run: npm run test:e2e -- --shard=${{ matrix.shard }}/2
 
       - name: Upload Playwright artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: browser-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          name: browser-e2e-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             frontend/playwright-report
             frontend/test-results

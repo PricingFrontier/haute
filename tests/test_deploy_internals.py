@@ -31,7 +31,7 @@ from haute.errors import DeployError
 from tests._deploy_helpers import FIXTURE_DIR
 from tests._deploy_helpers import make_resolved_deploy as _make_resolved
 from tests.conftest import make_graph as _g
-from tests.conftest import make_output_config
+from tests.conftest import make_output_config, make_ready_file_input_config
 
 if TYPE_CHECKING:
     from haute.deploy._model_code import HauteModel
@@ -1081,6 +1081,107 @@ class TestScoreGraphApiInputInjection:
         assert "x" in result.columns
         assert "y" in result.columns
 
+    @pytest.mark.parametrize(
+        ("input_df", "expected"),
+        [
+            (
+                pl.DataFrame(
+                    {
+                        "segment": pl.Series([], dtype=pl.String),
+                        "premium": pl.Series([], dtype=pl.Float64),
+                    }
+                ),
+                [],
+            ),
+            (
+                pl.DataFrame({"segment": ["a"], "premium": [1.0]}),
+                [{"segment": "a", "premium": 1.0}],
+            ),
+            (
+                pl.DataFrame({"segment": ["a", "a", "b"], "premium": [1.0, 2.0, 4.0]}),
+                [
+                    {"segment": "a", "premium": 3.0},
+                    {"segment": "b", "premium": 4.0},
+                ],
+            ),
+        ],
+        ids=["deploy-live-empty", "deploy-live", "deploy-batch"],
+    )
+    def test_group_by_admission_uses_injected_deploy_frame_metadata(
+        self,
+        input_df: pl.DataFrame,
+        expected: list[dict[str, object]],
+    ) -> None:
+        from haute.deploy._scorer import score_graph
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {
+                                "path": "",
+                                "tables": [
+                                    {
+                                        "path": "$[:]",
+                                        "label": "src",
+                                        "emit": True,
+                                        "columns": [
+                                            {
+                                                "name": "segment",
+                                                "path": "$[:].segment",
+                                                "type": "str",
+                                                "selected": True,
+                                            },
+                                            {
+                                                "name": "premium",
+                                                "path": "$[:].premium",
+                                                "type": "float",
+                                                "selected": True,
+                                            },
+                                        ],
+                                    }
+                                ],
+                            },
+                        },
+                    },
+                    {
+                        "id": "agg",
+                        "data": {
+                            "label": "agg",
+                            "nodeType": "polars",
+                            "config": {
+                                "code": (
+                                    "df = src.group_by('segment').agg("
+                                    "pl.col('premium').sum().alias('premium'))"
+                                )
+                            },
+                        },
+                    },
+                ],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "agg",
+                        "sourceHandle": "src",
+                    }
+                ],
+            }
+        )
+
+        result = score_graph(
+            graph=graph,
+            input_df=input_df,
+            input_node_ids=["src"],
+            output_node_id="agg",
+        )
+
+        assert result.sort("segment").to_dicts() == expected
+
     def test_api_input_frame_label_is_the_deploy_parameter_name(self):
         """Deploy user code binds the edge's frame name, not its source-node label."""
         from haute.deploy._scorer import score_graph
@@ -1417,7 +1518,7 @@ class TestScoreGraphOutputFields:
         assert plan.lazy_frame.collect().columns == ["x"]
         assert plan.execution_context.profile.value == "deploy_live"
         assert execute.call_args.kwargs["required_columns_by_node"] == {"out": frozenset({"x"})}
-        assert execute.call_args.kwargs["dataframe_cache_request"] is None
+        assert execute.call_args.kwargs.get("dataframe_cache_request") is None
         plan.cleanup(preserve_primary_error=False)
 
     def test_score_graph_lazy_releases_supplied_context_when_preamble_compile_fails(self):
@@ -1536,8 +1637,8 @@ class TestScoreGraphOutputFields:
         gc.collect()
         assert retained_ref() is None
 
-    def test_score_graph_lazy_builds_cache_request_for_batch_deploy(self):
-        """Batch deploy can reuse materialized backend frames across identical payloads."""
+    def test_score_graph_lazy_builds_no_cache_request_for_batch_deploy(self):
+        """Batch deploy never materialises through the dataframe execution cache."""
         from haute._execution_context import ExecutionContext, ExecutionProfile
         from haute.deploy import _scorer
 
@@ -1590,7 +1691,7 @@ class TestScoreGraphOutputFields:
                 execution_context=context,
             )
 
-        assert execute.call_args.kwargs["dataframe_cache_request"] is not None
+        assert execute.call_args.kwargs.get("dataframe_cache_request") is None
         plan.cleanup(preserve_primary_error=False)
 
     def test_no_output_fields_returns_all_columns(self):
@@ -1777,7 +1878,7 @@ class TestScoreGraphStaticDataSourceRemap:
             input_df=pl.DataFrame(),
             input_node_ids=[],
             output_node_id="out",
-            artifact_paths={"lookup__snapshot.parquet": str(source_path)},
+            artifact_paths={"lookup__snapshot.part-00000.parquet": str(source_path)},
         )
 
         assert result["quote_id"].to_list() == ["001"]
@@ -1824,11 +1925,62 @@ class TestScoreGraphStaticDataSourceRemap:
             input_df=pl.DataFrame(),
             input_node_ids=[],
             output_node_id="out",
-            artifact_paths={"lookup__snapshot.parquet": str(snapshot_path)},
+            artifact_paths={"lookup__snapshot.part-00000.parquet": str(snapshot_path)},
             output_fields=["keep"],
         )
 
         assert result.columns == ["keep"]
+
+    def test_static_data_source_snapshot_runs_post_load_code_for_a_selected_column(self, tmp_path):
+        """A snapshot's post-load code may produce a ``selected_columns`` entry."""
+        from haute.deploy._scorer import score_graph
+
+        snapshot_path = tmp_path / "lookup.snapshot.parquet"
+        pl.DataFrame({"quote_id": ["001"], "sale_date": ["2024-01-01"]}).write_parquet(
+            snapshot_path
+        )
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "lookup",
+                        "data": {
+                            "label": "lookup",
+                            "nodeType": "dataInput",
+                            "config": {
+                                "inputType": "file",
+                                "format": "csv",
+                                "mode": "scan",
+                                "path": "lookup.csv",
+                                "arguments": {},
+                                "code": "df = df.with_columns(SaleFlag = pl.lit(1))",
+                                "selected_columns": ["quote_id", "SaleFlag"],
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": make_output_config(["quote_id", "SaleFlag"]),
+                        },
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "lookup", "target": "out"}],
+            }
+        )
+
+        result = score_graph(
+            graph=graph,
+            input_df=pl.DataFrame(),
+            input_node_ids=[],
+            output_node_id="out",
+            artifact_paths={"lookup__snapshot.part-00000.parquet": str(snapshot_path)},
+        )
+
+        assert result.columns == ["quote_id", "SaleFlag"]
+        assert result["SaleFlag"].to_list() == [1]
 
 
 class TestScoreGraphMissingOutput:
@@ -2055,7 +2207,6 @@ class TestScoreGraphExternalFileRemap:
                             "config": {
                                 "path": "original/lookup.pkl",
                                 "fileType": "pickle",
-                                "modelClass": "classifier",
                                 "code": "df = df.with_columns(pl.lit(99).alias('ext_val'))",
                             },
                         },
@@ -2097,6 +2248,81 @@ class TestScoreGraphExternalFileRemap:
 
         assert "ext_val" in result.columns
         assert result["ext_val"].to_list() == [99]
+
+    def test_external_file_code_sees_the_preamble_as_in_the_editor(
+        self, tmp_path, _widen_sandbox_root
+    ):
+        """Deployed External File code calls a preamble helper and matches the preview."""
+        from haute.deploy._scorer import score_graph
+        from haute.executor import execute_graph
+
+        lookup = tmp_path / "lookup.json"
+        lookup.write_text(json.dumps({"base": 10.0}))
+        rows = tmp_path / "x.parquet"
+        pl.DataFrame({"x": [1.0]}).write_parquet(rows)
+        code = "df = df.with_columns(scaled=pl.lit(scale(obj['base'])))"
+        nodes = [
+            {
+                "id": "src",
+                "data": {
+                    "label": "src",
+                    "nodeType": "apiInput",
+                    "config": _single_frame_api_input_config("x", "float", label="src"),
+                },
+            },
+            {
+                "id": "ext",
+                "data": {
+                    "label": "ext",
+                    "nodeType": "externalFile",
+                    "config": {"path": str(lookup), "fileType": "json", "code": code},
+                },
+            },
+            {
+                "id": "out",
+                "data": {
+                    "label": "out",
+                    "nodeType": "output",
+                    "config": make_output_config(["x", "scaled"]),
+                },
+            },
+        ]
+        edges = [
+            {"id": "e1", "source": "src", "target": "ext", "sourceHandle": "src"},
+            {"id": "e2", "source": "ext", "target": "out"},
+        ]
+        graph = _g({"nodes": nodes, "edges": edges})
+        graph.preamble = "def scale(value):\n    return value * 3\n"
+        preview_graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "dataInput",
+                            "config": make_ready_file_input_config(str(rows)),
+                        },
+                    },
+                    nodes[1],
+                ],
+                "edges": [{"id": "e1", "source": "src", "target": "ext"}],
+            }
+        )
+        preview_graph.preamble = graph.preamble
+
+        preview = execute_graph(preview_graph, "ext", source="live")["ext"]
+        result = score_graph(
+            graph=graph,
+            input_df=pl.DataFrame({"x": [1.0]}),
+            input_node_ids=["src"],
+            output_node_id="out",
+            artifact_paths={"ext__lookup.json": str(lookup)},
+        )
+
+        assert preview.status == "ok", preview.error
+        assert [row["scaled"] for row in preview.preview] == [30.0]
+        assert result["scaled"].to_list() == [30.0]
 
     def test_external_file_remap_without_code(self, tmp_path):
         """externalFile without code passes through first input."""
@@ -2244,6 +2470,86 @@ class TestScoreGraphOptimiserApplyRemap:
         mock_dispatch.assert_called_once()
         assert mock_dispatch.call_args.args[3] == "selected_factor"
 
+    def test_online_apply_file_remap_plans_from_the_bundled_artifact(self, tmp_path):
+        """Projection reads the columns of the artifact the deployed apply serves.
+
+        The original artifact still exists but maximises ``income``; the bundle
+        maximises ``margin``. Planning from the original would drop ``margin``
+        before the served apply reads it.
+        """
+        from haute.deploy._scorer import score_graph
+
+        def artifact(objective: str) -> dict[str, object]:
+            return {
+                "version": f"{objective}_v1",
+                "mode": "online",
+                "lambdas": {},
+                "objective": objective,
+                "constraints": {},
+                "quote_id": "quote_id",
+                "scenario_index": "scenario_index",
+                "scenario_value": "scenario_value",
+            }
+
+        original = tmp_path / "opt.json"
+        original.write_text(json.dumps(artifact("income")), encoding="utf-8")
+        bundled = tmp_path / "bundled_opt.json"
+        bundled.write_text(json.dumps(artifact("margin")), encoding="utf-8")
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": _single_frame_api_input_config("quote_id", label="src"),
+                        },
+                    },
+                    {
+                        "id": "opt",
+                        "data": {
+                            "label": "opt",
+                            "nodeType": "optimiserApply",
+                            "config": {"sourceType": "file", "artifact_path": str(original)},
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": make_output_config(["quote_id", "optimal_scenario_value"]),
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "src", "target": "opt", "sourceHandle": "src"},
+                    {"id": "e2", "source": "opt", "target": "out"},
+                ],
+            }
+        )
+
+        result = score_graph(
+            graph=graph,
+            input_df=pl.DataFrame(
+                {
+                    "quote_id": ["q1", "q1", "q2", "q2"],
+                    "scenario_index": [0, 1, 0, 1],
+                    "scenario_value": [0.9, 1.1, 0.9, 1.1],
+                    "income": [10.0, 5.0, 10.0, 5.0],
+                    "margin": [1.0, 9.0, 1.0, 9.0],
+                }
+            ),
+            input_node_ids=["src"],
+            output_node_id="out",
+            artifact_paths={"opt__opt.json": str(bundled)},
+        )
+
+        assert result.sort("quote_id")["optimal_scenario_value"].to_list() == pytest.approx(
+            [1.1, 1.1]
+        )
+
     def _ratebook_apply_remap_score(self, tmp_path):
         """Score a deployed ratebook-apply graph and return the result frame."""
         from haute.deploy._scorer import score_graph
@@ -2266,6 +2572,8 @@ class TestScoreGraphOptimiserApplyRemap:
                             },
                         ]
                     },
+                    # North's 1.10 lies past the collar; the scorer must clip it.
+                    "combined_factor_bounds": {"min": 0.9, "max": 1.05},
                     "factor_dtypes": {
                         "region_band": [
                             {
@@ -2371,9 +2679,9 @@ class TestScoreGraphOptimiserApplyRemap:
         assert result["region_band"].to_list() == ["South", "North"]
 
     def test_ratebook_apply_file_remap_renames_to_configured_value_column(self, tmp_path):
-        """The optimised value lands in the user-configured column name."""
+        """The collared optimised value lands in the user-configured column name."""
         result = self._ratebook_apply_remap_score(tmp_path)
-        assert result["selected_factor"].to_list() == pytest.approx([0.95, 1.10])
+        assert result["selected_factor"].to_list() == [0.95, 1.05]
 
     def test_ratebook_apply_file_remap_emits_artifact_version_column(self, tmp_path):
         """The configured version column carries the artifact version per quote."""
@@ -2453,6 +2761,76 @@ class TestScoreGraphOptimiserApplyRemap:
         mock_dispatch.assert_called_once()
         assert mock_dispatch.call_args.args[3] == "selected_factor"
 
+    def test_optimiser_apply_mlflow_forwards_destination(self):
+        """The node's ``mlflow_destination`` reaches the request-time loader."""
+        from haute.deploy._scorer import score_graph
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": _single_frame_api_input_config("x", "float", label="src"),
+                        },
+                    },
+                    {
+                        "id": "opt",
+                        "data": {
+                            "label": "opt",
+                            "nodeType": "optimiserApply",
+                            "config": {
+                                "sourceType": "run",
+                                "run_id": "run_abc",
+                                "version_column": "__opt_v__",
+                                "optimised_value_column": "selected_factor",
+                                "mlflow_destination": "local",
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": make_output_config(["x", "selected_factor", "__opt_v__"]),
+                        },
+                    },
+                ],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "opt",
+                        "sourceHandle": "src",
+                    },
+                    {"id": "e2", "source": "opt", "target": "out"},
+                ],
+            }
+        )
+
+        mock_dispatch_result = pl.DataFrame(
+            {"x": [1.0], "selected_factor": [1.1], "__opt_v__": ["v1"]}
+        ).lazy()
+
+        with (
+            patch(
+                "haute._optimiser_io.load_mlflow_optimiser_artifact",
+                return_value=MagicMock(),
+            ) as mock_load,
+            patch("haute._builders._dispatch_apply", return_value=mock_dispatch_result),
+        ):
+            score_graph(
+                graph=graph,
+                input_df=pl.DataFrame({"x": [1.0]}),
+                input_node_ids=["src"],
+                output_node_id="out",
+            )
+
+        assert mock_load.call_args.kwargs["destination"] == "local"
+
 
 class TestScoreGraphModelScoreRemap:
     """Tests for modelScore remapping in score_graph."""
@@ -2466,6 +2844,7 @@ class TestScoreGraphModelScoreRemap:
 
         mock_model = MagicMock()
         mock_model.feature_names_ = ["x"]
+        mock_model.get_metadata.return_value = {"haute_offset_column": ""}
         mock_model.predict.return_value = np.array([42.0])
 
         graph = _g(
@@ -2564,6 +2943,7 @@ class TestScoreGraphModelScoreRemap:
 
         mock_model = MagicMock()
         mock_model.feature_names_ = ["x"]
+        mock_model.get_metadata.return_value = {"haute_offset_column": ""}
         mock_model.predict.return_value = np.array([42.0])
 
         graph = _g(
@@ -2665,6 +3045,7 @@ class TestScoreGraphModelScoreRemap:
         )
         mock_model = MagicMock()
         mock_model.feature_names_ = ["region"]
+        mock_model.get_metadata.return_value = {"haute_offset_column": ""}
         mock_model.get_cat_feature_indices.return_value = [0]
         mock_model.predict.return_value = np.array([42.0])
         graph = _g(
@@ -3220,8 +3601,8 @@ class TestScoreGraphModelScoreRemap:
                 artifact_paths={f"ms__{CONTRACT_FILENAME}": str(contract_path)},
             )
 
-    def test_multi_row_model_score_uses_deploy_batch_source(self, tmp_path):
-        """Multi-row deploy modelScore should use the batch scorer contract."""
+    def test_multi_row_model_score_scores_in_memory(self, tmp_path):
+        """Multi-row deploy modelScore should score eagerly in memory."""
         from haute._mlflow_io import ScoringModel
         from haute.deploy._scorer import score_graph
 
@@ -3305,7 +3686,7 @@ class TestScoreGraphModelScoreRemap:
             )
 
         assert result["pred"].to_list() == [10.0, 20.0]
-        assert captured["source"] == "deploy_batch"
+        assert captured["source"] == "live"
         remote_loader.assert_not_called()
 
     def test_single_row_model_score_keeps_live_source(self, tmp_path):
@@ -3419,7 +3800,7 @@ class TestScoreGraphModelScoreRemap:
             ),
             contract_path,
         )
-        scoring_model = MagicMock()
+        scoring_model = MagicMock(offset_column=None, offset_link=None)
         captured: dict[str, object] = {}
 
         def fake_run_score_pipeline(*_args, **kwargs):
@@ -3518,7 +3899,7 @@ class TestScoreGraphModelScoreRemap:
             ),
             contract_path,
         )
-        scoring_model = MagicMock()
+        scoring_model = MagicMock(offset_column=None, offset_link=None)
         captured: dict[str, object] = {}
 
         def fake_run_score_pipeline(*_args, **kwargs):
@@ -3612,11 +3993,11 @@ class TestScoreGraphModelScoreRemap:
         assert isinstance(extra_dfs, tuple)
         assert len(extra_dfs) == 1
 
-    def test_multi_row_unbundled_model_score_uses_deploy_batch_source(self):
-        """Configured non-bundled deploy modelScore follows deploy batch scoring."""
+    def test_multi_row_unbundled_model_score_scores_in_memory(self):
+        """Configured non-bundled deploy modelScore scores eagerly in memory."""
         from haute.deploy._scorer import score_graph
 
-        scoring_model = MagicMock()
+        scoring_model = MagicMock(offset_column=None, offset_link=None)
         captured: dict[str, object] = {}
 
         def fake_run_score_pipeline(*_args, **kwargs):
@@ -3684,19 +4065,19 @@ class TestScoreGraphModelScoreRemap:
             )
 
         assert result["pred"].to_list() == [10.0, 20.0]
-        assert captured["source"] == "deploy_batch"
+        assert captured["source"] == "live"
 
-    def test_deploy_batch_model_score_cleans_scored_temp_after_collect(
+    def test_multi_row_model_score_writes_no_temp_parquet(
         self,
         tmp_path,
+        monkeypatch,
     ):
-        """Request-scoped deploy cleanup removes scored parquet after response collect."""
+        """A multi-row score_graph call never disk-batches modelScore via _sink_to_temp."""
         from haute._mlflow_io import ScoringModel
         from haute.deploy._scorer import score_graph
 
         cbm_path = tmp_path / "model.cbm"
         cbm_path.write_bytes(b"fake")
-        scored_path = tmp_path / "haute_score_out_deploy.parquet"
         raw_model = MagicMock()
         scoring_model = ScoringModel(
             model=raw_model,
@@ -3705,9 +4086,13 @@ class TestScoreGraphModelScoreRemap:
             flavor="catboost",
         )
 
-        def fake_batch_score(*_args, **_kwargs):
-            pl.DataFrame({"pred": [10.0, 20.0]}).write_parquet(scored_path)
-            return str(scored_path)
+        def fake_run_score_pipeline(*_args, **kwargs):
+            return pl.DataFrame({"pred": [10.0, 20.0]}).lazy()
+
+        def fail_sink_to_temp(*_args, **_kwargs):
+            raise AssertionError("deploy scoring must never disk-batch via _sink_to_temp")
+
+        monkeypatch.setattr("haute._model_scorer._sink_to_temp", fail_sink_to_temp)
 
         graph = _g(
             {
@@ -3761,7 +4146,10 @@ class TestScoreGraphModelScoreRemap:
                 "haute._mlflow_io.load_mlflow_model",
                 side_effect=AssertionError("bundled scoring must not contact MLflow"),
             ) as remote_loader,
-            patch("haute._model_scorer._batch_score_to_parquet", side_effect=fake_batch_score),
+            patch(
+                "haute._model_scorer._run_score_pipeline",
+                side_effect=fake_run_score_pipeline,
+            ),
         ):
             result = score_graph(
                 graph=graph,
@@ -3772,8 +4160,60 @@ class TestScoreGraphModelScoreRemap:
             )
 
         assert result["pred"].to_list() == [10.0, 20.0]
-        assert not scored_path.exists()
+        assert not list(tmp_path.glob("haute_score_in_*"))
+        assert not list(tmp_path.glob("haute_score_out_*"))
         remote_loader.assert_not_called()
+
+    def test_multi_row_score_graph_passes_no_dataframe_cache_request(self, tmp_path):
+        """A multi-row score_graph call never materialises through the dataframe cache."""
+        from haute.deploy import _scorer
+        from haute.deploy._scorer import score_graph
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": _single_frame_api_input_config("x", "float", label="src"),
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": make_output_config(["x"]),
+                        },
+                    },
+                ],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "out",
+                        "sourceHandle": "src",
+                    },
+                ],
+            }
+        )
+
+        with patch.object(
+            _scorer,
+            "execute_lazy_graph",
+            wraps=_scorer.execute_lazy_graph,
+        ) as execute:
+            result = score_graph(
+                graph=graph,
+                input_df=pl.DataFrame({"x": [1.0, 2.0]}),
+                input_node_ids=["src"],
+                output_node_id="out",
+            )
+
+        assert result["x"].to_list() == [1.0, 2.0]
+        assert execute.call_args.kwargs.get("dataframe_cache_request") is None
 
 
 class TestBundledModelContractInputs:
@@ -3841,7 +4281,7 @@ class TestBundledModelContractInputs:
 
         with (
             patch(
-                "haute.deploy._scorer._load_local_model_cached",
+                "haute.deploy._scorer.load_local_model_cached",
                 return_value=scoring_model,
             ),
             pytest.raises(DeployError, match=message),
@@ -3862,7 +4302,7 @@ class TestBundledModelContractInputs:
         )
 
         with patch(
-            "haute.deploy._scorer._load_local_model_cached",
+            "haute.deploy._scorer.load_local_model_cached",
             return_value=scoring_model,
         ):
             result = _attach_bundled_model_contract_inputs(
@@ -3960,6 +4400,29 @@ class TestLoadEnv:
         assert os.environ["HAUTE_TEST_KEEP"] == "original"
 
 
+def _force_schema_cache_miss(tmp_path, monkeypatch) -> None:
+    """Point the on-disk output-schema cache at an empty temp location."""
+    from haute.deploy import _schema
+
+    monkeypatch.setattr(
+        _schema,
+        "_SCHEMA_CACHE_FILE",
+        str(tmp_path / "schema_cache" / "output_schema.json"),
+    )
+
+
+_STUB_EXECUTION_POLICY = {
+    "schema_version": 1,
+    "profile": "deploy_batch",
+    "status": "projected",
+    "strategy": "projected",
+    "reason_code": "projection_available",
+    "blocking_node_id": None,
+    "blocking_operator": None,
+    "remediation": "No change is needed.",
+}
+
+
 class TestResolveConfigEdgeCases:
     """Tests for resolve_config() edge cases."""
 
@@ -3978,6 +4441,7 @@ class TestResolveConfigEdgeCases:
         graph = MagicMock()
         graph.nodes = [source, output]
         graph.edges = []
+        graph.preamble = ""
         return graph
 
     def test_resolve_config_no_source_nodes_raises(self):
@@ -4042,6 +4506,7 @@ class TestResolveConfigEdgeCases:
         source.id = "single_src"
         source.data.nodeType = NodeType.DATA_INPUT
         mock_graph.nodes = [source]
+        mock_graph.preamble = ""
 
         with (
             patch("haute.parser.parse_pipeline_file", return_value=mock_graph),
@@ -4051,11 +4516,115 @@ class TestResolveConfigEdgeCases:
             patch("haute.deploy._config.find_source_nodes", return_value=["single_src"]),
             patch("haute.deploy._bundler.collect_artifacts", return_value={}),
             patch("haute.deploy._schema.infer_input_schema", return_value={"col": "Int64"}),
+            patch(
+                "haute.deploy._schema.infer_deploy_execution_policy",
+                return_value=_STUB_EXECUTION_POLICY,
+            ),
             patch("haute.deploy._schema.infer_output_schema", return_value={"out": "Float64"}),
         ):
             resolved = resolve_config(config)
 
         assert resolved.input_node_ids == ["single_src"]
+
+    @staticmethod
+    def _conservative_deploy_graph(tmp_path):
+        """A real apiInput graph whose group-by estimate cannot be proven."""
+        from tests.test_deploy_batch_scoring import (
+            _conservative_graph,
+            _write_policy_sample,
+        )
+
+        return _write_policy_sample(tmp_path, _conservative_graph())
+
+    @staticmethod
+    def _tmp_pipeline_file(tmp_path):
+        """A pipeline path inside the temp project root (parsing is patched)."""
+        pipeline = tmp_path / "pipeline.py"
+        pipeline.write_text("# conservative deploy fixture", encoding="utf-8")
+        return pipeline
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_resolve_config_bundles_an_unprovable_group_by_for_a_container_target(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """A cache-miss resolve must reach policy inference, not die in the dry-run.
+
+        The output-schema dry-run runs uncapped, so the conservative graph's
+        group-by is rejected there; the capped-worker fallback keeps resolution
+        alive and the recorded policy is the capped worker's warning.
+        """
+        from haute.deploy._config import ContainerConfig, DeployConfig, resolve_config
+
+        _force_schema_cache_miss(tmp_path, monkeypatch)
+        # The capped dry-run really spawns; the child derives its project root
+        # from the working directory it inherits.
+        monkeypatch.chdir(tmp_path)
+        graph = self._conservative_deploy_graph(tmp_path)
+        config = DeployConfig(
+            pipeline_file=self._tmp_pipeline_file(tmp_path),
+            project_dir=tmp_path,
+            model_name="test-model",
+            target="container",
+            container=ContainerConfig(base_image="python:3.11.9-slim"),
+        )
+
+        with (
+            patch("haute.parser.parse_pipeline_file", return_value=graph),
+            patch("haute.deploy._config.find_output_node", return_value="out"),
+            patch(
+                "haute.deploy._config.prune_for_deploy",
+                return_value=(graph, ["quotes", "shape", "agg", "out"], []),
+            ),
+            patch("haute.deploy._config.find_deploy_input_nodes", return_value=["quotes"]),
+            patch("haute.deploy._bundler.collect_artifacts", return_value={}),
+            patch("haute.deploy._schema.infer_input_schema", return_value={"segment": "String"}),
+        ):
+            resolved = resolve_config(config)
+
+        assert resolved.execution_policy["status"] == "warned"
+        assert resolved.execution_policy["strategy"] == "full-width-conservative"
+        assert resolved.execution_policy["runtime"] == "hard_capped_worker"
+        assert resolved.output_schema
+        assert "total" in resolved.output_schema
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_resolve_config_refuses_an_unprovable_group_by_for_databricks(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """The pyfunc target scores batches in process, so it cannot be capped."""
+        from haute.deploy._config import DeployConfig, resolve_config
+        from haute.errors import DeployError
+
+        _force_schema_cache_miss(tmp_path, monkeypatch)
+        graph = self._conservative_deploy_graph(tmp_path)
+        config = DeployConfig(
+            pipeline_file=self._tmp_pipeline_file(tmp_path),
+            project_dir=tmp_path,
+            model_name="test-model",
+            target="databricks",
+        )
+
+        def forbidden_runner(*_args, **_kwargs):
+            raise AssertionError("policy inference must refuse before any spawn")
+
+        with (
+            patch("haute.parser.parse_pipeline_file", return_value=graph),
+            patch("haute.deploy._config.find_output_node", return_value="out"),
+            patch(
+                "haute.deploy._config.prune_for_deploy",
+                return_value=(graph, ["quotes", "shape", "agg", "out"], []),
+            ),
+            patch("haute.deploy._config.find_deploy_input_nodes", return_value=["quotes"]),
+            patch("haute.deploy._bundler.collect_artifacts", return_value={}),
+            patch("haute.deploy._schema.infer_input_schema", return_value={"segment": "String"}),
+            patch("haute.deploy._schema.run_isolated_worker", forbidden_runner),
+        ):
+            with pytest.raises(DeployError, match="serving process"):
+                resolve_config(config)
 
     def test_resolve_config_rejects_a_sole_non_data_input_source(self):
         """A constant must never be promoted to the live deploy input."""
@@ -4106,6 +4675,10 @@ class TestResolveConfigEdgeCases:
             patch("haute.deploy._config.find_deploy_input_nodes", return_value=["api"]),
             patch("haute.deploy._bundler.collect_artifacts", return_value={}),
             patch("haute.deploy._schema.infer_input_schema", return_value={"col": "Int64"}),
+            patch(
+                "haute.deploy._schema.infer_deploy_execution_policy",
+                return_value=_STUB_EXECUTION_POLICY,
+            ),
             patch("haute.deploy._schema.infer_output_schema", return_value={"out": "Float64"}),
         ):
             resolved = resolve_config(config)
@@ -4186,6 +4759,10 @@ class TestResolveConfigEdgeCases:
             patch("haute.deploy._bundler.collect_artifacts", return_value={}),
             patch("haute.deploy._schema.infer_input_schema", return_value={"col": "Int64"}),
             patch(
+                "haute.deploy._schema.infer_deploy_execution_policy",
+                return_value=_STUB_EXECUTION_POLICY,
+            ),
+            patch(
                 "haute.deploy._schema.infer_output_schema",
                 return_value={"premium": "Float64", "age": "Int64"},
             ),
@@ -4213,6 +4790,10 @@ class TestResolveConfigEdgeCases:
             patch("haute.deploy._bundler.collect_artifacts", return_value={}),
             patch("haute.deploy._schema.infer_input_schema", return_value={"col": "Int64"}),
             patch(
+                "haute.deploy._schema.infer_deploy_execution_policy",
+                return_value=_STUB_EXECUTION_POLICY,
+            ),
+            patch(
                 "haute.deploy._schema.infer_output_schema",
                 return_value={"premium": "Float64", "age": "Int64"},
             ),
@@ -4230,6 +4811,14 @@ class TestResolveConfigEdgeCases:
 
 class TestGetDeployStatus:
     """Tests for get_deploy_status()."""
+
+    @pytest.fixture(autouse=True)
+    def _mlflow_databricks_pair(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """get_deploy_status resolves the dedicated Databricks MLflow pair first."""
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://myhost.databricks.com")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "mlflow-test-token")
+        for name in ("MLFLOW_TRACKING_URI", "DATABRICKS_CONFIG_PROFILE", "MLFLOW_ENABLE_DB_SDK"):
+            monkeypatch.delenv(name, raising=False)
 
     def test_model_not_found(self):
         from haute.deploy._mlflow import get_deploy_status
@@ -4423,63 +5012,21 @@ class TestCondaEnvAndPipRequirements:
     def test_pip_requirements_includes_haute_and_polars(self):
         from haute.deploy._mlflow import _pip_requirements
 
-        resolved = _make_resolved()
-        reqs = _pip_requirements(resolved)
+        reqs = _pip_requirements()
 
         assert any("haute==" in r for r in reqs)
-        assert "polars>=1.39.2" in reqs
+        assert "polars>=1.44.2" in reqs
 
-    def test_pip_requirements_includes_catboost_when_used(self):
-        """If a node has fileType=catboost, catboost is added to requirements."""
+    def test_pip_requirements_add_no_model_engine(self):
+        """The pinned Haute brings its own engines; no node adds one."""
         from haute.deploy._mlflow import _pip_requirements
 
-        graph = _g(
-            {
-                "nodes": [
-                    {
-                        "id": "ext",
-                        "data": {
-                            "label": "ext",
-                            "nodeType": "externalFile",
-                            "config": {"fileType": "catboost"},
-                        },
-                    },
-                ],
-            }
-        )
-        resolved = _make_resolved(pruned_graph=graph)
-        reqs = _pip_requirements(resolved)
-
-        assert any("catboost" in r for r in reqs)
-
-    def test_pip_requirements_no_catboost_without_it(self):
-        """Without catboost nodes, catboost is NOT in requirements."""
-        from haute.deploy._mlflow import _pip_requirements
-
-        graph = _g(
-            {
-                "nodes": [
-                    {
-                        "id": "t",
-                        "data": {
-                            "label": "t",
-                            "nodeType": "polars",
-                            "config": {},
-                        },
-                    },
-                ],
-            }
-        )
-        resolved = _make_resolved(pruned_graph=graph)
-        reqs = _pip_requirements(resolved)
-
-        assert not any("catboost" in r for r in reqs)
+        assert not any("catboost" in r for r in _pip_requirements())
 
     def test_conda_env_structure(self):
         from haute.deploy._mlflow import _conda_env
 
-        resolved = _make_resolved()
-        env = _conda_env(resolved)
+        env = _conda_env()
 
         assert env["name"] == "mlflow-env"
         assert "conda-forge" in env["channels"]
@@ -4489,8 +5036,7 @@ class TestCondaEnvAndPipRequirements:
     def test_conda_env_pins_python_version(self):
         from haute.deploy._mlflow import _SERVING_PYTHON_VERSION, _conda_env
 
-        resolved = _make_resolved()
-        env = _conda_env(resolved)
+        env = _conda_env()
 
         python_dep = env["dependencies"][0]
         assert python_dep == f"python={_SERVING_PYTHON_VERSION}"

@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "id": "smoke_corpus_underwriting_decision",
+  "case": "smoke_corpus_underwriting_decision",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "dry",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Add underwriting_decision, deciding each quote by age and claims.",
+                "ops": [
+                  {
+                    "op": "add_node",
+                    "node_type": "polars",
+                    "name": "underwriting_decision",
+                    "ref": "transform",
+                    "config": {
+                      "steps": [
+                        {
+                          "id": "start",
+                          "kind": "source",
+                          "input": "quotes"
+                        },
+                        {
+                          "id": "logic",
+                          "kind": "free_code",
+                          "code": "# Underwriting decision\ndf = df.with_columns(\n    pl.when(pl.col('age') < 18).then(pl.lit('decline'))\n    .when((pl.col('claims_count') >= 3) | (pl.col('vehicle_value') > 100000))\n    .then(pl.lit('refer'))\n    .when(pl.col('premium').is_null()).then(pl.lit('await_price'))\n    .otherwise(pl.lit('accept'))\n    .alias('decision')\n)\n"
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "quotes",
+                    "target": "$transform"
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "dry.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "Saved the change.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

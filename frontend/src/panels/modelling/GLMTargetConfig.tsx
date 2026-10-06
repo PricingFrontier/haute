@@ -1,39 +1,35 @@
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import type { OnUpdateConfig } from "../editors"
-import { ApiError } from "../../api/client"
+import { apiErrorMessage } from "../../api/errors"
 import type { DispersionParam } from "../../api/types"
 import { configField } from "../../utils/configField"
+import { effectiveMetrics } from "../../utils/trainingObjective"
 import { toggleButtonStyle } from "./styles"
 import { FailoverHelp } from "./FailoverHelp"
-import { OffsetFieldLabel } from "./OffsetFieldLabel"
+import { GLM_FAMILY_LINKS, isGlmFamily, type GlmFamily } from "./glmFamilies"
+import { ColumnSelector } from "./ColumnSelector"
+import { modelColumnChoices } from "./modelColumns"
+import WeightOffsetFields from "./WeightOffsetFields"
+import useToastStore from "../../stores/useToastStore"
 
 type Column = { name: string; dtype: string }
 
-// Families the backend validates (_VALID_GLM_LINKS in
-// routes/_train_service.py). Keep in sync with that dict.
-const FAMILIES = [
-  { value: "poisson", label: "Poisson", hint: "Claim frequency" },
-  { value: "gamma", label: "Gamma", hint: "Claim severity" },
-  { value: "tweedie", label: "Tweedie", hint: "Pure premium" },
-  { value: "gaussian", label: "Gaussian", hint: "Linear regression" },
-  { value: "binomial", label: "Binomial", hint: "Binary outcomes" },
-  { value: "quasipoisson", label: "Quasi-Poisson", hint: "Overdispersed counts" },
-  { value: "negbinomial", label: "Neg. Binomial", hint: "Overdispersed counts (explicit theta)" },
-] as const
-
-const CANONICAL_LINKS: Record<string, string> = {
-  poisson: "log",
-  gamma: "log",
-  tweedie: "log",
-  gaussian: "identity",
-  binomial: "logit",
-  quasipoisson: "log",
-  negbinomial: "log",
+/** Display order and labels; the families and their links come from GLM_FAMILY_LINKS. */
+const FAMILY_LABELS: Record<GlmFamily, { label: string; hint: string; metrics: string[] }> = {
+  poisson: { label: "Poisson", hint: "Claim frequency", metrics: ["gini", "poisson_deviance"] },
+  gamma: { label: "Gamma", hint: "Claim severity", metrics: ["gini", "rmse"] },
+  tweedie: { label: "Tweedie", hint: "Pure premium", metrics: ["gini", "tweedie_deviance"] },
+  gaussian: { label: "Gaussian", hint: "Linear regression", metrics: ["gini", "rmse"] },
+  binomial: { label: "Binomial", hint: "Binary outcomes", metrics: ["auc", "logloss"] },
+  quasipoisson: { label: "Quasi-Poisson", hint: "Overdispersed counts", metrics: ["gini", "poisson_deviance"] },
+  quasibinomial: { label: "Quasi-Binomial", hint: "Overdispersed binary outcomes", metrics: ["auc", "logloss"] },
+  negbinomial: { label: "Neg. Binomial", hint: "Overdispersed counts (explicit theta)", metrics: ["gini", "poisson_deviance"] },
 }
+const FAMILIES = (Object.keys(GLM_FAMILY_LINKS) as GlmFamily[]).map((value) => ({ value, ...FAMILY_LABELS[value] }))
 
 const TWEEDIE_HELP =
   "Tweedie interpolates between Poisson (power 1) and Gamma (power 2); the " +
-  "variance power sets where. There is no sensible default — leaving it unset " +
+  "variance power sets where. There is no sensible default - leaving it unset " +
   "would silently fit at power 1.5, so a choice is required. Estimate profiles " +
   "the likelihood over the power on the node's training data; the result is " +
   "filled in for you to accept or adjust. You can change it later; the value " +
@@ -41,12 +37,10 @@ const TWEEDIE_HELP =
 
 const THETA_HELP =
   "Negative Binomial dispersion: variance = mean + mean²/theta (smaller theta " +
-  "= more overdispersion). RustyStats does not estimate theta — leaving it " +
-  "unset would silently fit at theta=1.0, so a choice is required. Estimate " +
-  "profiles the likelihood over theta on the node's training data; the result " +
-  "is filled in for you to accept or adjust."
-
-const LINK_FUNCTIONS = ["log", "identity", "logit", "inverse", "sqrt", "cloglog", "probit"]
+  "= more overdispersion). RustyStats does not estimate theta and refuses to " +
+  "fit without it, so a choice is required. Estimate profiles the likelihood " +
+  "over theta on the node's training data; the result is filled in for you to " +
+  "accept or adjust."
 
 const GLM_METRICS = [
   { value: "gini", label: "Gini" },
@@ -66,13 +60,17 @@ export type GLMTargetConfigProps = {
   /** Run a profile-likelihood dispersion estimate on the node's training
    *  data and resolve with the value. The estimate is an explicit user
    *  action — the resolved value is filled into the config field for the
-   *  user to accept or adjust, never applied silently. */
-  onEstimateDispersion?: (param: DispersionParam) => Promise<number>
+   *  user to accept or adjust, never applied silently. The signal aborts
+   *  when this panel unmounts. */
+  onEstimateDispersion?: (param: DispersionParam, signal: AbortSignal) => Promise<number>
 }
 
 export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersion }: GLMTargetConfigProps) {
   const [estimating, setEstimating] = useState<DispersionParam | null>(null)
   const [estimateError, setEstimateError] = useState<string | null>(null)
+  // A closed panel has nowhere to show the estimate, so it cancels it.
+  const estimateRef = useRef<AbortController | null>(null)
+  useEffect(() => () => estimateRef.current?.abort(), [])
   const target = configField(config, "target", "")
   const weight = configField(config, "weight", "")
   // No display default: an unselected family must LOOK unselected — the
@@ -82,25 +80,42 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
   const family = configField(config, "family", "")
   const link = configField(config, "link", "")
   const intercept = configField(config, "intercept", true)
-  const metrics = configField<string[]>(config, "metrics", ["gini", "poisson_deviance"])
-  const canonicalLink = CANONICAL_LINKS[family] || "log"
+  const metrics = effectiveMetrics(config)
+  const links: readonly string[] = isGlmFamily(family) ? GLM_FAMILY_LINKS[family] : []
+  const canonicalLink = links[0]
+  const linkUnavailable = link !== "" && !links.includes(link)
+  const theta = config.theta
+  const offset = configField(config, "offset", "")
+  const { targetColumns, weightColumns, offsetColumns } = modelColumnChoices(columns, { target, weight, offset })
 
   const handleEstimate = async (param: DispersionParam) => {
     if (!onEstimateDispersion || estimating) return
+    const estimate = new AbortController()
+    estimateRef.current = estimate
     setEstimating(param)
     setEstimateError(null)
     try {
-      const value = await onEstimateDispersion(param)
+      const value = await onEstimateDispersion(param, estimate.signal)
+      if (estimate.signal.aborted) return
       // Filled in, not applied silently: the value lands in the visible,
       // editable field and the user keeps the final say.
       onUpdate(param, value)
     } catch (e) {
       // Prefer the backend's actionable detail ("GLM config has no factors…")
       // over the generic "HTTP 400" message.
-      const detail = e instanceof ApiError ? e.detail : undefined
-      setEstimateError(detail || (e instanceof Error ? e.message : String(e)))
+      const message = apiErrorMessage(e)
+      if (estimate.signal.aborted) {
+        // The panel has closed, so only a cancellation that failed is news: the
+        // estimate may still be running, and a toast outlives the panel.
+        if ((e as { name?: unknown } | null)?.name !== "AbortError") {
+          useToastStore.getState().addToast("error", `Cancelling the dispersion estimate failed: ${message}`)
+        }
+        return
+      }
+      setEstimateError(message)
     } finally {
-      setEstimating(null)
+      if (estimateRef.current === estimate) estimateRef.current = null
+      if (!estimate.signal.aborted) setEstimating(null)
     }
   }
 
@@ -118,58 +133,18 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
 
   return (
     <div>
-      <p className="text-[10px] mb-1" aria-label="Selected algorithm">Algorithm: <strong>GLM</strong></p>
-      <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
-        Target & Weight
-      </label>
+      <p className="text-[10px] mb-1" aria-label="Selected algorithm">Algorithm <strong>Rustystats</strong></p>
+      <h3 className="text-[14px] font-semibold" style={{ color: "var(--text-primary)" }}>Target and objective</h3>
       <div className="mt-1.5 space-y-2">
         {/* Target */}
         <div>
-          <label className="text-xs" style={{ color: "var(--text-secondary)" }}>Target column</label>
-          <select
-            value={target}
-            onChange={(e) => onUpdate("target", e.target.value)}
-            className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg text-xs font-mono"
-            style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
-          >
-            <option value="">Select target...</option>
-            {columns.map(c => <option key={c.name} value={c.name}>{c.name} ({c.dtype})</option>)}
-          </select>
-        </div>
-
-        {/* Weight */}
-        <div>
-          <label className="text-xs" style={{ color: "var(--text-secondary)" }}>Weight column (optional)</label>
-          <select
-            value={weight}
-            onChange={(e) => onUpdate("weight", e.target.value)}
-            className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg text-xs font-mono"
-            style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
-          >
-            <option value="">None</option>
-            {columns.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
-          </select>
-        </div>
-
-        {/* Offset */}
-        <div>
-          <OffsetFieldLabel />
-          <select
-            value={configField(config, "offset", "")}
-            onChange={(e) => onUpdate("offset", e.target.value || null)}
-            className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg text-xs font-mono"
-            style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
-          >
-            <option value="">None</option>
-            {columns.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
-          </select>
+          <label className="text-[13px]" style={{ color: "var(--text-secondary)" }}>Target column</label>
+          <ColumnSelector label="Target column" value={target} columns={targetColumns} onChange={(next) => onUpdate("target", next)} placeholder="Select target…" />
         </div>
 
         {/* Family */}
         <div>
-          <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
-            Family
-          </label>
+            <h3 className="text-[14px] font-semibold" style={{ color: "var(--text-primary)" }}>Family</h3>
           <div className="mt-1.5 flex flex-wrap gap-1.5">
             {FAMILIES.map(f => {
               const selected = family === f.value
@@ -177,19 +152,10 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
                 <button
                   key={f.value}
                   onClick={() => {
-                    const defaults: Record<string, string[]> = {
-                      poisson: ["gini", "poisson_deviance"],
-                      gamma: ["gini", "rmse"],
-                      tweedie: ["gini", "tweedie_deviance"],
-                      gaussian: ["gini", "rmse"],
-                      binomial: ["auc", "logloss"],
-                      quasipoisson: ["gini", "poisson_deviance"],
-                      negbinomial: ["gini", "poisson_deviance"],
-                    }
                     onUpdate({
                       family: f.value,
                       link: "",  // reset to canonical
-                      metrics: defaults[f.value] || ["gini", "rmse"],
+                      metrics: f.metrics,
                     })
                   }}
                   className="px-2.5 py-1 rounded-md text-xs font-mono transition-colors"
@@ -201,33 +167,45 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
               )
             })}
           </div>
+          {family !== "" && !isGlmFamily(family) && (
+            <p role="alert" className="mt-1 text-[11px]" style={{ color: "var(--danger)" }}>
+              The saved family {family} is not supported; choose one above.
+            </p>
+          )}
         </div>
 
-        {/* Link function */}
-        <div>
-          <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
-            Link Function
-          </label>
-          <div className="mt-1.5 flex flex-wrap gap-1.5">
-            <button
-              onClick={() => onUpdate("link", "")}
-              className="px-2.5 py-1 rounded-md text-xs font-mono transition-colors"
-              style={toggleButtonStyle(!link)}
-            >
-              auto ({canonicalLink})
-            </button>
-            {LINK_FUNCTIONS.filter(l => l !== canonicalLink).map(l => (
+        {/* Link function: the links RustyStats supports for the family. */}
+        {links.length > 0 && (
+          <div>
+            <label className="text-sm font-semibold" style={{ color: "var(--text-muted)" }}>
+              Link Function
+            </label>
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
               <button
-                key={l}
-                onClick={() => onUpdate("link", l)}
+                onClick={() => onUpdate("link", "")}
                 className="px-2.5 py-1 rounded-md text-xs font-mono transition-colors"
-                style={toggleButtonStyle(link === l)}
+                style={toggleButtonStyle(!link)}
               >
-                {l}
+                auto ({canonicalLink})
               </button>
-            ))}
+              {links.slice(1).map(l => (
+                <button
+                  key={l}
+                  onClick={() => onUpdate("link", l)}
+                  className="px-2.5 py-1 rounded-md text-xs font-mono transition-colors"
+                  style={toggleButtonStyle(link === l)}
+                >
+                  {l}
+                </button>
+              ))}
+            </div>
+            {linkUnavailable && (
+              <p role="alert" className="mt-1 text-[11px]" style={{ color: "var(--danger)" }}>
+                The saved link {link} is not available for {FAMILY_LABELS[family as GlmFamily].label}; choose one above.
+              </p>
+            )}
           </div>
-        </div>
+        )}
 
         {/* Tweedie variance power — gated: no silent 1.5 failover. */}
         {family === "tweedie" && (
@@ -271,8 +249,8 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
           </div>
         )}
 
-        {/* Negative Binomial dispersion — gated: no silent theta=1.0
-            failover. Starts empty; the user types a value or triggers an
+        {/* Negative Binomial dispersion — gated: RustyStats refuses to fit
+            without it. Starts empty; the user types a value or triggers an
             explicit estimate from the training data. */}
         {family === "negbinomial" && (
           <div>
@@ -283,7 +261,7 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
             <div className="mt-1 flex gap-1.5">
               <input
                 type="number" min={0} step="any"
-                value={typeof config.theta === "number" ? config.theta : ""}
+                value={typeof theta === "number" ? theta : ""}
                 placeholder="e.g. 1.5"
                 onChange={(e) => {
                   const parsed = parseFloat(e.target.value)
@@ -291,13 +269,18 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
                 }}
                 className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg text-xs font-mono"
                 style={
-                  typeof config.theta === "number"
+                  typeof theta === "number" && theta > 0
                     ? { background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }
                     : { background: "var(--warning-soft-subtle)", border: "1px solid var(--warning-border)", color: "var(--text-primary)" }
                 }
               />
               {estimateButton("theta")}
             </div>
+            {typeof theta === "number" && !(theta > 0) && (
+              <p role="alert" className="mt-1 text-[11px]" style={{ color: "var(--danger)" }}>
+                Theta must be greater than 0.
+              </p>
+            )}
             {estimateError && estimating === null && (
               <div className="mt-1 text-[11px]" style={{ color: "var(--warning)" }}>
                 Estimation failed: {estimateError}
@@ -305,6 +288,15 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
             )}
           </div>
         )}
+
+        <h3 className="text-[14px] font-semibold" style={{ color: "var(--text-primary)" }}>Weight and offset</h3>
+        <WeightOffsetFields
+          weight={weight}
+          offset={offset}
+          weightColumns={weightColumns}
+          offsetColumns={offsetColumns}
+          onUpdate={onUpdate}
+        />
 
         {/* Intercept */}
         <label className="flex items-center gap-2 cursor-pointer select-none">
@@ -319,9 +311,7 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
 
         {/* Metrics */}
         <div>
-          <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
-            Metrics
-          </label>
+          <h3 className="text-[14px] font-semibold" style={{ color: "var(--text-primary)" }}>Metrics</h3>
           <div className="mt-1.5 flex flex-wrap gap-1.5">
             {GLM_METRICS.map(m => {
               const selected = metrics.includes(m.value)

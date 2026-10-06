@@ -16,7 +16,7 @@ import pytest
 from haute._builders import _apply_online, _apply_ratebook, _build_node_fn
 from haute._config_builder import _build_node_config
 from haute._types import GraphNode, NodeData, NodeType
-from haute.codegen import _generate_node_code, _node_to_code
+from haute.codegen import _node_to_code
 from haute.errors import ConfigError, RatingFactorDtypeContractError
 
 # ---------------------------------------------------------------------------
@@ -38,7 +38,6 @@ def _make_online_artifact(
         "quote_id": "quote_id",
         "scenario_index": "scenario_index",
         "scenario_value": "scenario_value",
-        "chunk_size": 500_000,
     }
 
 
@@ -56,6 +55,7 @@ def _make_ratebook_artifact(version: str = "rb_v1") -> dict:
                 {"__factor_group__": "Manchester", "optimal_scenario_value": 0.98},
             ],
         },
+        "combined_factor_bounds": {"min": 0.1, "max": 10.0},
         "factor_dtypes": {
             "region": [{"column": "region", "dtype": {"kind": "String"}}],
         },
@@ -153,6 +153,7 @@ class TestBuildConfig:
                 "source_type": "registered",
                 "registered_model": "my_opt_model",
                 "version": "3",
+                "mlflow_destination": "local",
             },
             body="",
             param_names=["df"],
@@ -160,6 +161,7 @@ class TestBuildConfig:
         assert config["sourceType"] == "registered"
         assert config["registered_model"] == "my_opt_model"
         assert config["version"] == "3"
+        assert config["mlflow_destination"] == "local"
 
     def test_build_config_ratebook_input(self):
         config = _build_node_config(
@@ -176,6 +178,117 @@ class TestBuildConfig:
         assert config["ratebook_input"] == "banded_quotes"
 
 
+class TestApplyFromConfigDestination:
+    def test_apply_from_config_forwards_destination(self):
+        """The node's ``mlflow_destination`` reaches the MLflow artifact loader."""
+        from haute._node_apply import apply_optimiser_apply_from_config
+
+        lf = pl.DataFrame({"x": [1.0]}).lazy()
+        with (
+            patch(
+                "haute._optimiser_io.load_mlflow_optimiser_artifact",
+                return_value=_make_online_artifact(),
+            ) as mock_load,
+            patch("haute._builders._dispatch_apply", return_value=lf) as mock_dispatch,
+        ):
+            apply_optimiser_apply_from_config(
+                lf,
+                config={
+                    "sourceType": "run",
+                    "run_id": "r",
+                    "mlflow_destination": "local",
+                },
+                source_names=["scored"],
+            )
+
+        mock_dispatch.assert_called_once()
+        assert mock_load.call_args.kwargs["destination"] == "local"
+
+
+class TestOptimiserApplyDestinationPersistence:
+    """The destination is sidecar state; codegen never emits it as a kwarg."""
+
+    APPLY_SIDECAR = "config/apply_optimisation/apply_opt.json"
+
+    def _graph(self, extra_config: dict | None = None):
+        from tests.conftest import make_edge, make_file_input_config, make_graph
+
+        config = {"sourceType": "run", "run_id": "abc123"}
+        config.update(extra_config or {})
+        return make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "data": {
+                            "label": "source",
+                            "nodeType": "dataInput",
+                            "config": make_file_input_config("data.parquet"),
+                        },
+                    },
+                    {
+                        "id": "apply",
+                        "data": {
+                            "label": "apply_opt",
+                            "nodeType": "optimiserApply",
+                            "config": config,
+                        },
+                    },
+                ],
+                "edges": [make_edge("source", "apply").model_dump()],
+            }
+        )
+
+    def _write_sidecars(self, graph, base_dir: Path) -> dict[str, str]:
+        from haute._config_io import collect_node_configs
+
+        configs = collect_node_configs(graph)
+        for rel_path, content in configs.items():
+            cfg_file = base_dir / rel_path
+            cfg_file.parent.mkdir(parents=True, exist_ok=True)
+            cfg_file.write_text(content, encoding="utf-8")
+        return configs
+
+    def test_mlflow_destination_persists_in_sidecar_not_decorator(self, tmp_path):
+        from haute.codegen import graph_to_code
+        from haute.parser import parse_pipeline_source
+
+        graph = self._graph({"mlflow_destination": "local"})
+        code = graph_to_code(graph)
+
+        assert f'config="{self.APPLY_SIDECAR}"' in code
+        assert "mlflow_destination" not in code
+
+        present_dir = tmp_path / "present"
+        present_dir.mkdir()
+        configs = self._write_sidecars(graph, present_dir)
+        sidecar = json.loads(configs[self.APPLY_SIDECAR])
+        assert sidecar["mlflow_destination"] == "local"
+
+        parsed = parse_pipeline_source(code, _base_dir=present_dir)
+        apply_node = {n.data.label: n for n in parsed.nodes}["apply_opt"]
+        assert apply_node.data.nodeType == "optimiserApply"
+        assert apply_node.data.config.get("mlflow_destination") == "local"
+
+    def test_absent_mlflow_destination_appears_on_neither_side(self, tmp_path):
+        from haute.codegen import graph_to_code
+        from haute.parser import parse_pipeline_source
+
+        graph = self._graph()
+        code = graph_to_code(graph)
+        assert "mlflow_destination" not in code
+
+        absent_dir = tmp_path / "absent"
+        absent_dir.mkdir()
+        configs = self._write_sidecars(graph, absent_dir)
+        sidecar = json.loads(configs[self.APPLY_SIDECAR])
+        assert "mlflow_destination" not in sidecar
+
+        parsed = parse_pipeline_source(code, _base_dir=absent_dir)
+        apply_node = {n.data.label: n for n in parsed.nodes}["apply_opt"]
+        assert "mlflow_destination" not in apply_node.data.config
+
+
 # ---------------------------------------------------------------------------
 # Codegen
 # ---------------------------------------------------------------------------
@@ -189,11 +302,10 @@ class TestCodegen:
         )
         code = _node_to_code(node, source_names=["score_models"])
         assert 'config="config/apply_optimisation/apply_optimised_price.json"' in code
-        assert "def apply_optimised_price(" in code
-        # Body applies the artifact via the shared helper (not a no-op
-        # passthrough) so a standalone pipeline.run() actually optimises.
-        assert "apply_optimiser_apply_from_config(" in code
-        assert "source_names=['score_models']" in code
+        # A declaration: the decorator applies the artifact through the shared
+        # helper when the file runs, reading the input names off the signature.
+        assert "def apply_optimised_price(score_models): ..." in code
+        assert "apply_optimiser_apply_from_config" not in code
         assert "source_ids=" not in code
 
     def test_codegen_empty_config(self):
@@ -237,8 +349,11 @@ class TestCodegen:
                 "optimised_value_column": "selected_price_factor",
             },
         )
-        code = _generate_node_code(node, source_names=["df"])
-        assert "optimised_value_column='selected_price_factor'" in code
+        code = _node_to_code(node, source_names=["quotes"])
+        # The column lives in the sidecar the decorator references and reads.
+        assert code.startswith('@pipeline.optimiser_apply(config="config/apply_optimisation/')
+        assert "selected_price_factor" not in code
+        assert "def apply_opt(quotes): ..." in code
 
     def test_codegen_ratebook_input(self):
         node = _make_node(
@@ -248,8 +363,11 @@ class TestCodegen:
                 "ratebook_input": "banded_quotes",
             },
         )
-        code = _generate_node_code(node, source_names=["scored_quotes", "banded_quotes"])
-        assert "ratebook_input='banded_quotes'" in code
+        code = _node_to_code(node, source_names=["scored_quotes", "banded_quotes"])
+        # The sidecar names the ratebook input; the declaration's parameters are
+        # the exact source names the decorator resolves it against.
+        assert "ratebook_input=" not in code
+        assert "def apply_opt(scored_quotes, banded_quotes): ..." in code
 
 
 # ---------------------------------------------------------------------------
@@ -751,6 +869,7 @@ def _make_composite_artifact(version: str = "rb_comp_v1") -> dict:
                 },
             ],
         },
+        "combined_factor_bounds": {"min": 0.1, "max": 10.0},
         "factor_dtypes": {
             "channel:age_band": [
                 {"column": "channel", "dtype": {"kind": "String"}},
@@ -803,6 +922,7 @@ class TestExecutorRatebookComposite:
                     },
                 ],
             },
+            "combined_factor_bounds": {"min": 0.1, "max": 10.0},
             "factor_dtypes": {
                 "a:b:c": [
                     {"column": "a", "dtype": {"kind": "String"}},
@@ -871,6 +991,7 @@ class TestExecutorRatebookComposite:
                     {"__factor_group__": f"online{_SEP}25", "optimal_scenario_value": 1.15},
                 ],
             },
+            "combined_factor_bounds": {"min": 0.1, "max": 10.0},
             "factor_dtypes": {
                 "channel:age": [
                     {"column": "channel", "dtype": {"kind": "String"}},
@@ -894,6 +1015,7 @@ class TestExecutorRatebookComposite:
                     {"__factor_group__": "combo-1", "optimal_scenario_value": 1.30},
                 ],
             },
+            "combined_factor_bounds": {"min": 0.1, "max": 10.0},
             "factor_dtypes": {
                 "channel:age_band": [{"column": "channel:age_band", "dtype": {"kind": "String"}}]
             },
@@ -916,6 +1038,7 @@ class TestRatebookCompositeContractErrors:
                     },
                 ],
             },
+            "combined_factor_bounds": {"min": 0.1, "max": 10.0},
             "factor_dtypes": {
                 "channel:age_band": [
                     {"column": "channel", "dtype": {"kind": "String"}},
@@ -936,6 +1059,7 @@ class TestRatebookCompositeContractErrors:
                     {"__factor_group__": f"north{_SEP}east", "optimal_scenario_value": 1.0},
                 ],
             },
+            "combined_factor_bounds": {"min": 0.1, "max": 10.0},
             "factor_dtypes": {"region": [{"column": "region", "dtype": {"kind": "String"}}]},
         }
         df = pl.DataFrame({"region": [f"north{_SEP}east"]})
@@ -951,6 +1075,7 @@ class TestRatebookCompositeContractErrors:
                     {"__factor_group__": f"x{_SEP}y", "optimal_scenario_value": 1.0},
                 ],
             },
+            "combined_factor_bounds": {"min": 0.1, "max": 10.0},
             "factor_dtypes": {
                 "a:a": [
                     {"column": "a", "dtype": {"kind": "String"}},
@@ -971,6 +1096,7 @@ class TestRatebookCompositeContractErrors:
                     {"__factor_group__": f"online{_SEP}x", "optimal_scenario_value": 1.0},
                 ],
             },
+            "combined_factor_bounds": {"min": 0.1, "max": 10.0},
             "factor_dtypes": {
                 "channel:": [
                     {"column": "channel", "dtype": {"kind": "String"}},
@@ -1178,3 +1304,157 @@ class TestBundler:
         )
         artifacts = collect_artifacts(graph, [], pipeline_dir=Path("/tmp"))
         assert len(artifacts) == 0
+
+
+class TestLimitedOnlineApply:
+    """A limited read of online apply computes only the quotes it returns."""
+
+    @staticmethod
+    def _scenarios(quote_ids: list[str]) -> pl.DataFrame:
+        return pl.DataFrame(
+            {
+                "quote_id": [quote for quote in quote_ids for _ in range(2)],
+                "scenario_index": [0, 1] * len(quote_ids),
+                "scenario_value": [0.9, 1.1] * len(quote_ids),
+                "predicted_income": [float(i) for i in range(2 * len(quote_ids))],
+                "predicted_volume": [1.0, 0.8] * len(quote_ids),
+            }
+        )
+
+    @staticmethod
+    def _count_applied_rows(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+        import haute._builders as builders
+
+        heights: list[int] = []
+        real = builders._prepare_online_apply_frame
+
+        def counting(frame, artifact):
+            prepared = real(frame, artifact)
+            heights.append(prepared.height)
+            return prepared
+
+        monkeypatch.setattr(builders, "_prepare_online_apply_frame", counting)
+        return heights
+
+    def test_limit_returns_the_unlimited_prefix_and_applies_only_those_quotes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute._polars_utils import streaming_collect
+
+        path = tmp_path / "scored.parquet"
+        self._scenarios(["z", "a", "m"]).write_parquet(path)
+        artifact = _make_online_artifact()
+
+        unlimited = streaming_collect(_apply_online(pl.scan_parquet(path), artifact, "", "__ver__"))
+        heights = self._count_applied_rows(monkeypatch)
+        limited = streaming_collect(
+            _apply_online(pl.scan_parquet(path), artifact, "", "__ver__").head(2)
+        )
+
+        assert unlimited["quote_id"].to_list() == ["a", "m", "z"]
+        assert limited.equals(unlimited.head(2))
+        assert heights == [4]
+
+    def test_ratio_constraints_apply_to_the_whole_frame_under_any_limit(self) -> None:
+        from haute._polars_utils import streaming_collect
+
+        artifact = {
+            **_make_online_artifact(),
+            "lambdas": {"loss_ratio": 0.2},
+            "constraints": {
+                "loss_ratio": {
+                    "max": 0.6,
+                    "numerator": "predicted_claims",
+                    "denominator": "predicted_premium",
+                }
+            },
+        }
+        scored = pl.DataFrame(
+            {
+                "quote_id": ["q2", "q2", "q1", "q1"],
+                "scenario_index": [0, 1, 0, 1],
+                "scenario_value": [0.9, 1.1, 0.9, 1.1],
+                "predicted_income": [40.0, 55.0, 90.0, 110.0],
+                "predicted_claims": [30.0, 45.0, 55.0, 70.0],
+                "predicted_premium": [100.0, 100.0, 100.0, 100.0],
+            }
+        )
+
+        unlimited = streaming_collect(_apply_online(scored.lazy(), artifact, "", "__ver__"))
+        limited = streaming_collect(_apply_online(scored.lazy(), artifact, "", "__ver__").head(1))
+
+        assert limited.equals(unlimited.head(1))
+
+    def test_limit_reads_only_the_selected_quotes_through_an_upstream_scorer(self) -> None:
+        from haute._polars_utils import row_local_python_scan, streaming_collect
+
+        scenarios = self._scenarios([f"q{index:02d}" for index in range(50)])
+        scored_rows: list[int] = []
+
+        def score(batch: pl.DataFrame) -> pl.DataFrame:
+            scored_rows.append(batch.height)
+            return batch.with_columns(predicted_income=pl.col("scenario_value") * 100.0)
+
+        def scored() -> pl.LazyFrame:
+            return row_local_python_scan(
+                scenarios.drop("predicted_income").lazy(),
+                score,
+                schema=scenarios.schema,
+                generated_columns=("predicted_income",),
+                required_input_columns=("scenario_value",),
+                input_predicates_allowed=True,
+                elide_transform_when_unused=True,
+            )
+
+        artifact = _make_online_artifact()
+        unlimited = streaming_collect(_apply_online(scored(), artifact, "", "__ver__"))
+        scored_rows.clear()
+
+        limited = streaming_collect(_apply_online(scored(), artifact, "", "__ver__").head(4))
+
+        assert limited.equals(unlimited.head(4))
+        assert limited["quote_id"].to_list() == ["q00", "q01", "q02", "q03"]
+        assert sum(scored_rows) == 8
+
+    @pytest.mark.parametrize(
+        ("version", "optimised_value_col", "quote_id_col"),
+        [
+            ("", "", "quote_id"),
+            ("v9", "", "quote_id"),
+            ("v9", "chosen_multiplier", "quote_id"),
+            ("v9", "chosen_multiplier", "policy_id"),
+        ],
+    )
+    def test_declared_schema_matches_the_eager_apply(
+        self, version: str, optimised_value_col: str, quote_id_col: str
+    ) -> None:
+        from haute._builders import online_apply_output_schema
+        from haute._polars_utils import streaming_collect
+
+        artifact = {
+            **_make_online_artifact(),
+            "quote_id": quote_id_col,
+            "lambdas": {"predicted_volume": 0.5, "predicted_claims": 0.1},
+            "constraints": {
+                "predicted_volume": {"min": 0.9},
+                "predicted_claims": {"max": 100.0},
+            },
+        }
+        scored = (
+            _scored_df()
+            .with_columns(predicted_claims=pl.lit(10.0))
+            .rename({"quote_id": quote_id_col})
+        )
+        declared = online_apply_output_schema(
+            artifact,
+            version=version,
+            version_col="__ver__",
+            optimised_value_col=optimised_value_col,
+        )
+
+        # A DataFrame input applies eagerly, without the declared-schema scan.
+        eager = _apply_online(scored, artifact, version, "__ver__", optimised_value_col)
+        scan = _apply_online(scored.lazy(), artifact, version, "__ver__", optimised_value_col)
+
+        assert streaming_collect(eager).schema == declared
+        assert streaming_collect(scan).equals(streaming_collect(eager))

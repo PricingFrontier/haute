@@ -1,0 +1,303 @@
+# Bugs roadmap
+
+## Scope
+
+Defects found outside a component's own roadmap work, kept here until they
+are fixed. `BUG-18` was found on 4 October 2026 while making standalone runs
+execute submodels: `haute run` then ran a pipeline without its submodels, and
+deploy still parses the same way. `BUG-19` extends the
+check for statements a save would drop from the pipeline file to submodel files.
+`BUG-20` to `BUG-26` were found on 5 October 2026 while checking the deployment
+guides against the CI/CD files `haute init` generates: as generated, several of
+those files fail before a first release succeeds. The guides now give the manual
+step that works today for each, and drop it when the package lands. `BUG-27` to
+`BUG-30`, found the same day, are text that no longer matches the behaviour it
+describes: the CLI's help, the offset tooltip, a tuned t-boost run's summary and the
+t-boost starter parameters in the modelling UI specification.
+
+## Priorities
+
+| Package | State | Priority | Outcome |
+|---|---|---:|---|
+| BUG-18 | Decision | P1 | A deployed pipeline runs each submodel, and an unflattened submodel placeholder never reaches an executor silently. |
+| BUG-19 | Planned | P2 | A save never drops a statement written after a submodel file's constructor. |
+| BUG-20 | Decision | P1 | The starter test quote passes the deploy check, and the deploy specification and code agree on which test-quote rows are accepted. |
+| BUG-21 | Planned | P2 | The generated smoke and impact steps work for the generic container target once its endpoint addresses are set. |
+| BUG-22 | Planned | P1 | Databricks smoke and impact authenticate with the credentials the guides and generated workflows provide. |
+| BUG-23 | Decision | P2 | A new project's impact step reads a portfolio sample that CI can see. |
+| BUG-24 | Decision | P1 | Container targets log in to their registry before `haute deploy` pushes, and GitLab container deploys run where Docker is available. |
+| BUG-25 | Planned | P2 | The Databricks release tag carries the registered model version on GitHub and Azure DevOps. |
+| BUG-26 | Planned | P3 | The generated GitLab pipeline reuses uv's package cache between runs. |
+| BUG-27 | Planned | P3 | `haute --help` describes Haute without tying it to Databricks. |
+| BUG-28 | Planned | P2 | The offset tooltip names every loss that treats the offset as an exposure, and the losses that take no offset. |
+| BUG-29 | Planned | P2 | A tuned t-boost run's summary says its published model is the winning trial's fit, not a refit. |
+| BUG-30 | Planned | P3 | The modelling UI specification lists the t-boost starter parameters and readiness issues the editor has. |
+
+## Planned improvements
+
+### BUG-18 — A deployed pipeline runs its submodels
+**Why:** `parse_pipeline_file` keeps submodel occurrences as placeholder nodes
+unless it is asked to flatten them, and the executor's builder for a
+placeholder (`_build_submodel`) passes its input through. The editor's routes
+flatten every graph they execute, and `haute run` now does too, but deploy
+parses the pipeline without flattening (`deploy/_config.py`), prunes and
+validates that graph, and scores it with the placeholder still in place. A
+deployed pipeline with a submodel therefore appears to skip it: the node after
+the occurrence receives the frame that went into it, and the price is wrong
+with no error when the columns happen to line up. `haute run` showed the same
+failure on 4 October 2026 (the example project
+`tests/assistant_eval/projects/submodel_pricing` failed with "unable to find
+column vehicle_factor") before it was made to flatten; deploy's behaviour is
+from reading the code and has no reproduction yet.
+
+**Plan:** Decide whether deploy flattens right after parsing or later (the
+pruner reads `graph.submodels`, and bundled artifact keys are built from node
+ids, which flattening turns into `submodel_runtime/<occurrence>/<node>`). Then
+flatten for deploy, and make the placeholder builders refuse to build, naming
+the occurrence, so an unflattened graph fails instead of passing data through;
+check first that no other caller of `parse_pipeline_file` (`_scaffold.py`,
+`_pipeline_repair.py`, `routes/_helpers.py`) reaches a builder with one.
+
+**Acceptance:** A deploy scorer test serves a pipeline whose output sits behind
+a submodel and returns the submodel's columns; executing a graph that still
+holds a placeholder raises an error naming the occurrence.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/deploy/_config.py` (`parse_pipeline_file`);
+`src/haute/deploy/_pruner.py::prune_for_deploy`;
+`src/haute/_builders.py::_build_submodel`; `src/haute/parser.py::parse_pipeline_file`
+(`flatten=False` by default); `src/haute/cli/_run.py`.
+
+### BUG-19 — A save keeps the statements after a submodel's constructor
+**Why:** The editor document reports each module-level statement after
+`pipeline = haute.Pipeline(...)` that a save would drop (`unkept_module_statement`),
+but a submodel file (`modules/*.py`) is regenerated by the same save and is not
+checked: a constant or helper after `submodel = haute.Submodel(...)` loads with
+no diagnostic and the next save drops it while the node code that uses it stays.
+
+**Plan:** Run `_ast_helpers.unkept_module_statements(source, receiver="submodel",
+constructor_name="Submodel")` over each registered submodel file the recovery
+loader reads, and report each statement as the same diagnostic on that file.
+
+**Acceptance:** A submodel file with a constant after its constructor loads its
+pipeline's document degraded with a diagnostic naming the submodel file and
+line, and a save is refused with that location.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_pipeline_recovery.py::_unkept_statement_diagnostics`;
+`src/haute/_ast_helpers.py::unkept_module_statements`; `src/haute/codegen.py::_render_module`.
+
+
+### BUG-20 — The starter test quote passes the deploy check
+**Why:** Since the golden test-quote format (`bc527d74`), every row in
+`tests/quotes/*.json` must be `{"input": {...}, "expected": {...}?, "tolerance_pct": ...?}`
+plus `_`-prefixed notes, and any other top-level key fails with "unknown golden test
+quote key(s)". `haute init` still writes `tests/quotes/example.json` as a flat input row
+(`id`, `field_a`, `field_b`), so the generated CI's dry-run deploy and every deploy fail
+until the analyst rewrites it. The deploy specification says the opposite: test-quote
+files "may be plain input rows or golden rows".
+
+**Plan:** Decide whether plain input rows are accepted (the code changes to treat a row
+without `input` as the input, as the specification says) or refused (the specification
+changes). Either way, write the starter quote in the golden shape, and keep
+`docs/deployment/index.md#test-quotes` in step.
+
+**Acceptance:** A freshly initialised project's `haute deploy --dry-run` gets past the
+test-quote parse with the starter file in place; a test pins the starter quote to the
+loader; the specification and `_parse_test_quote_case` agree on plain rows.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/deploy/_validators.py::_parse_test_quote_case`
+(`_GOLDEN_QUOTE_KEYS`); `src/haute/_scaffold.py::starter_test_quote`;
+`specs/deploy/high-level.md` (Behaviour: test quotes).
+
+### BUG-21 — Container smoke and impact steps reach their endpoints
+**Why:** The generated smoke and impact steps run `haute smoke --endpoint-suffix
+"-staging"` and `haute impact --endpoint-suffix "-staging"` for every target except the
+three build-and-push-only ones. For `container`, both commands refuse the option ("is
+only supported for Databricks") and need `[ci.staging] endpoint_url` instead, which
+`haute init` does not write, so those jobs fail on every run.
+
+**Plan:** Generate the container target's smoke and impact steps without the option,
+and write commented `[ci.staging] endpoint_url` and `[ci.production] endpoint_url`
+entries into its `haute.toml`, so the steps fail with the existing "No staging endpoint
+URL configured" message until IT supplies the addresses.
+
+**Acceptance:** Scaffold tests show the container workflows for every CI provider call
+smoke and impact without `--endpoint-suffix`; with `endpoint_url` set, `haute smoke`
+reaches the configured address.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_scaffold.py::github_deploy_yml`, `gitlab_ci_yml`,
+`azure_devops_yml`; `src/haute/cli/_smoke.py` and `src/haute/cli/_impact.py` (the suffix refusal);
+`src/haute/cli/_helpers.py::resolve_transport`.
+
+### BUG-22 — Databricks smoke and impact use the RATING credentials
+**Why:** `haute deploy` updates the serving endpoint with `DATABRICKS_RATING_HOST` and
+`DATABRICKS_RATING_TOKEN`, the pair the guides and generated workflows provide, but
+`haute smoke` and `haute impact` build `WorkspaceClient()` with no arguments, which
+reads the SDK's default `DATABRICKS_HOST`/`DATABRICKS_TOKEN`. In CI those are unset, so
+both steps fail with "default auth: cannot configure default credentials".
+
+**Plan:** Build the smoke and impact workspace clients from the RATING pair, as the
+endpoint update does, failing with the same message naming a missing variable.
+
+**Acceptance:** With only the four documented secrets set, `haute smoke` and `haute
+impact` authenticate (a test checks the client receives the RATING host and token);
+the warning in `docs/deployment/targets/databricks.md` Step 3 is removed.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/cli/_smoke.py` and `src/haute/cli/_impact.py`
+(`WorkspaceClient()`); `src/haute/deploy/_mlflow.py` (the RATING pair);
+`src/haute/_scaffold.py::TARGETS` (the Databricks secrets).
+
+### BUG-23 — The impact step's portfolio sample is in the repository
+**Why:** `haute init` sets `[safety] impact_dataset = "data/portfolio_sample.parquet"`,
+and the same command gitignores `data/`, so CI's checkout never has the file and the
+impact step stops with "Impact dataset not found".
+
+**Plan:** Decide where a committed portfolio sample lives (for example
+`tests/impact/`) and whether the impact step should read a governed source instead of
+a file in Git; then make the scaffold default match.
+
+**Acceptance:** A new project's default `impact_dataset` path is not gitignored, and the
+deployment guides describe the chosen location.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_scaffold.py::haute_toml`;
+`src/haute/_gitignore_guard.py::GITIGNORE_GUARD_ENTRIES`; `src/haute/cli/_impact.py`.
+
+### BUG-24 — Container deploys log in to their registry
+**Why:** For the container targets, `haute deploy` pushes with a plain `docker push`
+and the generated workflows pass `DOCKER_USERNAME`/`DOCKER_PASSWORD` (and the AWS or
+Azure credentials) to the deploy steps, but nothing logs in with them, so a push to a
+private registry fails. The generated GitLab jobs also run in `python:3.11`, which has
+no Docker, so `haute deploy` stops with "Docker is not available".
+
+**Plan:** Decide how each registry authenticates (a `docker login` with the DOCKER pair,
+`aws ecr get-login-password` for ECR, a service principal for ACR) and whether Haute or
+the generated workflow performs it; give GitLab container deploys a Docker-capable job.
+
+**Acceptance:** A generated container workflow logs in before the deploy step for each
+CI provider, and its GitLab deploy jobs can run Docker; the manual login steps in the
+Docker, AWS ECS and Azure guides are removed.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/deploy/_container.py::_check_docker_available` and the push;
+`src/haute/_scaffold.py::TARGETS` (secrets) and the workflow generators.
+
+### BUG-25 — The Databricks release tag carries the model version
+**Why:** The production workflows tag a Databricks release with `haute status
+--version-only 2>/dev/null || echo "unknown"`, but on GitHub Actions and Azure DevOps the
+Tag release step has no credentials, so `haute status` fails silently and the tag is
+`deploy/vunknown`; the next production run then fails because that tag exists. GitLab's
+job-level variables reach the tag script.
+
+**Plan:** Pass the MLflow credentials to the Tag release step on GitHub Actions and
+Azure DevOps, and stop masking a failed version read as `unknown`.
+
+**Acceptance:** Scaffold tests show the Tag release step receives the secrets on every
+provider, and a failed version read fails the step with its error.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_scaffold.py::_release_tag_script`, `github_deploy_prod_yml`,
+`azure_devops_yml`.
+
+### BUG-26 — The GitLab pipeline reuses uv's cache
+**Why:** The generated `.gitlab-ci.yml` caches `.cache/uv`, but uv keeps its cache in
+`~/.cache/uv` unless `UV_CACHE_DIR` says otherwise, so nothing is cached between runs.
+
+**Plan:** Set `UV_CACHE_DIR: "$CI_PROJECT_DIR/.cache/uv"` in the generated file's
+top-level `variables:`.
+
+**Acceptance:** A scaffold test shows the cache path and `UV_CACHE_DIR` agree; the
+caching note in `docs/deployment/ci/gitlab.md` loses its workaround.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_scaffold.py::gitlab_ci_yml`.
+
+### BUG-27 — `haute --help` names Haute's real scope
+**Why:** The CLI group's help text, which `haute --help` prints, reads "Haute -
+Open-source pricing engine for insurance teams on Databricks.", while the package
+metadata, the README and the docs describe a pricing engine with Databricks as one of
+five deploy targets and an optional extra.
+
+**Plan:** Make the `cli` docstring match the package description, "Haute - Open-source
+pricing engine for insurance teams".
+
+**Acceptance:** `haute --help` prints the package description; a CLI test pins it to
+`pyproject.toml`'s `description`.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/cli/__init__.py::cli`; `pyproject.toml` (`description`).
+
+### BUG-28 — The offset tooltip matches the families' offset rules
+**Why:** The info icon beside Model Training's **Offset column (optional)** says the
+offset is an exposure multiplier under "a log-link GLM, or a CatBoost Poisson or Tweedie
+loss". The Gamma loss, and Poisson, Gamma and Tweedie on XGBoost, LightGBM, t-boost and
+EBM, use it the same way, and XGBoost, LightGBM, t-boost and EBM refuse an offset with
+the Logloss loss when training starts. The Model Training guide says so, and no longer
+claims the tooltip repeats it.
+
+**Plan:** Reword `OFFSET_HELP` from the family capabilities: a log link under a log-link
+GLM or a Poisson, Gamma or Tweedie loss, added under any other link, and no offset with
+Logloss on the families that refuse one.
+
+**Acceptance:** The tooltip's text names the same losses as the backend's offset rules,
+and a component test pins it.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/panels/modelling/OffsetFieldLabel.tsx` (`OFFSET_HELP`);
+`src/haute/modelling/_xgboost.py`, `src/haute/modelling/_lightgbm.py`,
+`src/haute/modelling/_tboost.py`, `src/haute/modelling/_ebm.py` (the offset refusals).
+
+### BUG-29 — A tuned t-boost summary does not claim a refit
+**Why:** After tuning, the Summary tab ends its tuning line with "· final tree count N"
+or, when the result has no tree count, "· refit with the winning round budget".
+`tuning_final_projection` returns no tree count for a validation-fit family, so a tuned
+t-boost run reads as refit, although t-boost publishes the winning trial's early-stopped
+fit and is never refit. The wording is right for EBM, which refits with its winning
+`max_rounds`.
+
+**Plan:** Choose the wording from the result's refit policy: the round budget for a
+fixed-budget family, and "the winning trial's fit" for a validation-fit family.
+
+**Acceptance:** A Summary tab test shows a tuned t-boost result without the refit
+wording and a tuned EBM result with it.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/panels/modelling/SummaryTab.tsx` (the tuning line);
+`src/haute/modelling/_tuning.py::tuning_final_projection`.
+
+### BUG-30 — The modelling UI specification lists the t-boost starter parameters
+**Why:** The specification says a new t-boost node starts with `n_trees` 4000 and
+`max_interaction_order` 3 "and no other key", with `tboost-n-trees` as its readiness
+issue. The editor writes eight keys (adding `n_bags`, `interaction_gain_hurdle`, `prune`,
+`prune_main_effects`, `band_tolerance` and `graduate`) and also raises
+`tboost-prune-main-effects` when pruning main effects meets a monotonicity constraint or
+`prune` set to false.
+
+**Plan:** Update the specification's t-boost bullet to the eight starter keys and both
+readiness issues, noting that `prune_main_effects` is the one starter value that differs
+from t-boost's own default.
+
+**Acceptance:** The specification and `TBOOST_DEFAULT_PARAMS` list the same keys and
+values, and the readiness issues match `trainingObjective.ts`.
+
+**Dependencies:** None.
+
+**Evidence:** `specs/frontend-modelling-optimiser-ui/high-level.md` (Behaviour, t-boost);
+`frontend/src/panels/ModellingConfig.tsx` (`TBOOST_DEFAULT_PARAMS`);
+`frontend/src/utils/trainingObjective.ts` (the t-boost readiness issues).

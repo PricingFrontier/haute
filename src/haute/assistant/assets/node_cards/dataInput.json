@@ -1,0 +1,69 @@
+{
+  "node_type": "dataInput",
+  "authorable": true,
+  "fields": {
+    "inputType": "Where the data lives: \"file\", \"database\", \"lakehouse\", \"databricks\" or \"inline\". Each type has its own required keys.",
+    "format": "For a file: \"parquet\", \"csv\", \"json\", \"ndjson\", \"ipc\", \"avro\", \"excel\", \"ods\" or \"lines\".",
+    "mode": "\"scan\" reads lazily (Parquet, CSV, NDJSON, IPC); \"read\" loads eagerly for formats that cannot scan.",
+    "path": "The file's path relative to the project root, with forward slashes.",
+    "arguments": "Options passed to the Polars reader for the format, such as {\"try_parse_dates\": true} for CSV. Leave {} when none are needed.",
+    "steps": "Optional post-processing of the loaded frame as step cards; df is already the loaded frame, so there is no source step. Keep [] when the file is used as read."
+  },
+  "inputs": [],
+  "configs": [
+    {
+      "name": "minimal",
+      "intent": "Read a Parquet file of policies.",
+      "config": {
+        "inputType": "file",
+        "format": "parquet",
+        "mode": "scan",
+        "path": "data/policies.parquet",
+        "arguments": {}
+      },
+      "produces": ["policy_id", "driver_age", "exposure"]
+    },
+    {
+      "name": "realistic",
+      "intent": "Read a claims CSV with its dates parsed, keeping only claims with a positive incurred amount.",
+      "config": {
+        "inputType": "file",
+        "format": "csv",
+        "mode": "scan",
+        "path": "data/claims.csv",
+        "arguments": {"try_parse_dates": true},
+        "steps": [
+          {
+            "id": "logic",
+            "kind": "free_code",
+            "code": "# Keep claims with a positive incurred amount\ndf = df.filter(pl.col(\"incurred\") > 0)"
+          }
+        ]
+      },
+      "produces": ["claim_id", "policy_id", "loss_date", "incurred"]
+    }
+  ],
+  "fixture": {
+    "downstream": [
+      {"op": "add_node", "node_type": "explore", "name": "inspect", "config": {}},
+      {"op": "add_edge", "source": "card", "target": "inspect"}
+    ],
+    "frames": {
+      "policies": {
+        "rows": [
+          {"policy_id": "p1", "driver_age": 19, "exposure": 1.0},
+          {"policy_id": "p2", "driver_age": 42, "exposure": 0.5}
+        ]
+      }
+    },
+    "files": {
+      "data/claims.csv": "claim_id,policy_id,loss_date,incurred\nc1,p1,2024-02-03,1250.0\nc2,p2,2024-05-19,0.0\nc3,p1,2024-11-30,310.5\n"
+    },
+    "expect": {
+      "realistic": [
+        {"claim_id": "c1", "incurred": 1250.0},
+        {"claim_id": "c3", "incurred": 310.5}
+      ]
+    }
+  }
+}

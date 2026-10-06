@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 from unittest.mock import patch
 
 import polars as pl
 import pytest
 
 from haute._execution_context import ExecutionContext, ExecutionProfile
+from haute._graph_walker import CollectPolicy, walk_graph
 from haute._user_exec import _exec_user_code
 from haute.errors import ExecutionError, LiveSwitchScenarioError
 from haute.executor import (
@@ -212,6 +215,31 @@ class TestExecUserCode:
 
         assert result.collect().to_dict(as_series=False) == {"source": [1]}
 
+    def test_preamble_bindings_from_os_and_shutil_reach_node_code(self, tmp_path):
+        # Project code is trusted: whatever the preamble binds is handed to
+        # node code as written, including helpers from os, sys or shutil.
+        namespace = _compile_preamble(
+            "import shutil\nfrom os.path import join\n",
+            pipeline_dir=tmp_path,
+        )
+        source = pl.LazyFrame({"name": ["a"]})
+
+        result = _exec_user_code(
+            "df = source.with_columns(\n"
+            "    path=pl.lit(join('dir', 'file')),\n"
+            "    copies=pl.lit(shutil.copyfile.__name__),\n"
+            ")",
+            ["source"],
+            (source,),
+            extra_ns=namespace,
+        )
+
+        assert result.collect().to_dict(as_series=False) == {
+            "name": ["a"],
+            "path": [str(Path("dir") / "file")],
+            "copies": ["copyfile"],
+        }
+
     def test_named_input_is_visible_inside_a_nested_user_helper(self):
         source = pl.LazyFrame({"source": [1]})
 
@@ -273,16 +301,12 @@ class TestCompilePreamble:
         expr = ns["make_lit"]()
         assert isinstance(expr, pl.Expr)
 
-    def test_filters_indirect_dangerous_os_path_helpers(self):
-        ns = _compile_preamble("from os.path import join\nSAFE = 1\n")
-        assert "SAFE" in ns
-        assert "join" not in ns
-
-    def test_filters_rebound_dangerous_modules(self):
-        ns = _compile_preamble("import os\nmy_path = os.path\nSAFE = 1\n")
-        assert "SAFE" in ns
-        assert "os" not in ns
-        assert "my_path" not in ns
+    def test_exports_os_bindings_unfiltered(self):
+        ns = _compile_preamble("import os\nfrom os.path import join\nmy_path = os.path\nSAFE = 1\n")
+        assert ns["SAFE"] == 1
+        assert ns["os"] is os
+        assert ns["join"] is os.path.join
+        assert ns["my_path"] is os.path
 
     def test_utility_modules_evicted_between_calls(self, tmp_path, monkeypatch):
         """Ensure utility modules are re-imported fresh each call, not cached."""
@@ -1222,6 +1246,128 @@ class TestExecuteGraph:
         assert "b" in col_names
 
 
+class TestTargetPreviewRowLimit:
+    """A target preview limits the previewed node's output, never each source."""
+
+    @staticmethod
+    def _preview(graph, target: str, row_limit: int):
+        return execute_graph(
+            graph,
+            target_node_id=target,
+            row_limit=row_limit,
+            target_preview_only=True,
+        )[target]
+
+    def test_left_join_of_differently_ordered_sources_previews_joined_values(self, tmp_path):
+        base_path = tmp_path / "base.parquet"
+        lookup_path = tmp_path / "lookup.parquet"
+        pl.DataFrame({"id": list(range(99, -1, -1))}).write_parquet(base_path)
+        pl.DataFrame(
+            {"id": list(range(100)), "premium": [float(i) * 10 for i in range(100)]}
+        ).write_parquet(lookup_path)
+        graph = _g(
+            {
+                "nodes": [
+                    _ready_source_node("base", str(base_path)),
+                    _ready_source_node("lookup", str(lookup_path)),
+                    _n(
+                        {
+                            "id": "join",
+                            "data": {
+                                "label": "join",
+                                "nodeType": "edgeJoin",
+                                "config": {"how": "left", "on": ["id"]},
+                            },
+                        }
+                    ),
+                ],
+                "edges": [
+                    _edge("base", "join", target_handle="base"),
+                    _edge("lookup", "join", target_handle="join"),
+                ],
+            }
+        )
+
+        result = self._preview(graph, "join", row_limit=5)
+
+        assert result.status == "ok"
+        assert result.row_count == 5
+        assert [(row["id"], row["premium"]) for row in result.preview] == [
+            (row_id, float(row_id) * 10) for row_id in range(99, 94, -1)
+        ]
+
+    def test_filter_preview_returns_first_rows_of_the_filtered_output(self, tmp_path):
+        path = tmp_path / "data.parquet"
+        pl.DataFrame({"x": list(range(100))}).write_parquet(path)
+        graph = _g(
+            {
+                "nodes": [
+                    _ready_source_node("src", str(path)),
+                    _transform_node("kept", "df = src.filter(pl.col('x') >= 50)"),
+                ],
+                "edges": [_edge("src", "kept")],
+            }
+        )
+
+        result = self._preview(graph, "kept", row_limit=3)
+
+        assert [row["x"] for row in result.preview] == [50, 51, 52]
+
+    def test_aggregation_preview_summarises_the_complete_input(self, tmp_path):
+        path = tmp_path / "data.parquet"
+        pl.DataFrame({"x": list(range(100))}).write_parquet(path)
+        graph = _g(
+            {
+                "nodes": [
+                    _ready_source_node("src", str(path)),
+                    _transform_node("total", "df = src.select(pl.col('x').sum())"),
+                ],
+                "edges": [_edge("src", "total")],
+            }
+        )
+
+        result = self._preview(graph, "total", row_limit=5)
+
+        assert result.preview == [{"x": sum(range(100))}]
+
+    def test_full_materialisation_limits_each_node_output_not_its_inputs(self, tmp_path):
+        path = tmp_path / "data.parquet"
+        pl.DataFrame({"x": list(range(100))}).write_parquet(path)
+        graph = _g(
+            {
+                "nodes": [
+                    _ready_source_node("src", str(path)),
+                    _transform_node("kept", "df = src.filter(pl.col('x') >= 50)"),
+                ],
+                "edges": [_edge("src", "kept")],
+            }
+        )
+
+        results = execute_graph(graph, row_limit=3)
+
+        assert [row["x"] for row in results["src"].preview] == [0, 1, 2]
+        assert [row["x"] for row in results["kept"].preview] == [50, 51, 52]
+
+    @pytest.mark.parametrize(
+        ("row_limits_by_node", "message"),
+        [({"src": 0}, "positive integers"), ({"": 1}, "must be node ids")],
+    )
+    def test_invalid_node_row_limits_are_rejected(self, tmp_path, row_limits_by_node, message):
+        from haute.executor import _build_node_fn
+
+        path = tmp_path / "data.parquet"
+        pl.DataFrame({"x": [1]}).write_parquet(path)
+        graph = _g({"nodes": [_ready_source_node("src", str(path))], "edges": []})
+
+        with pytest.raises(ValueError, match=message):
+            walk_graph(
+                graph,
+                _build_node_fn,
+                policy=CollectPolicy.display(row_limits_by_node=row_limits_by_node),
+                target_node_id="src",
+            )
+
+
 # ---------------------------------------------------------------------------
 # Data source user code preservation
 # ---------------------------------------------------------------------------
@@ -1495,13 +1641,13 @@ class TestExecuteSink:
         captured_sources: list[str] = []
         from unittest.mock import patch
 
-        from haute._execute_lazy import _execute_lazy as original_execute_lazy
+        from haute._graph_walker import walk_graph as original_execute_lazy
 
         def spy(*args, **kwargs):
             captured_sources.append(kwargs.get("source", "???"))
             return original_execute_lazy(*args, **kwargs)
 
-        with patch("haute.executor._execute_lazy", side_effect=spy):
+        with patch("haute.executor.walk_graph", side_effect=spy):
             write_data_output(graph, output_node_id="sink", source="live")
 
         assert captured_sources == ["batch"]
@@ -1513,13 +1659,13 @@ class TestExecuteSink:
         captured_sources: list[str] = []
         from unittest.mock import patch
 
-        from haute._execute_lazy import _execute_lazy as original_execute_lazy
+        from haute._graph_walker import walk_graph as original_execute_lazy
 
         def spy(*args, **kwargs):
             captured_sources.append(kwargs.get("source", "???"))
             return original_execute_lazy(*args, **kwargs)
 
-        with patch("haute.executor._execute_lazy", side_effect=spy):
+        with patch("haute.executor.walk_graph", side_effect=spy):
             write_data_output(graph, output_node_id="sink", source="my_custom")
 
         assert captured_sources == ["my_custom"]
@@ -1595,14 +1741,13 @@ class TestExecuteSink:
         df = pl.read_parquet(out)
         assert set(df.columns) >= {"key", "a", "b"}
 
-    def test_sink_passes_checkpoint_dir(self, tmp_path):
-        """write_data_output must pass a checkpoint_dir to _execute_lazy."""
+    def test_sink_runs_under_a_seed_plan(self, tmp_path):
+        """write_data_output executes under the seed plan it opened, with no checkpoint dir."""
         graph, _ = _make_sink_graph(tmp_path)
 
-        from pathlib import Path
         from unittest.mock import patch
 
-        from haute._execute_lazy import _execute_lazy as original
+        from haute._graph_walker import walk_graph as original
 
         captured_kwargs: list[dict] = []
 
@@ -1610,36 +1755,33 @@ class TestExecuteSink:
             captured_kwargs.append(kwargs)
             return original(*args, **kwargs)
 
-        with patch("haute.executor._execute_lazy", side_effect=spy):
+        with patch("haute.executor.walk_graph", side_effect=spy):
             write_data_output(graph, output_node_id="sink")
 
         assert len(captured_kwargs) == 1
-        cp_dir = captured_kwargs[0].get("checkpoint_dir")
-        assert cp_dir is not None
-        assert isinstance(cp_dir, Path)
+        assert captured_kwargs[0]["snapshot_plan"] is not None
+        assert captured_kwargs[0]["prepare_inputs"] is False
+        assert "checkpoint_dir" not in captured_kwargs[0]
 
-    def test_sink_cleans_up_checkpoint_dir(self, tmp_path):
-        """Checkpoint temp directory should be removed after sink completes."""
+    def test_sink_releases_its_plan_after_the_write(self, tmp_path):
+        """The seed plan stays open through the write and is closed once it completes."""
         graph, _ = _make_sink_graph(tmp_path)
 
-        from pathlib import Path
         from unittest.mock import patch
 
-        from haute._execute_lazy import _execute_lazy as original
+        from haute._graph_walker import walk_graph as original
 
-        created_dirs: list[Path] = []
+        plans: list = []
 
         def spy(*args, **kwargs):
-            cp_dir = kwargs.get("checkpoint_dir")
-            if cp_dir is not None:
-                created_dirs.append(cp_dir)
+            plans.append(kwargs["snapshot_plan"])
             return original(*args, **kwargs)
 
-        with patch("haute.executor._execute_lazy", side_effect=spy):
+        with patch("haute.executor.walk_graph", side_effect=spy):
             write_data_output(graph, output_node_id="sink")
 
-        assert len(created_dirs) == 1
-        assert not created_dirs[0].exists(), "checkpoint dir should be cleaned up"
+        assert len(plans) == 1
+        assert plans[0]._closed
 
     def test_live_scenario_resolves_batch_from_ism(self, tmp_path):
         """When scenario='live', write_data_output resolves the batch scenario
@@ -1692,13 +1834,13 @@ class TestExecuteSink:
         captured_sources: list[str] = []
         from unittest.mock import patch
 
-        from haute._execute_lazy import _execute_lazy as original_execute_lazy
+        from haute._graph_walker import walk_graph as original_execute_lazy
 
         def spy(*args, **kwargs):
             captured_sources.append(kwargs.get("source", "???"))
             return original_execute_lazy(*args, **kwargs)
 
-        with patch("haute.executor._execute_lazy", side_effect=spy):
+        with patch("haute.executor.walk_graph", side_effect=spy):
             write_data_output(graph, output_node_id="sink", source="live")
 
         # Should resolve to "nb_batch" from the ISM, not generic "batch"
@@ -1865,6 +2007,52 @@ class TestLiveSwitch:
         assert results["switch"].status == "ok"
         # With empty map, should fall back to first input (live_src, 3 rows)
         assert results["switch"].row_count == 3
+
+    @pytest.mark.parametrize(("source", "rows"), [("live", 1 + 2), ("test_batch", 10 + 20)])
+    def test_every_switch_follows_the_active_source(self, tmp_path, source, rows):
+        """Two Source Switches in one pipeline each route the input mapped to the source."""
+        frames = {"policy_live": 1, "policy_batch": 10, "claims_live": 2, "claims_batch": 20}
+        nodes = []
+        for name, row_count in frames.items():
+            path = tmp_path / f"{name}.parquet"
+            pl.DataFrame({"x": list(range(row_count))}).write_parquet(path)
+            nodes.append(_ready_source_node(name, str(path)))
+        for switch in ("policy", "claims"):
+            live, batch = f"{switch}_live", f"{switch}_batch"
+            nodes.append(
+                _n(
+                    {
+                        "id": switch,
+                        "data": {
+                            "label": switch,
+                            "nodeType": "liveSwitch",
+                            "config": {
+                                "input_scenario_map": {live: "live", batch: "test_batch"},
+                                "inputs": [live, batch],
+                            },
+                        },
+                    }
+                )
+            )
+        nodes.append(_transform_node("combined", "df = pl.concat([policy, claims])"))
+        graph = _g(
+            {
+                "nodes": nodes,
+                "edges": [
+                    _edge("policy_live", "policy"),
+                    _edge("policy_batch", "policy"),
+                    _edge("claims_live", "claims"),
+                    _edge("claims_batch", "claims"),
+                    _edge("policy", "combined"),
+                    _edge("claims", "combined"),
+                ],
+            }
+        )
+
+        results = execute_graph(graph, target_node_id="combined", source=source)
+
+        assert results["combined"].status == "ok"
+        assert results["combined"].row_count == rows
 
 
 # ---------------------------------------------------------------------------
@@ -2428,7 +2616,8 @@ class TestResolveBatchScenario:
 class TestPreviewCachePartialHit:
     """Verify the cache-extend (partial-hit) path in execute_graph."""
 
-    def test_partial_hit_extends_cache(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("fresh_error", [False, True])
+    def test_partial_hit_extends_cache(self, tmp_path, monkeypatch, fresh_error):
         """When a cached graph fingerprint exists but the target node is
         not yet materialized, execute_graph should re-execute for the new
         target and merge the results.
@@ -2483,6 +2672,19 @@ class TestPreviewCachePartialHit:
         assert results1["mid"].status == "ok"
         assert "leaf" not in results1
 
+        if fresh_error:
+            real_eager = executor_mod._eager_execute
+
+            def eager_with_partial_error(*args, **kwargs):
+                result = list(real_eager(*args, **kwargs))
+                # A producer can return usable frame evidence alongside a node error.
+                # Cache extension must preserve that error instead of reviving an old success.
+                result[2] = {**result[2], "mid": "partial result rejected"}
+                result[5] = {**result[5], "mid": 7}
+                return tuple(result)
+
+            monkeypatch.setattr(executor_mod, "_eager_execute", eager_with_partial_error)
+
         # Second call: same graph, but now requesting "leaf" — partial hit
         results2 = execute_graph(graph, target_node_id="leaf")
         assert "leaf" in results2
@@ -2490,7 +2692,12 @@ class TestPreviewCachePartialHit:
         assert results2["leaf"].row_count == 3
         # The merged cache should also still contain "mid" and "src"
         assert "mid" in results2
-        assert results2["mid"].status == "ok"
+        if fresh_error:
+            assert results2["mid"].status == "error"
+            assert results2["mid"].error == "partial result rejected"
+            assert _preview_cache.get("partial-hit-regression")["error_lines"]["mid"] == 7
+        else:
+            assert results2["mid"].status == "ok"
         assert plan_calls == 2, "a partial extension must plan against the current request"
 
         _preview_cache.clear()
@@ -2645,7 +2852,7 @@ class TestRequestedPreviewProjection:
         to be planned for schema, projection, and contract checks, but they
         should stay lazy until the target collect.
         """
-        import haute._execute_lazy as execute_lazy_mod
+        import haute._graph_walker as graph_walker_mod
         from haute.executor import _preview_cache
 
         _preview_cache.clear()
@@ -2669,7 +2876,7 @@ class TestRequestedPreviewProjection:
         )
 
         collect_calls = 0
-        original_streaming_collect = execute_lazy_mod.streaming_collect
+        original_streaming_collect = graph_walker_mod.streaming_collect
 
         def counting_streaming_collect(*args, **kwargs):
             nonlocal collect_calls
@@ -2677,7 +2884,7 @@ class TestRequestedPreviewProjection:
             return original_streaming_collect(*args, **kwargs)
 
         monkeypatch.setattr(
-            execute_lazy_mod,
+            graph_walker_mod,
             "streaming_collect",
             counting_streaming_collect,
         )
@@ -2779,6 +2986,7 @@ df = src.with_columns(
         class FakeScoringModel:
             feature_names = ["feature"]
             cat_feature_names: list[str] = []
+            offset_declared = True
 
         def fake_score_eager(
             scoring_model,
@@ -2786,7 +2994,6 @@ df = src.with_columns(
             features,
             output_col,
             task,
-            offset_column=None,
         ):
             return lf.with_columns(pl.lit(0.75).alias(output_col))
 
@@ -3502,6 +3709,69 @@ class TestPreviewCacheInvalidation:
         results2 = execute_graph(graph, target_node_id="t")
         assert results2["t"].preview[0]["y"] == 20
 
+    def test_prepare_data_output_uses_edited_helper_on_next_operation(
+        self,
+        tmp_path,
+        monkeypatch,
+        _widen_sandbox_root,
+    ):
+
+        from haute.executor import commit_prepared_data_output, prepare_data_output
+        from haute.graph_utils import PipelineGraph
+
+        monkeypatch.chdir(tmp_path)
+        utility_dir = tmp_path / "utility"
+        utility_dir.mkdir()
+        (utility_dir / "__init__.py").write_text("", encoding="utf-8")
+        helper = utility_dir / "helpers.py"
+        helper.write_text("VALUE = 10\n", encoding="utf-8")
+
+        p = tmp_path / "d.parquet"
+        pl.DataFrame({"x": [1, 2]}).write_parquet(p)
+        out1 = tmp_path / "out1.parquet"
+        out2 = tmp_path / "out2.parquet"
+
+        def _make_output_graph(out_path: Path) -> PipelineGraph:
+            return _g(
+                {
+                    "nodes": [
+                        _ready_source_node("src", str(p)),
+                        _transform_node("t", "df = src.with_columns(v=pl.lit(VALUE))"),
+                        {
+                            "id": "dout",
+                            "data": {
+                                "label": "dout",
+                                "nodeType": "dataOutput",
+                                "config": {
+                                    "outputType": "file",
+                                    "format": "parquet",
+                                    "path": str(out_path),
+                                },
+                            },
+                        },
+                    ],
+                    "edges": [_edge("src", "t"), _edge("t", "dout")],
+                    "preamble": "from utility.helpers import VALUE\n",
+                    "source_file": str(tmp_path / "pipeline.py"),
+                }
+            )
+
+        graph1 = _make_output_graph(out1)
+        prepared1 = prepare_data_output(graph1, "dout")
+        commit_prepared_data_output(prepared1)
+
+        helper.write_text(
+            "VALUE = 200\n# longer content to ensure size differs\n",
+            encoding="utf-8",
+        )
+
+        graph2 = _make_output_graph(out2)
+        prepared2 = prepare_data_output(graph2, "dout")
+        commit_prepared_data_output(prepared2)
+
+        assert pl.read_parquet(out1)["v"][0] == 10
+        assert pl.read_parquet(out2)["v"][0] == 200
+
     def test_invalidate_forces_re_execution(self, tmp_path):
         """After invalidation, the same graph fingerprint triggers a
         full re-execution instead of returning stale cached results.
@@ -3593,7 +3863,7 @@ class TestPreambleLockConcurrency:
 
         def compile_slow():
             try:
-                _compile_preamble(slow_source, force_refresh=True)
+                _compile_preamble(slow_source)
             except BaseException as exc:
                 errors.append(exc)
             finally:
@@ -3601,7 +3871,7 @@ class TestPreambleLockConcurrency:
 
         def compile_fast():
             try:
-                assert _compile_preamble("FAST_VALUE = 2\n", force_refresh=True)["FAST_VALUE"] == 2
+                assert _compile_preamble("FAST_VALUE = 2\n")["FAST_VALUE"] == 2
             except BaseException as exc:
                 errors.append(exc)
             finally:
@@ -3638,7 +3908,7 @@ class TestPreambleLockConcurrency:
         monkeypatch.chdir(tmp_path)
         executor._compile_preamble.cache_clear()  # type: ignore[attr-defined]
         source = "HOT_HIT = 1\n"
-        ns_first = _compile_preamble(source, force_refresh=False)
+        ns_first = _compile_preamble(source, execution_fingerprint="pinned-hot")
 
         errors: list[BaseException] = []
         finished = threading.Event()
@@ -3648,7 +3918,7 @@ class TestPreambleLockConcurrency:
 
         def compile_worker():
             try:
-                result.append(_compile_preamble(source, force_refresh=False))
+                result.append(_compile_preamble(source, execution_fingerprint="pinned-hot"))
             except BaseException as exc:
                 errors.append(exc)
             finally:
@@ -3664,6 +3934,25 @@ class TestPreambleLockConcurrency:
 
         assert not errors
         assert result == [ns_first]
+
+    def test_compile_preamble_pinned_fingerprint_is_used_verbatim(self):
+        _compile_preamble.cache_clear()
+        try:
+            ns_a1 = _compile_preamble("X = 1\n", execution_fingerprint="pinned-a")
+            ns_a2 = _compile_preamble("X = 1\n", execution_fingerprint="pinned-a")
+            assert ns_a1 is ns_a2
+
+            ns_b = _compile_preamble("X = 1\n", execution_fingerprint="pinned-b")
+            assert ns_b is not ns_a1
+            assert ns_b["X"] == 1
+
+            misses_before = _compile_preamble.cache_info().misses
+            ns_computed = _compile_preamble("X = 1\n")
+            misses_after = _compile_preamble.cache_info().misses
+            assert misses_after > misses_before
+            assert ns_computed["X"] == 1
+        finally:
+            _compile_preamble.cache_clear()
 
     def test_concurrent_pipeline_import_keeps_active_utility_path(
         self,
@@ -3707,7 +3996,6 @@ class TestPreambleLockConcurrency:
             try:
                 results["a"] = _compile_preamble(
                     source,
-                    force_refresh=True,
                     pipeline_dir=pipeline_a,
                 )["VALUE"]
             except BaseException as exc:
@@ -3718,7 +4006,6 @@ class TestPreambleLockConcurrency:
             try:
                 results["b"] = _compile_preamble(
                     source,
-                    force_refresh=True,
                     pipeline_dir=pipeline_b,
                 )["VALUE"]
             except BaseException as exc:
@@ -3747,7 +4034,6 @@ class TestPreambleLockConcurrency:
         monkeypatch,
     ):
         """One preview request should hash utility files once via a shared memo."""
-        import haute._cache as cache
         import haute.executor as executor
 
         monkeypatch.chdir(tmp_path)
@@ -3767,7 +4053,9 @@ class TestPreambleLockConcurrency:
         data_path = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1, 2]}).write_parquet(data_path)
 
-        original_content_hash = cache.content_hash
+        from haute._json_shred import _source_proof
+
+        original_content_hash = _source_proof._hash_file
         utility_hash_counts: dict[object, int] = {}
 
         def counted_content_hash(path):
@@ -3776,7 +4064,8 @@ class TestPreambleLockConcurrency:
                 utility_hash_counts[resolved] = utility_hash_counts.get(resolved, 0) + 1
             return original_content_hash(path)
 
-        monkeypatch.setattr(cache, "content_hash", counted_content_hash)
+        # Utility files are hashed through the shared source proof.
+        monkeypatch.setattr(_source_proof, "_hash_file", counted_content_hash)
 
         graph = _g(
             {
@@ -4409,3 +4698,305 @@ class TestPreambleFailureIsolation:
         assert "sink" not in errors or "bad_name" not in errors.get("sink", "")
 
         _preview_cache.clear()
+
+
+class TestSelectorRuntimeProjection:
+    """A preview resolves a selector node's input demand from the runtime schema."""
+
+    @staticmethod
+    def _graph(tmp_path, code: str, *, preamble: str = ""):
+        path = tmp_path / "wide.parquet"
+        pl.DataFrame({"id": ["q1", "q2"], "a": [1, 2], "big": [1.5, 2.5]}).write_parquet(path)
+        return _g(
+            {
+                "preamble": preamble,
+                "nodes": [
+                    _ready_source_node("source", str(path)),
+                    _transform_node("selected", code),
+                ],
+                "edges": [_edge("source", "selected")],
+            }
+        )
+
+    @staticmethod
+    def _preview(graph, monkeypatch):
+        import haute._graph_walker as graph_walker
+
+        selections: list[list[str]] = []
+        real = graph_walker.projected_or_carrier_columns
+
+        def recording(schema_names, demand):
+            selected = real(schema_names, demand)
+            selections.append(list(selected))
+            return selected
+
+        monkeypatch.setattr(graph_walker, "projected_or_carrier_columns", recording)
+        context = ExecutionContext(
+            operation="preview-test",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            telemetry_enabled=False,
+            memory_sampler=lambda: None,
+        )
+        results = execute_graph(
+            graph,
+            target_node_id="selected",
+            row_limit=10,
+            target_preview_only=True,
+            execution_context=context,
+        )
+        assert results["selected"].status == "ok", results["selected"].error
+        assert context.projection_plan is not None
+        return results["selected"], context.projection_plan.projection_plan, selections
+
+    def test_a_name_selector_resolves_the_source_demand_at_runtime(self, tmp_path, monkeypatch):
+        graph = self._graph(tmp_path, "df = source.select(pl.exclude('big'))")
+
+        result, plan, selections = self._preview(graph, monkeypatch)
+
+        assert [column.name for column in result.columns] == ["id", "a"]
+        diagnostics = plan.diagnostics_payload(profile=ExecutionProfile.PREVIEW_EAGER)
+        assert diagnostics is not None
+        assert (
+            diagnostics["edge_reasons"]["source->selected"]["rule"] == "runtime_inferred_streaming"
+        )
+        assert diagnostics["edge_reasons"]["source->selected"]["details"]["columns"] == ("a", "id")
+        assert "source" not in plan.opaque_boundaries
+        assert ["id", "a"] in selections
+
+    def test_a_selector_with_computed_arguments_keeps_the_boundary(self, tmp_path, monkeypatch):
+        graph = self._graph(
+            tmp_path,
+            "df = source.select(pl.exclude(names))",
+            preamble="names = ['big']",
+        )
+
+        _result, plan, selections = self._preview(graph, monkeypatch)
+
+        diagnostics = plan.diagnostics_payload(profile=ExecutionProfile.PREVIEW_EAGER)
+        assert diagnostics is not None
+        edge_reason = diagnostics["edge_reasons"].get("source->selected")
+        assert edge_reason is None or edge_reason["rule"] != "runtime_inferred_streaming"
+        assert selections == []
+
+
+class TestTargetPreviewDiagnosticReplan:
+    """A target-only preview re-plans its diagnostic from the frames it built."""
+
+    @staticmethod
+    def _joined_graph(tmp_path, *, limited_code: str = "df = competitor_join.limit(5)"):
+        from haute._types import GraphNode, NodeData, NodeType
+
+        pl.DataFrame(
+            {"id": list(range(10)), "a": list(range(10)), "wide": [1.5] * 10}
+        ).write_parquet(tmp_path / "quotes.parquet")
+        pl.DataFrame({"id": list(range(10)), "comp": [2.0] * 10}).write_parquet(
+            tmp_path / "comp.parquet"
+        )
+        pl.DataFrame({"id": list(range(10)), "premium": [3.0] * 10}).write_parquet(
+            tmp_path / "prem.parquet"
+        )
+
+        def join(node_id: str) -> GraphNode:
+            return GraphNode(
+                id=node_id,
+                data=NodeData(
+                    label=node_id,
+                    nodeType=NodeType.EDGE_JOIN,
+                    config={"how": "left", "on": ["id"]},
+                ),
+            )
+
+        return _g(
+            {
+                "nodes": [
+                    _ready_source_node("quotes", str(tmp_path / "quotes.parquet")),
+                    _ready_source_node("comp", str(tmp_path / "comp.parquet")),
+                    _ready_source_node("prem", str(tmp_path / "prem.parquet")),
+                    join("competitor_join"),
+                    _transform_node("limited", limited_code),
+                    join("premium_join"),
+                ],
+                "edges": [
+                    _edge("quotes", "competitor_join", target_handle="base"),
+                    _edge("comp", "competitor_join", target_handle="join"),
+                    _edge("competitor_join", "limited"),
+                    _edge("limited", "premium_join", target_handle="base"),
+                    _edge("prem", "premium_join", target_handle="join"),
+                ],
+            }
+        )
+
+    @staticmethod
+    def _preview(
+        graph,
+        *,
+        target_preview_only: bool = True,
+        requested_columns: list[str] | None = None,
+    ):
+        context = ExecutionContext(
+            operation="preview-test",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            telemetry_enabled=False,
+            memory_sampler=lambda: None,
+        )
+        results = execute_graph(
+            graph,
+            target_node_id="premium_join",
+            row_limit=3,
+            target_preview_only=target_preview_only,
+            requested_preview_columns=requested_columns,
+            execution_context=context,
+        )
+        assert results["premium_join"].status == "ok", results["premium_join"].error
+        assert context.projection_plan is not None
+        return context.projection_plan
+
+    @pytest.mark.parametrize(
+        "requested_columns",
+        [["id", "a", "wide", "comp", "premium"], None],
+        ids=["requested-columns", "first-click"],
+    )
+    def test_nodes_above_an_edge_join_are_not_reported_unprojected(
+        self, tmp_path, requested_columns
+    ):
+        strategy = self._preview(self._joined_graph(tmp_path), requested_columns=requested_columns)
+
+        assert strategy.projection_plan.opaque_boundaries == frozenset()
+        diagnostic = strategy.diagnostic.to_dict()
+        assert [
+            item["node_id"]
+            for item in diagnostic["boundaries"]["items"]
+            if item["boundary_kind"] == "unprojected-streaming-boundary"
+        ] == []
+
+    def test_code_outside_the_lineage_model_keeps_its_boundary(self, tmp_path):
+        graph = self._joined_graph(
+            tmp_path,
+            limited_code="for _ in range(1):\n    df = competitor_join.limit(5)",
+        )
+
+        strategy = self._preview(graph)
+
+        assert "competitor_join" in strategy.projection_plan.opaque_boundaries
+
+    def test_a_full_materialisation_keeps_the_pre_execution_plan(self, tmp_path):
+        strategy = self._preview(self._joined_graph(tmp_path), target_preview_only=False)
+
+        assert "competitor_join" in strategy.projection_plan.opaque_boundaries
+
+
+class TestBuilderPostCodeProjection:
+    """Builder post-code reads builder-generated columns without demanding them upstream."""
+
+    @staticmethod
+    def _preview(tmp_path, node_type: str, config: dict, requested: list[str]):
+        from haute._types import GraphNode, NodeData, NodeType
+
+        path = tmp_path / "rows.parquet"
+        pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2"],
+                "premium": [50.0, 100.0],
+                "vehicle_age_band": ["1-3", "10+"],
+                "cover_type": ["comprehensive", "comprehensive"],
+            }
+        ).write_parquet(path)
+        graph = _g(
+            {
+                "nodes": [
+                    _ready_source_node("source", str(path)),
+                    GraphNode(
+                        id="built",
+                        data=NodeData(label="built", nodeType=NodeType(node_type), config=config),
+                    ),
+                ],
+                "edges": [_edge("source", "built")],
+            }
+        )
+        result = execute_graph(
+            graph,
+            target_node_id="built",
+            row_limit=10,
+            target_preview_only=True,
+            requested_preview_columns=requested,
+        )["built"]
+        assert result.status == "ok", result.error
+        return result
+
+    def test_scenario_expander_post_code_reads_its_generated_columns(self, tmp_path):
+        result = self._preview(
+            tmp_path,
+            "scenarioExpander",
+            {
+                "column_name": "scenario_value",
+                "min_value": 1.0,
+                "max_value": 3.0,
+                "stepCount": 3,
+                "step_column": "scenario_index",
+                "code": "df = df.select(result=pl.col('scenario_value') * pl.col('premium'))",
+                "contract": {"inputs": ["premium"], "outputs": ["result"]},
+            },
+            ["result"],
+        )
+
+        assert sorted(row["result"] for row in result.preview) == [
+            50.0,
+            100.0,
+            100.0,
+            150.0,
+            200.0,
+            300.0,
+        ]
+
+    def test_scenario_expander_post_code_reads_the_default_index_column(self, tmp_path):
+        result = self._preview(
+            tmp_path,
+            "scenarioExpander",
+            {
+                "min_value": 1.0,
+                "max_value": 1.0,
+                "stepCount": 2,
+                "step_column": "",
+                "code": "df = df.select(result=pl.col('premium') + pl.col('scenario_index'))",
+                "contract": {"inputs": ["premium"], "outputs": ["result"]},
+            },
+            ["result"],
+        )
+
+        assert sorted(row["result"] for row in result.preview) == [50.0, 51.0, 100.0, 101.0]
+
+    def test_rating_step_post_code_reads_its_generated_columns(self, tmp_path):
+        result = self._preview(
+            tmp_path,
+            "ratingStep",
+            {
+                "tables": [
+                    {
+                        "name": "vehicle_factor",
+                        "factors": ["vehicle_age_band", "cover_type"],
+                        "outputColumn": "vehicle_factor",
+                        "defaultValue": "1.0",
+                        "entries": [
+                            {
+                                "vehicle_age_band": "1-3",
+                                "cover_type": "comprehensive",
+                                "value": 0.9,
+                            },
+                            {
+                                "vehicle_age_band": "10+",
+                                "cover_type": "comprehensive",
+                                "value": 1.4,
+                            },
+                        ],
+                    }
+                ],
+                "code": "df = df.select(rated=pl.col('premium') * pl.col('vehicle_factor'))",
+                "contract": {
+                    "inputs": ["vehicle_age_band", "cover_type", "premium"],
+                    "outputs": ["rated"],
+                },
+            },
+            ["rated"],
+        )
+
+        assert sorted(row["rated"] for row in result.preview) == [45.0, 140.0]

@@ -1,13 +1,17 @@
 import { useEffect, useState, type ReactNode } from "react"
-import { GitMerge, Plus, Search, Table2, X } from "lucide-react"
+import { GitMerge, Plus, Table2, X } from "lucide-react"
 import { InputSourcesBar, INPUT_STYLE } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
+import { SavedValueOption } from "../../components/form"
+import SearchableItemList from "./shared/SearchableItemList"
+import { useSearchableList, type SearchableListItem } from "./shared/useSearchableList"
 import { withAlpha } from "../../utils/color"
 import { classifyBandingLevels } from "../../utils/banding"
 import type { RatingFactorColumn, RatingFactorDtype, RatingTable } from "./rating/ratingTableUtils"
 import {
   normaliseRatingTables,
+  newRatingTable,
   buildCartesianEntries,
   ratingTableStatus,
   tableStats,
@@ -17,6 +21,8 @@ import {
 } from "./rating/ratingTableUtils"
 import { OneWayEditor } from "./rating/OneWayEditor"
 import { TwoWayGrid } from "./rating/TwoWayGrid"
+import useRatingLevels from "./rating/useRatingLevels"
+import type { SimpleNode } from "./_shared"
 import { useGraph } from "../useGraph"
 import useUIStore, { type RatingStepEditorSection } from "../../stores/useUIStore"
 
@@ -103,6 +109,46 @@ function combinedOutputHasIssue(
   return outputNameIssue || operationIssue || baseValueIssue
 }
 
+/**
+ * The largest rating table this editor will build or draw.
+ *
+ * Whole-dataset levels are real levels: a postcode or vehicle-model column has
+ * thousands, and two of them as factors is a million editable cells — which no
+ * browser will draw and nobody would fill in by hand. Rebuilding three such
+ * factors would allocate the product of all three. Past this size the editor
+ * says what it would take rather than locking up trying.
+ */
+const MAX_EDITABLE_TABLE_CELLS = 20000
+
+/**
+ * How many cells those factors make — every dimension, not just the ones it
+ * takes to pass the cap, because this number is shown to the user and a table
+ * reported as 40,000 cells when it is 400,000 is a worse answer than none.
+ * A table has at most three factors of at most `value_limit` levels, so the
+ * product is exact.
+ */
+function cartesianCellCount(factors: string[], levels: Record<string, string[]>): number {
+  let cells = 1
+  for (const factor of factors) {
+    const count = (levels[factor] || []).length
+    if (count === 0) return 0
+    cells *= count
+  }
+  return cells
+}
+
+/** The table those factors would make, as the editor says it. */
+function describeTableSize(
+  factors: string[],
+  levels: Record<string, string[]>,
+  cells: number,
+): string {
+  const dimensions = factors
+    .map(factor => `${factor} (${(levels[factor] || []).length})`)
+    .join(" × ")
+  return `${dimensions} would be ${cells.toLocaleString()} cells`
+}
+
 function onlyNonBandedLevels(
   levels: Record<string, string[]>,
   configuredBandingOutputs: string[],
@@ -145,24 +191,59 @@ export default function RatingStepEditor({
   errorLine?: number | null
   nodeId?: string
 }) {
-  const { allNodes } = useGraph()
+  const graph = useGraph()
+  const { allNodes } = graph
   const rememberedSection = useUIStore((s) => nodeId ? s.ratingStepEditorSections[nodeId] : undefined)
   const setRememberedSection = useUIStore((s) => s.setRatingStepEditorSection)
   const [activeTab, setActiveTab] = useState(0)
-  const [sliceIdx, setSliceIdx] = useState(0)
+  // The chosen slice is the level itself: levels can arrive, and an index
+  // would then name a different one without the user touching anything.
+  const [sliceLevel, setSliceLevel] = useState<string | null>(null)
+  // Why a factor the user picked was not added, kept until they move on.
+  const [factorLimitNotice, setFactorLimitNotice] = useState<string | null>(null)
   const [activeSection, setActiveSectionState] = useState<RatingSection>(() => (
     rememberedSection ?? resolveInitialSection(config)
   ))
-  const [tableSearch, setTableSearch] = useState("")
-  const [tableFilter, setTableFilter] = useState<"all" | "problems">("all")
   const tables = normaliseRatingTables(config)
   const bandingClassification = classifyBandingLevels(allNodes)
   const bandingLevels = bandingClassification.levels
   const rawStringLevels = extractPreviewCategoricalLevels(previewRows, upstreamColumns)
   const savedEntryLevels = extractTableEntryFactorLevels(tables)
+
+  // The whole dataset this node reads, when it is cached: a level that appears
+  // in none of the preview rows is still a level the tables can rate on. Only
+  // the raw factor columns are asked about — a banded output is named by the
+  // banding config rather than by the data, and asking is a pass over it.
+  const node = nodeId ? allNodes.find((candidate: SimpleNode) => candidate.id === nodeId) ?? null : null
+  const ratedColumns = tables
+    .flatMap(candidate => candidate.factors)
+    .filter(factor => factor && !bandingClassification.configuredOutputs.includes(factor))
+  const {
+    levels: datasetLevels,
+    totalRows: datasetRows,
+    basis: levelsBasis,
+    error: levelsError,
+  } = useRatingLevels({
+    node,
+    allNodes,
+    edges: graph.edges,
+    submodels: graph.submodels,
+    preamble: graph.preamble,
+    columns: ratedColumns,
+  })
+
+  // Whole-dataset levels are *added* to what the editor already shows, never
+  // put in front of it. They arrive while the user is typing, and a row that
+  // moved under a half-finished edit would take the value meant for its
+  // neighbour; the server's count order decides what its cap keeps, not where
+  // a row sits on screen. Levels already in a saved table stay for the same
+  // reason: a rate must not vanish from the editor that shows it.
   const rawFactorLevels = mergeFactorLevels(
-    onlyNonBandedLevels(rawStringLevels, bandingClassification.configuredOutputs),
-    onlyNonBandedLevels(savedEntryLevels, bandingClassification.configuredOutputs),
+    mergeFactorLevels(
+      onlyNonBandedLevels(rawStringLevels, bandingClassification.configuredOutputs),
+      onlyNonBandedLevels(savedEntryLevels, bandingClassification.configuredOutputs),
+    ),
+    onlyNonBandedLevels(datasetLevels, bandingClassification.configuredOutputs),
   )
   const factorLevels = mergeFactorLevels(bandingLevels, rawFactorLevels)
   const combinedOutputs = normaliseCombinedOutputs(config)
@@ -177,31 +258,33 @@ export default function RatingStepEditor({
 
   const availableColumns = Object.keys(factorLevels)
   const safeIdx = Math.min(activeTab, tables.length - 1)
-  const table = tables[safeIdx] || { factors: [], outputColumn: "", defaultValue: "1.0", entries: [] }
+  const table = tables[safeIdx] || newRatingTable()
   const tableStatuses = tables.map((candidate, idx) => ratingTableStatus(candidate, idx, tables))
   const activeTableStatus = tableStatuses[safeIdx] || { state: "problem" as const, issues: [] }
   const activeTableSummaryIssues = activeTableStatus.issues.filter(issue => !issue.startsWith("Output column"))
-  const problemTableCount = tableStatuses.filter(status => status.state === "problem").length
-  const visibleTableItems = tables
-    .map((candidate, idx) => ({
-      table: candidate,
-      idx,
-      status: tableStatuses[idx] || ratingTableStatus(candidate, idx, tables),
-      displayName: tableDisplayName(candidate, idx),
-      stats: tableStats(candidate.entries || []),
-    }))
-    .filter(item => {
-      if (tableFilter === "problems" && item.status.state !== "problem") return false
-      const query = tableSearch.trim().toLowerCase()
-      if (!query) return true
-      return item.displayName.toLowerCase().includes(query) ||
-        item.table.factors.some(factor => factor.toLowerCase().includes(query))
-    })
-  const activeTableVisible = visibleTableItems.some(item => item.idx === safeIdx)
-  const firstVisibleTableIdx = visibleTableItems[0]?.idx ?? null
-  const tableEditorUnavailable = firstVisibleTableIdx === null && (
-    tableSearch.trim().length > 0 || tableFilter === "problems"
+  const tableItems: SearchableListItem[] = tables.map((candidate, idx) => {
+    const status = tableStatuses[idx] || ratingTableStatus(candidate, idx, tables)
+    const stats = tableStats(candidate.entries || [])
+    return {
+      index: idx,
+      name: tableDisplayName(candidate, idx),
+      searchTerms: candidate.factors,
+      healthy: status.state === "healthy",
+      issues: status.issues,
+      badges: [`${candidate.factors.length}f`, ...(stats ? [String(stats.count)] : [])],
+    }
+  })
+  // A table the search or filter hides is not the one being edited.
+  const tableList = useSearchableList(
+    tableItems,
+    safeIdx,
+    (idx) => {
+      setActiveTab(idx)
+      setSliceLevel(null)
+    },
+    activeSection === "tables",
   )
+  const tableEditorUnavailable = tableList.noneVisible
   const outputColumnBlank = table.outputColumn.trim() === ""
   const outputColumnDuplicate = !outputColumnBlank && tables.some((candidate, idx) => (
     idx !== safeIdx && candidate.outputColumn.trim() === table.outputColumn.trim()
@@ -209,6 +292,9 @@ export default function RatingStepEditor({
   const outputColumnInvalid = outputColumnBlank || outputColumnDuplicate
   const outputColumnInputId = `rating-output-column-${safeIdx}`
   const outputColumnErrorId = `${outputColumnInputId}-error`
+  const defaultInputId = `rating-default-${safeIdx}`
+  const onMissingInputId = `rating-on-missing-${safeIdx}`
+  const hasDefault = typeof table.defaultValue === "string" && table.defaultValue.trim() !== ""
   const hasCombinedOutput = combinedOutputs.length > 0
   const safeCombinedIdx = hasCombinedOutput ? Math.min(activeCombinedIdx, combinedOutputs.length - 1) : 0
   const combinedOutput = combinedOutputs[safeCombinedIdx] || { outputColumn: "", operation: "multiply" as CombinedOperation, baseValue: "1.0" }
@@ -243,12 +329,6 @@ export default function RatingStepEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reset the visible editor section only when switching rating nodes
   }, [nodeId])
 
-  useEffect(() => {
-    if (activeSection !== "tables" || activeTableVisible || firstVisibleTableIdx === null) return
-    setActiveTab(firstVisibleTableIdx)
-    setSliceIdx(0)
-  }, [activeSection, activeTableVisible, firstVisibleTableIdx])
-
   const commitTables = (next: RatingTable[]) => onUpdate("tables", next)
 
   const updateTable = (idx: number, patch: Partial<RatingTable>) => {
@@ -256,9 +336,39 @@ export default function RatingStepEditor({
     commitTables(next)
   }
 
+  // An empty Default is removed rather than saved, so a miss follows onMissing.
+  const setDefaultValue = (idx: number, raw: string) => {
+    const value = raw.trim()
+    commitTables(tables.map((t, i) => {
+      if (i !== idx) return t
+      const { defaultValue: _previous, ...rest } = t
+      return value ? { ...rest, defaultValue: value } : rest
+    }))
+  }
+
   const setFactors = (idx: number, newFactors: string[]) => {
     const t = tables[idx]
-    const rebuilt = buildCartesianEntries(newFactors, factorLevels, t.entries, t.defaultValue)
+    // An entry must carry a value for every one of its table's factors, so a
+    // factor this editor cannot build entries for is not committed at all:
+    // leaving the old entries under a new factor writes a configuration the
+    // server rejects and the pipeline cannot run.
+    const cells = cartesianCellCount(newFactors, factorLevels)
+    const adds = newFactors.some(factor => !t.factors.includes(factor))
+    if (adds && cells > MAX_EDITABLE_TABLE_CELLS) {
+      setFactorLimitNotice(
+        `${describeTableSize(newFactors, factorLevels, cells)} - too many to edit here. ` +
+          `Band the column first, or rate it in a table of its own.`,
+      )
+      return
+    }
+    setFactorLimitNotice(null)
+    // Dropping a factor from a table that levels have already made oversized
+    // must stay possible, and the entries keep a value for every remaining
+    // factor, so they are left alone rather than expanded again.
+    const rebuilt =
+      cells > MAX_EDITABLE_TABLE_CELLS
+        ? t.entries
+        : buildCartesianEntries(newFactors, factorLevels, t.entries, t.defaultValue)
     const factorDtypes = newFactors.reduce<Record<string, RatingFactorDtype>>((result, factor) => {
       const descriptor = t.factorDtypes?.[factor]
       if (descriptor) result[factor] = descriptor
@@ -289,13 +399,13 @@ export default function RatingStepEditor({
 
   const selectTable = (idx: number) => {
     setActiveTab(idx)
-    setSliceIdx(0)
+    setSliceLevel(null)
+    setFactorLimitNotice(null)
   }
 
   const addTable = () => {
-    commitTables([...tables, { factors: [], outputColumn: "", defaultValue: "1.0", entries: [] }])
-    setTableSearch("")
-    setTableFilter("all")
+    commitTables([...tables, newRatingTable()])
+    tableList.reset()
     selectTable(tables.length)
   }
 
@@ -345,20 +455,48 @@ export default function RatingStepEditor({
 
   const rebuildCurrentEntries = () => {
     const t = tables[safeIdx]
+    if (cartesianCellCount(t.factors, factorLevels) > MAX_EDITABLE_TABLE_CELLS) return
     const rebuilt = buildCartesianEntries(t.factors, factorLevels, t.entries, t.defaultValue)
     updateTable(safeIdx, { entries: rebuilt })
   }
 
   const factorCount = table.factors.length
+  // Every combination of the table's factors, which is what rebuilding builds
+  // and — for the two gridded dimensions — what drawing it draws.
+  const tableCellCount = cartesianCellCount(table.factors, factorLevels)
+  const tableTooLarge = tableCellCount > MAX_EDITABLE_TABLE_CELLS
 
   // For 3-way: factor[2] is the slice dimension
   const sliceFactor = factorCount === 3 ? table.factors[2] : null
   const sliceLevels = sliceFactor ? (factorLevels[sliceFactor] || []) : []
-  const safeSliceIdx = Math.min(sliceIdx, Math.max(0, sliceLevels.length - 1))
+  const selectedSlice =
+    sliceLevel !== null && sliceLevels.includes(sliceLevel) ? sliceLevel : sliceLevels[0]
+
+  const levelsBasisLabel =
+    levelsBasis === "all"
+      ? `Levels from all rows · ${datasetRows.toLocaleString()}`
+      : levelsBasis === "stale"
+        ? "Cached data is out of date"
+        : `Levels from a sample · ${(previewRows?.length ?? 0).toLocaleString()} rows`
 
   return (
     <div className="px-4 py-3 space-y-3 overflow-y-auto">
       <InputSourcesBar inputSources={inputSources} onDeleteInput={onDeleteInput} />
+
+      {/* Only when something here reads the data. A table rating purely on
+          banded outputs takes its levels from the banding config, so neither
+          the basis has anything to say about it. */}
+      {node && ratedColumns.length > 0 && (
+        <div className="flex items-center justify-between gap-2" data-testid="rating-levels-basis">
+          <span
+            className="text-[11px]"
+            style={{ color: levelsError ? "var(--danger)" : "var(--text-muted)" }}
+            title={levelsError ?? undefined}
+          >
+            {levelsError ? `Reading the whole dataset failed: ${levelsError}` : levelsBasisLabel}
+          </span>
+        </div>
+      )}
 
       {bandingClassification.zeroLevelOutputs.length > 0 && (
         <div
@@ -394,141 +532,22 @@ export default function RatingStepEditor({
         <span>Rating Tables · {tables.length} table{tables.length !== 1 ? 's' : ''}</span>
       </div>
 
-      <div className="space-y-1.5">
-        <div className="flex items-center gap-1.5">
-          <div className="relative flex-1 min-w-0">
-            <Search
-              size={12}
-              className="absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none"
-              style={{ color: 'var(--text-muted)' }}
-            />
-            <input
-              type="search"
-              aria-label="Search rating tables"
-              value={tableSearch}
-              onChange={(e) => setTableSearch(e.target.value)}
-              className="w-full pl-7 pr-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none"
-              style={INPUT_STYLE}
-            />
-          </div>
-          <div
-            className="flex items-center rounded-lg p-0.5 shrink-0"
-            style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}
-          >
-            {(["all", "problems"] as const).map(filter => (
-              <button
-                key={filter}
-                type="button"
-                onClick={() => setTableFilter(filter)}
-                aria-pressed={tableFilter === filter}
-                className="px-2 py-1 rounded-md text-[10px] font-medium transition-colors"
-                style={{
-                  background: tableFilter === filter ? withAlpha(accentColor, 0.14) : 'transparent',
-                  color: tableFilter === filter ? accentColor : 'var(--text-muted)',
-                }}
-              >
-                {filter === "all" ? "All" : `Issues${problemTableCount > 0 ? ` ${problemTableCount}` : ""}`}
-              </button>
-            ))}
-          </div>
-          <button
-            type="button"
-            onClick={addTable}
-            aria-label="Add table"
-            className="accent-hover-btn p-1.5 rounded-lg shrink-0"
-            style={{ color: 'var(--text-muted)', border: '1px dashed var(--border)', ['--node-accent' as string]: accentColor }}
-          >
-            <Plus size={12} />
-          </button>
-        </div>
-
-        <div
-          role="group"
-          aria-label="Rating tables"
-          className="max-h-44 overflow-y-auto rounded-lg"
-          style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)' }}
-        >
-          {visibleTableItems.map((item, position) => {
-            const selected = item.idx === safeIdx
-            const focusable = selected || (!activeTableVisible && position === 0)
-            const statusLabel = tableStatusLabel(item.status.state)
-            return (
-              <div
-                key={item.idx}
-                className="group flex items-center gap-1.5 px-1.5 py-1 text-[11px] transition-colors border-b last:border-b-0"
-                style={{
-                  background: selected ? withAlpha(accentColor, 0.1) : 'transparent',
-                  borderColor: 'var(--border-subtle)',
-                  color: selected ? 'var(--text-primary)' : 'var(--text-secondary)',
-                }}
-              >
-                <button
-                  type="button"
-                  aria-label={`${item.displayName} ${statusLabel}`}
-                  aria-pressed={selected}
-                  title={item.status.issues.length > 0 ? item.status.issues.join("; ") : "Healthy"}
-                  tabIndex={focusable ? 0 : -1}
-                  data-rating-table-option="true"
-                  onClick={() => selectTable(item.idx)}
-                  onKeyDown={(e) => {
-                    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-                      e.preventDefault()
-                      const nextPosition = e.key === "ArrowDown"
-                        ? (position + 1) % visibleTableItems.length
-                        : (position - 1 + visibleTableItems.length) % visibleTableItems.length
-                      const next = visibleTableItems[nextPosition]
-                      if (!next) return
-                      selectTable(next.idx)
-                      const selector = e.currentTarget.closest('[aria-label="Rating tables"]')
-                      const options = selector?.querySelectorAll<HTMLElement>('[data-rating-table-option="true"]')
-                      window.requestAnimationFrame(() => options?.[nextPosition]?.focus())
-                    }
-                  }}
-                  className="min-w-0 flex flex-1 items-center gap-2 rounded-md px-1 py-0.5 text-left focus:outline-none focus:ring-1"
-                  style={{ color: 'inherit', background: 'transparent' }}
-                >
-                  <span
-                    aria-hidden="true"
-                    className="inline-block w-1.5 h-1.5 rounded-full shrink-0"
-                    style={{ background: item.status.state === "healthy" ? 'var(--success)' : 'var(--warning-strong)' }}
-                  />
-                  <span className="min-w-0 flex-1 truncate font-mono">{item.displayName}</span>
-                  <span
-                    className="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-mono"
-                    style={{ background: selected ? withAlpha(accentColor, 0.14) : 'var(--bg-elevated)', color: 'var(--text-muted)' }}
-                  >
-                    {item.table.factors.length}f
-                  </span>
-                  {item.stats && (
-                    <span
-                      className="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-mono"
-                      style={{ background: selected ? withAlpha(accentColor, 0.14) : 'var(--bg-elevated)', color: 'var(--text-muted)' }}
-                    >
-                      {item.stats.count}
-                    </span>
-                  )}
-                </button>
-                {tables.length > 1 && (
-                  <button
-                    type="button"
-                    aria-label={`Remove ${item.displayName} table`}
-                    onClick={(e) => { e.stopPropagation(); removeTable(item.idx) }}
-                    className="p-0.5 rounded opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity cursor-pointer hover:text-[var(--danger)] focus-visible:text-[var(--danger)]"
-                    style={{ color: 'var(--text-muted)' }}
-                  >
-                    <X size={10} />
-                  </button>
-                )}
-              </div>
-            )
-          })}
-          {visibleTableItems.length === 0 && (
-            <div className="px-2.5 py-3 text-center text-[11px]" style={{ color: 'var(--text-muted)' }}>
-              No matching tables
-            </div>
-          )}
-        </div>
-      </div>
+      <SearchableItemList
+        list={tableList}
+        selectedIndex={safeIdx}
+        onSelect={selectTable}
+        onAdd={addTable}
+        onRemove={tables.length > 1 ? removeTable : undefined}
+        labels={{
+          list: "Rating tables",
+          search: "Search rating tables",
+          add: "Add table",
+          remove: (name) => `Remove ${name} table`,
+          status: (healthy) => tableStatusLabel(healthy ? "healthy" : "problem"),
+          empty: "No matching tables",
+        }}
+        accentColor={accentColor}
+      />
 
       {tableEditorUnavailable ? (
         <div
@@ -573,6 +592,7 @@ export default function RatingStepEditor({
                 className="flex-1 px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none"
                 style={INPUT_STYLE}>
                 <option value="">Select column...</option>
+                <SavedValueOption value={f} options={availableColumns} missingLabel={(name) => `${name} (not a banding factor)`} />
                 {availableColumns.map(c => (
                   <option key={c} value={c}>{c} ({(factorLevels[c] || []).length} levels)</option>
                 ))}
@@ -598,8 +618,8 @@ export default function RatingStepEditor({
         </div>
       </div>
 
-      {/* Output column + default */}
-      <div className="grid grid-cols-2 gap-2">
+      {/* Output column, default and what a miss does */}
+      <div className="grid grid-cols-[2fr_1fr_1.3fr] gap-2">
         <div>
           <label htmlFor={outputColumnInputId} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: outputColumnInvalid ? 'var(--danger)' : 'var(--text-muted)' }}>Output Column</label>
           <input key={`out-${safeIdx}`} type="text" defaultValue={table.outputColumn}
@@ -619,18 +639,30 @@ export default function RatingStepEditor({
           )}
         </div>
         <div>
-          <label className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: 'var(--text-muted)' }}>Default</label>
-          <input key={`def-${safeIdx}`} type="number" step="0.01" defaultValue={table.defaultValue ?? "1.0"}
-            onBlur={(e) => updateTable(safeIdx, { defaultValue: e.target.value })}
+          <label htmlFor={defaultInputId} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: 'var(--text-muted)' }}>Default</label>
+          <input key={`def-${safeIdx}`} id={defaultInputId} type="number" step="0.01" defaultValue={table.defaultValue ?? ""}
+            onBlur={(e) => setDefaultValue(safeIdx, e.target.value)}
             className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
-            style={INPUT_STYLE} placeholder="1.0" />
+            style={INPUT_STYLE} placeholder="none" />
+        </div>
+        <div>
+          <label htmlFor={onMissingInputId} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: 'var(--text-muted)' }}>On miss</label>
+          <select id={onMissingInputId} value={table.onMissing ?? "error"}
+            disabled={hasDefault}
+            title={hasDefault ? "The default fills every miss" : "What a level with no entry does"}
+            onChange={(e) => updateTable(safeIdx, { onMissing: e.target.value })}
+            className="w-full px-2 py-1.5 text-xs rounded-lg focus:outline-none focus:ring-2 disabled:opacity-50"
+            style={INPUT_STYLE}>
+            <option value="error">Stop the run</option>
+            <option value="neutral">Leave empty</option>
+          </select>
         </div>
       </div>
 
       {/* Rebuild button */}
       {factorCount > 0 && (
-        <button onClick={rebuildCurrentEntries}
-          className="accent-hover-btn w-full px-2 py-1.5 text-[11px] font-medium rounded-lg"
+        <button onClick={rebuildCurrentEntries} disabled={tableTooLarge}
+          className="accent-hover-btn w-full px-2 py-1.5 text-[11px] font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
           style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)', color: 'var(--text-secondary)', ['--node-accent' as string]: accentColor }}>
           ↻ Rebuild from factor levels
         </button>
@@ -642,26 +674,55 @@ export default function RatingStepEditor({
           Select at least one factor to populate the rating table
         </div>
       )}
-      {factorCount === 1 && (
+      {factorLimitNotice && (
+        <div
+          role="status"
+          data-testid="rating-factor-limit"
+          className="px-3 py-2 text-[11px] rounded-lg"
+          style={{
+            background: "var(--warning-soft)",
+            border: "1px solid var(--warning-border)",
+            color: "var(--text-secondary)",
+          }}
+        >
+          {factorLimitNotice}
+        </div>
+      )}
+      {factorCount > 0 && tableTooLarge && (
+        <div
+          role="status"
+          data-testid="rating-table-too-large"
+          className="px-3 py-3 text-center text-[11px] rounded-lg"
+          style={{
+            background: "var(--warning-soft)",
+            border: "1px solid var(--warning-border)",
+            color: "var(--text-secondary)",
+          }}
+        >
+          {describeTableSize(table.factors, factorLevels, tableCellCount)} - too many to edit
+          here. Band the column first, or rate it in a table of its own.
+        </div>
+      )}
+      {factorCount === 1 && !tableTooLarge && (
         <OneWayEditor table={table} bandingLevels={factorLevels}
           onUpdateEntries={(e) => onUpdateEntries(safeIdx, e)} />
       )}
-      {factorCount === 2 && (
+      {factorCount === 2 && !tableTooLarge && (
         <TwoWayGrid table={table} bandingLevels={factorLevels}
           onUpdateEntries={(e) => onUpdateEntries(safeIdx, e)} />
       )}
-      {factorCount === 3 && (
+      {factorCount === 3 && !tableTooLarge && (
         <div className="space-y-2">
           <div className="flex items-center gap-2">
             <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--text-muted)' }}>
               {sliceFactor}
             </label>
-            <select aria-label={`${sliceFactor} slice`} value={safeSliceIdx}
-              onChange={(e) => setSliceIdx(Number(e.target.value))}
+            <select aria-label={`${sliceFactor} slice`} value={selectedSlice ?? ""}
+              onChange={(e) => setSliceLevel(e.target.value)}
               className="flex-1 px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none"
               style={INPUT_STYLE}>
-              {sliceLevels.map((level, i) => (
-                <option key={level} value={i}>{level}</option>
+              {sliceLevels.map((level) => (
+                <option key={level} value={level}>{level}</option>
               ))}
             </select>
           </div>
@@ -670,7 +731,7 @@ export default function RatingStepEditor({
               onUpdateEntries={(e) => onUpdateEntries(safeIdx, e)}
               factorOverrides={{
                 factors: [table.factors[0], table.factors[1]],
-                sliceKey: { [table.factors[2]]: sliceLevels[safeSliceIdx] },
+                sliceKey: { [table.factors[2]]: selectedSlice },
               }} />
           )}
         </div>

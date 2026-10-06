@@ -17,6 +17,7 @@ import polars as pl
 from haute._execution_context import ExecutionProfile
 from haute._hashing import content_hash
 from haute._logging import get_logger
+from haute._polars_dtypes import parse_dtype
 from haute._polars_utils import (
     is_bounded_execution_profile,
     normalise_execution_profile,
@@ -62,27 +63,6 @@ def _observed_source_suffix(path: str) -> str:
     return suffixes[-1] if suffixes else ""
 
 
-_POLARS_DTYPE_ALIASES: Mapping[str, Any] = {
-    "bool": pl.Boolean,
-    "boolean": pl.Boolean,
-    "date": pl.Date,
-    "datetime": pl.Datetime,
-    "float32": pl.Float32,
-    "float64": pl.Float64,
-    "int8": pl.Int8,
-    "int16": pl.Int16,
-    "int32": pl.Int32,
-    "int64": pl.Int64,
-    "string": pl.String,
-    "str": pl.String,
-    "uint8": pl.UInt8,
-    "uint16": pl.UInt16,
-    "uint32": pl.UInt32,
-    "uint64": pl.UInt64,
-    "utf8": pl.String,
-}
-
-
 def _normalise_columns(columns: Iterable[str] | None) -> tuple[str, ...] | None:
     if columns is None:
         return None
@@ -100,26 +80,6 @@ def _normalise_columns(columns: Iterable[str] | None) -> tuple[str, ...] | None:
     return tuple(ordered)
 
 
-def _normalise_dtype(value: Any, *, column: str) -> Any:
-    if not isinstance(value, str):
-        return value
-
-    dtype_name = value.strip()
-    key = dtype_name.lower()
-    if key in _POLARS_DTYPE_ALIASES:
-        return _POLARS_DTYPE_ALIASES[key]
-
-    dtype = getattr(pl, dtype_name, None)
-    if dtype is not None:
-        return dtype
-
-    raise SchemaMismatchError(
-        "Unsupported declared source dtype.",
-        column=column,
-        dtype=value,
-    )
-
-
 def _normalise_schema_overrides(
     schema_overrides: Mapping[str, Any] | None,
 ) -> dict[str, Any] | None:
@@ -130,7 +90,7 @@ def _normalise_schema_overrides(
     for column, dtype in schema_overrides.items():
         if not isinstance(column, str) or not column:
             raise SchemaMismatchError("Source schema columns must be non-empty strings.")
-        normalised[column] = _normalise_dtype(dtype, column=column)
+        normalised[column] = parse_dtype(dtype, column=column)
     return normalised
 
 
@@ -176,21 +136,11 @@ def _source_format(path: str) -> SourceFormat:
 def _select_columns(
     lf: pl.LazyFrame,
     columns: tuple[str, ...] | None,
-    *,
-    validate_columns: tuple[str, ...] | None = None,
 ) -> pl.LazyFrame:
     schema_columns = lf.collect_schema().names()
-    requested = set(columns or ())
-    validation_requested = set(validate_columns or ())
-    validation_missing = validation_requested - set(schema_columns)
-    if validation_missing:
-        raise SchemaMismatchError(
-            "Source selected_columns references columns missing from the source schema.",
-            missing=sorted(validation_missing),
-            available=schema_columns,
-        )
     if columns is None:
         return lf
+    requested = set(columns)
     missing = requested - set(schema_columns)
     if missing:
         raise SchemaMismatchError(
@@ -198,14 +148,7 @@ def _select_columns(
             missing=sorted(missing),
             available=schema_columns,
         )
-    # When selected_columns are being validated, the carrier comes from those
-    # so a later declarative selection cannot discard it.
-    selected = projected_or_carrier_columns(
-        schema_columns,
-        requested,
-        carrier_candidates=validation_requested,
-    )
-    return lf.select(selected)
+    return lf.select(projected_or_carrier_columns(schema_columns, requested))
 
 
 def _csv_header_columns(path: str) -> list[str]:
@@ -247,7 +190,6 @@ def _validate_csv_declared_schema_for_profile(
     profile: ExecutionProfile | None,
     schema_overrides: Mapping[str, Any] | None,
     columns: tuple[str, ...] | None,
-    validate_columns: tuple[str, ...] | None,
 ) -> list[str] | None:
     if not schema_overrides and not _is_bounded_csv_profile(profile):
         return None
@@ -273,19 +215,9 @@ def _validate_csv_declared_schema_for_profile(
                 missing=missing_projection,
                 available=header,
             )
-    if validate_columns:
-        missing_validation = sorted(set(validate_columns) - header_set)
-        if missing_validation:
-            raise SchemaMismatchError(
-                "Source selected_columns references columns missing from the source schema.",
-                missing=missing_validation,
-                available=header,
-            )
-
     if _is_bounded_csv_profile(profile):
         if columns == ():
-            carrier_candidates = set(validate_columns or header)
-            required = [next(column for column in header if column in carrier_candidates)]
+            required = [header[0]]
         else:
             required = list(columns) if columns is not None else header
         missing_required = sorted(
@@ -366,7 +298,7 @@ class DataSourceAdapter:
     source_type: str
     location: str
     _reader: Callable[
-        [ExecutionProfile | str | None, tuple[str, ...] | None, tuple[str, ...] | None],
+        [ExecutionProfile | str | None, tuple[str, ...] | None],
         pl.LazyFrame,
     ]
 
@@ -375,14 +307,9 @@ class DataSourceAdapter:
         *,
         profile: ExecutionProfile | str | None = None,
         columns: Iterable[str] | None = None,
-        validate_columns: Iterable[str] | None = None,
     ) -> pl.LazyFrame:
         """Read the configured source as a Polars LazyFrame."""
-        return self._reader(
-            profile,
-            _normalise_columns(columns),
-            _normalise_columns(validate_columns),
-        )
+        return self._reader(profile, _normalise_columns(columns))
 
 
 def _required_config_string(
@@ -417,7 +344,6 @@ def build_data_source_adapter(config: Mapping[str, Any]) -> DataSourceAdapter:
         def _read_flat_file(
             _profile: ExecutionProfile | str | None,
             _columns: tuple[str, ...] | None,
-            _validate_columns: tuple[str, ...] | None,
             _path: str = path,
             _schema_overrides: Mapping[str, Any] | None = schema_overrides,
         ) -> pl.LazyFrame:
@@ -425,7 +351,6 @@ def build_data_source_adapter(config: Mapping[str, Any]) -> DataSourceAdapter:
                 _path,
                 profile=_profile,
                 columns=_columns,
-                validate_columns=_validate_columns,
                 schema_overrides=_schema_overrides,
             )
 
@@ -439,14 +364,9 @@ def read_data_source(
     *,
     profile: ExecutionProfile | str | None = None,
     columns: Iterable[str] | None = None,
-    validate_columns: Iterable[str] | None = None,
 ) -> pl.LazyFrame:
     """Read a configured data source through the shared adaptor boundary."""
-    return build_data_source_adapter(config).read(
-        profile=profile,
-        columns=columns,
-        validate_columns=validate_columns,
-    )
+    return build_data_source_adapter(config).read(profile=profile, columns=columns)
 
 
 def read_user_bytes_and_text(path: str | Path) -> tuple[bytes, str]:
@@ -483,7 +403,6 @@ def read_source(
     *,
     profile: ExecutionProfile | str | None = None,
     columns: Iterable[str] | None = None,
-    validate_columns: Iterable[str] | None = None,
     schema_overrides: Mapping[str, Any] | None = None,
 ) -> pl.LazyFrame:
     """Read a data file into a LazyFrame, dispatching on file extension.
@@ -506,7 +425,6 @@ def read_source(
     path_string = _validate_source_path(path)
     normalised_profile = normalise_execution_profile(profile)
     projection_columns = _normalise_columns(columns)
-    validation_columns = _normalise_columns(validate_columns)
     source_schema_overrides = _normalise_schema_overrides(schema_overrides)
     fmt = _source_format(path_string)
 
@@ -516,7 +434,6 @@ def read_source(
             profile=normalised_profile,
             schema_overrides=source_schema_overrides,
             columns=projection_columns,
-            validate_columns=validation_columns,
         )
         if source_schema_overrides is None:
             lf = pl.scan_csv(path_string)
@@ -526,7 +443,7 @@ def read_source(
                 scan_kwargs["infer_schema"] = False
             lf = pl.scan_csv(path_string, **scan_kwargs)
             _validate_declared_schema(lf, source_schema_overrides, path=path_string)
-        return _select_columns(lf, projection_columns, validate_columns=validation_columns)
+        return _select_columns(lf, projection_columns)
 
     if fmt == SourceFormat.JSON:
         if normalised_profile is not None and is_bounded_execution_profile(normalised_profile):
@@ -539,7 +456,7 @@ def read_source(
             )
         lf = pl.read_json(path_string).lazy()
         _validate_declared_schema(lf, source_schema_overrides, path=path_string)
-        return _select_columns(lf, projection_columns, validate_columns=validation_columns)
+        return _select_columns(lf, projection_columns)
 
     if fmt == SourceFormat.NDJSON:
         if source_schema_overrides is None:
@@ -552,11 +469,15 @@ def read_source(
             )
             lf = pl.scan_ndjson(path_string, schema_overrides=source_schema_overrides)
             _validate_declared_schema(lf, source_schema_overrides, path=path_string)
-        return _select_columns(lf, projection_columns, validate_columns=validation_columns)
+        return _select_columns(lf, projection_columns)
 
     lf = pl.scan_parquet(path_string)
     _validate_declared_schema(lf, source_schema_overrides, path=path_string)
-    return _select_columns(lf, projection_columns, validate_columns=validation_columns)
+    return _select_columns(lf, projection_columns)
+
+
+#: The file types Load File loads; a model file is scored through Model Scoring.
+EXTERNAL_FILE_TYPES: tuple[str, ...] = ("pickle", "json", "joblib")
 
 
 @functools.lru_cache(maxsize=_OBJECT_CACHE_MAX_SIZE)
@@ -564,32 +485,27 @@ def _load_cached(
     path: str,
     digest: str,  # noqa: ARG001 - part of cache key, not used in body.
     file_type: str,
-    model_class: str,
 ) -> object:
-    """Memoised loader keyed on ``(path, digest, file_type, model_class)``."""
-    return _load_external_object_uncached(path, file_type, model_class)
+    """Memoised loader keyed on ``(path, digest, file_type)``."""
+    return _load_external_object_uncached(path, file_type)
 
 
-def load_external_object(path: str, file_type: str, model_class: str = "classifier") -> object:
-    """Load an external file (model, JSON, pickle, joblib) and return the object.
+def load_external_object(path: str, file_type: str) -> object:
+    """Load an external file (JSON, pickle, joblib) and return the object.
 
-    Results are cached by ``(path, content_hash, file_type, model_class)`` so
-    repeated calls skip disk parse/deserialisation cost. Pickle files are
-    deserialized with a restricted unpickler.
+    Results are cached by ``(path, content_hash, file_type)`` so repeated calls
+    skip disk parse/deserialisation cost. Pickle files are deserialized with a
+    restricted unpickler.
     """
     from haute._sandbox import validate_project_path
 
     validate_project_path(path)
 
     digest = content_hash(Path(path))
-    return _load_cached(path, digest, file_type, model_class)
+    return _load_cached(path, digest, file_type)
 
 
-def _load_external_object_uncached(
-    path: str,
-    file_type: str,
-    model_class: str,
-) -> object:
+def _load_external_object_uncached(path: str, file_type: str) -> object:
     """Deserialize an external file from disk without caching."""
     if file_type == "json":
         import json as _json
@@ -600,14 +516,11 @@ def _load_external_object_uncached(
         from haute._sandbox import safe_joblib_load
 
         return safe_joblib_load(path)
-    if file_type == "catboost":
-        from haute._mlflow_io import _load_catboost_model
-
-        class_to_task = {"regressor": "regression", "classifier": "classification"}
-        task = class_to_task.get(model_class, "regression")
-        return _load_catboost_model(path, task)
     if file_type == "pickle":
         from haute._sandbox import safe_unpickle
 
         return safe_unpickle(path)
-    raise ValueError(f"Unsupported file_type: {file_type!r}")
+    raise ValueError(
+        f"Unsupported file_type: {file_type!r}. Load File loads "
+        f"{', '.join(repr(supported) for supported in EXTERNAL_FILE_TYPES)} files."
+    )

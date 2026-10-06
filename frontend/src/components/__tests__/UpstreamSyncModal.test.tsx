@@ -32,7 +32,7 @@ function upstream(overrides: Partial<GitUpstreamStatus>): GitUpstreamStatus {
   }
 }
 
-describe("UpstreamSyncModal — a fork's relationship to its parent", () => {
+describe("UpstreamSyncModal - a fork's relationship to its parent", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     useGitStore.setState({ modal: "upstream" })
@@ -82,7 +82,7 @@ describe("UpstreamSyncModal — a fork's relationship to its parent", () => {
         ledger: { status: "diverged", ahead: 3, behind: 2 },
         can_fast_forward: false,
         message:
-          "Both projects have moved since the fork — 3 change(s) here and 2 in the parent.",
+          "Both projects have moved since the fork - 3 change(s) here and 2 in the parent.",
       }),
     )
     render(<UpstreamSyncModal onClose={vi.fn()} />)

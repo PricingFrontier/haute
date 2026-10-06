@@ -3,13 +3,16 @@ import type {
   ExecutionMetrics,
   ExecutionStrategyBoundary,
   ExecutionStrategyDiagnostic,
+  ExecutionStrategyProjectionCause,
   JobStatus,
 } from "../api/types"
 import { formatBytes } from "./formatBytes"
+import { isPlainObject } from "../types/guards"
 
 export type ExecutionDiagnostic = {
   message: string
   details: string[]
+  kind?: "strategy" | "pressure"
 }
 
 export type ExecutionFailureMessageOptions = {
@@ -29,15 +32,24 @@ const PROFILE_LABELS: Record<string, string> = {
   preview_eager: "preview",
   training_prep: "training",
   optimiser_setup: "optimiser",
+  optimiser_solve: "optimiser",
   optimiser_solve_worker: "optimiser",
-  auto_range: "auto-range",
   lazy_sink: "sink",
   deploy_batch: "deploy",
-  chunked_map_reduce: "chunked execution",
 }
 
 function profileLabel(profile: string): string {
   return PROFILE_LABELS[profile] ?? profile.replace(/_/g, " ")
+}
+
+function capitalise(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1)
+}
+
+const MEMORY_STAGE_LABELS: Record<string, string> = {
+  lazy_dataframe_cache_materialize: "Caching the dataframe",
+  explore_frame_stats: "Calculating column statistics",
+  collect: "Collecting results",
 }
 
 function pressurePercent(event: ExecutionMemoryPressureEvent): number {
@@ -64,6 +76,8 @@ export type ExecutionProjectionWarning = {
   boundary: ExecutionStrategyBoundary | null
   nodeId: string | null
   operator: string | null
+  /** The node whose code or contract kept that section full-width, when the planner named one. */
+  cause: ExecutionStrategyProjectionCause | null
 }
 
 /**
@@ -87,6 +101,7 @@ export function executionProjectionWarning(
     boundary,
     nodeId: boundary?.node_id ?? strategy.blocking_node_id ?? null,
     operator: boundary?.operator ?? strategy.blocking_operator ?? null,
+    cause: strategy.projection_cause ?? null,
   }
 }
 
@@ -95,9 +110,16 @@ function strategyLabel(status: ExecutionStrategyDiagnostic["status"]): string {
     projected: "Projection strategy applied",
     boundary: "Execution boundary required",
     admitted_eager: "Eager execution admitted",
+    warned: "Execution continued under a reserved memory envelope",
     rejected: "Execution strategy rejected",
     not_planned: "Execution strategy was not planned",
   }[status]
+}
+
+/** ` at '<node>' (<operator>)`, omitting the parts the diagnostic leaves null. */
+export function executionStrategyLocation(strategy: ExecutionStrategyDiagnostic): string {
+  if (!strategy.blocking_node_id) return ""
+  return ` at '${strategy.blocking_node_id}'${strategy.blocking_operator ? ` (${strategy.blocking_operator})` : ""}`
 }
 
 function rawCollectionDetail<T>(name: string, collection: { state: string; total_count: number | null; items: T[] }): string {
@@ -114,21 +136,34 @@ export function buildExecutionStrategyDiagnostic(
   if (strategy.blocking_node_id) details.push(`Blocking node ${strategy.blocking_node_id}`)
   if (strategy.blocking_operator) details.push(`Operator ${strategy.blocking_operator}`)
   if (strategy.estimated_peak_bytes !== undefined && strategy.estimated_peak_bytes !== null) details.push(`Estimated materialisation cost ${formatBytes(strategy.estimated_peak_bytes)}`)
-  if (strategy.headroom_bytes !== undefined && strategy.headroom_bytes !== null) details.push(`Available headroom ${formatBytes(strategy.headroom_bytes)}`)
+  if (strategy.headroom_bytes !== undefined && strategy.headroom_bytes !== null) {
+    details.push(
+      strategy.status === "warned"
+        ? `Reserved envelope ${formatBytes(strategy.headroom_bytes)}`
+        : `Available headroom ${formatBytes(strategy.headroom_bytes)}`,
+    )
+  }
   details.push(`Reason ${strategy.reason_code}`)
   if (strategy.remediation) details.push(`Remediation ${strategy.remediation}`)
+  const cause = strategy.projection_cause
+  if (cause) {
+    const input = cause.parent_node_id ? ` from ${cause.parent_node_id}` : ""
+    const operation = cause.operation ? ` in ${cause.operation}` : ""
+    details.push(
+      `Projection cause ${cause.node_id} (${cause.operator})${input}: ${cause.reason_code}${operation}; ${cause.total_count} total`,
+    )
+  }
   details.push(rawCollectionDetail("Boundaries", strategy.boundaries))
   details.push(rawCollectionDetail("Reasons", strategy.reasons))
   details.push(rawCollectionDetail("Provenance", strategy.provenance))
-  return { message: strategyLabel(strategy.status), details }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value)
+  const message = strategy.status === "warned"
+    ? `Execution ran without a memory estimate${executionStrategyLocation(strategy)}`
+    : strategyLabel(strategy.status)
+  return { message, details, kind: "strategy" }
 }
 
 function rawErrorDetail(error: unknown): unknown {
-  if (!isRecord(error)) return null
+  if (!isPlainObject(error)) return null
   if ("rawDetail" in error) return error.rawDetail
   return "detail" in error ? error.detail : null
 }
@@ -144,21 +179,115 @@ function stringField(fields: Record<string, unknown>, keys: string[]): string | 
 export function executionErrorDetailMessage(error: unknown): string | null {
   const detail = rawErrorDetail(error)
   if (typeof detail === "string" && detail.trim()) return detail
-  if (isRecord(detail)) {
-    return stringField(detail, ["message", "detail", "reason", "error_code"])
+  if (isPlainObject(detail)) {
+    const authored = stringField(detail, ["message", "detail"])
+    if (authored) return authored
+    if (detail.error_code === "memory_limit") return memoryLimitDetailMessage(detail)
+    return stringField(detail, ["reason", "error_code"])
   }
   return null
 }
 
+const REDUCE_MEMORY_ACTION =
+  "To reduce the memory it needs, filter rows or drop columns earlier in the pipeline."
+
+function byteField(fields: Record<string, unknown>, key: string): number | null {
+  const value = fields[key]
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null
+}
+
+/** User-facing names of the jobs whose memory reservation can refuse other work. */
+const RUNNING_JOB_NAMES: Readonly<Record<string, string>> = {
+  frontier_auto_range: "Auto range",
+  optimiser_solve: "Optimisation",
+  optimiser_solve_worker: "Optimisation",
+  optimiser_frontier_recompute: "Frontier recompute",
+  optimiser_estimate: "Solve estimate",
+  training_job: "Model training",
+  training_pipeline: "Model training",
+  training_evaluation_preview: "Training preview",
+  explore_relationships: "Explore",
+  explore_pivot: "Explore",
+  explore_pivot_members: "Explore",
+  node_snapshot: "Data caching",
+  input_snapshot_build: "Data caching",
+  pipeline_write_output: "Data output",
+}
+
+/**
+ * The running jobs named by an in-flight refusal's `in_flight_operations`
+ * (`"<profile>:<operation>"`), deduplicated in order; unknown operations are
+ * left out rather than shown by their internal names.
+ */
+function runningJobNames(detail: Record<string, unknown>): string[] {
+  const holders = detail.in_flight_operations
+  if (!Array.isArray(holders)) return []
+  const names: string[] = []
+  for (const holder of holders) {
+    if (typeof holder !== "string") continue
+    const name = RUNNING_JOB_NAMES[holder.slice(holder.indexOf(":") + 1)]
+    if (name && !names.includes(name)) names.push(name)
+  }
+  return names
+}
+
+/** Plain-language text for a structured `memory_limit` detail, by its closed reason. */
+function memoryLimitDetailMessage(detail: Record<string, unknown>): string {
+  const memory = (key: string) => {
+    const bytes = byteField(detail, key)
+    return bytes === null ? null : formatBytes(bytes)
+  }
+  const ranOutOfMemory = (sentence: string) => `${sentence} ${REDUCE_MEMORY_ACTION}`
+  switch (detail.reason) {
+    case "worker_may_have_exceeded_memory_limit":
+      return ranOutOfMemory(
+        "The process running this stopped abruptly, most likely because it ran out of memory.",
+      )
+    case "worker_rss_limit_exceeded": {
+      const used = memory("rss_bytes")
+      const limit = memory("rss_limit_bytes")
+      return ranOutOfMemory(
+        `This used ${used ? `${used} of ` : "more "}memory${limit ? `, over its ${limit} limit` : " than its limit"}.`,
+      )
+    }
+    case "rss_exceeds_memory_limit": {
+      const allowance = memory("memory_limit_bytes")
+      return ranOutOfMemory(`This needed more than its ${allowance ? `${allowance} ` : ""}memory allowance.`)
+    }
+    case "process_rss_limit_exceeded": {
+      // Admission reports the process cap itself; a running execution reports
+      // the cap as its effective RSS limit.
+      const atAdmission = byteField(detail, "rss_at_admission_bytes") !== null
+      const limit = memory(atAdmission ? "process_rss_limit_bytes" : "rss_limit_bytes")
+      const processLimit = `${limit ? `${limit} ` : ""}process memory limit`
+      if (atAdmission) {
+        return `There isn't enough free memory to start this: Haute is already using ${memory("rss_at_admission_bytes")} of its ${processLimit}.`
+      }
+      return ranOutOfMemory(`Haute reached its ${processLimit} while running this.`)
+    }
+    case "in_flight_memory_budget_exceeded": {
+      const jobs = runningJobNames(detail)
+      const running = jobs.length ? ` (${jobs.join(", ")})` : ""
+      return `Another job is running${running}. Try again when it finishes.`
+    }
+    case "native_memory_cap_unavailable":
+      return "This can't run because Haute can't enforce its memory limit on this machine."
+    case "memory_sampler_unavailable":
+      return "Haute stopped this because it couldn't measure its memory use."
+    default:
+      return ranOutOfMemory("This ran out of memory before it finished.")
+  }
+}
+
 export function executionMetricsFromError(error: unknown): ExecutionMetrics | null {
   const detail = rawErrorDetail(error)
-  if (!isRecord(detail) || !isRecord(detail.execution_metrics)) return null
+  if (!isPlainObject(detail) || !isPlainObject(detail.execution_metrics)) return null
   return detail.execution_metrics as unknown as ExecutionMetrics
 }
 
 export function executionTerminalReasonFromError(error: unknown): string | null {
   const detail = rawErrorDetail(error)
-  if (isRecord(detail)) {
+  if (isPlainObject(detail)) {
     const terminalReason = stringField(detail, ["terminal_reason"])
     if (terminalReason) return terminalReason
     const errorCode = stringField(detail, ["error_code"])
@@ -262,6 +391,15 @@ export function executionWarningNodeIds(
     if (projectionWarning.nodeId) {
       nodeIds.add(projectionWarning.nodeId)
     }
+    if (projectionWarning.cause) {
+      nodeIds.add(projectionWarning.cause.node_id)
+    }
+  }
+
+  if (metrics.execution_strategy?.status === "warned") {
+    nodeIds.add(requestedNodeId)
+    const blockingNodeId = metrics.execution_strategy.blocking_node_id
+    if (blockingNodeId) nodeIds.add(blockingNodeId)
   }
 
   if (shouldShowMemoryPressureDiagnostic(metrics)) {
@@ -275,29 +413,56 @@ export function executionWarningNodeIds(
   return [...nodeIds]
 }
 
-export function buildExecutionDiagnostic(
+export function buildMemoryPressureDiagnostic(
   metrics: ExecutionMetrics | null | undefined,
   options: ExecutionDiagnosticOptions = {},
 ): ExecutionDiagnostic | null {
-  const strategyDiagnostic = buildExecutionStrategyDiagnostic(metrics)
-  if (metrics?.execution_strategy?.status === "rejected" && strategyDiagnostic) {
-    return strategyDiagnostic
-  }
   if (!shouldShowMemoryPressureDiagnostic(metrics, options) || !metrics) return null
   const event = highestPressureEvent(metrics)
   if (!event) return null
 
   const details = [
-    `RSS ${formatBytes(event.rss_bytes)} of ${formatBytes(event.rss_limit_bytes)} limit`,
-    `Headroom used ${formatBytes(event.headroom_used_bytes)} of ${formatBytes(event.headroom_bytes)}`,
+    `Memory used: ${formatBytes(event.rss_bytes)}; limit: ${formatBytes(event.rss_limit_bytes)}`,
+    event.headroom_bytes < 0
+      ? `Memory over limit: ${formatBytes(-event.headroom_bytes)}`
+      : `Memory remaining: ${formatBytes(event.headroom_bytes)}`,
   ]
-  if (event.stage) details.push(`Stage ${event.stage}`)
-  if (event.config_key) details.push(`Budget ${event.config_key}`)
+  if (event.stage) {
+    const stage = MEMORY_STAGE_LABELS[event.stage] ?? capitalise(event.stage.replace(/_/g, " "))
+    details.push(`During: ${stage}`)
+  }
+  if (event.config_key) {
+    const source = event.config_key.startsWith("adaptive:")
+      ? "set automatically from available RAM"
+      : event.config_key.startsWith("default:")
+        ? "default memory allowance"
+        : event.config_key
+    details.push(`Limit source: ${source}`)
+  }
 
   return {
-    message: `Memory pressure reached ${pressurePercent(event)}% of the ${profileLabel(metrics.profile)} budget.`,
+    message: `${capitalise(profileLabel(metrics.profile))} reached ${pressurePercent(event)}% of its memory allowance.`,
     details,
+    kind: "pressure",
   }
+}
+
+/**
+ * The diagnostic a surface should render for this execution. A rejected
+ * strategy outranks everything; memory pressure (including a terminal
+ * memory-limit failure) outranks a warned strategy, which is informational.
+ */
+export function buildExecutionDiagnostic(
+  metrics: ExecutionMetrics | null | undefined,
+  options: ExecutionDiagnosticOptions = {},
+): ExecutionDiagnostic | null {
+  const strategyDiagnostic = buildExecutionStrategyDiagnostic(metrics)
+  const strategyStatus = metrics?.execution_strategy?.status
+  if (strategyStatus === "rejected" && strategyDiagnostic) return strategyDiagnostic
+  const pressureDiagnostic = buildMemoryPressureDiagnostic(metrics, options)
+  if (pressureDiagnostic) return pressureDiagnostic
+  if (strategyStatus === "warned" && strategyDiagnostic) return strategyDiagnostic
+  return null
 }
 
 export function buildExecutionFailureMessage(
@@ -312,7 +477,7 @@ export function buildExecutionFailureMessage(
     return baseMessage?.trim() || prefix || "Execution failed"
   }
 
-  const diagnostic = buildExecutionDiagnostic(metrics)
+  const diagnostic = buildMemoryPressureDiagnostic(metrics)
   if (!diagnostic) return baseMessage?.trim() || prefix || "Execution failed"
 
   const firstDetail = diagnostic.details[0]

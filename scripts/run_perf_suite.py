@@ -791,10 +791,15 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         default=Path(".cache/perf"),
         help="Directory for JSON, Markdown, and JUnit performance artifacts.",
     )
+    # The per-PR lane measured 350-370 s on CI runners in September 2026 with
+    # every test passing, about 195 s of it the two execution-engine
+    # certification tests, so 360 s failed about half the runs on noise alone.
+    # 420 s leaves headroom for runner variance; the scheduled workflow passes
+    # its own, larger budget.
     parser.add_argument(
         "--max-total-seconds",
         type=float,
-        default=360.0,
+        default=420.0,
         help="Maximum wall-clock time for the whole performance lane.",
     )
     parser.add_argument(

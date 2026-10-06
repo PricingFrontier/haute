@@ -1,4 +1,4 @@
-"""Fresh-interpreter cached JSON execution probe for performance certification."""
+"""Fresh-interpreter published API Input table read probe for performance certification."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from pathlib import Path
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._json_shred._cache import load_v2_api_source
 from haute._polars_utils import execution_collect
+from haute._source_cache import SourceCacheStore
 
 
 def _parse_args() -> argparse.Namespace:
@@ -63,6 +64,8 @@ def main() -> int:
                 str(args.source),
                 config,
                 port_columns={args.port: frozenset(args.column)},
+                read_snapshots=True,
+                store=SourceCacheStore(Path.cwd()),
             )[args.port]
             result = execution_collect(frame, execution_context=context, engine="streaming")
         metrics = context.metrics_payload(status="completed")

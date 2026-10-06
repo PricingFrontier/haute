@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -8,14 +7,15 @@ import polars as pl
 import pytest
 
 from haute._builders import _build_node_fn
-from haute._execute_lazy import _execute_lazy
 from haute._mlflow_io import ScoringModel
 from haute._model_scorer import (
     ScoreWriteProjection,
     _batch_score_to_parquet,
+    _cleanup_registered_temp_files,
     _project_scored_output,
     score_frame,
 )
+from haute.execution import execute_lazy_graph
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from tests.conftest import make_output_config, make_ready_file_input_config
 
@@ -226,6 +226,27 @@ def test_eager_classification_projection_preserves_required_existing_proba() -> 
     assert result["prediction"].to_list() == [0, 1]
 
 
+def test_eager_classification_projection_without_proba_keeps_only_the_prediction() -> None:
+    raw_model = MagicMock(spec=["predict"])
+    raw_model.predict.return_value = np.asarray([0, 1], dtype=np.int64)
+    input_frame = pl.DataFrame({"feature": [1.0, 2.0], "unused": [10, 20]})
+
+    result = score_frame(
+        model=raw_model,
+        lf=input_frame.lazy(),
+        features=["feature"],
+        cat_feature_names=frozenset(),
+        flavor="pyfunc",
+        task="classification",
+        output_col="prediction",
+        batch=False,
+        required_output_columns=frozenset({"prediction"}),
+    ).collect()
+
+    assert result.columns == ["prediction"]
+    assert result["prediction"].to_list() == [0, 1]
+
+
 def _poisoned_column_lazy(base: pl.DataFrame, column: str, message: str) -> pl.LazyFrame:
     """Append a column whose computation raises if it is ever materialised."""
     return base.lazy().with_columns(
@@ -339,7 +360,7 @@ def test_batched_scoring_prepares_prediction_from_feature_projection_only(tmp_pa
     try:
         result = pl.read_parquet(out_path)
     finally:
-        os.unlink(out_path)
+        _cleanup_registered_temp_files([out_path])
 
     prepare.assert_called_once()
     assert result.columns == ["feature_a", "unused_0", "feature_b", "unused_1", "prediction"]
@@ -378,7 +399,7 @@ def test_batched_scoring_projects_written_passthrough_columns(tmp_path) -> None:
     try:
         result = pl.read_parquet(out_path)
     finally:
-        os.unlink(out_path)
+        _cleanup_registered_temp_files([out_path])
 
     assert result.columns == ["quote_id", "prediction"]
     assert result["quote_id"].to_list() == ["q1", "q2", "q3"]
@@ -413,7 +434,7 @@ def test_batched_scoring_projected_zero_row_schema_preserves_passthrough(tmp_pat
     try:
         result = pl.read_parquet(out_path)
     finally:
-        os.unlink(out_path)
+        _cleanup_registered_temp_files([out_path])
 
     assert result.columns == ["quote_id", "prediction"]
     assert result.schema["quote_id"] == pl.String
@@ -456,7 +477,7 @@ def test_batched_score_frame_projects_temp_sink_to_features_and_required_passthr
             required_output_columns=frozenset({"quote_id", "prediction"}),
         ).collect()
 
-    assert captured_sink_columns == [["quote_id", "feature_a", "feature_b"]]
+    assert captured_sink_columns == []
     assert result.columns == ["quote_id", "prediction"]
     assert result["quote_id"].to_list() == ["q1", "q2", "q3"]
     assert result["prediction"].to_list() == [0.0, 1.0, 2.0]
@@ -592,7 +613,7 @@ def test_batched_scoring_preserves_passthrough_columns_across_multiple_batches(t
     finally:
         model_scorer._SCORE_BATCH_SIZE = original_batch_size
         if "out_path" in locals():
-            os.unlink(out_path)
+            _cleanup_registered_temp_files([out_path])
 
     assert result.columns == ["feature", "passthrough", "prediction"]
     assert result["passthrough"].to_list() == ["a", "b", "c", "d", "e"]
@@ -669,7 +690,7 @@ def test_lazy_batch_model_score_uses_downstream_required_output_projection(tmp_p
         patch("haute._mlflow_io.load_mlflow_model", return_value=scoring_model),
         patch("haute._model_scorer._sink_to_temp", side_effect=capture_projected_sink),
     ):
-        outputs, *_ = _execute_lazy(
+        outputs, *_ = execute_lazy_graph(
             graph,
             _build_node_fn,
             target_node_id="output",
@@ -678,7 +699,7 @@ def test_lazy_batch_model_score_uses_downstream_required_output_projection(tmp_p
 
     result = outputs["output"].collect()
 
-    assert captured_sink_columns == [["quote_id", "feature_a", "feature_b"]]
+    assert captured_sink_columns == []
     assert result.columns == ["quote_id", "prediction"]
     assert result["quote_id"].to_list() == ["q1", "q2", "q3"]
     assert result["prediction"].to_list() == [0.0, 1.0, 2.0]
@@ -802,7 +823,7 @@ def test_lazy_batch_model_score_uses_declared_transform_contract_for_projection(
         patch("haute._mlflow_io.load_mlflow_model", return_value=scoring_model),
         patch("haute._model_scorer._sink_to_temp", side_effect=capture_projected_sink),
     ):
-        outputs, *_ = _execute_lazy(
+        outputs, *_ = execute_lazy_graph(
             graph,
             _build_node_fn,
             target_node_id="online_optimiser",
@@ -812,16 +833,7 @@ def test_lazy_batch_model_score_uses_declared_transform_contract_for_projection(
 
     result = outputs["online_optimiser"].collect()
 
-    assert captured_sink_columns == [
-        [
-            "quote_id",
-            "scenario_index",
-            "premium_multiplier",
-            "premium",
-            "burn_cost",
-            "difference_to_market",
-        ]
-    ]
+    assert captured_sink_columns == []
     assert "unused" not in result.columns
     assert "difference_to_market" not in result.columns
     assert result["expected_margin"].to_list() == [0.0, 60.0, 180.0]
@@ -910,7 +922,7 @@ def test_lazy_batch_model_score_applies_stale_selected_columns_after_scoring(
         patch("haute._mlflow_io.load_mlflow_model", return_value=scoring_model),
         patch("haute._model_scorer._sink_to_temp", side_effect=capture_projected_sink),
     ):
-        outputs, *_ = _execute_lazy(
+        outputs, *_ = execute_lazy_graph(
             graph,
             build_node_fn,
             target_node_id="output",
@@ -919,5 +931,5 @@ def test_lazy_batch_model_score_applies_stale_selected_columns_after_scoring(
 
     result = outputs["output"].collect()
 
-    assert captured_sink_columns == [["quote_id", "feature_a", "feature_b", "unused"]]
+    assert captured_sink_columns == []
     assert result.columns == ["quote_id", "prediction"]

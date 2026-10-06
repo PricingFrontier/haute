@@ -92,7 +92,6 @@ def _primed_load(mock_env, *, run_id: str = "abc123", artifact: str = "model.cbm
         resolve_patch,
         patch("haute._mlflow_io._load_catboost_model", return_value=fake_model),
         patch("haute._mlflow_io._resolve_artifact_local", return_value="/tmp/model.cbm"),
-        patch("haute._mlflow_io._find_cbm_artifact", return_value=artifact),
     ):
         return load_mlflow_model(
             source_type="run",

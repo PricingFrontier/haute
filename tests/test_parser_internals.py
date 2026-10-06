@@ -3,11 +3,7 @@
 from __future__ import annotations
 
 from haute._ast_helpers import _dedent, _extract_preamble, _strip_docstring
-from haute._code_extraction import (
-    _extract_external_user_code,
-    _extract_model_score_user_code,
-    _extract_user_code,
-)
+from haute._code_extraction import extract_user_code
 from haute._config_builder import _build_node_config
 
 # ---------------------------------------------------------------------------
@@ -73,7 +69,7 @@ class TestDedent:
 
 
 # ---------------------------------------------------------------------------
-# _extract_user_code
+# extract_user_code — transforms (the ``polars`` kind)
 # ---------------------------------------------------------------------------
 
 
@@ -81,7 +77,7 @@ class TestExtractUserCode:
     def test_codegen_style_df_assignment(self):
         """Codegen produces: df = source.filter(...)\nreturn df"""
         body = '    """doc"""\n    df = source.filter(pl.col("x") > 0)\n    return df'
-        result = _extract_user_code(body, ["source"])
+        result = extract_user_code(body, kind="polars", param_names=["source"])
         assert "source" in result
         assert ".filter" in result
         assert "return" not in result
@@ -89,92 +85,74 @@ class TestExtractUserCode:
 
     def test_single_return_expression(self):
         body = '    """doc"""\n    return source.with_columns(y=pl.lit(1))'
-        result = _extract_user_code(body, ["source"])
+        result = extract_user_code(body, kind="polars", param_names=["source"])
         assert "source.with_columns" in result
         assert "return" not in result
 
     def test_explicit_assignment(self):
         body = '    """doc"""\n    df = df.filter(pl.col("x") > 0)\n    return df'
-        result = _extract_user_code(body, ["df"])
+        result = extract_user_code(body, kind="polars", param_names=["df"])
         assert "df =" in result
         assert ".filter" in result
 
     def test_empty_body(self):
-        assert _extract_user_code("", ["df"]) == ""
+        assert extract_user_code("", kind="polars", param_names=["df"]) == ""
 
     def test_docstring_only(self):
         body = '    """Just a docstring."""'
-        result = _extract_user_code(body, ["df"])
+        result = extract_user_code(body, kind="polars", param_names=["df"])
         # After stripping docstring, nothing left
         assert result == ""
 
 
 # ---------------------------------------------------------------------------
-# _extract_external_user_code
+# extract_user_code — External File hooks (the ``external`` kind)
 # ---------------------------------------------------------------------------
 
 
 class TestExtractExternalUserCode:
-    def test_strips_canonical_load_scaffold(self):
+    def test_strips_the_generated_binding(self):
         body = (
             '    """doc"""\n'
-            "    from haute.graph_utils import load_external_object_from_config\n"
-            "    obj = load_external_object_from_config(\n"
-            '        "config/load_file/model.json"\n'
-            "    )\n"
+            "    df = model_input\n"
             "    df = df.with_columns(pred=pl.lit(obj.predict()))\n"
             "    return df"
         )
-        result = _extract_external_user_code(body, ["df"])
+        result = extract_user_code(body, kind="external", param_names=["model_input"])
         assert result == "df = df.with_columns(pred=pl.lit(obj.predict()))"
 
     def test_empty_body(self):
-        assert _extract_external_user_code("", ["df"]) == ""
+        assert extract_user_code("", kind="external", param_names=["model_input"]) == ""
 
 
 # ---------------------------------------------------------------------------
-# _extract_model_score_user_code
+# extract_user_code — a Model Score's ``df`` hook (the ``hook`` kind)
 # ---------------------------------------------------------------------------
 
 
 class TestExtractModelScoreUserCode:
-    def test_generated_scoring_body_returns_empty(self):
-        """Body without post-processing is entirely auto-generated → empty string."""
-        body = (
-            '    """doc"""\n'
-            "    from haute.graph_utils import score_from_config\n"
-            '    df = score_from_config(source, config="config/model_scoring/m.json")\n'
-            "    return df"
-        )
-        assert _extract_model_score_user_code(body) == ""
+    def test_declaration_returns_empty(self):
+        """A Model Score without code is a declaration: its body holds no code."""
+        body = '    """doc"""\n    ...'
+        assert extract_user_code(body, kind="hook") == ""
 
-    def test_extracts_code_after_scoring_call(self):
-        """User code after the scoring call is extracted and dedented."""
+    def test_extracts_the_hook_code(self):
+        """The hook's code, before the closing ``return df``, is extracted and dedented."""
         body = (
             '    """doc"""\n'
-            "    from haute.graph_utils import score_from_config\n"
-            '    df = score_from_config(source, config="config/model_scoring/m.json")\n'
             '    df = df.with_columns(doubled=pl.col("prediction") * 2)\n'
             "    return df"
         )
-        result = _extract_model_score_user_code(body)
-        assert "doubled" in result
-        assert "return df" not in result
+        result = extract_user_code(body, kind="hook")
+        assert result == 'df = df.with_columns(doubled=pl.col("prediction") * 2)'
 
     def test_empty_body(self):
-        assert _extract_model_score_user_code("") == ""
+        assert extract_user_code("", kind="hook") == ""
 
     def test_multiline_user_code(self):
         """Multiple lines of user code are all extracted."""
-        body = (
-            "    from haute.graph_utils import score_from_config\n"
-            '    df = score_from_config(source, config="config/model_scoring/m.json")\n'
-            "    x = 1\n"
-            "    y = x + 2\n"
-            "    df = df.with_columns(z=pl.lit(y))\n"
-            "    return df"
-        )
-        result = _extract_model_score_user_code(body)
+        body = "    x = 1\n    y = x + 2\n    df = df.with_columns(z=pl.lit(y))\n    return df"
+        result = extract_user_code(body, kind="hook")
         assert "x = 1" in result
         assert "y = x + 2" in result
         assert "z=pl.lit(y)" in result

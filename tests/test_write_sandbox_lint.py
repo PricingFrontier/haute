@@ -52,6 +52,7 @@ from pathlib import Path
 
 import pytest
 
+from tests._source_files import source_files
 from tests._write_sandbox import ENV_ROOT, STRICT_FILES
 
 _TESTS_DIR = Path(__file__).resolve().parent
@@ -106,7 +107,7 @@ class LintViolation:
 def _iter_test_sources() -> list[Path]:
     return sorted(
         path
-        for path in _TESTS_DIR.rglob("*.py")
+        for path in source_files(_TESTS_DIR)
         if not any(part in _SKIP_DIRS for part in path.parts)
     )
 
@@ -511,9 +512,11 @@ EXPECTED_VIOLATIONS: dict[str, int] = {
     # runtime census (layer 3 observe mode) is the ground truth for which of
     # these actually escape the sandbox at run time.
     "tests/test_algorithms_coverage.py": 3,
-    "tests/test_dataframe_execution_cache.py": 1,
     "tests/test_deploy.py": 1,
-    "tests/test_deploy_contract_integrity.py": 1,
+    # The temp directory is created by the code under test
+    # (``_batch_scoring.py``'s ``tempfile.mkdtemp``, which takes no ``dir=``),
+    # so the tests can only write into and clean up the path it hands back.
+    "tests/test_deploy_batch_scoring.py": 4,
     "tests/test_deploy_scorer_artifact_cache.py": 1,
     "tests/test_executor.py": 2,
     "tests/test_file_ops.py": 18,
@@ -522,23 +525,21 @@ EXPECTED_VIOLATIONS: dict[str, int] = {
     # These writes resolve through isolated project/cache helper paths. The
     # static scanner intentionally cannot infer taint through those helpers;
     # the runtime sandbox census verifies that they remain under tmp_path.
-    "tests/test_apiinput_multi_port_runtime.py": 1,
-    "tests/test_json_cache_coverage_uplift.py": 8,
     # 5 pre-existing + 4 removing a cache layer and 1 rewriting a working-layer
     # manifest to exercise status fallback. All are `_json_cache_dir(...)`
     # results, which are `Path.cwd()`-rooted and therefore under the
     # `isolated_cwd` tmp_path.
-    "tests/test_json_cache_integrity.py": 10,
-    "tests/test_json_shred_mut_stragglers.py": 1,
-    "tests/test_load_v2_api_source.py": 10,
+    "tests/test_load_v2_api_source.py": 1,
     # 2 pre-existing + 2 cache-key-contract tests writing through
     # _artifact_cache_path(tmp_path / ...) results (tmp_path-rooted, but the
     # static taint cannot see through the helper call).
     "tests/test_mlflow_io.py": 4,
     "tests/test_mlflow_io_concurrency.py": 12,
     "tests/test_model_score_executor.py": 1,
-    "tests/test_optimiser_routes.py": 2,
     "tests/test_optimiser_service_coverage.py": 2,
+    # ``main()`` regenerates the checked-in compatibility corpus offline; it
+    # never runs under pytest.
+    "tests/test_polars_compatibility_corpus.py": 1,
     "tests/test_polars_utils.py": 1,
     "tests/test_server.py": 1,
     "tests/test_submodel_routes.py": 3,

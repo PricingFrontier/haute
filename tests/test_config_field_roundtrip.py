@@ -1,0 +1,577 @@
+"""An executable inventory of persisted configuration fields and loss witnesses.
+
+Examples are explicit, independent of the schema being checked. New TypedDict
+fields therefore fail the inventory gate until a real round-trip case is added.
+Dynamic user dictionary keys are covered by the adjacent property tests.
+"""
+
+from __future__ import annotations
+
+import json
+import types
+from copy import deepcopy
+from typing import Any, Required, Union, get_args, get_origin, get_type_hints, is_typeddict
+
+import pytest
+
+from haute._config_io import config_path_for_node
+from haute._config_validation import _TYPED_DICT_BY_NODE_TYPE
+from haute._graph_utils import _sanitize_func_name
+from haute._types import DATA_INPUT_CONFIG_TYPES, DATA_OUTPUT_CONFIG_TYPES, GraphEdge, NodeType
+from haute.codegen import graph_to_code_multi
+from haute.errors import ConfigError
+from haute.parser import parse_pipeline_file
+from tests.test_codegen_roundtrip_property import (
+    _SHARED_COLUMN_CONFIG,
+    _assert_semantically_equal,
+    _corpus_graphs,
+    _roundtrip,
+    _write_configs_recursive,
+)
+from tests.test_explore_charts import _chart
+from tests.test_explore_pivots import _formula, _pivot
+
+
+def _examples():
+    graph = _corpus_graphs()[0]
+    by_type = {node.data.nodeType: node for node in graph.nodes}
+    for node in graph.nodes:
+        node.data.config.update(deepcopy(_SHARED_COLUMN_CONFIG))
+    by_type[NodeType.MODEL_SCORE].data.config.update(
+        {
+            "mlflow_destination": "server",
+            "experiment_id": "experiment-17",
+            "experiment_name": "Pricing experiments",
+            "registered_model": "catalog.models.pricing",
+            "version": "3",
+            "model_path": "models/frequency.cbm",
+            "feature_contract_path": "models/features.json",
+        }
+    )
+    by_type[NodeType.EXTERNAL_FILE].data.config.update({"fileType": "joblib"})
+    by_type[NodeType.MODELLING].data.config.update(
+        {
+            "mlflow_destination": "server",
+            "weight": "_exposure",
+            "params": {"iterations": 17, "depth": 3},
+            "evaluation": {"method": "holdout", "test_size": 0.25},
+            "tuning": {"enabled": True, "n_trials": 3},
+            "refit_on_development": False,
+            "mlflow_experiment": "Pricing",
+            "output_dir": "models/output",
+            "model_export_path": "output/frequency.cbm",
+            "row_limit": 1234,
+            "terms": {"_age": {"type": "linear"}},
+            "family": "poisson",
+            "link": "log",
+            "offset": "_log_exposure",
+            "interactions": [{"factors": ["_age", "region"]}],
+            "regularization": "elastic_net",
+            "alpha": 0.25,
+            "l1_ratio": 0.75,
+            "cv_folds": 4,
+            "cv_selection": "1se",
+            "cv_seed": 7,
+            "max_iter": 50,
+            "tol": 1e-6,
+            "robust_standard_errors": "HC1",
+            "intercept": False,
+            "var_power": 1.5,
+            "theta": 2.5,
+            "loss_function": "Poisson",
+            "variance_power": 1.6,
+            "monotone_constraints": {"_age": 1},
+            "feature_weights": {"_age": 0.8},
+            "fold_column": "_fold",
+            "id_columns": ["_identifier"],
+            "positive_class": "claim",
+            "device": "gpu",
+        }
+    )
+    optimiser = by_type[NodeType.OPTIMISER]
+    band = by_type[NodeType.BANDING]
+    scenario = by_type[NodeType.SCENARIO_EXPANDER]
+    optimiser.data.config.update(
+        {
+            "mlflow_destination": "databricks",
+            "frontier_ranges": {"_premium": {"min": 10.0, "max": 20.0}},
+            "frontier_steps": 7,
+            "factor_columns": [["_age", "region"]],
+            "max_cd_iterations": 11,
+            "cd_tolerance": 0.002,
+            "data_input": _sanitize_func_name(scenario.data.label),
+            "banding_source": _sanitize_func_name(band.data.label),
+            "analysis_input": _sanitize_func_name(band.data.label),
+            "analysis_columns": ["region"],
+            "mlflow_experiment": "Optimisation",
+            "result_export_path": "rating/optimiser_result.json",
+        }
+    )
+    graph.edges.append(GraphEdge(id="banding_to_optimiser", source=band.id, target=optimiser.id))
+    by_type[NodeType.OPTIMISER_APPLY].data.config.update(
+        {
+            "mlflow_destination": "databricks",
+            "optimiser_mode": "ratebook",
+            "ratebook_input": _sanitize_func_name(optimiser.data.label),
+            "registered_model": "catalog.models.ratebook",
+            "version": "2",
+            "experiment_id": "experiment-18",
+            "experiment_name": "Optimisation",
+            "run_id": "run-19",
+            "run_name": "Best run",
+        }
+    )
+    by_type[NodeType.BANDING].data.config["factors"][0]["rightClosed"] = False
+    by_type[NodeType.RATING_STEP].data.config["tables"][0].update(
+        {
+            "factorDtypes": {"score_band": {"kind": "String"}},
+            "onMissing": "neutral",
+        }
+    )
+    chart = _chart()
+    chart["pivot_id"] = "pivot_1"
+    by_type[NodeType.EXPLORE].data.config.update(
+        {
+            "pivot_formulas": [_formula()],
+            "pivots": [_pivot(formulas=["formula_1"])],
+            "charts": [chart],
+        }
+    )
+    yield "all-node-fields", graph
+    # Non-default presentation values make this more than a presence check:
+    # a decoder that silently reconstructs its defaults must fail too.
+    presentation = graph.model_copy(deep=True)
+    explore = next(
+        node.data.config for node in presentation.nodes if node.data.nodeType == NodeType.EXPLORE
+    )
+    pivot = explore["pivots"][0]
+    pivot["enabled"] = False
+    pivot["options"] = {
+        "row_grand_totals": False,
+        "column_grand_totals": False,
+        "sort_by": "value_1",
+    }
+    pivot["rows"][0]["sort"] = "descending"
+    for placement in [
+        *pivot["columns"],
+        *pivot["rows"],
+        *pivot["values"],
+        *explore["pivot_formulas"],
+    ]:
+        placement.update({"decimal_places": 3, "number_format": "percent", "use_grouping": False})
+    pivot["values"][0].update(
+        {
+            "aggregation": "average",
+            "reference": "claims_mean",
+            "sort_rows": "descending",
+            "color_scale": "low_red_high_green",
+        }
+    )
+    chart = explore["charts"][0]
+    chart.update({"orientation": "horizontal", "enabled": False})
+    chart["category"].update({"include_grand_total": True, "label_rotation": 45})
+    chart["value_encodings"][0].update(
+        {
+            "mark": "area",
+            "axis": "secondary",
+            "stack_group": "premiums",
+            "stack_normalize": True,
+            "data_labels": True,
+            "markers": True,
+        }
+    )
+    chart["series_overrides"][0].update(
+        {"color": "#112233", "stack_group": "claims", "stack_normalize": True}
+    )
+    chart["axes"]["primary"].update(
+        {"title": "Premium", "minimum": 0.25, "maximum": 99.0, "number_format": "currency_gbp"}
+    )
+    chart["axes"]["secondary"].update(
+        {"title": "Frequency", "minimum": 1, "maximum": 10, "enabled": True}
+    )
+    chart["legend"] = {"visible": False, "position": "right"}
+    yield "explore-non-default-presentation", presentation
+    # Mutually exclusive input/output variants need separate, valid examples.
+    variants = [
+        (
+            NodeType.DATA_INPUT,
+            {
+                "inputType": "database",
+                "format": "database",
+                "connection": "warehouse",
+                "query": "SELECT _id FROM quotes",
+                "arguments": {"batch_size": 64},
+            },
+        ),
+        (
+            NodeType.DATA_INPUT,
+            {
+                "inputType": "database",
+                "format": "database",
+                "uri": "sqlite:///pricing.db",
+                "query": "SELECT _id FROM quotes",
+                "arguments": {"batch_size": 64},
+            },
+        ),
+        (
+            NodeType.DATA_INPUT,
+            {
+                "inputType": "databricks",
+                "http_path": "/sql/warehouses/test",
+                "table": "catalog.schema.quotes",
+                "query": "SELECT _id FROM catalog.schema.quotes",
+                "arguments": {"batch_size": 32},
+            },
+        ),
+        (
+            NodeType.DATA_INPUT,
+            {
+                "inputType": "inline",
+                "format": "records",
+                "mode": "read",
+                "records": [{"_id": 17, "nested": {"_key": "value"}}],
+                "arguments": {"infer_schema_length": 1},
+                # Post-load steps: the sidecar owns them and codegen renders
+                # them after the load scaffold (`df = df.head(2)`).
+                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+            },
+        ),
+        (
+            NodeType.DATA_INPUT,
+            {
+                "inputType": "lakehouse",
+                "format": "delta",
+                "mode": "scan",
+                "path": "data/lakehouse",
+                "arguments": {"version": 2},
+            },
+        ),
+        (
+            NodeType.DATA_OUTPUT,
+            {
+                "outputType": "database",
+                "format": "database",
+                "mode": "write",
+                "connection": "warehouse",
+                "table": "quoted_results",
+                "arguments": {"if_table_exists": "append"},
+            },
+        ),
+        (
+            NodeType.DATA_OUTPUT,
+            {
+                "outputType": "database",
+                "format": "database",
+                "mode": "write",
+                "uri": "sqlite:///pricing.db",
+                "table": "quoted_results",
+                "arguments": {"if_table_exists": "append"},
+            },
+        ),
+        (
+            NodeType.DATA_OUTPUT,
+            {
+                "outputType": "lakehouse",
+                "format": "delta",
+                "mode": "write",
+                "path": "outputs/lakehouse",
+                "arguments": {"mode": "append"},
+            },
+        ),
+        (
+            NodeType.EDGE_JOIN,
+            {
+                "how": "left",
+                "on": ["quote_id"],
+                "suffix": "_lookup",
+                "coalesce": False,
+                "validate": "m:1",
+                "maintainOrder": "left",
+            },
+        ),
+        # Frame-mode step lists: the sidecar owns them and codegen renders
+        # them after each surface's scaffold (`df = df.head(2)`).
+        (
+            NodeType.EXTERNAL_FILE,
+            {
+                "path": "models/external.pkl",
+                "fileType": "pickle",
+                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+            },
+        ),
+        (
+            NodeType.RATING_STEP,
+            {
+                "tables": [
+                    {
+                        "factors": ["score_band"],
+                        "outputColumn": "rate_factor",
+                        "defaultValue": "1.0",
+                        "entries": [{"score_band": "low", "value": "1.25"}],
+                    }
+                ],
+                "combinedOutputs": [],
+                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+            },
+        ),
+        (
+            NodeType.MODEL_SCORE,
+            {
+                "sourceType": "run",
+                "run_id": "run-1",
+                "artifact_path": "models/score.cbm",
+                "task": "regression",
+                "output_column": "prediction",
+                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+            },
+        ),
+        (
+            NodeType.SCENARIO_EXPANDER,
+            {
+                "quote_id": "quote_id",
+                "column_name": "scenario_value",
+                "min_value": 0.0,
+                "max_value": 1.0,
+                "stepCount": 3,
+                "step_column": "step_index",
+                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+            },
+        ),
+        # Explore keeps its steps in the decorator beside its cards, so the
+        # round trip has to carry both.
+        (
+            NodeType.EXPLORE,
+            {
+                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+                "pivot_formulas": [_formula()],
+                "pivots": [_pivot(formulas=["formula_1"])],
+            },
+        ),
+    ]
+    for index, (node_type, config) in enumerate(variants):
+        variant = graph.model_copy(deep=True)
+        position = next(
+            i for i, node in enumerate(variant.nodes) if node.data.nodeType == node_type
+        )
+        # Replace through the validated helper so a stepped example carries
+        # its materialised `code` exactly as the parsed graph will.
+        variant.nodes[position] = variant.nodes[position].with_config(
+            {**config, "contract": "opaque", **deepcopy(_SHARED_COLUMN_CONFIG)}
+        )
+        yield f"{node_type.value}-variant-{index}", variant
+    # A stepped transform persists its steps in the optional polars sidecar and
+    # regenerates its body from them; the sidecar must survive save -> parse.
+    variant = graph.model_copy(deep=True)
+    polars = next(node for node in variant.nodes if node.data.nodeType == NodeType.POLARS)
+    upstream_id = next(edge.source for edge in variant.edges if edge.target == polars.id)
+    upstream = next(node for node in variant.nodes if node.id == upstream_id)
+    stepped = polars.with_config(
+        {
+            "steps": [
+                {"id": "s", "kind": "source", "input": _sanitize_func_name(upstream.data.label)},
+                {"id": "l", "kind": "limit", "n": 5},
+            ],
+            "contract": "opaque",
+            **deepcopy(_SHARED_COLUMN_CONFIG),
+        }
+    )
+    variant.nodes[variant.nodes.index(polars)] = stepped
+    yield "polars-steps", variant
+    # A registered source names a version or an alias, never both.
+    for node_type in (NodeType.MODEL_SCORE, NodeType.OPTIMISER_APPLY):
+        variant = graph.model_copy(deep=True)
+        node = next(node for node in variant.nodes if node.data.nodeType == node_type)
+        node.data.config.pop("version", None)
+        node.data.config["alias"] = "champion"
+        yield f"{node_type.value}-alias", variant
+
+
+# These fields represent graph relationships rather than independent settings.
+# Their round-trip contracts are tested with real owner/copy and boundary graphs.
+_STRUCTURAL_POLICY = {
+    NodeType.POLARS: {"instanceOf", "inputMapping"},
+    NodeType.MODEL_SCORE: {"instanceOf", "inputMapping"},
+    NodeType.SUBMODEL: {"definitionId", "alias"},
+}
+
+
+def _declared_paths(schema: Any, prefix: str = "") -> set[str]:
+    origin = get_origin(schema)
+    if origin is Required:
+        return _declared_paths(get_args(schema)[0], prefix)
+    if origin in (Union, types.UnionType):
+        return set().union(*(_declared_paths(arg, prefix) for arg in get_args(schema)))
+    if origin is list:
+        return _declared_paths(get_args(schema)[0], prefix + "[]")
+    if not is_typeddict(schema):
+        return set()
+    paths: set[str] = set()
+    for key, child in get_type_hints(schema).items():
+        path = f"{prefix}.{key}" if prefix else key
+        paths.add(path)
+        paths.update(_declared_paths(child, path))
+    return paths
+
+
+def _example_paths(value: Any, prefix: str = "") -> set[str]:
+    if isinstance(value, list):
+        return set().union(*(_example_paths(item, prefix + "[]") for item in value))
+    if not isinstance(value, dict):
+        return set()
+    paths: set[str] = set()
+    for key, child in value.items():
+        path = f"{prefix}.{key}" if prefix else key
+        paths.add(path)
+        paths.update(_example_paths(child, path))
+    return paths
+
+
+def _assert_field_inventory(examples, schemas):
+    covered: dict[NodeType, set[str]] = {}
+    for _, graph in examples:
+        for node in graph.nodes:
+            covered.setdefault(node.data.nodeType, set()).update(_example_paths(node.data.config))
+    missing = {}
+    for node_type, node_schemas in schemas.items():
+        declared = set().union(*(_declared_paths(schema) for schema in node_schemas))
+        policy = _STRUCTURAL_POLICY.get(node_type, set())
+        assert policy <= declared, f"Stale structural policy for {node_type}: {policy - declared}"
+        gaps = declared - covered.get(node_type, set()) - policy
+        if gaps:
+            missing[node_type.value] = sorted(gaps)
+    assert not missing, f"Persisted fields without round-trip examples: {missing}"
+
+
+def _schemas():
+    return {
+        **{nt: (schema,) for nt, schema in _TYPED_DICT_BY_NODE_TYPE.items()},
+        NodeType.DATA_INPUT: DATA_INPUT_CONFIG_TYPES,
+        NodeType.DATA_OUTPUT: DATA_OUTPUT_CONFIG_TYPES,
+    }
+
+
+def test_every_declared_field_has_a_roundtrip_example_or_structural_policy():
+    _assert_field_inventory(list(_examples()), _schemas())
+
+
+def _assert_authored_values(original, parsed):
+    # This oracle deliberately does not call production normalizers: applying
+    # the same lossy normalizer to both sides could conceal a persistence bug.
+    # The one equivalence it encodes is the contract rule itself: an absent
+    # contract and "opaque" mean the same, so codegen omits an opaque contract
+    # and a node whose settings live in its decorator parses back without one.
+    for node in original.nodes:
+        restored = parsed.node_map[_sanitize_func_name(node.data.label)].data.config
+        for key, value in node.data.config.items():
+            if key == "contract" and value == "opaque":
+                assert restored.get(key, "opaque") == "opaque", (
+                    f"{node.data.nodeType}.{key} changed"
+                )
+                continue
+            assert key in restored, f"{node.data.nodeType}.{key} disappeared"
+            assert restored[key] == value, f"{node.data.nodeType}.{key} changed"
+
+
+@pytest.mark.parametrize(
+    "name,graph", list(_examples()), ids=lambda value: value if isinstance(value, str) else "graph"
+)
+def test_every_field_example_survives_repeated_save(name, graph):
+    original = graph.model_copy(deep=True)
+    first, parsed, second = _roundtrip(graph)
+    _assert_authored_values(original, parsed)
+    _assert_semantically_equal(original, parsed)
+    assert first == second, name
+    _, reparsed, third = _roundtrip(parsed)
+    _assert_authored_values(parsed, reparsed)
+    _assert_semantically_equal(parsed, reparsed)
+    assert second == third, name
+    assert graph == original, "Saving mutated the caller's configuration"
+
+
+def test_theta_and_glm_controls_survive_a_sidecar_write():
+    graph = _corpus_graphs()[0]
+    node = next(node for node in graph.nodes if node.data.nodeType == NodeType.MODELLING)
+    controls = {
+        "algorithm": "glm",
+        "family": "negbinomial",
+        "theta": 2.5,
+        "link": "log",
+        "terms": {"_age": {"type": "bs", "df": 5}},
+        "regularization": "ridge",
+        "cv_folds": 4,
+        "cv_selection": "1se",
+        "cv_seed": 7,
+        "max_iter": 50,
+        "tol": 1e-6,
+        "robust_standard_errors": "HC3",
+    }
+    node.data.config.update(deepcopy(controls))
+
+    _first, parsed, _second = _roundtrip(graph)
+
+    restored = parsed.node_map[_sanitize_func_name(node.data.label)].data.config
+    assert {key: restored.get(key) for key in controls} == controls
+
+
+def _modelling_node(graph):
+    return next(node for node in graph.nodes if node.data.nodeType == NodeType.MODELLING)
+
+
+def test_removed_exclude_field_is_refused_on_save_not_round_tripped():
+    """Features are opt-in: a modelling config still carrying ``exclude`` is
+    refused by name rather than saved and silently carried forward."""
+    graph = next(_examples())[1]
+    _modelling_node(graph).data.config["exclude"] = ["_identifier"]
+
+    with pytest.raises(ConfigError, match="removed exclude field") as raised:
+        _roundtrip(graph)
+
+    assert raised.value.context["removed_config_keys"] == ["exclude"]
+
+
+def test_removed_exclude_field_is_refused_when_a_saved_sidecar_carries_it(tmp_path):
+    """A hand-edited sidecar that still names ``exclude`` fails to load by name."""
+    graph = next(_examples())[1]
+    for rel_path, content in graph_to_code_multi(
+        graph, pipeline_name="capstone_roundtrip", source_file="main.py"
+    ).items():
+        path = tmp_path / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    _write_configs_recursive(graph, tmp_path)
+    sidecar = tmp_path / config_path_for_node(
+        NodeType.MODELLING, _sanitize_func_name(_modelling_node(graph).data.label), tmp_path
+    ).relative_to(tmp_path)
+    stored = json.loads(sidecar.read_text(encoding="utf-8"))
+    stored["exclude"] = ["_identifier"]
+    sidecar.write_text(json.dumps(stored), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="removed exclude field") as raised:
+        parse_pipeline_file(tmp_path / "main.py")
+
+    assert raised.value.context["removed_config_keys"] == ["exclude"]
+
+
+@pytest.mark.parametrize("field", ["selected_columns", "column_renames", "categorical_levels"])
+def test_roundtrip_oracle_rejects_dropped_fields(field):
+    graph = next(_examples())[1]
+    _, parsed, _ = _roundtrip(graph)
+    _assert_authored_values(graph, parsed)
+    # Inject the historical loss at the parser boundary; use the very same
+    # semantic oracle as the healthy round-trip test, not a separate check.
+    node = next(node for node in parsed.nodes if node.data.nodeType == NodeType.EDGE_JOIN)
+    del node.data.config[field]
+    with pytest.raises(AssertionError, match=field):
+        _assert_authored_values(graph, parsed)
+
+
+def test_field_inventory_rejects_a_new_uncovered_field():
+    from typing import TypedDict
+
+    class AddedField(TypedDict):
+        future_setting: str
+
+    schemas = _schemas()
+    schemas[NodeType.BANDING] = (*schemas[NodeType.BANDING], AddedField)
+    with pytest.raises(AssertionError, match="future_setting"):
+        _assert_field_inventory(list(_examples()), schemas)

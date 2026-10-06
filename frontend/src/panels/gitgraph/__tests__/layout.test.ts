@@ -118,7 +118,7 @@ const solidDot = (
   lowerDotted: false,
 })
 
-describe("computeGitGraphLayout — linear spine with departures (trunk view)", () => {
+describe("computeGitGraphLayout - linear spine with departures (trunk view)", () => {
   const view: GitGraphView = {
     viewBranch: null,
     rows: [pendingRow("P2"), pendingRow("P1"), ...trunkMilestoneRows],
@@ -230,7 +230,7 @@ describe("computeGitGraphLayout — linear spine with departures (trunk view)", 
   })
 })
 
-describe("computeGitGraphLayout — dotted rail beside the saves siding", () => {
+describe("computeGitGraphLayout - dotted rail beside the saves siding", () => {
   it("dots the rail across an expanded range: lower at the expanded dot, upper at the next", () => {
     const rail = computeGitGraphLayout(forestGraph, {
       viewBranch: null,
@@ -274,7 +274,7 @@ describe("computeGitGraphLayout — dotted rail beside the saves siding", () => 
     })
   })
 
-  it("stays solid across a placeholder expansion (no real saves — no siding)", () => {
+  it("stays solid across a placeholder expansion (no real saves - no siding)", () => {
     const rail = computeGitGraphLayout(forestGraph, {
       viewBranch: null,
       rows: [milestone("T6", true), placeholderRow("T6"), milestone("T5")],
@@ -340,7 +340,7 @@ describe("computeGitGraphLayout — dotted rail beside the saves siding", () => 
   })
 })
 
-describe("computeGitGraphLayout — sub-rail (expanded saves)", () => {
+describe("computeGitGraphLayout - sub-rail (expanded saves)", () => {
   it("draws pass + save-dot on the sub-rail and fold-in/fold-out around the range", () => {
     const rail = computeGitGraphLayout(forestGraph, {
       viewBranch: null,
@@ -603,7 +603,7 @@ describe("computeGitGraphLayout — sub-rail (expanded saves)", () => {
   })
 })
 
-describe("computeGitGraphLayout — ancestor lanes (peeking a fork)", () => {
+describe("computeGitGraphLayout - ancestor lanes (peeking a fork)", () => {
   const rail = computeGitGraphLayout(forestGraph, {
     viewBranch: "feature/a",
     rows: ["A2", "A1", "T3", "T2", "T1", "R0"].map((s) => milestone(s)),
@@ -744,7 +744,7 @@ const crystalGraph: GitGraphResponse = {
   ],
 }
 
-describe("computeGitGraphLayout — nearest-ancestor-first lanes (fork of a fork)", () => {
+describe("computeGitGraphLayout - nearest-ancestor-first lanes (fork of a fork)", () => {
   const rail = computeGitGraphLayout(crystalGraph, {
     viewBranch: "hotfix",
     rows: ["X", "A1", "T1", "R0"].map((s) => milestone(s)),
@@ -893,7 +893,7 @@ describe("computeGitGraphLayout — nearest-ancestor-first lanes (fork of a fork
   })
 })
 
-describe("computeGitGraphLayout — spawn-stub anchor cascade", () => {
+describe("computeGitGraphLayout - spawn-stub anchor cascade", () => {
   // trunk spine M2 (folds S1+S2), M1, R0. Departures exercising each anchor
   // rule: a save-sourced fork (live-src), a pending-save fork (pend-kid), a
   // plain fork-point fork (point-only), an off-window fork (elsewhere) and an
@@ -979,7 +979,7 @@ describe("computeGitGraphLayout — spawn-stub anchor cascade", () => {
 
   it("counts unresolvable live departures as overflow; unresolvable archived drop silently", () => {
     const rail = computeGitGraphLayout(cascadeGraph, { viewBranch: null, rows: collapsedRows })
-    expect(rail.overflowCount).toBe(1) // elsewhere only — ghost never counts
+    expect(rail.overflowCount).toBe(1) // elsewhere only - ghost never counts
     expect(rail.topChips).toEqual([
       { branch: "live-src", colorIndex: 1, archived: false },
       { branch: "pend-kid", colorIndex: 2, archived: false },
@@ -1021,7 +1021,7 @@ describe("computeGitGraphLayout — spawn-stub anchor cascade", () => {
   })
 })
 
-describe("computeGitGraphLayout — slot reservation per anchor group", () => {
+describe("computeGitGraphLayout - slot reservation per anchor group", () => {
   // Two live branches spawned from two saves folded into the SAME milestone:
   // one group of two, whether collapsed (both on the milestone row) or open
   // (spread over the save rows) — the rail width must not change on expand.
@@ -1083,7 +1083,7 @@ describe("computeGitGraphLayout — slot reservation per anchor group", () => {
   })
 })
 
-describe("computeGitGraphLayout — archived branches", () => {
+describe("computeGitGraphLayout - archived branches", () => {
   const graph: GitGraphResponse = {
     working_branch: "trunk",
     // Archived branches sit BETWEEN live ones in the payload order to prove
@@ -1179,7 +1179,7 @@ describe("computeGitGraphLayout — archived branches", () => {
   })
 })
 
-describe("computeGitGraphLayout — magnifier rules", () => {
+describe("computeGitGraphLayout - magnifier rules", () => {
   it("requires >= 2 parents, and a following milestone row while collapsed", () => {
     const rail = computeGitGraphLayout(forestGraph, {
       viewBranch: null,
@@ -1245,7 +1245,7 @@ describe("computeGitGraphLayout — magnifier rules", () => {
   })
 })
 
-describe("computeGitGraphLayout — degraded inputs", () => {
+describe("computeGitGraphLayout - degraded inputs", () => {
   const empty = {
     rows: [],
     laneCount: 0,

@@ -38,7 +38,7 @@ export default function BreakdownDropdown({
     <div ref={ref} className="relative flex items-center gap-1">
       <button
         onClick={() => { if (hasData) setOpen((v) => !v) }}
-        className="flex items-center gap-1 px-1 py-0.5 rounded transition-colors hover-breakdown"
+        className="flex items-center gap-1 px-1.5 h-[26px] rounded transition-colors hover-breakdown"
         data-hover-enabled={!open && hasData}
         data-open={open}
         style={{
@@ -57,10 +57,10 @@ export default function BreakdownDropdown({
         >
           <div className="px-3 py-2 overflow-y-auto" style={{ maxHeight: 240 }}>
             <div className="flex items-center justify-between mb-1.5">
-              <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+              <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-primary)' }}>
                 {title}
               </span>
-              <span className="text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>
+              <span className="text-[10px] font-mono" style={{ color: 'var(--text-primary)' }}>
                 {formatValue(data.total)} total
               </span>
             </div>
@@ -75,7 +75,7 @@ export default function BreakdownDropdown({
                 <div key={item.node_id} className="flex items-center gap-2 py-0.5">
                   <span
                     className="text-[11px] truncate shrink-0"
-                    style={{ width: 100, color: 'var(--text-secondary)' }}
+                    style={{ width: 100, color: 'var(--text-primary)' }}
                     title={item.label}
                   >
                     {item.label}
@@ -90,7 +90,7 @@ export default function BreakdownDropdown({
                       }}
                     />
                   </div>
-                  <span className={`text-[10px] font-mono shrink-0 ${valueWidth} text-right`} style={{ color: 'var(--text-muted)' }}>
+                  <span className={`text-[10px] font-mono shrink-0 ${valueWidth} text-right`} style={{ color: 'var(--text-primary)' }}>
                     {formatValue(item.value)}
                   </span>
                 </div>

@@ -15,8 +15,48 @@
 import { describe, it, expect, beforeEach } from "vitest"
 import type { Node } from "@xyflow/react"
 import type { PipelineEdge } from "../../types/node"
-import { serializeSnapshot, EMPTY_SNAPSHOT } from "../graphSnapshot"
+import {
+  serializeSnapshot,
+  cloneGraphSnapshot,
+  toCanonicalGraphPayload,
+  EMPTY_SNAPSHOT,
+} from "../graphSnapshot"
 import useGraphStore from "../../stores/useGraphStore"
+
+describe("stepped node derived code", () => {
+  it.each([
+    [false, "polars"],
+    [true, "polars"],
+    [false, "dataInput"],
+  ])("excludes generated fields only from dirty fingerprints (inside definition: %s, %s)", (inDefinition, nodeType) => {
+    const node = {
+      id: "transform", position: { x: 0, y: 0 },
+      data: { nodeType, config: { steps: [{ id: "s", kind: "source", input: "quotes" }], code: "old", _steps_error: "old error", _authored: "keep" } },
+    } as Node
+    const graph = {
+      nodes: inDefinition ? [] : [node], edges: [], preamble: "",
+      submodels: inDefinition ? { definition: { graph: { nodes: [node], edges: [] } } } : {},
+    }
+    const before = serializeSnapshot(graph)
+    const config = node.data.config as Record<string, unknown>
+    config.code = "df = quotes"
+    delete config._steps_error
+    expect(serializeSnapshot(graph)).toBe(before)
+    expect(JSON.stringify(toCanonicalGraphPayload(graph))).toContain('"code":"df = quotes"')
+    expect(JSON.stringify(cloneGraphSnapshot(graph))).toContain('"code":"df = quotes"')
+    expect(config.code).toBe("df = quotes")
+    config._authored = "changed"
+    expect(serializeSnapshot(graph)).not.toBe(before)
+  })
+
+  it("keeps authored code significant when the node has no steps", () => {
+    const node = { id: "transform", position: { x: 0, y: 0 }, data: { nodeType: "polars", config: { code: "df = quotes" } } } as Node
+    const graph = { nodes: [node], edges: [], preamble: "", submodels: {} }
+    const before = serializeSnapshot(graph)
+    ;(node.data.config as Record<string, unknown>).code = "df = rates"
+    expect(serializeSnapshot(graph)).not.toBe(before)
+  })
+})
 
 // ---------------------------------------------------------------------------
 // Fixtures — between them the two nodes carry all six stripped React Flow UI
@@ -62,7 +102,6 @@ const PREAMBLE = "import polars as pl"
 
 const SUBMODELS: Record<string, unknown> = {
   sub1: {
-    _inputPortInputNames: { input: "server_input" },
     nodes: [
       {
         id: "s1",
@@ -85,14 +124,37 @@ const SUBMODELS: Record<string, unknown> = {
  */
 const EXPECTED_FINGERPRINT =
   '{"edges":[{"id":"e1","source":"n1","sourceHandle":"out","sourcePort":null,"target":"n0","targetHandle":"in"}],' +
+  '"globalConstants":[],' +
   '"nodes":[{"data":{"alpha":1,"label":"price"},"id":"n1","position":{"x":10,"y":20},"type":"expression"},' +
   '{"data":{"config":{"_kept":true},"label":"src"},"id":"n0","position":{"x":0,"y":0},"type":"dataInput"}],' +
   '"preamble":"import polars as pl",' +
   '"submodels":{"sub1":{"edges":[{"source":"s1","target":"s2"}],"nodes":[{"data":{"kind":"input"},"id":"s1","position":{"x":0,"y":0}}]}}}'
 
-const EXPECTED_EMPTY = '{"edges":[],"nodes":[],"preamble":"","submodels":{}}'
+const EXPECTED_EMPTY = '{"edges":[],"globalConstants":[],"nodes":[],"preamble":"","submodels":{}}'
 
 describe("persisted-fingerprint serialized format", () => {
+  it("preserves user dictionary keys that resemble JavaScript or editor metadata", () => {
+    const config = JSON.parse('{"arguments":{"schema":{"__proto__":"String","constructor":"String","_id":"Int64"}},"records":[{"__proto__":{"kept":1},"_id":7}]}')
+    const graph = {
+      nodes: [{ ...NODE2, data: { ...NODE2.data, config } }],
+      edges: [], preamble: "", submodels: {},
+    }
+    const copies = [
+      toCanonicalGraphPayload(graph),
+      cloneGraphSnapshot(graph),
+      JSON.parse(serializeSnapshot(graph)),
+    ]
+    for (const copy of copies) {
+      const copiedConfig = copy.nodes[0].data.config
+      expect(copiedConfig).toEqual(config)
+      expect(Object.hasOwn(copiedConfig.arguments.schema, "__proto__")).toBe(true)
+      expect(Object.getPrototypeOf(copiedConfig.records[0])).toBe(Object.prototype)
+    }
+    const before = serializeSnapshot(graph)
+    config.records[0].__proto__.kept = 2
+    expect(serializeSnapshot(graph)).not.toBe(before)
+  })
+
   it("pins the empty-workspace sentinel byte-for-byte", () => {
     expect(EMPTY_SNAPSHOT).toBe(EXPECTED_EMPTY)
   })
@@ -182,6 +244,82 @@ describe("persisted-fingerprint serialized format", () => {
   })
 })
 
+describe("canonical graph request projection", () => {
+  it("recursively strips editor metadata without mutating the live graph", () => {
+    const rootNode = {
+      ...NODE,
+      data: {
+        ...NODE.data,
+        config: { expression: "pl.col('price')", _semanticOption: true },
+        _sourceFile: "main.py",
+        _recoveryId: "root@1",
+        _functionName: "server_price",
+        _defaultInputName: "server_price",
+        _sourceHandleInputNames: {},
+      },
+    } as Node
+    const rootEdge = {
+      ...EDGE,
+      data: { _inputName: "server_price", routing: { mode: "explicit" } },
+    } as PipelineEdge
+    const childNode = {
+      id: "child",
+      type: "polars",
+      position: { x: 1, y: 2 },
+      selected: true,
+      data: {
+        label: "Child",
+        nodeType: "polars",
+        config: {},
+        _sourceFile: "modules/child.py",
+        _recoveryId: "child@2",
+        _functionName: "server_child",
+        _defaultInputName: "server_child",
+        _sourceHandleInputNames: {},
+      },
+    } as Node
+    const childEdge = {
+      id: "child-edge",
+      source: "child",
+      target: "sink",
+      selected: true,
+      data: { _inputName: "server_child" },
+    } as PipelineEdge
+    const input = {
+      nodes: [rootNode],
+      edges: [rootEdge],
+      preamble: PREAMBLE,
+      submodels: {
+        pricing: {
+          definitionId: "pricing",
+          file: "modules/pricing.py",
+          graph: { nodes: [childNode], edges: [childEdge] },
+          inputPorts: [],
+          outputPorts: [],
+        },
+      },
+    }
+
+    const projected = toCanonicalGraphPayload(input)
+
+    expect(projected.nodes[0]).not.toHaveProperty("selected")
+    expect(projected.nodes[0].data).toEqual({
+      label: "price",
+      alpha: 1,
+      config: { expression: "pl.col('price')", _semanticOption: true },
+    })
+    expect(projected.edges[0]).not.toHaveProperty("selected")
+    expect(projected.edges[0].data).toEqual({ routing: { mode: "explicit" } })
+    const definition = projected.submodels?.pricing as Record<string, unknown>
+    const graph = definition.graph as { nodes: Node[]; edges: PipelineEdge[] }
+    expect(graph.nodes[0]).not.toHaveProperty("selected")
+    expect(graph.nodes[0].data).not.toHaveProperty("_functionName")
+    expect(graph.edges[0]).not.toHaveProperty("selected")
+    expect(graph.edges[0]).not.toHaveProperty("data")
+    expect(input.nodes[0].data._functionName).toBe("server_price")
+  })
+})
+
 describe("graph store produces the pinned format", () => {
   beforeEach(() => {
     useGraphStore.setState({
@@ -226,6 +364,15 @@ describe("graph store produces the pinned format", () => {
 
     store.setSubmodelsRaw(SUBMODELS)
     expect(fingerprint()).toBe(EXPECTED_FINGERPRINT)
+
+    const constants = [
+      { name: "rate", type: "float" as const, split: false, value: "1.5", bySource: {} },
+    ]
+    store.setGlobalConstantsRaw(constants)
+    expect(fingerprint()).toBe(EXPECTED_FINGERPRINT.replace(
+      '"globalConstants":[]',
+      '"globalConstants":[{"bySource":{},"name":"rate","split":false,"type":"float","value":"1.5"}]',
+    ))
   })
 
   it("retains server identities in live undo snapshots", () => {
@@ -233,6 +380,8 @@ describe("graph store produces the pinned format", () => {
       ...NODE,
       data: {
         ...NODE.data,
+        _sourceFile: "main.py",
+        _recoveryId: "root@1",
         _functionName: "server_price",
         _defaultInputName: "server_price",
         _sourceHandleInputNames: {},
@@ -248,13 +397,14 @@ describe("graph store produces the pinned format", () => {
     const submodels = {
       definition: {
         definitionId: "definition",
-        _inputPortInputNames: { public_input: "server_public_input" },
         graph: {
           nodes: [{
             id: "child",
             position: { x: 0, y: 0 },
             data: {
               label: "Child",
+              _sourceFile: "modules/child.py",
+              _recoveryId: "child@2",
               _functionName: "server_child",
               _defaultInputName: "server_child",
               _sourceHandleInputNames: {},
@@ -276,6 +426,8 @@ describe("graph store produces the pinned format", () => {
 
     const restored = useGraphStore.getState()
     expect(restored.nodes[0]?.data).toMatchObject({
+      _sourceFile: "main.py",
+      _recoveryId: "root@1",
       _functionName: "server_price",
       _defaultInputName: "server_price",
       _sourceHandleInputNames: {},
@@ -285,13 +437,12 @@ describe("graph store produces the pinned format", () => {
     expect(restored.nodes[0]?.data).not.toHaveProperty("_traceValue")
     expect(restored.edges[0]?.data).toEqual({ _inputName: "server_price" })
     const restoredDefinition = restored.submodels.definition as Record<string, unknown>
-    expect(restoredDefinition._inputPortInputNames).toEqual({
-      public_input: "server_public_input",
-    })
     const restoredChild = (
       restoredDefinition.graph as { nodes: Node[] }
     ).nodes[0]
     expect(restoredChild?.data).toMatchObject({
+      _sourceFile: "modules/child.py",
+      _recoveryId: "child@2",
       _functionName: "server_child",
       _defaultInputName: "server_child",
       _sourceHandleInputNames: {},

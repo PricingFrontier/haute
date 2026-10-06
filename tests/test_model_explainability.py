@@ -59,7 +59,7 @@ def catboost_scoring_model() -> Any:
     pytest.importorskip("catboost", reason="catboost optional dependency not installed")
     from haute._mlflow_io import _wrap_catboost
 
-    return _wrap_catboost(_train_catboost_with_categorical_feature())
+    return _wrap_catboost(_train_catboost_with_categorical_feature(), source="test model")
 
 
 def test_catboost_shap_contributions_sum_to_prediction(catboost_scoring_model: Any) -> None:
@@ -84,6 +84,9 @@ def test_catboost_shap_contributions_sum_to_prediction(catboost_scoring_model: A
     ]
     assert explanation["status"] == "ok"
     assert explanation["output_space"] == "prediction"
+    # An identity loss predicts in the space its contributions sum in.
+    assert explanation["link"] == "identity"
+    assert explanation["model_prediction_value"] == pytest.approx(explanation["prediction_value"])
     assert explanation["truncated"] is False
     assert explanation["omitted_count"] == 0
     assert shap_prediction == pytest.approx(explanation["prediction_value"], abs=1e-6)
@@ -183,7 +186,7 @@ def test_catboost_classifier_shap_labels_raw_formula_output_space() -> None:
             cat_features=[1],
         )
     )
-    scoring_model = _wrap_catboost(model)
+    scoring_model = _wrap_catboost(model, source="test model")
 
     explanation = explain_catboost_prediction(
         scoring_model,
@@ -198,6 +201,9 @@ def test_catboost_classifier_shap_labels_raw_formula_output_space() -> None:
         explanation["model_output_value"],
         abs=1e-6,
     )
+    # A classifier's label is not a transform of its raw score: no link is claimed.
+    assert "link" not in explanation
+    assert "model_prediction_value" not in explanation
 
 
 def _train_catboost_link_loss_model(loss_function: str) -> Any:
@@ -269,7 +275,7 @@ def test_catboost_link_loss_shap_reconciles_in_raw_formula_space(loss_function: 
     from haute._model_explainability import explain_catboost_prediction
 
     model = _train_catboost_link_loss_model(loss_function)
-    scoring_model = _wrap_catboost(model)
+    scoring_model = _wrap_catboost(model, source="test model")
     row = {"age": 43.0, "region": "south"}
     response_prediction, raw_prediction = _catboost_one_row_predictions(model, row)
     # Sanity: the two spaces genuinely differ for link losses (exp(x) - x >= 1).
@@ -299,6 +305,9 @@ def test_catboost_link_loss_shap_reconciles_in_raw_formula_space(loss_function: 
     )
     assert explanation["prediction_value"] == pytest.approx(response_prediction)
     assert explanation["output_difference"] == pytest.approx(0.0, abs=1e-6)
+    # The link names the transform from the raw score to the prediction.
+    assert explanation["link"] == "log"
+    assert explanation["model_prediction_value"] == pytest.approx(response_prediction)
 
 
 def test_catboost_poisson_without_traced_value_reports_response_prediction() -> None:
@@ -307,7 +316,7 @@ def test_catboost_poisson_without_traced_value_reports_response_prediction() -> 
     from haute._model_explainability import explain_catboost_prediction
 
     model = _train_catboost_link_loss_model("Poisson")
-    scoring_model = _wrap_catboost(model)
+    scoring_model = _wrap_catboost(model, source="test model")
     row = {"age": 61.0, "region": "west"}
     response_prediction, raw_prediction = _catboost_one_row_predictions(model, row)
 
@@ -334,7 +343,7 @@ def test_catboost_poisson_rejects_raw_space_traced_prediction() -> None:
     )
 
     model = _train_catboost_link_loss_model("Poisson")
-    scoring_model = _wrap_catboost(model)
+    scoring_model = _wrap_catboost(model, source="test model")
     row = {"age": 43.0, "region": "south"}
     _, raw_prediction = _catboost_one_row_predictions(model, row)
 

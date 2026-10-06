@@ -24,6 +24,7 @@ import {
 } from "../../types/generatedContractValidation"
 import { pivotOutputs } from "./pivotConfig"
 import type { ExplorePivotConfig } from "./pivotConfig"
+import { isObjectLiteral } from "../../utils/objectLiteral"
 
 export const CHART_CONFIG_VERSION = EXPLORE_CHART_CONFIG_VERSION
 
@@ -88,14 +89,6 @@ const SERIES_MEMBER_KINDS = new Set<ExplorePivotMemberKey["kind"]>([
   "float",
 ])
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    return false
-  }
-  const prototype = Object.getPrototypeOf(value)
-  return prototype === Object.prototype || prototype === null
-}
-
 function isSimpleLiteral(value: unknown): boolean {
   if (
     value === null ||
@@ -106,13 +99,13 @@ function isSimpleLiteral(value: unknown): boolean {
   }
   if (typeof value === "number") return Number.isFinite(value)
   if (Array.isArray(value)) return value.every(isSimpleLiteral)
-  if (isPlainObject(value)) return Object.values(value).every(isSimpleLiteral)
+  if (isObjectLiteral(value)) return Object.values(value).every(isSimpleLiteral)
   return false
 }
 
 function cloneLiteral<T>(value: T): T {
   if (Array.isArray(value)) return value.map(cloneLiteral) as T
-  if (isPlainObject(value)) {
+  if (isObjectLiteral(value)) {
     return Object.fromEntries(
       Object.entries(value).map(([key, item]) => [key, cloneLiteral(item)]),
     ) as T
@@ -135,7 +128,7 @@ function hasExactFields(
 function isCanonicalSeriesMember(
   value: unknown,
 ): value is ExplorePivotMemberKey {
-  if (!isPlainObject(value) || !hasExactFields(value, SERIES_MEMBER_FIELDS)) {
+  if (!isObjectLiteral(value) || !hasExactFields(value, SERIES_MEMBER_FIELDS)) {
     return false
   }
   if (
@@ -171,7 +164,7 @@ function parseCanonicalSeriesKey(seriesKey: string): CanonicalSeriesKey {
     throw new Error("Chart series key must be canonical JSON.")
   }
   if (
-    !isPlainObject(raw)
+    !isObjectLiteral(raw)
     || !hasExactFields(raw, SERIES_KEY_FIELDS)
     || raw.version !== 1
     || !nonEmptyString(raw.value_id)
@@ -318,6 +311,9 @@ function parseV1Chart(
   return chart
 }
 
+const CARD_PATH = /^\/\d+$/
+const CARD_VERSION_PATH = /^\/\d+\/version$/
+
 function chartPosition(error: GeneratedContractValidationError): number {
   const match = /^\/(\d+)(?:\/|$)/.exec(generatedContractErrorPath(error))
   return match === null ? 1 : Number(match[1]) + 1
@@ -334,9 +330,15 @@ function chartContractError(
   )
   const versionError = findGeneratedContractError(
     errors,
+    // Only the card's own version field: an unknown nested "version" key is an
+    // additional property, reported by name below.
     (error) => sameChart(error) && (
-      (error.keyword === "required" && error.params.missingProperty === "version")
-      || generatedContractErrorPath(error).endsWith("/version")
+      (
+        error.keyword === "required"
+        && error.params.missingProperty === "version"
+        && CARD_PATH.test(error.instancePath)
+      )
+      || CARD_VERSION_PATH.test(error.instancePath)
     ),
   )
   if (versionError !== undefined) return `Chart ${position} version must be 1.`

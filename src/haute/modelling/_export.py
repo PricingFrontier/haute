@@ -37,7 +37,7 @@ def generate_training_script(config: dict[str, Any], data_path: str) -> str:
     ----------
     config : dict
         Modelling node configuration containing algorithm, target, weight,
-        exclude, params, evaluation, tuning, metrics, mlflow_experiment, model_name,
+        feature_columns, params, evaluation, tuning, metrics, mlflow_experiment,
         loss_function, variance_power, offset, monotone_constraints,
         feature_weights, etc.
     data_path : str
@@ -67,8 +67,6 @@ def generate_training_script(config: dict[str, Any], data_path: str) -> str:
     # so skipping them keeps the script readable without changing the model.
     if kwargs["weight"]:
         parts.append(f"    weight={kwargs['weight']!r},")
-    if kwargs["exclude"]:
-        parts.append(f"    exclude={kwargs['exclude']!r},")
     if kwargs["feature_columns"]:
         parts.append(f"    feature_columns={kwargs['feature_columns']!r},")
     if kwargs["fold_column"]:
@@ -86,6 +84,10 @@ def generate_training_script(config: dict[str, Any], data_path: str) -> str:
     parts.append(f"    metrics={kwargs['metrics']!r},")
     if kwargs["tuning"] is not None:
         parts.append(f"    tuning={kwargs['tuning']!r},")
+    # Keeping the validation-fit model is a different saved model than the
+    # default development refit, so the script must carry it.
+    if not kwargs["refit_on_development"]:
+        parts.append("    refit_on_development=False,")
 
     if kwargs["loss_function"]:
         parts.append(f"    loss_function={kwargs['loss_function']!r},")
@@ -94,17 +96,21 @@ def generate_training_script(config: dict[str, Any], data_path: str) -> str:
         parts.append(f"    variance_power={kwargs['variance_power']!r},")
     if kwargs["offset"]:
         parts.append(f"    offset={kwargs['offset']!r},")
+    if kwargs["device"] == "gpu":
+        parts.append(f"    device={kwargs['device']!r},")
     if kwargs["monotone_constraints"]:
         parts.append(f"    monotone_constraints={kwargs['monotone_constraints']!r},")
     if kwargs["feature_weights"]:
         parts.append(f"    feature_weights={kwargs['feature_weights']!r},")
     if kwargs["categorical_levels"]:
         parts.append(f"    categorical_levels={kwargs['categorical_levels']!r},")
+    if kwargs["positive_class"] is not None:
+        parts.append(f"    positive_class={kwargs['positive_class']!r},")
 
     if kwargs["mlflow_experiment"]:
         parts.append(f"    mlflow_experiment={kwargs['mlflow_experiment']!r},")
-    if kwargs["model_name"]:
-        parts.append(f"    model_name={kwargs['model_name']!r},")
+    if kwargs["mlflow_destination"]:
+        parts.append(f"    mlflow_destination={kwargs['mlflow_destination']!r},")
 
     parts.append(f"    output_dir={kwargs['output_dir']!r},")
     parts.append(")")

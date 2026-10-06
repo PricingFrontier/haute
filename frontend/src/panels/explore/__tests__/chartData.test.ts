@@ -162,7 +162,7 @@ function result(
     node_id: "explore_1",
     pivot_id: sourcePivot.id,
     source: "pricing",
-    dataframe_cache_key: "dataframe-current",
+    data_version: "dataframe-current",
     calculation_key: "calculation-current",
     row_fields: sourcePivot.rows.map(({ field }) => field),
     column_fields: sourcePivot.columns.map(({ field }) => field),

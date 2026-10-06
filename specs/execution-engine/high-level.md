@@ -16,41 +16,55 @@ ancestor/cycle detection), the two execution strategies (eager-with-caching for
 interactive preview, lazy-with-parquet-checkpointing for sinks/scoring/training), the shared
 per-node building block both strategies call through (`_build_funcs`), column-contract
 enforcement at node boundaries, execution contexts that route/service call sites admit
-with profile-specific memory budgets, a bounded chunked map-reduce mode for datasets too
-large to hold as a single Polars plan, and a small process-isolation primitive for
+with profile-specific memory budgets, the chunk-local classifiers that decide when user
+code may run on row slices of a frame, and a small process-isolation primitive for
 running heavy work in a child process the parent can kill on timeout or memory limit.
 
 ## Scope
 
 **In scope:**
 - Turning a `PipelineGraph` (nodes + edges) into an executable order and running it,
-  both eagerly (`executor.execute_graph`, `_execute_lazy._execute_eager_core`) and
-  lazily (`execution.execute_lazy_graph`, `_execute_lazy._execute_lazy`).
+  both eagerly (`executor.execute_graph` and `trace.execute_trace`, display walks of
+  `_graph_walker.walk_graph`) and
+  lazily (`execution.execute_lazy_graph`, a sink walk of `_graph_walker.walk_graph`).
 - The GUI preview cache — reusing materialised node outputs across clicks on the same
   graph, extending the cache when a new target requires more of the graph, and
   discarding entries once source data or graph shape changes.
 - Column-contract enforcement at node input/output boundaries (via `_contracts.py`'s
-  `Contract`, consumed here) and the column-projection planning that lets checkpoints
+  `Contract`, consumed here) and the column-projection planning that lets captures
   and lazy scans avoid materialising unused columns.
-- Structural parquet checkpointing of the lazy plan at fan-in/fan-out/join-feeder
-  boundaries when the caller supplies a checkpoint directory (the normal sink path
-  does) to bound Polars plan duplication.
+- Seed plans: a bounded execution runs under a leased
+  [seed plan](../caching/low-level.md#seed-plans), reading fresh shared snapshots
+  and capturing fan-in/fan-out/join-feeder, materialising, batch Model Score, and
+  consumed points into the shared snapshot store, which bounds Polars plan duplication
+  and lets the next execution start there. An admitted preview runs under its own plan,
+  capturing its joins and materialising operations; a trace runs under the plan of the
+  preview it explains. With caching off in the [pipeline settings](low-level.md#pipeline-settings)
+  a preview runs without a plan and every other plan seeds and captures nothing, so each
+  execution runs up to its target from the inputs; an explicit cache build still builds
+  and publishes its own node.
+- Pipeline settings (`_pipeline_settings.py`): the per-clone file
+  `.haute/pipeline-settings.json` behind the Pipeline settings pane — chunk rows, caching,
+  the automatic cache size, the one preview memory budget, the memory kept free for the
+  system, and the pipeline, modelling and optimisation time limits. Each key is either set
+  or automatic, the file can be edited by hand, and every consumer reads it when its work
+  starts.
 - `ExecutionContext`/`ExecutionProfile`: the per-run cancellation token, optional
   memory budget, stage-timing/RSS-sampling instrumentation, and admission control used
   by route/service long-running operations (preview, sink, training prep, optimiser
-  setup, deploy, chunked map-reduce). Low-level callers may omit a context or construct
+  setup, deploy). Low-level callers may omit a context or construct
   one without admission limits.
-- Bounded chunked execution (`chunking.py`): proving a graph's suffix is safe to run
-  chunk-by-chunk (an AST whitelist for user Polars code, per-`NodeType` capability
-  declarations), sizing chunks, and streaming chunk batches through the same node
-  builder functions the eager/lazy paths use.
+- Chunk-local classification (`chunking.py`): an AST whitelist that proves a node's
+  user Polars code, or an expression, row-local, so running it on row slices of a frame
+  gives the same rows as running it on the whole frame. Bounded input-sliced writes,
+  the expression parser, and trace correlation rely on it.
 - Process isolation (`_worker_isolation.py`) for running a function in a spawned child
   process with an optional address-space cap, timeout, and cooperative-stop support.
 - Metadata-based RAM pre-estimation for training (`_ram_estimate.py`) so a training run
   can downsample before it starts rather than OOM mid-fit.
-- Host memory observation (`_host_memory.py`): available-RAM discovery on
-  Linux (`/proc/meminfo`), macOS (Mach VM counters), and Windows
-  (`GlobalMemoryStatusEx`), plus GPU VRAM detection. On Linux the host's
+- Host memory observation (`_host_memory.py`): available RAM read through
+  psutil on every platform, plus GPU VRAM detection; process memory and
+  liveness are read through psutil by `_process_memory.py`. On Linux the host's
   reported availability is clamped to observable container headroom: cgroup
   v2 `memory.max - memory.current`, falling back to the v1 limit/usage pair
   when v2 is absent. An unlimited cgroup leaves the host value unchanged;
@@ -60,9 +74,7 @@ running heavy work in a child process the parent can kill on timeout or memory l
   `scenarioExpander`, `optimiserApply`, and `OUTPUT` response-document assembly —
   the one implementation both the canvas executor and codegen-generated `.py`
   files call, so a saved pipeline's `pipeline.run()` behaves identically to the
-  GUI. Before `assemble_output_from_config` unified the two, a saved `OUTPUT`
-  node's generated code was a bare passthrough of the raw upstream frame instead
-  of the assembled document.
+  GUI.
 
 **Out of scope** (owned elsewhere, linked where relevant):
 - Static node schemas, sidecar validation, and registry configuration are owned by
@@ -71,16 +83,16 @@ running heavy work in a child process the parent can kill on timeout or memory l
   the `NodeBuildHooks` interception seam, then orchestrates when and how the resulting
   callables run. The node's public configuration contract remains pipeline-config's
   responsibility.
-- Whether a materialised DataFrame or lazy scan is reused across calls without
-  recomputation — the dataframe execution cache's storage/eviction/fingerprinting
-  policy belongs to [caching](../caching/high-level.md); this component only decides
-  *what* to cache and consumes the cache's `get`/`scan`/`materialize` API.
-- Sandboxing of user-written Polars/Python snippets (`code` config fields) — the
-  actual restricted-`exec` mechanism is [sandbox-security](../sandbox-security/high-level.md);
+- How a materialised node output is stored, identified and reused across calls — the
+  shared snapshot store and seed-plan resolution belong to
+  [caching](../caching/high-level.md); this component runs the seed plan it is given.
+- The accident guard for user-written Polars/Python snippets (`code` config fields);
+  node code is trusted project code and the guard's restricted-`exec` mechanism and
+  the trust boundary are [sandbox-security](../sandbox-security/high-level.md);
   this component calls it at preamble-compile and node-build time.
 - Correlating a completed run into a human-readable trace/waterfall — that is
   [tracing](../tracing/high-level.md), which is built on top of the same
-  `_execute_eager_core`/`ExecutionContext` primitives this component exposes.
+  `walk_graph`/`ExecutionContext` primitives this component exposes.
 - HTTP request/response shapes and route wiring for preview/run/sink/train endpoints —
   [server-api](../server-api/high-level.md).
 - Assistant revision, risk, consent, mutation, and verification policy is owned by
@@ -101,17 +113,30 @@ running heavy work in a child process the parent can kill on timeout or memory l
   graph than is cached extend the cache rather than starting over. Ordinary
   node-local failures are captured per-node (`status="error"`) rather than
   aborting the whole preview. Once
-  `_execute_eager_core` is running, every `HauteError` with a stable public
+  a display walk is running, every `HauteError` with a stable public
   `error_code`, cancellation, and memory-limit exhaustion is always raised. This includes
-  `ContractResolutionError`,
-  `ChunkMemoryRiskError`, `GroupByExecutionUnsupportedError`, and
+  `ContractResolutionError`, `GroupByExecutionUnsupportedError`, and
   `LiveSwitchScenarioError`. `ContractMismatchError` and the base
-  `SchemaMismatchError` have no public `error_code`, so the eager core re-raises
+  `SchemaMismatchError` have no public `error_code`, so the walk re-raises
   both through one explicit mismatch branch. The preview HTTP adapter converts
   either mismatch into the same in-situ `PreviewNodeResponse(status="error")`
   instead of a generic 500. Preamble compilation happens outside that core:
   interactive preview attaches a `PreambleError` only to nodes that consume its
   namespace, while non-preview execution propagates it.
+- **Preview row limits apply at the previewed node.** Target-only preview applies
+  `row_limit` once to the previewed node's collected output, with SQL `LIMIT` semantics:
+  the rows shown are rows the unlimited run produces, and Polars decides how far upstream
+  the limit travels. Sources and API-input ports are never capped, so a join between
+  sources stored in different key orders previews the rows the full run joins. Opaque
+  row-local Python steps — eager model scoring, the rating miss guard, sum-constraint online
+  optimiser apply, and OUTPUT assembly — run as Python scans that honour the limit,
+  projection, and predicate Polars pushes into them, and their exceptions keep their types at
+  every Haute collect, batch-collect, and sink seam (a direct Polars `.collect()` receives a
+  `ComputeError` naming the original). Native Polars node plans are never wrapped. A
+  preview's row count is the height of the limited target output, and trace follows the
+  limited preview. Deploy live scoring, batched parquet scoring, sink/batch execution, and
+  user-authored Python UDFs keep their execution; Explore reports, training, and optimiser
+  solve read their inputs in full.
 - **Sink/batch execution** (`executor.write_data_output`, `execution.execute_lazy_graph`)
   builds one Polars lazy plan for the whole graph (or up to a target node). Native
   sink-capable file formats use bounded Polars sinks and fail loudly if the plan cannot
@@ -119,13 +144,42 @@ running heavy work in a child process the parent can kill on timeout or memory l
   database output, instead uses `streaming_collect` and therefore materialises the
   result DataFrame before writing; it still refuses Polars' non-streaming broad-collect
   fallback for bounded profiles.
+- **The streaming chunk size is one editor setting.** Polars keeps its streaming chunk
+  size as process-wide configuration (`POLARS_STREAMING_CHUNK_SIZE`). The editor server
+  holds one value, the pipeline settings' `chunk_rows` (500,000 when unset), applies it at
+  start-up, applies a new value at once when the pipeline settings pane changes it
+  (`PATCH /api/pipeline-settings`), and applies a hand edit of the settings file at the
+  next admission. Server-thread executions read the process value,
+  spawned workers inherit it at spawn, and every task handed to a warm interactive
+  worker carries the server's current value, which the worker applies before running
+  the task. No execution scopes the value, so no request waits on another to apply
+  it. The one narrower cap: a batch Model Score below scenario expanders sinks its
+  input under the setting divided by their fan-out, because an `explode` multiplies
+  every streaming chunk of its source by the step count in each thread; the cap
+  lowers what Polars sees during that sink and never the setting itself. The value
+  never changes results, only memory use and speed, so a change reaches executions
+  started afterwards and may reach one in flight at its next collect. Requests carry
+  no chunk size, and deployed scoring runs with the default.
 - **`dataInput` and `dataOutput` are the sole tabular I/O node types.** A file-backed
   Parquet Data Input is scanned directly. Every other data input executes from a
-  validated leased snapshot generation; graph execution never builds or refreshes a
-  snapshot. Optional input code runs exactly once through `_exec_user_code` after
-  provider resolution. Direct source signatures or snapshot generation pointers,
-  together with source identity, mode, and code, participate in fingerprints without
-  resolved secrets.
+  validated leased snapshot generation. Graph execution may schedule a missing or stale
+  generation's build before it plans, but only through the IO layer's explicit build path
+  inside a hard memory cap (in the current isolated worker, or a spawned one admitted from
+  the execution's budget), warned before and recorded in the terminal diagnostics; a
+  schema-only execution, or one without an admitted context, never builds and meets the
+  typed `input_snapshot_missing` rejection instead. The one exception is the inferred
+  schema tier: a schema-only caller that records inferred inputs resolves a missing local
+  file snapshot's schema through the format's lazy scanner with the node's own settings
+  and bounded type inference, collecting nothing and writing no snapshot, and records the
+  tier `inferred`; formats without a scanner, configurations only the eager reader
+  accepts, and non-file providers are refused with the remedy to preview the input
+  first. The same caller resolves a structured API Input table with no snapshot from
+  its declared column types, reading no request data, and records the tier `declared`
+  per table. Optional input code runs exactly once through `_exec_user_code` after
+  provider resolution. Direct source signatures — or, for a snapshot-backed input, the
+  generation pointer together with the current source signature — along with source
+  identity, mode, and code, participate in fingerprints without resolved secrets, so a
+  mutated source misses every cache and reaches preparation.
 - **Output publication is explicit and contained.** `dataOutput` is preview
   pass-through; only `write_data_output` persists it. Local files stage to a unique
   contained same-filesystem sibling, validate completion, and replace atomically.
@@ -138,31 +192,56 @@ running heavy work in a child process the parent can kill on timeout or memory l
   establishes only that pipeline's parent as its root. The eager/lazy cores also
   scope the final builder read to the same root. Named database/Databricks/provider
   identifiers are not local paths and retain their external-resource semantics.
-- **Chunked map-reduce execution** (`chunking.chunk_plan` / `iter_chunked_frames`)
-  proves, ahead of running anything, that a graph's tail from a chosen `chunk_start`
-  node to the target is chunk-safe — a single-parent chain of node types whose
-  transforms are provably row-local — and then streams bounded batches through it,
-  never holding more than one chunk's worth of intermediate rows. Any node or user-code
-  construct outside the proven-safe set fails chunk *planning*, not execution, so
-  callers can fall back to the always-correct full executor. The shipped runner is
-  deliberately serial (`max_in_flight_chunks=1`); it does not execute chunks in
-  parallel. A non-root `chunk_start_node_id` requires the caller to supply a
-  `start_frame`; the runner bounds the suffix from that frame onward and does not
-  claim that producing or retaining the caller-owned start frame was bounded.
+- **Chunk-local classification** (`chunking.classify_chunk_local_polars_code`,
+  `classify_row_local_expression`) decides, before anything runs, whether a node's user
+  Polars code or an expression is provably row-local. User code is classified by a
+  receiver-aware AST walk alone: comments and string literals cannot affect
+  eligibility, a same-named method on another namespace does not inherit an
+  admission, and every rejection is a structured decision naming the blocking
+  operator, a closed reason code, and the source line. A rejection never fails the
+  pipeline; its consumer takes its whole-frame path (a write that is not input-sliced,
+  an expression value not computed from one row, or a trace edge that is not
+  row-aligned).
+  There is no chunked map-reduce runner: every execution runs the whole graph through
+  the one engine.
 - **Strategy decisions use one versioned public vocabulary.** The shared planner
   reports version 1 as `projected`, `schema-all-except`,
   `full-width-admitted-eager`, `unprojected-streaming-boundary`,
-  `materialisation-boundary`, `unsupported`, or `not-planned`, with an exact API
-  status, profile, boundedness, reason code, and available/unavailable/truncated
-  detail state. Diagnostics are JSON-safe, deterministically capped, and never carry
-  plans, frames, source values, or other user data.
-- **Group-by is never smuggled through chunking or streaming.** Only
-  `PREVIEW_EAGER`, `EXPLORE_ANALYSIS` (the explicit Explore dataframe-cache
-  materialisation), and `DEPLOY_LIVE` may use an admitted materialisation boundary,
-  and only when a present positive admission plus an available estimate fits both
-  memory limit and headroom. Every other batch/bounded profile rejects before
-  execution; missing admission, unavailable estimate, and excess headroom have
-  distinct typed reason codes.
+  `materialisation-boundary`, `full-width-conservative`, `unsupported`, or
+  `not-planned`, with an exact API status (`projected`, `admitted_eager`,
+  `boundary`, `warned`, `rejected`, or `not_planned`), profile, boundedness, reason
+  code, and available/unavailable/truncated detail state. `warned` is the only
+  status that continues execution without an estimate, and it exists only where a
+  native worker cap bounds the run. Diagnostics are JSON-safe, deterministically
+  capped, and never carry plans, frames, source values, or other user data.
+- **Group-by is an admitted global boundary in every materialising workflow.** No
+  execution profile rejects a graph merely because its relevant lineage contains a
+  group-by. Preview, lazy sinks, training, optimiser setup and auto-range, Explore,
+  assistant value profiling, and live and batch deploy all use
+  the same boundary contract: a present positive admission plus an available estimate
+  that fits both memory limit and headroom. Runtime-injected deploy inputs contribute
+  request-local row-count, schema, and width metadata to that estimate instead of
+  depending on a stale or absent source path. A bounded write never evaluates the global
+  aggregation independently per slice; the group-by is executed once under admission.
+  Missing admission and excess headroom
+  remain distinct typed failures. An unavailable estimate has exactly two outcomes.
+  When the planner runs inside a worker whose native memory cap is active, which is
+  how Data Output writes, preview and trace, Explore, API Input table builds, training
+  preparation, and multi-row deploy scoring execute,
+  the group-by still runs once as a materialisation boundary but under the run's
+  full admitted envelope, `min(memory_limit_bytes, headroom_bytes)`, the same number
+  the parent installed as that worker's native cap; the strategy is
+  `full-width-conservative` with status `warned`, and its diagnostic names the node,
+  the operator, the estimator's proof gap, the reserved envelope, the disabled
+  estimate-based admission, the cap backend, and remediation. A conservative run that
+  exceeds its envelope terminates exactly like any other worker memory breach: a typed
+  failure, no partial artifact, admission released once. Everywhere else, including
+  optimiser stages, single-row live deploy scoring, and any host without a native
+  cap, an unavailable estimate remains the typed
+  `materialisation_estimate_unavailable` failure, whose remediation states that the
+  surface runs without a hard worker cap. The warning is never a silent fallback: it
+  reaches every surface's execution diagnostics through the same strategy payload as
+  an admitted boundary.
 - **A proven API-input demand is applied before payload loading.** For a target
   lineage, the executor derives the JSON `apiInput` ports that actually feed the
   prepared graph and, where projection analysis proves a concrete demand, the
@@ -171,12 +250,110 @@ running heavy work in a child process the parent can kill on timeout or memory l
   nodes never share or overwrite a demand. The runtime loader reads only those port
   payloads and projects them before downstream materialisation. Generated/deploy
   callers that request the source itself retain full-bundle semantics.
+- **One operation registry classifies every recognised Polars operation.**
+  `haute._polars_operations` is the closed, receiver-aware table of the frame
+  methods, expression methods, `str`/`dt` namespace methods, and top-level `pl`
+  helpers the analysers recognise. Each entry records its class (row-local,
+  order-dependent, row-expanding, fan-in stateful, or opaque), its
+  execution policy (row-local, streaming, materialisation boundary, or opaque),
+  whether that policy rests on a memory measurement or on none, its
+  materialisation memory factor, whether it has a chunked-equals-full proof, and
+  whether lineage has a transfer for it. Lineage, cardinality, projection, and
+  chunk-local classification derive their
+  vocabularies from that table: chunk-local classification admits only registered row-local
+  operations that carry a proof, cardinality treats registered unbounded-expansion
+  expressions as unavailable, and the planner's materialisation boundaries are
+  every registered frame method whose policy is a materialisation boundary --
+  order-dependent and row-expanding ones as well as fan-in stateful ones --
+  together with the registered `over` expression method, each admitted on
+  measured evidence. A streaming policy likewise records whether it was measured
+  or is simply unmeasured, so no policy in the table is an assumption whose
+  provenance cannot be checked. An operation outside the registry is opaque
+  everywhere: lineage keeps a visible boundary, cardinality is unavailable, chunk
+  planning rejects it, and execution follows the conservative policy. A frame
+  method taken as a value, an unbound frame-class method called through `pl`, and
+  any `pl` attribute that is not a registered expression helper are treated as
+  frame receivers, so binding a method to a name or calling
+  `pl.LazyFrame.group_by(frame, ...)` cannot hide a boundary within the node's
+  own code. Calls into functions the analyser cannot see (a `utility` module
+  import) are not boundaries; the process RSS watchdog remains the defence for
+  those. Admitting a new
+  optimisation for a registered operation still requires its proof; a policy
+  change for a streaming operation requires recorded memory evidence.
+- **Global operation policies are memory evidence, not intuition.** Every
+  materialisation-boundary policy is backed by a fresh-process peak-RSS
+  measurement against the streaming control matched to that operator, recorded in
+  the registry entry's note; a streaming policy is either measured the same way or
+  inherited unmeasured, and which of the two it is is recorded per operator rather
+  than assumed.
+  `sort`, `unique`, `join`, `join_asof`, `top_k`, `bottom_k`, `reverse`, `shift`,
+  and `explode` measurably hold operator state proportional to the frame and are
+  therefore admitted materialisation boundaries alongside `group_by`: the planner
+  places them at a boundary, and admission is the estimate against the caller's
+  memory limit and headroom exactly as for a group-by. Window expressions
+  materialise their partitions, so `over` is a boundary recorded at the expression
+  level: the containing node becomes the boundary with `over` as its operator.
+  `shift` streamed at the passthrough floor before Polars 1.44; from 1.44 its
+  buffered state grows with the input (about 1.5x the passthrough control at
+  1.5 million rows and over 2x at 6 million on the Linux reference runner, with a
+  timing-dependent spread), so it is a boundary rather than a streaming operator.
+  The expression methods that read neighbouring rows through the same engine
+  state are boundaries recorded at the expression level too: `shift` written on a
+  column (a lag column), `diff`, which Polars computes as the column minus its
+  shift, and `pct_change`, whose extra memory grows about as fast as the whole
+  frame. Each is sized with the same whole-frame estimate as every other
+  boundary, which is conservative for a single lag or difference column; the
+  same-named methods of an expression namespace (`list.shift`, `list.diff`,
+  `arr.shift`) work within each row's value and never create a boundary.
+  `unpivot`, `rolling`, `group_by_dynamic`, `merge_sorted`,
+  `interpolate`, and `filter` were measured at or below the streaming control
+  matched to what they read rather than what they emit — a full-width passthrough
+  sink for a wide plan, a two-column sink for a narrow one, and a two-column sink
+  over the same nullable column for a plan that reads one, since a dense scan
+  under-represents the cost of a nullable read — and keep streaming with that
+  evidence recorded. A reducing operator is bound by the same full-width control
+  as any other wide plan, because emitting few rows does not change what it must
+  read; the tiny `head` sink is only the matched floor for a reducing
+  boundary's does-not-stream witness. A cross join is a boundary whose cost
+  nobody has measured, so it is admitted as a boundary but its estimate is
+  unavailable until someone measures it: warned under a native worker cap,
+  rejected without one, with its row product still carried downstream.
+  Operations no measurement covers —
+  `join_where`, `pivot`, `upsample`, `gather`, `sample` — keep
+  streaming with "no evidence" recorded; widening or narrowing any of these
+  policies requires new evidence, never a judgement call. Boundary admission
+  multiplies the row-count-and-width estimate by the operator's measured memory
+  factor before comparing it with headroom, and the same runtime calibration that
+  tightens group-by admission keeps correcting those factors upward from observed
+  peaks. A join with a declared `1:1`, `1:m`, or `m:1` contract is sized from the
+  largest operand it holds rather than from what it emits, because that contract
+  bounds its output by an operand — so a chained declared join is sized from the
+  previous join's result, not from the original sources — against the ports'
+  widths summed once per logical reference, so a self-join or a lookup table
+  joined twice is resident twice and charged twice, all under the usual overhead
+  multiplier and the largest factor among the node's chained boundary operators.
+  A many-to-many join — no `validate=`, or `m:m` — has no such bound, so it
+  carries the row product instead; when that product does not fit the headroom
+  the planner reports the estimate unavailable
+  (`join_cardinality_many_to_many`) rather than an over-run, so a capped surface
+  runs `full-width-conservative` with status `warned` and an uncapped one is
+  refused, both with the remediation to declare `validate='m:1'`, `'1:m'`, or
+  `'1:1'` where a key side is unique. The certification lane measured a
+  three-times fan-out join above the input-sized figure, which is why input
+  sizing is reserved for declared joins. The joined row count is recorded
+  separately and carried to the next boundary downstream. `explode` is the one
+  admitted boundary whose expansion is unbounded, so
+  its cardinality — and therefore its estimate — is unavailable: under an active
+  native worker cap it runs `full-width-conservative` with status `warned` under
+  the run's full envelope, and without one it is the typed
+  `materialisation_estimate_unavailable` rejection.
 - **Polars projection is one compositional lineage proof.** Opaque-contract Polars
   code is parsed into a fail-closed linear frame-operation model rather than a set of
   node-shape exceptions. Identity assignment and supported operations publish both
   their exact output schema
   when it is knowable and their backward input demand. Literal `select`,
-  `with_columns`, `rename`, `filter`, row-only slicing, `sort`, `unique`, `explode`,
+  `with_columns`, `rename`, `filter`, `drop`, `drop_nulls`, `with_row_index`,
+  row-only slicing, `sort`, `unique`, `explode`, literal `unpivot`,
   closed `group_by(...).agg(...)`, and mechanically attributable joins therefore
   compose before or after one another, including multiple joins and two ports from
   one source node. A terminal literal select or closed aggregate supplies its own
@@ -185,7 +362,18 @@ running heavy work in a child process the parent can kill on timeout or memory l
   named outputs, `filter` predicates and constraint names, and `pl.when`
   predicates and constraint names — the proof demands that column exactly, and a
   rename always demands every rename source because a strict rename requires them
-  at runtime. Dynamic
+  at runtime; a strict drop demands every dropped column for the same reason.
+  String and temporal expression methods are attributable only through an audited
+  registry of methods whose bare string arguments Polars parses as literals, so a
+  `str.contains` predicate is proven while an unregistered method with a direct
+  string argument keeps the boundary. A column selector written with literal arguments
+  (`pl.all()`, `pl.exclude`, regex and dtype columns, a preamble-imported
+  `polars.selectors` function) is expanded by Polars against the exact schema and analysed
+  like the explicit columns it expands to: name-based selectors resolve wherever column names
+  are known, dtype-based selectors where dtypes are known, and positional selectors are
+  chunk-local but not resolved for lineage; only an expression Polars reports as a pure
+  column selection counts as a selector. When static planning lacks a node's input schema,
+  the node is resolved at runtime from its input frame's schema, as joins are. Non-literal
   selectors, unregistered expression helpers, helper/control-flow-dependent frame mutation,
   unsupported join
   semantics, unknown schemas needed for ownership, ambiguous names, or any
@@ -211,10 +399,10 @@ running heavy work in a child process the parent can kill on timeout or memory l
   collections in fresh processes over the same generated wide artifact, checks
   semantic equality and exact selected width, and gates their incremental RSS
   ratio. The end-to-end training scenario derives its demand from the same target,
-  metadata, and feature-menu exclusions used by the modelling service. Per-port
-  cached API input and direct JSONL fallback scenarios retain structured width,
-  checkpoint, row-count, output-size, restart/cache-proof, telemetry-privacy,
-  and snapshot-lifecycle evidence. The ordinary pull-request suite keeps the
+  metadata, and feature-menu exclusions used by the modelling service. Published
+  API Input table and direct JSONL fallback scenarios retain structured width,
+  checkpoint, row-count, output-size, restart, telemetry-privacy,
+  and build-settlement evidence. The ordinary pull-request suite keeps the
   bounded CI scale; scheduled certification runs the one-million-row scenario
   weekly and the ten-million-row stress scenario monthly, with both larger
   scales also available through explicit workflow dispatch.
@@ -247,10 +435,12 @@ running heavy work in a child process the parent can kill on timeout or memory l
   recent successful same-scale workflow, so the monthly baseline does not disappear
   merely because cache eviction is shorter than its schedule.
 - Route/service long-running operations create an admitted `ExecutionContext` bound
-  to an `ExecutionProfile` (preview, lazy sink, training prep, optimiser setup, deploy
-  live/batch, chunked map-reduce, ...). An admitted context enforces a resident-memory
-  growth budget resolved from that profile (fixed default, environment override, or
-  an adaptive fraction of currently-available system RAM), samples RSS at stage
+  to an `ExecutionProfile` (preview, lazy sink, training prep, optimiser setup and
+  solve, deploy live/batch, ...). An admitted context enforces a resident-memory
+  growth budget resolved from that profile (for a preview, the pipeline settings'
+  preview memory; otherwise a fixed default, an environment override, or an adaptive
+  fraction of currently-available system RAM above the settings' kept-free memory),
+  samples RSS at stage
   boundaries, and raises after a sampled boundary crosses the limit. Low-level APIs
   also accept `None` or a directly-constructed context; those direct/test/library
   calls are not memory-admitted unless the caller supplies limits.
@@ -262,33 +452,60 @@ running heavy work in a child process the parent can kill on timeout or memory l
   paths, so a mismatch (missing column, wrong dtype on a join key) is detected at the
   offending node rather than as an opaque Polars error three nodes later. Missing
   columns use `ContractMismatchError`; join-key dtype disagreement uses
-  `SchemaMismatchError`. Both propagate identically through the eager core and
+  `SchemaMismatchError`. Both propagate identically through a display walk and
   are adapted identically by the preview route.
+- **A declared contract only fills the builder's opaque sides.** The effective
+  contract used for enforcement and projection (`overlay_declared_contract`) keeps
+  every side the builder derives from the node's current config and takes a
+  declared `config["contract"]` side only where the builder is opaque. A parsed
+  graph carries the previously generated annotation as that declaration, so after
+  an unsaved config edit (a renamed Model Score output column, a model whose
+  features changed) a preview checks and projects the edited node's real columns,
+  not the stale annotation.
 - **Contract resolution is fail-loud outside interactive preview.** Only
   `PREVIEW_EAGER` may turn classified configuration/I/O/model-boundary resolution
   failures into a diagnosed opaque contract. Every non-preview profile, and an
   unprofiled low-level eager or lazy call, raises `ContractResolutionError` before
   node work. This policy is independent of projection/materialisation strictness.
-- **Assistant schema inspection is plan-only.** `get_node_schema` performs the
+- **Node code reads the run's global constants.** Every execution binds
+  `global_constants` in node code to the pipeline's constants resolved for the source it
+  routes on (the request's source, the batch scenario for the optimiser and a Data Output
+  write started under `live`, and `live` for deployed scoring), as concrete values each
+  code's own reads restrict; [pipeline-config](../pipeline-config/high-level.md) owns their
+  meaning and errors.
+- **Assistant schema inspection is plan-only.** `inspect_node`'s schema part performs the
   same flattening, preamble compilation, active-source selection, node building,
   and contract enforcement as production lazy execution up to the requested
   top-level node, then calls `collect_schema()` on the preserved lazy result.
-  It never collects rows. Multi-frame results report one schema per output port.
+  It never collects rows: an OUTPUT terminal's document is *described* from its
+  mapping and its source schemas rather than assembled, so a schema-only
+  execution never materialises a document even when the requested lineage ends in
+  an OUTPUT node.
+  Multi-frame results report one schema per output port.
   This is execution-plan evidence, not proof of row values or commercial
-  correctness. The current assistant mutation service declares structural
-  verification after save; it does not claim that this schema read ran for every
-  mutation.
+  correctness. The assistant mutation service's tier follows its evidence: it
+  declares `schema` when schema evidence was collected for at least one target and
+  re-proves that evidence after save, and `structural` when there is none — a plan
+  with no executable target to resolve, or one whose every target already failed to
+  resolve on the saved graph and was excluded with a `pre_existing_schema_failure`
+  warning.
 - **Partitioned Parquet remains lazy and projected.** Directory-backed inputs retain
   Hive-partition predicates and required columns in the optimized scan, pruning
   irrelevant files/columns before checkpointing, caching, or response materialisation.
   Fan-in demand attribution comes only from operand/contract/join-key/schema evidence;
-  ambiguous ownership is an observable boundary (or a strict-profile failure), never
+  ambiguous ownership is an observable boundary in every execution profile, never
   a guessed source assignment.
 - **Input identity is 1:1 and edge-derived.** Every incoming edge of a node has
   exactly one *input name*, derived by `edge_input_name` (`_graph_utils.py`): an
   `apiInput`-frame edge's name is its frame label verbatim (frame labels are
-  validated as ASCII Python identifiers by the api-input schema); every other edge's name
-  is the sanitised source-node label. That name is simultaneously the name listed in
+  validated as ASCII Python identifiers by the api-input schema); a collapsed
+  submodel-output edge's name is its sanitised public output port name,
+  independent of the occurrence alias and port count; every ordinary edge's name
+  is the sanitised source-node label. Distinct occurrences feeding a common
+  consumer must contribute distinct input names; collisions fail explicitly.
+  Public submodel inputs likewise contribute their sanitised labels to child nodes.
+  Immutable public port ids address boundary handles only and never become frame names.
+  That name is simultaneously the name listed in
   the editor, the generated function's parameter, and the key used by
   name-referencing configs (`input_scenario_map`, instance `inputMapping`,
   `config["inputs"]`) — there are no hidden names, positional suffixes, or
@@ -297,63 +514,105 @@ running heavy work in a child process the parent can kill on timeout or memory l
   positional in mechanism, but because each name derives from its own edge, edge
   reordering can never re-mean a name.
 
+**Stepped transforms.** A stepped transform reaches the executor with its `code` already
+materialised from `steps` by the node data model, so chunk-local classification, projection, and every
+other reader classify the rendered program. The transform builder additionally validates
+the steps against the input names the code will execute with (the bound source names plus
+the original names an instance aliases) and builds the same incomplete function that a
+code-less transform builds, carrying the step-indexed message, when validation or
+rendering fails; a stepped original carrying `inputMapping` is rejected. The rendered
+code executes through the same sandboxed path as hand-written code, and execution errors
+keep reporting the failing line so the editor can name the failing step. A lazy plan's
+error (a missing column, a type mismatch) is raised only when the plan's schema is
+resolved, after the code ran, so it brings no line. When a preview records such a failure
+for an input-mode transform whose steps contain no free code, the executor resolves the
+full plan's schema and, only if that also fails, the schema of each step prefix on the
+input frames the run already built, reading no rows; the first failing prefix names its
+step, the error line is that step's first line, and the message is unchanged. An error
+only data can raise, such as a strict cast meeting a bad value, keeps no line, and a
+successful run does no extra work.
+
 ## Design rationale
 
+- **Hard-capped workers are the memory-safety mechanism; the static estimate admits
+  only what no cap bounds.** Wherever a native cap exists — a Windows Job Object, a
+  delegated Linux cgroup, or the `RLIMIT_AS` fallback — the cap bounds the run, and an
+  unavailable static estimate is only `warned`. The static stack (column lineage,
+  projection planning, cardinality bounds, the RAM estimator, the operator memory
+  registry and estimate calibration) stays load-bearing only for surfaces that run
+  without a native cap: the optimiser's `thread` compatibility mode, Databricks serving,
+  and macOS hosts, which have no dependable per-process cap. A hard cap cannot serve them
+  because they do not run in a capped worker, or the host offers no cap. The stack is not
+  extended for capped surfaces. The process-mode optimiser runs every native call in a
+  capped solver session (OPT-W01), so its resident-grid estimate is only a recorded
+  forecast there; whether the remaining uncapped surfaces still justify the stack is
+  decided again.
 - **Two execution strategies, one shared node-building step.** Eager execution
-  (`_execute_eager_core`) and lazy execution (`_execute_lazy`) both call
+  (the graph walker's display walk) and lazy execution (its sink walk) both call
   `_build_funcs`, which asks each node's `NODE_REGISTRY` builder for the same
   `(name, callable, is_source)` triple. This is deliberate: the GUI preview and a
   batch sink run *the same per-node logic*, differing only in when the result is
   collected. Divergence between "what preview shows" and "what the batch run
   produces" would otherwise be a permanent trust problem for users.
-- **Eager-with-caching for interactivity, lazy-with-checkpointing for throughput.**
+- **One graph walker.** `_graph_walker.walk_graph` walks a graph once under a
+  `CollectPolicy` that says what the walk collects and how it treats each node's frame.
+  The Data Output sink, every lazy execution (`execution.execute_lazy_graph`: deploy
+  scoring, training, the optimiser, node data, the assistant), the preview and the trace
+  run on it. Two decisions
+  bound it. Its functions stay at a cyclomatic complexity of 15 or below, held by ruff's
+  C901 rule scoped to the walker module only; the rest of the package is not held to
+  that limit. And the decorator pipeline's `Pipeline.run`/`score` keeps its own loop over
+  the Python functions it registered, sharing only the one topological sort
+  (`topo_sort_ids`) and frame picking (`_pick_source_frame`) with the walker: the walker
+  runs config-built nodes, and routing the decorator path through it would need
+  `Pipeline.to_graph()` to rebuild every live node losslessly.
+- **Eager-with-caching for interactivity, lazy-with-captures for throughput.**
   Interactive preview needs low click-to-result latency on the *same* graph across
   many small edits — caching materialised DataFrames keyed by a graph fingerprint
   wins. Batch/deploy/training need to process rows that may not fit in memory at all —
-  Polars' lazy engine, with the executor breaking join-chain plan duplication via
-  periodic parquet checkpoints, wins there instead. Running one
+  Polars' lazy engine, with the executor breaking join-chain plan duplication by
+  capturing structural points into shared snapshots, wins there instead. Running one
   strategy for both would either make preview too slow (rebuild the whole plan per
   click) or make batch runs memory-unsafe (materialise everything eagerly).
-  A JSON source's SHA-256 content proof is likewise the sole raw-file content proof
-  consumed by preview/trace identity, preview planning, source loading, and later
-  requests while the JSON-shredding component's strong native revision remains
-  unchanged. Runtime identity must not perform a second full-file hash with a different
-  algorithm. This removes duplicate and repeat multi-gigabyte source reads without
-  weakening same-size/same-mtime rewrite detection; non-JSON runtime files retain their
-  separately versioned runtime-file identity contract.
-  A cache build persists the strong revision that surrounded its complete source hash,
-  allowing a fresh server process to reuse that proof on an exact native-revision match;
-  missing, conflicting, or unsupported proof records force the full read.
-  Cached JSON Parquet generations use the same principle at their file-backed boundary:
-  one completely verified private snapshot can serve later cache misses only behind an
-  unchanged strong artifact revision and strict process entry/byte bounds.
+  A local file's shared content signature is likewise the sole raw-file content proof
+  consumed by preview/trace identity, snapshot-freshness checks, and later requests while
+  the file's freshness token (see [caching](../caching/high-level.md)) is unchanged.
+  Runtime identity never performs a second full-file hash of a file some other consumer
+  has proved. This removes duplicate and repeat multi-gigabyte source reads without
+  weakening same-size/same-mtime rewrite detection.
+  The proof lives in process memory: a published snapshot records the source's content
+  signature, not its native revision, so a fresh server process proves each source once. Planning and loading read the
+  published table generations, never the source.
   A full preview-cache hit also reuses the immutable strategy result that produced the
   cached frame, so it retains projection warnings and provenance without repeating
   footer estimation. Any miss or cache extension plans afresh before materialisation.
-- **Parquet checkpointing only at structural fan-in/fan-out/join-feeder points.**
-  Polars duplicates the upstream plan for every downstream branch of a lazy frame
-  (a known upstream limitation — pola-rs/polars#24206); checkpointing *every* node
-  would erase the benefit of staying lazy at all, so the engine only checkpoints where
-  a node has more than one parent, more than one child, or feeds a join. The
-  decision is acted on only when `checkpoint_dir` is non-`None`; direct lazy callers
-  may intentionally omit checkpointing.
-
-  The checkpoint action set is intentionally `SKIP` or `PARQUET` only;
-  in-memory `.collect().lazy()` checkpointing is not supported behaviour.
+- **Materialise only at capture points.** Polars duplicates the upstream plan for
+  every downstream branch of a lazy frame (a known upstream limitation —
+  pola-rs/polars#24206); materialising *every* node would erase the benefit of staying
+  lazy at all, so a planned run writes only its capture points — a node with more than
+  one parent or child along effective edges or that feeds a join, a materialising
+  operation, a batch Model Score, and the producer a caller consumes — through the
+  bounded sink into the shared snapshot store, and continues from what it wrote. A run
+  without a plan captures nothing, and there is no checkpoint directory.
+  In-memory `.collect().lazy()` materialisation is not supported behaviour.
 - **Profile-scoped memory budgets, not one global limit.** A preview click and a
   10M-row training run have wildly different acceptable memory footprints and
   latency expectations. `ExecutionProfile` lets each call site (preview route,
-  training service, optimiser service, chunked runner) get its own default budget,
-  its own environment-variable override, and — for the "heavy" batch-shaped profiles —
+  training service, optimiser service) get its own default budget,
+  its own override, and — for the "heavy" batch-shaped profiles —
   a process-wide in-flight reservation so several concurrent heavy jobs cannot each
-  assume the full adaptive budget and collectively overrun the host.
+  assume the full adaptive budget and collectively overrun the host. Previews take one
+  budget whatever they capture, because a person sets it as one number in the pipeline
+  settings; the heavy profiles keep their environment overrides, and all of them share the
+  settings' kept-free memory as the reserve below their adaptive fractions.
 - **Chunk safety is proven, not assumed.** Silent-wrongness is worse than a hard
   failure: a `fill_null(strategy="forward")` or `is_in(full_column)` inside chunked
   user code would produce *different, wrong* numbers per chunk boundary rather than an
   error. `chunking.py` only admits constructs it has a hypothesis-based proof for
-  (`test_chunk_whitelist_proofs.py`: chunked output == full-execution output on
-  randomised boundary-heavy frames); anything else fails chunk planning loudly and the
-  caller falls back to the always-correct full executor.
+  (`test_chunk_whitelist_proofs.py`: the code run on row slices of a frame and
+  concatenated == the code run on the whole frame, on randomised boundary-heavy
+  frames); the classifier rejects anything else and its consumer takes the
+  always-correct whole-frame path.
 - **Process isolation via `spawn`, not `fork`.** The child worker in
   `_worker_isolation.py` is started with `multiprocessing`'s `spawn` context
   specifically so it does not inherit the parent's already-large native heaps
@@ -380,28 +639,43 @@ running heavy work in a child process the parent can kill on timeout or memory l
   calibration factor so repeated under-estimation tightens later admission rather
   than remaining an unobserved operational risk.
 - **Join expansion is bounded mathematically before admission.** Source and per-port
-  row counts propagate through row-preserving/reducing operations and every proven
-  join. A many-to-many join uses the finite Cartesian upper bound; `1:1`, `1:m`, and
+  row counts propagate through row-preserving/reducing operations (including
+  `drop`, `drop_nulls`, `with_row_index`, and audited string or temporal
+  predicates), every proven join, and the bounded expansion of a literal `unpivot`,
+  which multiplies the bound by exactly its unpivoted column count. A many-to-many
+  join uses the finite Cartesian upper bound; `1:1`, `1:m`, and
   `m:1` validation contracts tighten that bound according to which key side is
   unique. Cross, outer, semi, and anti joins each use their own safe formula. The
   materialisation estimate uses the greatest row bound reached before or within the
-  boundary, rather than the largest ancestor source. Dynamic joins, `explode`, an
-  opaque row-changing transform, or a source without a row count make the estimate
-  unavailable with the blocking node and reason. Haute never substitutes an
-  arbitrary join multiplier, so admission either has auditable finite evidence or
-  fails conservatively before execution.
+  boundary, rather than the largest ancestor source. A join or join_asof boundary
+  with a declared `1:1`, `1:m`, or `m:1` contract is the exception: that contract
+  bounds its output by an operand, so it is sized from the largest operand it
+  holds and its output bound is charged at the next boundary downstream. A
+  many-to-many join keeps the row product as its row term, and a product that
+  does not fit the headroom is reported as the estimate being unavailable
+  (`join_cardinality_many_to_many`), not as an over-run. The certification lane
+  measured a fan-out join whose output is three times its largest input above the
+  input-sized figure, which is why input sizing is reserved for declared joins,
+  and certifies the fan-out case through that policy rather than against a
+  number. Dynamic joins, `explode`,
+  `unpivot` without a literal column list, an opaque row-changing transform, or a
+  source without a row count make the estimate unavailable with the blocking node
+  and reason. Haute never substitutes an arbitrary join or expansion multiplier, so
+  admission either has auditable finite evidence or fails conservatively before
+  execution.
 - **Metadata-only RAM estimation, not a sample run.** An earlier probe-based approach
   ran a 1,000-row sample through the pipeline before training; inner joins with no key
   overlap in a small sample produced zero rows and broke the estimate. Reading
   parquet footer metadata (row/column counts, per-column uncompressed size) is
-  immediate when a valid local Parquet source or per-port API-input cache exists, at the
+  immediate when a valid local Parquet source or a published API Input table exists, at the
   cost of being an estimate rather than an exact
   measurement — hence a 3× empirical overhead multiplier and a configurable safety
   factor rather than a computed exact figure.
-- **Operational evidence is deterministic and bounded.** Execution contexts expose
-  request-local sequenced fault points at named collect/sink/checkpoint/reducer/
-  response/terminal boundaries, record cancellation latency from the first request,
-  and release cleanup callbacks in reverse order plus admission exactly once.
+- **Operational evidence is deterministic and bounded.** Execution contexts record
+  cancellation latency from the first request, and release cleanup callbacks in
+  reverse order plus admission exactly once. Production code carries no
+  fault-injection points: a test that must fail or observe an execution at a named
+  boundary does so at that boundary's checkpoint, through a test-only context.
   Optional terminal telemetry is disabled by default; when enabled it emits at most
   one schema-versioned, allow-listed aggregate event per terminal status/reason,
   excluding identifiers, paths, columns, plans, messages, exception text, and user
@@ -411,25 +685,33 @@ running heavy work in a child process the parent can kill on timeout or memory l
   complete-width admission basis, and estimated-versus-observed memory. These are
   aggregate counters only; paths, graph identifiers, column names, and row values
   remain excluded.
+- **The execution context is a thin composition.** Every execution surface takes one
+  `ExecutionContext`, but the context only composes separate parts: the cancellation
+  token, the memory budget (admission record, limits, RSS probe, enforcement and
+  pressure thresholds), the lease (cleanup callbacks and the one admission release),
+  the metrics recorder, the evidence and provenance recorders, and terminal
+  telemetry. The budget and the lease are built without either recorder, so
+  enforcement never depends on evidence bookkeeping. Callers keep one interface: the
+  context delegates each call to the part that owns it. No class in
+  `_execution_context.py` exceeds 300 lines, and a meta test holds that limit.
 
 ## Interactions
 
 - [pipeline-config](../pipeline-config/high-level.md): owns node schemas, sidecar
   validation, and registry/configuration contracts. Execution-engine owns the runtime
   builder implementations and interception seam registered behind those contracts.
-- [caching](../caching/high-level.md): the dataframe execution cache
-  (`DataFrameExecutionCache`) that `_execute_lazy` seeds from and materialises into on
-  a cache miss, plus `_cache.lineage_cache_key()`, which
+- [caching](../caching/high-level.md): the seed plans the graph walker runs, plus
+  `_cache.lineage_cache_key()`, which
   `execution.preview_lineage_cache_key()` uses with
   `PREVIEW_EXECUTION_SEMANTICS_VERSION` and the complete selected-lineage payload as
   the sole preview/trace cache identity.
 - [sandbox-security](../sandbox-security/high-level.md): `executor._compile_preamble`
   and node builders execute user-written preamble/transform code through the sandbox's
   restricted-globals `exec`.
-- [tracing](../tracing/high-level.md): built directly on `_execute_eager_core` and
+- [tracing](../tracing/high-level.md): built directly on the graph walker's display walk and
   `ExecutionContext`'s stage/checkpoint instrumentation to reconstruct a run's
-  timeline; shares the preview cache's fingerprint shape so a trace can reuse
-  preview-cached frames.
+  timeline; shares the preview cache's lineage-key shape for its own trace cache,
+  but never reads preview-cached frames.
 - [io-layer](../io-layer/high-level.md) / [databricks-io](../databricks-io/high-level.md):
   supply the actual scan/read functions that source-node builders call; this
   component only decides when a source is re-read vs. reused.
@@ -444,7 +726,7 @@ running heavy work in a child process the parent can kill on timeout or memory l
   node (and every downstream node that depended on it) so one bad node doesn't blank
   the whole canvas. Any `HauteError` that opts into the public contract with a stable
   `error_code`, plus cancellation and memory-limit exhaustion, propagates from the
-  eager core even in swallow mode because these are API-level correctness/resource
+  display walk even while it records node failures because these are API-level correctness/resource
   signals. `ContractMismatchError` and `SchemaMismatchError` also propagate via
   the explicit mismatch branch; the preview route then presents either one as
   the target node's in-situ error response. Interactive preamble compilation
@@ -452,7 +734,9 @@ running heavy work in a child process the parent can kill on timeout or memory l
 - **Lazy (sink/batch/deploy) execution never swallows node failures** — any exception
   during plan construction or the final streaming collect propagates to the caller.
 - **Contract mismatches are typed at the offending node.** Missing/extra columns raise
-  `ContractMismatchError`, carrying the column diff and node id. A simple inferred
+  `ContractMismatchError`, carrying the node id and the missing columns. The
+  boundary checks' messages name the node by its label and only the missing columns,
+  never the frame's other columns, so the preview can show them as they are. A simple inferred
   join whose parent key dtypes differ raises `SchemaMismatchError`; both errors
   propagate on lazy/fail-fast and swallow-mode eager execution. The preview HTTP
   boundary converts either into the same `NodeResult(status="error")` shape.
@@ -467,24 +751,30 @@ running heavy work in a child process the parent can kill on timeout or memory l
   when the caller uses an admitted/limited context; direct unbounded contexts have no
   RSS limit to exceed.
 - **Invalid admission configuration raises `RuntimeError` before admission.** An
-  unknown `HAUTE_EXECUTION_MEMORY_POLICY`, malformed/non-positive memory/RSS limit,
-  or invalid reserve setting is configuration failure, not an
+  unknown `HAUTE_EXECUTION_MEMORY_POLICY` or a malformed/non-positive memory/RSS limit
+  is configuration failure, not an
   `ExecutionAdmissionError`; no context is created. Numeric admission overrides are
   parsed from one environment read before local unit conversion.
+- **An invalid pipeline settings file raises `PipelineSettingsError` wherever it is
+  read.** Admission reads the settings first, so a hand edit that breaks the file stops
+  every run, preview and job with a message naming the file and the key until it is
+  fixed; nothing falls back to automatic values in its place.
 - **Cancellation raises `ExecutionCancelledError`** at the next checkpoint once a
   context's cancellation token has been set; the engine does not poll independently,
   so cancellation latency is bounded by the distance between checkpoints, not
   instantaneous.
-- **Chunk planning fails loudly, never silently downgrades.** Any node type, user-code
-  construct, or graph shape the chunk contract does not have a proof for raises
-  `ChunkPlanUnsupportedError` at *plan* time; there is no silent fallback to full
-  materialisation inside the chunk runner itself — callers choose the full executor
-  explicitly.
+- **Chunk-local ineligibility is a decision, not an error.** A construct the
+  classifier has no proof for yields an ineligible `ChunkLocalDecision` naming the
+  blocking operator, the closed reason code, and the source line and column; nothing
+  raises. Ineligibility changes the physical strategy, never the validity of the
+  pipeline.
 - **Isolated-worker failures are reclassified into typed errors** rather than leaking
   raw `multiprocessing` exit codes: a remote Python exception becomes
   `IsolatedWorkerRemoteError`, a process that exits without a result payload becomes
   `IsolatedWorkerCrashedError` (with a `terminal_reason="memory_limited"` guess when
-  the exit code looks like `SIGKILL`/`SIGABRT` under a configured memory cap), a
+  the exit code looks like `SIGKILL`/`SIGABRT`, the Windows fail-fast status
+  `0xC0000409` a native allocation failure exits with, or the Windows stack-overflow status
+  `0xC00000FD` a refused stack commit exits with, under a configured memory cap), a
   timeout becomes `IsolatedWorkerTimeoutError`, and parent-owned cleanup callback
   failures are collected into `IsolatedWorkerCleanupError`. A cleanup-only failure is
   raised; when there is already a primary worker failure, cleanup detail is attached
@@ -495,9 +785,37 @@ running heavy work in a child process the parent can kill on timeout or memory l
   user work (Linux cgroup v2 where delegated, otherwise `RLIMIT_AS`; Windows Job
   Object) and rejects an unsupported host. Parent RSS observation is a secondary
   watchdog, not a substitute for a kernel cap. `best_effort` is an explicit
-  compatibility opt-out and never reports hard enforcement. macOS has no dependable
+  compatibility opt-out: it never claims hard enforcement when installation fails or
+  is unsupported, and a native cap it does install is reported as active evidence
+  only for the request that installed it. macOS has no dependable
   per-process hard-memory primitive for this contract, so workloads there must select
   `best_effort` explicitly; Haute never silently relabels RSS sampling as a hard cap.
+  The training fit's protocol worker installs the same native cap as every other
+  worker. `RLIMIT_AS` caps address space, which counts reservations a job never touches:
+  a Polars worker reserves gigabytes for its thread pools and their allocator arenas
+  while its resident memory stays small. So before a worker measures that cap's
+  baseline it starts both Polars engines' thread pools, and the cap then counts only
+  what the job allocates. The model library is loaded before the cap too: a training
+  or dispersion worker imports its engine module (CatBoost, LightGBM, XGBoost,
+  RustyStats or interpret) before measuring the baseline, because an import under the
+  cap maps the library's code and data into the job's budget, and a failed import is a
+  bare `ImportError` rather than the memory-limit failure. The library still reserves
+  address space during the fit, for its own thread pools and allocator arenas, for
+  runtime state it sets up on first use, and for the modules the fit imports, so the
+  training fit's address-space cap also allows 2.5 GiB plus 192 MiB per CPU for it. Those
+  figures are measured, not derived: left uncapped, CatBoost, the largest, reserves about
+  2.1 GiB on one CPU, 2.8 GiB on four and 4.9 GiB on sixteen above its baseline while its
+  resident memory grows by 50 to 120 MiB, and under a cap it needs less. The
+  count is the host's online CPUs (`os.cpu_count()`), not the process's affinity,
+  because the allocator and CatBoost size their reservations from the online count.
+  The parent RSS watchdog still enforces that worker's budget. A thread that cannot
+  start under an active cap is the typed memory-limit failure.
+  Hard-cap evidence is request-scoped: a worker's lease reports its backend only
+  between a successful cap installation and the following release, a failed
+  best-effort attempt after an earlier successful request leaves no evidence, and
+  both worker entrypoints expose the backend to the request only when the
+  installation for that request succeeded. The conservative execution policy reads
+  that evidence and never an inherited value.
 - **A worker result remains inside the hard-cap window until transport is complete.**
   One-shot workers synchronously serialize and flush their bounded result channel before
   exiting; the parent joins the process before accepting that payload. Warm workers keep
@@ -513,3 +831,47 @@ running heavy work in a child process the parent can kill on timeout or memory l
   the modelling node—not the largest ancestor source. The separate materialisation
   admission estimate uses the greatest upstream/intermediate bound, so a target-row
   downsample is never presented as protection for a larger join or source boundary.
+
+## Bounded executions seed from and capture into shared snapshots
+
+Training preparation, the training evaluation preview, optimiser setup (including
+auto-range and the input estimate), Data Output runs, and explicit node-data builds each
+resolve a seed plan once, after input preparation, by walking upstream from the target
+along effective edges: on each path the first node-output point at or upstream of the target
+with a fresh snapshot in the request's semantics class that covers the execution's column
+demand becomes a seed, and points above a seed are not consulted. Before projection planning,
+each capture point's demand is merged with its current generation's columns and propagated
+upstream, and any seed that cannot supply the propagated columns is dropped, so one execution
+publishes the widened column set. Every consumer in the execution of an upstream snapshot a
+seed was built from, seeded or recomputed, reads the same generation of it; a seed that cannot
+satisfy that is dropped. Seeds are leased for the whole job, including final collection, and a
+spawned worker reads only the generations its parent leased.
+
+Every full-data materialisation the execution performs — the fan-in, fan-out, and
+join-feeder points, nodes calling materialising frame operations, batch Model Score output,
+and the producer the caller consumes — is captured into the shared store through the bounded
+sink, and execution continues from what it wrote: never from a generation another execution
+published while it was computing. A capture never replaces a fresh generation unless widening
+it and never narrows an identity's columns; a capture not published under the publication
+rule continues from its own staged artifact as a request-owned file without recomputing
+the node and is reported as `snapshot_capture_superseded`, while any other
+store failure fails the execution. Worker processes capture directly through the store's
+cross-process locks. There is no temporary checkpoint directory. Deploy scoring neither
+seeds nor captures; a refresh disables
+seeding but still captures; a profile whose outputs are not proven identical to the
+snapshot's semantics class neither seeds nor captures.
+
+An admitted preview seeds and captures the same way, except that it captures only its joins
+and materialising operations. A stale snapshot is never seeded, and a preview whose lineage is
+not admitted — an API Input in it reads a flat file that a schema-only bounded read refuses —
+neither seeds nor captures. Preview row-limit semantics are unchanged: the limit applies at
+collection, never at sources, and the projection planner's column demand rules still decide
+what each point supplies. The generations a preview's plan lists join the runtime input
+fingerprint of the preview response cache. A response is stored only under the key of the plan
+a new request would choose after its captures, and every hit re-leases the generations it
+lists: a retired, missing, or non-current generation is a miss that executes, while corruption
+and other storage failures propagate. The response lists those generations as its `seed_plan`,
+each `seeded` or `captured`. A trace carries that list and runs under a listed plan that reads
+exactly those generations and captures nothing ([tracing](../tracing/high-level.md)); a
+generation lacking columns the trace reads there is recomputed, with every listed seed built
+from it. Deploy scoring neither seeds nor captures.

@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "id": "smoke_corpus_attach_regional_rates_structured",
+  "case": "smoke_corpus_attach_regional_rates",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "dry",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Add attach_regional_rates, joining each quote to its regional rate.",
+                "ops": [
+                  {
+                    "op": "add_node",
+                    "node_type": "polars",
+                    "name": "attach_regional_rates",
+                    "ref": "transform",
+                    "config": {
+                      "steps": [
+                        {
+                          "id": "s279",
+                          "kind": "source",
+                          "input": "quotes"
+                        },
+                        {
+                          "id": "s280",
+                          "kind": "join",
+                          "input": "rates",
+                          "how": "left",
+                          "leftOn": [
+                            "region"
+                          ],
+                          "rightOn": [
+                            "region"
+                          ],
+                          "suffix": "_right",
+                          "validate": "m:1",
+                          "maintainOrder": "left"
+                        },
+                        {
+                          "id": "s281",
+                          "kind": "with_column",
+                          "name": "regional_benchmark",
+                          "expr": {
+                            "type": "binary",
+                            "left": {
+                              "kind": "column",
+                              "name": "base_rate"
+                            },
+                            "op": "*",
+                            "right": {
+                              "kind": "column",
+                              "name": "factor"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "quotes",
+                    "target": "$transform"
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "rates",
+                    "target": "$transform"
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "dry.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "Saved the change.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

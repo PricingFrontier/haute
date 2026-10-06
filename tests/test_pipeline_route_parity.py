@@ -62,6 +62,7 @@ def _post_payload(endpoint: str, graph: dict, lookup_id: str) -> dict:
     if endpoint == "/api/pipeline/trace":
         return {
             "graph": graph,
+            "seed_plan": [],
             "row_index": 0,
             "target_node_id": lookup_id,
         }

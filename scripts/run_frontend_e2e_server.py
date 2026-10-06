@@ -53,17 +53,8 @@ _BROWSER_CORE_BLOCK = """
 
 
 @pipeline.data_input(config="config/data_input/raw_rows.json")
-def raw_rows() -> pl.LazyFrame:
+def raw_rows():
     \"\"\"Deterministic browser source independent of the product scaffold.\"\"\"
-    from pathlib import Path
-
-    from haute.graph_utils import resolve_data_input_from_config
-
-    df = resolve_data_input_from_config(
-        "config/data_input/raw_rows.json",
-        base_dir=Path(__file__).parent,
-    )
-    return df
 
 
 @pipeline.polars
@@ -73,79 +64,71 @@ def enriched(raw_rows: pl.LazyFrame) -> pl.LazyFrame:
 
 
 @pipeline.output(config="config/quote_response/priced.json")
-def priced(enriched: pl.LazyFrame) -> pl.LazyFrame:
+def priced(enriched):
     \"\"\"Core terminal node used by version-control browser flows.\"\"\"
-    return enriched
 """
 _BROWSER_MODEL_BLOCK = """
 
 
 @pipeline.modelling(config="config/model_training/browser_model.json")
-def browser_model(raw_rows: pl.LazyFrame) -> pl.LazyFrame:
+def browser_model(raw_rows):
     \"\"\"Browser E2E training node for async modelling flows.\"\"\"
-    return raw_rows
+"""
+_BROWSER_GLM_BLOCK = """
+
+
+@pipeline.modelling(config="config/model_training/browser_glm.json")
+def browser_glm(raw_rows):
+    \"\"\"Browser E2E GLM node for the terms-pane flow.\"\"\"
 """
 _BROWSER_CANVAS_BLOCK = """
 
 
 @pipeline.banding(config="config/banding/browser_mixed_banding.json")
-def browser_mixed_banding(enriched: pl.LazyFrame) -> pl.LazyFrame:
+def browser_mixed_banding(enriched):
     \"\"\"Browser E2E mixed-mode Banding fixture for Rating discovery.\"\"\"
-    from pathlib import Path
-
-    from haute.graph_utils import apply_banding_from_config
-
-    return apply_banding_from_config(
-        enriched,
-        "config/banding/browser_mixed_banding.json",
-        base_dir=Path(__file__).parent,
-    )
 
 
 @pipeline.rating_step(config="config/rating_step/browser_rating.json")
-def browser_rating(browser_mixed_banding: pl.LazyFrame) -> pl.LazyFrame:
+def browser_rating(browser_mixed_banding):
     \"\"\"Browser E2E three-factor Rating table fixture.\"\"\"
-    from pathlib import Path
-
-    from haute.graph_utils import apply_rating_step_from_config
-
-    return apply_rating_step_from_config(
-        browser_mixed_banding,
-        "config/rating_step/browser_rating.json",
-        base_dir=Path(__file__).parent,
-    )
 """
 _BROWSER_OPTIMISER_BLOCK = """
 
 
 @pipeline.data_input(config="config/data_input/browser_optimiser_rows.json")
-def browser_optimiser_rows() -> pl.LazyFrame:
+def browser_optimiser_rows():
     \"\"\"Browser E2E scored rows for optimiser flows.\"\"\"
-    from pathlib import Path
-
-    from haute.graph_utils import resolve_data_input_from_config
-
-    df = resolve_data_input_from_config(
-        "config/data_input/browser_optimiser_rows.json",
-        base_dir=Path(__file__).parent,
-    )
-    return df
 
 
 @pipeline.optimiser(config="config/optimisation/browser_optimiser.json")
-def browser_optimiser(browser_optimiser_rows: pl.LazyFrame) -> pl.LazyFrame:
+def browser_optimiser(browser_optimiser_rows):
     \"\"\"Browser E2E optimisation node for async optimiser flows.\"\"\"
-    return browser_optimiser_rows
 
 
 @pipeline.optimiser_apply(config="config/apply_optimisation/browser_apply.json")
-def browser_apply(browser_optimiser_rows: pl.LazyFrame) -> pl.LazyFrame:
+def browser_apply(browser_optimiser_rows):
     \"\"\"Browser E2E optimiser-apply node backed by saved optimiser artifacts.\"\"\"
-    return browser_optimiser_rows
+
+
+@pipeline.data_input(config="config/data_input/browser_ratebook_quotes.json")
+def browser_ratebook_quotes():
+    \"\"\"Browser E2E per-quote rows the ratebook's rating factor is banded from.\"\"\"
+
+
+@pipeline.banding(config="config/banding/browser_ratebook_banding.json")
+def browser_ratebook_banding(browser_ratebook_quotes):
+    \"\"\"Browser E2E Banding node: the ratebook solve's rating factor source.\"\"\"
+
+
+@pipeline.optimiser(config="config/optimisation/browser_ratebook.json")
+def browser_ratebook(browser_optimiser_rows, browser_ratebook_banding):
+    \"\"\"Browser E2E ratebook optimisation node for the Rates pane.\"\"\"
 """
 _BROWSER_MODEL_CONFIG = """{
   "name": "browser_model",
   "target": "value",
+  "feature_columns": ["id", "proposer_age", "channel", "vehicle_age", "mileage"],
   "algorithm": "catboost",
   "task": "regression",
   "loss_function": "RMSE",
@@ -164,6 +147,29 @@ _BROWSER_MODEL_CONFIG = """{
   },
   "metrics": [
     "gini",
+    "rmse"
+  ],
+  "row_limit": 30,
+  "output_dir": ".haute_cache/browser_training"
+}
+"""
+_BROWSER_GLM_CONFIG = """{
+  "name": "browser_glm",
+  "target": "value",
+  "algorithm": "glm",
+  "task": "regression",
+  "family": "gaussian",
+  "terms": {},
+  "evaluation": {
+    "schema_version": 1,
+    "strategy": "random",
+    "seed": 42,
+    "validation": {
+      "method": "single",
+      "size": 0.2
+    }
+  },
+  "metrics": [
     "rmse"
   ],
   "row_limit": 30,
@@ -191,25 +197,14 @@ _BROWSER_OUTPUT_CONFIG = """{
 _BROWSER_MIXED_BANDING_CONFIG = """{
   "factors": [
     {
-      "banding": "continuous",
+      "banding": "breakpoints",
       "column": "proposer_age",
       "outputColumn": "proposer_age_band",
-      "rules": [
-        {
-          "op1": "<=",
-          "val1": "40",
-          "op2": "",
-          "val2": "",
-          "assignment": "Age 40 or below"
-        },
-        {
-          "op1": ">",
-          "val1": "40",
-          "op2": "",
-          "val2": "",
-          "assignment": "Age over 40"
-        }
-      ],
+      "rules": {
+        "40": "Age 40 or below",
+        "": "Age over 40"
+      },
+      "rightClosed": true,
       "default": "Age other"
     },
     {
@@ -250,8 +245,6 @@ _BROWSER_RATING_CONFIG = """{
       "entries": []
     }
   ],
-  "operation": "multiply",
-  "combinedColumn": "",
   "combinedOutputs": [],
   "code": ""
 }
@@ -261,7 +254,7 @@ _BROWSER_OPTIMISER_CONFIG = """{
   "objective": "expected_income",
   "constraints": {
     "volume": {
-      "min": 0.9
+      "min": 8.0
     }
   },
   "quote_id": "quote_id",
@@ -269,15 +262,58 @@ _BROWSER_OPTIMISER_CONFIG = """{
   "scenario_value": "scenario_value",
   "max_iter": 20,
   "tolerance": 0.0001,
-  "record_history": true,
-  "frontier_enabled": true,
   "frontier_steps": 5,
   "frontier_ranges": {
     "volume": {
-      "min": 0.85,
-      "max": 0.99
+      "min": 7.5,
+      "max": 9.5
     }
-  }
+  },
+  "analysis_columns": [
+    "region"
+  ]
+}
+"""
+# A ratebook solve kept small for CI time: one three-level rating factor over the
+# online fixture's eight quotes, and no frontier.
+_BROWSER_RATEBOOK_CONFIG = """{
+  "mode": "ratebook",
+  "objective": "expected_income",
+  "constraints": {
+    "volume": {
+      "min": 8.4
+    }
+  },
+  "quote_id": "quote_id",
+  "scenario_index": "scenario_index",
+  "scenario_value": "scenario_value",
+  "data_input": "browser_optimiser_rows",
+  "banding_source": "browser_ratebook_banding",
+  "factor_columns": [
+    [
+      "region_band"
+    ]
+  ],
+  "max_iter": 20,
+  "tolerance": 0.0001,
+  "max_cd_iterations": 3,
+  "cd_tolerance": 0.001
+}
+"""
+_BROWSER_RATEBOOK_BANDING_CONFIG = """{
+  "factors": [
+    {
+      "banding": "categorical",
+      "column": "region",
+      "outputColumn": "region_band",
+      "rules": {
+        "North": "North",
+        "South": "South",
+        "East": "East"
+      },
+      "default": "Other region"
+    }
+  ]
 }
 """
 _BROWSER_OPTIMISER_APPLY_CONFIG = """{
@@ -289,19 +325,9 @@ _BROWSER_OPTIMISER_APPLY_CONFIG = """{
 _QUOTES_API_INPUT_BLOCK = """
 
 
-@pipeline.api_input(config="config/quote_input/quotes.json", contract="opaque")
-def quotes() -> dict[str, pl.LazyFrame]:
+@pipeline.api_input(config="config/quote_input/quotes.json")
+def quotes():
     \"\"\"Browser E2E apiInput node for v2-native flow tests.\"\"\"
-    from pathlib import Path
-
-    import orjson
-
-    from haute._json_shred._cache import load_v2_api_source
-
-    _data_path = Path(__file__).parent.parent / "data/quotes/sample_quote.json"
-    _config_path = Path("config/quote_input/quotes.json")
-    _v2_config = orjson.loads(_config_path.read_bytes())
-    return load_v2_api_source(str(_data_path), _v2_config)
 """
 # V2-native starting state: a data path is set (so the Infer Tables
 # button is visible) but no schema yet — the editor renders the bare v2
@@ -422,6 +448,8 @@ def _augment_starter_pipeline() -> None:
         source = source.rstrip() + _BROWSER_CORE_BLOCK
     if "def browser_model(" not in source:
         source = source.rstrip() + _BROWSER_MODEL_BLOCK
+    if "def browser_glm(" not in source:
+        source = source.rstrip() + _BROWSER_GLM_BLOCK
     if "def browser_mixed_banding(" not in source:
         source = source.rstrip() + _BROWSER_CANVAS_BLOCK
     if "def browser_optimiser(" not in source:
@@ -456,6 +484,16 @@ def _augment_starter_pipeline() -> None:
         "}\n",
         encoding="utf-8",
     )
+    (data_input_config_dir / "browser_ratebook_quotes.json").write_text(
+        "{\n"
+        '  "inputType": "file",\n'
+        '  "format": "parquet",\n'
+        '  "mode": "scan",\n'
+        '  "path": "data/optimiser_quotes.parquet",\n'
+        '  "arguments": {}\n'
+        "}\n",
+        encoding="utf-8",
+    )
 
     quote_response_config_dir = E2E_PROJECT_DIR / "rating" / "config" / "quote_response"
     quote_response_config_dir.mkdir(parents=True, exist_ok=True)
@@ -467,11 +505,16 @@ def _augment_starter_pipeline() -> None:
     config_dir = E2E_PROJECT_DIR / "rating" / "config" / "model_training"
     config_dir.mkdir(parents=True, exist_ok=True)
     (config_dir / "browser_model.json").write_text(_BROWSER_MODEL_CONFIG, encoding="utf-8")
+    (config_dir / "browser_glm.json").write_text(_BROWSER_GLM_CONFIG, encoding="utf-8")
 
     banding_dir = E2E_PROJECT_DIR / "rating" / "config" / "banding"
     banding_dir.mkdir(parents=True, exist_ok=True)
     (banding_dir / "browser_mixed_banding.json").write_text(
         _BROWSER_MIXED_BANDING_CONFIG,
+        encoding="utf-8",
+    )
+    (banding_dir / "browser_ratebook_banding.json").write_text(
+        _BROWSER_RATEBOOK_BANDING_CONFIG,
         encoding="utf-8",
     )
 
@@ -486,6 +529,10 @@ def _augment_starter_pipeline() -> None:
     optimisation_dir.mkdir(parents=True, exist_ok=True)
     (optimisation_dir / "browser_optimiser.json").write_text(
         _BROWSER_OPTIMISER_CONFIG,
+        encoding="utf-8",
+    )
+    (optimisation_dir / "browser_ratebook.json").write_text(
+        _BROWSER_RATEBOOK_CONFIG,
         encoding="utf-8",
     )
 
@@ -522,6 +569,7 @@ def _scaffold_e2e_project() -> None:
             "proposer_age": [24 if i % 2 else 52 for i in ids],
             "channel": ["direct" if i % 2 else "broker" for i in ids],
             "vehicle_age": [2 if i % 4 < 2 else 9 for i in ids],
+            "mileage": [float(5000 + 731 * i + (i * i) % 97) for i in ids],
         }
     )
     data_dir = E2E_PROJECT_DIR / "data"
@@ -531,10 +579,17 @@ def _scaffold_e2e_project() -> None:
     pipeline_data_dir.mkdir(exist_ok=True)
     sample.write_parquet(pipeline_data_dir / "sample.parquet")
 
+    # Volume falls as the price rises: 8.72 in total at the base price (1.0),
+    # 6.976 at 1.2 and 10.464 at 0.8, so the fixtures' volume minimums (8.0
+    # to 9.5) bind and the solve adjusts quotes both ways.
     scenario_values = [0.8, 0.9, 1.0, 1.1, 1.2]
+    # Each quote's region: the online solve's analysis column (the Segments
+    # pane's key) and, banded, the ratebook solve's rating factor.
+    regions = ["North", "South", "East"]
     optimiser_rows: list[dict[str, object]] = []
     for quote_num in range(1, 9):
         quote_id = f"q_{quote_num:03d}"
+        region = regions[quote_num % len(regions)]
         base_income = 100.0 + (quote_num * 25.0)
         base_volume = 1.0 + ((quote_num % 3) * 0.08)
         for scenario_idx, scenario_value in enumerate(scenario_values):
@@ -545,6 +600,7 @@ def _scaffold_e2e_project() -> None:
                     "scenario_value": scenario_value,
                     "expected_income": round(base_income * scenario_value, 4),
                     "volume": round(base_volume * (2.0 - scenario_value), 4),
+                    "region": region,
                 }
             )
     optimiser_sample = pl.DataFrame(optimiser_rows).with_columns(
@@ -554,6 +610,9 @@ def _scaffold_e2e_project() -> None:
         pl.col("volume").cast(pl.Float32),
     )
     optimiser_sample.write_parquet(pipeline_data_dir / "optimiser_sample.parquet")
+    optimiser_sample.select("quote_id", "region").unique(
+        subset="quote_id", keep="first", maintain_order=True
+    ).write_parquet(pipeline_data_dir / "optimiser_quotes.parquet")
 
 
 def _run_git(*args: str) -> None:
@@ -579,6 +638,7 @@ def _init_git_repo() -> None:
         "data/quotes/sample_quote.json",
         "rating/data/sample.parquet",
         "rating/data/optimiser_sample.parquet",
+        "rating/data/optimiser_quotes.parquet",
     )
     _run_git("commit", "-m", "Initial scaffold")
 

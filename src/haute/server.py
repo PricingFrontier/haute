@@ -32,7 +32,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.routing import Route
 
 from haute import __version__
-from haute._cache import canonical_json
+from haute._cpu_performance import configure_process_high_qos
+from haute._dedicated_workers import open_dedicated_workers, shutdown_dedicated_workers
 from haute._event_bus import default_bus
 from haute._execution_context import configure_execution_telemetry
 from haute._interactive_workers import (
@@ -50,8 +51,17 @@ from haute._local_security import (
     websocket_rejection_reason,
 )
 from haute._logging import configure_logging, get_logger
+from haute._pipeline_recovery import pipeline_document_fingerprint
+from haute._pipeline_settings import (
+    PipelineSettingsError,
+    follow_chunk_rows,
+    stop_following_chunk_rows,
+)
+from haute._sandbox import _get_project_root
 from haute.hosted import FORWARDED_USER_SCOPE_KEY
+from haute.routes._error_handlers import install_exception_handlers
 from haute.routes._helpers import (
+    _INTERNAL_ERROR_DETAIL,
     _ensure_pipeline_index,
     broadcast,
     discover_pipelines,
@@ -66,11 +76,14 @@ from haute.routes._helpers import (
     ws_clients_discard,
     ws_clients_lock,
 )
-from haute.routes._optimiser_service import (
+from haute.routes._optimiser_artifacts import (
     _artifact_stale_seconds,
     reap_stale_optimiser_artifacts,
 )
+from haute.routes._training_artifacts import reap_stale_training_artifacts
 from haute.routes.assistant import router as assistant_router
+from haute.routes.banding import router as banding_router
+from haute.routes.cache import router as cache_router
 from haute.routes.databricks import router as databricks_router
 from haute.routes.explore import router as explore_router
 from haute.routes.files import router as files_router
@@ -80,9 +93,11 @@ from haute.routes.io_capabilities import router as io_capabilities_router
 from haute.routes.json_cache import router as json_cache_router
 from haute.routes.mlflow import router as mlflow_router
 from haute.routes.modelling import router as modelling_router
+from haute.routes.node_data import router as node_data_router
 from haute.routes.optimiser import router as optimiser_router
 from haute.routes.output_assemble import router as output_assemble_router
 from haute.routes.pipeline import router as pipeline_router
+from haute.routes.rating import router as rating_router
 from haute.routes.submodel import router as submodel_router
 from haute.routes.utility import router as utility_router
 from haute.schemas import SessionStatusResponse
@@ -111,7 +126,7 @@ def static_build_ready(static_dir: Path) -> bool:
 logger = get_logger(component="server")
 
 _watcher_task: asyncio.Task | None = None
-_optimiser_reaper_task: asyncio.Task[None] | None = None
+_artifact_reaper_task: asyncio.Task[None] | None = None
 _WATCHER_RESTART_DELAY_SECONDS = 0.1
 _WATCHER_FLUSH_MAX_RETRIES = 3
 _WATCHER_FLUSH_RETRY_BASE_SECONDS = 0.1
@@ -249,11 +264,6 @@ async def _send_ws_parse_error(
     )
 
 
-def _document_payload_fingerprint(document_payload: dict[str, Any]) -> str:
-    """Fingerprint the complete wire-format editor document."""
-    return hashlib.sha256(canonical_json(document_payload).encode("utf-8")).hexdigest()
-
-
 def _client_fingerprint(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
@@ -277,7 +287,7 @@ def _prepare_ws_document_resync(
         document_payload = load_pipeline_editor_document(
             pipeline_path, project_root=Path.cwd()
         ).model_dump(mode="json", by_alias=True)
-        document_fingerprint = _document_payload_fingerprint(document_payload)
+        document_fingerprint = pipeline_document_fingerprint(document_payload)
         if client_document_fingerprint == document_fingerprint:
             return _WsDocumentResyncResult(source_file=source_file, unchanged=True)
     except Exception as exc:  # noqa: BLE001
@@ -381,28 +391,46 @@ _unsubscribe_pipeline_document_update = default_bus.subscribe(
 )
 
 
-def _clear_bytecache() -> None:
-    """Remove all .pyc files so stale bytecode never masks code changes."""
+def _remove_bytecode_caches(root: Path) -> None:
+    """Remove every ``__pycache__`` directory under *root*."""
     import shutil
 
-    src_dir = Path(__file__).resolve().parent
-    for pycache in src_dir.rglob("__pycache__"):
+    for pycache in root.rglob("__pycache__"):
         shutil.rmtree(pycache, ignore_errors=True)
 
 
-async def _reap_stale_optimiser_artifacts_in_background(stale_after_seconds: int) -> None:
-    """Reap optimiser artifacts off the event loop and surface failures."""
+def _clear_bytecache() -> None:
+    """Remove the package's .pyc files so stale bytecode never masks code changes."""
+    _remove_bytecode_caches(Path(__file__).resolve().parent)
+
+
+async def _reap_stale_job_artifacts_in_background(stale_after_seconds: int) -> None:
+    """Reap optimiser and training artifacts off the event loop and surface failures."""
     try:
         await asyncio.to_thread(reap_stale_optimiser_artifacts, stale_after_seconds)
+        await asyncio.to_thread(reap_stale_training_artifacts, stale_after_seconds)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
         logger.error(
-            "optimiser_artifact_reaper_failed",
+            "job_artifact_reaper_failed",
             error=str(exc),
             exc_info=True,
         )
         raise
+
+
+def _follow_pipeline_settings_chunk_rows() -> None:
+    """Apply the settings' chunk rows now and follow the file's changes.
+
+    An invalid settings file must not stop the server: every admission reads
+    the file and refuses with its message, which is how the person sees what
+    to fix, and the next read after the fix applies its chunk rows.
+    """
+    try:
+        follow_chunk_rows(_get_project_root())
+    except PipelineSettingsError as exc:
+        logger.error("pipeline_settings_invalid_at_startup", error=str(exc))
 
 
 @asynccontextmanager
@@ -411,6 +439,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     _clear_bytecache()
     configure_logging()
+    configure_process_high_qos()
     _load_env(Path.cwd())
     configure_execution_telemetry()
     recover_json_runtime_storage()
@@ -422,14 +451,19 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # callback that is allowed to (re)build this index — see
     # ``haute.routes._helpers`` for the full contract.
     _ensure_pipeline_index()
-    global _watcher_task, _optimiser_reaper_task
+    global _watcher_task, _artifact_reaper_task
     _watcher_task = None
-    _optimiser_reaper_task = None
+    _artifact_reaper_task = None
+    # The editor's streaming chunk size is process configuration: fix it from the
+    # pipeline settings before any worker is spawned so every child inherits it,
+    # and follow the settings file from here on.
+    _follow_pipeline_settings_chunk_rows()
     try:
+        open_dedicated_workers()
         start_interactive_worker_pool()
         _watcher_task = asyncio.create_task(_watcher_forever())
-        _optimiser_reaper_task = asyncio.create_task(
-            _reap_stale_optimiser_artifacts_in_background(stale_after_seconds)
+        _artifact_reaper_task = asyncio.create_task(
+            _reap_stale_job_artifacts_in_background(stale_after_seconds)
         )
         yield
     finally:
@@ -441,15 +475,22 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                         await _watcher_task
             finally:
                 _watcher_task = None
-                if _optimiser_reaper_task:
-                    reaper_task = _optimiser_reaper_task
-                    _optimiser_reaper_task = None
+                if _artifact_reaper_task:
+                    reaper_task = _artifact_reaper_task
+                    _artifact_reaper_task = None
                     await reaper_task
         finally:
-            shutdown_interactive_worker_pool()
+            try:
+                shutdown_dedicated_workers()
+            finally:
+                try:
+                    shutdown_interactive_worker_pool()
+                finally:
+                    stop_following_chunk_rows()
 
 
 app = FastAPI(title="Haute", version=__version__, lifespan=_lifespan)
+install_exception_handlers(app)
 _TRUSTED_LOCAL_HOSTS = ["localhost", "127.0.0.1", "::1"]
 
 
@@ -479,7 +520,12 @@ def _select_request_id(value: str | None) -> tuple[str, dict[str, str | int] | N
 
 
 class _RequestIdMiddleware(BaseHTTPMiddleware):
-    """Bind request_id, log every request with timing, capture 500 tracebacks."""
+    """Bind request_id, log every request with timing, capture 500 tracebacks.
+
+    It is also the application's handler for unexpected exceptions: anything
+    the registered exception handlers do not claim is logged here with its
+    traceback and answered with the sanitized ``_INTERNAL_ERROR_DETAIL``.
+    """
 
     async def dispatch(self, request: Request, call_next: Any) -> Any:
         rid, rejection = _select_request_id(request.headers.get("x-request-id"))
@@ -494,18 +540,19 @@ class _RequestIdMiddleware(BaseHTTPMiddleware):
 
         try:
             response = await call_next(request)
-        except Exception:
+        except Exception as exc:
             duration_ms = round((time.monotonic() - t0) * 1000, 1)
             logger.error(
                 "unhandled_exception",
                 method=method,
                 path=path,
                 duration_ms=duration_ms,
+                error_class=type(exc).__name__,
                 traceback=traceback.format_exc(),
             )
             response = JSONResponse(
                 status_code=500,
-                content={"detail": "Internal server error"},
+                content={"detail": _INTERNAL_ERROR_DETAIL},
             )
             response.headers["x-request-id"] = rid
             return response
@@ -576,6 +623,10 @@ app.include_router(input_cache_router)
 app.include_router(json_cache_router)
 app.include_router(submodel_router)
 app.include_router(explore_router)
+app.include_router(node_data_router)
+app.include_router(cache_router)
+app.include_router(banding_router)
+app.include_router(rating_router)
 app.include_router(modelling_router)
 app.include_router(optimiser_router)
 app.include_router(mlflow_router)
@@ -784,6 +835,11 @@ async def _file_watcher() -> None:
                 key = str(p.resolve())
                 if key in self_write_keys or is_self_write(p, consume=True):
                     self_write_keys.add(key)
+                    # The server's own write changed the bytes the last
+                    # broadcast described; forget that fingerprint so an
+                    # external restore of previously broadcast content is
+                    # broadcast again instead of being deduplicated.
+                    _last_broadcast_fp.pop(key, None)
                     logger.debug("file_watcher_skipped_self_write", file=str(p))
                     continue
                 if change_type not in (Change.modified, Change.added, Change.deleted):
@@ -882,7 +938,7 @@ async def _file_watcher() -> None:
                     # clients as an honest document rather than a parse error.
                     document = load_pipeline_editor_document(p, project_root=Path.cwd())
                     document_payload = document.model_dump(mode="json", by_alias=True)
-                    document_fingerprint = _document_payload_fingerprint(document_payload)
+                    document_fingerprint = pipeline_document_fingerprint(document_payload)
                     _last_broadcast_fp[fp_key] = fp
                     default_bus.publish(
                         "pipeline.document.update",

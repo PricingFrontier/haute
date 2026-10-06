@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest"
 import { cleanup, render, screen } from "@testing-library/react"
-import type { ExploreCacheReport } from "../../../api/types"
+import type { ExploreDataView } from "../exploreDataView"
 import type { SimpleNode } from "../../editors"
 import ExploreOverviewPane from "../ExploreOverviewPane"
 
@@ -12,13 +12,11 @@ function makeNode(config: Record<string, unknown>): SimpleNode {
   }
 }
 
-function makeReport(overrides: Partial<ExploreCacheReport> = {}): ExploreCacheReport {
+function makeReport(overrides: Partial<ExploreDataView> = {}): ExploreDataView {
   return {
-    status: "ok",
-    node_id: "explore_1",
-    upstream_node_id: "source_1",
+    producer_node_id: "source_1",
     source: "pricing",
-    dataframe_cache_key: "explore_dataset:abc123",
+    data_version: "data-v1",
     row_count: 1234,
     column_count: 12,
     generated_at: 1710000000,
@@ -50,7 +48,7 @@ describe("ExploreOverviewPane", () => {
       />,
     )
     expect(screen.getByText(/No cached data yet/i)).toBeInTheDocument()
-    expect(screen.getByText(/Needs caching/i)).toBeInTheDocument()
+    expect(screen.getByText(/Refresh this node to cache its data/i)).toBeInTheDocument()
     expect(screen.queryByTestId("explore-dataset-snapshot-card")).not.toBeInTheDocument()
   })
 
@@ -130,7 +128,7 @@ describe("ExploreOverviewPane", () => {
         report={null}
       />,
     )
-    const body = screen.getByText(/Needs caching/i)
+    const body = screen.getByText(/Refresh this node to cache its data/i)
     expect(body.textContent).not.toMatch(/dataset snapshot/i)
   })
 

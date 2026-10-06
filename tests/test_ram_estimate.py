@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -17,10 +18,13 @@ from haute._ram_estimate import (
     MaterialisationEstimate,
     MaterialisationEstimateState,
     RamEstimate,
+    TrainingEstimateUnavailableReason,
     _bounded_cardinality_evidence,
+    _cardinality_name_bindings,
     _data_input_parquet_artifact,
     _dedupe_resolved_columns,
     _detailed_ancestor_source_metadata,
+    _detailed_parquet_metadata,
     _detailed_source_metadata_for_node,
     _DetailedSourceMetadata,
     _edge_join_key_columns_on_path,
@@ -30,24 +34,51 @@ from haute._ram_estimate import (
     _named_cardinality_inputs,
     _parquet_metadata,
     _passthrough_cardinality,
+    _port_operand_counts,
     _resolve_edge_join_column_names,
     _resolve_row_cardinality_from_index,
     _resolve_target_column_names,
     _resolve_target_columns,
     _ResolvedRowCardinality,
+    _safe_edge_input_name,
     _source_column_base_widths,
+    decoded_frame_row_width_bytes,
     estimate_gpu_vram_bytes,
     estimate_materialisation_boundaries,
     estimate_safe_training_rows,
 )
 from haute._types import NodeType
+from haute.errors import ConfigError
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, PipelineGraph
+from haute.modelling._train_config import TrainingConfigError
 from tests.conftest import build_test_input_snapshot
 
 
 def _boundary_estimate(graph: PipelineGraph, target_node_id: str) -> MaterialisationEstimate:
     [(_, estimate)] = list(estimate_materialisation_boundaries(graph, [target_node_id]))
     return estimate
+
+
+def test_decoded_frame_row_width_uses_materialised_variable_width_values() -> None:
+    value = "x" * 4_096
+    frame = pl.DataFrame({"label": [value] * 4, "number": [1, 2, 3, 4]})
+
+    assert decoded_frame_row_width_bytes(frame) == sum(
+        max(8, frame.get_column(column).estimated_size() / frame.height) for column in frame.columns
+    )
+    assert decoded_frame_row_width_bytes(frame) >= len(value) + 8
+
+
+def test_decoded_frame_row_width_empty_and_invalid_inputs_fail_clearly() -> None:
+    assert decoded_frame_row_width_bytes(pl.DataFrame(schema={"a": pl.String})) == 8
+    with pytest.raises(TypeError, match="Polars DataFrame"):
+        decoded_frame_row_width_bytes(object())  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("path", [[], "missing-*.parquet"])
+def test_detailed_parquet_metadata_refuses_empty_file_sets(path: object) -> None:
+    with pytest.raises(FileNotFoundError, match="no parquet files match"):
+        _detailed_parquet_metadata(path)  # type: ignore[arg-type]
 
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
@@ -136,6 +167,8 @@ def _make_modelling_node(
     label: str = "model",
     config: dict | None = None,
 ) -> GraphNode:
+    # A GLM keeps every column, so a plain target measures the pipeline's width;
+    # tests of a tree model's feature selection pass their own algorithm.
     return GraphNode(
         id=node_id,
         type="custom",
@@ -143,7 +176,7 @@ def _make_modelling_node(
         data=NodeData(
             label=label,
             nodeType="modelling",
-            config=config or {},
+            config={"algorithm": "glm", **(config or {})},
         ),
     )
 
@@ -228,7 +261,7 @@ def test_persistent_data_input_uses_verified_generation_row_count(
     generation_path = tmp_path / "generation.parquet"
     generation = SimpleNamespace(
         metadata=SimpleNamespace(row_count=17),
-        data_path=generation_path,
+        data_paths=(generation_path,),
     )
     opened: list[object] = []
 
@@ -253,7 +286,7 @@ def test_persistent_data_input_uses_verified_generation_row_count(
         ),
     )
 
-    assert _data_input_parquet_artifact({"source": "persistent"}) == (17, generation_path)
+    assert _data_input_parquet_artifact({"source": "persistent"}) == (17, (generation_path,))
     assert opened == [(tmp_path, ("identity", tmp_path))]
 
 
@@ -725,8 +758,8 @@ class TestEstimateSafeTrainingRows:
         assert result.estimated_bytes > numeric_baseline
         assert result.bytes_per_row > 2 * 8 * 3.0
 
-    def test_excluded_edge_join_key_still_counts_for_pipeline_peak(self, tmp_path) -> None:
-        """Join keys excluded from modelling remain needed during edgeJoin execution."""
+    def test_unselected_edge_join_key_still_counts_for_pipeline_peak(self, tmp_path) -> None:
+        """Join keys a tree model does not train on remain needed during edgeJoin execution."""
         base_path = tmp_path / "base.parquet"
         join_path = tmp_path / "join.parquet"
         rows = 1000
@@ -765,7 +798,13 @@ class TestEstimateSafeTrainingRows:
             },
         )
         joined.data.nodeType = NodeType.EDGE_JOIN
-        target = _make_modelling_node(config={"exclude": ["quote_id"]})
+        target = _make_modelling_node(
+            config={
+                "algorithm": "catboost",
+                "target": "claim_count",
+                "feature_columns": ["premium", "competitor_premium"],
+            }
+        )
         graph = PipelineGraph(
             nodes=[base, join, joined, target],
             edges=[
@@ -824,6 +863,56 @@ class TestEstimateSafeTrainingRows:
         assert result.probe_columns == 3
         assert result.estimated_bytes == _estimate_peak_bytes(12, 3)
 
+    @pytest.mark.parametrize(
+        ("validate", "rows", "unbounded"), [(None, 400, ("joined",)), ("m:1", 20, ())]
+    )
+    def test_a_join_without_a_key_contract_bounds_rows_without_a_downsample_verdict(
+        self, tmp_path, validate: str | None, rows: int, unbounded: tuple[str, ...]
+    ) -> None:
+        """An undeclared join's row product is a worst case, not a count (MDL-01)."""
+        left_path = tmp_path / "left.parquet"
+        right_path = tmp_path / "right.parquet"
+        pl.DataFrame({"id": range(20), "left_value": range(20)}).write_parquet(left_path)
+        pl.DataFrame({"id": range(20), "right_value": range(20)}).write_parquet(right_path)
+        config: dict[str, object] = {"how": "left", "on": ["id"]}
+        if validate is not None:
+            config["validate"] = validate
+        joined = _make_transform_node(node_id="joined", config=config)
+        joined.data.nodeType = NodeType.EDGE_JOIN
+        target = _make_modelling_node()
+        graph = PipelineGraph(
+            nodes=[
+                _make_source_node(
+                    node_id="left",
+                    node_type="dataInput",
+                    config=_ready_file_input_config(left_path),
+                ),
+                _make_source_node(
+                    node_id="right",
+                    node_type="dataInput",
+                    config=_ready_file_input_config(right_path),
+                ),
+                joined,
+                target,
+            ],
+            edges=[
+                GraphEdge(id="left-join", source="left", target="joined", targetHandle="base"),
+                GraphEdge(id="right-join", source="right", target="joined", targetHandle="join"),
+                GraphEdge(id="join-model", source="joined", target=target.id),
+            ],
+        )
+
+        # Too little RAM for the worst case, so a row limit is needed.
+        with patch("haute._ram_estimate.available_ram_bytes", return_value=1):
+            result = estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
+
+        assert result.total_rows == rows
+        assert result.unbounded_join_node_ids == unbounded
+        assert result.safe_row_limit is not None
+        # Only a proven count earns a downsample verdict.
+        assert result.was_downsampled is (not unbounded)
+        assert (result.warning is None) is bool(unbounded)
+
     def test_unproven_target_cardinality_returns_unavailable_training_estimate(
         self,
         tmp_path,
@@ -846,20 +935,43 @@ class TestEstimateSafeTrainingRows:
 
         result = estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
 
+        assert result.unavailable_reason is TrainingEstimateUnavailableReason.ROW_COUNT_UNPROVABLE
+        assert result.blocking_node_id == transform.id
         assert result.total_rows is None
         assert result.safe_row_limit is None
-        assert result.estimated_bytes == 0
+        assert result.estimated_bytes is None
+        assert result.bytes_per_row is None
         assert result.probe_columns == 0
 
-    def test_string_exclude_config_is_ignored_as_invalid_sequence(self, tmp_path) -> None:
-        """A bare string is not treated as a sequence of excluded column names."""
+    def test_string_feature_columns_fail_loud(self, tmp_path) -> None:
+        """A bare string is not a list of feature names, and is refused."""
         path = tmp_path / "cols.parquet"
         pl.DataFrame({"a": range(20), "b": range(20)}).write_parquet(str(path))
         src = _make_source_node(
             node_type="dataInput",
             config=_ready_file_input_config(path),
         )
-        target = _make_modelling_node(config={"exclude": "a"})
+        target = _make_modelling_node(config={"algorithm": "catboost", "feature_columns": "a"})
+        graph = PipelineGraph(
+            nodes=[src, target],
+            edges=[GraphEdge(id="e1", source=src.id, target=target.id)],
+        )
+
+        with pytest.raises(TrainingConfigError, match="feature_columns must be a list"):
+            estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
+
+    def test_tree_model_counts_only_its_selected_features_and_roles(self, tmp_path) -> None:
+        """Features are opt-in: an unticked column never enters the split or pools."""
+        path = tmp_path / "cols.parquet"
+        frame = pl.DataFrame({"y": range(20), "a": range(20), "b": range(20), "c": range(20)})
+        frame.write_parquet(str(path))
+        src = _make_source_node(
+            node_type="dataInput",
+            config=_ready_file_input_config(path),
+        )
+        target = _make_modelling_node(
+            config={"algorithm": "catboost", "target": "y", "feature_columns": ["a", "y"]}
+        )
         graph = PipelineGraph(
             nodes=[src, target],
             edges=[GraphEdge(id="e1", source=src.id, target=target.id)],
@@ -912,7 +1024,13 @@ class TestEstimateSafeTrainingRows:
             },
         )
         joined.data.nodeType = NodeType.EDGE_JOIN
-        target = _make_modelling_node(config={"exclude": ["quote_id"]})
+        target = _make_modelling_node(
+            config={
+                "algorithm": "catboost",
+                "target": "claim_count",
+                "feature_columns": ["premium", "competitor_premium"],
+            }
+        )
         graph = PipelineGraph(
             nodes=[base, join, joined, target],
             edges=[
@@ -968,7 +1086,13 @@ class TestEstimateSafeTrainingRows:
             },
         )
         joined.data.nodeType = NodeType.EDGE_JOIN
-        target = _make_modelling_node(config={"exclude": ["quote_id"]})
+        target = _make_modelling_node(
+            config={
+                "algorithm": "catboost",
+                "target": "claim_count",
+                "feature_columns": ["premium", "competitor_premium"],
+            }
+        )
         graph = PipelineGraph(
             nodes=[base, join, joined, target],
             edges=[
@@ -984,7 +1108,7 @@ class TestEstimateSafeTrainingRows:
         assert result.bytes_per_row == 5 * 8 * 3.0
         assert result.estimated_bytes == _estimate_peak_bytes(rows, 5)
 
-    def test_excluded_coalesce_false_right_key_still_counts_for_pipeline_peak(
+    def test_unselected_coalesce_false_right_key_still_counts_for_pipeline_peak(
         self,
         tmp_path,
     ) -> None:
@@ -1027,7 +1151,13 @@ class TestEstimateSafeTrainingRows:
             },
         )
         joined.data.nodeType = NodeType.EDGE_JOIN
-        target = _make_modelling_node(config={"exclude": ["quote_id", "quote_id_right"]})
+        target = _make_modelling_node(
+            config={
+                "algorithm": "catboost",
+                "target": "claim_count",
+                "feature_columns": ["premium", "competitor_premium"],
+            }
+        )
         graph = PipelineGraph(
             nodes=[base, join, joined, target],
             edges=[
@@ -1678,6 +1808,74 @@ def test_cardinality_proof_validation_and_evidence_cap_are_explicit() -> None:
     assert evidence[-1] == "cardinality_evidence_truncated=2"
 
 
+def test_estimate_graph_index_rejects_non_dataframe_runtime_source_frame() -> None:
+    source = GraphNode(id="source", data=NodeData(nodeType=NodeType.CONSTANT))
+
+    with pytest.raises(TypeError, match="polars DataFrames"):
+        _EstimateGraphIndex.build(
+            PipelineGraph(nodes=[source]),
+            "batch",
+            runtime_source_frames_by_node={"source": object()},
+        )  # type: ignore[arg-type]
+
+
+def test_cardinality_binding_collision_and_safe_edge_names_fail_closed(monkeypatch) -> None:
+    import haute._ram_estimate as ram_estimate
+
+    index = _cardinality_index_for_node(NodeType.POLARS, {}, parent_count=2)
+    index.node_map["parent-0"].data.label = "left_source"
+    index.node_map["parent-1"].data.label = "right_source"
+    node = index.node_map["target"]
+    edges = tuple(edge for edge in index.pruned_edges if edge.target == "target")
+    names = [ram_estimate._safe_edge_input_name(edge, index) for edge in edges]
+    assert all(names)
+    monkeypatch.setattr(
+        ram_estimate,
+        "resolve_input_mapping_names",
+        lambda source_names, mapping: (source_names[1], source_names[1]),
+    )
+    node.data.config["inputMapping"] = {"left": names[0], "right": names[1]}
+    assert _cardinality_name_bindings(index, node, edges) is None
+
+    missing = GraphEdge(id="missing", source="absent", target="target")
+    assert _safe_edge_input_name(missing, index) is None
+    api = GraphNode(id="api", data=NodeData(nodeType=NodeType.API_INPUT))
+    api_index = _EstimateGraphIndex.build(PipelineGraph(nodes=[api, node], edges=[]), "batch")
+    malformed = GraphEdge(id="malformed", source="api", target="target")
+    assert _safe_edge_input_name(malformed, api_index) is None
+
+
+def test_port_operand_counts_rejects_missing_bindings_and_unbound_names(monkeypatch) -> None:
+    import haute._ram_estimate as ram_estimate
+
+    index = _cardinality_index_for_node(NodeType.POLARS, {}, parent_count=1)
+    node = index.node_map["target"]
+    edges = tuple(edge for edge in index.pruned_edges if edge.target == "target")
+    with monkeypatch.context() as patcher:
+        patcher.setattr(ram_estimate, "_cardinality_name_bindings", lambda *_args: None)
+        assert _port_operand_counts(edges, index, node, {"parent_0": 1}) is None
+
+    assert _port_operand_counts(edges, index, node, {"not_bound": 1}) is None
+
+
+def test_join_estimate_reports_unresolved_operand_binding(tmp_path: Path, monkeypatch) -> None:
+    import haute._ram_estimate as ram_estimate
+
+    path = tmp_path / "source.parquet"
+    _write_shape_source(path)
+    graph = _self_join_graph(path, "df = src.join(src, on='segment', validate='m:1')")
+    monkeypatch.setattr(ram_estimate, "_port_operand_counts", lambda *_args: None)
+
+    [(_, estimate)] = list(
+        estimate_materialisation_boundaries(
+            graph, ["joined"], boundary_operators={"joined": ("join",)}
+        )
+    )
+
+    assert estimate.state is MaterialisationEstimateState.UNAVAILABLE
+    assert estimate.unavailable_reason == "join_operand_binding_unresolved"
+
+
 def _cardinality_index_for_node(
     node_type: NodeType, config: dict[str, object], parent_count: int = 1
 ) -> _EstimateGraphIndex:
@@ -1702,7 +1900,7 @@ def _cardinality_index_for_node(
     ("node_type", "config", "expected_rows"),
     [
         (NodeType.POLARS, {"code": "df = df.filter(pl.col('value') > 0)"}, 4),
-        (NodeType.SCENARIO_EXPANDER, {"steps": 3}, 12),
+        (NodeType.SCENARIO_EXPANDER, {"stepCount": 3}, 12),
         (NodeType.RATING_STEP, {}, 4),
         (NodeType.EXPLORE, {"code": "df = df.filter(pl.col('value') > 0)"}, 4),
         (NodeType.MODEL_SCORE, {}, 4),
@@ -1728,7 +1926,7 @@ def test_row_cardinality_resolution_proves_closed_node_semantics(
     ("node_type", "config", "parent_count", "reason"),
     [
         (NodeType.POLARS, {}, 1, "empty_code"),
-        (NodeType.SCENARIO_EXPANDER, {"steps": 0}, 1, "invalid_scenario_steps"),
+        (NodeType.SCENARIO_EXPANDER, {"stepCount": 0}, 1, "invalid_scenario_steps"),
         (NodeType.SCENARIO_EXPANDER, {}, 2, "invalid_input_cardinality"),
         (NodeType.RATING_STEP, {}, 2, "invalid_input_cardinality"),
         (NodeType.OPTIMISER, {"data_input": "absent"}, 1, "invalid_optimiser_input"),
@@ -1793,6 +1991,83 @@ def test_cardinality_helpers_fail_closed_for_invalid_bindings_and_missing_nodes(
     assert missing.unavailable_reason == "node_missing"
 
 
+def test_cardinality_binding_uses_collapsed_submodel_public_port_name() -> None:
+    graph = PipelineGraph.model_validate(
+        {
+            "nodes": [
+                {
+                    "id": "occurrence",
+                    "type": "submodel",
+                    "data": {
+                        "label": "unrelated_alias",
+                        "nodeType": "submodel",
+                        "config": {
+                            "definitionId": "definition_public_output",
+                            "alias": "unrelated_alias",
+                        },
+                    },
+                },
+                {
+                    "id": "target",
+                    "data": {
+                        "label": "target",
+                        "nodeType": "polars",
+                        "config": {},
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "public-result-edge",
+                    "source": "occurrence",
+                    "target": "target",
+                    "sourceHandle": "out__opaque_output_id",
+                }
+            ],
+            "submodels": {
+                "definition_public_output": {
+                    "definitionId": "definition_public_output",
+                    "file": "modules/public_output.py",
+                    "graph": {
+                        "nodes": [
+                            {
+                                "id": "internal_result",
+                                "data": {
+                                    "label": "private implementation result",
+                                    "nodeType": "polars",
+                                    "config": {},
+                                },
+                            }
+                        ],
+                        "edges": [],
+                    },
+                    "inputPorts": [],
+                    "outputPorts": [
+                        {
+                            "name": "opaque_output_id",
+                            "source": {
+                                "nodeId": "internal_result",
+                                "handleId": None,
+                            },
+                        }
+                    ],
+                }
+            },
+        }
+    )
+    index = _EstimateGraphIndex.build(graph, "batch")
+    edge = index.pruned_edges[0]
+    proof = _ResolvedRowCardinality.proven(4, 4, ("proof",))
+
+    bindings = _named_cardinality_inputs(
+        index,
+        index.node_map["target"],
+        ((edge, proof),),
+    )
+
+    assert bindings == {"opaque_output_id": proof}
+
+
 def test_cardinality_resolution_handles_constants_and_rejects_invalid_join_arity() -> None:
     constant_index = _EstimateGraphIndex.build(
         PipelineGraph(nodes=[GraphNode(id="constant", data=NodeData(nodeType=NodeType.CONSTANT))]),
@@ -1831,10 +2106,10 @@ def test_cardinality_binding_and_node_failure_paths_fail_closed() -> None:
             1,
             "invalid_input_name_binding",
         ),
-        (NodeType.SCENARIO_EXPANDER, {"steps": "invalid"}, 1, "invalid_scenario_steps"),
+        (NodeType.SCENARIO_EXPANDER, {"stepCount": "invalid"}, 1, "invalid_scenario_steps"),
         (
             NodeType.SCENARIO_EXPANDER,
-            {"steps": 2, "code": "df = df.filter(pl.col('x') > 0)"},
+            {"stepCount": 2, "code": "df = df.filter(pl.col('x') > 0)"},
             1,
             None,
         ),
@@ -1876,12 +2151,25 @@ def test_cardinality_resolution_covers_malformed_bindings_and_source_transforms(
     assert (
         _named_cardinality_inputs(malformed, malformed.node_map["target"], ((edge, proof),)) is None
     )
+    # A falsey non-mapping is malformed, not absent: runtime code generation
+    # validates every non-``None`` value, so the estimator must not treat it
+    # as "no mapping" and hand back an available estimate.
+    for falsey in ([], "", 0):
+        shaped = _cardinality_index_for_node(NodeType.POLARS, {"inputMapping": falsey})
+        shaped_edge = shaped.pruned_edges[0]
+        assert (
+            _named_cardinality_inputs(shaped, shaped.node_map["target"], ((shaped_edge, proof),))
+            is None
+        ), falsey
 
     mapped = _cardinality_index_for_node(NodeType.POLARS, {"inputMapping": {"alias": "Unnamed"}})
     mapped_edge = mapped.pruned_edges[0]
     bindings = _named_cardinality_inputs(mapped, mapped.node_map["target"], ((mapped_edge, proof),))
     assert bindings is not None and bindings["alias"] == proof
 
+    # Two edges collapsing onto one logical name is a graph the executor
+    # refuses, so the estimator raises its error rather than quietly declining
+    # to measure a run that cannot start.
     collision = _cardinality_index_for_node(NodeType.POLARS, {"inputMapping": {"a": "b"}}, 2)
     collision.node_map["parent-0"].data.label = "a"
     collision.node_map["parent-1"].data.label = "b"
@@ -1889,9 +2177,8 @@ def test_cardinality_resolution_covers_malformed_bindings_and_source_transforms(
         (item, collision.cardinality_by_target[(item.source, None)])
         for item in collision.pruned_edges
     )
-    assert (
-        _named_cardinality_inputs(collision, collision.node_map["target"], collision_edges) is None
-    )
+    with pytest.raises(ConfigError, match="duplicate logical input names"):
+        _named_cardinality_inputs(collision, collision.node_map["target"], collision_edges)
 
     no_edge_alias = _cardinality_index_for_node(NodeType.POLARS, {})
     assert (
@@ -2066,8 +2353,11 @@ class TestEstimateSafeTrainingRowsEdgeCases:
         graph = PipelineGraph(nodes=[src, target], edges=[edge])
 
         result = estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
+        assert result.unavailable_reason is TrainingEstimateUnavailableReason.ROW_COUNT_UNPROVABLE
+        assert result.blocking_node_id == src.id
         assert result.safe_row_limit is None
         assert result.total_rows is None
+        assert result.estimated_bytes is None
         assert not result.was_downsampled
 
     def test_safe_row_limit_respects_minimum(self, tmp_path) -> None:
@@ -2109,7 +2399,7 @@ class TestEstimateSafeTrainingRowsEdgeCases:
 
 
 # ---------------------------------------------------------------------------
-# RamEstimate — NamedTuple field access
+# RamEstimate — field access and availability invariants
 # ---------------------------------------------------------------------------
 
 
@@ -2151,17 +2441,115 @@ class TestRamEstimateFields:
         assert est.bytes_per_row == expected_bpr
 
     def test_default_probe_columns(self) -> None:
-        """probe_columns defaults to 0."""
+        """probe_columns defaults to 0; zero figures are an honest known-empty estimate."""
         est = RamEstimate(
             safe_row_limit=None,
-            total_rows=None,
+            total_rows=0,
             estimated_bytes=0,
             available_bytes=1,
-            bytes_per_row=0,
+            bytes_per_row=0.0,
             was_downsampled=False,
             warning=None,
         )
         assert est.probe_columns == 0
+        assert est.unavailable_reason is None
+
+    def test_unavailable_constructors_carry_their_reason(self) -> None:
+        row_count = RamEstimate.row_count_unprovable("join", available_bytes=10)
+        assert row_count.unavailable_reason is (
+            TrainingEstimateUnavailableReason.ROW_COUNT_UNPROVABLE
+        )
+        assert (row_count.total_rows, row_count.blocking_node_id) == (None, "join")
+        assert (row_count.estimated_bytes, row_count.bytes_per_row) == (None, None)
+
+        schema = RamEstimate.schema_unresolvable(250, available_bytes=10)
+        assert schema.unavailable_reason is TrainingEstimateUnavailableReason.SCHEMA_UNRESOLVABLE
+        assert (schema.total_rows, schema.blocking_node_id) == (250, None)
+        assert (schema.estimated_bytes, schema.bytes_per_row) == (None, None)
+
+    @pytest.mark.parametrize(
+        ("overrides", "message"),
+        [
+            ({"estimated_bytes": None}, "requires a row total and memory figures"),
+            ({"total_rows": None}, "requires a row total and memory figures"),
+            ({"blocking_node_id": "src"}, "names no blocking node"),
+            (
+                {"unbounded_join_node_ids": ("join",), "was_downsampled": True},
+                "worst-case row bound has no downsampling verdict",
+            ),
+            (
+                {
+                    "unavailable_reason": TrainingEstimateUnavailableReason.SCHEMA_UNRESOLVABLE,
+                },
+                "has no memory figures",
+            ),
+            (
+                {
+                    "unavailable_reason": TrainingEstimateUnavailableReason.ROW_COUNT_UNPROVABLE,
+                    "estimated_bytes": None,
+                    "bytes_per_row": None,
+                    "blocking_node_id": "src",
+                },
+                "names its blocking node and has no row total",
+            ),
+            (
+                {
+                    "unavailable_reason": TrainingEstimateUnavailableReason.ROW_COUNT_UNPROVABLE,
+                    "total_rows": None,
+                    "estimated_bytes": None,
+                    "bytes_per_row": None,
+                },
+                "names its blocking node and has no row total",
+            ),
+            (
+                {
+                    "unavailable_reason": TrainingEstimateUnavailableReason.SCHEMA_UNRESOLVABLE,
+                    "estimated_bytes": None,
+                    "bytes_per_row": None,
+                    "blocking_node_id": "src",
+                },
+                "keeps its row total and names no blocking node",
+            ),
+            (
+                {
+                    "unavailable_reason": TrainingEstimateUnavailableReason.SCHEMA_UNRESOLVABLE,
+                    "estimated_bytes": None,
+                    "bytes_per_row": None,
+                    "warning": "downsampled",
+                },
+                "has no memory figures, row limit, warning",
+            ),
+        ],
+    )
+    def test_rejects_figures_that_disagree_with_availability(
+        self,
+        overrides: dict[str, object],
+        message: str,
+    ) -> None:
+        fields: dict[str, object] = {
+            "safe_row_limit": None,
+            "total_rows": 100,
+            "estimated_bytes": 2_400,
+            "available_bytes": 1_000_000,
+            "bytes_per_row": 24.0,
+            "was_downsampled": False,
+            "warning": None,
+        }
+        with pytest.raises(ValueError, match=message):
+            RamEstimate(**{**fields, **overrides})  # type: ignore[arg-type]
+
+    def test_rejects_a_reason_outside_the_closed_set(self) -> None:
+        with pytest.raises(TypeError, match="TrainingEstimateUnavailableReason"):
+            RamEstimate(
+                safe_row_limit=None,
+                total_rows=100,
+                estimated_bytes=None,
+                available_bytes=1,
+                bytes_per_row=None,
+                was_downsampled=False,
+                warning=None,
+                unavailable_reason="schema_unresolvable",  # type: ignore[arg-type]
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -2185,10 +2573,13 @@ class TestEstimateSafeTrainingRowsSchemaUnavailable:
 
         with patch("haute._ram_estimate._resolve_target_columns", return_value=None):
             result = estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
+        assert result.unavailable_reason is TrainingEstimateUnavailableReason.SCHEMA_UNRESOLVABLE
+        assert result.blocking_node_id is None
         assert not result.was_downsampled
         assert result.safe_row_limit is None
         assert result.total_rows == 100
-        assert result.bytes_per_row == 0
+        assert result.estimated_bytes is None
+        assert result.bytes_per_row is None
         assert result.probe_columns == 0
 
 
@@ -2231,18 +2622,17 @@ def _json_port_config(data_path) -> dict:
 
 @pytest.fixture()
 def json_api_input(tmp_path, monkeypatch):
-    """A JSON apiInput with a real built v2 working-layer cache.
+    """A JSON apiInput with each emitting table's input snapshot already built.
 
     Built through the same reader/writer the engine uses rather than a stub:
-    the point of resolving per port is that a stale or absent cache is
-    rejected here exactly as it is at execution.
+    the point of resolving per port is that an absent snapshot is reported
+    unavailable here exactly as it is at execution.
     """
 
     import json as _json
 
-    from haute._json_flatten import _json_cache_dir
-    from haute._json_shred._cache import build_per_port_cache
     from haute._sandbox import _get_project_root, set_project_root
+    from tests.conftest import build_test_api_input_snapshots
 
     monkeypatch.chdir(tmp_path)
     original_root = _get_project_root()
@@ -2259,11 +2649,9 @@ def json_api_input(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     config = _json_port_config(data_path)
-    cache_dir = _json_cache_dir(data_path, "working")
-    committed_dir = _json_cache_dir(data_path, "committed")
-    build_per_port_cache(data_path, config, cache_dir)
+    build_test_api_input_snapshots(data_path, config)
     try:
-        yield data_path, config, cache_dir, committed_dir
+        yield data_path, config
     finally:
         set_project_root(original_root)
 
@@ -2279,9 +2667,9 @@ class TestJsonApiInputPortMetadata:
         """One strategy request must not reopen the same source metadata per boundary."""
 
         import haute._ram_estimate as ram_estimate_mod
-        from haute.execution import _estimate_group_by_boundaries
+        from haute.execution import _estimate_materialising_boundaries
 
-        _data_path, config, _cache_dir, _committed_dir = json_api_input
+        _data_path, config = json_api_input
         source = _make_source_node(node_id="quote_in", node_type="apiInput", config=config)
         aggregate_code = {"code": "df = df.group_by('policy_id').agg(pl.len().alias('count'))"}
         first = _make_transform_node(node_id="agg1", config=aggregate_code)
@@ -2312,7 +2700,9 @@ class TestJsonApiInputPortMetadata:
             counting_port_metadata,
         )
 
-        estimate = _estimate_group_by_boundaries(graph, [first.id, second.id], source="live")
+        estimate = _estimate_materialising_boundaries(
+            graph, {first.id: "group_by", second.id: "group_by"}, source="live"
+        )
 
         assert estimate.state is MaterialisationEstimateState.AVAILABLE
         assert metadata_calls == 1
@@ -2324,7 +2714,7 @@ class TestJsonApiInputPortMetadata:
         """An unusable first boundary must not probe unrelated later sources."""
 
         import haute.execution as execution_mod
-        from haute.execution import _estimate_group_by_boundaries
+        from haute.execution import _estimate_materialising_boundaries
 
         graph = PipelineGraph(nodes=[], edges=[])
 
@@ -2334,51 +2724,63 @@ class TestJsonApiInputPortMetadata:
 
         monkeypatch.setattr(execution_mod, "estimate_materialisation_boundaries", estimates)
 
-        estimate = _estimate_group_by_boundaries(graph, ["first", "later"], source="live")
+        estimate = _estimate_materialising_boundaries(graph, ["first", "later"], source="live")
 
         assert estimate.state is MaterialisationEstimateState.UNAVAILABLE
         assert estimate.unavailable_reason == "first:metadata_missing"
 
-    def test_planning_and_loading_share_one_unchanged_source_content_proof(
+    def test_runtime_source_frame_replaces_unreadable_configured_metadata(
         self,
-        json_api_input,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Planner metadata and loading reuse the persisted cache-build source proof."""
+        source = _make_source_node(
+            node_id="src",
+            label="src",
+            node_type="apiInput",
+            config={"path": ""},
+        )
+        aggregate = _make_transform_node(
+            node_id="agg",
+            config={
+                "code": (
+                    "df = src.group_by('segment').agg(pl.col('premium').sum().alias('premium'))"
+                )
+            },
+        )
+        graph = PipelineGraph(
+            nodes=[source, aggregate],
+            edges=[
+                GraphEdge(
+                    id="e1",
+                    source="src",
+                    target="agg",
+                    sourceHandle="src",
+                )
+            ],
+        )
+        runtime_frame = pl.DataFrame({"segment": ["a", "a", "b"], "premium": [1.0, 2.0, 4.0]})
 
-        from haute._json_shred import _source_proof
-        from haute._json_shred._cache import load_v2_api_source
-        from haute._ram_estimate import _json_api_input_port_metadata
-
-        data_path, config, _cache_dir, _committed_dir = json_api_input
-        node = _make_source_node(node_type="apiInput", config=config)
-        _source_proof._clear_data_file_signature_memo()
-        real_hash_file = _source_proof._hash_file
-        raw_hashes = 0
-
-        def counting_hash_file(path):
-            nonlocal raw_hashes
-            if Path(path).resolve() == data_path.resolve():
-                raw_hashes += 1
-            return real_hash_file(path)
-
-        monkeypatch.setattr(_source_proof, "_hash_file", counting_hash_file)
-
-        metadata = _json_api_input_port_metadata(node, "policies")
-        frames = load_v2_api_source(
-            str(data_path),
-            config,
-            port_columns={"policies": {"policy_id"}},
+        monkeypatch.setattr(
+            "haute._ram_estimate._detailed_source_metadata_for_node",
+            lambda _node: pytest.fail("configured source metadata must not be read"),
         )
 
-        assert metadata is not None and metadata.row_count == 2
-        assert frames["policies"].collect()["policy_id"].to_list() == [1, 2]
-        assert raw_hashes == 0
+        [(_, estimate)] = list(
+            estimate_materialisation_boundaries(
+                graph,
+                ["agg"],
+                runtime_source_frames_by_node={"src": runtime_frame},
+            )
+        )
+
+        assert estimate.state is MaterialisationEstimateState.AVAILABLE
+        assert estimate.estimated_peak_bytes is not None
+        assert estimate.estimated_peak_bytes > 0
 
     def test_each_emitted_table_is_sized_from_its_own_parquet(self, json_api_input) -> None:
         from haute._ram_estimate import _json_api_input_port_metadata
 
-        _data_path, config, _cache_dir, _committed_dir = json_api_input
+        _data_path, config = json_api_input
         node = _make_source_node(node_type="apiInput", config=config)
 
         policies = _json_api_input_port_metadata(node, "policies")
@@ -2389,116 +2791,13 @@ class TestJsonApiInputPortMetadata:
         # Sizing a boundary from the wrong table is the failure this prevents.
         assert policies.row_count != drivers.row_count
 
-    def test_committed_layer_is_used_when_working_holds_no_match(self, json_api_input) -> None:
-        """Layer preference is the reader's, not this module's."""
-
-        import shutil
-
-        from haute._ram_estimate import _json_api_input_port_metadata
-
-        _data_path, config, working_dir, committed_dir = json_api_input
-        committed_dir.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(working_dir, committed_dir, dirs_exist_ok=True)
-        shutil.rmtree(working_dir)
-
-        node = _make_source_node(node_type="apiInput", config=config)
-
-        assert _json_api_input_port_metadata(node, "policies").row_count == 2
-
-    def test_source_proof_is_reused_when_plausible_working_is_stale(
-        self,
-        json_api_input,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        import shutil
-
-        import orjson
-
-        from haute._json_shred import _source_proof
-        from haute._ram_estimate import _json_api_input_port_metadata
-
-        _data_path, config, working_dir, committed_dir = json_api_input
-        committed_dir.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(working_dir, committed_dir, dirs_exist_ok=True)
-        working_meta_path = working_dir / "meta.json"
-        working_meta = orjson.loads(working_meta_path.read_bytes())
-        working_meta["data_file"]["sha256"] = "0" * 64
-        working_meta_path.write_bytes(orjson.dumps(working_meta))
-        node = _make_source_node(node_type="apiInput", config=config)
-        real_source_proof = _source_proof._data_file_signature
-        source_proof_calls = 0
-
-        def counting_source_proof(path):
-            nonlocal source_proof_calls
-            source_proof_calls += 1
-            return real_source_proof(path)
-
-        monkeypatch.setattr(
-            "haute._json_shred._source_proof._data_file_signature",
-            counting_source_proof,
-        )
-
-        metadata = _json_api_input_port_metadata(node, "policies")
-
-        assert metadata is not None and metadata.row_count == 2
-        assert source_proof_calls == 1
-
     def test_a_port_the_cache_never_emitted_is_unavailable(self, json_api_input) -> None:
         from haute._ram_estimate import _json_api_input_port_metadata
 
-        _data_path, config, _cache_dir, _committed_dir = json_api_input
+        _data_path, config = json_api_input
         node = _make_source_node(node_type="apiInput", config=config)
 
         assert _json_api_input_port_metadata(node, "vehicles") is None
-
-    def test_a_stale_cache_is_rejected_rather_than_sized_from(self, json_api_input) -> None:
-        """The signature check is the engine's; a boundary must never be
-        estimated from a cache the run itself would rebuild."""
-
-        from haute._ram_estimate import _json_api_input_port_metadata
-
-        data_path, config, _cache_dir, _committed_dir = json_api_input
-        data_path.write_text('[{"policy_id": 9, "drivers": []}]', encoding="utf-8")
-        node = _make_source_node(node_type="apiInput", config=config)
-
-        assert _json_api_input_port_metadata(node, "policies") is None
-
-    def test_a_tampered_cache_artifact_is_not_used_for_admission(
-        self,
-        json_api_input,
-    ) -> None:
-        """Admission must size the exact generation runtime would accept."""
-
-        from haute._ram_estimate import _json_api_input_port_metadata
-
-        _data_path, config, cache_dir, _committed_dir = json_api_input
-        pl.DataFrame({"policy_id": [999]}).write_parquet(cache_dir / "policies.parquet")
-        node = _make_source_node(node_type="apiInput", config=config)
-
-        assert _json_api_input_port_metadata(node, "policies") is None
-
-    def test_a_snapshot_with_a_different_schema_is_not_used_for_admission(
-        self,
-        json_api_input,
-        tmp_path: Path,
-    ) -> None:
-        from haute._ram_estimate import _json_api_input_port_metadata
-
-        _data_path, config, _cache_dir, _committed_dir = json_api_input
-        incompatible_snapshot = tmp_path / "incompatible.parquet"
-        pl.DataFrame({"unexpected": [1]}).write_parquet(incompatible_snapshot)
-        node = _make_source_node(node_type="apiInput", config=config)
-
-        with (
-            patch(
-                "haute._json_shred._runtime_storage._snapshot_cache_artifact_locked",
-                return_value=incompatible_snapshot,
-            ),
-            patch("haute._json_shred._runtime_storage._release_runtime_snapshot") as release,
-        ):
-            assert _json_api_input_port_metadata(node, "policies") is None
-
-        assert release.call_count == 1
 
     @pytest.mark.parametrize("path_value", ["", None, 17])
     def test_a_node_without_a_usable_path_is_unavailable(self, path_value) -> None:
@@ -2517,44 +2816,45 @@ class TestJsonApiInputPortMetadata:
 
         assert _json_api_input_port_metadata(node, "policies") is None
 
-    def test_absent_cache_metadata_does_not_hash_the_uncached_source(
+    def test_absent_snapshot_metadata_is_unavailable_without_touching_the_source(
         self,
-        json_api_input,
+        tmp_path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Admission must not add a full-file pass before direct execution."""
 
-        import shutil
+        import json as _json
 
         from haute._ram_estimate import _json_api_input_port_metadata
+        from haute._sandbox import set_project_root
 
-        _data_path, config, working_dir, committed_dir = json_api_input
-        shutil.rmtree(working_dir)
-        if committed_dir.exists():
-            shutil.rmtree(committed_dir)
+        set_project_root(tmp_path)
+        data_path = tmp_path / "unbuilt.json"
+        data_path.write_text(_json.dumps([{"policy_id": 1, "drivers": []}]), encoding="utf-8")
+        config = _json_port_config(data_path)  # no snapshot built for this config
         node = _make_source_node(node_type="apiInput", config=config)
 
         def unexpected_source_proof(_path):
-            raise AssertionError("an absent cache must not require a source hash")
+            raise AssertionError("an absent snapshot must not require a source hash")
 
         monkeypatch.setattr(
-            "haute._json_shred._source_proof._data_file_signature",
+            "haute._json_shred._source_proof.file_signature",
             unexpected_source_proof,
         )
 
         assert _json_api_input_port_metadata(node, "policies") is None
 
-    def test_an_unreadable_cache_warns_and_reports_unavailable(self, json_api_input) -> None:
+    def test_an_unreadable_snapshot_warns_and_reports_unavailable(self, json_api_input) -> None:
         """Estimation degrades to "unknown" rather than raising into a caller
         that would treat the failure as "unlimited"."""
 
         from haute._ram_estimate import _json_api_input_port_metadata
 
-        _data_path, config, _cache_dir, _committed_dir = json_api_input
+        _data_path, config = json_api_input
         node = _make_source_node(node_type="apiInput", config=config)
 
         with patch(
-            "haute._json_shred._source_proof._data_file_signature",
+            "haute._ram_estimate._detailed_parquet_metadata",
             side_effect=OSError("cache device is gone"),
         ):
             with capture_logs() as logs:
@@ -2566,7 +2866,7 @@ class TestJsonApiInputPortMetadata:
         """Sibling branches of one apiInput must not inflate a boundary they
         do not feed — the whole reason the walk carries the arrival handle."""
 
-        _data_path, config, _cache_dir, _committed_dir = json_api_input
+        _data_path, config = json_api_input
         source = _make_source_node(node_id="quote_in", node_type="apiInput", config=config)
         consumer = _make_transform_node(node_id="claims")
         sibling = _make_transform_node(node_id="drivers_only")
@@ -2671,3 +2971,890 @@ def test_training_estimate_refuses_zero_headroom_instead_of_flooring() -> None:
     with patch("haute._ram_estimate.available_ram_bytes", return_value=0):
         with pytest.raises(RuntimeError, match="available memory is exhausted"):
             estimate_safe_training_rows(graph, "src1", _build_dummy_node_fn)
+
+
+# ---------------------------------------------------------------------------
+# Provable Polars shapes beneath a materialisation boundary
+# ---------------------------------------------------------------------------
+
+_GROUP_BY_PREMIUM = "df = df.group_by('segment').agg(pl.col('premium').sum().alias('premium'))"
+_GROUP_BY_VALUE = "df = df.group_by('segment').agg(pl.col('value').sum().alias('total'))"
+
+PROVABLE_SHAPES: tuple[tuple[str, str, str], ...] = (
+    ("control_filter", "df = df.filter(pl.col('premium') > 0)", _GROUP_BY_PREMIUM),
+    ("drop", "df = df.drop('extra')", _GROUP_BY_PREMIUM),
+    ("drop_nulls_subset", "df = df.drop_nulls(subset=['premium'])", _GROUP_BY_PREMIUM),
+    ("drop_nulls", "df = df.drop_nulls()", _GROUP_BY_PREMIUM),
+    ("with_row_index", "df = df.with_row_index('row_id')", _GROUP_BY_PREMIUM),
+    ("str_contains", "df = df.filter(pl.col('s').str.contains('x'))", _GROUP_BY_PREMIUM),
+    (
+        "dt_truncate",
+        "df = df.with_columns(pl.col('t').dt.truncate('1mo').alias('month'))",
+        _GROUP_BY_PREMIUM,
+    ),
+    (
+        "literal_unpivot",
+        "df = df.unpivot(on=['premium', 'extra'], index=['segment'])",
+        _GROUP_BY_VALUE,
+    ),
+)
+
+_PROVABLE_SHAPE_ROWS = 20
+
+
+def _write_shape_source(path: Path) -> None:
+    """A parquet with the column types every provable shape exercises."""
+    rows = _PROVABLE_SHAPE_ROWS
+    pl.DataFrame(
+        {
+            "segment": [f"seg-{index % 4}" for index in range(rows)],
+            "premium": [None if index % 7 == 0 else float(index) for index in range(rows)],
+            "extra": [index for index in range(rows)],
+            "s": [
+                None if index % 5 == 0 else f"a{'x' if index % 2 else 'y'}{index}"
+                for index in range(rows)
+            ],
+            "t": [
+                None if index % 6 == 0 else date(2024, 1 + (index % 12), 1 + (index % 28))
+                for index in range(rows)
+            ],
+        },
+        schema={
+            "segment": pl.String,
+            "premium": pl.Float64,
+            "extra": pl.Int64,
+            "s": pl.String,
+            "t": pl.Date,
+        },
+    ).write_parquet(str(path))
+
+
+def _shape_graph(path: Path, transform_code: str, group_by_code: str) -> PipelineGraph:
+    source = _make_source_node(
+        node_id="source",
+        node_type="dataInput",
+        config=_ready_file_input_config(path),
+    )
+    transform = _make_transform_node(node_id="shape", config={"code": transform_code})
+    group_by = _make_transform_node(node_id="agg", config={"code": group_by_code})
+    return PipelineGraph(
+        nodes=[source, transform, group_by],
+        edges=[
+            GraphEdge(id="e1", source=source.id, target=transform.id),
+            GraphEdge(id="e2", source=transform.id, target=group_by.id),
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    ("transform_code", "group_by_code"),
+    [pytest.param(shape[1], shape[2], id=shape[0]) for shape in PROVABLE_SHAPES],
+)
+def test_provable_polars_shapes_keep_the_group_by_estimate_available(
+    tmp_path: Path,
+    transform_code: str,
+    group_by_code: str,
+) -> None:
+    path = tmp_path / "shapes.parquet"
+    _write_shape_source(path)
+    graph = _shape_graph(path, transform_code, group_by_code)
+
+    estimate = _boundary_estimate(graph, "agg")
+
+    assert estimate.state is MaterialisationEstimateState.AVAILABLE, estimate.unavailable_reason
+    assert estimate.estimated_peak_bytes is not None
+    assert estimate.estimated_peak_bytes > 0
+
+
+def test_dynamic_unpivot_keeps_the_group_by_estimate_unavailable(tmp_path: Path) -> None:
+    """Without a literal ``on`` list the expansion factor has no length evidence."""
+    path = tmp_path / "shapes.parquet"
+    _write_shape_source(path)
+    graph = _shape_graph(path, "df = df.unpivot(index=['segment'])", _GROUP_BY_VALUE)
+
+    estimate = _boundary_estimate(graph, "agg")
+
+    assert estimate.state is MaterialisationEstimateState.UNAVAILABLE
+    assert estimate.unavailable_reason is not None
+    assert estimate.unavailable_reason.startswith("row_cardinality_unavailable:")
+    assert "dynamic_unpivot" in estimate.unavailable_reason
+
+
+def test_literal_unpivot_cardinality_is_bounded_by_the_on_column_count() -> None:
+    """A two-column literal ``unpivot`` is exactly a doubling of the input rows."""
+    index = _cardinality_index_for_node(
+        NodeType.POLARS,
+        {"code": "df = df.unpivot(on=['premium', 'extra'], index=['segment'])"},
+    )
+    index.cardinality_by_target[("parent-0", None)] = _ResolvedRowCardinality.proven(
+        _PROVABLE_SHAPE_ROWS,
+        _PROVABLE_SHAPE_ROWS,
+        ("source=parent-0",),
+    )
+
+    result = _resolve_row_cardinality_from_index(index, "target", None)
+
+    assert result.available, result.unavailable_reason
+    assert result.output_rows == 2 * _PROVABLE_SHAPE_ROWS
+    assert result.peak_rows == 2 * _PROVABLE_SHAPE_ROWS
+
+
+@pytest.mark.parametrize(
+    ("operator", "factor_basis_points"),
+    [
+        ("group_by", 100),
+        ("sort", 300),
+        ("unique", 350),
+        ("reverse", 250),
+        ("shift", 100),
+        ("diff", 100),
+        ("pct_change", 150),
+        ("over", 250),
+        ("join_asof", 250),
+        ("top_k", 100),
+        ("bottom_k", 100),
+    ],
+)
+def test_boundary_estimate_applies_and_records_the_operator_memory_factor(
+    tmp_path: Path,
+    operator: str,
+    factor_basis_points: int,
+) -> None:
+    """EXEC-P07: the measured operator surcharge multiplies the finished estimate."""
+    path = tmp_path / "shapes.parquet"
+    _write_shape_source(path)
+    graph = _shape_graph(path, "df = df.filter(pl.col('premium') > 0)", _GROUP_BY_PREMIUM)
+
+    [(_, base)] = list(estimate_materialisation_boundaries(graph, ["agg"]))
+    [(_, scaled)] = list(
+        estimate_materialisation_boundaries(
+            graph,
+            ["agg"],
+            boundary_operators={"agg": (operator,)},
+        )
+    )
+
+    assert base.estimated_peak_bytes is not None
+    assert scaled.estimated_peak_bytes is not None
+    assert (
+        scaled.estimated_peak_bytes == (base.estimated_peak_bytes * factor_basis_points + 99) // 100
+    )
+    assert f"boundary_operator={operator}" in scaled.assumptions
+    assert f"materialisation_factor_basis_points={factor_basis_points}" in scaled.assumptions
+
+
+def test_boundary_estimate_without_an_operator_carries_no_surcharge(tmp_path: Path) -> None:
+    path = tmp_path / "shapes.parquet"
+    _write_shape_source(path)
+    graph = _shape_graph(path, "df = df.filter(pl.col('premium') > 0)", _GROUP_BY_PREMIUM)
+
+    estimate = _boundary_estimate(graph, "agg")
+
+    assert "materialisation_factor_basis_points=100" in estimate.assumptions
+    assert not any(item.startswith("boundary_operator=") for item in estimate.assumptions)
+
+
+def _join_graph(left_path: Path, right_path: Path, join_code: str) -> PipelineGraph:
+    """left/right sources -> join -> group_by."""
+    left = _make_source_node(
+        node_id="left",
+        label="left",
+        node_type="dataInput",
+        config=_ready_file_input_config(left_path),
+    )
+    right = _make_source_node(
+        node_id="right",
+        label="right",
+        node_type="dataInput",
+        config=_ready_file_input_config(right_path),
+    )
+    joined = _make_transform_node(node_id="joined", label="joined", config={"code": join_code})
+    aggregated = _make_transform_node(
+        node_id="agg",
+        label="agg",
+        config={
+            "code": "df = df.group_by('segment').agg(pl.col('premium').sum().alias('premium'))"
+        },
+    )
+    return PipelineGraph(
+        nodes=[left, right, joined, aggregated],
+        edges=[
+            GraphEdge(id="e1", source="left", target="joined"),
+            GraphEdge(id="e2", source="right", target="joined"),
+            GraphEdge(id="e3", source="joined", target="agg"),
+        ],
+    )
+
+
+def test_declared_join_boundary_is_sized_from_its_ports_not_its_output(tmp_path: Path) -> None:
+    """A declared ``m:1`` join cannot emit more rows than its left operand.
+
+    The contract is what makes input sizing sound: the join holds both ports and
+    streams an output the contract already bounds by one of them.
+    """
+    left_path = tmp_path / "left.parquet"
+    right_path = tmp_path / "right.parquet"
+    _write_shape_source(left_path)
+    _write_shape_source(right_path)
+    graph = _join_graph(
+        left_path, right_path, "df = left.join(right, on='segment', how='left', validate='m:1')"
+    )
+
+    estimate = _boundary_estimate(graph, "joined")
+
+    assert estimate.state is MaterialisationEstimateState.AVAILABLE, estimate.unavailable_reason
+    assert estimate.estimated_peak_bytes is not None
+    assert estimate.estimated_peak_bytes > 0
+
+    [(_, scaled)] = list(
+        estimate_materialisation_boundaries(
+            graph, ["joined"], boundary_operators={"joined": ("join",)}
+        )
+    )
+    assert scaled.state is MaterialisationEstimateState.AVAILABLE, scaled.unavailable_reason
+    assert scaled.estimated_peak_bytes is not None
+    assert scaled.depends_on_many_to_many_join is False
+    # The port bound is one source's rows, and the declared contract keeps the
+    # output there too.
+    assert f"boundary_input_rows_upper_bound={_PROVABLE_SHAPE_ROWS}" in scaled.assumptions
+    assert f"boundary_output_rows_upper_bound={_PROVABLE_SHAPE_ROWS}" in scaled.assumptions
+    # Same rows and same widths as the unoperated estimate, so only the operator
+    # factor separates them.
+    assert "materialisation_factor_basis_points=200" in scaled.assumptions
+    assert scaled.estimated_peak_bytes == (estimate.estimated_peak_bytes * 200 + 99) // 100
+
+
+def test_undeclared_join_boundary_is_sized_from_the_row_product(tmp_path: Path) -> None:
+    """Without a contract the row product is the only bound the join has.
+
+    The certification lane measured a three-times fan-out join above the
+    input-sized figure, so input sizing is reserved for declared joins.
+    """
+    left_path = tmp_path / "left.parquet"
+    right_path = tmp_path / "right.parquet"
+    _write_shape_source(left_path)
+    _write_shape_source(right_path)
+    graph = _join_graph(left_path, right_path, "df = left.join(right, on='segment')")
+
+    [(_, scaled)] = list(
+        estimate_materialisation_boundaries(
+            graph, ["joined"], boundary_operators={"joined": ("join",)}
+        )
+    )
+
+    assert scaled.state is MaterialisationEstimateState.AVAILABLE, scaled.unavailable_reason
+    assert scaled.depends_on_many_to_many_join is True
+    product = _PROVABLE_SHAPE_ROWS * _PROVABLE_SHAPE_ROWS
+    assert f"boundary_input_rows_upper_bound={product}" in scaled.assumptions
+    assert f"boundary_output_rows_upper_bound={product}" in scaled.assumptions
+
+
+def test_an_explicit_many_to_many_contract_is_also_unbounded(tmp_path: Path) -> None:
+    """``validate='m:m'`` declares the absence of a bound, not a bound."""
+    left_path = tmp_path / "left.parquet"
+    right_path = tmp_path / "right.parquet"
+    _write_shape_source(left_path)
+    _write_shape_source(right_path)
+    graph = _join_graph(
+        left_path, right_path, "df = left.join(right, on='segment', validate='m:m')"
+    )
+
+    [(_, scaled)] = list(
+        estimate_materialisation_boundaries(
+            graph, ["joined"], boundary_operators={"joined": ("join",)}
+        )
+    )
+
+    assert scaled.state is MaterialisationEstimateState.AVAILABLE, scaled.unavailable_reason
+    assert scaled.depends_on_many_to_many_join is True
+
+
+def test_group_by_after_an_undeclared_join_still_sees_the_row_product(tmp_path: Path) -> None:
+    """The unbounded-join flag is inherited by whatever materialises downstream."""
+    left_path = tmp_path / "left.parquet"
+    right_path = tmp_path / "right.parquet"
+    _write_shape_source(left_path)
+    _write_shape_source(right_path)
+    graph = _join_graph(left_path, right_path, "df = left.join(right, on='segment')")
+
+    [(_, downstream)] = list(
+        estimate_materialisation_boundaries(
+            graph, ["agg"], boundary_operators={"agg": ("group_by",)}
+        )
+    )
+
+    assert downstream.state is MaterialisationEstimateState.AVAILABLE
+    assert downstream.depends_on_many_to_many_join is True
+    assert (
+        f"cardinality_peak_upper_bound={_PROVABLE_SHAPE_ROWS * _PROVABLE_SHAPE_ROWS}"
+        in downstream.assumptions
+    )
+
+
+def test_declared_join_uniqueness_keeps_the_downstream_bound_tight(tmp_path: Path) -> None:
+    left_path = tmp_path / "left.parquet"
+    right_path = tmp_path / "right.parquet"
+    _write_shape_source(left_path)
+    _write_shape_source(right_path)
+    graph = _join_graph(
+        left_path,
+        right_path,
+        "df = left.join(right, on='segment', how='left', validate='m:1')",
+    )
+
+    downstream = _boundary_estimate(graph, "agg")
+
+    assert downstream.state is MaterialisationEstimateState.AVAILABLE
+    assert f"cardinality_peak_upper_bound={_PROVABLE_SHAPE_ROWS}" in downstream.assumptions
+
+
+def test_join_boundary_with_an_unresolvable_port_stays_unavailable(tmp_path: Path) -> None:
+    left_path = tmp_path / "left.parquet"
+    _write_shape_source(left_path)
+    left = _make_source_node(
+        node_id="left",
+        label="left",
+        node_type="dataInput",
+        config=_ready_file_input_config(left_path),
+    )
+    dynamic = _make_transform_node(
+        node_id="right",
+        label="right",
+        config={"code": "df = df.unpivot(index=['segment'])"},
+    )
+    joined = _make_transform_node(
+        node_id="joined", label="joined", config={"code": "df = left.join(right, on='segment')"}
+    )
+    graph = PipelineGraph(
+        nodes=[left, dynamic, joined],
+        edges=[
+            GraphEdge(id="e1", source="left", target="right"),
+            GraphEdge(id="e2", source="left", target="joined"),
+            GraphEdge(id="e3", source="right", target="joined"),
+        ],
+    )
+
+    [(_, estimate)] = list(
+        estimate_materialisation_boundaries(
+            graph, ["joined"], boundary_operators={"joined": ("join",)}
+        )
+    )
+
+    assert estimate.state is MaterialisationEstimateState.UNAVAILABLE
+    assert estimate.unavailable_reason is not None
+    assert "dynamic_unpivot" in estimate.unavailable_reason
+
+
+@pytest.mark.parametrize(
+    ("operators", "expected_factor"),
+    [
+        (("unique", "reverse"), 350),
+        (("reverse", "unique"), 350),
+        (("sort", "reverse"), 300),
+        (("reverse",), 250),
+    ],
+)
+def test_boundary_estimate_applies_the_maximum_chained_factor(
+    tmp_path: Path,
+    operators: tuple[str, ...],
+    expected_factor: int,
+) -> None:
+    """A chained node's estimate must not depend on which operator came first."""
+    path = tmp_path / "shapes.parquet"
+    _write_shape_source(path)
+    graph = _shape_graph(path, "df = df.filter(pl.col('premium') > 0)", _GROUP_BY_PREMIUM)
+
+    [(_, base)] = list(estimate_materialisation_boundaries(graph, ["agg"]))
+    [(_, scaled)] = list(
+        estimate_materialisation_boundaries(graph, ["agg"], boundary_operators={"agg": operators})
+    )
+
+    assert base.estimated_peak_bytes is not None
+    assert scaled.estimated_peak_bytes is not None
+    assert scaled.estimated_peak_bytes == (base.estimated_peak_bytes * expected_factor + 99) // 100
+    assert f"materialisation_factor_basis_points={expected_factor}" in scaled.assumptions
+    # The diagnostic still blames the first operator evaluated; the whole chain
+    # is recorded so the factor can be audited.
+    assert f"boundary_operator={operators[0]}" in scaled.assumptions
+    assert f"boundary_operators={','.join(operators)}" in scaled.assumptions
+
+
+def _three_source_join_graph(
+    left_path: Path,
+    middle_path: Path,
+    right_path: Path,
+    join_code: str,
+) -> PipelineGraph:
+    nodes = [
+        _make_source_node(
+            node_id=name, label=name, node_type="dataInput", config=_ready_file_input_config(path)
+        )
+        for name, path in (
+            ("left", left_path),
+            ("middle", middle_path),
+            ("right", right_path),
+        )
+    ]
+    nodes.append(_make_transform_node(node_id="joined", label="joined", config={"code": join_code}))
+    return PipelineGraph(
+        nodes=nodes,
+        edges=[
+            GraphEdge(id="e1", source="left", target="joined"),
+            GraphEdge(id="e2", source="middle", target="joined"),
+            GraphEdge(id="e3", source="right", target="joined"),
+        ],
+    )
+
+
+def test_chained_join_is_sized_from_the_previous_join_not_the_original_ports(
+    tmp_path: Path,
+) -> None:
+    """The second join consumes the first join's result, product included."""
+    paths = []
+    for name in ("left", "middle", "right"):
+        path = tmp_path / f"{name}.parquet"
+        _write_shape_source(path)
+        paths.append(path)
+    undeclared = _three_source_join_graph(
+        *paths,
+        "df = left.join(middle, on='segment').join(right, on='segment')",
+    )
+    declared = _three_source_join_graph(
+        *paths,
+        "df = left.join(middle, on='segment', how='left', validate='m:1')"
+        ".join(right, on='segment', how='left', validate='m:1')",
+    )
+
+    [(_, chained)] = list(
+        estimate_materialisation_boundaries(
+            undeclared, ["joined"], boundary_operators={"joined": ("join",)}
+        )
+    )
+    [(_, linear)] = list(
+        estimate_materialisation_boundaries(
+            declared, ["joined"], boundary_operators={"joined": ("join",)}
+        )
+    )
+
+    assert chained.state is MaterialisationEstimateState.AVAILABLE, chained.unavailable_reason
+    assert linear.state is MaterialisationEstimateState.AVAILABLE, linear.unavailable_reason
+    # The undeclared chain's second join consumes the first join's product and
+    # is itself bounded only by its own product on top of that.
+    assert (
+        "boundary_input_rows_upper_bound="
+        f"{_PROVABLE_SHAPE_ROWS * _PROVABLE_SHAPE_ROWS * _PROVABLE_SHAPE_ROWS}"
+        in chained.assumptions
+    )
+    # A declared m:1 chain never expands, so it stays at one port's rows.
+    assert f"boundary_input_rows_upper_bound={_PROVABLE_SHAPE_ROWS}" in linear.assumptions
+    assert chained.estimated_peak_bytes is not None
+    assert linear.estimated_peak_bytes is not None
+    assert chained.estimated_peak_bytes > linear.estimated_peak_bytes
+
+
+def test_cross_join_boundary_is_unmeasured_and_therefore_unavailable(tmp_path: Path) -> None:
+    """EXEC-P07 measured inner/left/asof joins; a cross join inherits nothing."""
+    left_path = tmp_path / "left.parquet"
+    right_path = tmp_path / "right.parquet"
+    _write_shape_source(left_path)
+    _write_shape_source(right_path)
+    graph = _join_graph(left_path, right_path, "df = left.join(right, how='cross')")
+
+    [(_, estimate)] = list(
+        estimate_materialisation_boundaries(
+            graph, ["joined"], boundary_operators={"joined": ("join",)}
+        )
+    )
+
+    assert estimate.state is MaterialisationEstimateState.UNAVAILABLE
+    assert estimate.unavailable_reason == "cross_join_unmeasured"
+
+
+def test_cross_join_output_product_still_propagates_downstream(tmp_path: Path) -> None:
+    """Only the join's own admission is withheld; its output bound is unchanged."""
+    left_path = tmp_path / "left.parquet"
+    right_path = tmp_path / "right.parquet"
+    _write_shape_source(left_path)
+    _write_shape_source(right_path)
+    graph = _join_graph(left_path, right_path, "df = left.join(right, how='cross')")
+
+    downstream = _boundary_estimate(graph, "agg")
+
+    assert downstream.state is MaterialisationEstimateState.AVAILABLE
+    assert (
+        f"cardinality_peak_upper_bound={_PROVABLE_SHAPE_ROWS * _PROVABLE_SHAPE_ROWS}"
+        in downstream.assumptions
+    )
+
+
+def _self_join_graph(path: Path, join_code: str) -> PipelineGraph:
+    """One source wired into a join node twice: both ports hold the same frame."""
+    source = _make_source_node(
+        node_id="src", label="src", node_type="dataInput", config=_ready_file_input_config(path)
+    )
+    joined = _make_transform_node(node_id="joined", label="joined", config={"code": join_code})
+    return PipelineGraph(
+        nodes=[source, joined],
+        edges=[GraphEdge(id="e1", source="src", target="joined")],
+    )
+
+
+def test_self_join_charges_the_shared_port_width_twice(tmp_path: Path) -> None:
+    """``df.join(df, ...)`` holds one frame as two operands, so it costs two."""
+    path = tmp_path / "src.parquet"
+    _write_shape_source(path)
+    self_join = _self_join_graph(path, "df = src.join(src, on='segment', validate='m:1')")
+    single = _self_join_graph(path, "df = src.sort('premium')")
+
+    [(_, joined)] = list(
+        estimate_materialisation_boundaries(
+            self_join, ["joined"], boundary_operators={"joined": ("join",)}
+        )
+    )
+    [(_, sorted_once)] = list(
+        estimate_materialisation_boundaries(
+            single, ["joined"], boundary_operators={"joined": ("sort",)}
+        )
+    )
+
+    assert joined.state is MaterialisationEstimateState.AVAILABLE, joined.unavailable_reason
+    assert "boundary_resident_operand_count=2" in joined.assumptions
+    assert joined.estimated_peak_bytes is not None
+    assert sorted_once.estimated_peak_bytes is not None
+    # Same rows and same source columns: only the doubled port width and the
+    # two operators' factors (200 for join, 300 for sort) differ.
+    single_port_width_at_join_factor = (sorted_once.estimated_peak_bytes * 200 + 299) // 300
+    assert joined.estimated_peak_bytes == 2 * single_port_width_at_join_factor
+
+
+def test_a_lookup_joined_twice_is_charged_twice(tmp_path: Path) -> None:
+    """A chain that joins the same lookup twice holds it twice."""
+    left_path = tmp_path / "left.parquet"
+    lookup_path = tmp_path / "lookup.parquet"
+    _write_shape_source(left_path)
+    _write_shape_source(lookup_path)
+
+    def _graph(code: str) -> PipelineGraph:
+        nodes = [
+            _make_source_node(
+                node_id=name,
+                label=name,
+                node_type="dataInput",
+                config=_ready_file_input_config(path),
+            )
+            for name, path in (("left", left_path), ("lookup", lookup_path))
+        ]
+        nodes.append(_make_transform_node(node_id="joined", label="joined", config={"code": code}))
+        return PipelineGraph(
+            nodes=nodes,
+            edges=[
+                GraphEdge(id="e1", source="left", target="joined"),
+                GraphEdge(id="e2", source="lookup", target="joined"),
+            ],
+        )
+
+    twice = _graph(
+        "df = left.join(lookup, on='segment', how='left', validate='m:1')"
+        ".join(lookup, on='segment', how='left', validate='m:1')"
+    )
+    once = _graph("df = left.join(lookup, on='segment', how='left', validate='m:1')")
+
+    estimates = {}
+    for name, graph in (("twice", twice), ("once", once)):
+        [(_, estimate)] = list(
+            estimate_materialisation_boundaries(
+                graph, ["joined"], boundary_operators={"joined": ("join",)}
+            )
+        )
+        estimates[name] = estimate
+
+    assert estimates["twice"].state is MaterialisationEstimateState.AVAILABLE
+    assert "boundary_resident_operand_count=3" in estimates["twice"].assumptions
+    # Two ports resident once each is the ordinary case and stays unannotated.
+    assert not any(
+        item.startswith("boundary_resident_operand_count=")
+        for item in estimates["once"].assumptions
+    )
+    assert estimates["twice"].estimated_peak_bytes is not None
+    assert estimates["once"].estimated_peak_bytes is not None
+    assert estimates["twice"].estimated_peak_bytes > estimates["once"].estimated_peak_bytes
+
+
+def test_an_ordinary_two_port_join_is_unchanged_by_operand_counting(tmp_path: Path) -> None:
+    left_path = tmp_path / "left.parquet"
+    right_path = tmp_path / "right.parquet"
+    _write_shape_source(left_path)
+    _write_shape_source(right_path)
+    graph = _join_graph(
+        left_path, right_path, "df = left.join(right, on='segment', how='left', validate='m:1')"
+    )
+
+    [(_, estimate)] = list(
+        estimate_materialisation_boundaries(
+            graph, ["joined"], boundary_operators={"joined": ("join",)}
+        )
+    )
+
+    assert estimate.state is MaterialisationEstimateState.AVAILABLE
+    assert not any(
+        item.startswith("boundary_resident_operand_count=") for item in estimate.assumptions
+    )
+    assert f"boundary_input_rows_upper_bound={_PROVABLE_SHAPE_ROWS}" in estimate.assumptions
+
+
+def _alias_join_graph(path: Path, code: str, input_mapping: dict[str, str]) -> PipelineGraph:
+    """One source into a join node that renames it through ``inputMapping``."""
+    source = _make_source_node(
+        node_id="src", label="src", node_type="dataInput", config=_ready_file_input_config(path)
+    )
+    joined = _make_transform_node(
+        node_id="joined",
+        label="joined",
+        config={"code": code, "inputMapping": input_mapping},
+    )
+    return PipelineGraph(
+        nodes=[source, joined],
+        edges=[GraphEdge(id="e1", source="src", target="joined")],
+    )
+
+
+def test_a_self_join_through_an_input_mapping_alias_is_charged_twice(tmp_path: Path) -> None:
+    """``inputMapping`` renames the frame; both operands are still resident.
+
+    Counting by the edge's own name and defaulting the alias to one reference
+    silently halved this estimate.
+    """
+    path = tmp_path / "src.parquet"
+    _write_shape_source(path)
+    aliased = _alias_join_graph(
+        path,
+        "df = logical.join(logical, on='segment', validate='m:1')",
+        {"logical": "src"},
+    )
+    direct = _self_join_graph(path, "df = src.join(src, on='segment', validate='m:1')")
+
+    estimates = {}
+    for name, graph in (("aliased", aliased), ("direct", direct)):
+        [(_, estimate)] = list(
+            estimate_materialisation_boundaries(
+                graph, ["joined"], boundary_operators={"joined": ("join",)}
+            )
+        )
+        estimates[name] = estimate
+
+    assert estimates["aliased"].state is MaterialisationEstimateState.AVAILABLE, estimates[
+        "aliased"
+    ].unavailable_reason
+    assert "boundary_resident_operand_count=2" in estimates["aliased"].assumptions
+    # The alias must not change what the estimate costs.
+    assert estimates["aliased"].estimated_peak_bytes == estimates["direct"].estimated_peak_bytes
+
+
+def test_a_duplicate_valued_input_mapping_fails_loudly_instead_of_estimating(
+    tmp_path: Path,
+) -> None:
+    """Two logical names for one edge is not a graph the runtime will execute.
+
+    ``resolve_input_mapping_names`` is the canonical contract: the mapping is
+    one-to-one. Summing the two aliases into one edge would have produced a
+    confident estimate for a graph the executor rejects, so the estimator
+    raises the same error rather than inventing an answer.
+    """
+    from haute._graph_utils import resolve_input_mapping_names
+
+    mapping = {"alpha": "src", "beta": "src"}
+
+    with pytest.raises(ConfigError) as runtime_error:
+        resolve_input_mapping_names(["src"], mapping)
+
+    path = tmp_path / "src.parquet"
+    _write_shape_source(path)
+    graph = _alias_join_graph(
+        path,
+        "df = alpha.join(beta, on='segment', validate='m:1')",
+        mapping,
+    )
+
+    with pytest.raises(ConfigError) as estimator_error:
+        list(
+            estimate_materialisation_boundaries(
+                graph, ["joined"], boundary_operators={"joined": ("join",)}
+            )
+        )
+
+    # The analyst sees the executor's diagnosis, not an estimator-specific one.
+    assert str(estimator_error.value) == str(runtime_error.value)
+    assert "one distinct current edge input name" in str(estimator_error.value)
+
+
+@pytest.mark.parametrize(
+    ("validate", "expected"),
+    [(None, True), ("m:m", True), ("m:1", False)],
+)
+def test_edge_join_contract_decides_the_many_to_many_flag(
+    tmp_path: Path, validate: str | None, expected: bool
+) -> None:
+    """An Edge Join without a bounding contract carries the row product downstream."""
+    left_path = tmp_path / "left.parquet"
+    right_path = tmp_path / "right.parquet"
+    _write_shape_source(left_path)
+    pl.DataFrame({"segment": ["a", "b"], "rate": [1.0, 2.0]}).write_parquet(right_path)
+    left = _make_source_node(
+        node_id="left",
+        label="left",
+        node_type="dataInput",
+        config=_ready_file_input_config(left_path),
+    )
+    right = _make_source_node(
+        node_id="right",
+        label="right",
+        node_type="dataInput",
+        config=_ready_file_input_config(right_path),
+    )
+    config: dict[str, object] = {"how": "inner", "on": ["segment"]}
+    if validate is not None:
+        config["validate"] = validate
+    joined = _make_edge_join_node(node_id="joined", label="joined", config=config)
+    joined.data.nodeType = NodeType.EDGE_JOIN
+    aggregated = _make_transform_node(
+        node_id="agg",
+        label="agg",
+        config={
+            "code": "df = df.group_by('segment').agg(pl.col('premium').sum().alias('premium'))"
+        },
+    )
+    graph = PipelineGraph(
+        nodes=[left, right, joined, aggregated],
+        edges=[
+            GraphEdge(id="e1", source="left", target="joined", targetHandle="base"),
+            GraphEdge(id="e2", source="right", target="joined", targetHandle="join"),
+            GraphEdge(id="e3", source="joined", target="agg"),
+        ],
+    )
+
+    [(_, downstream)] = list(
+        estimate_materialisation_boundaries(
+            graph, ["agg"], boundary_operators={"agg": ("group_by",)}
+        )
+    )
+
+    assert downstream.state is MaterialisationEstimateState.AVAILABLE, downstream.unavailable_reason
+    assert downstream.depends_on_many_to_many_join is expected
+
+
+# ---------------------------------------------------------------------------
+# Estimator path resolution — the estimate must describe the files execution opens
+# ---------------------------------------------------------------------------
+
+
+def _nested_pipeline_project(tmp_path: Path) -> Path:
+    """Build a project whose pipeline lives in ``rating/`` and data at the root.
+
+    This is the shape that exposes a resolver disagreement: a relative locator
+    such as ``data/policies.parquet`` names a project-root file, while anchoring
+    it to the pipeline directory alone names ``rating/data/policies.parquet``.
+    """
+    from haute._sandbox import set_project_root
+
+    (tmp_path / "haute.toml").write_text(
+        '[project]\nname = "t"\npipeline = "rating/main.py"\n',
+        encoding="utf-8",
+    )
+    pipeline_dir = tmp_path / "rating"
+    pipeline_dir.mkdir(exist_ok=True)
+    main_py = pipeline_dir / "main.py"
+    main_py.write_text("", encoding="utf-8")
+    set_project_root(tmp_path)
+    return main_py
+
+
+class TestEstimatorResolvesPathsLikeTheExecutor:
+    """Relative runtime locators must resolve to the files execution opens.
+
+    Execution canonicalises every local runtime input path through
+    :func:`haute.execution.canonical_dataframe_execution_graph` — project root
+    first, pipeline directory as fallback, existing files win. An estimator
+    that anchors the raw config path to the pipeline directory alone inspects a
+    different file, or no file at all, and reports a degraded or simply wrong
+    estimate for a graph that runs fine.
+    """
+
+    def test_root_relative_data_input_reports_the_row_count_execution_reads(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        main_py = _nested_pipeline_project(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "data").mkdir()
+        pl.DataFrame({"policy_id": [1, 2, 3]}).write_parquet(tmp_path / "data" / "policies.parquet")
+        node = _make_source_node(
+            node_id="src",
+            node_type="dataInput",
+            config=_file_input_config("data/policies.parquet"),
+        )
+        graph = PipelineGraph(nodes=[node], edges=[], source_file=str(main_py))
+
+        index = _EstimateGraphIndex.build(graph, "live")
+        metadata = index.source_metadata(index.node_map["src"])
+
+        assert metadata is not None
+        assert metadata.row_count == 3
+
+    def test_data_input_measures_the_same_copy_execution_opens(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from haute.execution import canonical_dataframe_execution_graph
+
+        main_py = _nested_pipeline_project(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "rating" / "outputs").mkdir(parents=True)
+        (tmp_path / "outputs").mkdir()
+        pl.DataFrame({"policy_id": [1, 2]}).write_parquet(
+            tmp_path / "rating" / "outputs" / "nb.parquet"
+        )
+        pl.DataFrame({"policy_id": [1, 2, 3, 4, 5]}).write_parquet(
+            tmp_path / "outputs" / "nb.parquet"
+        )
+        node = _make_source_node(
+            node_id="src",
+            node_type="dataInput",
+            config=_file_input_config("outputs/nb.parquet"),
+        )
+        graph = PipelineGraph(nodes=[node], edges=[], source_file=str(main_py))
+        [executed_node] = canonical_dataframe_execution_graph(graph).nodes
+        executed_path = Path(str(executed_node.data.config["path"]))
+
+        index = _EstimateGraphIndex.build(graph, "live")
+        metadata = index.source_metadata(index.node_map["src"])
+
+        assert metadata is not None
+        assert metadata.row_count == read_parquet_metadata(executed_path)["row_count"]
+        assert metadata.row_count == 5
+
+    def test_root_relative_api_input_resolves_from_outside_the_project_root(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        main_py = _nested_pipeline_project(tmp_path)
+        # The estimator must not depend on the process working directory: a
+        # locator is project-relative, not cwd-relative, exactly as execution
+        # treats it.
+        monkeypatch.chdir(tmp_path / "rating")
+        (tmp_path / "data").mkdir()
+        pl.DataFrame({"quote_id": [1, 2, 3, 4]}).write_parquet(tmp_path / "data" / "quotes.parquet")
+        node = _make_source_node(
+            node_id="src",
+            node_type="apiInput",
+            config={"path": "data/quotes.parquet"},
+        )
+        graph = PipelineGraph(nodes=[node], edges=[], source_file=str(main_py))
+
+        index = _EstimateGraphIndex.build(graph, "live")
+        metadata = index.source_metadata(index.node_map["src"])
+
+        assert metadata is not None
+        assert metadata.row_count == 4

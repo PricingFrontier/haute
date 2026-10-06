@@ -28,9 +28,8 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 function renderAutoRange(onUpdate = vi.fn(() => ({ ok: true as const }))) {
   const hook = renderHook(() => useOptimiserAutoRange({
     nodeId: "optimiser-1",
-    constraintNames: ["loss_ratio"],
     buildGraph: () => ({ nodes: [], edges: [] }),
-    onUpdate,
+    writeRanges: onUpdate,
   }))
   return { ...hook, onUpdate }
 }
@@ -52,7 +51,7 @@ describe("useOptimiserAutoRange", () => {
     })
     const { result, unmount, onUpdate } = renderAutoRange()
 
-    act(() => result.current.run())
+    act(() => result.current.run(["loss_ratio"]))
     expect(result.current.autoRangeLoading).toBe(true)
     unmount()
     expect(requestSignal?.aborted).toBe(true)
@@ -74,13 +73,17 @@ describe("useOptimiserAutoRange", () => {
       requestSignal = signal
       return Promise.resolve({ status: "started", job_id: "stale-job" })
     })
-    api.status.mockReturnValue(status.promise)
+    let statusSignal: AbortSignal | undefined
+    api.status.mockImplementation((_jobId: string, { signal }: { signal: AbortSignal }) => {
+      statusSignal = signal
+      return status.promise
+    })
     const { result, onUpdate } = renderAutoRange()
 
-    act(() => result.current.run())
+    act(() => result.current.run(["loss_ratio"]))
     await waitFor(() => expect(api.status).toHaveBeenCalledWith(
       "stale-job",
-      { signal: requestSignal },
+      { signal: expect.any(AbortSignal) },
     ))
 
     act(() => {
@@ -89,6 +92,7 @@ describe("useOptimiserAutoRange", () => {
 
     await waitFor(() => expect(api.cancel).toHaveBeenCalledWith("stale-job"))
     expect(requestSignal?.aborted).toBe(true)
+    expect(statusSignal?.aborted).toBe(true)
     expect(result.current.autoRangeLoading).toBe(false)
 
     await act(async () => {

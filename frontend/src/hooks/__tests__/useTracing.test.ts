@@ -9,6 +9,7 @@ import useTracing, {
 import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
+import useNodeDataStore from "../../stores/useNodeDataStore"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
 import { makeNode, makeEdge } from "../../test-utils/factories"
 import { NODE_TYPES } from "../../utils/nodeTypes"
@@ -118,6 +119,7 @@ function makeTrace(nodeIds: string[]): TraceResult {
       output_values: {},
       topological_rank: topologicalRank,
       column_relevant: true,
+      contributed_columns: [], derivations: [],
     })),
     target_node_id: nodeIds.at(-1) ?? "",
     row_index: 0,
@@ -185,8 +187,8 @@ describe("useTracing", () => {
         source_revision: "r2",
         load_status: "degraded",
       }),
-      null,
       false,
+      "live-fingerprint",
     )
     const { result } = renderHook(() => useTracing(makeParams()))
 
@@ -211,8 +213,8 @@ describe("useTracing", () => {
         source_revision: "r2",
         load_status: "degraded",
       }),
-      null,
       false,
+      "live-fingerprint",
     )
     await act(async () => {
       resolveTrace({ status: "ok", trace: makeTrace(["stale_trace"]) })
@@ -251,7 +253,7 @@ describe("useTracing", () => {
 
   it("handleCellClick calls traceCell and sets result on success", async () => {
     const trace = {
-      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true }],
+      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] }],
       target_node_id: "n2",
       row_index: 0,
       column: "price",
@@ -269,6 +271,39 @@ describe("useTracing", () => {
     })
     await waitFor(() => expect(result.current.traceResult).not.toBeNull())
     expect(result.current.tracedCell).toEqual({ rowIndex: 0, column: "price" })
+  })
+
+  it("sends the displayed preview's seed plan, and none without one", async () => {
+    mockTraceCell.mockResolvedValue({ status: "ok", trace: makeTrace(["n1", "n2"]) })
+    const previewSeedPlan = [{
+      node_id: "join",
+      port_label: null,
+      node_label: "Join",
+      identity_digest: "b".repeat(64),
+      generation_id: "generation-7",
+      columns: null,
+      created_at: "2026-09-19T00:00:00+00:00",
+      kind: "captured" as const,
+    }]
+    const seeded = renderHook(() => useTracing(makeParams({ previewSeedPlan })))
+    await act(async () => {
+      seeded.result.current.handleCellClick(0, "price")
+    })
+    await waitFor(() => expect(mockTraceCell).toHaveBeenCalledOnce())
+    expect(mockTraceCell.mock.calls[0][0].seed_plan).toEqual([{
+      node_id: "join",
+      port_label: null,
+      identity_digest: "b".repeat(64),
+      generation_id: "generation-7",
+    }])
+    seeded.unmount()
+
+    const unseeded = renderHook(() => useTracing(makeParams()))
+    await act(async () => {
+      unseeded.result.current.handleCellClick(0, "price")
+    })
+    await waitFor(() => expect(mockTraceCell).toHaveBeenCalledTimes(2))
+    expect(mockTraceCell.mock.calls[1][0].seed_plan).toEqual([])
   })
 
   it("ignores stale trace responses when a newer click resolves first", async () => {
@@ -490,7 +525,7 @@ describe("useTracing", () => {
       data: {
         label: "INPUT",
         nodeType: NODE_TYPES.SUBMODEL_PORT,
-        instanceId: "instance_primary",
+        instanceId: "pricing",
         definitionId: "definition_pricing",
         portDirection: "input",
         ports: [],
@@ -502,7 +537,7 @@ describe("useTracing", () => {
       data: {
         label: "OUTPUT",
         nodeType: NODE_TYPES.SUBMODEL_PORT,
-        instanceId: "instance_primary",
+        instanceId: "pricing",
         definitionId: "definition_pricing",
         portDirection: "output",
         ports: [],
@@ -519,7 +554,7 @@ describe("useTracing", () => {
       },
     }
     const params = makeParams({
-      activeSubmodelIdentity: { instanceId: "instance_primary", definitionId: "definition_pricing" },
+      activeSubmodelIdentity: { instanceId: "pricing", definitionId: "definition_pricing" },
       nodes: [inputBoundary, child, outputBoundary],
       submodels,
       submodelsRef: { current: submodels },
@@ -531,17 +566,29 @@ describe("useTracing", () => {
     })
     mockTraceCell.mockResolvedValue({
       status: "ok",
-      trace: makeTrace(["external-source-b", "submodel_runtime/instance_primary/child", "external-target"]),
+      trace: makeTrace(["external-source-b", "submodel_runtime/pricing/child", "external-target"]),
     })
 
-    const { result } = renderHook(() => useTracing(params))
+    const { result, rerender } = renderHook(
+      (focus: string | null) => useTracing({ ...params, traceFocusNodeId: focus }),
+      { initialProps: null as string | null },
+    )
     await act(async () => {
       result.current.handleCellClick(0, "price")
     })
     await waitFor(() => expect(result.current.traceResult).not.toBeNull())
     expect(mockTraceCell).toHaveBeenCalledWith(expect.objectContaining({
-      target_node_id: "submodel_runtime/instance_primary/child",
+      target_node_id: "submodel_runtime/pricing/child",
     }))
+
+    // A trace card points at runtime ids: the ring lands on the visible node for each.
+    const focusedIds = () => result.current.nodesWithStatus.filter((node) => node.data._traceFocused).map((node) => node.id)
+    rerender("submodel_runtime/pricing/child")
+    expect(focusedIds()).toEqual(["child"])
+    expect(result.current.resolveTraceNodeId("submodel_runtime/pricing/child")).toBe("child")
+    rerender("external-target")
+    expect(focusedIds()).toEqual(["boundary-output"])
+    rerender(null)
 
     const projectedData = Object.fromEntries(
       result.current.nodesWithStatus.map((node) => [node.id, node.data]),
@@ -556,9 +603,44 @@ describe("useTracing", () => {
     })
   })
 
+  it("retains an unavailable submodel with a missing definition without tracing it", () => {
+    const inputs = makeNode("Inputs", NODE_TYPES.SUBMODEL, {
+      data: {
+        label: "Inputs",
+        nodeType: NODE_TYPES.SUBMODEL,
+        config: { definitionId: "Inputs", alias: "Inputs" },
+        _loadAvailability: "unavailable",
+      },
+    })
+    const consumer = makeNode("consumer")
+    const { result } = renderHook(() => useTracing(makeParams({
+      nodes: [inputs, consumer],
+      edges: [makeEdge("Inputs", "consumer")],
+      selectedNode: consumer,
+    })))
+
+    expect(result.current.nodesWithStatus.map((node) => node.id)).toEqual(["Inputs", "consumer"])
+    expect(result.current.edgesWithTrace.map((edge) => edge.id)).toEqual(["e_Inputs_consumer"])
+    expect(mockTraceCell).not.toHaveBeenCalled()
+  })
+
+  it.each(["ready", undefined] as const)("still rejects a %s submodel with a missing definition", (availability) => {
+    const inputs = makeNode("Inputs", NODE_TYPES.SUBMODEL, {
+      data: {
+        label: "Inputs",
+        nodeType: NODE_TYPES.SUBMODEL,
+        config: { definitionId: "Inputs", alias: "Inputs" },
+        ...(availability === undefined ? {} : { _loadAvailability: availability }),
+      },
+    })
+    expect(() => renderHook(() => useTracing(makeParams({ nodes: [inputs] })))).toThrow(
+      "Submodel instance Inputs references missing or malformed definition Inputs",
+    )
+  })
+
   it("nodesWithStatus dims nodes not in trace via _traceDimmed data flag only", async () => {
     const trace = {
-      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true }],
+      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] }],
       target_node_id: "n2",
       row_index: 0,
       column: "price",
@@ -582,11 +664,43 @@ describe("useTracing", () => {
     expect(dimmedNode.style?.opacity).toBeUndefined()
   })
 
+  it("nodesWithStatus rings the node a trace card points at, only while a trace shows", async () => {
+    const trace = {
+      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] }],
+      target_node_id: "n1",
+      row_index: 0,
+      column: "price",
+      output_value: 1,
+      total_nodes_in_pipeline: 2,
+      nodes_in_trace: 1,
+      execution_ms: 10,
+      row_id_column: null,
+      row_id_value: null,
+    }
+    mockTraceCell.mockResolvedValue({ status: "ok", trace: completeTrace(trace) })
+    const { result, rerender } = renderHook(
+      (props: { focus: string | null }) => useTracing(makeParams({ traceFocusNodeId: props.focus })),
+      { initialProps: { focus: "n1" as string | null } },
+    )
+    const focused = () => result.current.nodesWithStatus.map((n) => [n.id, n.data._traceFocused])
+    // No trace yet: nothing is ringed.
+    expect(focused()).toEqual([["n1", false], ["n2", false]])
+
+    await act(async () => {
+      result.current.handleCellClick(0, "price")
+    })
+    await waitFor(() => expect(result.current.traceResult).not.toBeNull())
+    expect(focused()).toEqual([["n1", true], ["n2", false]])
+
+    rerender({ focus: null })
+    expect(focused()).toEqual([["n1", false], ["n2", false]])
+  })
+
   it("nodesWithStatus does not set style.opacity on traced nodes either", async () => {
     const trace = {
       steps: [
-        { node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true },
-        { node_id: "n2", node_name: "N2", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 1, column_relevant: true },
+        { node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] },
+        { node_id: "n2", node_name: "N2", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 1, column_relevant: true, contributed_columns: [], derivations: [] },
       ],
       target_node_id: "n2",
       row_index: 0,
@@ -612,7 +726,7 @@ describe("useTracing", () => {
 
   it("nodesWithStatus preserves transition on style", async () => {
     const trace = {
-      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true }],
+      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] }],
       target_node_id: "n2",
       row_index: 0,
       column: "price",
@@ -638,8 +752,8 @@ describe("useTracing", () => {
   it("edgesWithTrace highlights edges between traced nodes", async () => {
     const trace = {
       steps: [
-        { node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true },
-        { node_id: "n2", node_name: "N2", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 1, column_relevant: true },
+        { node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] },
+        { node_id: "n2", node_name: "N2", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 1, column_relevant: true, contributed_columns: [], derivations: [] },
       ],
       target_node_id: "n2",
       row_index: 0,
@@ -843,7 +957,7 @@ describe("useTracing", () => {
 
   it("_hoverDimmed is false when trace is active (trace takes priority)", async () => {
     const trace = {
-      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true }],
+      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] }],
       target_node_id: "n2",
       row_index: 0,
       column: "price",
@@ -994,5 +1108,199 @@ describe("useTracing", () => {
     for (const n of result.current.nodesWithStatus) {
       expect(n.data._hoverDimmed).toBe(false)
     }
+  })
+})
+
+describe("useTracing validity across shared snapshots", () => {
+  const seedPlanEntry = (generationId: string) => ({
+    node_id: "join",
+    port_label: null,
+    node_label: "Join",
+    identity_digest: "b".repeat(64),
+    generation_id: generationId,
+    columns: null,
+    created_at: "2026-09-19T00:00:00+00:00",
+    kind: "seeded" as const,
+  })
+
+  beforeEach(() => {
+    useSettingsStore.setState({ rowLimit: 1000, activeSource: "live" })
+    useDocumentStatusStore.getState().loadDocumentStatus(
+      makePipelineEditorDocument({ source_file: "main.py", source_revision: "r1" }),
+    )
+    mockTraceCell.mockReset()
+    mockReducedMotion(false)
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it("hides a completed trace when a snapshot is published, refreshed, or cleared", async () => {
+    mockTraceCell.mockResolvedValue({ status: "ok", trace: makeTrace(["n1", "n2"]) })
+    const { result } = renderHook(() => useTracing(makeParams({ previewSeedPlan: [seedPlanEntry("g1")] })))
+    await act(async () => { result.current.handleCellClick(0, "price") })
+    await waitFor(() => expect(result.current.traceState.status).toBe("ready"))
+
+    act(() => useNodeDataStore.getState().bumpEpoch())
+
+    expect(result.current.traceState.status).toBe("idle")
+    expect(result.current.traceResult).toBeNull()
+    expect(result.current.tracedCell).toBeNull()
+  })
+
+  it("aborts an in-flight trace and discards its late response when the epoch changes", async () => {
+    let resolve!: (value: Awaited<ReturnType<typeof traceCell>>) => void
+    let signal: AbortSignal | undefined
+    mockTraceCell.mockImplementation((args) => {
+      signal = args.signal
+      return new Promise((done) => { resolve = done })
+    })
+    const { result } = renderHook(() => useTracing(makeParams({ previewSeedPlan: [seedPlanEntry("g1")] })))
+    act(() => result.current.handleCellClick(0, "price"))
+    await waitFor(() => expect(mockTraceCell).toHaveBeenCalledOnce())
+
+    act(() => useNodeDataStore.getState().bumpEpoch())
+
+    expect(signal?.aborted).toBe(true)
+    expect(result.current.traceState.status).toBe("idle")
+    await act(async () => { resolve({ status: "ok", trace: makeTrace(["n1", "n2"]) }) })
+    expect(result.current.traceResult).toBeNull()
+  })
+
+  it("hides a completed trace when the explained preview reads other generations", async () => {
+    mockTraceCell.mockResolvedValue({ status: "ok", trace: makeTrace(["n1", "n2"]) })
+    const { result, rerender } = renderHook(
+      ({ plan }) => useTracing(makeParams({ previewSeedPlan: plan })),
+      { initialProps: { plan: [seedPlanEntry("g1")] } },
+    )
+    await act(async () => { result.current.handleCellClick(0, "price") })
+    await waitFor(() => expect(result.current.traceState.status).toBe("ready"))
+
+    rerender({ plan: [seedPlanEntry("g1")] })
+    expect(result.current.traceState.status).toBe("ready")
+
+    rerender({ plan: [seedPlanEntry("g2")] })
+    expect(result.current.traceState.status).toBe("idle")
+    expect(result.current.traceResult).toBeNull()
+  })
+
+  it("keeps a node not traced above a snapshot on the canvas trace path, without a traced value", async () => {
+    const diagnostic = (nodeId: string, reason: string, seedNodeIds: string[]) => ({
+      code: reason,
+      severity: "info",
+      reason,
+      message: "Backend detail.",
+      node_id: nodeId,
+      child_node_id: null,
+      match_columns: [],
+      ignored_columns: [],
+      matched_row_indices: [],
+      seed_node_ids: seedNodeIds,
+    })
+    mockTraceCell.mockResolvedValue({
+      status: "ok",
+      trace: {
+        ...makeTrace(["n2"]),
+        omissions: [
+          { node_id: "n1", node_name: "n1", node_type: "polars", topological_rank: 0, reason: "seed_row_not_reproduced", diagnostic_index: 0 },
+          { node_id: "n0", node_name: "n0", node_type: "polars", topological_rank: 0, reason: "ambiguous_match", diagnostic_index: 1 },
+        ],
+        correlation_diagnostics: [
+          diagnostic("n1", "seed_row_not_reproduced", ["n2"]),
+          diagnostic("n0", "ambiguous_match", []),
+        ],
+      },
+    })
+    const nodes = [makeNode("n0"), makeNode("n1"), makeNode("n2")] as Node[]
+    const edges = [makeEdge("n0", "n2"), makeEdge("n1", "n2")] as Edge[]
+    const { result } = renderHook(() => useTracing(makeParams({ nodes, edges })))
+    await act(async () => { result.current.handleCellClick(0, "price") })
+    await waitFor(() => expect(result.current.traceResult).not.toBeNull())
+
+    const node = (id: string) => result.current.nodesWithStatus.find((candidate) => candidate.id === id)!
+    // Its data reached the target through the snapshot: on the path, not dimmed.
+    expect(node("n1").data._traceDimmed).toBe(false)
+    expect(node("n1").data._traceActive).toBe(false)
+    // Other omissions keep their existing treatment.
+    expect(node("n0").data._traceDimmed).toBe(true)
+    const edge = (source: string) => result.current.edgesWithTrace.find((candidate) => candidate.source === source)!
+    expect(edge("n1").style?.strokeWidth).toBe(2.5)
+    expect(edge("n0").style?.strokeWidth).toBe(1)
+  })
+
+  it("lights every step on the traced value's lineage with what it computed for the value", async () => {
+    const base = makeTrace(["model", "side", "join", "apply"])
+    const diff = (added: string[]) => ({ columns_added: added, columns_removed: [], columns_modified: [], columns_passed: [] })
+    mockTraceCell.mockResolvedValue({
+      status: "ok",
+      trace: {
+        ...base,
+        column: "optimal_premium",
+        steps: [
+          { ...base.steps[0], schema_diff: diff(["competitor_premium", "note"]), output_values: { competitor_premium: 377.2, note: "x" }, contributed_columns: ["competitor_premium"], derivations: [] },
+          { ...base.steps[1], schema_diff: diff(["market_note"]), output_values: { market_note: "y" }, column_relevant: false },
+          { ...base.steps[2], schema_diff: diff(["sale_flag"]), output_values: { sale_flag: null } },
+          { ...base.steps[3], schema_diff: diff(["optimal_premium"]), output_values: { optimal_premium: 1.5 }, contributed_columns: ["optimal_premium"], derivations: [] },
+        ],
+      },
+    })
+    const nodes = ["model", "side", "join", "apply"].map((id) => makeNode(id)) as Node[]
+    const edges = [makeEdge("model", "join"), makeEdge("side", "join"), makeEdge("join", "apply")] as Edge[]
+    const { result } = renderHook(() => useTracing(makeParams({ nodes, edges, selectedNode: makeNode("apply") })))
+    await act(async () => { result.current.handleCellClick(0, "optimal_premium") })
+    await waitFor(() => expect(result.current.traceResult).not.toBeNull())
+
+    const data = (id: string) => result.current.nodesWithStatus.find((node) => node.id === id)!.data
+    expect(data("apply")).toMatchObject({ _traceActive: true, _traceValue: 1.5 })
+    // Upstream of the target, a step shows what it computed for the value.
+    expect(data("model")).toMatchObject({ _traceActive: true, _traceValue: 377.2 })
+    // A join that only carries the value's inputs is lit but shows no value.
+    expect(data("join")._traceActive).toBe(true)
+    expect(data("join")._traceValue).toBeUndefined()
+    // Joined-in data the value never reads is on the path, not lit.
+    expect(data("side")).toMatchObject({ _traceActive: false, _traceDimmed: false })
+  })
+
+  it("refreshes the preview when the generations it read have expired", async () => {
+    const err = Object.assign(new Error("HTTP 409"), {
+      status: 409,
+      rawDetail: {
+        error_code: "preview_seed_plan_expired",
+        message: "The preview's shared snapshot 'join' is no longer current.",
+      },
+    })
+    mockTraceCell.mockRejectedValue(err)
+    const refreshPreview = vi.fn()
+    const { result, rerender } = renderHook(
+      ({ plan, selectedNode }) => useTracing(makeParams({ refreshPreview, previewSeedPlan: plan, selectedNode })),
+      {
+        initialProps: {
+          plan: [seedPlanEntry("g1")] as ReturnType<typeof seedPlanEntry>[] | undefined,
+          selectedNode: makeNode("n2"),
+        },
+      },
+    )
+    await act(async () => { result.current.handleCellClick(0, "price") })
+
+    await waitFor(() => expect(result.current.traceState).toMatchObject({ status: "error", retryable: false }))
+    expect(refreshPreview).toHaveBeenCalledWith(expect.objectContaining({ id: "n2" }))
+    expect(result.current.tracedCell).toBeNull()
+
+    // The refresh replaces the preview — first with a loading one that lists
+    // no generations — and its own captures raise the epoch.
+    const selectedNode = makeNode("n2")
+    rerender({ plan: undefined, selectedNode })
+    act(() => useNodeDataStore.getState().bumpEpoch())
+    rerender({ plan: [seedPlanEntry("g2")], selectedNode })
+
+    expect(result.current.traceState).toMatchObject({
+      status: "error",
+      message: expect.stringContaining("The cached data this preview read has changed"),
+    })
+
+    rerender({ plan: [seedPlanEntry("g2")], selectedNode: makeNode("n1") })
+    expect(result.current.traceState.status).toBe("idle")
   })
 })

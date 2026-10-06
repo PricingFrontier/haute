@@ -24,11 +24,12 @@ function makeParams() {
     setSelectedNode: vi.fn(),
     setPreviewData: vi.fn(),
     fitView: vi.fn(),
+    submodels: {},
     resolveNodeIdentities: vi.fn(async (nodes: readonly Node[]) => [...nodes]),
   }
 }
 
-describe("useNodeHandlers — handleRenameNode", () => {
+describe("useNodeHandlers - handleRenameNode", () => {
   beforeEach(() => {
     useNodeResultsStore.setState({ previews: {}, columnCache: {} })
     useUIStore.setState({ renameDialog: null, submodelDialog: null })
@@ -196,7 +197,7 @@ describe("useNodeHandlers — handleRenameNode", () => {
 
   it("rejects an instance whose resolved identity does not match", async () => {
     const params = makeParams()
-    const source = makeNode("source", "submodel", { data: { label: "Score", nodeType: "submodel", config: { definitionId: "def", alias: "score" } } })
+    const source = makeNode("source", "submodel", { data: { label: "score", nodeType: "submodel", config: { definitionId: "def", alias: "score" } } })
     params.graphRef.current = { nodes: [source], edges: [] }
     params.resolveNodeIdentities = vi.fn(async () => [makeNode("wrong")])
     const { result } = renderHook(() => useNodeHandlers(params))

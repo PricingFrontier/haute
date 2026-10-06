@@ -13,6 +13,7 @@ from typing import Any
 from haute._io import read_user_text
 from haute._logging import get_logger
 from haute.assistant._config import ASSISTANT_EGRESS_TOML_KEYS, ASSISTANT_TOML_KEYS
+from haute.deploy._project_modules import ProjectModules, resolve_project_modules
 from haute.deploy._pruner import (
     find_deploy_input_nodes,
     find_output_node,
@@ -171,6 +172,11 @@ _VALID_TOML_SCHEMA: dict[str, set[str] | dict[str, set[str]]] = {
         "gcp-run": {"project", "region", "service"},
     },
     "test_quotes": {"dir"},
+    # Owned by the MLflow settings endpoint (routes/mlflow.py), not deploy;
+    # listed so whole-file validation accepts the file that endpoint writes.
+    # The table is a destination inventory: the retired single-mode ``mode``
+    # key is an unknown key like any other.
+    "mlflow": {"tracking_uri", "folder"},
     "safety": {
         "_self": {"impact_dataset"},
         "approval": {"min_approvers"},
@@ -494,8 +500,11 @@ class ResolvedDeploy:
     artifacts: dict[str, Path]
     input_schema: dict[str, str]
     output_schema: dict[str, str]
+    project_modules: ProjectModules
+    execution_policy: dict[str, Any] = field(default_factory=dict)
     removed_node_ids: list[str] = field(default_factory=list)
     snapshot_provenance: dict[str, dict[str, Any]] = field(default_factory=dict)
+    model_sources: dict[str, dict[str, Any]] = field(default_factory=dict)
     _resources: ExitStack = field(default_factory=ExitStack, repr=False, compare=False)
     _closed: bool = field(default=False, init=False, repr=False, compare=False)
 
@@ -537,7 +546,12 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
     from haute._path_resolution import RuntimePathError, resolve_runtime_file_path
     from haute._project import resolve_pipeline_file
     from haute.deploy._bundler import collect_artifacts
-    from haute.deploy._schema import infer_input_schema, infer_output_schema
+    from haute.deploy._schema import (
+        DeployBatchRuntime,
+        infer_deploy_execution_policy,
+        infer_input_schema,
+        infer_output_schema,
+    )
     from haute.parser import parse_pipeline_file
 
     # Re-run base-image pinning validation here.  ``__post_init__`` ran at
@@ -610,6 +624,7 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
     pipeline_dir = config.pipeline_file.parent
     resources = ExitStack()
     snapshot_provenance: dict[str, dict[str, Any]] = {}
+    model_sources: dict[str, dict[str, Any]] = {}
     try:
         # Validate every local runtime path before any bundle copy, schema
         # read, or sample load.  Reuse execution's maintained enumeration so
@@ -646,6 +661,7 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
             project_root=project_root,
             resources=resources,
             snapshot_provenance=snapshot_provenance,
+            model_sources=model_sources,
         )
 
         # Infer schemas. The output-schema dry-run scores with the exact bundled
@@ -654,6 +670,21 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
         # reflects the served model identity.
         artifact_paths = {name: str(path) for name, path in artifacts.items()}
         input_schema = infer_input_schema(pruned_graph, deploy_inputs[0])
+        # Plan the served batch strategy first: it needs only the one-row
+        # sample, and a target that scores batches in process must refuse an
+        # unprovable group-by before the schema dry-run tries to run one.
+        # Container targets score batches in a hard-capped worker; the
+        # Databricks pyfunc target scores them in the serving process.
+        batch_runtime: DeployBatchRuntime = (
+            "hard_capped_worker" if config.target in _CONTAINER_BASED_TARGETS else "in_process"
+        )
+        execution_policy = infer_deploy_execution_policy(
+            pruned_graph,
+            output_node_id,
+            deploy_inputs,
+            artifact_paths=artifact_paths,
+            batch_runtime=batch_runtime,
+        )
         output_schema = infer_output_schema(
             pruned_graph,
             output_node_id,
@@ -681,6 +712,7 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
                     available_fields=available,
                 )
             output_schema = {field: output_schema[field] for field in fields}
+        project_modules = resolve_project_modules(pruned_graph.preamble or "", pipeline_dir)
     except BaseException:
         resources.close()
         raise
@@ -703,7 +735,10 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
         artifacts=artifacts,
         input_schema=input_schema,
         output_schema=output_schema,
+        project_modules=project_modules,
+        execution_policy=execution_policy,
         removed_node_ids=removed_ids,
         snapshot_provenance=snapshot_provenance,
+        model_sources=model_sources,
         _resources=resources,
     )

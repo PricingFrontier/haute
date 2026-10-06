@@ -1,10 +1,10 @@
 import { useEffect, useRef } from "react"
-import type { Node, Edge } from "@xyflow/react"
+import type { Node, Edge, NodeChange } from "@xyflow/react"
 import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import { isProtectedSubmodelNodeData, nodeData } from "../types/node"
-import { isSingletonType } from "../utils/nodeTypes"
+import { isSingletonType, type NodeTypeValue } from "../utils/nodeTypes"
 import { requestSubmodelCreation } from "../utils/submodelCreation"
 import type { SharedNodeDeletionResult } from "./useSubmodelBoundaryEditing"
 
@@ -29,6 +29,7 @@ interface KeyboardShortcutsParams {
   closePanel: () => void
   isInsideSubmodel: boolean
   readOnly: boolean
+  existingSingletonTypes: ReadonlySet<NodeTypeValue>
   resolveGraphIdentities: (
     nodes: readonly Node[],
     edges: readonly Edge[],
@@ -36,6 +37,8 @@ interface KeyboardShortcutsParams {
   commitSharedNodeDeletion?: (
     nodeIds: ReadonlySet<string>,
     selectedEdgeIds?: ReadonlySet<string>,
+    nodeChanges?: NodeChange[],
+    onSettled?: (committed: boolean) => void,
   ) => SharedNodeDeletionResult
 }
 
@@ -70,7 +73,7 @@ export default function useKeyboardShortcuts({
   handleSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
   graphRef, clipboard, nodeIdCounter,
   setSelectedNode, setLastSelectedId, setPreviewData, clearTrace, closePanel,
-  isInsideSubmodel, readOnly,
+  isInsideSubmodel, readOnly, existingSingletonTypes,
   resolveGraphIdentities,
   commitSharedNodeDeletion,
 }: KeyboardShortcutsParams) {
@@ -81,12 +84,25 @@ export default function useKeyboardShortcuts({
     const handler = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName
       const el = e.target as HTMLElement
-      const isTyping = tag === "INPUT" || tag === "TEXTAREA" || el.closest?.(".cm-editor") != null
       const mod = e.ctrlKey || e.metaKey
+      // Focused dialogs own their keyboard interactions, including Escape. The
+      // node-search palette is itself a modal dialog, so its toggle key still
+      // reaches the Ctrl+K handler below while it is open.
+      const closesNodeSearch = mod && e.key === "k" && useUIStore.getState().nodeSearchOpen
+      if (e.defaultPrevented) return
+      if (el.closest?.('[role="dialog"][aria-modal="true"]') && !closesNodeSearch) return
+      const isTyping = tag === "INPUT" || tag === "TEXTAREA" || el.closest?.(".cm-editor") != null
 
-      // Ctrl+S / Cmd+S → save
+      // Ctrl+S / Cmd+S → save. Editor fields commit on blur, so a focused field
+      // is blurred first and the save runs once React has rendered that commit;
+      // otherwise the value being typed would be left out of the save.
       if (mod && e.key === "s") {
         e.preventDefault()
+        if (tag === "INPUT" || tag === "TEXTAREA") {
+          el.blur()
+          window.setTimeout(handleSave, 0)
+          return
+        }
         handleSave()
         return
       }
@@ -136,15 +152,19 @@ export default function useKeyboardShortcuts({
         if (copiedNodes.length === 0) return
         e.preventDefault()
         const capturedGraph = graphRef.current
-        // Filter out singleton types that already exist in the graph
-        const existingSingletonTypes = new Set<string>()
+        // Submodel boundaries do not create a second singleton scope. Include
+        // the immediate graph too in case it changed before React re-rendered.
+        const occupiedSingletonTypes = new Set<string>(existingSingletonTypes)
         for (const n of capturedGraph.nodes) {
           const nt = nodeData(n).nodeType
-          if (isSingletonType(nt)) existingSingletonTypes.add(nt!)
+          if (isSingletonType(nt)) occupiedSingletonTypes.add(nt!)
         }
         const pasteable = copiedNodes.filter((n) => {
           const nt = nodeData(n).nodeType
-          return !(isSingletonType(nt) && existingSingletonTypes.has(nt!))
+          if (!isSingletonType(nt)) return true
+          if (occupiedSingletonTypes.has(nt!)) return false
+          occupiedSingletonTypes.add(nt!)
+          return true
         })
         if (pasteable.length === 0) return
         const idMap = new Map<string, string>()
@@ -279,8 +299,31 @@ export default function useKeyboardShortcuts({
           if (selectedNodeIds.size === 0 && selectedEdgeIds.size === 0) return
         }
         if (selectedNodeIds.size > 0) {
-          const sharedDeletion = commitSharedNodeDeletion?.(selectedNodeIds, selectedEdgeIds)
+          // Selection, preview and cached-result cleanup only runs once the
+          // nodes have actually left the graph; a shared-boundary deletion may
+          // still be resolving parent identities and can yet fail.
+          const cleanupAfterRemoval = () => {
+            setSelectedNode(null)
+            setLastSelectedId?.(null)
+            setPreviewData(null)
+            // Clean up store state for deleted nodes
+            for (const nid of selectedNodeIds) {
+              useNodeResultsStore.getState().clearNode(nid)
+            }
+          }
+          let cleanedUp = false
+          const sharedDeletion = commitSharedNodeDeletion?.(
+            selectedNodeIds,
+            selectedEdgeIds,
+            undefined,
+            (committed) => {
+              if (!committed) return
+              cleanedUp = true
+              cleanupAfterRemoval()
+            },
+          )
           if (sharedDeletion === "blocked") return
+          if (sharedDeletion === "pending") return
           // Nodes + their edges removed in ONE undo step. setNodes-then-setEdges
           // would push two snapshots, so one delete would take two undos to
           // reverse (the undo-atomicity bug class).
@@ -290,13 +333,7 @@ export default function useKeyboardShortcuts({
               currentEdges.filter((ed) => !selectedNodeIds.has(ed.source) && !selectedNodeIds.has(ed.target)),
             )
           }
-          setSelectedNode(null)
-          setLastSelectedId?.(null)
-          setPreviewData(null)
-          // Clean up store state for deleted nodes
-          for (const nid of selectedNodeIds) {
-            useNodeResultsStore.getState().clearNode(nid)
-          }
+          if (!cleanedUp) cleanupAfterRemoval()
         } else {
           // Pure-edge delete: only edges selected, no nodes — a single setEdges
           // is already one snapshot.
@@ -311,6 +348,7 @@ export default function useKeyboardShortcuts({
     graphRef, clipboard, nodeIdCounter,
     setSelectedNode, setLastSelectedId, setPreviewData, clearTrace, closePanel,
     addToast, setShortcutsOpen, setSubmodelDialog, setNodeSearchOpen, isInsideSubmodel, readOnly,
+    existingSingletonTypes,
     resolveGraphIdentities, commitSharedNodeDeletion,
   ])
 }

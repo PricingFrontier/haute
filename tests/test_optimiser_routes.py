@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import threading
 import time
@@ -10,38 +11,52 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, ClassVar
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import polars as pl
 import pytest
 from fastapi import HTTPException
+from price_contour import PerFactorRecord
 
 from haute._config_builder import _build_node_config
+from haute._execution_context import ExecutionProfile
 from haute._sandbox import set_project_root
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.graph_utils import NodeType
+from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
+from haute.routes._optimiser_input import _optimiser_solve_required_columns_by_node
 from haute.routes._optimiser_limits import (
     APPLY_PREVIEW_ROW_LIMIT,
     FRONTIER_POINT_LIMIT,
 )
 from haute.routes._optimiser_service import (
     FrontierAutoRangeContext,
-    SolveContext,
-    _auto_range_required_columns_by_node,
-    _build_streaming_auto_range_plan,
-    _compute_scenario_value_stats,
-    _default_auto_range_chunk_size,
-    _default_auto_range_partitions,
     _estimate_scenario_frontier_ranges,
-    _looks_chunk_local_user_code,
-    _optimiser_solve_required_columns_by_node,
 )
+from haute.routes._optimiser_solver import SolveContext, _as_solved_adjustments
 from haute.routes.optimiser import _build_artifact_payload
 from tests._projection_helpers import pair_value
 from tests.conftest import build_test_input_snapshot, make_edge, make_graph
 from tests.job_store_support import replace_job, seed_job
+from tests.optimiser_fixtures import (
+    SOLVE_PROVENANCE,
+    SOLVE_SCENARIO_GRID,
+    library_frontier_frame,
+    logged_json_artifacts,
+    make_completed_job,
+    make_frontier_data,
+    make_frontier_point,
+    make_input_summary,
+    make_online_apply_frame,
+    make_ratebook_quote_results,
+    make_solved_result,
+    setup_grid_stub,
+    typed_frontier_point,
+    use_local_mlflow_store,
+    with_solve_summary,
+)
 from tests.optimiser_fixtures import frontier_result as _frontier_result
 from tests.optimiser_fixtures import poll_frontier_until_done as _poll_frontier_until_done
 
@@ -135,7 +150,7 @@ def _snapshot_parquet_data_input(
 @contextmanager
 def _persisted_ratebook_factors_handle(factors_df: pl.DataFrame) -> Iterator[dict[str, object]]:
     """Yield a canonical ratebook factor handle and remove its artifact afterwards."""
-    from haute.routes._optimiser_service import (
+    from haute.routes._optimiser_artifacts import (
         _cleanup_ratebook_factors_artifact,
         _persist_ratebook_factors_artifact,
     )
@@ -189,7 +204,7 @@ def _make_optimiser_graph(data_path: str, config: dict | None = None) -> dict:
     return graph.model_dump()
 
 
-def _make_estimate_projection_impossible_graph(left_path: str, right_path: str) -> dict:
+def _make_estimate_contract_free_fan_in_graph(left_path: str, right_path: str) -> dict:
     """Build a fan-in optimiser graph that needs parent ownership metadata."""
     graph = make_graph(
         {
@@ -302,7 +317,7 @@ def _make_auto_range_runtime_projectable_graph(left_path: str, right_path: str) 
                             "column_name": "premium_multiplier",
                             "min_value": 1.0,
                             "max_value": 2.0,
-                            "steps": 2,
+                            "stepCount": 2,
                             "code": (
                                 "df = df.with_columns("
                                 "premium=pl.col('premium') * pl.col('premium_multiplier'))"
@@ -339,7 +354,9 @@ def _make_auto_range_runtime_projectable_graph(left_path: str, right_path: str) 
                         "nodeType": "optimiser",
                         "config": {
                             "mode": "online",
-                            "objective": "not_needed",
+                            # A real column: auto-range captures what the following solve
+                            # reads, so an objective nothing produces would widen its reads.
+                            "objective": "margin",
                             "constraints": {
                                 "conversion_prediction": {"min": 0.0},
                                 "margin": {"min": 0.0},
@@ -418,7 +435,7 @@ def _poll_auto_range_until_done(client: TestClient, job_id: str, timeout: float 
 def _in_solver_worker_context():
     """Enter the solver worker context for unit tests that call the heavy
     solver entrypoints directly (they are guarded against inline execution)."""
-    from haute.routes._optimiser_service import solver_worker_context
+    from haute.routes._optimiser_solver import solver_worker_context
 
     with solver_worker_context():
         yield
@@ -431,27 +448,38 @@ def _frontier_point_summary(
     total_volume: float = 0.9,
     threshold_volume: float | None = None,
     converged: bool = True,
-) -> dict[str, float | bool]:
-    """Build the stored frontier-point summary shape emitted by price-contour."""
-    return {
+    mode: str = "online",
+    iterations: int = 3,
+    **extra: Any,
+) -> dict[str, Any]:
+    """A typed frontier point from the row price-contour emits for it."""
+    row: dict[str, Any] = {
         "threshold_volume": total_volume if threshold_volume is None else threshold_volume,
+        "bound_volume": total_volume if threshold_volume is None else threshold_volume,
         "total_objective": total_objective,
         "total_volume": total_volume,
         "lambda_volume": lambda_volume,
-        "iterations": 3,
+        "iterations": iterations,
         "converged": converged,
-        "sv_mean": 1.0,
-        "sv_std": 0.1,
-        "sv_min": 0.8,
-        "sv_p5": 0.85,
-        "sv_p25": 0.95,
-        "sv_median": 1.0,
-        "sv_p75": 1.05,
-        "sv_p95": 1.15,
-        "sv_max": 1.2,
-        "sv_pct_increase": 0.5,
-        "sv_pct_decrease": 0.25,
     }
+    if mode == "online":
+        row.update(
+            {
+                "sv_mean": 1.0,
+                "sv_std": 0.1,
+                "sv_min": 0.8,
+                "sv_p5": 0.85,
+                "sv_p25": 0.95,
+                "sv_median": 1.0,
+                "sv_p75": 1.05,
+                "sv_p95": 1.15,
+                "sv_max": 1.2,
+                "sv_pct_increase": 0.5,
+                "sv_pct_decrease": 0.25,
+            }
+        )
+    row.update(extra)
+    return typed_frontier_point(row, mode=mode)
 
 
 # ---------------------------------------------------------------------------
@@ -494,7 +522,12 @@ class TestParserInference:
 
 
 class TestCodegen:
-    def test_codegen_optimiser(self):
+    def test_codegen_optimiser(self, tmp_path: Path):
+        """An optimiser is a declaration referencing its sidecar; when the saved
+        file runs on its own, its decorator passes the scored frame through."""
+        import runpy
+
+        from haute._config_io import collect_node_configs
         from haute.codegen import _node_to_code
         from haute.graph_utils import GraphNode, NodeData
 
@@ -511,10 +544,23 @@ class TestCodegen:
             ),
         )
         code = _node_to_code(node, source_names=["scored_data"])
-        assert 'config="config/optimisation/my_optimiser.json"' in code
-        assert "def my_optimiser(" in code
-        assert "scored_data: pl.LazyFrame" in code
-        assert "return scored_data" in code
+        assert code == (
+            '@pipeline.optimiser(config="config/optimisation/my_optimiser.json")\n'
+            "def my_optimiser(scored_data): ...\n"
+        )
+
+        module = tmp_path / "main.py"
+        module.write_text(
+            f'import haute\n\npipeline = haute.Pipeline("p")\n\n\n{code}', encoding="utf-8"
+        )
+        for rel_path, content in collect_node_configs(
+            PipelineGraph(nodes=[node], edges=[])
+        ).items():
+            sidecar = tmp_path / rel_path
+            sidecar.parent.mkdir(parents=True, exist_ok=True)
+            sidecar.write_text(content, encoding="utf-8")
+        scored = pl.DataFrame({"expected_income": [1.0]})
+        assert runpy.run_path(str(module))["my_optimiser"](scored) is scored
 
 
 # ---------------------------------------------------------------------------
@@ -608,6 +654,37 @@ class TestSolveRoute:
 
         assert resp.status_code == 400
         assert "timeout must be a positive integer" in resp.json()["detail"]
+
+    @pytest.mark.parametrize(
+        ("route", "config"),
+        [
+            # The solve's own timeout check reads the optimisation time limit.
+            ("/api/optimiser/solve", None),
+            # With the solve timeout set, auto-range's own timeout check reads it.
+            ("/api/optimiser/frontier/auto-range/start", {"timeout": 60}),
+        ],
+    )
+    def test_an_invalid_settings_file_answers_409_rather_than_a_config_error(
+        self, client, scored_data, monkeypatch, route, config
+    ):
+        """A broken settings file is the application's 409 with its message, not a 400."""
+        from haute import _pipeline_settings
+
+        message = (
+            f"{_pipeline_settings.SETTINGS_PATH}: optimisation_time_limit_minutes must be "
+            "a number of minutes greater than 0"
+        )
+
+        def refuse(_root):
+            raise _pipeline_settings.PipelineSettingsError(message)
+
+        monkeypatch.setattr(_pipeline_settings, "read_pipeline_settings", refuse)
+        graph = _make_optimiser_graph(scored_data, config=config)
+
+        resp = client.post(route, json={"graph": graph, "node_id": "opt"})
+
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == message
 
     def test_solve_rejects_concurrent(self, client, scored_data, clean_job_store):
         """A second solve request while one is running returns 409."""
@@ -704,7 +781,7 @@ class TestSolveRoute:
         launch_called = threading.Event()
         with (
             patch.object(_solve_service, "_execute_pipeline", return_value=lazy_outputs),
-            patch.object(_solve_service, "_build_grid", return_value=object()),
+            patch.object(_solve_service, "_build_grid", return_value=setup_grid_stub()),
             patch.object(
                 _solve_service,
                 "_launch_background",
@@ -712,7 +789,7 @@ class TestSolveRoute:
             ) as launch_background,
         ):
             resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
-            assert launch_called.wait(timeout=2.0)
+            assert launch_called.wait(timeout=10.0)
 
         assert resp.status_code == 200
         data = resp.json()
@@ -733,11 +810,12 @@ class TestSolveRoute:
         store = JobStore()
         service = OptimiserSolveService(store)
         setup_started = threading.Event()
+        release_setup = threading.Event()
         launch_called = threading.Event()
 
         def slow_execute(*args, **kwargs):
             setup_started.set()
-            time.sleep(0.25)
+            assert release_setup.wait(timeout=10.0), "setup was never released"
             return {"source": scored_lf}
 
         def mark_launched(*args, **kwargs):
@@ -747,18 +825,21 @@ class TestSolveRoute:
             patch.object(service, "_execute_pipeline", side_effect=slow_execute),
             patch.object(service, "_validate_and_project", return_value=(["volume"], scored_lf)),
             patch.object(service, "_extract_factors", return_value=None),
-            patch.object(service, "_build_grid", return_value=object()),
+            patch.object(service, "_build_grid", return_value=setup_grid_stub()),
             patch.object(service, "_launch_background", side_effect=mark_launched),
         ):
-            start = time.monotonic()
             response = service.start(body)
-            elapsed = time.monotonic() - start
-            assert setup_started.wait(timeout=1.0)
-            assert launch_called.wait(timeout=2.0)
+            # ``start`` returned while setup is still blocked on release_setup,
+            # which is what "off the HTTP request" means. Holding setup open
+            # states that directly; an elapsed-time bound would only assert
+            # that a loaded runner beat an arbitrary wall-clock margin.
+            assert setup_started.wait(timeout=10.0)
+            assert not launch_called.is_set()
+            release_setup.set()
+            assert launch_called.wait(timeout=10.0)
 
         assert response.status == "started"
         assert response.job_id is not None
-        assert elapsed < 0.1
         assert store.require_job(response.job_id)["status"] == "running"
 
     def test_solve_setup_http_failure_becomes_pollable_status(self, scored_data):
@@ -792,6 +873,95 @@ class TestSolveRoute:
         assert job["error_detail"] == "bad setup"
         assert "bad setup" in job["message"]
         launch_background.assert_not_called()
+
+    def test_setup_memory_limited_preparation_ends_memory_limited(self, scored_data):
+        """A memory-limited preparation failure is not flattened to contract_error."""
+        from haute.errors import InputPreparationError
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserSolveRequest
+
+        graph = _make_optimiser_graph(scored_data)
+        body = OptimiserSolveRequest(graph=graph, node_id="opt")
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
+        failure = InputPreparationError(
+            "Preparing this Data Input's snapshot failed.",
+            node_id="source",
+            identity_digest="b" * 64,
+            build_class="admitted_eager",
+            reason_code="memory_limited",
+            remediation="Give the execution more memory headroom and try again.",
+        )
+
+        with (
+            contextlib.ExitStack() as resources,
+            patch(
+                "haute.routes._optimiser_service.execute_lazy_graph",
+                side_effect=failure,
+            ),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            service._execute_pipeline(body, job_id, resources)
+
+        assert exc_info.value.status_code == 507
+        job = store.require_job(job_id)
+        assert job["status"] == "memory_limited"
+        assert job["terminal_reason"] == "memory_limited"
+        assert job["error"] == str(failure)
+        assert job["error_code"] == "memory_limit"
+        assert job["http_status_code"] == 507
+        assert job["error_detail"]["reason_code"] == "memory_limited"
+
+    def test_setup_build_failed_preparation_ends_contract_error(self, scored_data):
+        """A non-memory preparation failure still ends the job contract_error."""
+        from haute.errors import InputPreparationError
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserSolveRequest
+
+        graph = _make_optimiser_graph(scored_data)
+        body = OptimiserSolveRequest(graph=graph, node_id="opt")
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
+        failure = InputPreparationError(
+            "Preparing this Data Input's snapshot failed.",
+            node_id="source",
+            identity_digest="c" * 64,
+            build_class="admitted_eager",
+            reason_code="build_failed",
+            remediation="Build this Data Input's snapshot and try again.",
+        )
+
+        with (
+            contextlib.ExitStack() as resources,
+            patch(
+                "haute.routes._optimiser_service.execute_lazy_graph",
+                side_effect=failure,
+            ),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            service._execute_pipeline(body, job_id, resources)
+
+        assert exc_info.value.status_code == 422
+        job = store.require_job(job_id)
+        assert job["status"] == "contract_error"
+        assert job["terminal_reason"] == "contract_error"
+        assert job["http_status_code"] == 422
 
     def test_solve_marks_job_error_when_factor_extraction_fails(
         self,
@@ -922,7 +1092,13 @@ class TestSolveRoute:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
         context = ExecutionContext(
             operation="optimiser_solve",
             profile=ExecutionProfile.OPTIMISER_SETUP,
@@ -1050,7 +1226,7 @@ class TestSolveRoute:
                     }
                 ),
             ),
-            patch.object(_solve_service, "_build_grid", return_value=object()),
+            patch.object(_solve_service, "_build_grid", return_value=setup_grid_stub()),
             patch.object(
                 _solve_service,
                 "_launch_background",
@@ -1061,7 +1237,7 @@ class TestSolveRoute:
                 "/api/optimiser/solve",
                 json={"graph": graph, "node_id": "online_optimiser"},
             )
-            assert launched.wait(timeout=2.0)
+            assert launched.wait(timeout=10.0)
 
         assert resp.status_code == 200
         launched_config = launch_background.call_args.kwargs["config"]
@@ -1082,33 +1258,37 @@ class TestStatusRoute:
         client,
         clean_job_store,
     ):
-        frontier_data = {
-            "status": "ok",
-            "points": [{"total_objective": 100.0, "lambda_volume": 0.25}],
-            "n_points": 3,
-            "points_returned": 1,
-            "points_limit": 1,
-            "points_truncated": True,
-            "constraint_names": ["volume"],
-        }
+        frontier_data = make_frontier_data(
+            [typed_frontier_point({"total_objective": 100.0, "lambda_volume": 0.25})],
+            n_points=3,
+            points_limit=1,
+            points_truncated=True,
+        )
         seed_job(
             clean_job_store,
             "capped_frontier_status",
             {
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "progress": 1.0,
                 "message": "Completed",
                 "elapsed_seconds": 0.2,
                 "frontier_data": frontier_data,
                 "result": {
+                    "frontier_generation": 0,
                     "mode": "online",
                     "total_objective": 100.0,
                     "baseline_objective": 95.0,
                     "constraints": {"volume": 0.9},
                     "baseline_constraints": {"volume": 0.85},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 0.25},
                     "converged": True,
                     "frontier": frontier_data,
+                    "diagnostics_errors": [],
+                    "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
+                    "segment_keys": [],
                 },
                 "created_at": time.time(),
                 "completed_at": time.time(),
@@ -1497,6 +1677,37 @@ class TestEstimateRoute:
         assert resp.status_code == 422
         assert "bounded streaming mode" in resp.json()["detail"]
 
+    def test_estimate_maps_admission_failure_to_memory_limit_response(
+        self,
+        client,
+        scored_data,
+    ) -> None:
+        from haute._execution_admission import ExecutionAdmissionError
+
+        graph = _make_optimiser_graph(scored_data)
+        error = ExecutionAdmissionError(
+            "optimiser_estimate",
+            profile=ExecutionProfile.OPTIMISER_SETUP,
+            memory_limit_bytes=1024,
+            rss_at_admission_bytes=512,
+            reason="in_flight_memory_budget_exceeded",
+            in_flight_reserved_bytes=2048,
+            in_flight_limit_bytes=1024,
+        )
+
+        with patch("haute.routes.optimiser._optimiser_input_metrics", side_effect=error):
+            resp = client.post(
+                "/api/optimiser/estimate",
+                json={"graph": graph, "node_id": "opt"},
+            )
+
+        assert resp.status_code == 507
+        detail = resp.json()["detail"]
+        assert detail["error_code"] == "memory_limit"
+        assert detail["profile"] == ExecutionProfile.OPTIMISER_SETUP.value
+        assert detail["reason"] == "in_flight_memory_budget_exceeded"
+        assert detail["message"].startswith("Optimiser estimate was not started")
+
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_estimate_allows_contract_free_fan_in_boundary(self, client, tmp_path):
         left_path = tmp_path / "estimate_left.parquet"
@@ -1510,7 +1721,7 @@ class TestEstimateRoute:
             }
         ).write_parquet(left_path)
         pl.DataFrame({"quote_id": ["q1", "q2"], "volume": [1.0, 0.8]}).write_parquet(right_path)
-        graph = _make_estimate_projection_impossible_graph(
+        graph = _make_estimate_contract_free_fan_in_graph(
             str(left_path),
             str(right_path),
         )
@@ -1570,12 +1781,12 @@ class TestEstimateRoute:
         assert data["ranges"]["expected_margin"]["max"] == pytest.approx(39.0)
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_frontier_auto_range_does_not_require_solver_only_columns(
+    def test_frontier_auto_range_requires_the_solves_scenario_columns(
         self,
         client,
         tmp_path,
     ):
-        """Auto-range validates objective, but does not need scenario grid columns."""
+        """Auto-range runs the solve's stage, so it asks for the solve's scenario columns."""
         df = pl.DataFrame(
             {
                 "quote_id": ["q1", "q1", "q2"],
@@ -1594,12 +1805,80 @@ class TestEstimateRoute:
 
         assert start_resp.status_code == 200
         status = _poll_auto_range_until_done(client, start_resp.json()["job_id"])
-        assert status["status"] == "completed"
-        data = status["result"]
-        assert data["ranges"]["volume"]["min"] == pytest.approx(9.0)
-        assert data["ranges"]["volume"]["max"] == pytest.approx(12.0)
+        assert status["status"] == "contract_error"
+        detail = status["error_detail"]
+        assert "Source projection references columns missing" in detail
+        assert "scenario_index" in detail
+        assert "scenario_value" in detail
 
-    def test_frontier_auto_range_rejects_null_quote_id_before_deriving_ranges(
+    def test_frontier_auto_range_checks_values_per_batch_with_whole_frame_totals(
+        self,
+        scored_data,
+    ):
+        """Violations in different batches are totalled, and no whole-frame query runs."""
+        from haute._polars_utils import current_streaming_chunk_size, set_streaming_chunk_size
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserFrontierAutoRangeRequest
+
+        graph = _make_optimiser_graph(scored_data)
+        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+        volume = [float(i) for i in range(10)]
+        volume[2] = float("nan")
+        volume[8] = float("nan")
+        source_lf = pl.LazyFrame(
+            {
+                "quote_id": [f"q{i}" for i in range(10)],
+                "expected_income": [100.0] * 10,
+                "volume": volume,
+            }
+        )
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
+        _node, prepared = service._prepare_frontier_auto_range(body)
+        previous = current_streaming_chunk_size()
+        set_streaming_chunk_size(3)
+        try:
+            with (
+                patch.object(service, "_execute_pipeline", return_value={"source": source_lf}),
+                patch(
+                    "haute.routes._optimiser_input.validate_input_value_contracts",
+                    side_effect=AssertionError("auto-range must not run a whole-frame query"),
+                ),
+                pytest.raises(HTTPException) as exc_info,
+            ):
+                service._run_frontier_auto_range_job(body, job_id, **prepared)
+        finally:
+            set_streaming_chunk_size(previous)
+
+        assert exc_info.value.status_code == 400
+        # Rows 2 and 8 sit in different batches of 3; both are counted.
+        assert "'volume' (2 NaN rows)" in exc_info.value.detail
+        assert service.frontier_auto_range_status(job_id).status == "contract_error"
+
+    def test_frontier_auto_range_batches_carry_a_string_quote_id_without_a_categorical(
+        self,
+        scored_data,
+    ):
+        """No Categorical cast is built for auto-range: the quote id stays text end to end."""
+        from haute.routes._optimiser_input import validate_and_project_auto_range
+
+        source_lf = pl.LazyFrame(
+            {"quote_id": ["q1", "q2"], "expected_income": [1.0, 2.0], "volume": [1.0, 2.0]}
+        )
+        config = {
+            "objective": "expected_income",
+            "constraints": {"volume": {"min": 0.0}},
+            "quote_id": "quote_id",
+        }
+
+        _constraints, projected_lf, _check = validate_and_project_auto_range(source_lf, config)
+
+        assert projected_lf.collect_schema()["quote_id"] == pl.String
+        assert "Categorical" not in projected_lf.explain()
+
+    def test_frontier_auto_range_rejects_null_quote_id(
         self,
         scored_data,
     ):
@@ -1618,15 +1897,10 @@ class TestEstimateRoute:
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
-        prepared = service._prepare_frontier_auto_range(body)
-        prepared["streaming_plan"] = None
+        _node, prepared = service._prepare_frontier_auto_range(body)
 
         with (
             patch.object(service, "_execute_pipeline", return_value={"source": source_lf}),
-            patch(
-                "haute.routes._optimiser_service._estimate_scenario_frontier_ranges",
-                side_effect=AssertionError("range derivation should not run"),
-            ),
             pytest.raises(HTTPException) as exc_info,
         ):
             service._run_frontier_auto_range_job(body, job_id, **prepared)
@@ -1660,7 +1934,7 @@ class TestEstimateRoute:
             pytest.param("volume", float("-inf"), "'volume' (1 infinite row)", id="constraint-inf"),
         ],
     )
-    def test_frontier_auto_range_rejects_non_finite_values_before_deriving_ranges(
+    def test_frontier_auto_range_rejects_non_finite_values(
         self,
         scored_data,
         column,
@@ -1686,15 +1960,10 @@ class TestEstimateRoute:
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
-        prepared = service._prepare_frontier_auto_range(body)
-        prepared["streaming_plan"] = None
+        _node, prepared = service._prepare_frontier_auto_range(body)
 
         with (
             patch.object(service, "_execute_pipeline", return_value={"source": source_lf}),
-            patch(
-                "haute.routes._optimiser_service._estimate_scenario_frontier_ranges",
-                side_effect=AssertionError("range derivation should not run"),
-            ),
             pytest.raises(HTTPException) as exc_info,
         ):
             service._run_frontier_auto_range_job(body, job_id, **prepared)
@@ -1715,7 +1984,7 @@ class TestEstimateRoute:
             pytest.param("volume", "'volume' (1 null row)", id="constraint-null"),
         ],
     )
-    def test_frontier_auto_range_rejects_null_values_before_deriving_ranges(
+    def test_frontier_auto_range_rejects_null_values(
         self,
         scored_data,
         column,
@@ -1743,15 +2012,10 @@ class TestEstimateRoute:
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
-        prepared = service._prepare_frontier_auto_range(body)
-        prepared["streaming_plan"] = None
+        _node, prepared = service._prepare_frontier_auto_range(body)
 
         with (
             patch.object(service, "_execute_pipeline", return_value={"source": source_lf}),
-            patch(
-                "haute.routes._optimiser_service._estimate_scenario_frontier_ranges",
-                side_effect=AssertionError("range derivation should not run"),
-            ),
             pytest.raises(HTTPException) as exc_info,
         ):
             service._run_frontier_auto_range_job(body, job_id, **prepared)
@@ -1775,6 +2039,8 @@ class TestEstimateRoute:
         df = pl.DataFrame(
             {
                 "quote_id": ["q1", "q1", "q2"],
+                "scenario_index": [0, 1, 0],
+                "scenario_value": [0.9, 1.1, 0.9],
                 "expected_income": pl.Series([100.0, float("nan"), 90.0], dtype=pl.Float32),
                 "volume": pl.Series([2.0, 5.0, 7.0], dtype=pl.Float32),
             }
@@ -1825,13 +2091,12 @@ class TestEstimateRoute:
             .map_elements(fail_if_materialised, return_dtype=pl.Float64)
             .alias("unrelated_poison")
         )
-        graph = _make_optimiser_graph(scored_data, config={"auto_range_chunk_size": 1024})
+        graph = _make_optimiser_graph(scored_data)
         body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
-        prepared = service._prepare_frontier_auto_range(body)
-        prepared["streaming_plan"] = None
+        _node, prepared = service._prepare_frontier_auto_range(body)
         real_bounded_collect_batches = optimiser_service.bounded_collect_batches
 
         with (
@@ -1862,6 +2127,9 @@ class TestEstimateRoute:
         pl.DataFrame(
             {
                 "quote_id": ["q1", "q1", "q2"],
+                "scenario_index": [0, 1, 0],
+                "scenario_value": [0.9, 1.1, 0.9],
+                "expected_income": [1.0, 2.0, 3.0],
                 "volume": [2.0, 5.0, 7.0],
             }
         ).write_parquet(scored_path)
@@ -1904,7 +2172,7 @@ class TestEstimateRoute:
                             "nodeType": "optimiser",
                             "config": {
                                 "mode": "online",
-                                "objective": "not_needed_for_auto_range",
+                                "objective": "expected_income",
                                 "constraints": {"volume": {"min": 0.0}},
                                 "quote_id": "quote_id",
                                 "scenario_index": "scenario_index",
@@ -2160,7 +2428,7 @@ class TestEstimateRoute:
 
         with (
             patch.object(service, "_execute_pipeline", return_value=lazy_outputs),
-            patch.object(service, "_build_grid", return_value=object()),
+            patch.object(service, "_build_grid", return_value=setup_grid_stub()),
             patch.object(service, "_launch_background", return_value=None),
         ):
             solve_started = service.start(solve_body)
@@ -2242,7 +2510,7 @@ class TestEstimateRoute:
 
         with pytest.raises(BackgroundJobStoppedError):
             _estimate_scenario_frontier_ranges(
-                FrontierAutoRangeContext(chunk_size=1, partition_count=2),
+                FrontierAutoRangeContext(chunk_size=1),
                 scored_lf=df.lazy(),
                 quote_id_col="quote_id",
                 constraint_cols=["volume"],
@@ -2266,7 +2534,7 @@ class TestEstimateRoute:
         )
 
         ranges = _estimate_scenario_frontier_ranges(
-            FrontierAutoRangeContext(chunk_size=2, partition_count=2),
+            FrontierAutoRangeContext(chunk_size=2),
             scored_lf=df.lazy(),
             quote_id_col="quote_id",
             constraint_cols=["volume", "margin"],
@@ -2302,7 +2570,7 @@ class TestEstimateRoute:
 
         context = ExecutionContext(
             operation="frontier-auto-range-test",
-            profile=ExecutionProfile.AUTO_RANGE,
+            profile=ExecutionProfile.OPTIMISER_SOLVE,
             memory_limit_bytes=100,
             memory_sampler=lambda: 1_000 if batch_added else 1,
         )
@@ -2318,7 +2586,6 @@ class TestEstimateRoute:
             _estimate_scenario_frontier_ranges(
                 FrontierAutoRangeContext(
                     chunk_size=2,
-                    partition_count=2,
                     execution_context=context,
                 ),
                 scored_lf=df.lazy(),
@@ -2328,637 +2595,6 @@ class TestEstimateRoute:
 
         assert batch_added
         assert "frontier_range_batch_reduce" in context.metrics_payload()["stage_elapsed_ms"]
-
-    @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_frontier_auto_range_streams_before_scenario_expansion_and_recombines_quotes(
-        self,
-        tmp_path,
-    ):
-        """Streaming auto-range expands one base chunk at a time without double-counting."""
-        from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import OptimiserSolveService
-        from haute.schemas import OptimiserFrontierAutoRangeRequest
-
-        source_df = pl.DataFrame(
-            {
-                "quote_id": ["q1", "q2", "q1"],
-                "premium": [100.0, 200.0, 50.0],
-                "base_premium": [100.0, 100.0, 100.0],
-                "wide_unused": ["drop", "these", "values"],
-            }
-        )
-        source_path = tmp_path / "base.parquet"
-        source_df.write_parquet(source_path)
-
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "source",
-                        "data": {
-                            "label": "source",
-                            "nodeType": "dataInput",
-                            "config": _snapshot_parquet_data_input(
-                                str(source_path), contract="opaque"
-                            ),
-                        },
-                    },
-                    {
-                        "id": "premium",
-                        "data": {
-                            "label": "premium",
-                            "nodeType": "scenarioExpander",
-                            "config": {
-                                "quote_id": "quote_id",
-                                "column_name": "premium_multiplier",
-                                "min_value": 0.5,
-                                "max_value": 1.5,
-                                "steps": 3,
-                                "step_column": "scenario_index",
-                                "contract": {
-                                    "inputs": ["premium"],
-                                    "outputs": ["premium_multiplier", "scenario_index"],
-                                },
-                            },
-                        },
-                    },
-                    {
-                        "id": "features",
-                        "data": {
-                            "label": "features",
-                            "nodeType": "polars",
-                            "config": {
-                                "code": (
-                                    "df = premium.with_columns("
-                                    "scenario_feature=("
-                                    "pl.col('premium') * pl.col('premium_multiplier')"
-                                    " / pl.col('base_premium')"
-                                    "))"
-                                ),
-                                "contract": {
-                                    "inputs": [
-                                        "premium",
-                                        "base_premium",
-                                        "premium_multiplier",
-                                    ],
-                                    "outputs": ["scenario_feature"],
-                                },
-                            },
-                        },
-                    },
-                    {
-                        "id": "conversion_scoring",
-                        "data": {
-                            "label": "conversion_scoring",
-                            "nodeType": "modelScore",
-                            "config": {
-                                "sourceType": "run",
-                                "run_id": "run-1",
-                                "artifact_path": "model.rsglm",
-                                "task": "regression",
-                                "output_column": "conversion_prediction",
-                                "model_reuse_lifetime": "batch",
-                                "contract": {
-                                    "inputs": ["scenario_feature"],
-                                    "outputs": ["conversion_prediction"],
-                                },
-                            },
-                        },
-                    },
-                    {
-                        "id": "optimiser_input",
-                        "data": {
-                            "label": "optimiser_input",
-                            "nodeType": "polars",
-                            "config": {
-                                "code": "df = conversion_scoring",
-                                "contract": {
-                                    "inputs": ["conversion_prediction"],
-                                    "outputs": [],
-                                },
-                            },
-                        },
-                    },
-                    {
-                        "id": "opt",
-                        "data": {
-                            "label": "optimiser",
-                            "nodeType": "optimiser",
-                            "config": {
-                                "mode": "online",
-                                "objective": "not_needed_for_auto_range",
-                                "constraints": {"conversion_prediction": {"min": 0.0}},
-                                "quote_id": "quote_id",
-                                "scenario_index": "scenario_index",
-                                "scenario_value": "premium_multiplier",
-                                "data_input": "optimiser_input",
-                                "chunk_size": 3,
-                                "auto_range_partition_count": 2,
-                            },
-                        },
-                    },
-                ],
-                "edges": [
-                    make_edge("source", "premium").model_dump(),
-                    make_edge("premium", "features").model_dump(),
-                    make_edge("features", "conversion_scoring").model_dump(),
-                    make_edge("conversion_scoring", "optimiser_input").model_dump(),
-                    make_edge("optimiser_input", "opt").model_dump(),
-                ],
-            }
-        )
-        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
-
-        store = JobStore()
-        service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
-        score_chunk_sizes = []
-
-        class FakeScoringModel:
-            feature_names = ["scenario_feature"]
-            cat_feature_names = frozenset()
-
-        def fake_score_eager(
-            scoring_model,
-            lf,
-            features,
-            output_col,
-            task,
-            offset_column=None,
-        ):
-            del scoring_model, features, task, offset_column
-            row_count = int(lf.select(pl.len().alias("n")).collect().item())
-            score_chunk_sizes.append(row_count)
-            return lf.with_columns((pl.col("scenario_feature") * 2.0).alias(output_col))
-
-        with (
-            patch.object(service, "_execute_pipeline", wraps=service._execute_pipeline) as execute,
-            patch("haute._mlflow_io.load_mlflow_model", return_value=FakeScoringModel()) as load,
-            patch("haute._mlflow_io._score_eager", side_effect=fake_score_eager),
-        ):
-            prepared = service._prepare_frontier_auto_range(body)
-            response = service._run_frontier_auto_range_job(body, job_id, **prepared)
-
-        assert response.status == "ok"
-        assert response.ranges["conversion_prediction"].min == pytest.approx(2.5)
-        assert response.ranges["conversion_prediction"].max == pytest.approx(9.0)
-        assert execute.call_args.kwargs["target_node_id"] == "source"
-        assert score_chunk_sizes
-        assert max(score_chunk_sizes) == 3
-        # One load for projection planning and one for the streaming scorer;
-        # repeated chunks must reuse the streaming scorer's loaded model.
-        assert load.call_count == 2
-        execution_metrics = store.require_job(job_id)["execution_metrics"]
-        assert "frontier_stream_score_collect" in execution_metrics["stage_elapsed_ms"]
-
-    @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_frontier_auto_range_uses_generic_chunk_runner_for_supported_chain(
-        self,
-        tmp_path,
-    ):
-        from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import OptimiserSolveService
-        from haute.schemas import OptimiserFrontierAutoRangeRequest
-
-        source_path = tmp_path / "base.parquet"
-        pl.DataFrame(
-            {
-                "quote_id": ["q1", "q2", "q1"],
-                "premium": [100.0, 200.0, 50.0],
-                "base_premium": [100.0, 100.0, 100.0],
-                "unused_payload": ["drop", "me", "please"],
-            }
-        ).write_parquet(source_path)
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "source",
-                        "data": {
-                            "label": "source",
-                            "nodeType": "dataInput",
-                            "config": _snapshot_parquet_data_input(str(source_path)),
-                        },
-                    },
-                    {
-                        "id": "scenario",
-                        "data": {
-                            "label": "scenario",
-                            "nodeType": "scenarioExpander",
-                            "config": {
-                                "quote_id": "quote_id",
-                                "column_name": "premium_multiplier",
-                                "min_value": 0.5,
-                                "max_value": 1.5,
-                                "steps": 2,
-                                "step_column": "scenario_index",
-                                "contract": {
-                                    "inputs": [],
-                                    "outputs": ["premium_multiplier", "scenario_index"],
-                                },
-                            },
-                        },
-                    },
-                    {
-                        "id": "features",
-                        "data": {
-                            "label": "features",
-                            "nodeType": "polars",
-                            "config": {
-                                "code": (
-                                    "df = scenario.with_columns("
-                                    "conversion_prediction="
-                                    "pl.col('premium') * pl.col('premium_multiplier') "
-                                    "/ pl.col('base_premium'))"
-                                ),
-                                "contract": {
-                                    "inputs": [
-                                        "premium",
-                                        "base_premium",
-                                        "premium_multiplier",
-                                    ],
-                                    "outputs": ["conversion_prediction"],
-                                },
-                            },
-                        },
-                    },
-                    {
-                        "id": "opt",
-                        "data": {
-                            "label": "optimiser",
-                            "nodeType": "optimiser",
-                            "config": {
-                                "mode": "online",
-                                "objective": "not_needed_for_auto_range",
-                                "constraints": {"conversion_prediction": {"min": 0.0}},
-                                "quote_id": "quote_id",
-                                "scenario_index": "scenario_index",
-                                "scenario_value": "premium_multiplier",
-                                "data_input": "features",
-                                "chunk_size": 4,
-                                "auto_range_partition_count": 2,
-                            },
-                        },
-                    },
-                ],
-                "edges": [
-                    make_edge("source", "scenario").model_dump(),
-                    make_edge("scenario", "features").model_dump(),
-                    make_edge("features", "opt").model_dump(),
-                ],
-            }
-        )
-        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
-        store = JobStore()
-        service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
-        observed_feature_inputs: list[list[str]] = []
-
-        def recording_build_node_fn(node, **kwargs):
-            from haute.executor import _build_node_fn as real_build_node_fn
-
-            name, fn, is_source = real_build_node_fn(node, **kwargs)
-            if node.id != "features":
-                return name, fn, is_source
-
-            def recording_features(*frames):
-                observed_feature_inputs.append(frames[0].collect_schema().names())
-                return fn(*frames)
-
-            return name, recording_features, is_source
-
-        prepared = service._prepare_frontier_auto_range(body)
-        assert prepared["streaming_plan"] is not None
-        assert prepared["streaming_plan"].chunk_plan is not None
-        with patch("haute.routes._optimiser_service._build_node_fn", recording_build_node_fn):
-            response = service._run_frontier_auto_range_job(body, job_id, **prepared)
-
-        assert response.status == "ok"
-        assert response.ranges["conversion_prediction"].min == pytest.approx(1.25)
-        assert response.ranges["conversion_prediction"].max == pytest.approx(4.5)
-        assert observed_feature_inputs
-        assert all("unused_payload" not in columns for columns in observed_feature_inputs)
-        execution_metrics = store.require_job(job_id)["execution_metrics"]
-        assert "chunk_source_collect_batch" in execution_metrics["stage_elapsed_ms"]
-        assert "chunk_collect" in execution_metrics["stage_elapsed_ms"]
-
-    @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_frontier_auto_range_streaming_and_lazy_paths_match_for_intermediate_data_input(
-        self,
-        tmp_path,
-    ):
-        """Streaming and lazy fallback must agree on the same configured data_input."""
-        from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import OptimiserSolveService
-        from haute.schemas import OptimiserFrontierAutoRangeRequest
-
-        source_path = tmp_path / "base.parquet"
-        pl.DataFrame(
-            {
-                "quote_id": ["q1", "q2", "q1"],
-                "premium": [100.0, 200.0, 50.0],
-                "base_premium": [100.0, 100.0, 100.0],
-                "unused_payload": ["drop", "me", "please"],
-            }
-        ).write_parquet(source_path)
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "source",
-                        "data": {
-                            "label": "source",
-                            "nodeType": "dataInput",
-                            "config": _snapshot_parquet_data_input(str(source_path)),
-                        },
-                    },
-                    {
-                        "id": "scenario",
-                        "data": {
-                            "label": "scenario",
-                            "nodeType": "scenarioExpander",
-                            "config": {
-                                "quote_id": "quote_id",
-                                "column_name": "premium_multiplier",
-                                "min_value": 0.5,
-                                "max_value": 1.5,
-                                "steps": 2,
-                                "step_column": "scenario_index",
-                                "contract": {
-                                    "inputs": [],
-                                    "outputs": ["premium_multiplier", "scenario_index"],
-                                },
-                            },
-                        },
-                    },
-                    {
-                        "id": "features",
-                        "data": {
-                            "label": "features",
-                            "nodeType": "polars",
-                            "config": {
-                                "code": (
-                                    "df = scenario.with_columns("
-                                    "conversion_prediction="
-                                    "pl.col('premium') * pl.col('premium_multiplier') "
-                                    "/ pl.col('base_premium'))"
-                                ),
-                                "contract": {
-                                    "inputs": [
-                                        "premium",
-                                        "base_premium",
-                                        "premium_multiplier",
-                                    ],
-                                    "outputs": ["conversion_prediction"],
-                                },
-                            },
-                        },
-                    },
-                    {
-                        "id": "opt",
-                        "data": {
-                            "label": "optimiser",
-                            "nodeType": "optimiser",
-                            "config": {
-                                "mode": "online",
-                                "objective": "not_needed_for_auto_range",
-                                "constraints": {"conversion_prediction": {"min": 0.0}},
-                                "quote_id": "quote_id",
-                                "scenario_index": "scenario_index",
-                                "scenario_value": "premium_multiplier",
-                                "data_input": "features",
-                                "chunk_size": 4,
-                                "auto_range_partition_count": 2,
-                            },
-                        },
-                    },
-                ],
-                "edges": [
-                    make_edge("source", "scenario").model_dump(),
-                    make_edge("scenario", "features").model_dump(),
-                    make_edge("features", "opt").model_dump(),
-                ],
-            }
-        )
-        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
-        store = JobStore()
-        service = OptimiserSolveService(store)
-        prepared = service._prepare_frontier_auto_range(body)
-        assert prepared["streaming_plan"] is not None
-
-        streaming_job_id = store.create_job(
-            {"status": "running", "job_type": "frontier_auto_range"}
-        )
-        streaming_response = service._run_frontier_auto_range_job(
-            body,
-            streaming_job_id,
-            **prepared,
-        )
-
-        lazy_job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
-        lazy_prepared = dict(prepared)
-        lazy_prepared["streaming_plan"] = None
-        lazy_response = service._run_frontier_auto_range_job(
-            body,
-            lazy_job_id,
-            **lazy_prepared,
-        )
-
-        assert streaming_response.status == "ok"
-        assert lazy_response.status == "ok"
-        assert lazy_response.ranges["conversion_prediction"].min == pytest.approx(
-            streaming_response.ranges["conversion_prediction"].min
-        )
-        assert lazy_response.ranges["conversion_prediction"].max == pytest.approx(
-            streaming_response.ranges["conversion_prediction"].max
-        )
-
-    @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_frontier_auto_range_streaming_maps_bounded_collect_failure_to_422(
-        self,
-        tmp_path,
-    ):
-        from haute.errors import BoundedMemoryUnsupportedError
-        from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import OptimiserSolveService
-        from haute.schemas import OptimiserFrontierAutoRangeRequest
-
-        source_path = tmp_path / "base.parquet"
-        pl.DataFrame(
-            {
-                "quote_id": ["q1", "q2"],
-                "premium": [100.0, 200.0],
-            }
-        ).write_parquet(source_path)
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "source",
-                        "data": {
-                            "label": "source",
-                            "nodeType": "dataInput",
-                            "config": _snapshot_parquet_data_input(
-                                str(source_path), contract="opaque"
-                            ),
-                        },
-                    },
-                    {
-                        "id": "scenario",
-                        "data": {
-                            "label": "scenario",
-                            "nodeType": "scenarioExpander",
-                            "config": {
-                                "quote_id": "quote_id",
-                                "column_name": "premium_multiplier",
-                                "min_value": 0.9,
-                                "max_value": 1.1,
-                                "steps": 2,
-                                "step_column": "scenario_index",
-                            },
-                        },
-                    },
-                    {
-                        "id": "opt",
-                        "data": {
-                            "label": "optimiser",
-                            "nodeType": "optimiser",
-                            "config": {
-                                "mode": "online",
-                                "objective": "not_needed_for_auto_range",
-                                "constraints": {"premium": {"min": 0.0}},
-                                "quote_id": "quote_id",
-                                "scenario_index": "scenario_index",
-                                "scenario_value": "premium_multiplier",
-                                "chunk_size": 2,
-                            },
-                        },
-                    },
-                ],
-                "edges": [
-                    make_edge("source", "scenario").model_dump(),
-                    make_edge("scenario", "opt").model_dump(),
-                ],
-            }
-        )
-        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
-        store = JobStore()
-        service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
-        prepared = service._prepare_frontier_auto_range(body)
-        assert prepared["streaming_plan"] is not None
-        error = BoundedMemoryUnsupportedError(
-            "Bounded streaming collect failed",
-            profile="auto_range",
-            cause="ComputeError",
-        )
-
-        with (
-            patch("haute.routes._optimiser_service.streaming_collect", side_effect=error),
-            pytest.raises(HTTPException) as exc_info,
-        ):
-            service._run_frontier_auto_range_job(body, job_id, **prepared)
-
-        assert exc_info.value.status_code == 422
-        assert "bounded streaming mode" in str(exc_info.value.detail)
-        job = store.require_job(job_id)
-        assert job["status"] == "contract_error"
-        assert job["terminal_reason"] == "contract_error"
-        assert "bounded streaming mode" in job["message"]
-        assert job["http_status_code"] == 422
-        assert "bounded streaming mode" in job["error_detail"]
-
-    @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_frontier_auto_range_streaming_records_value_error_metadata(
-        self,
-        tmp_path,
-    ):
-        from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import OptimiserSolveService
-        from haute.schemas import OptimiserFrontierAutoRangeRequest
-
-        source_path = tmp_path / "base.parquet"
-        pl.DataFrame(
-            {
-                "quote_id": ["q1", "q2"],
-                "premium": [100.0, 200.0],
-            }
-        ).write_parquet(source_path)
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "source",
-                        "data": {
-                            "label": "source",
-                            "nodeType": "dataInput",
-                            "config": _snapshot_parquet_data_input(
-                                str(source_path), contract="opaque"
-                            ),
-                        },
-                    },
-                    {
-                        "id": "scenario",
-                        "data": {
-                            "label": "scenario",
-                            "nodeType": "scenarioExpander",
-                            "config": {
-                                "quote_id": "quote_id",
-                                "column_name": "premium_multiplier",
-                                "min_value": 0.9,
-                                "max_value": 1.1,
-                                "steps": 2,
-                                "step_column": "scenario_index",
-                            },
-                        },
-                    },
-                    {
-                        "id": "opt",
-                        "data": {
-                            "label": "optimiser",
-                            "nodeType": "optimiser",
-                            "config": {
-                                "mode": "online",
-                                "objective": "not_needed_for_auto_range",
-                                "constraints": {"premium": {"min": 0.0}},
-                                "quote_id": "quote_id",
-                                "scenario_index": "scenario_index",
-                                "scenario_value": "premium_multiplier",
-                                "chunk_size": 2,
-                            },
-                        },
-                    },
-                ],
-                "edges": [
-                    make_edge("source", "scenario").model_dump(),
-                    make_edge("scenario", "opt").model_dump(),
-                ],
-            }
-        )
-        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
-        store = JobStore()
-        service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
-        prepared = service._prepare_frontier_auto_range(body)
-        assert prepared["streaming_plan"] is not None
-
-        with (
-            patch(
-                "haute.routes._optimiser_service.streaming_collect",
-                side_effect=ValueError("bad streaming range"),
-            ),
-            pytest.raises(HTTPException) as exc_info,
-        ):
-            service._run_frontier_auto_range_job(body, job_id, **prepared)
-
-        assert exc_info.value.status_code == 400
-        assert exc_info.value.detail == "bad streaming range"
-        job = store.require_job(job_id)
-        assert job["status"] == "contract_error"
-        assert job["terminal_reason"] == "contract_error"
-        assert job["http_status_code"] == 400
-        assert job["error_detail"] == "bad streaming range"
-        assert job["execution_metrics"]["terminal_reason"] == "contract_error"
 
     def test_frontier_auto_range_lazy_maps_bounded_collect_failure_to_422(
         self,
@@ -2974,11 +2610,10 @@ class TestEstimateRoute:
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
-        prepared = service._prepare_frontier_auto_range(body)
-        prepared["streaming_plan"] = None
+        _node, prepared = service._prepare_frontier_auto_range(body)
         error = BoundedMemoryUnsupportedError(
             "Bounded streaming collect failed",
-            profile="auto_range",
+            profile="optimiser_solve",
             cause="ComputeError",
         )
 
@@ -3018,8 +2653,7 @@ class TestEstimateRoute:
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
-        prepared = service._prepare_frontier_auto_range(body)
-        prepared["streaming_plan"] = None
+        _node, prepared = service._prepare_frontier_auto_range(body)
 
         with (
             patch.object(
@@ -3044,6 +2678,54 @@ class TestEstimateRoute:
         assert job["error_detail"] == "bad lazy range"
         assert job["execution_metrics"]["terminal_reason"] == "contract_error"
 
+    def test_frontier_auto_range_reducer_budget_below_minimum_is_memory_limited(
+        self,
+        scored_data,
+    ):
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import (
+            AutoRangeReducerBudgetError,
+            OptimiserSolveService,
+        )
+        from haute.schemas import OptimiserFrontierAutoRangeRequest
+
+        graph = _make_optimiser_graph(scored_data)
+        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
+        _node, prepared = service._prepare_frontier_auto_range(body)
+        error = AutoRangeReducerBudgetError(
+            budget_bytes=64 * 1024 * 1024,
+            minimum_bytes=384 * 1024 * 1024,
+            violation="batch_not_contiguous",
+            setting="HAUTE_OPTIMISER_REDUCER_BUDGET_MB",
+        )
+
+        with (
+            patch.object(
+                service,
+                "_execute_pipeline",
+                return_value={"source": pl.scan_parquet(scored_data)},
+            ),
+            patch(
+                "haute.routes._optimiser_service._estimate_scenario_frontier_ranges",
+                side_effect=error,
+            ),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            service._run_frontier_auto_range_job(body, job_id, **prepared)
+
+        assert exc_info.value.status_code == 507
+        detail = exc_info.value.detail
+        assert detail["reason"] == "reducer_budget_below_minimum"
+        assert detail["reducer_budget_bytes"] == 64 * 1024 * 1024
+        assert detail["reducer_min_budget_bytes"] == 384 * 1024 * 1024
+        assert detail["violation"] == "batch_not_contiguous"
+        job = store.require_job(job_id)
+        assert job["status"] == "memory_limited"
+        assert job["terminal_reason"] == "memory_limited"
+
     def test_frontier_auto_range_missing_column_status_includes_http_metadata(
         self,
         scored_data,
@@ -3057,8 +2739,7 @@ class TestEstimateRoute:
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
-        prepared = service._prepare_frontier_auto_range(body)
-        prepared["streaming_plan"] = None
+        _node, prepared = service._prepare_frontier_auto_range(body)
         missing_constraint_lf = pl.DataFrame(
             {
                 "quote_id": ["q1", "q2"],
@@ -3097,8 +2778,7 @@ class TestEstimateRoute:
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
-        prepared = service._prepare_frontier_auto_range(body)
-        prepared["streaming_plan"] = None
+        _node, prepared = service._prepare_frontier_auto_range(body)
         numeric_quote_id_lf = pl.DataFrame(
             {
                 "quote_id": [1, 2],
@@ -3123,686 +2803,12 @@ class TestEstimateRoute:
         assert isinstance(status.error_detail, str)
         assert "quote_id must be Utf8" in status.error_detail
 
-    def test_streaming_auto_range_plan_allows_opaque_base_projection(self, tmp_path):
-        """Opaque base projection should not block chunking before expansion."""
-        source_path = tmp_path / "base.parquet"
-        pl.DataFrame({"quote_id": ["q1"], "premium": [100.0]}).write_parquet(source_path)
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "source",
-                        "data": {
-                            "label": "source",
-                            "nodeType": "dataInput",
-                            "config": _snapshot_parquet_data_input(
-                                str(source_path), contract="opaque"
-                            ),
-                        },
-                    },
-                    {
-                        "id": "premium",
-                        "data": {
-                            "label": "premium",
-                            "nodeType": "scenarioExpander",
-                            "config": {
-                                "quote_id": "quote_id",
-                                "column_name": "premium_multiplier",
-                                "steps": 2,
-                                "code": (
-                                    "df = df.with_columns("
-                                    "premium=pl.col('premium') * "
-                                    "pl.col('premium_multiplier'))"
-                                ),
-                                "contract": {
-                                    "inputs": ["premium"],
-                                    "outputs": [
-                                        "premium",
-                                        "premium_multiplier",
-                                        "scenario_index",
-                                    ],
-                                },
-                            },
-                        },
-                    },
-                    {
-                        "id": "optimiser_input",
-                        "data": {
-                            "label": "optimiser_input",
-                            "nodeType": "polars",
-                            "config": {
-                                "code": (
-                                    "df = premium.with_columns("
-                                    "conversion_prediction=pl.col('premium'))"
-                                ),
-                                "contract": {
-                                    "inputs": ["premium"],
-                                    "outputs": ["conversion_prediction"],
-                                },
-                            },
-                        },
-                    },
-                    {
-                        "id": "opt",
-                        "data": {
-                            "label": "optimiser",
-                            "nodeType": "optimiser",
-                            "config": {
-                                "mode": "online",
-                                "objective": "not_needed",
-                                "constraints": {"conversion_prediction": {"min": 0.0}},
-                                "quote_id": "quote_id",
-                                "scenario_index": "scenario_index",
-                                "scenario_value": "premium_multiplier",
-                                "data_input": "optimiser_input",
-                            },
-                        },
-                    },
-                ],
-                "edges": [
-                    make_edge("source", "premium").model_dump(),
-                    make_edge("premium", "optimiser_input").model_dump(),
-                    make_edge("optimiser_input", "opt").model_dump(),
-                ],
-            }
-        )
-
-        plan = _build_streaming_auto_range_plan(
-            graph,
-            "opt",
-            graph.node_map["opt"].data.config,
-            mode="online",
-            required_columns_by_node={
-                "optimiser_input": frozenset({"quote_id", "conversion_prediction"}),
-            },
-        )
-
-        assert plan is not None
-        assert plan.base_node_id == "source"
-        assert plan.chain_node_ids == ("premium", "optimiser_input")
-        assert plan.base_required_columns == frozenset({"quote_id", "premium"})
-        assert plan.chunk_plan.chunk_size_policy == "byte_budget"
-        assert plan.chunk_plan.target_chunk_bytes is not None
-
-    def test_streaming_auto_range_plan_infers_single_optimiser_parent(self, tmp_path):
-        """Single-input optimiser graphs do not need explicit data_input for streaming."""
-        source_path = tmp_path / "base.parquet"
-        pl.DataFrame({"quote_id": ["q1"], "premium": [100.0]}).write_parquet(source_path)
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "source",
-                        "data": {
-                            "label": "source",
-                            "nodeType": "dataInput",
-                            "config": _snapshot_parquet_data_input(str(source_path)),
-                        },
-                    },
-                    {
-                        "id": "premium",
-                        "data": {
-                            "label": "premium",
-                            "nodeType": "scenarioExpander",
-                            "config": {
-                                "quote_id": "quote_id",
-                                "column_name": "premium_multiplier",
-                                "steps": 2,
-                                "contract": {
-                                    "inputs": ["premium"],
-                                    "outputs": ["premium_multiplier", "scenario_index"],
-                                },
-                            },
-                        },
-                    },
-                    {
-                        "id": "optimiser_input",
-                        "data": {
-                            "label": "optimiser_input",
-                            "nodeType": "polars",
-                            "config": {
-                                "code": (
-                                    "df = premium.with_columns("
-                                    "conversion_prediction=pl.col('premium'))"
-                                ),
-                                "contract": {
-                                    "inputs": ["premium"],
-                                    "outputs": ["conversion_prediction"],
-                                },
-                            },
-                        },
-                    },
-                    {
-                        "id": "opt",
-                        "data": {
-                            "label": "optimiser",
-                            "nodeType": "optimiser",
-                            "config": {
-                                "mode": "online",
-                                "objective": "not_needed",
-                                "constraints": {"conversion_prediction": {"min": 0.0}},
-                                "quote_id": "quote_id",
-                                "scenario_index": "scenario_index",
-                                "scenario_value": "premium_multiplier",
-                            },
-                        },
-                    },
-                ],
-                "edges": [
-                    make_edge("source", "premium").model_dump(),
-                    make_edge("premium", "optimiser_input").model_dump(),
-                    make_edge("optimiser_input", "opt").model_dump(),
-                ],
-            }
-        )
-        required_columns_by_node = _auto_range_required_columns_by_node(
-            graph,
-            "opt",
-            graph.node_map["opt"].data.config,
-            mode="online",
-        )
-
-        plan = _build_streaming_auto_range_plan(
-            graph,
-            "opt",
-            graph.node_map["opt"].data.config,
-            mode="online",
-            required_columns_by_node=required_columns_by_node,
-        )
-
-        assert required_columns_by_node == {
-            "optimiser_input": frozenset({"quote_id", "conversion_prediction"})
-        }
-        assert plan is not None
-        assert plan.base_node_id == "source"
-        assert plan.chain_node_ids == ("premium", "optimiser_input")
-        assert plan.chunk_plan.chunk_size_policy == "byte_budget"
-
-    def test_streaming_auto_range_plan_honours_explicit_chunk_override(
-        self,
-        tmp_path,
-    ):
-        """User chunk overrides stay row-explicit instead of being byte-budgeted."""
-        source_path = tmp_path / "base.parquet"
-        pl.DataFrame({"quote_id": ["q1", "q2"], "premium": [100.0, 200.0]}).write_parquet(
-            source_path
-        )
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "source",
-                        "data": {
-                            "label": "source",
-                            "nodeType": "dataInput",
-                            "config": _snapshot_parquet_data_input(str(source_path)),
-                        },
-                    },
-                    {
-                        "id": "premium",
-                        "data": {
-                            "label": "premium",
-                            "nodeType": "scenarioExpander",
-                            "config": {
-                                "quote_id": "quote_id",
-                                "column_name": "premium_multiplier",
-                                "steps": 2,
-                                "contract": {
-                                    "inputs": ["premium"],
-                                    "outputs": ["premium_multiplier", "scenario_index"],
-                                },
-                            },
-                        },
-                    },
-                    {
-                        "id": "optimiser_input",
-                        "data": {
-                            "label": "optimiser_input",
-                            "nodeType": "polars",
-                            "config": {
-                                "code": (
-                                    "df = premium.with_columns("
-                                    "conversion_prediction=pl.col('premium'))"
-                                ),
-                                "contract": {
-                                    "inputs": ["premium"],
-                                    "outputs": ["conversion_prediction"],
-                                },
-                            },
-                        },
-                    },
-                    {
-                        "id": "opt",
-                        "data": {
-                            "label": "optimiser",
-                            "nodeType": "optimiser",
-                            "config": {
-                                "mode": "online",
-                                "objective": "not_needed",
-                                "constraints": {"conversion_prediction": {"min": 0.0}},
-                                "quote_id": "quote_id",
-                                "scenario_index": "scenario_index",
-                                "scenario_value": "premium_multiplier",
-                                "auto_range_chunk_size": 7,
-                            },
-                        },
-                    },
-                ],
-                "edges": [
-                    make_edge("source", "premium").model_dump(),
-                    make_edge("premium", "optimiser_input").model_dump(),
-                    make_edge("optimiser_input", "opt").model_dump(),
-                ],
-            }
-        )
-        required_columns_by_node = _auto_range_required_columns_by_node(
-            graph,
-            "opt",
-            graph.node_map["opt"].data.config,
-            mode="online",
-        )
-
-        plan = _build_streaming_auto_range_plan(
-            graph,
-            "opt",
-            graph.node_map["opt"].data.config,
-            mode="online",
-            required_columns_by_node=required_columns_by_node,
-        )
-
-        assert plan is not None
-        assert plan.chunk_plan.chunk_size == 7
-        assert plan.chunk_plan.chunk_size_policy == "explicit_rows"
-        assert plan.chunk_plan.target_chunk_bytes is None
-
-    def test_streaming_auto_range_plan_rejects_global_polars_transform(self, tmp_path):
-        """Global transforms are not eligible for chunk-local auto-range execution."""
-        source_path = tmp_path / "base.parquet"
-        pl.DataFrame({"quote_id": ["q1"], "premium": [1.0]}).write_parquet(source_path)
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "source",
-                        "data": {
-                            "label": "source",
-                            "nodeType": "dataInput",
-                            "config": _snapshot_parquet_data_input(str(source_path)),
-                        },
-                    },
-                    {
-                        "id": "premium",
-                        "data": {
-                            "label": "premium",
-                            "nodeType": "scenarioExpander",
-                            "config": {
-                                "column_name": "premium_multiplier",
-                                "steps": 2,
-                                "contract": {
-                                    "inputs": ["premium"],
-                                    "outputs": ["premium_multiplier", "scenario_index"],
-                                },
-                            },
-                        },
-                    },
-                    {
-                        "id": "aggregate",
-                        "data": {
-                            "label": "aggregate",
-                            "nodeType": "polars",
-                            "config": {
-                                "code": (
-                                    "df = premium.group_by('quote_id').agg("
-                                    "conversion_prediction=pl.col('premium').sum())"
-                                ),
-                                "contract": {
-                                    "inputs": ["premium"],
-                                    "outputs": ["conversion_prediction"],
-                                },
-                            },
-                        },
-                    },
-                    {
-                        "id": "opt",
-                        "data": {
-                            "label": "optimiser",
-                            "nodeType": "optimiser",
-                            "config": {
-                                "mode": "online",
-                                "objective": "not_needed",
-                                "constraints": {"conversion_prediction": {"min": 0.0}},
-                                "data_input": "aggregate",
-                            },
-                        },
-                    },
-                ],
-                "edges": [
-                    make_edge("source", "premium").model_dump(),
-                    make_edge("premium", "aggregate").model_dump(),
-                    make_edge("aggregate", "opt").model_dump(),
-                ],
-            }
-        )
-
-        plan = _build_streaming_auto_range_plan(
-            graph,
-            "opt",
-            graph.node_map["opt"].data.config,
-            mode="online",
-            required_columns_by_node={
-                "aggregate": frozenset({"quote_id", "conversion_prediction"}),
-            },
-        )
-
-        assert plan is None
-
-    def test_streaming_auto_range_plan_rejects_global_polars_transform_with_whitespace(
-        self,
-        tmp_path,
-    ):
-        """Formatting cannot hide a global transform from the streaming guard."""
-        source_path = tmp_path / "base.parquet"
-        pl.DataFrame({"quote_id": ["q1"], "premium": [1.0]}).write_parquet(source_path)
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "source",
-                        "data": {
-                            "label": "source",
-                            "nodeType": "dataInput",
-                            "config": _snapshot_parquet_data_input(str(source_path)),
-                        },
-                    },
-                    {
-                        "id": "premium",
-                        "data": {
-                            "label": "premium",
-                            "nodeType": "scenarioExpander",
-                            "config": {
-                                "column_name": "premium_multiplier",
-                                "steps": 2,
-                                "contract": {
-                                    "inputs": ["premium"],
-                                    "outputs": ["premium_multiplier", "scenario_index"],
-                                },
-                            },
-                        },
-                    },
-                    {
-                        "id": "aggregate",
-                        "data": {
-                            "label": "aggregate",
-                            "nodeType": "polars",
-                            "config": {
-                                "code": (
-                                    "df = premium\n"
-                                    ".group_by\n"
-                                    "('quote_id')\n"
-                                    ".agg\n"
-                                    "(conversion_prediction=pl.col('premium').sum())"
-                                ),
-                                "contract": {
-                                    "inputs": ["premium"],
-                                    "outputs": ["conversion_prediction"],
-                                },
-                            },
-                        },
-                    },
-                    {
-                        "id": "opt",
-                        "data": {
-                            "label": "optimiser",
-                            "nodeType": "optimiser",
-                            "config": {
-                                "mode": "online",
-                                "objective": "not_needed",
-                                "constraints": {"conversion_prediction": {"min": 0.0}},
-                                "data_input": "aggregate",
-                            },
-                        },
-                    },
-                ],
-                "edges": [
-                    make_edge("source", "premium").model_dump(),
-                    make_edge("premium", "aggregate").model_dump(),
-                    make_edge("aggregate", "opt").model_dump(),
-                ],
-            }
-        )
-
-        plan = _build_streaming_auto_range_plan(
-            graph,
-            "opt",
-            graph.node_map["opt"].data.config,
-            mode="online",
-            required_columns_by_node={
-                "aggregate": frozenset({"quote_id", "conversion_prediction"}),
-            },
-        )
-
-        assert plan is None
-
-    def test_streaming_auto_range_guard_rejects_expression_aggregate(self):
-        """Aggregates hidden in with_columns are not chunk-local."""
-        assert not _looks_chunk_local_user_code(
-            "df = premium.with_columns(conversion_prediction=pl.col('premium').mean())",
-            frame_names=("premium",),
-        )
-        assert _looks_chunk_local_user_code(
-            "df = premium.with_columns(conversion_prediction=pl.col('premium') * pl.lit(2.0))",
-            frame_names=("premium",),
-        )
-        assert not _looks_chunk_local_user_code(
-            "df = GLOBAL_LAZY_FRAME.with_columns("
-            "conversion_prediction=pl.col('premium') * pl.lit(2.0))",
-            frame_names=("premium",),
-        )
-
-    def test_streaming_auto_range_plan_resolves_instance_node_code(self, tmp_path):
-        """Instance wrappers should be checked against their original node code."""
-        source_path = tmp_path / "base.parquet"
-        pl.DataFrame({"quote_id": ["q1"], "premium": [100.0]}).write_parquet(source_path)
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "source",
-                        "data": {
-                            "label": "source",
-                            "nodeType": "dataInput",
-                            "config": _snapshot_parquet_data_input(str(source_path)),
-                        },
-                    },
-                    {
-                        "id": "premium",
-                        "data": {
-                            "label": "premium",
-                            "nodeType": "scenarioExpander",
-                            "config": {
-                                "column_name": "premium_multiplier",
-                                "steps": 2,
-                                "contract": {
-                                    "inputs": ["premium"],
-                                    "outputs": ["premium_multiplier", "scenario_index"],
-                                },
-                            },
-                        },
-                    },
-                    {
-                        "id": "row_local_features",
-                        "data": {
-                            "label": "row_local_features",
-                            "nodeType": "polars",
-                            "config": {
-                                "code": (
-                                    "df = premium.with_columns("
-                                    "conversion_prediction=pl.col('premium'))"
-                                ),
-                                "contract": {
-                                    "inputs": ["premium"],
-                                    "outputs": ["conversion_prediction"],
-                                },
-                            },
-                        },
-                    },
-                    {
-                        "id": "features_instance",
-                        "data": {
-                            "label": "features_instance",
-                            "nodeType": "polars",
-                            "config": {
-                                "instanceOf": "row_local_features",
-                                "code": "df = row_local_features(premium=premium)",
-                                "contract": {
-                                    "inputs": ["premium"],
-                                    "outputs": ["conversion_prediction"],
-                                },
-                            },
-                        },
-                    },
-                    {
-                        "id": "opt",
-                        "data": {
-                            "label": "optimiser",
-                            "nodeType": "optimiser",
-                            "config": {
-                                "mode": "online",
-                                "objective": "not_needed",
-                                "constraints": {"conversion_prediction": {"min": 0.0}},
-                                "data_input": "features_instance",
-                            },
-                        },
-                    },
-                ],
-                "edges": [
-                    make_edge("source", "premium").model_dump(),
-                    make_edge("premium", "features_instance").model_dump(),
-                    make_edge("features_instance", "opt").model_dump(),
-                ],
-            }
-        )
-
-        plan = _build_streaming_auto_range_plan(
-            graph,
-            "opt",
-            graph.node_map["opt"].data.config,
-            mode="online",
-            required_columns_by_node={
-                "features_instance": frozenset(
-                    {"quote_id", "scenario_index", "conversion_prediction"}
-                ),
-            },
-        )
-
-        assert plan is not None
-        assert plan.chain_node_ids == ("premium", "features_instance")
-
-    def test_streaming_auto_range_plan_rejects_preexpanded_base(self, tmp_path):
-        """A previous scenario expansion must not be hidden inside the base."""
-        source_path = tmp_path / "base.parquet"
-        pl.DataFrame({"quote_id": ["q1"], "premium": [100.0]}).write_parquet(source_path)
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "source",
-                        "data": {
-                            "label": "source",
-                            "nodeType": "dataInput",
-                            "config": {"path": str(source_path)},
-                        },
-                    },
-                    {
-                        "id": "market_scenario",
-                        "data": {
-                            "label": "market_scenario",
-                            "nodeType": "scenarioExpander",
-                            "config": {
-                                "column_name": "market_multiplier",
-                                "steps": 2,
-                                "contract": {
-                                    "inputs": [],
-                                    "outputs": ["market_multiplier", "scenario_index"],
-                                },
-                            },
-                        },
-                    },
-                    {
-                        "id": "premium",
-                        "data": {
-                            "label": "premium",
-                            "nodeType": "scenarioExpander",
-                            "config": {
-                                "column_name": "premium_multiplier",
-                                "steps": 2,
-                                "contract": {
-                                    "inputs": ["premium"],
-                                    "outputs": ["premium_multiplier", "scenario_index"],
-                                },
-                            },
-                        },
-                    },
-                    {
-                        "id": "optimiser_input",
-                        "data": {
-                            "label": "optimiser_input",
-                            "nodeType": "polars",
-                            "config": {
-                                "code": (
-                                    "df = premium.with_columns("
-                                    "conversion_prediction=pl.col('premium'))"
-                                ),
-                                "contract": {
-                                    "inputs": ["premium"],
-                                    "outputs": ["conversion_prediction"],
-                                },
-                            },
-                        },
-                    },
-                    {
-                        "id": "opt",
-                        "data": {
-                            "label": "optimiser",
-                            "nodeType": "optimiser",
-                            "config": {
-                                "mode": "online",
-                                "objective": "not_needed",
-                                "constraints": {"conversion_prediction": {"min": 0.0}},
-                                "data_input": "optimiser_input",
-                            },
-                        },
-                    },
-                ],
-                "edges": [
-                    make_edge("source", "market_scenario").model_dump(),
-                    make_edge("market_scenario", "premium").model_dump(),
-                    make_edge("premium", "optimiser_input").model_dump(),
-                    make_edge("optimiser_input", "opt").model_dump(),
-                ],
-            }
-        )
-
-        plan = _build_streaming_auto_range_plan(
-            graph,
-            "opt",
-            graph.node_map["opt"].data.config,
-            mode="online",
-            required_columns_by_node={
-                "optimiser_input": frozenset(
-                    {"quote_id", "scenario_index", "conversion_prediction"}
-                ),
-            },
-        )
-
-        assert plan is None
-
     @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_frontier_auto_range_streams_from_multi_parent_base_before_expander(
+    def test_frontier_auto_range_reduces_a_fan_in_base_expanded_downstream(
         self,
         tmp_path,
     ):
-        """Fan-in before the scenario expander can still stream from that base."""
+        """A fan-in before the scenario expander yields exact per-quote envelope totals."""
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
         from haute.schemas import OptimiserFrontierAutoRangeRequest
@@ -3869,7 +2875,7 @@ class TestEstimateRoute:
                                 "column_name": "premium_multiplier",
                                 "min_value": 1.0,
                                 "max_value": 2.0,
-                                "steps": 2,
+                                "stepCount": 2,
                                 "code": (
                                     "df = df.with_columns("
                                     "premium=pl.col('premium') * "
@@ -3912,7 +2918,7 @@ class TestEstimateRoute:
                             "nodeType": "optimiser",
                             "config": {
                                 "mode": "online",
-                                "objective": "not_needed",
+                                "objective": "margin",
                                 "constraints": {
                                     "conversion_prediction": {"min": 0.0},
                                     "margin": {"min": 0.0},
@@ -3921,8 +2927,6 @@ class TestEstimateRoute:
                                 "scenario_index": "scenario_index",
                                 "scenario_value": "premium_multiplier",
                                 "data_input": "optimiser_input",
-                                "chunk_size": 2,
-                                "auto_range_partition_count": 2,
                             },
                         },
                     },
@@ -3941,20 +2945,14 @@ class TestEstimateRoute:
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
-        prepared = service._prepare_frontier_auto_range(body)
-        with patch.object(
-            service,
-            "_execute_pipeline",
-            wraps=service._execute_pipeline,
-        ) as execute:
-            response = service._run_frontier_auto_range_job(body, job_id, **prepared)
+        _node, prepared = service._prepare_frontier_auto_range(body)
+        response = service._run_frontier_auto_range_job(body, job_id, **prepared)
 
         assert response.status == "ok"
         assert response.ranges["conversion_prediction"].min == pytest.approx(350.0)
         assert response.ranges["conversion_prediction"].max == pytest.approx(700.0)
         assert response.ranges["margin"].min == pytest.approx(70.0)
         assert response.ranges["margin"].max == pytest.approx(220.0)
-        assert execute.call_args.kwargs["target_node_id"] == "joined"
 
     @pytest.mark.parametrize("chunk_size", [0, -1, 1.5, "1000", True])
     def test_frontier_auto_range_estimator_rejects_invalid_chunk_size(self, chunk_size):
@@ -3977,208 +2975,20 @@ class TestEstimateRoute:
                 constraint_cols=["volume"],
             )
 
-    def test_frontier_auto_range_prepare_uses_auto_range_tuned_defaults(self, scored_data):
-        """Auto-range defaults are tuned independently from solver grid chunking."""
+    def test_frontier_auto_range_prepare_resolves_the_solves_demand(self, scored_data):
+        """Auto-range asks the pipeline for exactly what the solve asks for."""
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
         from haute.schemas import OptimiserFrontierAutoRangeRequest
 
         graph = _make_optimiser_graph(scored_data)
         body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
-        prepared = OptimiserSolveService(JobStore())._prepare_frontier_auto_range(body)
+        node, prepared = OptimiserSolveService(JobStore())._prepare_frontier_auto_range(body)
 
-        assert prepared["chunk_size"] == _default_auto_range_chunk_size()
-        assert prepared["partition_count"] == _default_auto_range_partitions()
-
-    def test_frontier_auto_range_prepare_treats_projection_plan_failure_as_ineligible(
-        self,
-        scored_data,
-    ):
-        """The streaming probe must not escape before the auto-range job wrapper."""
-        from haute.errors import ProjectionImpossibleError
-        from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import OptimiserSolveService
-        from haute.schemas import OptimiserFrontierAutoRangeRequest
-
-        graph = _make_optimiser_graph(scored_data)
-        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
-        service = OptimiserSolveService(JobStore())
-
-        with patch(
-            "haute.routes._optimiser_service._build_streaming_auto_range_plan",
-            side_effect=ProjectionImpossibleError("missing parent ownership"),
-        ):
-            prepared = service._prepare_frontier_auto_range(body)
-
-        assert prepared["streaming_plan"] is None
-
-    def test_frontier_auto_range_prepare_does_not_hide_contract_errors(
-        self,
-        scored_data,
-    ):
-        """Only projection-impossible preflight failures are streaming ineligibility."""
-        from haute.errors import ContractMismatchError
-        from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import OptimiserSolveService
-        from haute.schemas import OptimiserFrontierAutoRangeRequest
-
-        graph = _make_optimiser_graph(scored_data)
-        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
-        service = OptimiserSolveService(JobStore())
-
-        with (
-            patch(
-                "haute.routes._optimiser_service._build_streaming_auto_range_plan",
-                side_effect=ContractMismatchError("bad contract"),
-            ),
-            pytest.raises(ContractMismatchError, match="bad contract"),
-        ):
-            service._prepare_frontier_auto_range(body)
-
-    def test_frontier_auto_range_prepare_does_not_fallback_after_chunk_plan_rejection(
-        self,
-        tmp_path,
-    ):
-        """Eligible streaming shapes must fail loudly if the chunk planner rejects them."""
-        from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import OptimiserSolveService
-        from haute.schemas import OptimiserFrontierAutoRangeRequest
-
-        source_path = tmp_path / "quotes.parquet"
-        pl.DataFrame({"quote_id": ["q1"], "premium": [100.0]}).write_parquet(source_path)
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "source",
-                        "data": {
-                            "label": "source",
-                            "nodeType": "dataInput",
-                            "config": _snapshot_parquet_data_input(str(source_path)),
-                        },
-                    },
-                    {
-                        "id": "scenario",
-                        "data": {
-                            "label": "scenario",
-                            "nodeType": "scenarioExpander",
-                            "config": {
-                                "column_name": "premium_multiplier",
-                                "steps": 2,
-                                "contract": {
-                                    "inputs": ["premium"],
-                                    "outputs": ["premium_multiplier", "scenario_index"],
-                                },
-                            },
-                        },
-                    },
-                    {
-                        "id": "opt",
-                        "data": {
-                            "label": "optimiser",
-                            "nodeType": "optimiser",
-                            "config": {
-                                "mode": "online",
-                                "objective": "not_needed",
-                                "constraints": {"premium": {"min": 0.0}},
-                                "quote_id": "quote_id",
-                                "scenario_index": "scenario_index",
-                                "scenario_value": "premium_multiplier",
-                            },
-                        },
-                    },
-                ],
-                "edges": [
-                    make_edge("source", "scenario").model_dump(),
-                    make_edge("scenario", "opt").model_dump(),
-                ],
-            }
+        assert node.id == "opt"
+        assert prepared["required_columns_by_node"] == _optimiser_solve_required_columns_by_node(
+            body.graph, "opt", node.data.config
         )
-        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
-
-        from haute.errors import ChunkPlanUnsupportedError
-
-        with (
-            patch(
-                "haute.chunking.chunk_plan",
-                side_effect=ChunkPlanUnsupportedError("forced chunk-plan rejection"),
-            ),
-            pytest.raises(HTTPException) as exc_info,
-        ):
-            OptimiserSolveService(JobStore())._prepare_frontier_auto_range(body)
-
-        assert exc_info.value.status_code == 422
-        assert "bounded streaming mode" in str(exc_info.value.detail)
-        assert "forced chunk-plan rejection" in str(exc_info.value.detail)
-
-    def test_frontier_auto_range_prepare_prefers_auto_range_chunk_override(
-        self,
-        scored_data,
-    ):
-        """Auto-range can be tuned without changing solver grid chunking."""
-        from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import OptimiserSolveService
-        from haute.schemas import OptimiserFrontierAutoRangeRequest
-
-        graph = _make_optimiser_graph(
-            scored_data,
-            config={"chunk_size": 3, "auto_range_chunk_size": 7},
-        )
-        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
-        prepared = OptimiserSolveService(JobStore())._prepare_frontier_auto_range(body)
-
-        assert prepared["chunk_size"] == 7
-
-    @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_frontier_auto_range_rejects_invalid_chunk_size(
-        self,
-        client,
-        scored_data,
-    ):
-        graph = _make_optimiser_graph(scored_data, config={"chunk_size": 0})
-
-        resp = client.post(
-            "/api/optimiser/frontier/auto-range/start",
-            json={"graph": graph, "node_id": "opt"},
-        )
-
-        assert resp.status_code == 400
-        assert "chunk_size must be a positive integer" in resp.json()["detail"]
-
-    @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_frontier_auto_range_rejects_invalid_auto_range_chunk_size(
-        self,
-        client,
-        scored_data,
-    ):
-        graph = _make_optimiser_graph(
-            scored_data,
-            config={"chunk_size": 3, "auto_range_chunk_size": 0},
-        )
-
-        resp = client.post(
-            "/api/optimiser/frontier/auto-range/start",
-            json={"graph": graph, "node_id": "opt"},
-        )
-
-        assert resp.status_code == 400
-        assert "auto_range_chunk_size must be a positive integer" in resp.json()["detail"]
-
-    @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_frontier_auto_range_rejects_invalid_partition_count(
-        self,
-        client,
-        scored_data,
-    ):
-        graph = _make_optimiser_graph(scored_data, config={"auto_range_partition_count": 0})
-
-        resp = client.post(
-            "/api/optimiser/frontier/auto-range/start",
-            json={"graph": graph, "node_id": "opt"},
-        )
-
-        assert resp.status_code == 400
-        assert "auto_range_partition_count must be a positive integer" in resp.json()["detail"]
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_frontier_auto_range_runtime_projects_contract_free_fan_in(
@@ -4251,10 +3061,14 @@ class TestEstimateRoute:
         }
         diagnostics = status["execution_metrics"]["execution_strategy"]
         assert diagnostics["schema_version"] == 1
-        assert diagnostics["profile"] == "auto_range"
-        assert diagnostics["status"] == "projected"
-        assert diagnostics["boundedness"] == "bounded"
-        assert diagnostics["boundaries"]["total_count"] == 0
+        assert diagnostics["profile"] == "optimiser_solve"
+        # The fan-in node joins, which EXEC-P07 admits as a materialisation
+        # boundary; the runtime projection reasons below are unaffected.
+        assert diagnostics["strategy"] == "materialisation-boundary"
+        assert diagnostics["status"] == "boundary"
+        assert diagnostics["boundedness"] == "unbounded"
+        assert diagnostics["boundaries"]["total_count"] == 1
+        assert diagnostics["blocking_operator"] == "join"
         reason_edges = {
             (item["parent_node_id"], item["node_id"], item["reason_code"])
             for item in diagnostics["reasons"]["items"]
@@ -4280,7 +3094,7 @@ class TestEstimateRoute:
         )
         path = tmp_path / "auto_range_null_quote.parquet"
         df.write_parquet(path)
-        graph = _make_optimiser_graph(str(path), config={"chunk_size": 1})
+        graph = _make_optimiser_graph(str(path))
 
         start_resp = client.post(
             "/api/optimiser/frontier/auto-range/start",
@@ -4327,8 +3141,8 @@ class TestEstimateRoute:
         assert start_resp.status_code == 200
         status = _poll_auto_range_until_done(client, start_resp.json()["job_id"])
         assert status["status"] == "contract_error"
-        assert "required by a projection contract are missing" in status["error_detail"]
-        assert "expected_margin" in status["error_detail"]
+        # The source scan refuses the projection before anything reads it.
+        assert "Source projection references columns missing" in status["error_detail"]
         assert "expected_margin" in status["error_detail"]
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
@@ -4390,7 +3204,7 @@ class TestEstimateRoute:
         assert status["status"] == "completed"
         data = status["result"]
         assert data["status"] == "ok"
-        assert data["warning"] is None
+        assert "warning" not in data
         assert "Ratebook factor-table coupling" not in str(status)
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
@@ -4490,7 +3304,7 @@ class TestEstimateRoute:
     def test_frontier_auto_range_ratebook_projection_seeds_data_and_banding_inputs(
         self,
     ):
-        """Ratebook auto-range should prove both optimiser parents are narrow."""
+        """Ratebook auto-range (the solve's demand) proves both optimiser parents narrow."""
         graph = make_graph(
             {
                 "nodes": [
@@ -4537,16 +3351,12 @@ class TestEstimateRoute:
         )
         config = graph.node_map["opt"].data.config
 
-        required = _auto_range_required_columns_by_node(
-            graph,
-            "opt",
-            config,
-            mode="ratebook",
-        )
+        required = _optimiser_solve_required_columns_by_node(graph, "opt", config)
 
-        assert required == {
-            "scored": frozenset({"quote_ref", "expected_margin"}),
-        }
+        solve_columns = frozenset(
+            {"quote_ref", "scenario_index", "scenario_value", "expected_income", "expected_margin"}
+        )
+        assert required == {"scored": solve_columns}
 
         from haute._execution_context import ExecutionProfile
         from haute.projection import ProjectionRequest, plan
@@ -4555,15 +3365,13 @@ class TestEstimateRoute:
             ProjectionRequest(
                 graph=graph,
                 target_node_id="opt",
-                profile=ExecutionProfile.AUTO_RANGE,
+                profile=ExecutionProfile.OPTIMISER_SOLVE,
                 source="batch",
                 required_columns_by_node=required,
             )
         )
 
-        assert pair_value(projection.edge_demands, "scored", "opt") == frozenset(
-            {"quote_ref", "expected_margin"}
-        )
+        assert pair_value(projection.edge_demands, "scored", "opt") == solve_columns
         assert pair_value(projection.edge_demands, "banding", "opt") == frozenset(
             {"quote_ref", "territory", "channel", "age_band"}
         )
@@ -4691,7 +3499,8 @@ class TestApplyRoute:
         assert data["status"] == "ok"
         assert data["row_count"] > 0
         assert "total_objective" in data
-        assert data["from_artifact"] is False
+        # The as-solved page is always read from the persisted apply artifact.
+        assert data["from_artifact"] is True
 
     def test_apply_missing_job(self, client):
         resp = client.post("/api/optimiser/apply", json={"job_id": "nonexistent"})
@@ -4933,6 +3742,12 @@ def _make_ratebook_intermediate_graph(data_path: str, banding_data_path: str) ->
     return graph.model_dump()
 
 
+# A ratebook result's serialised table for its one ``region`` factor spec.
+_REGION_FACTOR_TABLES = {
+    "region": [{"__factor_group__": "North", "optimal_scenario_value": 1.0, "quote_count": 2}]
+}
+
+
 def _ratebook_solve_result_namespace(
     *,
     total_objective: float = 222.0,
@@ -4943,54 +3758,127 @@ def _ratebook_solve_result_namespace(
     cd_iterations: int = 5,
     clamp_rate: float = 0.04,
     factor_tables: dict[str, dict[str, float]] | None = None,
+    constraint_bounds: dict[str, float] | None = None,
+    per_factor_results: list[PerFactorRecord] | None = None,
+    quote_results: pl.DataFrame | None = None,
 ) -> SimpleNamespace:
     """Mock shaped like the REAL ``price_contour.RatebookResult``.
 
     Deliberately has NO ``dataframe`` and NO ``iterations`` attribute —
-    the real result carries factor tables and aggregates only (pinned by
-    ``tests/test_optimiser_routes_real_library.py``).  Every mocked
-    ratebook solve must use this shape: a phantom ``dataframe=`` would
-    make ``_finalize_solve_result`` persist an apply artifact and
-    scenario stats that real ratebook solves never produce (3b.9).
+    the real result carries factor tables, aggregates and the canonical
+    per-quote evaluation ``quote_results`` (pinned by
+    ``tests/test_optimiser_routes_real_library.py``), which a mocked solve's
+    finalize persists as the apply artifact (OPT-V09C). Its default holds two
+    quotes at ``SOLVE_SCENARIO_GRID``'s middle step, one per constraint.
+
+    ``per_factor_results`` defaults to one pass over ``region`` ending on the
+    result's totals and λ, as a real solve's CD trace does.
     """
+    total_constraints = total_constraints if total_constraints is not None else {"volume": 0.97}
+    lambdas = lambdas if lambdas is not None else {"volume": 0.7}
     return SimpleNamespace(
+        quote_results=(
+            quote_results
+            if quote_results is not None
+            else make_ratebook_quote_results(list(total_constraints))
+        ),
         total_objective=total_objective,
         baseline_objective=baseline_objective,
-        total_constraints=(
-            total_constraints if total_constraints is not None else {"volume": 0.97}
-        ),
+        total_constraints=total_constraints,
         baseline_constraints=(
             baseline_constraints if baseline_constraints is not None else {"volume": 0.88}
         ),
-        lambdas=lambdas if lambdas is not None else {"volume": 0.7},
+        lambdas=lambdas,
+        constraint_bounds=constraint_bounds if constraint_bounds is not None else {"volume": 0.9},
         converged=True,
         cd_iterations=cd_iterations,
         clamp_rate=clamp_rate,
+        combined_factor_bounds={"min": 0.9, "max": 1.1},
         factor_tables=(
             factor_tables
             if factor_tables is not None
             else {"region": {"North": 1.08, "South": 0.92}}
         ),
-        per_factor_results=[],
+        per_factor_results=(
+            per_factor_results
+            if per_factor_results is not None
+            else [
+                _per_factor_record(
+                    total_objective=total_objective,
+                    total_constraints=total_constraints,
+                    lambdas=lambdas,
+                )
+            ]
+        ),
+    )
+
+
+def _per_factor_record(
+    *,
+    cd_iteration: int = 1,
+    factor: str = "region",
+    factor_index: int = 0,
+    total_objective: float = 222.0,
+    total_constraints: dict[str, float] | None = None,
+    lambdas: dict[str, float] | None = None,
+) -> PerFactorRecord:
+    """One inner grouped solve of a ratebook coordinate descent, as price-contour records it."""
+    return PerFactorRecord(
+        cd_iteration=cd_iteration,
+        factor=factor,
+        factor_index=factor_index,
+        total_objective=total_objective,
+        total_constraints=total_constraints if total_constraints is not None else {"volume": 0.97},
+        lambdas=lambdas if lambdas is not None else {"volume": 0.7},
+        clamp_rate=0.04,
+        inner_iterations=4,
+        inner_converged=True,
+    )
+
+
+_RATEBOOK_FRONTIER_POINT_TABLES = {"region": {"North": 1.08, "South": 0.92}}
+
+
+def _ratebook_frontier_point_summary(
+    *,
+    clamp_rate: float = 0.04,
+    iterations: int = 3,
+    **kwargs: Any,
+) -> dict[str, float | bool]:
+    """A typed ratebook frontier point: its ``clamp_rate`` column and no ``sv_*``;
+    ``iterations`` is the point's CD pass count."""
+    return _frontier_point_summary(
+        mode="ratebook", iterations=iterations, clamp_rate=clamp_rate, **kwargs
     )
 
 
 def _make_ratebook_frontier_materialisation_job(clean_job_store, job_id: str):
+    """A completed ratebook job with one frontier point and its kept tables.
+
+    ``frontier_factor_tables`` holds the solver-side ``{factor: {level: rate}}``
+    tables price-contour kept for each retained point, aligned with
+    ``frontier_data["points"]``. The solver, grid and factor contexts are
+    seeded only so tests can prove materialisation never touches them.
+    """
     factor_contexts = SimpleNamespace(n_quotes=2, factor_specs=[["region"]])
     mock_grid = MagicMock()
     mock_solver = MagicMock()
-    mock_solver.solve.return_value = _ratebook_solve_result_namespace()
     base_result = {
+        "frontier_generation": 0,
         "mode": "ratebook",
         "total_objective": 100.0,
         "baseline_objective": 95.0,
         "constraints": {"volume": 0.92},
         "baseline_constraints": {"volume": 0.88},
+        "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
         "lambdas": {"volume": 0.5},
         "converged": True,
         "factor_tables": {"region": [{"__factor_group__": "Old", "optimal_scenario_value": 1.0}]},
+        "combined_factor_bounds": {"min": 0.1, "max": 10.0},
         "factor_dtypes": {"region": [{"column": "region", "dtype": {"kind": "String"}}]},
-        "scenario_value_histogram": {"counts": [1, 2], "edges": [0.9, 1.0, 1.1]},
+        "diagnostics_errors": [],
+        "input_summary": make_input_summary(),
+        "scenario_grid": SOLVE_SCENARIO_GRID,
     }
     seed_job(
         clean_job_store,
@@ -5009,17 +3897,19 @@ def _make_ratebook_frontier_materialisation_job(clean_job_store, job_id: str):
             "ratebook_factor_contexts": factor_contexts,
             "factor_columns_valid": [["region"]],
             "factor_level_counts": {"region": {"North": 1, "South": 1}},
+            "combined_factor_bounds": {"min": 0.1, "max": 10.0},
             "factor_dtypes": {"region": [{"column": "region", "dtype": {"kind": "String"}}]},
             "base_result": base_result,
             "result": dict(base_result),
             "frontier_data": {
+                "frontier_generation": 0,
                 "status": "ok",
                 "n_points": 1,
                 "points_returned": 1,
                 "points_limit": FRONTIER_POINT_LIMIT,
                 "points_truncated": False,
                 "points": [
-                    _frontier_point_summary(
+                    _ratebook_frontier_point_summary(
                         lambda_volume=0.7,
                         total_objective=220.0,
                         total_volume=0.97,
@@ -5028,12 +3918,30 @@ def _make_ratebook_frontier_materialisation_job(clean_job_store, job_id: str):
                 ],
                 "constraint_names": ["volume"],
             },
+            "frontier_factor_tables": [_RATEBOOK_FRONTIER_POINT_TABLES],
             "artifact_handles": {},
             "created_at": time.time(),
             "completed_at": time.time(),
         },
     )
     return mock_solver, mock_grid, factor_contexts
+
+
+def _append_second_ratebook_frontier_point(job: dict[str, Any]) -> None:
+    """Append a second retained ratebook point together with its kept tables."""
+    job["frontier_data"]["n_points"] = 2
+    job["frontier_data"]["points_returned"] = 2
+    job["frontier_data"]["points"].append(
+        _ratebook_frontier_point_summary(
+            lambda_volume=0.9,
+            total_objective=240.0,
+            total_volume=1.03,
+            threshold_volume=1.02,
+            iterations=7,
+            clamp_rate=0.02,
+        )
+    )
+    job["frontier_factor_tables"].append({"region": {"North": 1.12, "South": 0.98}})
 
 
 def _expected_region_factor_tables(
@@ -5077,6 +3985,22 @@ class TestRatebookSolve:
         assert "factor_tables" in result
         assert "converged" in result
         assert "lambdas" in result
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_ratebook_solve_reports_the_solved_grid_shape(self, client, tmp_path):
+        """A real ratebook solve names the grid it scored, as an online solve
+        does: the result's provenance strip reads N quotes x M scenario steps."""
+        scored_path, banding_path = _make_ratebook_data(tmp_path, n_quotes=7, n_steps=4)
+        graph = _make_ratebook_graph(scored_path, banding_path)
+        resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+        assert resp.status_code == 200
+
+        status = _poll_until_done(client, resp.json()["job_id"])
+        assert status["status"] == "completed", status.get("message", "")
+        result = status["result"]
+        assert result["mode"] == "ratebook"
+        assert result["n_quotes"] == 7
+        assert result["n_steps"] == 4
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_ratebook_solve_preserves_intermediate_data_input_and_banding_source(
@@ -5126,7 +4050,7 @@ class TestRatebookSolve:
 class TestSolveWithHistory:
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_solve_with_history(self, client, scored_data):
-        graph = _make_optimiser_graph(scored_data, config={"record_history": True})
+        graph = _make_optimiser_graph(scored_data)
         resp = client.post(
             "/api/optimiser/solve",
             json={"graph": graph, "node_id": "opt"},
@@ -5144,9 +4068,9 @@ class TestSolveWithHistory:
         assert "total_objective" in first
 
 
-class TestScenarioValueStats:
+class TestAdjustmentReport:
     @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_scenario_value_stats_in_result(self, client, scored_data):
+    def test_adjustments_in_result(self, client, scored_data):
         graph = _make_optimiser_graph(scored_data)
         resp = client.post(
             "/api/optimiser/solve",
@@ -5156,17 +4080,12 @@ class TestScenarioValueStats:
         status = _poll_until_done(client, job_id)
         assert status["status"] == "completed"
         result = status["result"]
-        assert "scenario_value_stats" in result
-        stats = result["scenario_value_stats"]
-        assert "mean" in stats
-        assert "p50" in stats
-        assert "pct_increase" in stats
-        assert "scenario_value_histogram" in result
-        hist = result["scenario_value_histogram"]
-        assert "counts" in hist
-        assert "edges" in hist
-        assert len(hist["counts"]) == 20
-        assert len(hist["edges"]) == 21
+        report = result["adjustments"]
+        assert [bar["optimal_step"] for bar in report["bars"]] == [
+            step["optimal_step"] for step in result["scenario_grid"]
+        ]
+        assert sum(bar["quotes"] for bar in report["bars"]) == report["n_quotes"]
+        assert report["weightings"][0]["key"] == "quotes"
 
 
 class TestColumnValidation:
@@ -5327,7 +4246,7 @@ def _make_expander_graph(data_path: str) -> dict:
                             "column_name": "scenario_value",
                             "min_value": 0.8,
                             "max_value": 1.2,
-                            "steps": 5,
+                            "stepCount": 5,
                             "step_column": "scenario_index",
                         },
                     },
@@ -5409,14 +4328,14 @@ class TestSolverWorkerContextGuard:
         ["_compute_frontier", "_solve_online", "_solve_ratebook"],
     )
     def test_heavy_entrypoints_fail_loud_outside_worker_context(self, entrypoint_name):
-        import haute.routes._optimiser_service as service
+        import haute.routes._optimiser_solver as service
 
         entrypoint = getattr(service, entrypoint_name)
         with pytest.raises(RuntimeError, match="must run inside a background solver worker"):
             entrypoint(MagicMock(), MagicMock())
 
     def test_compute_frontier_runs_inside_worker_context(self):
-        from haute.routes._optimiser_service import _compute_frontier, solver_worker_context
+        from haute.routes._optimiser_solver import _compute_frontier, solver_worker_context
 
         mock_solver = MagicMock()
         mock_solver.frontier.return_value = SimpleNamespace(
@@ -5434,7 +4353,7 @@ class TestSolverWorkerContextGuard:
         assert len(result.points) == 1
 
     def test_worker_context_resets_after_exit(self):
-        from haute.routes._optimiser_service import _compute_frontier, solver_worker_context
+        from haute.routes._optimiser_solver import _compute_frontier, solver_worker_context
 
         with solver_worker_context():
             pass
@@ -5457,13 +4376,17 @@ class TestFrontierRoute:
         """Concurrent submissions create exactly one frontier worker."""
         mock_solver = MagicMock()
         frontier_result = SimpleNamespace(
-            points=pl.DataFrame(
-                {
-                    "total_objective": [100.0],
-                    "volume": [0.9],
-                    "lambda_volume": [0.25],
-                    "converged": [True],
-                }
+            points=library_frontier_frame(
+                [
+                    {
+                        "total_objective": 100.0,
+                        "total_volume": 0.9,
+                        "lambda_volume": 0.25,
+                        "bound_volume": 0.9,
+                        "converged": True,
+                    }
+                ],
+                constraint_names=["volume"],
             )
         )
         worker_started = threading.Event()
@@ -5489,8 +4412,12 @@ class TestFrontierRoute:
                     "baseline_objective": 80.0,
                     "constraints": {"volume": 0.85},
                     "baseline_constraints": {"volume": 0.8},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 0.1},
                     "converged": True,
+                    "diagnostics_errors": [],
+                    "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "artifact_handles": {},
                 "created_at": time.time(),
@@ -5547,6 +4474,7 @@ class TestFrontierRoute:
     ):
         """A failed frontier launch must leave no running job or cancellation token."""
         import haute.routes.optimiser as optimiser_routes
+        from haute.routes import _optimiser_frontier
         from haute.schemas import OptimiserFrontierRequest
 
         seed_job(
@@ -5563,8 +4491,12 @@ class TestFrontierRoute:
                     "baseline_objective": 80.0,
                     "constraints": {"volume": 0.85},
                     "baseline_constraints": {"volume": 0.8},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 0.1},
                     "converged": True,
+                    "diagnostics_errors": [],
+                    "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "artifact_handles": {},
                 "created_at": time.time(),
@@ -5582,7 +4514,7 @@ class TestFrontierRoute:
         frontier_threading = MagicMock()
         frontier_threading.Thread.return_value = failed_thread
         with (
-            patch.object(optimiser_routes, "threading", frontier_threading),
+            patch.object(_optimiser_frontier, "threading", frontier_threading),
             pytest.raises(HTTPException) as exc_info,
         ):
             optimiser_routes.run_frontier(body)
@@ -5602,7 +4534,7 @@ class TestFrontierRoute:
         assert frontier_job["status"] == "error"
         assert frontier_job["terminal_reason"] == "error"
         assert frontier_job["message"] == "Failed to start frontier worker: thread boom"
-        assert optimiser_routes._frontier_jobs.cancel(frontier_job_id) is False
+        assert optimiser_routes._frontier_service.sweeps.cancel(frontier_job_id) is False
 
     def test_frontier_cancel_stops_late_parent_publication(
         self,
@@ -5619,13 +4551,17 @@ class TestFrontierRoute:
                 solver_started.set()
                 assert allow_solver_return.wait(timeout=3)
                 return SimpleNamespace(
-                    points=pl.DataFrame(
-                        {
-                            "total_objective": [999.0],
-                            "volume": [0.99],
-                            "lambda_volume": [9.0],
-                            "converged": [True],
-                        }
+                    points=library_frontier_frame(
+                        [
+                            {
+                                "total_objective": 999.0,
+                                "total_volume": 0.99,
+                                "lambda_volume": 9.0,
+                                "bound_volume": 0.9,
+                                "converged": True,
+                            }
+                        ],
+                        constraint_names=["volume"],
                     )
                 )
 
@@ -5636,9 +4572,13 @@ class TestFrontierRoute:
             "baseline_objective": 80.0,
             "constraints": {"volume": 0.85},
             "baseline_constraints": {"volume": 0.8},
+            "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
             "lambdas": {"volume": 0.1},
             "converged": True,
             "frontier": original_frontier,
+            "diagnostics_errors": [],
+            "input_summary": make_input_summary(),
+            "scenario_grid": SOLVE_SCENARIO_GRID,
         }
         seed_job(
             clean_job_store,
@@ -5675,15 +4615,53 @@ class TestFrontierRoute:
 
         deadline = time.monotonic() + 3
         while (
-            optimiser_routes._frontier_jobs.cancellation_reason(frontier_job_id) is not None
+            optimiser_routes._frontier_service.sweeps.cancellation_reason(frontier_job_id)
+            is not None
             and time.monotonic() < deadline
         ):
             time.sleep(0.01)
-        assert optimiser_routes._frontier_jobs.cancellation_reason(frontier_job_id) is None
+        assert (
+            optimiser_routes._frontier_service.sweeps.cancellation_reason(frontier_job_id) is None
+        )
         parent = clean_job_store.require_job("cancel_frontier_parent")
         assert parent["frontier_data"] == original_frontier
         assert parent["result"] == base_result
         assert clean_job_store.require_job(frontier_job_id)["status"] == "cancelled"
+
+    @pytest.mark.parametrize("timeout", [600, None])
+    def test_running_frontier_within_its_timeout_reports_live_elapsed_time(
+        self,
+        client,
+        clean_job_store,
+        timeout,
+    ):
+        """A running recompute inside its timeout (or with none) stays running and
+        reports the wall-clock time since it started, not the stored snapshot."""
+        seed_job(
+            clean_job_store,
+            "running_frontier",
+            {
+                "status": "running",
+                "job_type": "frontier_recompute",
+                "parent_job_id": "running_frontier_parent",
+                "start_time": time.monotonic() - 5,
+                "timeout": timeout,
+                "progress": 0.4,
+                "message": "Solving point 2 of 5",
+                "elapsed_seconds": 0.0,
+                "created_at": time.time(),
+            },
+        )
+
+        response = client.get("/api/optimiser/frontier/status/running_frontier")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "running"
+        assert body["progress"] == 0.4
+        assert body["result"] is None
+        assert body["elapsed_seconds"] >= 5
+        assert clean_job_store.require_job("running_frontier")["status"] == "running"
 
     def test_frontier_timeout_stops_late_parent_publication(
         self,
@@ -5700,13 +4678,17 @@ class TestFrontierRoute:
                 solver_started.set()
                 assert allow_solver_return.wait(timeout=3)
                 return SimpleNamespace(
-                    points=pl.DataFrame(
-                        {
-                            "total_objective": [999.0],
-                            "volume": [0.99],
-                            "lambda_volume": [9.0],
-                            "converged": [True],
-                        }
+                    points=library_frontier_frame(
+                        [
+                            {
+                                "total_objective": 999.0,
+                                "total_volume": 0.99,
+                                "lambda_volume": 9.0,
+                                "bound_volume": 0.9,
+                                "converged": True,
+                            }
+                        ],
+                        constraint_names=["volume"],
                     )
                 )
 
@@ -5716,8 +4698,12 @@ class TestFrontierRoute:
             "baseline_objective": 80.0,
             "constraints": {"volume": 0.85},
             "baseline_constraints": {"volume": 0.8},
+            "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
             "lambdas": {"volume": 0.1},
             "converged": True,
+            "diagnostics_errors": [],
+            "input_summary": make_input_summary(),
+            "scenario_grid": SOLVE_SCENARIO_GRID,
         }
         seed_job(
             clean_job_store,
@@ -5762,11 +4748,14 @@ class TestFrontierRoute:
 
         deadline = time.monotonic() + 3
         while (
-            optimiser_routes._frontier_jobs.cancellation_reason(frontier_job_id) is not None
+            optimiser_routes._frontier_service.sweeps.cancellation_reason(frontier_job_id)
+            is not None
             and time.monotonic() < deadline
         ):
             time.sleep(0.01)
-        assert optimiser_routes._frontier_jobs.cancellation_reason(frontier_job_id) is None
+        assert (
+            optimiser_routes._frontier_service.sweeps.cancellation_reason(frontier_job_id) is None
+        )
         parent = clean_job_store.require_job("timeout_frontier_parent")
         assert parent.get("frontier_data") is None
         assert parent["result"] == base_result
@@ -5838,28 +4827,40 @@ class TestFrontierRoute:
         assert data["constraint_names"] == ["volume"]
 
     def test_ratebook_frontier_uses_factor_contexts(self, client, clean_job_store):
+        """A ratebook recompute sweeps with the job's factor contexts and keeps
+        each retained point's factor tables on the job, aligned with its rows,
+        so a point can later be materialised without re-solving."""
         mock_solver = MagicMock()
         mock_grid = MagicMock()
         factor_contexts = SimpleNamespace(n_quotes=2, factor_specs=[["region"]])
+        point_tables = [{"region": {"North": 1.05, "South": 0.95}}]
         mock_solver.frontier.return_value = SimpleNamespace(
-            points=pl.DataFrame(
-                {
-                    "total_objective": [100.0],
-                    "volume": [0.9],
-                    "lambda_volume": [0.25],
-                }
-            )
+            points=library_frontier_frame(
+                [
+                    {
+                        "total_objective": 100.0,
+                        "total_volume": 0.9,
+                        "lambda_volume": 0.25,
+                        "bound_volume": 0.9,
+                        "converged": True,
+                    }
+                ],
+                constraint_names=["volume"],
+                mode="ratebook",
+            ),
+            factor_tables=point_tables,
         )
         seed_job(
             clean_job_store,
             "ratebook_frontier",
             {
+                "result": make_solved_result(mode="ratebook", constraint_names=["volume"]),
                 "status": "completed",
                 "solver": mock_solver,
                 "quote_grid": mock_grid,
                 "ratebook_factor_contexts": factor_contexts,
                 "factor_columns_valid": [["region"]],
-                "config": {"mode": "ratebook"},
+                "config": {"mode": "ratebook", "constraints": {"volume": {"min": 0.9}}},
                 "created_at": time.time(),
                 "completed_at": time.time(),
             },
@@ -5874,24 +4875,33 @@ class TestFrontierRoute:
             },
         )
 
-        assert data["points"][0]["total_volume"] == pytest.approx(0.9)
+        assert data["points"][0]["mode"] == "ratebook"
+        assert data["points"][0]["totals"]["volume"] == pytest.approx(0.9)
         mock_solver.frontier.assert_called_once()
         assert mock_solver.frontier.call_args.args == (mock_grid, factor_contexts)
         assert mock_solver.frontier.call_args.kwargs["threshold_ranges"] == {"volume": (0.85, 0.95)}
         assert mock_solver.frontier.call_args.kwargs["n_points_per_dim"] == 3
         assert mock_solver.frontier.call_args.kwargs["factor_columns"] == [["region"]]
+        job = clean_job_store.require_job("ratebook_frontier")
+        assert job["frontier_factor_tables"] == point_tables
 
     def test_frontier_request_without_ranges_uses_config_ranges(self, client, clean_job_store):
         mock_solver = MagicMock()
         mock_grid = MagicMock()
         mock_solver.frontier.return_value = SimpleNamespace(
-            points=pl.DataFrame(
-                {
-                    "total_objective": [100.0],
-                    "volume": [0.9],
-                    "loss": [12.0],
-                    "lambda_volume": [0.25],
-                }
+            points=library_frontier_frame(
+                [
+                    {
+                        "total_objective": 100.0,
+                        "total_volume": 0.9,
+                        "total_loss": 12.0,
+                        "lambda_volume": 0.25,
+                        "bound_volume": 0.9,
+                        "bound_loss": 20.0,
+                        "converged": True,
+                    }
+                ],
+                constraint_names=["volume", "loss"],
             )
         )
         seed_job(
@@ -5901,10 +4911,10 @@ class TestFrontierRoute:
                 "status": "completed",
                 "solver": mock_solver,
                 "quote_grid": mock_grid,
-                "result": {
-                    "mode": "online",
-                    "baseline_constraints": {"volume": 999.0, "loss": 0.0},
-                },
+                "result": make_solved_result(
+                    constraint_names=["volume", "loss"],
+                    baseline_constraints={"volume": 999.0, "loss": 0.0},
+                ),
                 "config": {
                     "mode": "online",
                     "constraints": {"volume": {"min": 0.9}, "loss": {"max": 20.0}},
@@ -5926,8 +4936,10 @@ class TestFrontierRoute:
             },
         )
 
-        assert data["points"][0]["total_volume"] == pytest.approx(0.9)
-        assert data["points"][0]["total_loss"] == pytest.approx(12.0)
+        assert data["points"][0]["totals"] == {
+            "volume": pytest.approx(0.9),
+            "loss": pytest.approx(12.0),
+        }
         assert data["constraint_names"] == ["volume", "loss"]
         assert mock_solver.frontier.call_args.kwargs["threshold_ranges"] == {
             "volume": (10.0, 20.0),
@@ -5935,76 +4947,13 @@ class TestFrontierRoute:
         }
         assert mock_solver.frontier.call_args.kwargs["n_points_per_dim"] == 3
 
-    def test_frontier_omits_initial_lambdas_when_base_result_has_none(
-        self,
-        client,
-        clean_job_store,
-    ):
-        class SolverWithoutInitialLambdas:
-            def __init__(self) -> None:
-                self.calls: list[dict[str, object]] = []
-
-            def frontier(
-                self,
-                quote_grid: object,
-                *,
-                threshold_ranges: dict[str, tuple[float, float]],
-                n_points_per_dim: int,
-            ) -> SimpleNamespace:
-                self.calls.append(
-                    {
-                        "quote_grid": quote_grid,
-                        "threshold_ranges": threshold_ranges,
-                        "n_points_per_dim": n_points_per_dim,
-                    }
-                )
-                return SimpleNamespace(
-                    points=pl.DataFrame(
-                        {
-                            "total_objective": [100.0],
-                            "loss_ratio": [0.9],
-                            "lambda_loss_ratio": [0.25],
-                        }
-                    )
-                )
-
-        solver = SolverWithoutInitialLambdas()
-        quote_grid = object()
-        seed_job(
-            clean_job_store,
-            "frontier_no_initial_lambdas",
-            {
-                "status": "completed",
-                "solver": solver,
-                "quote_grid": quote_grid,
-                "created_at": time.time(),
-                "completed_at": time.time(),
-            },
-        )
-
-        _frontier_result(
-            client,
-            {
-                "job_id": "frontier_no_initial_lambdas",
-                "threshold_ranges": {"loss_ratio": [0.8, 0.95]},
-                "n_points_per_dim": 3,
-            },
-        )
-
-        assert solver.calls == [
-            {
-                "quote_grid": quote_grid,
-                "threshold_ranges": {"loss_ratio": (0.8, 0.95)},
-                "n_points_per_dim": 3,
-            }
-        ]
-
     def test_frontier_config_range_errors_are_client_errors(self, client, clean_job_store):
         mock_solver = MagicMock()
         seed_job(
             clean_job_store,
             "auto_frontier_invalid_ranges",
             {
+                "result": make_solved_result(mode="online", constraint_names=["volume"]),
                 "status": "completed",
                 "solver": mock_solver,
                 "quote_grid": MagicMock(),
@@ -6027,11 +4976,12 @@ class TestFrontierRoute:
         assert "frontier_ranges.volume must contain min and max values" in resp.json()["detail"]
         mock_solver.frontier.assert_not_called()
 
-    def test_frontier_without_ranges_requires_config_constraints(self, client, clean_job_store):
+    def test_frontier_without_ranges_requires_a_swept_constraint(self, client, clean_job_store):
         seed_job(
             clean_job_store,
             "auto_frontier_no_constraints",
             {
+                "result": make_solved_result(mode="online", constraint_names=[]),
                 "status": "completed",
                 "solver": MagicMock(),
                 "quote_grid": MagicMock(),
@@ -6047,7 +4997,7 @@ class TestFrontierRoute:
         )
 
         assert resp.status_code == 400
-        assert "no configured constraints" in resp.json()["detail"].lower()
+        assert "sweeps no constraint" in resp.json()["detail"].lower()
 
     def test_frontier_rejects_invalid_threshold_range_shape_at_schema_layer(
         self,
@@ -6066,6 +5016,7 @@ class TestFrontierRoute:
             clean_job_store,
             "frontier_bad_range",
             {
+                "result": make_solved_result(mode="online", constraint_names=["volume"]),
                 "status": "completed",
                 "solver": mock_solver,
                 "quote_grid": MagicMock(),
@@ -6116,6 +5067,7 @@ class TestFrontierRoute:
             clean_job_store,
             "frontier_compute_dos",
             {
+                "result": make_solved_result(),
                 "status": "completed",
                 "solver": mock_solver,
                 "quote_grid": MagicMock(),
@@ -6150,18 +5102,24 @@ class TestFrontierRoute:
         """Requests at or below the compute budget must still succeed."""
         mock_solver = MagicMock()
         mock_solver.frontier.return_value = SimpleNamespace(
-            points=pl.DataFrame(
-                {
-                    "total_objective": [100.0],
-                    "volume": [0.9],
-                    "lambda_volume": [0.25],
-                }
+            points=library_frontier_frame(
+                [
+                    {
+                        "total_objective": 100.0,
+                        "total_volume": 0.9,
+                        "lambda_volume": 0.25,
+                        "bound_volume": 0.9,
+                        "converged": True,
+                    }
+                ],
+                constraint_names=["volume"],
             )
         )
         seed_job(
             clean_job_store,
             "frontier_compute_ok",
             {
+                "result": make_solved_result(mode="online", constraint_names=["volume"]),
                 "status": "completed",
                 "solver": mock_solver,
                 "quote_grid": MagicMock(),
@@ -6223,43 +5181,38 @@ class TestFrontierRoute:
 # ---------------------------------------------------------------------------
 
 
-class TestComputeScenarioValueStats:
-    """Unit tests for _compute_scenario_value_stats."""
+class TestAsSolvedAdjustments:
+    """Unit tests for _as_solved_adjustments (the finalize-time report)."""
+
+    _JOB: ClassVar[dict[str, Any]] = {
+        "config": {"constraints": {}},
+        "scenario_grid": SOLVE_SCENARIO_GRID,
+    }
 
     def test_no_dataframe_attribute(self):
-        """Object without .dataframe omits stats payloads entirely."""
-        result = SimpleNamespace()  # no .dataframe
-        stats, hist = _compute_scenario_value_stats(result)
-        assert stats is None
-        assert hist is None
+        """An object without .dataframe raises; finalize records it as a diagnostics error."""
+        with pytest.raises(ValueError, match="no per-quote frame"):
+            _as_solved_adjustments(SimpleNamespace(), self._JOB)
 
     def test_missing_column(self):
-        """DataFrame without optimal_scenario_value omits stats payloads entirely."""
-        df = pl.DataFrame({"other_col": [1.0, 2.0, 3.0]})
-        result = SimpleNamespace(dataframe=df)
-        stats, hist = _compute_scenario_value_stats(result)
-        assert stats is None
-        assert hist is None
+        """A frame without the chosen-scenario columns raises rather than omitting the report."""
+        from haute.routes._optimiser_outcomes import ChoiceJoinError
 
-    def test_valid_scenario_values(self):
-        """Normal case with optimal_scenario_value column."""
-        df = pl.DataFrame(
+        result = SimpleNamespace(dataframe=pl.DataFrame({"other_col": [1.0, 2.0, 3.0]}))
+        with pytest.raises(ChoiceJoinError, match="optimal_step"):
+            _as_solved_adjustments(result, self._JOB)
+
+    def test_empty_dataframe_raises_rather_than_omitting_the_report(self):
+        frame = pl.DataFrame(
             {
-                "optimal_scenario_value": [0.9, 1.0, 1.1, 1.2, 0.8],
+                "quote_id": pl.Series([], dtype=pl.String),
+                "optimal_step": pl.Series([], dtype=pl.Int32),
+                "optimal_scenario_value": pl.Series([], dtype=pl.Float32),
+                "optimal_objective": pl.Series([], dtype=pl.Float32),
             }
         )
-        result = SimpleNamespace(dataframe=df)
-        stats, hist = _compute_scenario_value_stats(result)
-        assert "mean" in stats
-        assert "p50" in stats
-        assert "pct_increase" in stats
-        assert "pct_decrease" in stats
-        assert stats["pct_increase"] > 0  # 1.1 and 1.2 are > 1.0
-        assert stats["pct_decrease"] > 0  # 0.9 and 0.8 are < 1.0
-        assert "counts" in hist
-        assert "edges" in hist
-        assert len(hist["counts"]) == 20
-        assert len(hist["edges"]) == 21
+        with pytest.raises(ValueError, match="no quotes"):
+            _as_solved_adjustments(SimpleNamespace(dataframe=frame), self._JOB)
 
 
 class TestBuildArtifactPayload:
@@ -6267,19 +5220,22 @@ class TestBuildArtifactPayload:
 
     def test_online_mode_basic(self):
         """Online mode produces a payload with expected keys."""
-        job = {
-            "node_label": "my_opt",
-            "config": {
-                "mode": "online",
-                "constraints": {"volume": {"min": 0.9}},
-                "objective": "income",
-            },
-        }
+        job = with_solve_summary(
+            {
+                "node_label": "my_opt",
+                "config": {
+                    "mode": "online",
+                    "constraints": {"volume": {"min": 0.9}},
+                    "objective": "income",
+                },
+            }
+        )
         solve_result = SimpleNamespace(
             lambdas={"volume": 0.5},
             total_objective=1000.0,
             baseline_objective=950.0,
             total_constraints={"volume": 0.92},
+            constraint_bounds={"volume": 0.9},
             baseline_constraints={"volume": 0.88},
             converged=True,
             iterations=10,
@@ -6292,19 +5248,22 @@ class TestBuildArtifactPayload:
 
     def test_missing_chunk_size_is_not_serialized_as_default(self):
         """Saved artifacts only carry chunk_size when the user set it explicitly."""
-        job = {
-            "node_label": "my_opt",
-            "config": {
-                "mode": "online",
-                "constraints": {"volume": {"min": 0.9}},
-                "objective": "income",
-            },
-        }
+        job = with_solve_summary(
+            {
+                "node_label": "my_opt",
+                "config": {
+                    "mode": "online",
+                    "constraints": {"volume": {"min": 0.9}},
+                    "objective": "income",
+                },
+            }
+        )
         solve_result = SimpleNamespace(
             lambdas={"volume": 0.5},
             total_objective=1000.0,
             baseline_objective=950.0,
             total_constraints={"volume": 0.92},
+            constraint_bounds={"volume": 0.9},
             baseline_constraints={"volume": 0.88},
             converged=True,
             iterations=10,
@@ -6314,59 +5273,32 @@ class TestBuildArtifactPayload:
 
         assert "chunk_size" not in payload
 
-    def test_explicit_chunk_size_is_serialized(self):
-        """Explicit row chunking remains part of the optimiser artifact contract."""
-        job = {
-            "node_label": "my_opt",
-            "config": {
-                "mode": "online",
-                "constraints": {"volume": {"min": 0.9}},
-                "objective": "income",
-                "chunk_size": 123,
-            },
-        }
-        solve_result = SimpleNamespace(
-            lambdas={"volume": 0.5},
-            total_objective=1000.0,
-            baseline_objective=950.0,
-            total_constraints={"volume": 0.92},
-            baseline_constraints={"volume": 0.88},
-            converged=True,
-            iterations=10,
-        )
-
-        payload = _build_artifact_payload(job, solve_result)
-
-        assert payload["chunk_size"] == 123
-
     def test_setup_chunking_provenance_is_serialized(self):
         """Saved artifacts preserve the physical chunking provenance used by setup."""
         setup_chunking = {
             "optimiser_grid": {
-                "policy": "byte_budget",
-                "chunk_size": 4096,
-                "target_chunk_bytes": 67_108_864,
-                "estimated_row_bytes": 128,
-                "row_count": 1_000_000,
-                "size_bytes": 64_000_000,
-                "uncompressed_size_bytes": 128_000_000,
+                "policy": "pipeline_setting",
+                "chunk_size": 500_000,
                 "source": "optimiser_grid",
             }
         }
-        job = {
-            "node_label": "my_opt",
-            "config": {
-                "mode": "online",
-                "constraints": {"volume": {"min": 0.9}},
-                "objective": "income",
-            },
-            "setup_chunking": setup_chunking,
-        }
+        job = with_solve_summary(
+            {
+                "node_label": "my_opt",
+                "config": {
+                    "mode": "online",
+                    "constraints": {"volume": {"min": 0.9}},
+                    "objective": "income",
+                },
+                "setup_chunking": setup_chunking,
+            }
+        )
         solve_result = SimpleNamespace(
             lambdas={"volume": 0.5},
             total_objective=1000.0,
             baseline_objective=950.0,
             total_constraints={"volume": 0.92},
+            constraint_bounds={"volume": 0.9},
             baseline_constraints={"volume": 0.88},
             converged=True,
             iterations=10,
@@ -6379,22 +5311,31 @@ class TestBuildArtifactPayload:
 
     def test_ratebook_mode_includes_factor_tables(self):
         """Ratebook mode includes factor_tables and clamp_rate."""
-        job = {
-            "node_label": "rb_opt",
-            "config": {"mode": "ratebook", "constraints": {}, "objective": "income"},
-            "result": {
-                "factor_tables": {
-                    "region": [{"__factor_group__": "North", "optimal_scenario_value": 1.1}]
+        job = with_solve_summary(
+            {
+                "node_label": "rb_opt",
+                "config": {"mode": "ratebook", "constraints": {}, "objective": "income"},
+                "result": {
+                    "factor_tables": {
+                        "region": [{"__factor_group__": "North", "optimal_scenario_value": 1.1}]
+                    },
+                    "combined_factor_bounds": {"min": 0.1, "max": 10.0},
+                    "factor_dtypes": {
+                        "region": [{"column": "region", "dtype": {"kind": "String"}}]
+                    },
                 },
-                "factor_dtypes": {"region": [{"column": "region", "dtype": {"kind": "String"}}]},
-            },
-        }
+            }
+        )
         solve_result = SimpleNamespace(
             lambdas={},
             total_objective=1000.0,
+            baseline_objective=0.0,
+            baseline_constraints={},
             total_constraints={},
+            constraint_bounds={},
             converged=True,
             clamp_rate=0.05,
+            combined_factor_bounds={"min": 0.9, "max": 1.1},
         )
         payload = _build_artifact_payload(job, solve_result)
         assert payload["mode"] == "ratebook"
@@ -6403,64 +5344,176 @@ class TestBuildArtifactPayload:
             "region": [{"column": "region", "dtype": {"kind": "String"}}]
         }
         assert payload["clamp_rate"] == 0.05
+        assert payload["combined_factor_bounds"] == {"min": 0.9, "max": 1.1}
 
     def test_version_override(self):
         """User-specified version overrides auto-generated one."""
-        job = {"node_label": "opt", "config": {"mode": "online"}}
+        job = with_solve_summary({"node_label": "opt", "config": {"mode": "online"}})
         solve_result = SimpleNamespace(
             lambdas={},
             total_objective=0.0,
+            baseline_objective=0.0,
+            baseline_constraints={},
             total_constraints={},
+            constraint_bounds={},
             converged=True,
         )
         payload = _build_artifact_payload(job, solve_result, version_override="v2.0")
         assert payload["version"] == "v2.0"
 
+    @staticmethod
+    def _frontier_job() -> dict:
+        return with_solve_summary(
+            {
+                "node_label": "my_opt",
+                "config": {
+                    "mode": "online",
+                    "objective": "income",
+                    "constraints": {"volume": {"min": 0.9}},
+                },
+                "selected_frontier_point": 1,
+                "frontier_data": {
+                    "status": "ok",
+                    "points": [
+                        make_frontier_point(objective=100.0, threshold_volume=0.85),
+                        make_frontier_point(objective=110.0, threshold_volume=0.9),
+                        make_frontier_point(objective=120.0, threshold_volume=0.95),
+                    ],
+                    "n_points": 3,
+                    "constraint_names": ["volume"],
+                },
+            }
+        )
+
     def test_payload_includes_frontier_selection(self):
-        """T3: When a frontier point is selected, payload includes frontier_selection."""
-        job = {
-            "node_label": "my_opt",
-            "config": {"mode": "online", "objective": "income", "constraints": {}},
-            "selected_frontier_point": 2,
-            "frontier_data": {
-                "status": "ok",
-                "points": [
-                    {"total_objective": 100.0},
-                    {"total_objective": 110.0},
-                    {"total_objective": 120.0},
-                ],
-                "n_points": 3,
-                "constraint_names": ["volume"],
-            },
-        }
+        """T3: A frontier-point target records its frontier_selection and thresholds."""
+        job = self._frontier_job()
         solve_result = SimpleNamespace(
             lambdas={"volume": 0.5},
             total_objective=120.0,
             baseline_objective=100.0,
             total_constraints={"volume": 0.92},
+            constraint_bounds={"volume": 0.9},
             baseline_constraints={"volume": 0.88},
             converged=True,
             iterations=10,
         )
-        payload = _build_artifact_payload(job, solve_result)
+        payload = _build_artifact_payload(job, solve_result, point_index=2)
         assert "frontier_selection" in payload
         fs = payload["frontier_selection"]
         assert fs["selected_from_frontier"] is True
         assert fs["point_index"] == 2
         assert fs["n_frontier_points"] == 3
+        # The point's own threshold is the effective one; the configured
+        # specs OPTIMISER_APPLY reads stay unchanged.
+        assert payload["effective_constraints"] == {"volume": {"min": 0.95}}
+        assert payload["constraints"] == {"volume": {"min": 0.9}}
+
+    def test_anchor_target_ignores_the_server_selected_point(self):
+        """No point index is the job's own solve, whatever point the server has selected."""
+        job = self._frontier_job()
+        solve_result = SimpleNamespace(
+            lambdas={"volume": 0.5},
+            total_objective=105.0,
+            baseline_objective=0.0,
+            baseline_constraints={},
+            total_constraints={"volume": 0.91},
+            constraint_bounds={"volume": 0.9},
+            converged=True,
+        )
+        payload = _build_artifact_payload(job, solve_result)
+        assert "frontier_selection" not in payload
+        assert payload["effective_constraints"] == {"volume": {"min": 0.9}}
+        assert payload["stale_at_publish"] is False
+
+    def test_payload_records_the_audit_trail(self):
+        """Solver settings, input provenance and staleness are recorded for audit."""
+        job = with_solve_summary(
+            {
+                "node_label": "rb",
+                "config": {
+                    "mode": "ratebook",
+                    "objective": "income",
+                    "constraints": {"volume": {"min": 0.9}},
+                    "max_iter": 80,
+                    "cd_tolerance": 0.01,
+                    "frontier_ranges": {"volume": {"min": 0.8, "max": 1.0}},
+                },
+                "base_result": {"n_quotes": 12, "n_steps": 3},
+                "result": {"n_quotes": 99},
+                "input_provenance": {
+                    "node_id": "opt",
+                    "data_source": "batch",
+                    "source_file": "main.py",
+                    "graph_fingerprint": "abc123",
+                },
+            }
+        )
+        solve_result = SimpleNamespace(
+            lambdas={"volume": 0.5},
+            total_objective=105.0,
+            baseline_objective=0.0,
+            baseline_constraints={},
+            total_constraints={"volume": 0.91},
+            constraint_bounds={"volume": 0.9},
+            converged=True,
+            factor_tables={},
+            factor_dtypes={},
+            clamp_rate=0.1,
+            combined_factor_bounds={"min": 0.9, "max": 1.1},
+        )
+        payload = _build_artifact_payload(job, solve_result, stale_at_publish=True)
+        assert payload["solver_settings"] == {
+            "max_iter": 80,
+            "tolerance": 1e-6,
+            "max_cd_iterations": 10,
+            "cd_tolerance": 0.01,
+            "frontier_steps": 15,
+            "frontier_ranges": {"volume": {"min": 0.8, "max": 1.0}},
+        }
+        assert payload["input_summary"] == {
+            "n_quotes": 12,
+            "n_steps": 3,
+            "node_id": "opt",
+            "data_source": "batch",
+            "source_file": "main.py",
+            "graph_fingerprint": "abc123",
+        }
+        assert payload["stale_at_publish"] is True
+
+    def test_online_solver_settings_without_frontier(self):
+        job = with_solve_summary({"node_label": "o", "config": {"mode": "online"}})
+        solve_result = SimpleNamespace(
+            lambdas={},
+            total_objective=1.0,
+            baseline_objective=0.0,
+            baseline_constraints={},
+            total_constraints={},
+            constraint_bounds={},
+            converged=True,
+        )
+        payload = _build_artifact_payload(job, solve_result)
+        assert payload["solver_settings"] == {
+            "max_iter": 50,
+            "tolerance": 1e-6,
+        }
+        assert payload["input_summary"]["n_quotes"] is None
 
     def test_payload_no_frontier_selection_when_none(self):
         """T3: When no frontier point is selected, payload has no frontier_selection key."""
-        job = {
-            "node_label": "my_opt",
-            "config": {"mode": "online", "objective": "income", "constraints": {}},
-            # No selected_frontier_point key
-        }
+        job = with_solve_summary(
+            {
+                "node_label": "my_opt",
+                "config": {"mode": "online", "objective": "income", "constraints": {}},
+                # No selected_frontier_point key
+            }
+        )
         solve_result = SimpleNamespace(
             lambdas={"volume": 0.5},
             total_objective=100.0,
             baseline_objective=95.0,
             total_constraints={"volume": 0.92},
+            constraint_bounds={"volume": 0.9},
             baseline_constraints={"volume": 0.88},
             converged=True,
             iterations=10,
@@ -6507,14 +5560,24 @@ class TestOptimiserMlflowLog:
         assert resp.status_code == 400
         assert "not completed" in resp.json()["detail"]
 
-    def test_mlflow_log_no_solve_result(self, client, clean_job_store):
+    def test_mlflow_log_without_publish_summary_asks_for_a_re_run(self, client, clean_job_store):
         seed_job(
             clean_job_store,
-            "no_result",
+            "no_summary",
             {
                 "status": "completed",
-                "solver": None,
-                "solve_result": None,
+                "result": {
+                    "lambdas": {},
+                    "total_objective": 1.0,
+                    "constraints": {},
+                    "baseline_objective": 0.0,
+                    "baseline_constraints": {},
+                    "converged": True,
+                    "diagnostics_errors": [],
+                    "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
+                },
+                "publish_summary": None,
                 "created_at": time.time(),
                 "completed_at": time.time(),
             },
@@ -6522,21 +5585,28 @@ class TestOptimiserMlflowLog:
         resp = client.post(
             "/api/optimiser/mlflow/log",
             json={
-                "job_id": "no_result",
+                "job_id": "no_summary",
                 "experiment_name": "/test",
             },
         )
         assert resp.status_code == 400
-        assert "no solve result" in resp.json()["detail"].lower()
+        assert "re-run the solve" in resp.json()["detail"].lower()
 
     def test_mlflow_log_import_error(self, client, clean_job_store):
-        """If mlflow is not installed, return 400."""
+        """If mlflow is not installed, return the shared 503 every MLflow route uses."""
         mock_solver = MagicMock()
-        mock_solve = MagicMock(lambdas={}, total_objective=0, total_constraints={}, converged=True)
+        mock_solve = MagicMock(
+            lambdas={},
+            total_objective=0,
+            total_constraints={},
+            constraint_bounds={},
+            converged=True,
+        )
         seed_job(
             clean_job_store,
             "import_err",
             {
+                "result": make_solved_result(),
                 "status": "completed",
                 "solver": mock_solver,
                 "solve_result": mock_solve,
@@ -6555,11 +5625,13 @@ class TestOptimiserMlflowLog:
                     "experiment_name": "/test",
                 },
             )
-        assert resp.status_code == 400
-        assert "mlflow" in resp.json()["detail"].lower()
+        assert resp.status_code == 503
+        assert (
+            resp.json()["detail"] == "MLflow is not installed. Install it with: pip install mlflow"
+        )
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_mlflow_log_after_real_solve(self, client, scored_data):
+    def test_mlflow_log_after_real_solve(self, client, scored_data, tmp_path, monkeypatch):
         """A completed solve keeps the solver available for later MLflow logging."""
         graph = _make_optimiser_graph(scored_data)
         resp = client.post(
@@ -6570,37 +5642,236 @@ class TestOptimiserMlflowLog:
         status = _poll_until_done(client, job_id)
         assert status["status"] == "completed"
 
-        mock_mlflow = MagicMock()
-        mock_run = MagicMock()
-        mock_run.info.run_id = "real-solve-run"
-        mock_mlflow.start_run.return_value.__enter__ = MagicMock(return_value=mock_run)
-        mock_mlflow.start_run.return_value.__exit__ = MagicMock(return_value=False)
-
-        with (
-            patch.dict("sys.modules", {"mlflow": mock_mlflow}),
-            patch(
-                "haute.modelling._mlflow_log.configure_mlflow_tracking",
-                return_value=("http://localhost:5000", "local"),
-            ),
-            patch(
-                "haute.modelling._mlflow_log.resolve_experiment_name",
-                return_value="/optimiser",
-            ),
-            patch(
-                "haute.modelling._mlflow_log.build_run_url",
-                return_value="http://localhost:5000/real-solve-run",
-            ),
-        ):
-            resp = client.post(
-                "/api/optimiser/mlflow/log",
-                json={"job_id": job_id, "experiment_name": "/optimiser"},
-            )
+        store = use_local_mlflow_store(tmp_path, monkeypatch)
+        resp = client.post(
+            "/api/optimiser/mlflow/log",
+            json={"job_id": job_id, "experiment_name": "optimiser"},
+        )
 
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
-        assert data["run_id"] == "real-solve-run"
-        mock_mlflow.log_metrics.assert_called_once()
+        run = store.get_run(data["run_id"])
+        assert run.info.status == "FINISHED"
+        assert run.data.metrics
+
+    @staticmethod
+    def _seed_opt_job(job_store, job_id, config_extra=None):
+        # Publishing reads only the completion summaries; no heavy state is seeded.
+        config = {"mode": "online", **(config_extra or {})}
+        seed_job(
+            job_store,
+            job_id,
+            {
+                "status": "completed",
+                "result": {
+                    "mode": "online",
+                    "lambdas": {"m": 0.1},
+                    "total_objective": 100.0,
+                    "constraints": {},
+                    "baseline_objective": 0.0,
+                    "baseline_constraints": {},
+                    "converged": True,
+                    "iterations": 10,
+                    "diagnostics_errors": [],
+                    "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
+                },
+                "publish_summary": {
+                    "params": {"mode": "online"},
+                    "metrics": {"total_objective": 100.0},
+                    "artifacts": {},
+                },
+                "config": config,
+                "node_label": "opt",
+                "created_at": time.time(),
+                "completed_at": time.time(),
+            },
+        )
+
+    def test_omitted_and_empty_go_to_auto_and_key_goes_to_its_own(
+        self, client, clean_job_store, tmp_path, monkeypatch
+    ):
+        from mlflow.tracking import MlflowClient
+
+        from haute._sandbox import set_project_root
+
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+        monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+        monkeypatch.chdir(tmp_path)
+        set_project_root(tmp_path)
+
+        # 1) omitted destination -> 200, backend == "local", tracking_uri startswith file:
+        self._seed_opt_job(clean_job_store, "opt_dest_omitted", {"mlflow_destination": "server"})
+        resp = client.post(
+            "/api/optimiser/mlflow/log",
+            json={"job_id": "opt_dest_omitted", "experiment_name": "opt_exp_test"},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["backend"] == "local"
+        assert data["tracking_uri"].startswith("file:")
+
+        # 2) destination "" -> same
+        self._seed_opt_job(clean_job_store, "opt_dest_empty", {"mlflow_destination": "server"})
+        resp = client.post(
+            "/api/optimiser/mlflow/log",
+            json={"job_id": "opt_dest_empty", "destination": "", "experiment_name": "opt_exp_test"},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["backend"] == "local"
+        assert data["tracking_uri"].startswith("file:")
+
+        # 3) destination "local" -> same
+        self._seed_opt_job(clean_job_store, "opt_dest_local", {"mlflow_destination": "server"})
+        resp = client.post(
+            "/api/optimiser/mlflow/log",
+            json={
+                "job_id": "opt_dest_local",
+                "destination": "local",
+                "experiment_name": "opt_exp_test",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["backend"] == "local"
+        assert data["tracking_uri"].startswith("file:")
+
+        # Count runs before unconfigured server attempt
+        client_mlflow = MlflowClient(tracking_uri=(tmp_path / "mlruns").as_uri())
+        exp = client_mlflow.get_experiment_by_name("opt_exp_test")
+        assert exp is not None
+        runs_before = len(client_mlflow.search_runs([exp.experiment_id]))
+
+        # 4) destination "server" (unconfigured) -> 400,
+        # "MLflow server is not configured" in detail,
+        # and the local store gained no new run.
+        self._seed_opt_job(clean_job_store, "opt_dest_server", {"mlflow_destination": "server"})
+        resp = client.post(
+            "/api/optimiser/mlflow/log",
+            json={
+                "job_id": "opt_dest_server",
+                "destination": "server",
+                "experiment_name": "opt_exp_test",
+            },
+        )
+        assert resp.status_code == 400, resp.text
+        assert "MLflow server is not configured" in resp.json()["detail"]
+        runs_after = len(client_mlflow.search_runs([exp.experiment_id]))
+        assert runs_after == runs_before
+
+    def test_second_destination_is_distinct(self, client, clean_job_store, tmp_path, monkeypatch):
+        from mlflow.tracking import MlflowClient
+
+        from haute._sandbox import set_project_root
+        from haute.modelling._mlflow_settings import TrackingConfig
+
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+        monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+        monkeypatch.chdir(tmp_path)
+        set_project_root(tmp_path)
+
+        server_runs_dir = tmp_path / "server-runs"
+        server_config = TrackingConfig(
+            "server", server_runs_dir.as_uri(), "http://stub:5000", "toml"
+        )
+        monkeypatch.setattr(
+            "haute.modelling._mlflow_settings._resolve_server",
+            lambda stored=None: server_config,
+        )
+
+        self._seed_opt_job(clean_job_store, "opt_srv_distinct")
+        resp = client.post(
+            "/api/optimiser/mlflow/log",
+            json={
+                "job_id": "opt_srv_distinct",
+                "destination": "server",
+                "experiment_name": "opt_srv_exp",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["backend"] == "server"
+        assert data["tracking_uri"] == server_runs_dir.as_uri()
+
+        server_client = MlflowClient(tracking_uri=server_runs_dir.as_uri())
+        exp = server_client.get_experiment_by_name("opt_srv_exp")
+        assert exp is not None
+        assert len(server_client.search_runs([exp.experiment_id])) == 1
+
+        self._seed_opt_job(clean_job_store, "opt_loc_distinct")
+        resp = client.post(
+            "/api/optimiser/mlflow/log",
+            json={
+                "job_id": "opt_loc_distinct",
+                "destination": "local",
+                "experiment_name": "opt_loc_exp",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["backend"] == "local"
+        assert data["tracking_uri"] == (tmp_path / "mlruns").as_uri()
+
+        local_client = MlflowClient(tracking_uri=(tmp_path / "mlruns").as_uri())
+        loc_exp = local_client.get_experiment_by_name("opt_loc_exp")
+        assert loc_exp is not None
+        assert len(local_client.search_runs([loc_exp.experiment_id])) == 1
+
+    def test_unknown_destination_is_422_before_any_write(self, client):
+        resp = client.post(
+            "/api/optimiser/mlflow/log",
+            json={"job_id": "x", "destination": "managed"},
+        )
+        assert resp.status_code == 422
+
+    def test_chosen_databricks_fails_loudly_when_rejected_but_unchosen_logs_locally(
+        self, client, clean_job_store, tmp_path, monkeypatch
+    ):
+        from mlflow.tracking import MlflowClient
+
+        from haute._sandbox import set_project_root
+
+        monkeypatch.chdir(tmp_path)
+        set_project_root(tmp_path)
+        monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
+        monkeypatch.setenv("MLFLOW_ENABLE_DB_SDK", "true")
+
+        self._seed_opt_job(clean_job_store, "opt_dest_sdk")
+        resp = client.post(
+            "/api/optimiser/mlflow/log",
+            json={"job_id": "opt_dest_sdk", "destination": "databricks"},
+        )
+        assert resp.status_code == 400, resp.text
+        assert "MLFLOW_ENABLE_DB_SDK" in resp.json()["detail"]
+
+        self._seed_opt_job(clean_job_store, "opt_dest_sdk_local")
+        resp = client.post(
+            "/api/optimiser/mlflow/log",
+            json={
+                "job_id": "opt_dest_sdk_local",
+                "destination": "",
+                "experiment_name": "opt_sdk_local_exp",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["backend"] == "local"
+
+        client_mlflow = MlflowClient(tracking_uri=(tmp_path / "mlruns").as_uri())
+        exp = client_mlflow.get_experiment_by_name("opt_sdk_local_exp")
+        assert exp is not None
+        assert len(client_mlflow.search_runs([exp.experiment_id])) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -6640,7 +5911,7 @@ class TestSolveBackgroundErrors:
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_solve_typed_input_error_is_contract_error(self, client, scored_data):
-        from haute.routes._optimiser_service import _OptimiserSolveInputError
+        from haute.routes._optimiser_solver import _OptimiserSolveInputError
 
         graph = _make_optimiser_graph(scored_data)
         with patch(
@@ -6655,7 +5926,7 @@ class TestSolveBackgroundErrors:
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_solve_typed_solver_error_is_algorithm_error(self, client, scored_data):
-        from haute.routes._optimiser_service import _OptimiserSolverExecutionError
+        from haute.routes._optimiser_solver import _OptimiserSolverExecutionError
 
         graph = _make_optimiser_graph(scored_data)
         with patch(
@@ -6744,6 +6015,7 @@ class TestJobStateGuards:
             clean_job_store,
             "no_solver",
             {
+                "result": make_solved_result(),
                 "status": "completed",
                 "solver": None,
                 "quote_grid": None,
@@ -6781,7 +6053,9 @@ class TestJobStateGuards:
         assert resp.status_code == 400
         assert "not completed" in resp.json()["detail"]
 
-    def test_save_no_solve_result(self, client, clean_job_store):
+    def test_save_without_a_result_summary_is_an_invariant_failure(self, client, clean_job_store):
+        # Save publishes from the completion summary, never the heavy solve result;
+        # a completed solve without one is a server invariant failure.
         seed_job(
             clean_job_store,
             "no_sr2",
@@ -6797,11 +6071,11 @@ class TestJobStateGuards:
             "/api/optimiser/save",
             json={
                 "job_id": "no_sr2",
-                "output_path": "/tmp/x.json",
+                "output_path": "x.json",
             },
         )
-        assert resp.status_code == 400
-        assert "no solve result" in resp.json()["detail"].lower()
+        assert resp.status_code == 500
+        assert resp.json()["detail"] == "Job summary is missing"
 
 
 # ---------------------------------------------------------------------------
@@ -6854,122 +6128,7 @@ class TestUnsupportedMode:
 
 @pytest.mark.usefixtures("_widen_sandbox_root")
 class TestExecutePipelineArgs:
-    """Verify _execute_pipeline passes scenario, preamble_ns, and checkpoint_dir."""
-
-    def test_auto_range_required_columns_seed_uses_configured_data_input(self, scored_data):
-        """Online auto-range seeds configured data_input with its minimal columns."""
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "source",
-                        "data": {
-                            "label": "source",
-                            "nodeType": "dataInput",
-                            "config": _snapshot_parquet_data_input(scored_data),
-                        },
-                    },
-                    {
-                        "id": "side_source",
-                        "data": {
-                            "label": "side source",
-                            "nodeType": "dataInput",
-                            "config": _snapshot_parquet_data_input(scored_data),
-                        },
-                    },
-                    {
-                        "id": "opt",
-                        "data": {
-                            "label": "optimiser",
-                            "nodeType": "optimiser",
-                            "config": {
-                                "mode": "online",
-                                "objective": "expected_income",
-                                "constraints": {"volume": {"min": 0.9}},
-                                "quote_id": "quote_id",
-                                "scenario_index": "scenario_index",
-                                "scenario_value": "scenario_value",
-                                "data_input": "source",
-                            },
-                        },
-                    },
-                ],
-                "edges": [
-                    make_edge("source", "opt").model_dump(),
-                    make_edge("side_source", "opt").model_dump(),
-                ],
-            }
-        )
-
-        seeds = _auto_range_required_columns_by_node(
-            graph,
-            "opt",
-            graph.nodes[-1].data.config,
-            mode="online",
-        )
-
-        assert seeds == {
-            "source": frozenset(
-                {
-                    "expected_income",
-                    "quote_id",
-                    "volume",
-                }
-            )
-        }
-
-    def test_auto_range_required_columns_rejects_unconnected_data_input(self, scored_data):
-        """A configured data_input must be a connected optimiser parent."""
-        from fastapi import HTTPException
-
-        graph_dict = _make_optimiser_graph(
-            scored_data,
-            config={
-                "data_input": "missing_source",
-            },
-        )
-        graph = make_graph(graph_dict)
-
-        with pytest.raises(HTTPException) as exc_info:
-            _auto_range_required_columns_by_node(
-                graph,
-                "opt",
-                graph.nodes[-1].data.config,
-                mode="online",
-            )
-
-        assert exc_info.value.status_code == 400
-        assert "data_input" in exc_info.value.detail
-        assert "missing_source" in exc_info.value.detail
-
-    def test_auto_range_required_columns_seeds_ratebook_data_input(self, scored_data):
-        """Ratebook auto-range seeds the data input and lets planner rules route factors."""
-        graph_dict = _make_optimiser_graph(
-            scored_data,
-            config={
-                "mode": "ratebook",
-                "factor_columns": [["territory"]],
-                "data_input": "source",
-            },
-        )
-        graph = make_graph(graph_dict)
-
-        seeds = _auto_range_required_columns_by_node(
-            graph,
-            "opt",
-            graph.nodes[-1].data.config,
-            mode="ratebook",
-        )
-
-        assert seeds == {
-            "source": frozenset(
-                {
-                    "expected_income",
-                    "quote_id",
-                    "volume",
-                }
-            )
-        }
+    """Verify _execute_pipeline passes scenario, preamble_ns, and its seed plan."""
 
     def test_optimiser_solve_required_columns_seed_uses_configured_data_input(self, scored_data):
         """Solve/estimate seeds only the actual optimiser data input branch."""
@@ -7084,6 +6243,7 @@ class TestExecutePipelineArgs:
                             "config": {
                                 "factors": [
                                     {
+                                        "banding": "breakpoints",
                                         "column": "territory",
                                         "outputColumn": "territory_band",
                                     }
@@ -7276,77 +6436,8 @@ class TestExecutePipelineArgs:
         )
         assert projection.needed_by_node["request"] is None
 
-    def test_shared_multi_frame_source_is_never_a_dataframe_cache_candidate(self):
-        """The per-node cache cannot materialise a dict-of-frames source output."""
-        from haute.routes._optimiser_service import _optimiser_dataframe_cache_node_ids
-
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "request",
-                        "data": {
-                            "label": "Quote_Input_1",
-                            "nodeType": "apiInput",
-                            "config": {
-                                "tables": [
-                                    {"label": "quote_info", "path": "$[:].quotes", "emit": True},
-                                    {
-                                        "label": "rating_factors",
-                                        "path": "$[:].factors",
-                                        "emit": True,
-                                    },
-                                ],
-                            },
-                        },
-                    },
-                    {
-                        "id": "opt",
-                        "data": {
-                            "label": "optimiser",
-                            "nodeType": "optimiser",
-                            "config": {
-                                "mode": "ratebook",
-                                "objective": "expected_income",
-                                "constraints": {},
-                                "factor_columns": [["territory_band"]],
-                                "data_input": "quote_info",
-                                "banding_source": "rating_factors",
-                            },
-                        },
-                    },
-                ],
-                "edges": [
-                    {
-                        "id": "e_quotes",
-                        "source": "request",
-                        "sourceHandle": "quote_info",
-                        "target": "opt",
-                    },
-                    {
-                        "id": "e_factors",
-                        "source": "request",
-                        "sourceHandle": "rating_factors",
-                        "target": "opt",
-                    },
-                ],
-            }
-        )
-
-        cache_node_ids = _optimiser_dataframe_cache_node_ids(
-            graph,
-            optimiser_node_id="opt",
-            execution_target_node_id="opt",
-            explicit_target_node=False,
-        )
-
-        assert "request" not in cache_node_ids
-
-    def test_execute_pipeline_runs_uncached_when_every_cache_candidate_is_filtered(
-        self,
-        tmp_path,
-    ):
-        """Shared multi-frame setup must not build an empty cache request."""
+    def test_shared_multi_frame_setup_plans_no_capture(self):
+        """A multi-frame apiInput feeding both optimiser inputs is built, never captured."""
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
         from haute.schemas import OptimiserSolveRequest
@@ -7411,14 +6502,22 @@ class TestExecutePipelineArgs:
             captured.update(kwargs)
             return ({"request": {}},)
 
-        with patch(
-            "haute.routes._optimiser_service.execute_lazy_graph",
-            side_effect=fake_execute_lazy_graph,
+        with (
+            patch(
+                "haute.routes._optimiser_service.execute_lazy_graph",
+                side_effect=fake_execute_lazy_graph,
+            ),
+            contextlib.ExitStack() as resources,
         ):
-            outputs = service._execute_pipeline(body, "job-1", tmp_path)
+            outputs = service._execute_pipeline(body, "job-1", resources)
+            plan = captured["snapshot_plan"]
 
-        assert outputs == {"request": {}}
-        assert captured["dataframe_cache_request"] is None
+            assert outputs == {"request": {}}
+            assert captured["prepare_inputs"] is False
+            # Its tables have their own store: the plan builds it and captures nothing.
+            assert plan.decision.captures == {}
+            assert plan.decision.seeds == {}
+            assert "request" in plan.decision.executed_node_ids
 
     def test_solve_passes_optimiser_seed_to_execute_pipeline(self, scored_data):
         from haute.routes._job_store import JobStore
@@ -7438,7 +6537,7 @@ class TestExecutePipelineArgs:
                 "_execute_pipeline",
                 return_value={"source": scored_lf},
             ) as execute,
-            patch.object(service, "_build_grid", return_value=object()),
+            patch.object(service, "_build_grid", return_value=setup_grid_stub()),
             patch.object(
                 service,
                 "_launch_background",
@@ -7446,7 +6545,7 @@ class TestExecutePipelineArgs:
             ),
         ):
             response = service.start(body)
-            assert launch_called.wait(timeout=2.0)
+            assert launch_called.wait(timeout=10.0)
 
         assert response.status == "started"
         assert execute.call_args.kwargs["required_columns_by_node"] == {
@@ -7481,7 +6580,7 @@ class TestExecutePipelineArgs:
         with (
             patch.object(service, "_execute_pipeline", return_value={"source": scored_lf}),
             patch(
-                "haute.routes._optimiser_service.streaming_collect",
+                "haute.routes._optimiser_input.streaming_collect",
                 side_effect=error,
             ),
             patch.object(service, "_build_grid") as build_grid,
@@ -7496,47 +6595,6 @@ class TestExecutePipelineArgs:
         assert "bounded streaming mode" in job["message"]
         build_grid.assert_not_called()
         launch_background.assert_not_called()
-
-    def test_execute_pipeline_maps_projection_impossible_to_422(self, scored_data, tmp_path):
-        from haute.errors import ProjectionImpossibleError
-        from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import OptimiserSolveService
-        from haute.schemas import OptimiserSolveRequest
-
-        graph_dict = _make_optimiser_graph(scored_data)
-        body = OptimiserSolveRequest(graph=graph_dict, node_id="opt")
-
-        store = JobStore()
-        service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running"})
-        checkpoint_dir = tmp_path / "ckpt"
-        checkpoint_dir.mkdir()
-
-        with (
-            patch(
-                "haute.routes._optimiser_service.execute_lazy_graph",
-                side_effect=ProjectionImpossibleError(
-                    "Fan-in join projection requires literal how/suffix arguments.",
-                    node_id="join",
-                    node_type="polars",
-                ),
-            ),
-            patch("haute.executor._resolve_batch_scenario", return_value=None),
-            patch("haute.executor._compile_preamble", return_value={}),
-            pytest.raises(HTTPException) as exc_info,
-        ):
-            service._execute_pipeline(
-                body,
-                job_id,
-                checkpoint_dir,
-                required_columns_by_node={"source": frozenset({"volume"})},
-            )
-
-        assert exc_info.value.status_code == 422
-        assert "bounded projection" in str(exc_info.value.detail)
-        job = store.require_job(job_id)
-        assert job["status"] == "contract_error"
-        assert job["terminal_reason"] == "contract_error"
 
     def test_estimate_passes_optimiser_seed_to_execute_pipeline(self, scored_data):
         from haute.routes import optimiser as optimiser_module
@@ -7555,6 +6613,10 @@ class TestExecutePipelineArgs:
 
         assert metrics["expanded_row_count"] == 250
         assert execute.call_args.kwargs["target_node_id"] == "source"
+        execution_context = execute.call_args.kwargs["execution_context"]
+        assert execution_context.profile is ExecutionProfile.OPTIMISER_SETUP
+        assert execution_context.admission is not None
+        assert execution_context.lease.released is True
         assert execute.call_args.kwargs["required_columns_by_node"] == {
             "source": frozenset(
                 {
@@ -7567,8 +6629,8 @@ class TestExecutePipelineArgs:
             )
         }
 
-    def test_execute_pipeline_passes_scenario_and_checkpoint(self, scored_data, tmp_path):
-        """_execute_lazy receives scenario != 'live', caller's checkpoint_dir, and preamble_ns."""
+    def test_execute_pipeline_passes_scenario_and_seed_plan(self, scored_data):
+        """The lazy execution receives scenario != 'live', the run's seed plan, and preamble_ns."""
 
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -7579,11 +6641,15 @@ class TestExecutePipelineArgs:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running"})
-        checkpoint_dir = tmp_path / "ckpt"
-        checkpoint_dir.mkdir()
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
-        # Capture the kwargs _execute_lazy is called with.
+        # Capture the kwargs the lazy execution is called with.
         captured = {}
 
         def fake_execute_lazy(*args, **kwargs):
@@ -7592,6 +6658,7 @@ class TestExecutePipelineArgs:
             return ({"opt": MagicMock()}, [], {}, {})
 
         with (
+            contextlib.ExitStack() as resources,
             patch(
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=fake_execute_lazy,
@@ -7605,20 +6672,21 @@ class TestExecutePipelineArgs:
                 return_value={"helper": lambda x: x},
             ),
         ):
-            service._execute_pipeline(body, job_id, checkpoint_dir)
+            service._execute_pipeline(body, job_id, resources)
 
         # source should come from _resolve_batch_scenario (not default "batch")
         assert captured["source"] == "ism_scenario"
-        # checkpoint_dir is the one we passed in
-        assert captured["checkpoint_dir"] == checkpoint_dir
         # preamble_ns is the dict returned by _compile_preamble
         assert captured["preamble_ns"] is not None
         assert "helper" in captured["preamble_ns"]
-        cache_request = captured["dataframe_cache_request"]
-        assert cache_request is not None
-        assert set(cache_request.keys_by_node) == {"source"}
+        # The run is planned against shared snapshots, whose inputs the plan
+        # prepared; it has no checkpoint directory or private cache request.
+        assert captured["snapshot_plan"] is not None
+        assert captured["prepare_inputs"] is False
+        assert "checkpoint_dir" not in captured
+        assert "dataframe_cache_request" not in captured
 
-    def test_execute_pipeline_forwards_required_columns_by_node(self, scored_data, tmp_path):
+    def test_execute_pipeline_forwards_required_columns_by_node(self, scored_data):
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
         from haute.schemas import OptimiserSolveRequest
@@ -7628,9 +6696,13 @@ class TestExecutePipelineArgs:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running"})
-        checkpoint_dir = tmp_path / "ckpt"
-        checkpoint_dir.mkdir()
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         captured = {}
 
@@ -7640,6 +6712,7 @@ class TestExecutePipelineArgs:
 
         seeds = {"opt": frozenset({"quote_id", "expected_income"})}
         with (
+            contextlib.ExitStack() as resources,
             patch(
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=fake_execute_lazy,
@@ -7650,7 +6723,7 @@ class TestExecutePipelineArgs:
             service._execute_pipeline(
                 body,
                 job_id,
-                checkpoint_dir,
+                resources,
                 required_columns_by_node=seeds,
             )
 
@@ -7738,13 +6811,14 @@ class TestExecutePipelineArgs:
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
 
-        outputs = service._execute_pipeline(body, job_id, tmp_path)
+        with contextlib.ExitStack() as resources:
+            outputs = service._execute_pipeline(body, job_id, resources)
 
-        assert "optimiser_input" in outputs
-        assert "banding" in outputs
-        assert "opt" in outputs
+            assert "optimiser_input" in outputs
+            assert "banding" in outputs
+            assert "opt" in outputs
 
-    def test_execute_pipeline_contract_mismatch_returns_400(self, scored_data, tmp_path):
+    def test_execute_pipeline_contract_mismatch_returns_400(self, scored_data):
         from fastapi import HTTPException
 
         from haute.errors import ContractMismatchError
@@ -7757,11 +6831,16 @@ class TestExecutePipelineArgs:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running"})
-        checkpoint_dir = tmp_path / "ckpt"
-        checkpoint_dir.mkdir()
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         with (
+            contextlib.ExitStack() as resources,
             patch(
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=ContractMismatchError(
@@ -7776,7 +6855,7 @@ class TestExecutePipelineArgs:
                 service._execute_pipeline(
                     body,
                     job_id,
-                    checkpoint_dir,
+                    resources,
                     required_columns_by_node={"source": frozenset({"volume"})},
                 )
 
@@ -7798,8 +6877,7 @@ class TestExecutePipelineArgs:
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
-        prepared = service._prepare_frontier_auto_range(body)
-        prepared["streaming_plan"] = None
+        _node, prepared = service._prepare_frontier_auto_range(body)
         with patch.object(
             service,
             "_execute_pipeline",
@@ -7813,12 +6891,14 @@ class TestExecutePipelineArgs:
                 {
                     "expected_income",
                     "quote_id",
+                    "scenario_index",
+                    "scenario_value",
                     "volume",
                 }
             )
         }
 
-    def test_execute_pipeline_defaults_to_batch_when_no_ism(self, scored_data, tmp_path):
+    def test_execute_pipeline_defaults_to_batch_when_no_ism(self, scored_data):
         """When _resolve_batch_scenario returns None, scenario defaults to 'batch'."""
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -7829,9 +6909,13 @@ class TestExecutePipelineArgs:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running"})
-        checkpoint_dir = tmp_path / "ckpt"
-        checkpoint_dir.mkdir()
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         captured = {}
 
@@ -7840,6 +6924,7 @@ class TestExecutePipelineArgs:
             return ({"opt": MagicMock()}, [], {}, {})
 
         with (
+            contextlib.ExitStack() as resources,
             patch(
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=fake_execute_lazy,
@@ -7847,11 +6932,11 @@ class TestExecutePipelineArgs:
             patch("haute.executor._resolve_batch_scenario", return_value=None),
             patch("haute.executor._compile_preamble", return_value={}),
         ):
-            service._execute_pipeline(body, job_id, checkpoint_dir)
+            service._execute_pipeline(body, job_id, resources)
 
         assert captured["source"] == "batch"
 
-    def test_execute_pipeline_preamble_ns_none_for_empty_preamble(self, scored_data, tmp_path):
+    def test_execute_pipeline_preamble_ns_none_for_empty_preamble(self, scored_data):
         """When _compile_preamble returns empty/falsy, preamble_ns is None."""
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -7862,9 +6947,13 @@ class TestExecutePipelineArgs:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running"})
-        checkpoint_dir = tmp_path / "ckpt"
-        checkpoint_dir.mkdir()
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         captured = {}
 
@@ -7873,6 +6962,7 @@ class TestExecutePipelineArgs:
             return ({"opt": MagicMock()}, [], {}, {})
 
         with (
+            contextlib.ExitStack() as resources,
             patch(
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=fake_execute_lazy,
@@ -7880,7 +6970,7 @@ class TestExecutePipelineArgs:
             patch("haute.executor._resolve_batch_scenario", return_value=None),
             patch("haute.executor._compile_preamble", return_value={}),
         ):
-            service._execute_pipeline(body, job_id, checkpoint_dir)
+            service._execute_pipeline(body, job_id, resources)
 
         # Empty dict from _compile_preamble is falsy → preamble_ns should be None
         assert captured["preamble_ns"] is None
@@ -7891,13 +6981,22 @@ class TestBuildGridBoundedSink:
 
     def test_build_grid_uses_bounded_sink(self, tmp_path):
         """The optimiser staging write must not use the fallback-capable sink."""
+        from haute._polars_utils import set_streaming_chunk_size
+
+        set_streaming_chunk_size(1_000)
 
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         # Build a real scored LazyFrame
         n_quotes, n_steps = 10, 3
@@ -7925,17 +7024,16 @@ class TestBuildGridBoundedSink:
             "quote_id": "quote_id",
             "scenario_index": "scenario_index",
             "scenario_value": "scenario_value",
-            "chunk_size": 1_000,
         }
 
         def patched_bounded_sink(lf, path, **kw):
             collected = lf.collect(engine="streaming")
             collected.write_parquet(path)
 
-        mock_grid = MagicMock()
+        mock_grid = MagicMock(scenario_values=[0.9, 1.1])
         with (
             patch(
-                "haute.routes._optimiser_service.bounded_sink",
+                "haute.routes._optimiser_input.bounded_sink",
                 side_effect=patched_bounded_sink,
             ) as mock_sink,
             patch(
@@ -7943,7 +7041,7 @@ class TestBuildGridBoundedSink:
                 return_value=mock_grid,
             ) as mock_build,
         ):
-            result = service._build_grid(scored_lf, ["volume"], config, "opt", job_id)
+            result = service._build_grid(scored_lf, ["volume"], config, "opt", job_id).grid
 
         assert mock_sink.call_count == 1
         # build_grid_from_parquet_chunked was called with correct chunking and column mappings
@@ -7958,10 +7056,10 @@ class TestBuildGridBoundedSink:
 
 @pytest.mark.usefixtures("_widen_sandbox_root")
 class TestExecutePipelineCleanup:
-    """Verify checkpoint dir lifecycle: caller owns creation + cleanup."""
+    """Verify the seed plan's lifecycle: the caller's stack holds it and releases it."""
 
-    def test_execute_pipeline_uses_caller_checkpoint_dir(self, scored_data, tmp_path):
-        """_execute_pipeline passes the caller-provided checkpoint_dir to _execute_lazy."""
+    def test_execute_pipeline_holds_its_plan_on_the_callers_stack(self, scored_data):
+        """The plan stays open while the caller reads the frames and closes with its stack."""
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
         from haute.schemas import OptimiserSolveRequest
@@ -7971,9 +7069,13 @@ class TestExecutePipelineCleanup:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running"})
-        checkpoint_dir = tmp_path / "ckpt"
-        checkpoint_dir.mkdir()
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         captured = {}
 
@@ -7982,6 +7084,7 @@ class TestExecutePipelineCleanup:
             return ({"opt": MagicMock()}, [], {}, {})
 
         with (
+            contextlib.ExitStack() as resources,
             patch(
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=fake_execute_lazy,
@@ -7989,13 +7092,16 @@ class TestExecutePipelineCleanup:
             patch("haute.executor._resolve_batch_scenario", return_value=None),
             patch("haute.executor._compile_preamble", return_value={}),
         ):
-            lazy_outputs = service._execute_pipeline(body, job_id, checkpoint_dir)
+            lazy_outputs = service._execute_pipeline(body, job_id, resources)
+            plan = captured["snapshot_plan"]
+            assert not plan._closed
 
         assert isinstance(lazy_outputs, dict)
-        assert captured["checkpoint_dir"] == checkpoint_dir
+        assert plan._closed
+        assert "checkpoint_dir" not in captured
 
-    def test_execute_pipeline_error_does_not_leak_tmpdir(self, scored_data, tmp_path):
-        """When _execute_lazy raises, the caller's finally block cleans the checkpoint dir."""
+    def test_execute_pipeline_error_leaves_its_plan_on_the_callers_stack(self, scored_data):
+        """When the lazy execution raises, the caller's stack still closes the plan it opened."""
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
         from haute.schemas import OptimiserSolveRequest
@@ -8005,38 +7111,38 @@ class TestExecutePipelineCleanup:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
+
+        plans = []
 
         def failing_execute_lazy(*args, **kwargs):
+            plans.append(kwargs["snapshot_plan"])
             raise RuntimeError("boom")
 
-        # Simulate what start() does: create dir, call _execute_pipeline, cleanup in finally
-        import tempfile
-        from pathlib import Path
+        with (
+            contextlib.ExitStack() as resources,
+            patch(
+                "haute.routes._optimiser_service.execute_lazy_graph",
+                side_effect=failing_execute_lazy,
+            ),
+            patch("haute.executor._resolve_batch_scenario", return_value=None),
+            patch("haute.executor._compile_preamble", return_value={}),
+        ):
+            from fastapi import HTTPException
 
-        checkpoint_dir = Path(tempfile.mkdtemp(prefix="haute_test_"))
-        try:
-            with (
-                patch(
-                    "haute.routes._optimiser_service.execute_lazy_graph",
-                    side_effect=failing_execute_lazy,
-                ),
-                patch("haute.executor._resolve_batch_scenario", return_value=None),
-                patch("haute.executor._compile_preamble", return_value={}),
-            ):
-                from fastapi import HTTPException
+            with pytest.raises(HTTPException):
+                service._execute_pipeline(body, job_id, resources)
+            assert not plans[0]._closed
 
-                with pytest.raises(HTTPException):
-                    service._execute_pipeline(body, job_id, checkpoint_dir)
-        finally:
-            import shutil
+        assert plans[0]._closed
 
-            shutil.rmtree(checkpoint_dir, ignore_errors=True)
-
-        # Checkpoint dir should be gone after caller cleanup
-        assert not checkpoint_dir.exists()
-
-    def test_execute_pipeline_error_raises_http_exception(self, scored_data, tmp_path):
+    def test_execute_pipeline_error_raises_http_exception(self, scored_data):
         """Pipeline execution errors are wrapped in HTTPException(500)."""
         from fastapi import HTTPException
 
@@ -8049,14 +7155,19 @@ class TestExecutePipelineCleanup:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running"})
-        checkpoint_dir = tmp_path / "ckpt"
-        checkpoint_dir.mkdir()
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         def failing_execute_lazy(*args, **kwargs):
             raise RuntimeError("boom")
 
         with (
+            contextlib.ExitStack() as resources,
             patch(
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=failing_execute_lazy,
@@ -8065,7 +7176,7 @@ class TestExecutePipelineCleanup:
             patch("haute.executor._compile_preamble", return_value={}),
         ):
             with pytest.raises(HTTPException) as exc_info:
-                service._execute_pipeline(body, job_id, checkpoint_dir)
+                service._execute_pipeline(body, job_id, resources)
             assert exc_info.value.status_code == 500
 
 
@@ -8083,7 +7194,6 @@ class TestFrontierInSolve:
         graph = _make_optimiser_graph(
             scored_data,
             config={
-                "frontier_enabled": True,
                 "frontier_ranges": {"volume": {"min": 40.0, "max": 60.0}},
             },
         )
@@ -8109,7 +7219,6 @@ class TestFrontierInSolve:
         graph = _make_optimiser_graph(
             scored_data,
             config={
-                "frontier_enabled": True,
                 "frontier_ranges": {"volume": {"min": 40.0, "max": 60.0}},
             },
         )
@@ -8168,27 +7277,18 @@ class TestFrontierInSolve:
         assert result.get("lambdas") == {}
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_solve_with_empty_constraints_ignores_frontier_enabled(
+    def test_solve_with_empty_constraints_computes_no_frontier(
         self,
         client,
         scored_data,
     ):
-        """When ``frontier_enabled=true`` but ``constraints={}``, the
-        frontier is silently skipped (no points to optimise over).
-
-        This is the contract behaviour that the rating UI relies on:
-        ``frontier_enabled`` is a hint, not a hard requirement; the
-        solver determines whether a frontier is meaningful.  A regression
-        that started erroring (or, worse, silently producing garbage
-        lambdas) on this combination would break every config that
-        toggles ``frontier_enabled`` on without first adding constraints.
-        """
+        """With no constraints nothing is swept, so no frontier is computed
+        and no spurious ``frontier_error`` is reported."""
         graph = _make_optimiser_graph(
             scored_data,
             config={
                 "objective": "expected_income",
                 "constraints": {},
-                "frontier_enabled": True,
                 "frontier_ranges": {},  # no constraints → no ranges
                 "max_iter": 5,
             },
@@ -8201,10 +7301,38 @@ class TestFrontierInSolve:
 
         assert status["status"] == "completed"
         result = status["result"]
-        # frontier_enabled with no constraints is a no-op — no frontier
-        # data, no spurious frontier_error message.
         assert result.get("frontier") is None
         assert result.get("frontier_error") is None
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_swept_constraint_is_solved_at_its_range_start(
+        self,
+        client,
+        scored_data,
+        clean_job_store,
+    ):
+        """A swept constraint's hidden bound never reaches the solve: the job
+        runs it at the start of its range, so the as-solved result sits on the
+        frontier."""
+        graph = _make_optimiser_graph(
+            scored_data,
+            config={
+                "constraints": {"volume": {"min": 1.0}},
+                "frontier_ranges": {"volume": {"min": 40.0, "max": 60.0}},
+                "frontier_steps": 3,
+                "max_iter": 5,
+            },
+        )
+        resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+
+        assert resp.status_code == 200, resp.text
+        job_id = resp.json()["job_id"]
+        status = _poll_until_done(client, job_id)
+
+        assert status["status"] == "completed"
+        assert clean_job_store.require_job(job_id)["config"]["constraints"] == {
+            "volume": {"min": 40.0}
+        }
 
 
 class TestFrontierSelect:
@@ -8216,7 +7344,6 @@ class TestFrontierSelect:
         graph = _make_optimiser_graph(
             scored_data,
             config={
-                "frontier_enabled": True,
                 "frontier_ranges": {"volume": {"min": 40.0, "max": 60.0}},
             },
         )
@@ -8249,7 +7376,6 @@ class TestFrontierSelect:
         graph = _make_optimiser_graph(
             scored_data,
             config={
-                "frontier_enabled": True,
                 "frontier_ranges": {"volume": {"min": 40.0, "max": 60.0}},
             },
         )
@@ -8278,11 +7404,15 @@ class TestFrontierSelect:
             "sel_oob",
             {
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "solver": MagicMock(),
                 "quote_grid": MagicMock(),
                 "frontier_data": {
+                    "frontier_generation": 0,
                     "status": "ok",
-                    "points": [{"total_objective": 1.0, "lambda_volume": 0.5}],
+                    "points": [
+                        typed_frontier_point({"total_objective": 1.0, "lambda_volume": 0.5})
+                    ],
                     "n_points": 1,
                     "constraint_names": ["volume"],
                 },
@@ -8311,11 +7441,15 @@ class TestFrontierSelect:
             "sel_capped",
             {
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "solver": MagicMock(),
                 "quote_grid": MagicMock(),
                 "frontier_data": {
+                    "frontier_generation": 0,
                     "status": "ok",
-                    "points": [{"total_objective": 1.0, "lambda_volume": 0.5}],
+                    "points": [
+                        typed_frontier_point({"total_objective": 1.0, "lambda_volume": 0.5})
+                    ],
                     "n_points": 3,
                     "points_returned": 1,
                     "points_limit": 1,
@@ -8355,6 +7489,7 @@ class TestFrontierSelect:
             total_objective=120.0,
             baseline_objective=95.0,
             total_constraints={"volume": 0.97},
+            constraint_bounds={"volume": 0.9},
             baseline_constraints={"volume": 0.88},
             lambdas={"volume": 0.3},
             converged=True,
@@ -8364,21 +7499,31 @@ class TestFrontierSelect:
             "rb_select",
             {
                 "status": "completed",
-                "config": {"mode": "ratebook", "factor_columns": [["region"]]},
+                "config": {
+                    "mode": "ratebook",
+                    "factor_columns": [["region"]],
+                    "constraints": {"volume": {"min": 0.9}},
+                },
                 "solver": mock_solver,
                 "quote_grid": mock_grid,
                 "ratebook_factor_contexts": factor_contexts,
                 "factor_columns_valid": [["region"]],
                 "artifact_handles": {},
                 "result": {
+                    "frontier_generation": 0,
                     "total_objective": 100.0,
                     "baseline_objective": 95.0,
                     "constraints": {"volume": 0.92},
                     "baseline_constraints": {"volume": 0.88},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 0.5},
                     "converged": True,
+                    "diagnostics_errors": [],
+                    "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "frontier_data": {
+                    "frontier_generation": 0,
                     "status": "ok",
                     "n_points": 1,
                     "points_returned": 1,
@@ -8413,7 +7558,9 @@ class TestFrontierSelect:
         clean_job_store,
     ):
         """On-demand Rates tab materialisation keeps the stored band order."""
-        _make_ratebook_frontier_materialisation_job(clean_job_store, "rb_select_order")
+        mock_solver, _mock_grid, _factor_contexts = _make_ratebook_frontier_materialisation_job(
+            clean_job_store, "rb_select_order"
+        )
         replace_job(
             clean_job_store,
             "rb_select_order",
@@ -8433,6 +7580,8 @@ class TestFrontierSelect:
         rows = resp.json()["factor_tables"]["region"]
         assert [row["__factor_group__"] for row in rows] == ["South", "North"]
         assert [row["quote_count"] for row in rows] == [1, 1]
+        assert [row["optimal_scenario_value"] for row in rows] == [0.92, 1.08]
+        mock_solver.solve.assert_not_called()
 
     def test_select_negative_index(self, client, clean_job_store):
         """Negative point index returns 422 (Pydantic validation via Field(ge=0))."""
@@ -8452,6 +7601,7 @@ class TestFrontierSelect:
             "sel_nf",
             {
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "solver": MagicMock(),
                 "quote_grid": MagicMock(),
                 "frontier_data": None,
@@ -8487,7 +7637,6 @@ class TestFrontierSelect:
         graph = _make_optimiser_graph(
             scored_data,
             config={
-                "frontier_enabled": True,
                 "frontier_ranges": {"volume": {"min": 40.0, "max": 60.0}},
             },
         )
@@ -8521,6 +7670,7 @@ class TestFrontierSelect:
             "sel_touch_ttl",
             {
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "created_at": 100.0,
                 "completed_at": 100.0,
                 "heavy_objects_expires_at": 1000.0,
@@ -8528,6 +7678,7 @@ class TestFrontierSelect:
                 "solve_result": object(),
                 "quote_grid": MagicMock(),
                 "frontier_data": {
+                    "frontier_generation": 0,
                     "status": "ok",
                     "points": [
                         _frontier_point_summary(
@@ -8545,12 +7696,17 @@ class TestFrontierSelect:
                     "constraint_names": ["volume"],
                 },
                 "result": {
+                    "frontier_generation": 0,
                     "total_objective": 100.0,
                     "baseline_objective": 95.0,
                     "constraints": {"volume": 0.85},
                     "baseline_constraints": {"volume": 0.8},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 0.2},
                     "converged": True,
+                    "diagnostics_errors": [],
+                    "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "artifact_handles": {},
             },
@@ -8600,6 +7756,7 @@ class TestFrontierSelect:
             "sel_touch_before_work",
             {
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "created_at": 100.0,
                 "completed_at": 100.0,
                 "heavy_objects_expires_at": 1000.0,
@@ -8607,6 +7764,7 @@ class TestFrontierSelect:
                 "solve_result": object(),
                 "quote_grid": MagicMock(),
                 "frontier_data": {
+                    "frontier_generation": 0,
                     "status": "ok",
                     "points": [
                         _frontier_point_summary(
@@ -8619,12 +7777,17 @@ class TestFrontierSelect:
                     "constraint_names": ["volume"],
                 },
                 "result": {
+                    "frontier_generation": 0,
                     "total_objective": 100.0,
                     "baseline_objective": 95.0,
                     "constraints": {"volume": 0.85},
                     "baseline_constraints": {"volume": 0.8},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 0.2},
                     "converged": True,
+                    "diagnostics_errors": [],
+                    "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "artifact_handles": {},
             },
@@ -8659,10 +7822,12 @@ class TestFrontierSelect:
             "sel_cleanup_primary",
             {
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "solver": solver,
                 "solve_result": object(),
                 "quote_grid": MagicMock(),
                 "frontier_data": {
+                    "frontier_generation": 0,
                     "status": "ok",
                     "points": [
                         _frontier_point_summary(
@@ -8675,12 +7840,17 @@ class TestFrontierSelect:
                     "constraint_names": ["volume"],
                 },
                 "result": {
+                    "frontier_generation": 0,
                     "total_objective": 100.0,
                     "baseline_objective": 95.0,
                     "constraints": {"volume": 0.85},
                     "baseline_constraints": {"volume": 0.8},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 0.2},
                     "converged": True,
+                    "diagnostics_errors": [],
+                    "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "artifact_handles": {},
                 "created_at": time.time(),
@@ -8690,7 +7860,7 @@ class TestFrontierSelect:
 
         with (
             patch(
-                "haute.routes.optimiser._persist_apply_result_artifact",
+                "haute.routes._optimiser_frontier._persist_apply_frame_artifact",
                 side_effect=AssertionError("selection must not persist apply artifacts"),
             ),
             patch.object(
@@ -8810,49 +7980,6 @@ class TestValidateConfig:
         assert exc_info.value.status_code == 400
         assert "objective" in exc_info.value.detail.lower()
 
-    @pytest.mark.parametrize("chunk_size", [0, -1, 1.5, "1000", True])
-    def test_invalid_explicit_chunk_size_raises_400_synchronously(self, chunk_size):
-        from fastapi import HTTPException
-
-        from haute.routes._optimiser_service import OptimiserSolveService
-
-        with pytest.raises(HTTPException) as exc_info:
-            OptimiserSolveService._validate_config(
-                {"objective": "income", "chunk_size": chunk_size}
-            )
-        assert exc_info.value.status_code == 400
-        assert exc_info.value.detail == "chunk_size must be a positive integer."
-
-
-# ---------------------------------------------------------------------------
-# _compute_scenario_value_stats unit tests (gap: empty dataframe)
-# ---------------------------------------------------------------------------
-
-
-class TestComputeScenarioValueStatsExtended:
-    def test_empty_dataframe_omits_distribution_payloads(self):
-        df = pl.DataFrame({"optimal_scenario_value": pl.Series([], dtype=pl.Float64)})
-        result = SimpleNamespace(dataframe=df)
-        stats, hist = _compute_scenario_value_stats(result)
-        assert stats is None
-        assert hist is None
-
-    def test_normal_distribution_returns_full_stats(self):
-        rng = np.random.RandomState(0)
-        values = rng.normal(1.0, 0.1, 1000).tolist()
-        df = pl.DataFrame({"optimal_scenario_value": values})
-        result = SimpleNamespace(dataframe=df)
-        stats, hist = _compute_scenario_value_stats(result)
-        for key in ("mean", "std", "min", "max", "p5", "p25", "p50", "p75", "p95"):
-            assert key in stats, f"Missing stat key: {key}"
-        assert stats["mean"] == pytest.approx(1.0, abs=0.05)
-        assert stats["std"] > 0
-        assert stats["p5"] < stats["p25"] < stats["p50"] < stats["p75"] < stats["p95"]
-        assert "counts" in hist
-        assert "edges" in hist
-        assert len(hist["counts"]) == 20
-        assert len(hist["edges"]) == 21
-
 
 # ---------------------------------------------------------------------------
 # _finalize_solve_result unit tests
@@ -8862,12 +7989,22 @@ class TestComputeScenarioValueStatsExtended:
 @pytest.mark.usefixtures("_in_solver_worker_context")
 class TestFinalizeSolveResult:
     def _make_solve_result(self, *, converged=True):
-        df = pl.DataFrame({"optimal_scenario_value": [0.9, 1.0, 1.1, 1.2, 0.8]})
+        # A per-quote frame over SOLVE_SCENARIO_GRID (0.9, 1.0, 1.1).
+        df = pl.DataFrame(
+            {
+                "quote_id": ["a", "b", "c", "d", "e"],
+                "optimal_step": pl.Series([0, 1, 2, 2, 0], dtype=pl.Int32),
+                "optimal_scenario_value": pl.Series([0.9, 1.0, 1.1, 1.1, 0.9], dtype=pl.Float32),
+                "optimal_objective": pl.Series([20.0] * 5, dtype=pl.Float32),
+                "optimal_volume": pl.Series([0.2] * 5, dtype=pl.Float32),
+            }
+        )
         return SimpleNamespace(
             dataframe=df,
             total_objective=100.0,
             baseline_objective=95.0,
             total_constraints={"volume": 0.92},
+            constraint_bounds={"volume": 0.9},
             baseline_constraints={"volume": 0.88},
             lambdas={"volume": 0.5},
             converged=converged,
@@ -8875,10 +8012,17 @@ class TestFinalizeSolveResult:
 
     def test_convergence_warning_when_not_converged(self):
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import _finalize_solve_result
+        from haute.routes._optimiser_solver import _finalize_solve_result
 
         store = JobStore()
-        job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
+            }
+        )
         solve_result = self._make_solve_result(converged=False)
         mock_solver = MagicMock()
         mock_grid = MagicMock()
@@ -8899,10 +8043,17 @@ class TestFinalizeSolveResult:
 
     def test_no_warning_when_converged(self):
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import _finalize_solve_result
+        from haute.routes._optimiser_solver import _finalize_solve_result
 
         store = JobStore()
-        job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
+            }
+        )
         solve_result = self._make_solve_result(converged=True)
         mock_solver = MagicMock()
         mock_grid = MagicMock()
@@ -8922,10 +8073,17 @@ class TestFinalizeSolveResult:
 
     def test_result_dict_includes_core_fields(self):
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import _finalize_solve_result
+        from haute.routes._optimiser_solver import _finalize_solve_result
 
         store = JobStore()
-        job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
+            }
+        )
         solve_result = self._make_solve_result()
         mock_solver = MagicMock()
         mock_grid = MagicMock()
@@ -8951,16 +8109,23 @@ class TestFinalizeSolveResult:
         assert job["status"] == "completed"
         assert job["elapsed_seconds"] == 2.5
 
-    def test_frontier_not_computed_for_individual_point_mode(self):
+    def test_frontier_not_computed_when_no_constraint_is_swept(self):
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import _finalize_solve_result
+        from haute.routes._optimiser_solver import _finalize_solve_result
 
         store = JobStore()
-        for frontier_enabled in (None, False):
-            config = {"constraints": {"volume": {"min": 0.9}}}
-            if frontier_enabled is not None:
-                config["frontier_enabled"] = frontier_enabled
-            job_id = store.create_job({"status": "running", "config": config})
+        for ranges in (None, {}):
+            config: dict[str, Any] = {"constraints": {"volume": {"min": 0.9}}, "frontier_steps": 3}
+            if ranges is not None:
+                config["frontier_ranges"] = ranges
+            job_id = store.create_job(
+                {
+                    "input_provenance": SOLVE_PROVENANCE,
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
+                    "status": "running",
+                    "config": config,
+                }
+            )
             solve_result = self._make_solve_result()
             mock_solver = MagicMock()
 
@@ -8979,18 +8144,55 @@ class TestFinalizeSolveResult:
             assert job["result"]["frontier"] is None
             mock_solver.frontier.assert_not_called()
 
-    def test_frontier_missing_ranges_surfaces_error_without_defaulting(self):
+    def test_swept_frontier_ranges_covers_only_the_swept_constraints(self):
+        from haute.routes._optimiser_solver import swept_frontier_ranges
+
+        config = {
+            "constraints": {"volume": {"min": 0.9}, "loss": {"max": 0.7}, "premium": {"min": 1.0}},
+            # Keyed out of constraint order: the result follows constraint order.
+            "frontier_ranges": {
+                "premium": {"min": 1.0, "max": 2.0},
+                "volume": {"min": 0.8, "max": 0.95},
+            },
+        }
+
+        ranges = swept_frontier_ranges(config)
+
+        assert ranges == {"volume": (0.8, 0.95), "premium": (1.0, 2.0)}
+        assert list(ranges) == ["volume", "premium"]
+        assert swept_frontier_ranges({**config, "frontier_ranges": {}}) == {}
+
+    def test_anchor_swept_constraints_solves_each_swept_constraint_at_its_range_start(self):
+        from haute.routes._optimiser_solver import anchor_swept_constraints
+
+        config = {
+            "constraints": {"volume": {"min": 0.0}, "loss": {"max": 0.7}},
+            "frontier_ranges": {"volume": {"min": 0.8, "max": 0.95}},
+        }
+
+        anchored = anchor_swept_constraints(config)
+
+        assert anchored["constraints"] == {"volume": {"min": 0.8}, "loss": {"max": 0.7}}
+        # The saved bound is untouched, so un-sweeping restores it.
+        assert config["constraints"]["volume"] == {"min": 0.0}
+        # A swept range without a start leaves the bound for validation.
+        incomplete = {**config, "frontier_ranges": {"volume": {"max": 0.95}}}
+        assert anchor_swept_constraints(incomplete)["constraints"]["volume"] == {"min": 0.0}
+
+    def test_frontier_range_for_an_unknown_constraint_surfaces_error(self):
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import _finalize_solve_result
+        from haute.routes._optimiser_solver import _finalize_solve_result
 
         store = JobStore()
         job_id = store.create_job(
             {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
-                    "frontier_enabled": True,
                     "frontier_steps": 3,
+                    "frontier_ranges": {"premium": {"min": 1.0, "max": 2.0}},
                 },
             }
         )
@@ -9011,20 +8213,24 @@ class TestFinalizeSolveResult:
         assert job["status"] == "completed"
         assert job["frontier_data"] is None
         assert job["result"]["frontier"] is None
-        assert "frontier_ranges must provide min and max" in job["result"]["frontier_error"]
+        assert (
+            "frontier_ranges names premium, which are not constraints"
+            in job["result"]["frontier_error"]
+        )
         mock_solver.frontier.assert_not_called()
 
     def test_frontier_partial_range_surfaces_error_without_defaulting_missing_side(self):
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import _finalize_solve_result
+        from haute.routes._optimiser_solver import _finalize_solve_result
 
         store = JobStore()
         job_id = store.create_job(
             {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
-                    "frontier_enabled": True,
                     "frontier_ranges": {"volume": {"min": 0.8}},
                     "frontier_steps": 3,
                 },
@@ -9054,22 +8260,24 @@ class TestFinalizeSolveResult:
 
     def test_inline_frontier_enforces_compute_budget_before_solver(self):
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import _finalize_solve_result
+        from haute.routes._optimiser_solver import _finalize_solve_result
 
         constraints = {f"c{index}": {"min": 0.0} for index in range(6)}
         store = JobStore()
         job_id = store.create_job(
             {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {
                     "constraints": constraints,
-                    "frontier_enabled": True,
                     "frontier_ranges": {name: {"min": 0.0, "max": 1.0} for name in constraints},
                     "frontier_steps": 100,
                 },
             }
         )
         solve_result = self._make_solve_result()
+        solve_result.constraint_bounds = {name: 0.0 for name in constraints}
         mock_solver = MagicMock()
 
         _finalize_solve_result(
@@ -9090,15 +8298,16 @@ class TestFinalizeSolveResult:
 
     def test_frontier_computed_for_online_mode(self):
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import _finalize_solve_result
+        from haute.routes._optimiser_solver import _finalize_solve_result
 
         store = JobStore()
         job_id = store.create_job(
             {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
-                    "frontier_enabled": True,
                     "frontier_ranges": {"volume": {"min": 0.8, "max": 1.1}},
                     "frontier_steps": 3,
                 },
@@ -9106,12 +8315,24 @@ class TestFinalizeSolveResult:
         )
         solve_result = self._make_solve_result()
         mock_solver = MagicMock()
-        frontier_points = MagicMock()
-        frontier_points.to_dicts.return_value = [
-            {"total_objective": 100, "lambda_volume": 0.3},
-            {"total_objective": 110, "lambda_volume": 0.5},
-        ]
-        frontier_points.__len__ = lambda self: 2
+        frontier_points = library_frontier_frame(
+            [
+                {
+                    "total_objective": 100,
+                    "total_volume": 0.9,
+                    "lambda_volume": 0.3,
+                    "bound_volume": 0.9,
+                    "converged": True,
+                },
+                {
+                    "total_objective": 110,
+                    "total_volume": 0.95,
+                    "lambda_volume": 0.5,
+                    "bound_volume": 0.9,
+                    "converged": True,
+                },
+            ]
+        )
         mock_solver.frontier.return_value = SimpleNamespace(points=frontier_points)
         mock_grid = MagicMock()
 
@@ -9137,16 +8358,17 @@ class TestFinalizeSolveResult:
 
     def test_frontier_progress_is_visible_while_finalize_computes_frontier(self):
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import _finalize_solve_result
+        from haute.routes._optimiser_solver import _finalize_solve_result
 
         store = JobStore()
         job_id = store.create_job(
             {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "start_time": time.monotonic() - 5.0,
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
-                    "frontier_enabled": True,
                     "frontier_ranges": {"volume": {"min": 0.8, "max": 1.1}},
                     "frontier_steps": 3,
                 },
@@ -9162,12 +8384,16 @@ class TestFinalizeSolveResult:
             assert job["progress"] == pytest.approx(0.8)
             assert job["elapsed_seconds"] >= 5.0
             return SimpleNamespace(
-                points=pl.DataFrame(
-                    {
-                        "total_objective": [100.0],
-                        "volume": [0.9],
-                        "lambda_volume": [0.3],
-                    }
+                points=library_frontier_frame(
+                    [
+                        {
+                            "total_objective": 100.0,
+                            "total_volume": 0.9,
+                            "lambda_volume": 0.3,
+                            "bound_volume": 0.9,
+                        }
+                    ],
+                    constraint_names=["volume"],
                 )
             )
 
@@ -9190,15 +8416,16 @@ class TestFinalizeSolveResult:
 
     def test_frontier_uses_per_constraint_absolute_ranges(self):
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import _finalize_solve_result
+        from haute.routes._optimiser_solver import _finalize_solve_result
 
         store = JobStore()
         job_id = store.create_job(
             {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
-                    "frontier_enabled": True,
                     "frontier_ranges": {"volume": {"min": 70.0, "max": 95.0}},
                     "frontier_steps": 3,
                 },
@@ -9207,7 +8434,9 @@ class TestFinalizeSolveResult:
         solve_result = self._make_solve_result()
         mock_solver = MagicMock()
         mock_solver.frontier.return_value = SimpleNamespace(
-            points=pl.DataFrame({"total_objective": [100.0], "lambda_volume": [0.3]})
+            points=library_frontier_frame(
+                [{"total_objective": 100.0, "lambda_volume": 0.3}], constraint_names=["volume"]
+            )
         )
 
         _finalize_solve_result(
@@ -9224,15 +8453,16 @@ class TestFinalizeSolveResult:
 
     def test_auto_frontier_payload_is_capped_in_job_state(self):
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import _finalize_solve_result
+        from haute.routes._optimiser_solver import _finalize_solve_result
 
         store = JobStore()
         job_id = store.create_job(
             {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
-                    "frontier_enabled": True,
                     "frontier_ranges": {"volume": {"min": 0.8, "max": 1.1}},
                     "frontier_steps": 3,
                 },
@@ -9240,7 +8470,12 @@ class TestFinalizeSolveResult:
         )
         solve_result = self._make_solve_result()
         mock_solver = MagicMock()
-        frontier_points = pl.DataFrame({"total_objective": list(range(FRONTIER_POINT_LIMIT + 1))})
+        frontier_points = library_frontier_frame(
+            [
+                {"total_objective": float(i), "total_volume": 0.9, "lambda_volume": 0.3}
+                for i in range(FRONTIER_POINT_LIMIT + 1)
+            ]
+        )
         mock_solver.frontier.return_value = SimpleNamespace(points=frontier_points)
         mock_grid = MagicMock()
 
@@ -9265,14 +8500,7 @@ class TestFinalizeSolveResult:
 
     def test_auto_frontier_slices_before_serialising_points(self):
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import _finalize_solve_result
-
-        class VisiblePoints:
-            def __init__(self, size: int) -> None:
-                self.size = size
-
-            def to_dicts(self):
-                return [{"total_objective": i} for i in range(self.size)]
+        from haute.routes._optimiser_solver import _finalize_solve_result
 
         class HugePoints:
             def __len__(self) -> int:
@@ -9280,7 +8508,18 @@ class TestFinalizeSolveResult:
 
             def head(self, n: int):
                 assert n == FRONTIER_POINT_LIMIT
-                return VisiblePoints(n)
+                return library_frontier_frame(
+                    [
+                        {
+                            "total_objective": i,
+                            "total_volume": 0.9,
+                            "lambda_volume": 0.3,
+                            "bound_volume": 0.9,
+                            "converged": True,
+                        }
+                        for i in range(n)
+                    ]
+                )
 
             def to_dicts(self):
                 raise AssertionError("Full frontier must not be serialised")
@@ -9288,10 +8527,11 @@ class TestFinalizeSolveResult:
         store = JobStore()
         job_id = store.create_job(
             {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
-                    "frontier_enabled": True,
                     "frontier_ranges": {"volume": {"min": 0.8, "max": 1.1}},
                 },
             }
@@ -9320,14 +8560,15 @@ class TestFinalizeSolveResult:
         client,
         clean_job_store,
     ):
-        from haute.routes._optimiser_service import _finalize_solve_result
+        from haute.routes._optimiser_solver import _finalize_solve_result
 
         job_id = clean_job_store.create_job(
             {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
-                    "frontier_enabled": True,
                     "frontier_ranges": {"volume": {"min": 0.8, "max": 1.1}},
                     "frontier_steps": 3,
                 },
@@ -9336,8 +8577,9 @@ class TestFinalizeSolveResult:
         solve_result = self._make_solve_result()
         mock_solver = MagicMock()
         mock_solver.frontier.side_effect = RuntimeError("frontier exploded")
+        mock_solver.summary.return_value = {"params": {}, "metrics": {}, "artifacts": {}}
 
-        with patch("haute.routes._optimiser_service.logger.warning") as log_warning:
+        with patch("haute.routes._optimiser_solver.logger.warning") as log_warning:
             _finalize_solve_result(
                 solve_result,
                 mode="online",
@@ -9365,15 +8607,16 @@ class TestFinalizeSolveResult:
 
     def test_frontier_computed_for_ratebook_mode_with_factors(self):
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import _finalize_solve_result
+        from haute.routes._optimiser_solver import _finalize_solve_result
 
         store = JobStore()
         job_id = store.create_job(
             {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
-                    "frontier_enabled": True,
                     "frontier_ranges": {"volume": {"min": 0.8, "max": 1.1}},
                     "frontier_steps": 3,
                 },
@@ -9382,12 +8625,25 @@ class TestFinalizeSolveResult:
         # 3b.9: real RatebookResult field set — no phantom dataframe
         solve_result = _ratebook_solve_result_namespace()
         mock_solver = MagicMock()
-        frontier_points = MagicMock()
-        frontier_points.to_dicts.return_value = [
-            {"total_objective": 100, "lambda_volume": 0.3},
-            {"total_objective": 110, "lambda_volume": 0.5},
-        ]
-        frontier_points.__len__ = lambda self: 2
+        frontier_points = library_frontier_frame(
+            [
+                {
+                    "total_objective": 100,
+                    "total_volume": 0.9,
+                    "lambda_volume": 0.3,
+                    "bound_volume": 0.9,
+                    "converged": True,
+                },
+                {
+                    "total_objective": 110,
+                    "total_volume": 0.95,
+                    "lambda_volume": 0.5,
+                    "bound_volume": 0.9,
+                    "converged": True,
+                },
+            ],
+            mode="ratebook",
+        )
         mock_solver.frontier.return_value = SimpleNamespace(points=frontier_points)
         mock_grid = MagicMock()
         factor_contexts = SimpleNamespace(n_quotes=2, factor_specs=[["region"]])
@@ -9402,6 +8658,7 @@ class TestFinalizeSolveResult:
             elapsed=1.0,
             ratebook_factor_contexts=factor_contexts,
             factor_columns=[["region"]],
+            extra_fields={"factor_tables": _REGION_FACTOR_TABLES},
         )
 
         job = store.require_job(job_id)
@@ -9419,7 +8676,7 @@ class TestFinalizeSolveResult:
         from unittest.mock import patch
 
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import _finalize_solve_result
+        from haute.routes._optimiser_solver import _finalize_solve_result
 
         store = JobStore(ttl_seconds=60, heavy_object_ttl_seconds=1)
         solve_result = self._make_solve_result()
@@ -9427,7 +8684,14 @@ class TestFinalizeSolveResult:
         mock_grid = MagicMock()
 
         with patch("haute.routes._job_store.time.time", return_value=100.0):
-            job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
+            job_id = store.create_job(
+                {
+                    "input_provenance": SOLVE_PROVENANCE,
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
+                    "status": "running",
+                    "config": {"constraints": {"volume": {"min": 0.9}}},
+                }
+            )
             _finalize_solve_result(
                 solve_result,
                 mode="online",
@@ -9449,10 +8713,17 @@ class TestFinalizeSolveResult:
 
     def test_finalized_job_persists_apply_artifact_handle(self):
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import _finalize_solve_result
+        from haute.routes._optimiser_solver import _finalize_solve_result
 
         store = JobStore()
-        job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
+            }
+        )
         solve_result = self._make_solve_result()
         row_count = len(solve_result.dataframe)
 
@@ -9475,16 +8746,23 @@ class TestFinalizeSolveResult:
         assert solve_result.dataframe is None
         assert "dataframe" not in job["result"]
 
-    def test_finalized_ratebook_job_persists_factors_artifact_not_dataframe(self):
+    def test_finalized_ratebook_job_persists_factors_and_quote_results_artifacts(self):
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import (
+        from haute.routes._optimiser_artifacts import (
             _RATEBOOK_FACTORS_HANDLE_KEY,
-            _finalize_solve_result,
             _load_ratebook_factors_artifact,
         )
+        from haute.routes._optimiser_solver import _finalize_solve_result
 
         store = JobStore()
-        job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
+            }
+        )
         # 3b.9: real RatebookResult field set — no phantom ``dataframe``
         # (``_make_solve_result`` models the ONLINE shape, which does carry one).
         solve_result = _ratebook_solve_result_namespace()
@@ -9500,6 +8778,7 @@ class TestFinalizeSolveResult:
             elapsed=1.0,
             factors_df=factors_df,
             factor_columns=[["region"]],
+            extra_fields={"factor_tables": _REGION_FACTOR_TABLES},
         )
 
         job = store.require_job(job_id)
@@ -9508,18 +8787,27 @@ class TestFinalizeSolveResult:
         assert handle["kind"] == "optimiser_ratebook_factors"
         assert handle["row_count"] == 2
         assert _load_ratebook_factors_artifact(handle).equals(factors_df)
-        # A real-shape ratebook result must not leave an apply artifact behind.
-        assert "apply_result" not in job["artifact_handles"]
+        # The as-solved apply artifact is price-contour's canonical per-quote evaluation.
+        apply_handle = job["artifact_handles"]["apply_result"]
+        assert apply_handle["kind"] == "optimiser_apply_result"
+        assert pl.read_parquet(apply_handle["path"]).equals(solve_result.quote_results)
 
     def test_finalized_job_skips_artifact_publication_when_status_guard_is_lost(
         self,
     ):
         from haute.routes._job_lifecycle import JobLifecycle
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import _finalize_solve_result
+        from haute.routes._optimiser_solver import _finalize_solve_result
 
         store = JobStore()
-        job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
+            }
+        )
         JobLifecycle(store).transition(
             job_id,
             to="error",
@@ -9535,7 +8823,7 @@ class TestFinalizeSolveResult:
             artifact_dir.mkdir(parents=True)
             return str(artifact_dir)
 
-        with patch("haute.routes._optimiser_service.tempfile.mkdtemp", side_effect=_mkdtemp):
+        with patch("haute.routes._optimiser_artifacts.tempfile.mkdtemp", side_effect=_mkdtemp):
             _finalize_solve_result(
                 self._make_solve_result(),
                 mode="online",
@@ -9587,24 +8875,26 @@ class TestSolveStatusEdgeCases:
             "done_frontier",
             {
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "progress": 1.0,
                 "message": "Completed",
                 "elapsed_seconds": 5.0,
                 "result": {
+                    "frontier_generation": 0,
                     "mode": "online",
                     "total_objective": 200.0,
                     "baseline_objective": 180.0,
                     "constraints": {"volume": 0.92},
                     "baseline_constraints": {"volume": 0.88},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 0.4},
                     "converged": True,
+                    "diagnostics_errors": [],
+                    "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
+                    "segment_keys": [],
                 },
-                "frontier_data": {
-                    "status": "ok",
-                    "points": [{"obj": 1.0}],
-                    "n_points": 1,
-                    "constraint_names": ["volume"],
-                },
+                "frontier_data": make_frontier_data([make_frontier_point()]),
                 "created_at": time.time(),
                 "completed_at": time.time(),
             },
@@ -9625,159 +8915,77 @@ class TestSolveStatusEdgeCases:
 
 
 class TestApplyLambdasUnit:
-    def test_apply_returns_row_count_and_preview(self, client, clean_job_store):
-        df = pl.DataFrame(
-            {
-                "quote_id": [f"q{i}" for i in range(5)],
-                "optimal_scenario_value": [1.0] * 5,
-            }
-        )
-        mock_solve_result = SimpleNamespace(
-            dataframe=df,
-            total_objective=500.0,
-            total_constraints={"volume": 0.95},
-        )
+    @staticmethod
+    def _seed_persisted(store: Any, job_id: str, frame: pl.DataFrame, **extra: Any) -> dict:
+        """A completed online job whose as-solved apply frame is the persisted *frame*."""
+        from haute.routes._optimiser_artifacts import _persist_apply_frame_artifact
+
+        handle = _persist_apply_frame_artifact(frame)
         seed_job(
-            clean_job_store,
-            "apply_unit",
-            {
-                "status": "completed",
-                "solve_result": mock_solve_result,
-                "created_at": time.time(),
-                "completed_at": time.time(),
-            },
+            store,
+            job_id,
+            make_completed_job(
+                result=make_solved_result(total_objective=500.0, constraints={"volume": 0.95}),
+                artifact_handles={"apply_result": handle},
+                **extra,
+            ),
         )
+        return handle
+
+    def test_apply_returns_row_count_and_preview(self, client, clean_job_store):
+        frame = make_online_apply_frame([f"q{i}" for i in range(5)])
+        self._seed_persisted(clean_job_store, "apply_unit", frame)
+
         resp = client.post("/api/optimiser/apply", json={"job_id": "apply_unit"})
-        assert resp.status_code == 200
+
+        assert resp.status_code == 200, resp.text
         data = resp.json()
         assert data["status"] == "ok"
-        assert data["row_count"] == 5
+        assert data["row_count"] == data["matched_row_count"] == 5
         assert data["total_objective"] == 500.0
-        assert len(data["preview"]) == 5
+        assert data["constraints"] == {"volume": 0.95}
+        assert data["from_artifact"] is True
+        assert data["preview"] == frame.drop("optimal_step").to_dicts()
         assert data["preview_row_count"] == 5
         assert data["preview_row_limit"] == APPLY_PREVIEW_ROW_LIMIT
-        assert data["preview_truncated"] is False
 
-    def test_apply_preview_payload_is_capped_with_truncation_metadata(
-        self,
-        client,
-        clean_job_store,
-    ):
-        df = pl.DataFrame(
-            {
-                "quote_id": [f"q{i}" for i in range(APPLY_PREVIEW_ROW_LIMIT + 1)],
-                "optimal_scenario_value": [1.0] * (APPLY_PREVIEW_ROW_LIMIT + 1),
-            }
-        )
-        mock_solve_result = SimpleNamespace(
-            dataframe=df,
-            total_objective=500.0,
-            total_constraints={"volume": 0.95},
-        )
-        seed_job(
-            clean_job_store,
-            "apply_capped",
-            {
-                "status": "completed",
-                "solve_result": mock_solve_result,
-                "created_at": time.time(),
-                "completed_at": time.time(),
-            },
-        )
+    def test_apply_preview_payload_is_capped_with_the_counts(self, client, clean_job_store):
+        frame = make_online_apply_frame([f"q{i:03d}" for i in range(APPLY_PREVIEW_ROW_LIMIT + 1)])
+        self._seed_persisted(clean_job_store, "apply_capped", frame)
 
         resp = client.post("/api/optimiser/apply", json={"job_id": "apply_capped"})
 
-        assert resp.status_code == 200
+        assert resp.status_code == 200, resp.text
         data = resp.json()
-        assert data["row_count"] == APPLY_PREVIEW_ROW_LIMIT + 1
-        assert len(data["preview"]) == APPLY_PREVIEW_ROW_LIMIT
-        assert data["preview_row_count"] == APPLY_PREVIEW_ROW_LIMIT
+        assert data["row_count"] == data["matched_row_count"] == APPLY_PREVIEW_ROW_LIMIT + 1
+        assert len(data["preview"]) == data["preview_row_count"] == APPLY_PREVIEW_ROW_LIMIT
         assert data["preview_row_limit"] == APPLY_PREVIEW_ROW_LIMIT
-        assert data["preview_truncated"] is True
 
-    def test_apply_loads_persisted_artifact_handle_after_heavy_result_is_slimmed(
-        self,
-        client,
-        clean_job_store,
-    ):
-        from haute.routes._optimiser_service import _persist_apply_result_artifact
-
-        df = pl.DataFrame(
-            {
-                "quote_id": ["q1", "q2"],
-                "optimal_scenario_value": [1.0, 1.1],
-            }
-        )
-        handle = _persist_apply_result_artifact(SimpleNamespace(dataframe=df))
-        assert handle is not None
-        seed_job(
-            clean_job_store,
-            "apply_handle",
-            {
-                "status": "completed",
-                "result": {
-                    "total_objective": 500.0,
-                    "constraints": {"volume": 0.95},
-                },
-                "artifact_handles": {"apply_result": handle},
-                "created_at": time.time(),
-                "completed_at": time.time(),
-            },
-        )
-
-        resp = client.post("/api/optimiser/apply", json={"job_id": "apply_handle"})
-
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["status"] == "ok"
-        assert data["total_objective"] == 500.0
-        assert data["constraints"] == {"volume": 0.95}
-        assert data["row_count"] == 2
-        assert data["preview"] == [
-            {"quote_id": "q1", "optimal_scenario_value": 1.0},
-            {"quote_id": "q2", "optimal_scenario_value": 1.1},
-        ]
+        last = client.post(
+            "/api/optimiser/apply",
+            json={"job_id": "apply_capped", "offset": APPLY_PREVIEW_ROW_LIMIT},
+        ).json()
+        assert [row["quote_id"] for row in last["preview"]] == [f"q{APPLY_PREVIEW_ROW_LIMIT:03d}"]
+        assert last["offset"] == APPLY_PREVIEW_ROW_LIMIT
 
     def test_apply_success_clears_heavy_result_but_keeps_handle_for_later_apply(
         self,
         client,
         clean_job_store,
     ):
-        from haute.routes._optimiser_service import _persist_apply_result_artifact
-
-        df = pl.DataFrame(
-            {
-                "quote_id": ["q1", "q2"],
-                "optimal_scenario_value": [1.0, 1.1],
-            }
-        )
-        handle = _persist_apply_result_artifact(SimpleNamespace(dataframe=df))
-        assert handle is not None
-        seed_job(
+        frame = make_online_apply_frame(["q1", "q2"])
+        handle = self._seed_persisted(
             clean_job_store,
             "apply_terminal",
-            {
-                "status": "completed",
-                "solver": MagicMock(),
-                "quote_grid": MagicMock(),
-                "solve_result": SimpleNamespace(
-                    dataframe=df,
-                    total_objective=500.0,
-                    total_constraints={"volume": 0.95},
-                ),
-                "result": {
-                    "total_objective": 500.0,
-                    "constraints": {"volume": 0.95},
-                },
-                "artifact_handles": {"apply_result": handle},
-                "created_at": time.time(),
-                "completed_at": time.time(),
-            },
+            frame,
+            solver=MagicMock(),
+            quote_grid=MagicMock(),
+            solve_result=SimpleNamespace(dataframe=frame),
         )
 
         resp = client.post("/api/optimiser/apply", json={"job_id": "apply_terminal"})
 
-        assert resp.status_code == 200
+        assert resp.status_code == 200, resp.text
         job = clean_job_store.require_job("apply_terminal")
         assert "solver" not in job
         assert "quote_grid" not in job
@@ -9787,37 +8995,17 @@ class TestApplyLambdasUnit:
         second_resp = client.post("/api/optimiser/apply", json={"job_id": "apply_terminal"})
 
         assert second_resp.status_code == 200
-        assert second_resp.json()["preview"] == [
-            {"quote_id": "q1", "optimal_scenario_value": 1.0},
-            {"quote_id": "q2", "optimal_scenario_value": 1.1},
-        ]
+        assert second_resp.json()["preview"] == frame.drop("optimal_step").to_dicts()
 
     def test_apply_missing_artifact_handle_returns_gone(
         self,
         client,
         clean_job_store,
     ):
-        from haute.routes._optimiser_service import _persist_apply_result_artifact
-
-        handle = _persist_apply_result_artifact(
-            SimpleNamespace(dataframe=pl.DataFrame({"quote_id": ["q1"]}))
+        handle = self._seed_persisted(
+            clean_job_store, "apply_missing_handle", make_online_apply_frame(["q1"])
         )
-        assert handle is not None
         Path(handle["path"]).unlink()
-        seed_job(
-            clean_job_store,
-            "apply_missing_handle",
-            {
-                "status": "completed",
-                "result": {
-                    "total_objective": 500.0,
-                    "constraints": {"volume": 0.95},
-                },
-                "artifact_handles": {"apply_result": handle},
-                "created_at": time.time(),
-                "completed_at": time.time(),
-            },
-        )
 
         resp = client.post("/api/optimiser/apply", json={"job_id": "apply_missing_handle"})
 
@@ -9826,40 +9014,21 @@ class TestApplyLambdasUnit:
             "Optimiser apply artifact is no longer available. Re-run the solve to regenerate it."
         )
 
-    def test_apply_solve_result_without_dataframe_attribute_fails_loudly(
-        self,
-        client,
-        clean_job_store,
-    ):
-        """A solve_result missing ``dataframe`` is a backend bug, not a 500.
+    def test_a_damaged_apply_artifact_fails_loudly(self, client, clean_job_store):
+        """An artifact without its mode's schema is a defect: the sanitised 500, never a page."""
+        from haute.routes._optimiser_outcomes import ChoiceJoinError
 
-        Previously the ``cast(_DataFrameResultLike, ...).dataframe`` access
-        raised ``AttributeError`` which the broad ``except Exception``
-        funnelled into a generic 500 with no actionable detail.  Surface a
-        typed error instead so the cause is obvious in the response.
-        """
-        seed_job(
+        self._seed_persisted(
             clean_job_store,
-            "apply_no_dataframe",
-            {
-                "status": "completed",
-                "solve_result": SimpleNamespace(
-                    # No ``dataframe`` attribute on purpose.
-                    total_objective=42.0,
-                    total_constraints={"volume": 1.0},
-                ),
-                "result": {"total_objective": 42.0, "constraints": {"volume": 1.0}},
-                "created_at": time.time(),
-                "completed_at": time.time(),
-            },
+            "apply_damaged",
+            make_online_apply_frame(["q1"]).drop("optimal_volume"),
         )
 
-        resp = client.post("/api/optimiser/apply", json={"job_id": "apply_no_dataframe"})
+        with patch("haute.server.logger.error") as log_error:
+            resp = client.post("/api/optimiser/apply", json={"job_id": "apply_damaged"})
 
         assert resp.status_code == 500
-        detail = resp.json()["detail"].lower()
-        assert "dataframe" in detail
-        assert "solve_result" in detail or "solve result" in detail
+        assert log_error.call_args.kwargs["error_class"] == ChoiceJoinError.__name__
 
     def test_apply_after_heavy_result_policy_expiry_without_handle_returns_400(
         self,
@@ -9876,7 +9045,10 @@ class TestApplyLambdasUnit:
                 "solve_result": SimpleNamespace(
                     dataframe=pl.DataFrame({"quote_id": ["q1"]}),
                     total_objective=100.0,
+                    baseline_objective=0.0,
+                    baseline_constraints={},
                     total_constraints={},
+                    constraint_bounds={},
                 ),
                 "result": {"total_objective": 100.0},
                 "created_at": time.time() - _DEFAULT_HEAVY_OBJECT_TTL_SECONDS - 1,
@@ -9892,65 +9064,6 @@ class TestApplyLambdasUnit:
         assert job["status"] == "completed"
         assert job["result"] == {"total_objective": 100.0}
         assert "solve_result" not in job
-
-    def test_apply_ratebook_frontier_point_is_explicit_contract_error(
-        self,
-        client,
-        clean_job_store,
-    ):
-        """The real ``RatebookResult`` has no per-quote dataframe, so the
-        "Load detail" apply has nothing to serve in ratebook mode.  The
-        route must reject with 422 BEFORE any solver or artifact work —
-        the old behaviour re-ran a full CD solve and then died on the
-        missing ``dataframe`` attribute as an opaque 500."""
-        mock_solver, _mock_grid, _factor_contexts = _make_ratebook_frontier_materialisation_job(
-            clean_job_store,
-            "apply_rb_frontier",
-        )
-
-        resp = client.post(
-            "/api/optimiser/apply",
-            json={"job_id": "apply_rb_frontier", "point_index": 0},
-        )
-
-        assert resp.status_code == 422
-        detail = resp.json()["detail"]
-        assert "ratebook" in detail.lower()
-        assert "factor tables" in detail.lower()
-        mock_solver.solve.assert_not_called()
-        job = clean_job_store.require_job("apply_rb_frontier")
-        assert "frontier_apply_result:0" not in job["artifact_handles"]
-        assert job.get("selected_frontier_point") is None
-        # The rejection must not consume the frontier-analysis session.
-        assert job["solver"] is mock_solver
-
-    def test_apply_ratebook_frontier_point_rejection_is_idempotent(
-        self,
-        client,
-        clean_job_store,
-    ):
-        """Repeated detail attempts keep failing cleanly without mutating
-        job state or invoking the solver."""
-        mock_solver, _mock_grid, _factors_df = _make_ratebook_frontier_materialisation_job(
-            clean_job_store,
-            "apply_rb_frontier_cached",
-        )
-
-        first_resp = client.post(
-            "/api/optimiser/apply",
-            json={"job_id": "apply_rb_frontier_cached", "point_index": 0},
-        )
-        second_resp = client.post(
-            "/api/optimiser/apply",
-            json={"job_id": "apply_rb_frontier_cached", "point_index": 0},
-        )
-
-        assert first_resp.status_code == 422
-        assert second_resp.status_code == 422
-        assert first_resp.json()["detail"] == second_resp.json()["detail"]
-        mock_solver.solve.assert_not_called()
-        job = clean_job_store.require_job("apply_rb_frontier_cached")
-        assert job["artifact_handles"] == {}
 
     def test_save_ratebook_frontier_point_rebuilds_stale_cached_summary(
         self,
@@ -9974,6 +9087,8 @@ class TestApplyLambdasUnit:
                     "selected_frontier_point": 0,
                     "total_objective": 111.0,
                     "constraints": {"volume": 0.91},
+                    "baseline_objective": 0.0,
+                    "baseline_constraints": {},
                     "lambdas": {"volume": 0.1},
                     "factor_tables": {
                         "region": [
@@ -9983,6 +9098,9 @@ class TestApplyLambdasUnit:
                             }
                         ]
                     },
+                    "diagnostics_errors": [],
+                    "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 }
             )
 
@@ -10004,11 +9122,12 @@ class TestApplyLambdasUnit:
         )
 
         assert resp.status_code == 200
-        mock_solver.solve.assert_called_once()
-        assert mock_solver.solve.call_args.kwargs["lambdas"] == {"volume": 0.7}
+        mock_solver.solve.assert_not_called()
         saved = json_mod.loads(Path(out_path).read_text(encoding="utf-8"))
-        assert saved["total_objective"] == 222.0
+        # The stale cache is replaced by the frontier row and its kept tables.
+        assert saved["total_objective"] == 220.0
         assert saved["total_constraints"] == {"volume": 0.97}
+        assert saved["lambdas"] == {"volume": 0.7}
         assert saved["factor_tables"] == _expected_region_factor_tables()
 
 
@@ -10020,20 +9139,40 @@ class TestApplyLambdasUnit:
 class TestRunFrontierUnit:
     def test_frontier_returns_points_and_constraint_names(self, client, clean_job_store):
         mock_solver = MagicMock()
-        frontier_points = MagicMock()
-        frontier_points.to_dicts.return_value = [
-            {"obj": 100, "lambda_vol": 0.3},
-            {"obj": 110, "lambda_vol": 0.5},
-            {"obj": 120, "lambda_vol": 0.7},
-        ]
-        frontier_points.__len__ = lambda self: 3
+        frontier_points = library_frontier_frame(
+            [
+                {
+                    "total_objective": 100,
+                    "total_volume": 0.9,
+                    "lambda_volume": 0.3,
+                    "bound_volume": 0.9,
+                    "converged": True,
+                },
+                {
+                    "total_objective": 110,
+                    "total_volume": 0.92,
+                    "lambda_volume": 0.5,
+                    "bound_volume": 0.9,
+                    "converged": True,
+                },
+                {
+                    "total_objective": 120,
+                    "total_volume": 0.94,
+                    "lambda_volume": 0.7,
+                    "bound_volume": 0.9,
+                    "converged": True,
+                },
+            ]
+        )
         mock_solver.frontier.return_value = SimpleNamespace(points=frontier_points)
 
         seed_job(
             clean_job_store,
             "frontier_unit",
             {
+                "result": make_solved_result(mode="online", constraint_names=["volume"]),
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "solver": mock_solver,
                 "quote_grid": MagicMock(),
                 "created_at": time.time(),
@@ -10064,13 +9203,17 @@ class TestRunFrontierUnit:
         """Recomputing a frontier clears stale selected-point state."""
         mock_solver = MagicMock()
         mock_solver.frontier.return_value = SimpleNamespace(
-            points=pl.DataFrame(
-                {
-                    "total_objective": [300.0],
-                    "volume": [0.97],
-                    "lambda_volume": [0.8],
-                    "converged": [True],
-                }
+            points=library_frontier_frame(
+                [
+                    {
+                        "total_objective": 300.0,
+                        "total_volume": 0.97,
+                        "lambda_volume": 0.8,
+                        "bound_volume": 0.9,
+                        "converged": True,
+                    }
+                ],
+                constraint_names=["volume"],
             )
         )
         base_result = {
@@ -10079,8 +9222,12 @@ class TestRunFrontierUnit:
             "baseline_objective": 90.0,
             "constraints": {"volume": 0.9},
             "baseline_constraints": {"volume": 0.85},
+            "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
             "lambdas": {"volume": 0.3},
             "converged": True,
+            "diagnostics_errors": [],
+            "input_summary": make_input_summary(),
+            "scenario_grid": SOLVE_SCENARIO_GRID,
         }
         old_frontier = {
             "status": "ok",
@@ -10110,6 +9257,8 @@ class TestRunFrontierUnit:
                     **base_result,
                     "total_objective": 200.0,
                     "constraints": {"volume": 0.95},
+                    "baseline_objective": 0.0,
+                    "baseline_constraints": {},
                     "lambdas": {"volume": 0.7},
                     "selected_frontier_point": 0,
                     "frontier": old_frontier,
@@ -10147,7 +9296,7 @@ class TestRunFrontierUnit:
         clean_job_store,
     ):
         """Old point-indexed apply artifacts must not be reused for a new frontier."""
-        from haute.routes._optimiser_service import _persist_apply_result_artifact
+        from haute.routes._optimiser_artifacts import _persist_apply_result_artifact
 
         stale_frontier_handle = _persist_apply_result_artifact(
             SimpleNamespace(dataframe=pl.DataFrame({"optimal_scenario_value": [9.9]}))
@@ -10163,13 +9312,17 @@ class TestRunFrontierUnit:
         mock_solver = MagicMock()
         mock_grid = MagicMock()
         mock_solver.frontier.return_value = SimpleNamespace(
-            points=pl.DataFrame(
-                {
-                    "total_objective": [300.0],
-                    "volume": [0.97],
-                    "lambda_volume": [0.8],
-                    "converged": [True],
-                }
+            points=library_frontier_frame(
+                [
+                    {
+                        "total_objective": 300.0,
+                        "total_volume": 0.97,
+                        "lambda_volume": 0.8,
+                        "bound_volume": 0.9,
+                        "converged": True,
+                    }
+                ],
+                constraint_names=["volume"],
             )
         )
         base_result = {
@@ -10178,8 +9331,12 @@ class TestRunFrontierUnit:
             "baseline_objective": 90.0,
             "constraints": {"volume": 0.9},
             "baseline_constraints": {"volume": 0.85},
+            "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
             "lambdas": {"volume": 0.3},
             "converged": True,
+            "diagnostics_errors": [],
+            "input_summary": make_input_summary(),
+            "scenario_grid": SOLVE_SCENARIO_GRID,
         }
         seed_job(
             clean_job_store,
@@ -10189,6 +9346,7 @@ class TestRunFrontierUnit:
                 "solver": mock_solver,
                 "quote_grid": mock_grid,
                 "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "base_result": base_result,
                 "result": {**base_result, "selected_frontier_point": 0},
                 "frontier_data": {
@@ -10230,23 +9388,16 @@ class TestRunFrontierUnit:
         assert base_apply_path.is_file()
         assert not stale_frontier_path.exists()
 
-        apply_result = SimpleNamespace(
-            dataframe=pl.DataFrame(
-                {
-                    "quote_id": ["q1"],
-                    "optimal_scenario_value": [1.2],
-                }
-            )
-        )
+        apply_result = SimpleNamespace(dataframe=make_online_apply_frame(["q1"], steps=[2]))
         with patch("price_contour.apply_from_grid", return_value=apply_result) as mock_apply:
             apply_resp = client.post(
                 "/api/optimiser/apply",
                 json={"job_id": "frontier_recompute_artifacts", "point_index": 0},
             )
 
-        assert apply_resp.status_code == 200
+        assert apply_resp.status_code == 200, apply_resp.text
         assert apply_resp.json()["from_artifact"] is False
-        assert apply_resp.json()["preview"][0]["optimal_scenario_value"] == 1.2
+        assert apply_resp.json()["preview"][0]["optimal_scenario_value"] == pytest.approx(1.1)
         mock_apply.assert_called_once()
         assert mock_apply.call_args.kwargs["lambdas"] == {"volume": 0.8}
 
@@ -10256,7 +9407,7 @@ class TestRunFrontierUnit:
         clean_job_store,
     ):
         """Point apply artifacts created during frontier compute cannot survive."""
-        from haute.routes._optimiser_service import _persist_apply_result_artifact
+        from haute.routes._optimiser_artifacts import _persist_apply_result_artifact
 
         base_apply_handle = _persist_apply_result_artifact(
             SimpleNamespace(dataframe=pl.DataFrame({"optimal_scenario_value": [1.0]}))
@@ -10275,8 +9426,12 @@ class TestRunFrontierUnit:
             "baseline_objective": 90.0,
             "constraints": {"volume": 0.9},
             "baseline_constraints": {"volume": 0.85},
+            "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
             "lambdas": {"volume": 0.3},
             "converged": True,
+            "diagnostics_errors": [],
+            "input_summary": make_input_summary(),
+            "scenario_grid": SOLVE_SCENARIO_GRID,
         }
         mock_solver = MagicMock()
 
@@ -10293,13 +9448,17 @@ class TestRunFrontierUnit:
                 },
             )
             return SimpleNamespace(
-                points=pl.DataFrame(
-                    {
-                        "total_objective": [300.0],
-                        "volume": [0.97],
-                        "lambda_volume": [0.8],
-                        "converged": [True],
-                    }
+                points=library_frontier_frame(
+                    [
+                        {
+                            "total_objective": 300.0,
+                            "total_volume": 0.97,
+                            "lambda_volume": 0.8,
+                            "bound_volume": 0.9,
+                            "converged": True,
+                        }
+                    ],
+                    constraint_names=["volume"],
                 )
             )
 
@@ -10356,15 +9515,27 @@ class TestRunFrontierUnit:
         clean_job_store,
     ):
         mock_solver = MagicMock()
-        points = [{"obj": i, "lambda_vol": i / 100} for i in range(FRONTIER_POINT_LIMIT + 1)]
-        frontier_points = pl.DataFrame(points)
+        frontier_points = library_frontier_frame(
+            [
+                {
+                    "total_objective": float(i),
+                    "total_volume": 0.9,
+                    "lambda_volume": i / 100 + 0.01,
+                    "bound_volume": 0.9,
+                    "converged": True,
+                }
+                for i in range(FRONTIER_POINT_LIMIT + 1)
+            ]
+        )
         mock_solver.frontier.return_value = SimpleNamespace(points=frontier_points)
 
         seed_job(
             clean_job_store,
             "frontier_capped",
             {
+                "result": make_solved_result(mode="online", constraint_names=["volume"]),
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "solver": mock_solver,
                 "quote_grid": MagicMock(),
                 "created_at": time.time(),
@@ -10382,6 +9553,7 @@ class TestRunFrontierUnit:
         )
         assert data["n_points"] == FRONTIER_POINT_LIMIT + 1
         assert len(data["points"]) == FRONTIER_POINT_LIMIT
+        assert len(data["point_summaries"]) == FRONTIER_POINT_LIMIT
         assert data["points_returned"] == FRONTIER_POINT_LIMIT
         assert data["points_limit"] == FRONTIER_POINT_LIMIT
         assert data["points_truncated"] is True
@@ -10391,20 +9563,24 @@ class TestRunFrontierUnit:
         client,
         clean_job_store,
     ):
-        class VisiblePoints:
-            def __init__(self, size: int) -> None:
-                self.size = size
-
-            def to_dicts(self):
-                return [{"obj": i, "lambda_vol": i / 100} for i in range(self.size)]
-
         class HugePoints:
             def __len__(self) -> int:
                 return FRONTIER_POINT_LIMIT + 1
 
             def head(self, n: int):
                 assert n == FRONTIER_POINT_LIMIT
-                return VisiblePoints(n)
+                return library_frontier_frame(
+                    [
+                        {
+                            "total_objective": i,
+                            "total_volume": 0.9,
+                            "lambda_volume": i / 100 + 0.01,
+                            "bound_volume": 0.9,
+                            "converged": True,
+                        }
+                        for i in range(n)
+                    ]
+                )
 
             def to_dicts(self):
                 raise AssertionError("Full frontier must not be serialised")
@@ -10415,7 +9591,9 @@ class TestRunFrontierUnit:
             clean_job_store,
             "frontier_serialise_budget",
             {
+                "result": make_solved_result(mode="online", constraint_names=["volume"]),
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "solver": mock_solver,
                 "quote_grid": MagicMock(),
                 "created_at": time.time(),
@@ -10461,25 +9639,36 @@ class TestRunFrontierUnit:
 # ---------------------------------------------------------------------------
 
 
+def _anchor_result(**overrides: object) -> dict[str, object]:
+    """A completed online solve's lightweight result summary."""
+    return {
+        "mode": "online",
+        "lambdas": {"volume": 0.5},
+        "total_objective": 100.0,
+        "constraints": {"volume": 0.92},
+        "baseline_objective": 95.0,
+        "baseline_constraints": {"volume": 0.88},
+        "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
+        "converged": True,
+        "iterations": 10,
+        "frontier_generation": 0,
+        "input_summary": make_input_summary(),
+        "scenario_grid": SOLVE_SCENARIO_GRID,
+        "diagnostics_errors": [],
+        **overrides,
+    }
+
+
 class TestSaveResultUnit:
     def test_save_path_traversal_blocked_unit(self, client, clean_job_store, tmp_path):
         from haute._sandbox import set_project_root
 
-        mock_solve_result = SimpleNamespace(
-            lambdas={"volume": 0.5},
-            total_objective=100.0,
-            total_constraints={"volume": 0.92},
-            baseline_constraints={"volume": 0.88},
-            baseline_objective=95.0,
-            converged=True,
-        )
         seed_job(
             clean_job_store,
             "save_trav",
             {
                 "status": "completed",
-                "solve_result": mock_solve_result,
-                "solver": MagicMock(),
+                "result": _anchor_result(),
                 "config": {"mode": "online"},
                 "node_label": "opt",
                 "created_at": time.time(),
@@ -10502,20 +9691,13 @@ class TestSaveResultUnit:
 
         from haute._sandbox import set_project_root
 
-        mock_solve_result = SimpleNamespace(
-            lambdas={"volume": 0.5},
-            total_objective=100.0,
-            total_constraints={"volume": 0.92},
-            baseline_constraints={"volume": 0.88},
-            baseline_objective=95.0,
-            converged=True,
-            iterations=10,
-        )
+        mock_solve_result = MagicMock()
         seed_job(
             clean_job_store,
             "save_ok",
             {
                 "status": "completed",
+                "result": _anchor_result(),
                 "solve_result": mock_solve_result,
                 "solver": MagicMock(),
                 "quote_grid": MagicMock(),
@@ -10541,15 +9723,18 @@ class TestSaveResultUnit:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
+        assert data["apply_path"] == "out.json"
 
         saved = json_mod.loads(Path(out_path).read_text(encoding="utf-8"))
         assert saved["lambdas"] == {"volume": 0.5}
         assert saved["total_objective"] == 100.0
         assert saved["converged"] is True
+        # Publishing neither reads nor releases the heavy runtime state.
         job = clean_job_store.require_job("save_ok")
-        assert "solver" not in job
-        assert "solve_result" not in job
-        assert "quote_grid" not in job
+        assert job["solve_result"] is mock_solve_result
+        assert "solver" in job
+        assert "quote_grid" in job
+        assert not mock_solve_result.mock_calls
 
     def test_save_ratebook_frontier_point_materialises_selected_factor_tables(
         self,
@@ -10561,7 +9746,7 @@ class TestSaveResultUnit:
 
         from haute._sandbox import set_project_root
 
-        mock_solver, mock_grid, factor_contexts = _make_ratebook_frontier_materialisation_job(
+        mock_solver, _mock_grid, _factor_contexts = _make_ratebook_frontier_materialisation_job(
             clean_job_store,
             "save_rb_frontier",
         )
@@ -10579,14 +9764,13 @@ class TestSaveResultUnit:
 
         assert resp.status_code == 200
         saved = json_mod.loads(Path(out_path).read_text(encoding="utf-8"))
-        assert saved["total_objective"] == 222.0
+        # The frontier row's totals and the tables the frontier kept for it.
+        assert saved["total_objective"] == 220.0
         assert saved["total_constraints"] == {"volume": 0.97}
+        assert saved["lambdas"] == {"volume": 0.7}
         assert saved["factor_tables"] == _expected_region_factor_tables()
         assert saved["frontier_selection"]["point_index"] == 0
-        args = mock_solver.solve.call_args.args
-        assert args[0] is mock_grid
-        assert args[1] is factor_contexts
-        assert mock_solver.solve.call_args.kwargs["lambdas"] == {"volume": 0.7}
+        mock_solver.solve.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -10604,19 +9788,26 @@ class TestSelectFrontierPointIdempotent:
             "idem",
             {
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "selected_frontier_point": 2,
                 "result": {
+                    "frontier_generation": 0,
                     "total_objective": 150.0,
                     "constraints": {"volume": 0.93},
                     "baseline_objective": 140.0,
                     "baseline_constraints": {"volume": 0.87},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 0.6},
                     "converged": True,
                     "selected_frontier_point": 2,
+                    "diagnostics_errors": [],
+                    "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "solver": MagicMock(),
                 "quote_grid": MagicMock(),
                 "frontier_data": {
+                    "frontier_generation": 0,
                     "status": "ok",
                     "points": [
                         _frontier_point_summary(
@@ -10669,13 +9860,18 @@ class TestSelectFrontierPointIdempotent:
                 "status": "completed",
                 "selected_frontier_point": 2,
                 "result": {
+                    "frontier_generation": 0,
                     "total_objective": 150.0,
                     "constraints": {"volume": 0.93},
                     "baseline_objective": 140.0,
                     "baseline_constraints": {"volume": 0.87},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 0.6},
                     "converged": True,
                     "selected_frontier_point": 2,
+                    "diagnostics_errors": [],
+                    "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "created_at": time.time(),
                 "completed_at": time.time(),
@@ -10706,24 +9902,36 @@ class TestSelectFrontierPointIdempotent:
             "idem_stale",
             {
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "selected_frontier_point": 1,
                 "base_result": {
+                    "frontier_generation": 0,
                     "total_objective": 100.0,
                     "constraints": {"volume": 0.9},
                     "baseline_objective": 90.0,
                     "baseline_constraints": {"volume": 0.85},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 0.3},
                     "converged": True,
+                    "diagnostics_errors": [],
+                    "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "result": {
+                    "frontier_generation": 0,
                     "total_objective": 999.0,
                     "constraints": {"volume": 0.01},
                     "baseline_objective": 90.0,
                     "baseline_constraints": {"volume": 0.85},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 9.0},
                     "converged": True,
+                    "diagnostics_errors": [],
+                    "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "frontier_data": {
+                    "frontier_generation": 0,
                     "status": "ok",
                     "points": [
                         _frontier_point_summary(
@@ -10771,25 +9979,37 @@ class TestSelectFrontierPointIdempotent:
             "idem_stale_metrics",
             {
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "selected_frontier_point": 1,
                 "base_result": {
+                    "frontier_generation": 0,
                     "total_objective": 100.0,
                     "constraints": {"volume": 0.9},
                     "baseline_objective": 90.0,
                     "baseline_constraints": {"volume": 0.85},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 0.3},
                     "converged": True,
+                    "diagnostics_errors": [],
+                    "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "result": {
+                    "frontier_generation": 0,
                     "total_objective": 999.0,
                     "constraints": {"volume": 0.01},
                     "baseline_objective": 90.0,
                     "baseline_constraints": {"volume": 0.85},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 9.0},
                     "converged": True,
                     "selected_frontier_point": 1,
+                    "diagnostics_errors": [],
+                    "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "frontier_data": {
+                    "frontier_generation": 0,
                     "status": "ok",
                     "points": [
                         _frontier_point_summary(
@@ -10837,9 +10057,11 @@ class TestSelectFrontierPointResolve:
             "fsel",
             {
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "solver": mock_solver,
                 "quote_grid": MagicMock(),
                 "frontier_data": {
+                    "frontier_generation": 0,
                     "status": "ok",
                     "points": [
                         _frontier_point_summary(
@@ -10858,12 +10080,17 @@ class TestSelectFrontierPointResolve:
                     "constraint_names": ["volume"],
                 },
                 "result": {
+                    "frontier_generation": 0,
                     "total_objective": 100.0,
                     "baseline_objective": 90.0,
                     "constraints": {"volume": 0.9},
                     "baseline_constraints": {"volume": 0.85},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 0.3},
                     "converged": True,
+                    "diagnostics_errors": [],
+                    "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "artifact_handles": {},
                 "created_at": time.time(),
@@ -10885,24 +10112,6 @@ class TestSelectFrontierPointResolve:
         assert data["lambdas"] == {"volume": 0.7}
         assert data["converged"] is True
         assert data["constraints"] == {"volume": 0.95}
-        mock_solver.solve.assert_not_called()
-
-    def test_resolve_malformed_frontier_point_fails_loudly(self, client, clean_job_store):
-        """Malformed stored frontier point summaries fail loudly before selection."""
-        mock_solver = self._make_frontier_job(clean_job_store)
-
-        def remove_required_total_volume(job):
-            job["frontier_data"]["points"][1].pop("total_volume")
-
-        replace_job(clean_job_store, "fsel", remove_required_total_volume)
-
-        resp = client.post(
-            "/api/optimiser/frontier/select",
-            json={"job_id": "fsel", "point_index": 1},
-        )
-
-        assert resp.status_code == 500
-        assert "total_volume" in resp.json()["detail"]
         mock_solver.solve.assert_not_called()
 
     def test_resolve_non_converged_adds_warning(self, client, clean_job_store):
@@ -10937,19 +10146,17 @@ class TestSelectFrontierPointResolve:
         job = clean_job_store.require_job("fsel")
         assert "warning" not in job["result"]
 
-    def test_resolve_records_scenario_stats(self, client, clean_job_store):
-        """After selection, scenario stats are derived from stored frontier columns."""
+    def test_select_removes_the_solves_adjustment_report(self, client, clean_job_store):
+        """A selected point's summary carries no report: it is loaded on request."""
         self._make_frontier_job(clean_job_store)
         resp = client.post(
             "/api/optimiser/frontier/select",
             json={"job_id": "fsel", "point_index": 1},
         )
         assert resp.status_code == 200
+        assert resp.json()["adjustments"] is None
         job = clean_job_store.require_job("fsel")
-        assert "scenario_value_stats" in job["result"]
-        assert "scenario_value_histogram" not in job["result"]
-        stats = job["result"]["scenario_value_stats"]
-        assert "mean" in stats
+        assert "adjustments" not in job["result"]
 
     def test_select_ratebook_frontier_point_does_not_reuse_base_factor_tables(
         self,
@@ -10972,7 +10179,7 @@ class TestSelectFrontierPointResolve:
         assert job["result"]["selected_frontier_point"] == 0
         assert job["result"]["total_objective"] == 220.0
         assert "factor_tables" not in job["result"]
-        assert "scenario_value_histogram" not in job["result"]
+        assert "adjustments" not in job["result"]
         mock_solver.solve.assert_not_called()
 
     def test_select_ratebook_frontier_point_can_materialise_factor_tables(
@@ -10980,8 +10187,13 @@ class TestSelectFrontierPointResolve:
         client,
         clean_job_store,
     ):
-        """Ratebook point selection can opt into selected-point factor tables."""
-        mock_solver, mock_grid, factor_contexts = _make_ratebook_frontier_materialisation_job(
+        """Ratebook point selection can opt into selected-point factor tables.
+
+        The tables are the ones the frontier kept for the point and the
+        totals, λ, CD passes and clamp rate are the frontier row's own, with
+        no re-solve.
+        """
+        mock_solver, _mock_grid, _factor_contexts = _make_ratebook_frontier_materialisation_job(
             clean_job_store,
             "rb_select_rates",
         )
@@ -10999,57 +10211,35 @@ class TestSelectFrontierPointResolve:
         data = resp.json()
         expected_tables = _expected_region_factor_tables()
         assert data["factor_tables"] == expected_tables
-        assert data["cd_iterations"] == 5
+        assert data["total_objective"] == 220.0
+        assert data["constraints"] == {"volume": 0.97}
+        assert data["lambdas"] == {"volume": 0.7}
+        assert data["cd_iterations"] == 3
         assert data["clamp_rate"] == 0.04
         job = clean_job_store.require_job("rb_select_rates")
         assert job["result"]["factor_tables"] == expected_tables
-        mock_solver.solve.assert_called_once_with(
-            mock_grid,
-            factor_contexts,
-            factor_columns=[["region"]],
-            lambdas={"volume": 0.7},
-            _constraints_override={"volume": {"min": 0.96}},
-        )
+        assert job["result"]["total_objective"] == 220.0
+        assert job["selected_frontier_point"] == 0
+        mock_solver.solve.assert_not_called()
 
     def test_select_ratebook_frontier_point_can_switch_materialised_factor_tables(
         self,
         client,
         clean_job_store,
     ):
-        """Ratebook rates can be materialised for multiple selected frontier points."""
-        mock_solver, mock_grid, factor_contexts = _make_ratebook_frontier_materialisation_job(
+        """Ratebook rates can be materialised for multiple selected frontier points.
+
+        Each selection attaches that point's own kept tables and row totals.
+        """
+        mock_solver, _mock_grid, _factor_contexts = _make_ratebook_frontier_materialisation_job(
             clean_job_store,
             "rb_select_rates_switch",
         )
-
-        def append_second_frontier_point(job):
-            job["frontier_data"]["n_points"] = 2
-            job["frontier_data"]["points_returned"] = 2
-            job["frontier_data"]["points"].append(
-                _frontier_point_summary(
-                    lambda_volume=0.9,
-                    total_objective=240.0,
-                    total_volume=1.03,
-                    threshold_volume=1.02,
-                )
-            )
-
         replace_job(
             clean_job_store,
             "rb_select_rates_switch",
-            append_second_frontier_point,
+            _append_second_ratebook_frontier_point,
         )
-        mock_solver.solve.side_effect = [
-            _ratebook_solve_result_namespace(),
-            _ratebook_solve_result_namespace(
-                total_objective=241.0,
-                total_constraints={"volume": 1.03},
-                lambdas={"volume": 0.9},
-                cd_iterations=7,
-                clamp_rate=0.02,
-                factor_tables={"region": {"North": 1.12, "South": 0.98}},
-            ),
-        ]
 
         first = client.post(
             "/api/optimiser/frontier/select",
@@ -11069,111 +10259,24 @@ class TestSelectFrontierPointResolve:
         )
 
         assert first.status_code == 200
+        assert first.json()["factor_tables"] == _expected_region_factor_tables()
+        assert first.json()["total_objective"] == 220.0
+        assert first.json()["cd_iterations"] == 3
         assert second.status_code == 200, second.json()
-        assert second.json()["factor_tables"] == _expected_region_factor_tables(
+        second_data = second.json()
+        assert second_data["factor_tables"] == _expected_region_factor_tables(
             north=1.12,
             south=0.98,
         )
-        assert mock_solver.solve.call_count == 2
-        assert mock_solver.solve.call_args_list[0].kwargs == {
-            "factor_columns": [["region"]],
-            "lambdas": {"volume": 0.7},
-            "_constraints_override": {"volume": {"min": 0.96}},
-        }
-        assert mock_solver.solve.call_args_list[1].kwargs == {
-            "factor_columns": [["region"]],
-            "lambdas": {"volume": 0.9},
-            "_constraints_override": {"volume": {"min": 1.02}},
-        }
-        assert mock_solver.solve.call_args_list[0].args == (mock_grid, factor_contexts)
-        assert mock_solver.solve.call_args_list[1].args == (mock_grid, factor_contexts)
-
-    def test_apply_ratebook_frontier_point_rejection_preserves_rate_table_switching(
-        self,
-        client,
-        clean_job_store,
-    ):
-        """A rejected detail attempt must not break later rate-table switching.
-
-        The "Load detail" apply is a 422 contract error in ratebook mode
-        (the real ``RatebookResult`` has no per-quote dataframe); the
-        rejection must leave the frontier-analysis session fully intact so
-        the user can keep materialising rate tables for other points.
-        """
-        mock_solver, mock_grid, factor_contexts = _make_ratebook_frontier_materialisation_job(
-            clean_job_store,
-            "rb_apply_then_switch_rates",
-        )
-
-        def append_second_frontier_point(job):
-            job["frontier_data"]["n_points"] = 2
-            job["frontier_data"]["points_returned"] = 2
-            job["frontier_data"]["points"].append(
-                _frontier_point_summary(
-                    lambda_volume=0.9,
-                    total_objective=240.0,
-                    total_volume=1.03,
-                    threshold_volume=1.02,
-                )
-            )
-
-        replace_job(
-            clean_job_store,
-            "rb_apply_then_switch_rates",
-            append_second_frontier_point,
-        )
-        mock_solver.solve.side_effect = [
-            _ratebook_solve_result_namespace(),
-            _ratebook_solve_result_namespace(
-                total_objective=241.0,
-                total_constraints={"volume": 1.03},
-                lambdas={"volume": 0.9},
-                cd_iterations=7,
-                clamp_rate=0.02,
-                factor_tables={"region": {"North": 1.12, "South": 0.98}},
-            ),
-        ]
-
-        first_rates = client.post(
-            "/api/optimiser/frontier/select",
-            json={
-                "job_id": "rb_apply_then_switch_rates",
-                "point_index": 0,
-                "include_ratebook_tables": True,
-            },
-        )
-        apply_detail = client.post(
-            "/api/optimiser/apply",
-            json={
-                "job_id": "rb_apply_then_switch_rates",
-                "point_index": 0,
-            },
-        )
-        second_rates = client.post(
-            "/api/optimiser/frontier/select",
-            json={
-                "job_id": "rb_apply_then_switch_rates",
-                "point_index": 1,
-                "include_ratebook_tables": True,
-            },
-        )
-
-        assert first_rates.status_code == 200
-        assert apply_detail.status_code == 422
-        assert "ratebook" in apply_detail.json()["detail"].lower()
-        assert second_rates.status_code == 200, second_rates.json()
-        assert second_rates.json()["factor_tables"] == _expected_region_factor_tables(
-            north=1.12,
-            south=0.98,
-        )
-        job = clean_job_store.require_job("rb_apply_then_switch_rates")
-        assert job["solver"] is mock_solver
-        assert job["quote_grid"] is mock_grid
-        assert job["ratebook_factor_contexts"] is factor_contexts
-        assert "solve_result" not in job
-        # Only the two select materialisations hit the solver; the rejected
-        # detail attempt never did.
-        assert mock_solver.solve.call_count == 2
+        assert second_data["total_objective"] == 240.0
+        assert second_data["constraints"] == {"volume": 1.03}
+        assert second_data["lambdas"] == {"volume": 0.9}
+        assert second_data["cd_iterations"] == 7
+        assert second_data["clamp_rate"] == 0.02
+        job = clean_job_store.require_job("rb_select_rates_switch")
+        assert job["selected_frontier_point"] == 1
+        assert job["result"]["factor_tables"] == second_data["factor_tables"]
+        mock_solver.solve.assert_not_called()
 
     def test_resolve_records_frontier_provenance(self, client, clean_job_store):
         """After selection, the selected frontier point index is stored on the job."""
@@ -11214,7 +10317,7 @@ class TestSelectFrontierPointResolve:
         client,
         clean_job_store,
     ):
-        from haute.routes._optimiser_service import _persist_apply_result_artifact
+        from haute.routes._optimiser_artifacts import _persist_apply_result_artifact
 
         self._make_frontier_job(clean_job_store)
         old_handle = _persist_apply_result_artifact(
@@ -11245,7 +10348,7 @@ class TestSelectFrontierPointResolve:
         client,
         clean_job_store,
     ):
-        from haute.routes._optimiser_service import _persist_apply_result_artifact
+        from haute.routes._optimiser_artifacts import _persist_apply_result_artifact
 
         self._make_frontier_job(clean_job_store)
         old_handle = _persist_apply_result_artifact(
@@ -11262,7 +10365,7 @@ class TestSelectFrontierPointResolve:
         cleanup_error = RuntimeError("cleanup denied")
         with (
             patch(
-                "haute.routes.optimiser._cleanup_apply_result_artifact",
+                "haute.routes._optimiser_frontier._cleanup_apply_result_artifact",
                 side_effect=cleanup_error,
             ),
             patch("haute.routes.optimiser.logger.warning") as log_warning,
@@ -11284,35 +10387,6 @@ class TestSelectFrontierPointResolve:
 
         log_warning.assert_not_called()
 
-    def test_select_no_lambda_values(self, client, clean_job_store):
-        """Frontier point with no lambda_ prefixed columns returns 400."""
-        seed_job(
-            clean_job_store,
-            "no_lam",
-            {
-                "status": "completed",
-                "solver": MagicMock(),
-                "quote_grid": MagicMock(),
-                "frontier_data": {
-                    "status": "ok",
-                    "points": [
-                        {"total_objective": 100.0, "some_col": 0.5},
-                    ],
-                    "n_points": 1,
-                    "constraint_names": ["volume"],
-                },
-                "result": {},
-                "created_at": time.time(),
-                "completed_at": time.time(),
-            },
-        )
-        resp = client.post(
-            "/api/optimiser/frontier/select",
-            json={"job_id": "no_lam", "point_index": 0},
-        )
-        assert resp.status_code == 400
-        assert "no lambda" in resp.json()["detail"].lower()
-
     def test_select_no_solver(self, client, clean_job_store):
         """Select with no solver still works from stored frontier data."""
         seed_job(
@@ -11320,9 +10394,11 @@ class TestSelectFrontierPointResolve:
             "no_slv",
             {
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "solver": None,
                 "quote_grid": None,
                 "frontier_data": {
+                    "frontier_generation": 0,
                     "status": "ok",
                     "points": [
                         _frontier_point_summary(
@@ -11335,8 +10411,10 @@ class TestSelectFrontierPointResolve:
                     "constraint_names": ["volume"],
                 },
                 "result": {
+                    "frontier_generation": 0,
                     "baseline_objective": 90.0,
                     "baseline_constraints": {"volume": 0.85},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                 },
                 "created_at": time.time(),
                 "completed_at": time.time(),
@@ -11358,9 +10436,11 @@ class TestSelectFrontierPointResolve:
             "sel_err",
             {
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "solver": mock_solver,
                 "quote_grid": MagicMock(),
                 "frontier_data": {
+                    "frontier_generation": 0,
                     "status": "ok",
                     "points": [
                         _frontier_point_summary(
@@ -11373,8 +10453,10 @@ class TestSelectFrontierPointResolve:
                     "constraint_names": ["volume"],
                 },
                 "result": {
+                    "frontier_generation": 0,
                     "baseline_objective": 90.0,
                     "baseline_constraints": {"volume": 0.85},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                 },
                 "created_at": time.time(),
                 "completed_at": time.time(),
@@ -11393,23 +10475,25 @@ class TestBuildArtifactPayloadExtended:
 
     def test_online_mode_fields(self):
         """Online mode includes objective, quote_id, scenario fields."""
-        job = {
-            "node_label": "my_opt",
-            "config": {
-                "mode": "online",
-                "constraints": {"volume": {"min": 0.9}},
-                "objective": "income",
-                "quote_id": "qid",
-                "scenario_index": "step",
-                "scenario_value": "sv",
-                "chunk_size": 100_000,
-            },
-        }
+        job = with_solve_summary(
+            {
+                "node_label": "my_opt",
+                "config": {
+                    "mode": "online",
+                    "constraints": {"volume": {"min": 0.9}},
+                    "objective": "income",
+                    "quote_id": "qid",
+                    "scenario_index": "step",
+                    "scenario_value": "sv",
+                },
+            }
+        )
         solve_result = SimpleNamespace(
             lambdas={"volume": 0.5},
             total_objective=1000.0,
             baseline_objective=950.0,
             total_constraints={"volume": 0.92},
+            constraint_bounds={"volume": 0.9},
             baseline_constraints={"volume": 0.88},
             converged=True,
             iterations=10,
@@ -11419,31 +10503,40 @@ class TestBuildArtifactPayloadExtended:
         assert payload["quote_id"] == "qid"
         assert payload["scenario_index"] == "step"
         assert payload["scenario_value"] == "sv"
-        assert payload["chunk_size"] == 100_000
+        assert "chunk_size" not in payload
         assert payload["iterations"] == 10
         assert payload["cd_iterations"] is None
 
     def test_ratebook_mode_with_factor_tables(self):
         """Ratebook mode includes factor_tables and clamp_rate."""
-        job = {
-            "node_label": "rb",
-            "config": {"mode": "ratebook", "constraints": {}, "objective": "income"},
-            "result": {
-                "factor_tables": {
-                    "region": [
-                        {"__factor_group__": "N", "optimal_scenario_value": 1.05},
-                        {"__factor_group__": "S", "optimal_scenario_value": 0.95},
-                    ]
+        job = with_solve_summary(
+            {
+                "node_label": "rb",
+                "config": {"mode": "ratebook", "constraints": {}, "objective": "income"},
+                "result": {
+                    "factor_tables": {
+                        "region": [
+                            {"__factor_group__": "N", "optimal_scenario_value": 1.05},
+                            {"__factor_group__": "S", "optimal_scenario_value": 0.95},
+                        ]
+                    },
+                    "combined_factor_bounds": {"min": 0.1, "max": 10.0},
+                    "factor_dtypes": {
+                        "region": [{"column": "region", "dtype": {"kind": "String"}}]
+                    },
                 },
-                "factor_dtypes": {"region": [{"column": "region", "dtype": {"kind": "String"}}]},
-            },
-        }
+            }
+        )
         solve_result = SimpleNamespace(
             lambdas={},
             total_objective=1000.0,
+            baseline_objective=0.0,
+            baseline_constraints={},
             total_constraints={},
+            constraint_bounds={},
             converged=True,
             clamp_rate=0.03,
+            combined_factor_bounds={"min": 0.9, "max": 1.1},
         )
         payload = _build_artifact_payload(job, solve_result)
         assert payload["factor_tables"] is not None
@@ -11455,11 +10548,14 @@ class TestBuildArtifactPayloadExtended:
 
     def test_version_override_replaces_auto(self):
         """Version override takes precedence over auto-generated version."""
-        job = {"node_label": "test", "config": {"mode": "online"}}
+        job = with_solve_summary({"node_label": "test", "config": {"mode": "online"}})
         solve_result = SimpleNamespace(
             lambdas={},
             total_objective=0.0,
+            baseline_objective=0.0,
+            baseline_constraints={},
             total_constraints={},
+            constraint_bounds={},
             converged=True,
         )
         payload = _build_artifact_payload(job, solve_result, version_override="custom_v1")
@@ -11467,11 +10563,14 @@ class TestBuildArtifactPayloadExtended:
 
     def test_auto_version_when_no_override(self):
         """When no version override, auto-generated version is used."""
-        job = {"node_label": "My Opt", "config": {"mode": "online"}}
+        job = with_solve_summary({"node_label": "My Opt", "config": {"mode": "online"}})
         solve_result = SimpleNamespace(
             lambdas={},
             total_objective=0.0,
+            baseline_objective=0.0,
+            baseline_constraints={},
             total_constraints={},
+            constraint_bounds={},
             converged=True,
         )
         payload = _build_artifact_payload(job, solve_result, version_override="")
@@ -11480,16 +10579,21 @@ class TestBuildArtifactPayloadExtended:
 
     def test_no_frontier_selection_when_index_none(self):
         """No frontier_selection when selected_frontier_point is None."""
-        job = {
-            "node_label": "opt",
-            "config": {"mode": "online"},
-            "selected_frontier_point": None,
-            "frontier_data": {"n_points": 3},
-        }
+        job = with_solve_summary(
+            {
+                "node_label": "opt",
+                "config": {"mode": "online"},
+                "selected_frontier_point": None,
+                "frontier_data": {"n_points": 3},
+            }
+        )
         solve_result = SimpleNamespace(
             lambdas={},
             total_objective=0.0,
+            baseline_objective=0.0,
+            baseline_constraints={},
             total_constraints={},
+            constraint_bounds={},
             converged=True,
         )
         # selected_idx is None so frontier_selection should not be added
@@ -11498,16 +10602,21 @@ class TestBuildArtifactPayloadExtended:
 
     def test_no_frontier_selection_when_no_frontier_data(self):
         """No frontier_selection when frontier_data is missing."""
-        job = {
-            "node_label": "opt",
-            "config": {"mode": "online"},
-            "selected_frontier_point": 2,
-            # no frontier_data key
-        }
+        job = with_solve_summary(
+            {
+                "node_label": "opt",
+                "config": {"mode": "online"},
+                "selected_frontier_point": 2,
+                # no frontier_data key
+            }
+        )
         solve_result = SimpleNamespace(
             lambdas={},
             total_objective=0.0,
+            baseline_objective=0.0,
+            baseline_constraints={},
             total_constraints={},
+            constraint_bounds={},
             converged=True,
         )
         payload = _build_artifact_payload(job, solve_result)
@@ -11531,6 +10640,7 @@ class TestMlflowLogExtended:
             lambdas={"volume": 0.5},
             total_objective=100.0,
             total_constraints={"volume": 0.92},
+            constraint_bounds={"volume": 0.9},
             baseline_constraints={"volume": 0.88},
             baseline_objective=95.0,
             converged=True,
@@ -11552,9 +10662,14 @@ class TestMlflowLogExtended:
                 "baseline_objective": 95.0,
                 "constraints": {"volume": 0.92},
                 "baseline_constraints": {"volume": 0.88},
+                "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                 "lambdas": {"volume": 0.5},
                 "converged": True,
+                "diagnostics_errors": [],
+                "input_summary": make_input_summary(),
+                "scenario_grid": SOLVE_SCENARIO_GRID,
             },
+            "publish_summary": mock_solver.summary.return_value,
             "node_label": "my_opt",
             "created_at": time.time(),
             "completed_at": time.time(),
@@ -11566,17 +10681,7 @@ class TestMlflowLogExtended:
         seed_job(clean_job_store, job_id, job)
         return mock_solver
 
-    @staticmethod
-    def _make_mlflow_mock():
-        """Create a mock mlflow module with working context manager."""
-        mock_mlflow = MagicMock()
-        mock_run = MagicMock()
-        mock_run.info.run_id = "run123"
-        mock_mlflow.start_run.return_value.__enter__ = MagicMock(return_value=mock_run)
-        mock_mlflow.start_run.return_value.__exit__ = MagicMock(return_value=False)
-        return mock_mlflow
-
-    def test_mlflow_log_success_with_frontier(self, client, clean_job_store):
+    def test_mlflow_log_success_with_frontier(self, client, clean_job_store, tmp_path, monkeypatch):
         """MLflow log with frontier data logs frontier CSV and tags."""
         frontier_data = {
             "status": "ok",
@@ -11595,193 +10700,212 @@ class TestMlflowLogExtended:
             "n_points": 2,
             "constraint_names": ["volume"],
         }
-        self._make_mlflow_job(
+        mock_solver = self._make_mlflow_job(
             clean_job_store,
             "mlf_ok",
             frontier_data=frontier_data,
-            selected_frontier_point=1,
+            selected_frontier_point=0,
         )
-        mock_mlflow = self._make_mlflow_mock()
+        store = use_local_mlflow_store(tmp_path, monkeypatch)
 
-        with (
-            patch.dict("sys.modules", {"mlflow": mock_mlflow}),
-            patch(
-                "haute.modelling._mlflow_log.configure_mlflow_tracking",
-                return_value=("http://localhost:5000", "local"),
-            ),
-            patch(
-                "haute.modelling._mlflow_log.resolve_experiment_name",
-                return_value="/test_exp",
-            ),
-            patch(
-                "haute.modelling._mlflow_log.build_run_url",
-                return_value="http://localhost:5000/run123",
-            ),
-        ):
-            resp = client.post(
-                "/api/optimiser/mlflow/log",
-                json={"job_id": "mlf_ok", "experiment_name": "/test_exp"},
-            )
+        resp = client.post(
+            "/api/optimiser/mlflow/log",
+            json={
+                "job_id": "mlf_ok",
+                "experiment_name": "test_exp",
+                "point_index": 1,
+                "stale": True,
+            },
+        )
 
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
-        assert data["run_id"] == "run123"
-        assert data["experiment_name"] == "/test_exp"
-        # Verify frontier tags were set
-        mock_mlflow.set_tag.assert_any_call("frontier.n_points", "2")
-        mock_mlflow.set_tag.assert_any_call("frontier.selected_point_index", "1")
+        assert data["experiment_name"] == "test_exp"
+        run = store.get_run(data["run_id"])
+        assert run.info.status == "FINISHED"
+        assert run.data.tags["frontier.n_points"] == "2"
+        # The requested point, not the server-selected one.
+        assert run.data.tags["frontier.selected_point_index"] == "1"
+        assert run.data.tags["effective_constraint.volume.min"] == "0.95"
+        assert run.data.tags["stale_at_publish"] == "true"
+        assert run.data.params["solver_settings.max_iter"] == "50"
+        logged = {artifact.path for artifact in store.list_artifacts(data["run_id"])}
+        assert {"frontier.csv", "optimiser_result.json"} <= logged
+        # The logged frontier is price-contour's points table: every typed point
+        # written back as the library's flat row, in its schema's column order.
+        import csv
+
+        import price_contour
+
+        csv_path = store.download_artifacts(data["run_id"], "frontier.csv", str(tmp_path))
+        with open(csv_path, newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+        assert list(rows[0]) == list(price_contour.frontier_points_schema("online", ["volume"]))
+        assert [float(row["total_objective"]) for row in rows] == [100.0, 110.0]
+        assert [float(row["lambda_volume"]) for row in rows] == [0.3, 0.5]
+        assert [float(row["total_volume"]) for row in rows] == [0.9, 0.95]
+        optimiser_result = logged_json_artifacts(store, data["run_id"], tmp_path / "logged")[
+            "optimiser_result.json"
+        ]
+        assert optimiser_result["effective_constraints"] == {"volume": {"min": 0.95}}
+        assert optimiser_result["constraints"] == {"volume": {"min": 0.9}}
+        assert optimiser_result["stale_at_publish"] is True
+        # Publishing neither needs nor releases heavy runtime state.
         job = clean_job_store.require_job("mlf_ok")
-        assert "solver" in job
-        assert "solve_result" not in job
-        assert "quote_grid" in job
+        assert {"solver", "solve_result", "quote_grid"} <= set(job)
+        mock_solver.summary.assert_not_called()
+
+    def test_mlflow_log_without_point_logs_the_anchor_not_the_selected_point(
+        self, client, clean_job_store, tmp_path, monkeypatch
+    ):
+        frontier_data = {
+            "status": "ok",
+            "points": [
+                _frontier_point_summary(total_objective=90.0, lambda_volume=0.3),
+                _frontier_point_summary(total_objective=110.0, lambda_volume=0.5),
+            ],
+            "n_points": 2,
+            "constraint_names": ["volume"],
+        }
+        self._make_mlflow_job(
+            clean_job_store,
+            "mlf_anchor",
+            frontier_data=frontier_data,
+            selected_frontier_point=1,
+        )
+        store = use_local_mlflow_store(tmp_path, monkeypatch)
+
+        resp = client.post("/api/optimiser/mlflow/log", json={"job_id": "mlf_anchor"})
+
+        assert resp.status_code == 200, resp.text
+        run_id = resp.json()["run_id"]
+        tags = store.get_run(run_id).data.tags
+        assert "frontier.selected_point_index" not in tags
+        assert tags["stale_at_publish"] == "false"
+        optimiser_result = logged_json_artifacts(store, run_id, tmp_path / "logged")[
+            "optimiser_result.json"
+        ]
+        assert optimiser_result["total_objective"] == 100.0
+        assert "frontier_selection" not in optimiser_result
+        assert optimiser_result["effective_constraints"] == {"volume": {"min": 0.9}}
 
     def test_mlflow_log_ratebook_frontier_point_materialises_selected_factor_tables(
         self,
         client,
         clean_job_store,
+        tmp_path,
+        monkeypatch,
     ):
-        import json as json_mod
-
-        mock_solver, mock_grid, factor_contexts = _make_ratebook_frontier_materialisation_job(
+        mock_solver, _mock_grid, _factor_contexts = _make_ratebook_frontier_materialisation_job(
             clean_job_store,
             "mlf_rb_frontier",
         )
-        mock_mlflow = self._make_mlflow_mock()
-        logged_json: dict[str, dict] = {}
+        store = use_local_mlflow_store(tmp_path, monkeypatch)
 
-        def capture_artifact(path: str) -> None:
-            artifact_path = Path(path)
-            if artifact_path.suffix == ".json":
-                logged_json[artifact_path.name] = json_mod.loads(
-                    artifact_path.read_text(encoding="utf-8")
-                )
-
-        mock_mlflow.log_artifact.side_effect = capture_artifact
-
-        with (
-            patch.dict("sys.modules", {"mlflow": mock_mlflow}),
-            patch(
-                "haute.modelling._mlflow_log.configure_mlflow_tracking",
-                return_value=("http://localhost:5000", "local"),
-            ),
-            patch(
-                "haute.modelling._mlflow_log.resolve_experiment_name",
-                return_value="/ratebook_exp",
-            ),
-            patch(
-                "haute.modelling._mlflow_log.build_run_url",
-                return_value="http://localhost:5000/run-rb",
-            ),
-        ):
-            resp = client.post(
-                "/api/optimiser/mlflow/log",
-                json={
-                    "job_id": "mlf_rb_frontier",
-                    "experiment_name": "/ratebook_exp",
-                    "point_index": 0,
-                },
-            )
+        resp = client.post(
+            "/api/optimiser/mlflow/log",
+            json={
+                "job_id": "mlf_rb_frontier",
+                "experiment_name": "ratebook_exp",
+                "point_index": 0,
+            },
+        )
 
         assert resp.status_code == 200
+        run_id = resp.json()["run_id"]
+        logged_json = logged_json_artifacts(store, run_id, tmp_path / "logged")
         optimiser_result = logged_json["optimiser_result.json"]
-        assert optimiser_result["total_objective"] == 222.0
+        assert optimiser_result["total_objective"] == 220.0
+        assert optimiser_result["cd_iterations"] == 3
         assert optimiser_result["factor_tables"] == _expected_region_factor_tables()
         assert (
             logged_json["frontier_point_summary.json"]["factor_tables"]
             == (optimiser_result["factor_tables"])
         )
-        args = mock_solver.solve.call_args.args
-        assert args[0] is mock_grid
-        assert args[1] is factor_contexts
-        assert mock_solver.solve.call_args.kwargs["lambdas"] == {"volume": 0.7}
-        mock_mlflow.set_tag.assert_any_call("frontier.selected_point_index", "0")
+        mock_solver.solve.assert_not_called()
+        assert store.get_run(run_id).data.tags["frontier.selected_point_index"] == "0"
 
-    def test_mlflow_log_no_frontier(self, client, clean_job_store):
+    def test_mlflow_log_no_frontier(self, client, clean_job_store, tmp_path, monkeypatch):
         """MLflow log without frontier data still succeeds."""
         self._make_mlflow_job(clean_job_store, "mlf_nf")
-        mock_mlflow = self._make_mlflow_mock()
+        store = use_local_mlflow_store(tmp_path, monkeypatch)
 
-        with (
-            patch.dict("sys.modules", {"mlflow": mock_mlflow}),
-            patch(
-                "haute.modelling._mlflow_log.configure_mlflow_tracking",
-                return_value=("http://localhost:5000", "local"),
-            ),
-            patch(
-                "haute.modelling._mlflow_log.resolve_experiment_name",
-                return_value="/test",
-            ),
-            patch(
-                "haute.modelling._mlflow_log.build_run_url",
-                return_value="http://localhost:5000/run456",
-            ),
-        ):
-            resp = client.post(
-                "/api/optimiser/mlflow/log",
-                json={"job_id": "mlf_nf"},
-            )
+        resp = client.post("/api/optimiser/mlflow/log", json={"job_id": "mlf_nf"})
 
         assert resp.status_code == 200
         # No frontier tags should be set when no frontier data
-        frontier_calls = [c for c in mock_mlflow.set_tag.call_args_list if "frontier" in str(c)]
-        assert len(frontier_calls) == 0
+        tags = store.get_run(resp.json()["run_id"]).data.tags
+        assert not [tag for tag in tags if tag.startswith("frontier.")]
 
-    def test_mlflow_log_artifacts_skips_none(self, client, clean_job_store):
+    def test_mlflow_log_artifacts_skips_none(self, client, clean_job_store, tmp_path, monkeypatch):
         """Artifacts with None data are skipped during logging."""
-        mock_solver = MagicMock()
-        mock_solver.summary.return_value = {
-            "params": {"mode": "online"},
-            "metrics": {"total_objective": 50.0},
-            "artifacts": {"lambdas": {"volume": 0.5}, "empty_one": None},
-        }
-        mock_solve_result = SimpleNamespace(
-            lambdas={"volume": 0.5},
-            total_objective=50.0,
-            total_constraints={},
-            baseline_constraints={},
-            baseline_objective=45.0,
-            converged=True,
-        )
         seed_job(
             clean_job_store,
             "mlf_skip",
             {
                 "status": "completed",
-                "solver": mock_solver,
-                "solve_result": mock_solve_result,
+                "result": _anchor_result(total_objective=50.0, constraints={}),
+                "publish_summary": {
+                    "params": {"mode": "online"},
+                    "metrics": {"total_objective": 50.0},
+                    "artifacts": {"lambdas": {"volume": 0.5}, "empty_one": None},
+                },
                 "config": {"mode": "online", "objective": "income", "constraints": {}},
                 "node_label": "opt",
                 "created_at": time.time(),
                 "completed_at": time.time(),
             },
         )
-        mock_mlflow = self._make_mlflow_mock()
+        store = use_local_mlflow_store(tmp_path, monkeypatch)
 
-        with (
-            patch.dict("sys.modules", {"mlflow": mock_mlflow}),
-            patch(
-                "haute.modelling._mlflow_log.configure_mlflow_tracking",
-                return_value=("http://localhost:5000", "local"),
-            ),
-            patch(
-                "haute.modelling._mlflow_log.resolve_experiment_name",
-                return_value="/test",
-            ),
-            patch(
-                "haute.modelling._mlflow_log.build_run_url",
-                return_value="http://localhost:5000/run789",
-            ),
-        ):
-            resp = client.post(
-                "/api/optimiser/mlflow/log",
-                json={"job_id": "mlf_skip"},
-            )
+        resp = client.post("/api/optimiser/mlflow/log", json={"job_id": "mlf_skip"})
 
         assert resp.status_code == 200
-        # log_artifact calls: 1 for lambdas, 0 for empty_one (None), 1 for optimiser_result.json
-        artifact_calls = mock_mlflow.log_artifact.call_args_list
-        assert len(artifact_calls) == 2  # lambdas.json + optimiser_result.json
+        # The None artifact is skipped: lambdas.json + optimiser_result.json only.
+        logged = {artifact.path for artifact in store.list_artifacts(resp.json()["run_id"])}
+        assert logged == {"lambdas.json", "optimiser_result.json"}
+
+    def test_the_log_runs_while_another_writer_holds_the_fluent_state(
+        self, client, clean_job_store, tmp_path, monkeypatch
+    ):
+        """The optimiser logs no model, so it never waits for MLflow's
+        process-global fluent state, and never writes the tracking URI into
+        the environment."""
+        import os
+
+        from haute._mlflow_utils import mlflow_fluent_operation
+
+        self._make_mlflow_job(clean_job_store, "mlf_concurrent")
+        store = use_local_mlflow_store(tmp_path, monkeypatch)
+        held = threading.Event()
+        release = threading.Event()
+
+        def hold_fluent_state() -> None:
+            with mlflow_fluent_operation():
+                held.set()
+                release.wait()
+
+        holder = threading.Thread(target=hold_fluent_state, daemon=True)
+        holder.start()
+        assert held.wait(10)
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            request = executor.submit(
+                client.post,
+                "/api/optimiser/mlflow/log",
+                json={"job_id": "mlf_concurrent", "experiment_name": "concurrent"},
+            )
+            try:
+                resp = request.result(timeout=30)
+            finally:
+                # Released before the executor waits for the request, so a
+                # log that does wait for the fluent state fails instead of hanging.
+                release.set()
+                holder.join(10)
+
+        assert resp.status_code == 200, resp.text
+        assert store.get_run(resp.json()["run_id"]).info.status == "FINISHED"
+        assert "MLFLOW_TRACKING_URI" not in os.environ
 
 
 class TestSolveStatusTimeout:
@@ -11840,13 +10964,19 @@ class TestSolveStatusTimeout:
                     "message": "Completed",
                     "elapsed_seconds": 12.0,
                     "result": {
+                        "frontier_generation": 0,
                         "mode": "online",
                         "total_objective": 100.0,
                         "baseline_objective": 95.0,
                         "constraints": {},
                         "baseline_constraints": {},
+                        "effective_bounds": {},
                         "lambdas": {},
                         "converged": True,
+                        "diagnostics_errors": [],
+                        "input_summary": make_input_summary(),
+                        "scenario_grid": SOLVE_SCENARIO_GRID,
+                        "segment_keys": [],
                     },
                     "created_at": time.time(),
                     "completed_at": time.time(),
@@ -11965,13 +11095,19 @@ class TestSolveStatusTimeout:
                 "timeout": 10,
                 "elapsed_seconds": 12.0,
                 "result": {
+                    "frontier_generation": 0,
                     "mode": "online",
                     "total_objective": 100.0,
                     "baseline_objective": 95.0,
                     "constraints": {"volume": 0.91},
                     "baseline_constraints": {"volume": 0.88},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 0.5},
                     "converged": True,
+                    "diagnostics_errors": [],
+                    "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
+                    "segment_keys": [],
                 },
                 "created_at": time.time(),
                 "completed_at": time.time(),
@@ -11996,13 +11132,19 @@ class TestSolveStatusTimeout:
                 "message": "Completed",
                 "elapsed_seconds": 2.0,
                 "result": {
+                    "frontier_generation": 0,
                     "mode": "online",
                     "total_objective": 100.0,
                     "baseline_objective": 95.0,
                     "constraints": {"volume": 0.91},
                     "baseline_constraints": {"volume": 0.88},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 0.5},
                     "converged": True,
+                    "diagnostics_errors": [],
+                    "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
+                    "segment_keys": [],
                 },
                 "created_at": time.time(),
                 "completed_at": time.time(),
@@ -12036,13 +11178,15 @@ class TestSolveOnlineUnit:
     """Unit tests for _solve_online."""
 
     def test_solve_online_initializes_solver_and_records_history(self):
-        """_solve_online creates OnlineOptimiser and passes record_history."""
+        """_solve_online always asks OnlineOptimiser to record its history (Q5)."""
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import SolveContext, _solve_online
+        from haute.routes._optimiser_solver import SolveContext, _solve_online
 
         store = JobStore()
         job_id = store.create_job(
             {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
@@ -12056,6 +11200,7 @@ class TestSolveOnlineUnit:
             total_objective=100.0,
             baseline_objective=90.0,
             total_constraints={"volume": 0.92},
+            constraint_bounds={"volume": 0.9},
             baseline_constraints={"volume": 0.88},
             lambdas={"volume": 0.5},
             converged=True,
@@ -12071,9 +11216,7 @@ class TestSolveOnlineUnit:
             "objective": "expected_income",
             "constraints": {"volume": {"min": 0.9}},
             "max_iter": 20,
-            "chunk_size": 1000,
             "tolerance": 1e-4,
-            "record_history": True,
         }
 
         with patch("price_contour.OnlineOptimiser") as mock_solver:
@@ -12103,16 +11246,19 @@ class TestSolveOnlineUnit:
         job = store.require_job(job_id)
         assert job["status"] == "completed"
         assert job["result"]["iterations"] == 15
-        assert job["result"]["history"] is not None
+        assert job["result"]["history"] == [{"iteration": 0, "total_objective": 80.0}]
+        assert job["result"]["ratebook_cd_trace"] is None
 
-    def test_solve_online_no_history(self):
-        """When record_history is False, history is None in result."""
+    def test_solve_online_without_library_history_fails_loudly(self):
+        """History is always requested, so a result without one is a library defect."""
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import SolveContext, _solve_online
+        from haute.routes._optimiser_solver import SolveContext, _solve_online
 
         store = JobStore()
         job_id = store.create_job(
             {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {"constraints": {}, "objective": "income"},
             }
@@ -12123,6 +11269,7 @@ class TestSolveOnlineUnit:
             total_objective=100.0,
             baseline_objective=90.0,
             total_constraints={},
+            constraint_bounds={},
             baseline_constraints={},
             lambdas={},
             converged=True,
@@ -12137,10 +11284,12 @@ class TestSolveOnlineUnit:
         config = {
             "objective": "income",
             "constraints": {},
-            "record_history": False,
         }
 
-        with patch("price_contour.OnlineOptimiser") as mock_solver:
+        with (
+            patch("price_contour.OnlineOptimiser") as mock_solver,
+            pytest.raises(RuntimeError, match="no history"),
+        ):
             mock_solver.return_value.solve.return_value = mock_result
             _solve_online(
                 SolveContext(
@@ -12154,15 +11303,21 @@ class TestSolveOnlineUnit:
                 config=config,
             )
 
-        job = store.require_job(job_id)
-        assert job["result"]["history"] is None
+        assert store.require_job(job_id).get("result") is None
 
     def test_solve_online_requires_worker_start_time(self):
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import SolveContext, _solve_online
+        from haute.routes._optimiser_solver import SolveContext, _solve_online
 
         store = JobStore()
-        job_id = store.create_job({"status": "running", "config": {}})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+                "config": {},
+            }
+        )
 
         with (
             patch("price_contour.OnlineOptimiser") as mock_solver,
@@ -12189,13 +11344,17 @@ class TestSolveRatebookUnit:
     def test_solve_ratebook_no_factors_df(self):
         """Ratebook mode without factors_df raises a typed input error."""
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import (
-            _OptimiserSolveInputError,
-            _solve_ratebook,
-        )
+        from haute.routes._optimiser_solver import _OptimiserSolveInputError, _solve_ratebook
 
         store = JobStore()
-        job_id = store.create_job({"status": "running", "config": {}})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+                "config": {},
+            }
+        )
         mock_grid = MagicMock()
 
         with pytest.raises(_OptimiserSolveInputError, match="banding source"):
@@ -12214,10 +11373,17 @@ class TestSolveRatebookUnit:
 
     def test_solve_ratebook_requires_worker_start_time(self):
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import _solve_ratebook
+        from haute.routes._optimiser_solver import _solve_ratebook
 
         store = JobStore()
-        job_id = store.create_job({"status": "running", "config": {}})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+                "config": {},
+            }
+        )
 
         with pytest.raises(RuntimeError, match="SolveContext.start_time"):
             _solve_ratebook(
@@ -12235,10 +11401,17 @@ class TestSolveRatebookUnit:
     def test_solve_ratebook_invalid_factor_columns(self):
         """Ratebook mode with missing factor columns is a typed input error."""
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import _OptimiserSolveInputError, _solve_ratebook
+        from haute.routes._optimiser_solver import _OptimiserSolveInputError, _solve_ratebook
 
         store = JobStore()
-        job_id = store.create_job({"status": "running", "config": {}})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+                "config": {},
+            }
+        )
         mock_grid = MagicMock()
         factors_df = pl.DataFrame({"quote_id": ["q1"], "existing_col": ["A"]})
 
@@ -12266,22 +11439,25 @@ class TestSolveRatebookUnit:
     def test_solve_ratebook_success(self):
         """Ratebook solve succeeds with valid factors_df."""
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import (
+        from haute.routes._optimiser_artifacts import (
             _RATEBOOK_FACTORS_HANDLE_KEY,
             _load_ratebook_factors_artifact,
-            _solve_ratebook,
         )
+        from haute.routes._optimiser_solver import _solve_ratebook
 
         store = JobStore()
         job_id = store.create_job(
             {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
-                "config": {"constraints": {}},
+                "config": {"constraints": {"volume": {"min": 0.9}}},
             }
         )
 
         mock_grid = MagicMock()
         mock_grid.quote_ids = ["q1", "q2", "q3"]
+        mock_grid.scenario_values = [0.9, 1.0, 1.1]
         mock_grid.n_quotes = 3
 
         factors_df = pl.DataFrame(
@@ -12297,6 +11473,7 @@ class TestSolveRatebookUnit:
             total_objective=100.0,
             baseline_objective=90.0,
             total_constraints={"volume": 0.92},
+            constraint_bounds={"volume": 0.9},
             lambdas={"volume": 0.5},
             cd_iterations=3,
             factor_tables={"region": {"North": 1.1, "East": 1.0}},
@@ -12338,26 +11515,145 @@ class TestSolveRatebookUnit:
             assert "ratebook_factor_contexts" in job
             factors_handle = job["artifact_handles"][_RATEBOOK_FACTORS_HANDLE_KEY]
             assert _load_ratebook_factors_artifact(factors_handle).columns == ["quote_id", "region"]
+            # The collar is the grid's first and last scenario value (Q17).
+            assert job["result"]["combined_factor_bounds"] == {"min": 0.9, "max": 1.1}
+            assert job["result"]["clamp_rate"] == mock_result.clamp_rate
+            # The CD trace is the library's per-factor records, by name.
+            assert job["result"]["history"] is None
+            assert job["result"]["ratebook_cd_trace"] == {
+                "records": [
+                    {
+                        "cd_iteration": 1,
+                        "factor": "region",
+                        "factor_index": 0,
+                        "total_objective": 100.0,
+                        "total_constraints": {"volume": 0.92},
+                        "lambdas": {"volume": 0.5},
+                    }
+                ],
+                "truncated": False,
+            }
 
-    def test_solve_ratebook_real_shape_persists_no_apply_artifact_or_stats(self):
-        """3b.9 characterization pin: the REAL ``RatebookResult`` has no
-        ``.dataframe`` (pinned by tests/test_optimiser_routes_real_library.py),
-        so a ratebook solve through the service must persist NO apply-result
-        artifact and fabricate NO scenario-value stats/histogram.  Phantom
-        ``dataframe=`` mock fields used to make both appear — this pin keeps
-        that divergence from silently returning."""
+    @staticmethod
+    def _solve_ratebook_with(mock_result: SimpleNamespace) -> dict[str, Any]:
+        """Run ``_solve_ratebook`` over a one-factor book with *mock_result*; the job."""
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import (
-            _APPLY_RESULT_HANDLE_KEY,
-            _RATEBOOK_FACTORS_HANDLE_KEY,
-            _solve_ratebook,
-        )
+        from haute.routes._optimiser_solver import _solve_ratebook
 
         store = JobStore()
-        job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
+            }
+        )
+        mock_grid = MagicMock()
+        mock_grid.quote_ids = ["q1", "q2"]
+        mock_grid.scenario_values = [0.9, 1.0, 1.1]
+        mock_grid.n_quotes = 2
+        factors_df = pl.DataFrame({"quote_id": ["q1", "q2"], "region": ["North", "South"]})
+        config = {
+            "objective": "income",
+            "constraints": {"volume": {"min": 0.9}},
+            "factor_columns": [["region"]],
+            "quote_id": "quote_id",
+        }
+        with (
+            _persisted_ratebook_factors_handle(factors_df) as factors_handle,
+            patch("price_contour.RatebookOptimiser") as mock_solver,
+        ):
+            mock_solver.return_value.solve.return_value = mock_result
+            _solve_ratebook(
+                SolveContext(
+                    job_id=job_id,
+                    node_id="opt",
+                    mode="ratebook",
+                    store=store,
+                    start_time=time.monotonic(),
+                ),
+                quote_grid=mock_grid,
+                config=config,
+                ratebook_factors_handle=factors_handle,
+            )
+        return store.require_job(job_id)
+
+    def test_ratebook_cd_trace_keeps_the_last_records_past_its_cap(self, monkeypatch):
+        monkeypatch.setenv("HAUTE_OPTIMISER_CD_TRACE_LIMIT", "2")
+        records = [
+            _per_factor_record(cd_iteration=cd_pass, total_objective=float(cd_pass))
+            for cd_pass in (1, 2, 3)
+        ]
+
+        job = self._solve_ratebook_with(
+            _ratebook_solve_result_namespace(per_factor_results=records)
+        )
+
+        trace = job["result"]["ratebook_cd_trace"]
+        assert trace["truncated"] is True
+        assert [record["cd_iteration"] for record in trace["records"]] == [2, 3]
+
+    def test_ratebook_cd_trace_at_its_cap_is_not_truncated(self, monkeypatch):
+        monkeypatch.setenv("HAUTE_OPTIMISER_CD_TRACE_LIMIT", "2")
+        records = [_per_factor_record(cd_iteration=cd_pass) for cd_pass in (1, 2)]
+
+        job = self._solve_ratebook_with(
+            _ratebook_solve_result_namespace(per_factor_results=records)
+        )
+
+        assert job["result"]["ratebook_cd_trace"]["truncated"] is False
+        assert len(job["result"]["ratebook_cd_trace"]["records"]) == 2
+
+    @pytest.mark.parametrize(
+        ("records", "message"),
+        [
+            pytest.param([], "at least 1", id="no-records"),
+            pytest.param(
+                [_per_factor_record(total_constraints={"other": 1.0}, lambdas={"other": 0.1})],
+                "constraint names",
+                id="wrong-constraint-names",
+            ),
+            pytest.param(
+                [_per_factor_record(total_objective=float("nan"))],
+                "finite",
+                id="non-finite-objective",
+            ),
+        ],
+    )
+    def test_malformed_ratebook_cd_trace_fails_the_solve_loudly(self, records, message):
+        with pytest.raises(ValueError, match=message):
+            self._solve_ratebook_with(_ratebook_solve_result_namespace(per_factor_results=records))
+
+    def test_solve_ratebook_persists_its_quote_results_and_reports_them(self):
+        """The REAL ``RatebookResult`` has no ``.dataframe`` (pinned by
+        tests/test_optimiser_routes_real_library.py): a ratebook solve persists its
+        canonical ``quote_results`` as the apply artifact and builds the as-solved
+        adjustment report from it, counting the flagged quotes (OPT-V09C)."""
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_artifacts import (
+            _APPLY_RESULT_HANDLE_KEY,
+            _RATEBOOK_FACTORS_HANDLE_KEY,
+        )
+        from haute.routes._optimiser_solver import _solve_ratebook
+
+        store = JobStore()
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+                "config": {
+                    "mode": "ratebook",
+                    "constraints": {"volume": {"min": 0.9}},
+                    "factor_columns": [["region"]],
+                },
+            }
+        )
 
         mock_grid = MagicMock()
         mock_grid.quote_ids = ["q1", "q2"]
+        mock_grid.scenario_values = [0.9, 1.0, 1.1]
         mock_grid.n_quotes = 2
         factors_df = pl.DataFrame({"quote_id": ["q1", "q2"], "region": ["North", "South"]})
         config = {
@@ -12366,11 +11662,14 @@ class TestSolveRatebookUnit:
             "factor_columns": [["region"]],
             "quote_id": "quote_id",
         }
+        # q1's product 1.02 rounds to the 1.0 step; q2's lands on it.
+        quote_results = make_ratebook_quote_results(["volume"])
 
         with _persisted_ratebook_factors_handle(factors_df) as factors_handle:
             with patch("price_contour.RatebookOptimiser") as mock_solver:
                 mock_solver.return_value.solve.return_value = _ratebook_solve_result_namespace(
                     factor_tables={"region": {"North": 1.08, "South": 0.92}},
+                    quote_results=quote_results,
                 )
                 _solve_ratebook(
                     SolveContext(
@@ -12387,21 +11686,32 @@ class TestSolveRatebookUnit:
 
             job = store.require_job(job_id)
             assert job["status"] == "completed"
-            assert _APPLY_RESULT_HANDLE_KEY not in job["artifact_handles"]
+            apply_path = job["artifact_handles"][_APPLY_RESULT_HANDLE_KEY]["path"]
+            assert pl.read_parquet(apply_path).equals(quote_results)
             assert _RATEBOOK_FACTORS_HANDLE_KEY in job["artifact_handles"]
-            assert job["result"]["scenario_value_stats"] is None
-            assert job["result"]["scenario_value_histogram"] is None
+            report = job["result"]["adjustments"]
+            assert job["result"]["diagnostics_errors"] == []
+            assert [bar["quotes"] for bar in report["bars"]] == [0, 2, 0]
+            assert report["deployed_factor_differs"] == 1
 
     def test_solve_ratebook_orders_factor_tables_by_banding_rule_order(self):
         """Ratebook rates are serialised in the source banding row order."""
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import _solve_ratebook
+        from haute.routes._optimiser_solver import _solve_ratebook
 
         store = JobStore()
-        job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+                "config": {"constraints": {}},
+            }
+        )
 
         mock_grid = MagicMock()
         mock_grid.quote_ids = ["q1", "q2", "q3", "q4", "q5"]
+        mock_grid.scenario_values = [0.9, 1.0, 1.1]
         mock_grid.n_quotes = 5
 
         factors_df = pl.DataFrame(
@@ -12416,6 +11726,7 @@ class TestSolveRatebookUnit:
             total_objective=100.0,
             baseline_objective=90.0,
             total_constraints={},
+            constraint_bounds={},
             baseline_constraints={},
             lambdas={},
             cd_iterations=2,
@@ -12479,7 +11790,7 @@ class TestSolveRatebookUnit:
 
     def test_ratebook_factor_level_counts_support_composite_factor_groups(self):
         """Counts use price-contour's table and level keys for composite groups."""
-        from haute.routes._optimiser_service import _ratebook_factor_level_counts
+        from haute.routes._optimiser_solver import _ratebook_factor_level_counts
 
         factors_df = pl.DataFrame(
             {
@@ -12504,7 +11815,7 @@ class TestSolveRatebookUnit:
         """3b.10: counts keys go through ``normalise_rating_key`` per
         component so they agree with the keys the apply-side rating join
         derives from frame values (Float64 25.0 -> "25", strings verbatim)."""
-        from haute.routes._optimiser_service import _ratebook_factor_level_counts
+        from haute.routes._optimiser_solver import _ratebook_factor_level_counts
 
         factors_df = pl.DataFrame(
             {
@@ -12533,7 +11844,7 @@ class TestSolveRatebookUnit:
 
     def test_ratebook_factor_level_counts_rejects_object_dtype(self):
         """Mixed Python object columns have no stable persisted dtype contract."""
-        from haute.routes._optimiser_service import _ratebook_factor_level_counts
+        from haute.routes._optimiser_solver import _ratebook_factor_level_counts
 
         factors_df = pl.DataFrame([pl.Series("age", ["25", 25.0], dtype=pl.Object)])
 
@@ -12549,7 +11860,7 @@ class TestSolveRatebookUnit:
         join derives from a Float64 frame; non-integer floats keep their
         digits; never-numeric strings stay verbatim; quote counts attach to
         the canonical key."""
-        from haute.routes._optimiser_service import _serialise_ratebook_factor_tables
+        from haute.routes._optimiser_solver import _serialise_ratebook_factor_tables
 
         serialised = _serialise_ratebook_factor_tables(
             {"age": {"25.0": 1.1, "30.5": 0.9}, "region": {"young": 1.2}},
@@ -12571,7 +11882,7 @@ class TestSolveRatebookUnit:
 
     def test_serialise_ratebook_factor_tables_idempotent_for_canonical_labels(self):
         """3b.10: already-canonical labels are unchanged by canonicalisation."""
-        from haute.routes._optimiser_service import _serialise_ratebook_factor_tables
+        from haute.routes._optimiser_solver import _serialise_ratebook_factor_tables
 
         serialised = _serialise_ratebook_factor_tables(
             {"age": {"25": 1.1}},
@@ -12588,7 +11899,7 @@ class TestSolveRatebookUnit:
         """3b.10: a Utf8 source column's literal "25.0" level has a verbatim
         counts key, so it must NOT collapse — the apply join keeps Utf8 frame
         values verbatim and would miss a collapsed label."""
-        from haute.routes._optimiser_service import _serialise_ratebook_factor_tables
+        from haute.routes._optimiser_solver import _serialise_ratebook_factor_tables
 
         serialised = _serialise_ratebook_factor_tables(
             {"age": {"25.0": 1.1}},
@@ -12605,7 +11916,7 @@ class TestSolveRatebookUnit:
         """3b.10: composite levels split on the unit separator and
         canonicalise per component — string parts verbatim, float parts
         collapsed."""
-        from haute.routes._optimiser_service import _serialise_ratebook_factor_tables
+        from haute.routes._optimiser_solver import _serialise_ratebook_factor_tables
 
         serialised = _serialise_ratebook_factor_tables(
             {"channel:age": {"online\x1f25.0": 1.1, "phone\x1f30.5": 0.9}},
@@ -12628,7 +11939,7 @@ class TestSolveRatebookUnit:
     def test_serialise_ratebook_factor_tables_uses_ordered_component_dtypes(self):
         """3b.10: neighbouring counted keys cannot confuse canonicalisation;
         each solver component is reconstructed through its exact dtype."""
-        from haute.routes._optimiser_service import _serialise_ratebook_factor_tables
+        from haute.routes._optimiser_solver import _serialise_ratebook_factor_tables
 
         serialised = _serialise_ratebook_factor_tables(
             {"code:age": {"25.0\x1f7.0": 1.1}},
@@ -12672,7 +11983,7 @@ class TestSolveRatebookUnit:
     ):
         """Exact component dtypes select one key even when both old
         heuristic candidates exist in the counts."""
-        from haute.routes._optimiser_service import _serialise_ratebook_factor_tables
+        from haute.routes._optimiser_solver import _serialise_ratebook_factor_tables
 
         serialised = _serialise_ratebook_factor_tables(
             {"code:age": {"25.0\x1f7.0": 1.1}},
@@ -12688,7 +11999,7 @@ class TestSolveRatebookUnit:
         (possible only if the solver input mixed value types in one factor
         column) must fail loudly naming the colliding levels — never
         last-writer-wins."""
-        from haute.routes._optimiser_service import _serialise_ratebook_factor_tables
+        from haute.routes._optimiser_solver import _serialise_ratebook_factor_tables
 
         with pytest.raises(ValueError, match="collide|canonicalise") as exc_info:
             _serialise_ratebook_factor_tables(
@@ -12706,7 +12017,7 @@ class TestSolveRatebookUnit:
         """3b.10: a level whose canonical forms are all absent from the
         counts still fails loudly (the pre-existing missing-counts
         contract)."""
-        from haute.routes._optimiser_service import _serialise_ratebook_factor_tables
+        from haute.routes._optimiser_solver import _serialise_ratebook_factor_tables
 
         with pytest.raises(ValueError, match="counts missing"):
             _serialise_ratebook_factor_tables(
@@ -12720,7 +12031,7 @@ class TestSolveRatebookUnit:
         """3b.10: hand-built tables may key levels with raw values (a float
         25.0 instead of a label); these canonicalise exactly through
         ``normalise_rating_key`` and keep the loud missing-counts contract."""
-        from haute.routes._optimiser_service import _serialise_ratebook_factor_tables
+        from haute.routes._optimiser_solver import _serialise_ratebook_factor_tables
 
         serialised = _serialise_ratebook_factor_tables(
             {"age": {25.0: 1.1}},
@@ -12743,12 +12054,20 @@ class TestSolveRatebookUnit:
     def test_solve_ratebook_rejects_null_factor_values_before_solver(self):
         """Null banding levels should fail loudly before price-contour runs."""
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import _OptimiserSolveInputError, _solve_ratebook
+        from haute.routes._optimiser_solver import _OptimiserSolveInputError, _solve_ratebook
 
         store = JobStore()
-        job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
+            }
+        )
         mock_grid = MagicMock()
         mock_grid.quote_ids = ["q1", "q2", "q3"]
+        mock_grid.scenario_values = [0.9, 1.0, 1.1]
         mock_grid.n_quotes = 3
 
         factors_df = pl.DataFrame(
@@ -12789,19 +12108,20 @@ class TestSolveRatebookUnit:
     def test_solve_ratebook_frontier_passes_prepared_factors(self):
         """Ratebook frontier-in-solve passes prepared factor contexts."""
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import (
+        from haute.routes._optimiser_artifacts import (
             _RATEBOOK_FACTORS_HANDLE_KEY,
             _load_ratebook_factors_artifact,
-            _solve_ratebook,
         )
+        from haute.routes._optimiser_solver import _solve_ratebook
 
         store = JobStore()
         job_id = store.create_job(
             {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
-                    "frontier_enabled": True,
                     "frontier_ranges": {"volume": {"min": 0.8, "max": 1.1}},
                     "frontier_steps": 3,
                 },
@@ -12810,6 +12130,7 @@ class TestSolveRatebookUnit:
 
         mock_grid = MagicMock()
         mock_grid.quote_ids = ["q1", "q2"]
+        mock_grid.scenario_values = [0.9, 1.0, 1.1]
         mock_grid.n_quotes = 2
         factors_df = pl.DataFrame(
             {
@@ -12822,23 +12143,29 @@ class TestSolveRatebookUnit:
             total_objective=100.0,
             baseline_objective=90.0,
             total_constraints={"volume": 0.92},
+            constraint_bounds={"volume": 0.9},
             lambdas={"volume": 0.5},
             cd_iterations=3,
-            factor_tables={},
+            factor_tables={"region": {"North": 1.0, "South": 1.0}},
         )
-        frontier_points = pl.DataFrame(
-            {
-                "total_objective": [100.0],
-                "volume": [0.9],
-                "lambda_volume": [0.25],
-            }
+        frontier_points = library_frontier_frame(
+            [
+                {
+                    "total_objective": 100.0,
+                    "total_volume": 0.9,
+                    "lambda_volume": 0.25,
+                    "bound_volume": 0.9,
+                    "converged": True,
+                }
+            ],
+            constraint_names=["volume"],
+            mode="ratebook",
         )
         config = {
             "objective": "income",
             "constraints": {"volume": {"min": 0.9}},
             "factor_columns": [["region"]],
             "quote_id": "quote_id",
-            "frontier_enabled": True,
             "frontier_ranges": {"volume": {"min": 0.8, "max": 1.1}},
             "frontier_steps": 3,
         }
@@ -12883,11 +12210,13 @@ class TestSolveRatebookUnit:
     def test_solve_ratebook_custom_quote_id(self):
         """Ratebook solve with custom quote_id column renames it."""
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import _solve_ratebook
+        from haute.routes._optimiser_solver import _solve_ratebook
 
         store = JobStore()
         job_id = store.create_job(
             {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {"constraints": {}},
             }
@@ -12895,6 +12224,7 @@ class TestSolveRatebookUnit:
 
         mock_grid = MagicMock()
         mock_grid.quote_ids = ["q1", "q2"]
+        mock_grid.scenario_values = [0.9, 1.0, 1.1]
         mock_grid.n_quotes = 2
 
         factors_df = pl.DataFrame(
@@ -12909,10 +12239,11 @@ class TestSolveRatebookUnit:
             total_objective=100.0,
             baseline_objective=90.0,
             total_constraints={},
+            constraint_bounds={},
             baseline_constraints={},
             lambdas={},
             cd_iterations=2,
-            factor_tables={},
+            factor_tables={"region": {"North": 1.0, "South": 1.0}},
         )
 
         config = {
@@ -13012,9 +12343,9 @@ class TestSolveRatebookUnit:
         )
 
         captured: dict[str, Path] = {}
-        from haute.routes import _optimiser_service as opt_mod
+        from haute.routes import _optimiser_artifacts
 
-        original_persist = opt_mod._persist_ratebook_factors_lazy_artifact
+        original_persist = _optimiser_artifacts._persist_ratebook_factors_lazy_artifact
 
         def recording_persist(factors_lf, **kwargs):
             handle = original_persist(factors_lf, **kwargs)
@@ -13024,7 +12355,9 @@ class TestSolveRatebookUnit:
             return handle
 
         with (
-            patch.object(opt_mod, "_persist_ratebook_factors_lazy_artifact", recording_persist),
+            patch.object(
+                _optimiser_artifacts, "_persist_ratebook_factors_lazy_artifact", recording_persist
+            ),
             pytest.raises(ExecutionMemoryLimitExceededError),
         ):
             OptimiserSolveService._extract_factors(
@@ -13067,9 +12400,9 @@ class TestSolveRatebookUnit:
         )
 
         captured: dict[str, Path] = {}
-        from haute.routes import _optimiser_service as opt_mod
+        from haute.routes import _optimiser_artifacts
 
-        original_persist = opt_mod._persist_ratebook_factors_lazy_artifact
+        original_persist = _optimiser_artifacts._persist_ratebook_factors_lazy_artifact
 
         def recording_persist(factors_lf, **kwargs):
             handle = original_persist(factors_lf, **kwargs)
@@ -13079,7 +12412,9 @@ class TestSolveRatebookUnit:
             return handle
 
         with (
-            patch.object(opt_mod, "_persist_ratebook_factors_lazy_artifact", recording_persist),
+            patch.object(
+                _optimiser_artifacts, "_persist_ratebook_factors_lazy_artifact", recording_persist
+            ),
             pytest.raises(ExecutionCancelledError),
         ):
             OptimiserSolveService._extract_factors(
@@ -13102,7 +12437,7 @@ class TestSolveRatebookUnit:
 class TestExecutePipelineExtended:
     """Additional coverage for _execute_pipeline: preamble, streaming chunk."""
 
-    def test_execute_pipeline_restores_chunk_size(self, scored_data, tmp_path):
+    def test_execute_pipeline_restores_chunk_size(self, scored_data):
         """When prev chunk size is set, it is restored after execution."""
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -13113,9 +12448,13 @@ class TestExecutePipelineExtended:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running"})
-        checkpoint_dir = tmp_path / "ckpt"
-        checkpoint_dir.mkdir()
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         captured_chunk_sizes = []
 
@@ -13126,6 +12465,7 @@ class TestExecutePipelineExtended:
             return ({"opt": MagicMock()}, [], {}, {})
 
         with (
+            contextlib.ExitStack() as resources,
             patch(
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=fake_execute_lazy,
@@ -13133,12 +12473,12 @@ class TestExecutePipelineExtended:
             patch("haute.executor._resolve_batch_scenario", return_value=None),
             patch("haute.executor._compile_preamble", return_value={}),
         ):
-            service._execute_pipeline(body, job_id, checkpoint_dir)
+            service._execute_pipeline(body, job_id, resources)
 
         # During execution, chunk size should have been set to 50000
         assert len(captured_chunk_sizes) == 1
 
-    def test_execute_pipeline_exception_updates_job_store(self, scored_data, tmp_path):
+    def test_execute_pipeline_exception_updates_job_store(self, scored_data):
         """Pipeline failure updates job store with error status."""
         from fastapi import HTTPException
 
@@ -13151,11 +12491,16 @@ class TestExecutePipelineExtended:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running"})
-        checkpoint_dir = tmp_path / "ckpt"
-        checkpoint_dir.mkdir()
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         with (
+            contextlib.ExitStack() as resources,
             patch(
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=RuntimeError("pipeline broke"),
@@ -13164,7 +12509,7 @@ class TestExecutePipelineExtended:
             patch("haute.executor._compile_preamble", return_value={}),
         ):
             with pytest.raises(HTTPException) as exc_info:
-                service._execute_pipeline(body, job_id, checkpoint_dir)
+                service._execute_pipeline(body, job_id, resources)
             assert exc_info.value.status_code == 500
 
         job = store.require_job(job_id)
@@ -13175,7 +12520,6 @@ class TestExecutePipelineExtended:
     def test_execute_pipeline_preserves_configured_optimiser_data_input(
         self,
         scored_data,
-        tmp_path,
     ):
         """Configured data_input is consumed after graph execution, so preserve it."""
         from haute.routes._job_store import JobStore
@@ -13191,13 +12535,12 @@ class TestExecutePipelineExtended:
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
-        checkpoint_dir = tmp_path / "ckpt"
-        checkpoint_dir.mkdir()
 
         def fake_execute_lazy(*args, **kwargs):
             return ({"opt": MagicMock()}, [], {}, {})
 
         with (
+            contextlib.ExitStack() as resources,
             patch(
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=fake_execute_lazy,
@@ -13205,20 +12548,29 @@ class TestExecutePipelineExtended:
             patch("haute.executor._resolve_batch_scenario", return_value=None),
             patch("haute.executor._compile_preamble", return_value={}),
         ):
-            service._execute_pipeline(body, job_id, checkpoint_dir)
+            service._execute_pipeline(body, job_id, resources)
 
         assert "source" in execute.call_args.kwargs["preserve_node_ids"]
 
-    def test_execute_pipeline_caches_configured_data_input_between_runs(
+    def test_execute_pipeline_uses_edited_helper_on_next_operation(
         self,
         tmp_path,
+        monkeypatch,
     ):
-        """A repeated online setup should reuse the consumed data_input frame."""
-        import haute.execution as execution
+        from haute._sandbox import set_project_root
+        from haute.executor import _compile_preamble, execute_graph
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
         from haute.schemas import OptimiserSolveRequest
 
+        monkeypatch.chdir(tmp_path)
+        set_project_root(tmp_path)
+        util_dir = tmp_path / "utility"
+        util_dir.mkdir()
+        (util_dir / "__init__.py").write_text("", encoding="utf-8")
+        (util_dir / "helpers.py").write_text("VALUE = 10\n", encoding="utf-8")
+
+        scored_path = _make_scored_data(tmp_path)
         graph = make_graph(
             {
                 "nodes": [
@@ -13227,15 +12579,17 @@ class TestExecutePipelineExtended:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": {},
+                            "config": _snapshot_parquet_data_input(scored_path),
                         },
                     },
                     {
-                        "id": "optimiser_input",
+                        "id": "t",
                         "data": {
-                            "label": "optimiser input",
+                            "label": "t",
                             "nodeType": "polars",
-                            "config": {},
+                            "config": {
+                                "code": "df = source.with_columns(v=pl.lit(VALUE))",
+                            },
                         },
                     },
                     {
@@ -13250,99 +12604,87 @@ class TestExecutePipelineExtended:
                                 "quote_id": "quote_id",
                                 "scenario_index": "scenario_index",
                                 "scenario_value": "scenario_value",
-                                "data_input": "optimiser_input",
+                                "data_input": "t",
                             },
                         },
                     },
                 ],
                 "edges": [
-                    make_edge("source", "optimiser_input").model_dump(),
-                    make_edge("optimiser_input", "opt").model_dump(),
+                    make_edge("source", "t").model_dump(),
+                    make_edge("t", "opt").model_dump(),
                 ],
+                "preamble": "from utility.helpers import VALUE\n",
+                "source_file": str(tmp_path / "pipeline.py"),
             }
         )
-        body = OptimiserSolveRequest(graph=graph.model_dump(), node_id="opt")
+
         store = JobStore()
         service = OptimiserSolveService(store)
-        checkpoint_dir = tmp_path / "ckpt"
-        checkpoint_dir.mkdir()
+        body = OptimiserSolveRequest(graph=graph.model_dump(), node_id="opt")
 
-        first_calls: list[str] = []
-
-        def first_build(node, **_kwargs):
-            first_calls.append(node.id)
-            if node.id == "source":
-                return (
-                    node.id,
-                    lambda: pl.DataFrame(
-                        {
-                            "quote_id": ["q1", "q1"],
-                            "scenario_index": [0, 1],
-                            "scenario_value": [0.9, 1.1],
-                            "expected_income": [10.0, 12.0],
-                            "volume": [1.0, 0.8],
-                        }
-                    ).lazy(),
-                    True,
-                )
-            if node.id == "optimiser_input":
-                return node.id, lambda input_lf: input_lf, False
-            return node.id, lambda input_lf: input_lf, False
-
-        second_calls: list[str] = []
-
-        def second_build(node, **_kwargs):
-            second_calls.append(node.id)
-            raise AssertionError(f"cached data_input should skip every builder, got {node.id!r}")
-
-        execution.invalidate_dataframe_execution_cache()
         try:
-            with (
-                patch("haute.executor._build_node_fn", side_effect=first_build),
-                patch("haute.executor._resolve_batch_scenario", return_value=None),
-                patch("haute.executor._compile_preamble", return_value={}),
-            ):
-                first_outputs = service._execute_pipeline(
+            job_id_1 = store.create_job(
+                {
+                    "input_provenance": SOLVE_PROVENANCE,
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
+                    "status": "running",
+                }
+            )
+            with contextlib.ExitStack() as resources:
+                outputs = service._execute_pipeline(
                     body,
-                    store.create_job({"status": "running"}),
-                    checkpoint_dir,
+                    job_id_1,
+                    resources,
+                    target_node_id="t",
                 )
+                assert outputs["t"].collect()["v"][0] == 10
 
-            with (
-                patch("haute.executor._build_node_fn", side_effect=second_build),
-                patch("haute.executor._resolve_batch_scenario", return_value=None),
-                patch("haute.executor._compile_preamble", return_value={}),
-            ):
-                second_outputs = service._execute_pipeline(
+            # Edit helpers.py to VALUE = 200 (make the file size differ)
+            (util_dir / "helpers.py").write_text(
+                "VALUE = 200\n# longer file to ensure byte size differs\n",
+                encoding="utf-8",
+            )
+
+            preview_res = execute_graph(graph, target_node_id="t")
+            assert preview_res["t"].preview[0]["v"] == 200
+
+            job_id_2 = store.create_job(
+                {
+                    "input_provenance": SOLVE_PROVENANCE,
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
+                    "status": "running",
+                }
+            )
+            with contextlib.ExitStack() as resources:
+                outputs_2 = service._execute_pipeline(
                     body,
-                    store.create_job({"status": "running"}),
-                    checkpoint_dir,
+                    job_id_2,
+                    resources,
+                    target_node_id="t",
                 )
+                assert outputs_2["t"].collect()["v"][0] == 200
         finally:
-            execution.invalidate_dataframe_execution_cache()
+            _compile_preamble.cache_clear()
 
-        assert first_calls == ["source", "optimiser_input"]
-        assert second_calls == []
-        assert "optimiser_input" in first_outputs
-        assert second_outputs["optimiser_input"].collect().to_dict(as_series=False) == {
-            "quote_id": ["q1", "q1"],
-            "scenario_index": [0, 1],
-            "scenario_value": [0.9, 1.1],
-            "expected_income": [10.0, 12.0],
-            "volume": [1.0, 0.8],
-        }
-
-    def test_execute_pipeline_reuses_auto_range_data_input_for_solve(
+    def test_execute_pipeline_reuses_namespace_when_helper_is_unchanged(
         self,
         tmp_path,
+        monkeypatch,
     ):
-        """Auto-range should warm the same optimiser input frame used by solve."""
-        import haute.execution as execution
-        from haute._execution_context import ExecutionContext, ExecutionProfile
+        from haute._sandbox import set_project_root
+        from haute.executor import _compile_preamble
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
-        from haute.schemas import OptimiserFrontierAutoRangeRequest, OptimiserSolveRequest
+        from haute.schemas import OptimiserSolveRequest
 
+        monkeypatch.chdir(tmp_path)
+        set_project_root(tmp_path)
+        util_dir = tmp_path / "utility"
+        util_dir.mkdir()
+        (util_dir / "__init__.py").write_text("", encoding="utf-8")
+        (util_dir / "helpers.py").write_text("VALUE = 10\n", encoding="utf-8")
+
+        scored_path = _make_scored_data(tmp_path)
         graph = make_graph(
             {
                 "nodes": [
@@ -13351,15 +12693,17 @@ class TestExecutePipelineExtended:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": {},
+                            "config": _snapshot_parquet_data_input(scored_path),
                         },
                     },
                     {
-                        "id": "optimiser_input",
+                        "id": "t",
                         "data": {
-                            "label": "optimiser input",
+                            "label": "t",
                             "nodeType": "polars",
-                            "config": {},
+                            "config": {
+                                "code": "df = source.with_columns(v=pl.lit(VALUE))",
+                            },
                         },
                     },
                     {
@@ -13374,102 +12718,64 @@ class TestExecutePipelineExtended:
                                 "quote_id": "quote_id",
                                 "scenario_index": "scenario_index",
                                 "scenario_value": "scenario_value",
-                                "data_input": "optimiser_input",
+                                "data_input": "t",
                             },
                         },
                     },
                 ],
                 "edges": [
-                    make_edge("source", "optimiser_input").model_dump(),
-                    make_edge("optimiser_input", "opt").model_dump(),
+                    make_edge("source", "t").model_dump(),
+                    make_edge("t", "opt").model_dump(),
                 ],
+                "preamble": "from utility.helpers import VALUE\n",
+                "source_file": str(tmp_path / "pipeline.py"),
             }
         )
-        auto_body = OptimiserFrontierAutoRangeRequest(graph=graph.model_dump(), node_id="opt")
-        solve_body = OptimiserSolveRequest(graph=graph.model_dump(), node_id="opt")
-        config = graph.node_map["opt"].data.config
-        auto_range_required_columns_by_node = _auto_range_required_columns_by_node(
-            graph,
-            "opt",
-            config,
-            mode="online",
-        )
-        solve_required_columns_by_node = _optimiser_solve_required_columns_by_node(
-            graph,
-            "opt",
-            config,
-        )
+
         store = JobStore()
         service = OptimiserSolveService(store)
-        checkpoint_dir = tmp_path / "ckpt"
-        checkpoint_dir.mkdir()
-        source_frame = pl.DataFrame(
-            {
-                "quote_id": ["q1", "q1"],
-                "scenario_index": [0, 1],
-                "scenario_value": [0.9, 1.1],
-                "expected_income": [10.0, 12.0],
-                "volume": [1.0, 0.8],
-            }
-        )
+        body = OptimiserSolveRequest(graph=graph.model_dump(), node_id="opt")
 
-        auto_range_calls: list[str] = []
+        _compile_preamble.cache_clear()
+        initial_hits = _compile_preamble.cache_info().hits
 
-        def auto_range_build(node, **_kwargs):
-            auto_range_calls.append(node.id)
-            if node.id == "source":
-                return node.id, lambda: source_frame.lazy(), True
-            if node.id == "optimiser_input":
-                return node.id, lambda input_lf: input_lf, False
-            return node.id, lambda input_lf: input_lf, False
-
-        solve_calls: list[str] = []
-
-        def solve_build(node, **_kwargs):
-            solve_calls.append(node.id)
-            raise AssertionError(f"auto-range cache should skip every builder, got {node.id!r}")
-
-        execution.invalidate_dataframe_execution_cache()
         try:
-            with (
-                patch("haute.executor._build_node_fn", side_effect=auto_range_build),
-                patch("haute.executor._resolve_batch_scenario", return_value=None),
-                patch("haute.executor._compile_preamble", return_value={}),
-            ):
-                service._execute_pipeline(
-                    auto_body,
-                    store.create_job({"status": "running"}),
-                    checkpoint_dir,
-                    required_columns_by_node=auto_range_required_columns_by_node,
-                    execution_context=ExecutionContext(
-                        operation="frontier_auto_range",
-                        profile=ExecutionProfile.AUTO_RANGE,
-                    ),
+            job_id_1 = store.create_job(
+                {
+                    "input_provenance": SOLVE_PROVENANCE,
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
+                    "status": "running",
+                }
+            )
+            with contextlib.ExitStack() as resources:
+                outputs_1 = service._execute_pipeline(
+                    body,
+                    job_id_1,
+                    resources,
+                    target_node_id="t",
                 )
+                val_1 = outputs_1["t"].collect()["v"][0]
 
-            with (
-                patch("haute.executor._build_node_fn", side_effect=solve_build),
-                patch("haute.executor._resolve_batch_scenario", return_value=None),
-                patch("haute.executor._compile_preamble", return_value={}),
-            ):
-                solve_outputs = service._execute_pipeline(
-                    solve_body,
-                    store.create_job({"status": "running"}),
-                    checkpoint_dir,
-                    required_columns_by_node=solve_required_columns_by_node,
-                    execution_context=ExecutionContext(
-                        operation="optimiser_solve",
-                        profile=ExecutionProfile.OPTIMISER_SETUP,
-                    ),
+            job_id_2 = store.create_job(
+                {
+                    "input_provenance": SOLVE_PROVENANCE,
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
+                    "status": "running",
+                }
+            )
+            with contextlib.ExitStack() as resources:
+                outputs_2 = service._execute_pipeline(
+                    body,
+                    job_id_2,
+                    resources,
+                    target_node_id="t",
                 )
+                val_2 = outputs_2["t"].collect()["v"][0]
+
+            assert val_1 == val_2 == 10
+            assert _compile_preamble.cache_info().hits > initial_hits
         finally:
-            execution.invalidate_dataframe_execution_cache()
-
-        assert auto_range_calls == ["source", "optimiser_input"]
-        assert solve_calls == []
-        assert solve_outputs["optimiser_input"].collect().to_dict(as_series=False) == (
-            source_frame.to_dict(as_series=False)
-        )
+            _compile_preamble.cache_clear()
 
 
 class TestValidateAndProject:
@@ -13484,7 +12790,13 @@ class TestValidateAndProject:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         # LazyFrame missing 'volume' column
         source_lf = pl.LazyFrame(
@@ -13516,7 +12828,13 @@ class TestValidateAndProject:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         # Include a null quote_id row
         source_lf = pl.LazyFrame(
@@ -13558,7 +12876,13 @@ class TestValidateAndProject:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         source_lf = pl.LazyFrame(
             {
@@ -13593,7 +12917,13 @@ class TestValidateAndProject:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         source_lf = pl.LazyFrame(
             {
@@ -13621,12 +12951,22 @@ class TestBuildGrid:
 
     def test_build_grid_creates_temp_file_and_cleans_up(self, tmp_path):
         """_build_grid creates temp parquet, builds grid, and cleans up."""
+        from haute._polars_utils import set_streaming_chunk_size
+
+        set_streaming_chunk_size(1_024)
+
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         scored_lf = pl.LazyFrame(
             {
@@ -13644,12 +12984,11 @@ class TestBuildGrid:
             "quote_id": "quote_key",
             "scenario_index": "scenario_step",
             "scenario_value": "price_factor",
-            "chunk_size": 1_024,
         }
 
-        mock_grid = MagicMock()
+        mock_grid = MagicMock(scenario_values=[0.9, 1.1])
         with (
-            patch("haute.routes._optimiser_service.bounded_sink") as mock_sink,
+            patch("haute.routes._optimiser_input.bounded_sink") as mock_sink,
             patch(
                 "price_contour.build_grid_from_parquet_chunked",
                 return_value=mock_grid,
@@ -13661,7 +13000,7 @@ class TestBuildGrid:
 
             mock_sink.side_effect = do_sink
 
-            result = service._build_grid(scored_lf, ["vol"], config, "opt", job_id)
+            result = service._build_grid(scored_lf, ["vol"], config, "opt", job_id).grid
 
         assert result is mock_grid
         mock_build.assert_called_once()
@@ -13677,16 +13016,22 @@ class TestBuildGrid:
 
         assert not Path(parquet_path).exists()
 
-    def test_build_grid_without_chunk_size_uses_default_chunked_builder(self, tmp_path):
-        """Without explicit chunk_size, derive rows from the setup byte budget."""
-        from haute._polars_utils import read_parquet_metadata
+    def test_build_grid_reads_in_the_pipeline_chunk_size(self, tmp_path):
+        """The grid is built in chunks of the Pipeline Settings streaming chunk size."""
+        from haute._polars_utils import set_streaming_chunk_size
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running", "config": {}})
-
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+                "config": {},
+            }
+        )
         scored_lf = pl.LazyFrame(
             {
                 "quote_key": pl.Series(["q1", "q2", "q1", "q2"], dtype=pl.Utf8),
@@ -13696,7 +13041,6 @@ class TestBuildGrid:
                 "vol": pl.Series([0.9, 0.95, 0.85, 0.90], dtype=pl.Float32),
             }
         )
-
         config = {
             "objective": "income",
             "constraints": {"vol": {"min": 0.9}},
@@ -13704,116 +13048,36 @@ class TestBuildGrid:
             "scenario_index": "scenario_step",
             "scenario_value": "price_factor",
         }
-
-        mock_grid = MagicMock()
-        expected_chunk_size = None
-
-        def patched_bounded_sink(lf, path, **kw):
-            nonlocal expected_chunk_size
-            lf.collect().write_parquet(path)
-            metadata = read_parquet_metadata(Path(path))
-            row_bytes_basis = int(metadata.get("uncompressed_size_bytes") or metadata["size_bytes"])
-            estimated_row_bytes = max(
-                1,
-                -(-row_bytes_basis // max(1, int(metadata["row_count"]))),
-            )
-            expected_chunk_size = max(1, 256 // estimated_row_bytes)
+        set_streaming_chunk_size(3)
 
         with (
-            patch("haute.routes._optimiser_service.bounded_sink") as mock_sink,
+            patch("haute.routes._optimiser_input.bounded_sink") as mock_sink,
             patch(
                 "price_contour.build_grid_from_parquet_chunked",
-                return_value=mock_grid,
+                return_value=MagicMock(scenario_values=[0.9, 1.1]),
             ) as mock_build,
-            patch(
-                "haute.routes._optimiser_service._optimiser_setup_target_chunk_bytes",
-                return_value=256,
-            ),
         ):
-            mock_sink.side_effect = patched_bounded_sink
+            mock_sink.side_effect = lambda lf, path, **_kw: lf.collect().write_parquet(path)
+            service._build_grid(scored_lf, ["vol"], config, "opt", job_id)
 
-            result = service._build_grid(scored_lf, ["vol"], config, "opt", job_id)
-
-        assert result is mock_grid
-        mock_build.assert_called_once()
-        assert mock_build.call_args.args[2] == expected_chunk_size
-        assert mock_build.call_args.kwargs["quote_id"] == "quote_key"
-        assert mock_build.call_args.kwargs["scenario_index"] == "scenario_step"
-        assert mock_build.call_args.kwargs["scenario_value"] == "price_factor"
-        assert mock_build.call_args.kwargs["objective"] == "income"
-        assert "scenario_value_col" not in mock_build.call_args.kwargs
-        provenance = store.get_job(job_id)["setup_chunking"]["optimiser_grid"]
-        assert provenance["policy"] == "byte_budget"
-        assert provenance["target_chunk_bytes"] == 256
-        assert provenance["chunk_size"] == expected_chunk_size
-        assert provenance["source"] == "optimiser_grid"
-
-    def test_build_grid_explicit_chunk_size_preserves_row_semantics(self, tmp_path):
-        """Explicit chunk_size remains a user row-count override."""
-        from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import OptimiserSolveService
-
-        store = JobStore()
-        service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running", "config": {"chunk_size": 7}})
-        scored_lf = pl.LazyFrame(
-            {
-                "quote_id": pl.Series(["q1", "q2"], dtype=pl.Utf8),
-                "scenario_index": pl.Series([0, 0], dtype=pl.Int32),
-                "scenario_value": pl.Series([1.0, 1.0], dtype=pl.Float32),
-                "expected_income": pl.Series([10.0, 20.0], dtype=pl.Float32),
-                "volume": pl.Series([0.9, 1.1], dtype=pl.Float32),
-            }
-        )
-        config = {
-            "objective": "expected_income",
-            "constraints": {"volume": {"min": 0.9}},
-            "chunk_size": 7,
+        assert mock_build.call_args.args[2] == 3
+        assert mock_build.call_args.kwargs["n_steps"] == 2
+        assert store.get_job(job_id)["setup_chunking"]["optimiser_grid"] == {
+            "policy": "pipeline_setting",
+            "chunk_size": 3,
+            "pipeline_chunk_size": 3,
+            "n_steps": 2,
+            "source": "optimiser_grid",
         }
 
-        with (
-            patch(
-                "haute.routes._optimiser_service.bounded_sink",
-                side_effect=lambda lf, path, **kw: lf.collect().write_parquet(path),
-            ),
-            patch(
-                "price_contour.build_grid_from_parquet_chunked",
-                return_value=MagicMock(),
-            ) as mock_build,
-        ):
-            service._build_grid(scored_lf, ["volume"], config, "opt", job_id)
-
-        assert mock_build.call_args.args[2] == 7
-        provenance = store.get_job(job_id)["setup_chunking"]["optimiser_grid"]
-        assert provenance["policy"] == "explicit_rows"
-        assert provenance["chunk_size"] == 7
-        assert provenance["source"] == "optimiser_grid"
-
-    def test_byte_budget_chunk_size_rejects_empty_parquet(self, tmp_path: Path) -> None:
-        """Byte-budgeted setup chunking fails loudly when no rows exist to size."""
-        from haute.routes._optimiser_service import _chunk_size_decision_for_parquet
-
-        empty_path = tmp_path / "empty.parquet"
-        pl.DataFrame({"quote_id": pl.Series([], dtype=pl.Utf8)}).write_parquet(empty_path)
-
-        with pytest.raises(ValueError, match="parquet row_count"):
-            _chunk_size_decision_for_parquet(
-                {},
-                empty_path,
-                source="optimiser_grid",
-            )
-
-    def test_ratebook_factor_context_chunk_size_uses_byte_policy_when_unspecified(
-        self,
-        tmp_path,
-    ) -> None:
-        """Ratebook factor contexts follow byte-aware setup chunking when possible."""
-        from haute._polars_utils import read_parquet_metadata
-        from haute.routes._optimiser_service import (
-            _build_ratebook_factor_contexts,
+    def test_ratebook_factor_contexts_read_in_the_pipeline_chunk_size(self, tmp_path) -> None:
+        """Ratebook factor contexts are built in chunks of the pipeline's streaming chunk size."""
+        from haute._polars_utils import set_streaming_chunk_size
+        from haute.routes._optimiser_artifacts import (
             _cleanup_ratebook_factors_artifact,
             _persist_ratebook_factors_artifact,
         )
+        from haute.routes._optimiser_solver import _build_ratebook_factor_contexts
 
         factors_df = pl.DataFrame(
             {
@@ -13823,27 +13087,14 @@ class TestBuildGrid:
         )
         handle = _persist_ratebook_factors_artifact(factors_df)
         assert handle is not None
-        factors_path = Path(handle["path"])
-        metadata = read_parquet_metadata(factors_path)
-        row_bytes_basis = int(metadata.get("uncompressed_size_bytes") or metadata["size_bytes"])
-        estimated_row_bytes = max(
-            1,
-            -(-row_bytes_basis // max(1, int(metadata["row_count"]))),
-        )
-        expected_chunk_size = max(1, 128 // estimated_row_bytes)
         quote_grid = SimpleNamespace(quote_ids=["q1", "q2", "q3", "q4"], n_quotes=4)
+        set_streaming_chunk_size(2)
 
         try:
-            with (
-                patch(
-                    "price_contour.build_ratebook_factor_contexts_from_parquet_chunked",
-                    return_value=MagicMock(),
-                ) as mock_build,
-                patch(
-                    "haute.routes._optimiser_service._optimiser_setup_target_chunk_bytes",
-                    return_value=128,
-                ),
-            ):
+            with patch(
+                "price_contour.build_ratebook_factor_contexts_from_parquet_chunked",
+                return_value=MagicMock(),
+            ) as mock_build:
                 _build_ratebook_factor_contexts(
                     handle,
                     quote_grid,
@@ -13853,54 +13104,29 @@ class TestBuildGrid:
         finally:
             _cleanup_ratebook_factors_artifact(handle)
 
-        assert mock_build.call_args.args[2] == expected_chunk_size
+        assert mock_build.call_args.args[2] == 2
 
-    @pytest.mark.parametrize("chunk_size", [0, -1, 1.5, "1000", True])
-    def test_build_grid_rejects_invalid_chunk_size(self, chunk_size):
-        """Invalid chunk sizes fail loudly instead of silently selecting another path."""
-        from fastapi import HTTPException
-
-        from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import OptimiserSolveService
-
-        store = JobStore()
-        service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running"})
-        scored_lf = pl.LazyFrame(
-            {
-                "quote_id": pl.Series(["q1"], dtype=pl.Utf8),
-                "scenario_index": pl.Series([0], dtype=pl.Int32),
-                "scenario_value": pl.Series([1.0], dtype=pl.Float32),
-                "expected_income": pl.Series([100.0], dtype=pl.Float32),
-            }
-        )
-        config = {
-            "objective": "expected_income",
-            "constraints": {},
-            "quote_id": "quote_id",
-            "scenario_index": "scenario_index",
-            "scenario_value": "scenario_value",
-            "chunk_size": chunk_size,
-        }
-
-        with pytest.raises(HTTPException) as exc_info:
-            service._build_grid(scored_lf, [], config, "opt", job_id)
-
-        assert exc_info.value.status_code == 400
-        assert "chunk_size must be a positive integer" in exc_info.value.detail
-
-    @pytest.mark.parametrize("chunk_size", [None, 2])
+    @pytest.mark.parametrize("chunk_size", [500_000, 4, 3, 2, 1])
     def test_build_grid_accepts_categorical_quote_id_with_real_price_contour(
         self,
         chunk_size,
     ):
-        """Real 0.3.2 grid builders accept categorical quote IDs."""
+        """The real grid builder accepts categorical quote IDs at any pipeline chunk size.
+
+        A setting below one quote's three rows reads a whole quote per chunk.
+        """
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
         config = {
             "objective": "income",
             "constraints": {"vol": {"min": 0.9}},
@@ -13908,28 +13134,33 @@ class TestBuildGrid:
             "scenario_index": "scenario_step",
             "scenario_value": "price_factor",
         }
-        if chunk_size is not None:
-            config["chunk_size"] = chunk_size
+        from haute._polars_utils import set_streaming_chunk_size
+
+        # One pipeline chunk holds the whole grid; smaller settings split quotes.
+        set_streaming_chunk_size(chunk_size)
 
         scored_lf = pl.LazyFrame(
             {
                 "quote_key": pl.Series(
-                    ["q1", "q1", "q2", "q2"],
+                    ["q1", "q1", "q1", "q2", "q2", "q2"],
                     dtype=pl.Categorical,
                 ),
-                "scenario_step": pl.Series([0, 1, 0, 1], dtype=pl.Int32),
-                "price_factor": pl.Series([0.9, 1.1, 0.9, 1.1], dtype=pl.Float32),
-                "income": pl.Series([100.0, 110.0, 200.0, 220.0], dtype=pl.Float32),
-                "vol": pl.Series([0.9, 0.85, 0.95, 0.90], dtype=pl.Float32),
+                "scenario_step": pl.Series([0, 1, 2, 0, 1, 2], dtype=pl.Int32),
+                "price_factor": pl.Series([0.9, 1.0, 1.1, 0.9, 1.0, 1.1], dtype=pl.Float32),
+                "income": pl.Series([100.0, 105.0, 110.0, 200.0, 210.0, 220.0], dtype=pl.Float32),
+                "vol": pl.Series([0.9, 0.87, 0.85, 0.95, 0.92, 0.90], dtype=pl.Float32),
             }
         )
 
-        grid = service._build_grid(scored_lf, ["vol"], config, "opt", job_id)
+        grid = service._build_grid(scored_lf, ["vol"], config, "opt", job_id).grid
 
         assert grid.quote_ids == ["q1", "q2"]
         assert grid.n_quotes == 2
-        assert grid.n_steps == 2
-        assert grid.scenario_values == pytest.approx([0.9, 1.1])
+        assert grid.n_steps == 3
+        assert grid.scenario_values == pytest.approx([0.9, 1.0, 1.1])
+        assert store.get_job(job_id)["setup_chunking"]["optimiser_grid"]["chunk_size"] == max(
+            chunk_size, 3
+        )
 
     def test_build_grid_failure_updates_job_store(self, tmp_path):
         """Grid construction failure updates job store with error."""
@@ -13940,7 +13171,13 @@ class TestBuildGrid:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         scored_lf = pl.LazyFrame(
             {
@@ -13959,7 +13196,7 @@ class TestBuildGrid:
         }
 
         with (
-            patch("haute.routes._optimiser_service.bounded_sink") as mock_sink,
+            patch("haute.routes._optimiser_input.bounded_sink") as mock_sink,
             patch(
                 "price_contour.build_grid_from_parquet_chunked",
                 side_effect=RuntimeError("grid failed"),
@@ -13990,7 +13227,13 @@ class TestBuildGrid:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
         scored_lf = pl.LazyFrame(
             {
                 "quote_id": pl.Series(["q1"], dtype=pl.Utf8),
@@ -14001,7 +13244,7 @@ class TestBuildGrid:
         )
 
         with patch(
-            "haute.routes._optimiser_service.bounded_sink",
+            "haute.routes._optimiser_input.bounded_sink",
             side_effect=BoundedMemoryUnsupportedError("Bounded streaming sink failed"),
         ):
             with pytest.raises(HTTPException) as exc_info:
@@ -14030,7 +13273,13 @@ class TestResolveDataInputFrame:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         mock_lf = MagicMock()
         lazy_outputs = {"data_node": mock_lf, "opt": MagicMock()}
@@ -14050,7 +13299,13 @@ class TestResolveDataInputFrame:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         mock_lf = MagicMock()
         lazy_outputs = {"opt": mock_lf}
@@ -14076,7 +13331,13 @@ class TestResolveDataInputFrame:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         lazy_outputs = {"opt": MagicMock()}
         config = {"data_input": "missing_data"}
@@ -14101,7 +13362,13 @@ class TestResolveDataInputFrame:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         lazy_outputs = {}
         config = {}
@@ -14132,25 +13399,38 @@ class TestLaunchBackground:
         ]
         assert len(registries) == 1
 
-    @pytest.mark.parametrize("raw_value", ["not-an-int", "0", "-1"])
-    def test_configured_solver_timeout_env_fails_loudly(
+    @pytest.mark.parametrize("raw_value", ['"not-a-number"', "0", "-1"])
+    def test_an_invalid_optimisation_time_limit_fails_loudly(
         self,
-        monkeypatch,
+        tmp_path,
         raw_value,
     ):
-        from haute.routes._optimiser_service import _default_solver_timeout
+        """An invalid limit in the settings file never silently removes the solve's limit."""
+        from haute._pipeline_settings import PipelineSettingsError
+        from haute._sandbox import set_project_root
+        from haute.routes._optimiser_service import _solve_timeout_from_config
 
-        monkeypatch.setenv("HAUTE_SOLVER_TIMEOUT", raw_value)
+        (tmp_path / ".haute").mkdir()
+        (tmp_path / ".haute" / "pipeline-settings.json").write_text(
+            f'{{"optimisation_time_limit_minutes": {raw_value}}}', encoding="utf-8"
+        )
+        set_project_root(tmp_path)
 
-        with pytest.raises(RuntimeError, match="HAUTE_SOLVER_TIMEOUT.*positive integer"):
-            _default_solver_timeout()
+        with pytest.raises(PipelineSettingsError, match="optimisation_time_limit_minutes"):
+            _solve_timeout_from_config({})
 
     def test_background_sets_start_time_and_timeout(self, clean_job_store):
         """_launch_background sets start_time and timeout on the job."""
         from haute.routes._optimiser_service import OptimiserSolveService
 
         service = OptimiserSolveService(clean_job_store)
-        job_id = clean_job_store.create_job({"status": "running"})
+        job_id = clean_job_store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         mock_grid = MagicMock()
         config = {"timeout": 42}
@@ -14174,7 +13454,13 @@ class TestLaunchBackground:
         from haute.routes._optimiser_service import OptimiserSolveService
 
         service = OptimiserSolveService(clean_job_store)
-        job_id = clean_job_store.create_job({"status": "running"})
+        job_id = clean_job_store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         with patch("haute.routes._optimiser_service._solve_online"):
             service._launch_background(
@@ -14194,7 +13480,13 @@ class TestLaunchBackground:
         from haute.routes._optimiser_service import OptimiserSolveService
 
         service = OptimiserSolveService(clean_job_store)
-        job_id = clean_job_store.create_job({"status": "running"})
+        job_id = clean_job_store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         with (
             patch(
@@ -14218,11 +13510,19 @@ class TestLaunchBackground:
 
     def test_late_completion_does_not_overwrite_timeout(self, clean_job_store):
         """Late solver progress/completion must not overwrite a timeout error."""
-        from haute.routes._optimiser_service import OptimiserSolveService, _finalize_solve_result
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.routes._optimiser_solver import _finalize_solve_result
 
         service = OptimiserSolveService(clean_job_store)
         job_id = clean_job_store.create_job(
-            {"status": "running", "progress": 0.0, "message": "Starting", "config": {}}
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+                "progress": 0.0,
+                "message": "Starting",
+                "config": {},
+            }
         )
 
         deferred_threads: list[object] = []
@@ -14241,6 +13541,7 @@ class TestLaunchBackground:
                 total_objective=100.0,
                 baseline_objective=95.0,
                 total_constraints={"volume": 0.91},
+                constraint_bounds={"volume": 0.9},
                 baseline_constraints={"volume": 0.88},
                 lambdas={"volume": 0.5},
                 converged=True,
@@ -14298,40 +13599,34 @@ class TestApplyException:
     """Test apply endpoint exception handling."""
 
     def test_apply_exception_returns_500(self, client, clean_job_store):
-        """When solve_result.dataframe raises, apply returns 500."""
-        mock_solve_result = MagicMock()
-        mock_solve_result.dataframe = property(
-            lambda self: (_ for _ in ()).throw(RuntimeError("boom"))
-        )
+        """An unexpected failure reading the apply artifact is the sanitised 500."""
+        from haute.routes._optimiser_artifacts import _persist_apply_frame_artifact
 
-        # Use a SimpleNamespace with a property that raises
-        class FailingResult:
-            @property
-            def dataframe(self):
-                raise RuntimeError("boom")
-
-            total_objective = 100.0
-            total_constraints = {"volume": 0.92}
-
+        handle = _persist_apply_frame_artifact(make_online_apply_frame(["q1"]))
         seed_job(
             clean_job_store,
             "apply_err",
-            {
-                "status": "completed",
-                "solve_result": FailingResult(),
-                "created_at": time.time(),
-                "completed_at": time.time(),
-            },
+            make_completed_job(
+                artifact_handles={"apply_result": handle},
+                solve_result=SimpleNamespace(dataframe=None),
+            ),
         )
-        with patch("haute.routes.optimiser.logger.error") as log_error:
+        with (
+            patch(
+                "haute.routes._optimiser_artifacts._scan_apply_result_artifact",
+                side_effect=RuntimeError("boom"),
+            ),
+            patch("haute.server.logger.error") as log_error,
+        ):
             resp = client.post("/api/optimiser/apply", json={"job_id": "apply_err"})
 
         assert resp.status_code == 500
+        assert resp.json()["detail"] == _INTERNAL_ERROR_DETAIL
+        # The application handler logs it; the route no longer catches it.
         log_error.assert_called_once()
-        assert log_error.call_args.args == ("apply_failed",)
-        assert log_error.call_args.kwargs["error"] == "boom"
-        assert log_error.call_args.kwargs["job_id"] == "apply_err"
-        assert log_error.call_args.kwargs["exc_info"] is True
+        assert log_error.call_args.args == ("unhandled_exception",)
+        assert log_error.call_args.kwargs["error_class"] == "RuntimeError"
+        assert log_error.call_args.kwargs["path"] == "/api/optimiser/apply"
         job = clean_job_store.require_job("apply_err")
         assert "solve_result" in job
 
@@ -14347,6 +13642,7 @@ class TestFrontierException:
             clean_job_store,
             "front_err",
             {
+                "result": make_solved_result(),
                 "status": "completed",
                 "solver": mock_solver,
                 "quote_grid": MagicMock(),
@@ -14354,7 +13650,7 @@ class TestFrontierException:
                 "completed_at": time.time(),
             },
         )
-        with patch("haute.routes.optimiser.logger.error") as log_error:
+        with patch("haute.routes._optimiser_frontier.logger.error") as log_error:
             resp = client.post(
                 "/api/optimiser/frontier",
                 json={
@@ -14378,29 +13674,16 @@ class TestFrontierException:
 class TestSaveExceptionPaths:
     """Test save endpoint OSError and generic Exception paths."""
 
-    def test_save_touches_solve_result_before_reading_it(
+    def test_save_neither_reads_nor_reserves_heavy_state(
         self,
         client,
         clean_job_store,
         tmp_path,
     ):
-        """Saving reserves the heavy solve result before payload construction."""
+        """Saving publishes from the summary: the heavy window is not extended."""
         from haute._sandbox import set_project_root
 
-        class ExpiryAssertingSolveResult:
-            @property
-            def lambdas(self):
-                assert clean_job_store.require_job("save_touch")[
-                    "heavy_objects_expires_at"
-                ] == pytest.approx(1840.0)
-                return {}
-
-            total_objective = 0.0
-            total_constraints = {}
-            baseline_constraints = {}
-            baseline_objective = 0.0
-            converged = True
-
+        solve_result = MagicMock()
         seed_job(
             clean_job_store,
             "save_touch",
@@ -14409,7 +13692,8 @@ class TestSaveExceptionPaths:
                 "created_at": 100.0,
                 "completed_at": 100.0,
                 "heavy_objects_expires_at": 1000.0,
-                "solve_result": ExpiryAssertingSolveResult(),
+                "result": _anchor_result(),
+                "solve_result": solve_result,
                 "config": {"mode": "online"},
                 "node_label": "opt",
             },
@@ -14421,27 +13705,24 @@ class TestSaveExceptionPaths:
                 "/api/optimiser/save",
                 json={"job_id": "save_touch", "output_path": str(tmp_path / "out.json")},
             )
+            job = clean_job_store.require_job("save_touch")
 
         assert resp.status_code == 200
+        assert job["heavy_objects_expires_at"] == 1000.0
+        assert job["solve_result"] is solve_result
+        assert not solve_result.mock_calls
 
     def test_save_os_error(self, client, clean_job_store, tmp_path):
         """OSError during save returns 500 with filesystem error message."""
         from haute._sandbox import set_project_root
 
-        mock_solve_result = SimpleNamespace(
-            lambdas={},
-            total_objective=0.0,
-            total_constraints={},
-            baseline_constraints={},
-            baseline_objective=0.0,
-            converged=True,
-        )
         seed_job(
             clean_job_store,
             "save_os",
             {
                 "status": "completed",
-                "solve_result": mock_solve_result,
+                "result": _anchor_result(),
+                "solve_result": MagicMock(),
                 "solver": MagicMock(),
                 "config": {"mode": "online"},
                 "node_label": "opt",
@@ -14475,20 +13756,13 @@ class TestSaveExceptionPaths:
         """Generic Exception during save returns 500."""
         from haute._sandbox import set_project_root
 
-        mock_solve_result = SimpleNamespace(
-            lambdas={},
-            total_objective=0.0,
-            total_constraints={},
-            baseline_constraints={},
-            baseline_objective=0.0,
-            converged=True,
-        )
         seed_job(
             clean_job_store,
             "save_gen",
             {
                 "status": "completed",
-                "solve_result": mock_solve_result,
+                "result": _anchor_result(),
+                "solve_result": MagicMock(),
                 "solver": MagicMock(),
                 "config": {"mode": "online"},
                 "node_label": "opt",
@@ -14501,18 +13775,34 @@ class TestSaveExceptionPaths:
 
         with (
             patch("pathlib.Path.write_bytes", side_effect=RuntimeError("unexpected")),
-            patch("haute.routes.optimiser.logger.error") as log_error,
+            patch("haute.server.logger.error") as log_error,
         ):
             resp = client.post(
                 "/api/optimiser/save",
                 json={"job_id": "save_gen", "output_path": out_path},
             )
         assert resp.status_code == 500
+        assert resp.json()["detail"] == _INTERNAL_ERROR_DETAIL
+        # The application handler logs it; the route no longer catches it.
         log_error.assert_called_once()
-        assert log_error.call_args.args == ("save_failed",)
-        assert log_error.call_args.kwargs["error"] == "unexpected"
-        assert log_error.call_args.kwargs["job_id"] == "save_gen"
-        assert log_error.call_args.kwargs["exc_info"] is True
+        assert log_error.call_args.args == ("unhandled_exception",)
+        assert log_error.call_args.kwargs["error_class"] == "RuntimeError"
+        assert log_error.call_args.kwargs["path"] == "/api/optimiser/save"
+
+
+def _ratebook_gate_payload(**overrides: Any) -> dict[str, Any]:
+    """A ratebook artifact payload that passes the gate until *overrides* break it."""
+    payload: dict[str, Any] = {
+        "lambdas": {},
+        "total_objective": 1.0,
+        "mode": "ratebook",
+        "factor_tables": {"region": []},
+        "factor_dtypes": {"region": [{"column": "region", "dtype": {"kind": "String"}}]},
+        "clamp_rate": 0.25,
+        "combined_factor_bounds": {"min": 0.9, "max": 1.1},
+    }
+    payload.update(overrides)
+    return payload
 
 
 class TestSaveArtifactGate:
@@ -14546,6 +13836,7 @@ class TestSaveArtifactGate:
                     "total_objective": 1.0,
                     "mode": "ratebook",
                     "factor_tables": {"region": []},
+                    "combined_factor_bounds": {"min": 0.1, "max": 10.0},
                     "factor_dtypes": {"other": [{"column": "region", "dtype": {"kind": "String"}}]},
                 },
                 "do not match",
@@ -14556,6 +13847,7 @@ class TestSaveArtifactGate:
                     "total_objective": 1.0,
                     "mode": "ratebook",
                     "factor_tables": {"region": []},
+                    "combined_factor_bounds": {"min": 0.1, "max": 10.0},
                     "factor_dtypes": {"region": []},
                 },
                 "non-empty ordered list",
@@ -14566,6 +13858,7 @@ class TestSaveArtifactGate:
                     "total_objective": 1.0,
                     "mode": "ratebook",
                     "factor_tables": {"region": []},
+                    "combined_factor_bounds": {"min": 0.1, "max": 10.0},
                     "factor_dtypes": {"region": ["not a mapping"]},
                 },
                 "malformed record at index 0",
@@ -14576,6 +13869,7 @@ class TestSaveArtifactGate:
                     "total_objective": 1.0,
                     "mode": "ratebook",
                     "factor_tables": {"region": []},
+                    "combined_factor_bounds": {"min": 0.1, "max": 10.0},
                     "factor_dtypes": {"region": [{"column": "region"}]},
                 },
                 "malformed record at index 0",
@@ -14587,6 +13881,34 @@ class TestSaveArtifactGate:
                 },
                 "6 in total",
             ),
+            (
+                _ratebook_gate_payload(clamp_rate=None),
+                "no finite clamp_rate (got None)",
+            ),
+            (
+                _ratebook_gate_payload(clamp_rate=float("nan")),
+                "no finite clamp_rate (got nan)",
+            ),
+            (
+                _ratebook_gate_payload(combined_factor_bounds=None),
+                "no valid combined-factor collar: combined_factor_bounds must be an object",
+            ),
+            (
+                _ratebook_gate_payload(combined_factor_bounds={"min": 1.2, "max": 0.8}),
+                "min 1.2 is greater than max 0.8",
+            ),
+            (
+                _ratebook_gate_payload(combined_factor_bounds={"min": float("nan"), "max": 1.1}),
+                "combined_factor_bounds.min must be finite",
+            ),
+            (
+                _ratebook_gate_payload(combined_factor_bounds={"min": "0.9", "max": 1.1}),
+                "combined_factor_bounds.min must be a number",
+            ),
+            (
+                _ratebook_gate_payload(combined_factor_bounds={"max": 1.1}),
+                "exactly the keys 'min' and 'max'",
+            ),
         ],
         ids=[
             "lambdas",
@@ -14597,6 +13919,13 @@ class TestSaveArtifactGate:
             "ratebook-malformed-dtype-record",
             "ratebook-incomplete-dtype-record",
             "many-non-finite-values",
+            "ratebook-missing-clamp-rate",
+            "ratebook-nan-clamp-rate",
+            "ratebook-missing-collar",
+            "ratebook-inverted-collar",
+            "ratebook-nan-collar",
+            "ratebook-string-collar",
+            "ratebook-one-key-collar",
         ],
     )
     def test_artifact_gate_rejects_invalid_required_sections(
@@ -14612,6 +13941,14 @@ class TestSaveArtifactGate:
         assert exc_info.value.status_code == 400
         assert expected_detail in exc_info.value.detail
 
+    def test_artifact_gate_accepts_a_complete_ratebook_payload(self) -> None:
+        from haute.routes.optimiser import _validate_artifact_payload
+
+        _validate_artifact_payload(_ratebook_gate_payload())
+        _validate_artifact_payload(
+            _ratebook_gate_payload(combined_factor_bounds={"min": 1.0, "max": 1.0})
+        )
+
     @staticmethod
     def _completed_job(
         store,
@@ -14622,13 +13959,11 @@ class TestSaveArtifactGate:
         config: dict | None = None,
         solve_result_extra: dict | None = None,
     ) -> None:
-        solve_result = SimpleNamespace(
+        config = config or {"mode": "online"}
+        result = _anchor_result(
+            mode=config["mode"],
             lambdas={"volume": 0.5} if lambdas is None else lambdas,
             total_objective=total_objective,
-            total_constraints={"volume": 0.92},
-            baseline_constraints={"volume": 0.88},
-            baseline_objective=95.0,
-            converged=True,
             **(solve_result_extra or {}),
         )
         seed_job(
@@ -14636,9 +13971,10 @@ class TestSaveArtifactGate:
             job_id,
             {
                 "status": "completed",
-                "solve_result": solve_result,
+                "result": result,
+                "solve_result": MagicMock(),
                 "solver": MagicMock(),
-                "config": config or {"mode": "online"},
+                "config": config,
                 "node_label": "opt",
                 "created_at": time.time(),
                 "completed_at": time.time(),
@@ -14692,6 +14028,7 @@ class TestSaveArtifactGate:
                         }
                     ]
                 },
+                "combined_factor_bounds": {"min": 0.1, "max": 10.0},
                 "factor_dtypes": {"region": [{"column": "region", "dtype": {"kind": "String"}}]},
                 "clamp_rate": 0.0,
             },
@@ -14741,7 +14078,7 @@ class TestSaveArtifactGate:
         with patch("pathlib.Path.replace", side_effect=OSError("disk full")):
             resp = client.post(
                 "/api/optimiser/save",
-                json={"job_id": "save_torn", "output_path": str(out_path)},
+                json={"job_id": "save_torn", "output_path": str(out_path), "overwrite": True},
             )
 
         assert resp.status_code == 500
@@ -14775,36 +14112,22 @@ class TestSaveArtifactGate:
         assert second.status_code == 200
         saved = json_mod.loads(out_path.read_text(encoding="utf-8"))
         assert saved["lambdas"] == {"volume": 0.5}
-        # The successful retry then slims the job as usual.
-        assert "solve_result" not in clean_job_store.require_job("save_retry")
+        # Publishing never releases the heavy state.
+        assert "solve_result" in clean_job_store.require_job("save_retry")
 
 
 class TestMlflowLogExceptionPath:
     """Test mlflow_log generic exception path."""
 
-    def test_mlflow_log_touches_runtime_objects_before_reading_them(
+    def test_mlflow_log_neither_needs_nor_reserves_the_solver(
         self,
         client,
         clean_job_store,
+        tmp_path,
+        monkeypatch,
     ):
-        """MLflow logging reserves solver and solve result before summary work."""
+        """The anchor logs its completion-time summary; the solver is never called."""
         mock_solver = MagicMock()
-
-        def summary_after_touch(_solve_result):
-            assert clean_job_store.require_job("mlf_touch")[
-                "heavy_objects_expires_at"
-            ] == pytest.approx(1840.0)
-            return {"params": {}, "metrics": {}, "artifacts": {}}
-
-        mock_solver.summary.side_effect = summary_after_touch
-        mock_solve_result = SimpleNamespace(
-            lambdas={},
-            total_objective=0,
-            total_constraints={},
-            baseline_constraints={},
-            baseline_objective=0,
-            converged=True,
-        )
         seed_job(
             clean_job_store,
             "mlf_touch",
@@ -14814,67 +14137,49 @@ class TestMlflowLogExceptionPath:
                 "completed_at": 100.0,
                 "heavy_objects_expires_at": 1000.0,
                 "solver": mock_solver,
-                "solve_result": mock_solve_result,
+                "result": _anchor_result(),
+                "publish_summary": {"params": {}, "metrics": {}, "artifacts": {}},
                 "config": {"mode": "online"},
                 "node_label": "opt",
             },
         )
-        mock_mlflow = MagicMock()
-        mock_run = MagicMock()
-        mock_run.info.run_id = "touch-run"
-        mock_mlflow.start_run.return_value.__enter__ = MagicMock(return_value=mock_run)
-        mock_mlflow.start_run.return_value.__exit__ = MagicMock(return_value=False)
+        use_local_mlflow_store(tmp_path, monkeypatch)
 
-        with (
-            patch("haute.routes._job_store.time.time", return_value=940.0),
-            patch.dict("sys.modules", {"mlflow": mock_mlflow}),
-            patch(
-                "haute.modelling._mlflow_log.configure_mlflow_tracking",
-                return_value=("http://localhost:5000", "local"),
-            ),
-            patch(
-                "haute.modelling._mlflow_log.resolve_experiment_name",
-                return_value="/test",
-            ),
-            patch(
-                "haute.modelling._mlflow_log.build_run_url",
-                return_value="http://localhost:5000/touch-run",
-            ),
-        ):
+        with patch("haute.routes._job_store.time.time", return_value=940.0):
             resp = client.post(
                 "/api/optimiser/mlflow/log",
                 json={"job_id": "mlf_touch"},
             )
+            job = clean_job_store.require_job("mlf_touch")
 
         assert resp.status_code == 200
+        assert job["heavy_objects_expires_at"] == 1000.0
+        assert not mock_solver.mock_calls
 
-    def test_mlflow_log_internal_error(self, client, clean_job_store):
+    def test_mlflow_log_internal_error(self, client, clean_job_store, tmp_path, monkeypatch):
         """When mlflow logging raises, endpoint returns 500."""
-        mock_solver = MagicMock()
-        mock_solver.summary.side_effect = RuntimeError("summary boom")
-        mock_solve_result = SimpleNamespace(
-            lambdas={},
-            total_objective=0,
-            total_constraints={},
-            converged=True,
-        )
         seed_job(
             clean_job_store,
             "mlf_err",
             {
                 "status": "completed",
-                "solver": mock_solver,
-                "solve_result": mock_solve_result,
+                "solver": MagicMock(),
+                "solve_result": MagicMock(),
+                "result": _anchor_result(),
+                "publish_summary": {"params": {}, "metrics": {}, "artifacts": {}},
                 "config": {"mode": "online"},
                 "node_label": "opt",
                 "created_at": time.time(),
                 "completed_at": time.time(),
             },
         )
-        mock_mlflow = MagicMock()
+        use_local_mlflow_store(tmp_path, monkeypatch)
         with (
-            patch.dict("sys.modules", {"mlflow": mock_mlflow}),
-            patch("haute.routes.optimiser.logger.error") as log_error,
+            patch(
+                "haute.routes.optimiser.ensure_experiment",
+                side_effect=RuntimeError("experiment boom"),
+            ),
+            patch("haute.routes._mlflow_log_errors.logger.error") as log_error,
         ):
             resp = client.post(
                 "/api/optimiser/mlflow/log",
@@ -14883,9 +14188,12 @@ class TestMlflowLogExceptionPath:
         assert resp.status_code == 500
         log_error.assert_called_once()
         assert log_error.call_args.args == ("mlflow_log_failed",)
-        assert log_error.call_args.kwargs["error"] == "summary boom"
-        assert log_error.call_args.kwargs["job_id"] == "mlf_err"
-        assert log_error.call_args.kwargs["exc_info"] is True
+        # Category and type only: the raw text never reaches the log.
+        assert log_error.call_args.kwargs == {
+            "category": "unknown",
+            "error_type": "RuntimeError",
+            "job_id": "mlf_err",
+        }
         job = clean_job_store.require_job("mlf_err")
         assert "solver" in job
         assert "solve_result" in job
@@ -14895,8 +14203,8 @@ class TestMlflowLogExceptionPath:
 class TestExecutePipelineHTTPExceptionPassthrough:
     """Test that HTTPException raised inside _execute_pipeline is re-raised directly."""
 
-    def test_http_exception_passthrough(self, scored_data, tmp_path):
-        """HTTPException from _execute_lazy is re-raised, not wrapped."""
+    def test_http_exception_passthrough(self, scored_data):
+        """HTTPException from the lazy execution is re-raised, not wrapped."""
         from fastapi import HTTPException
 
         from haute.routes._job_store import JobStore
@@ -14908,13 +14216,18 @@ class TestExecutePipelineHTTPExceptionPassthrough:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running"})
-        checkpoint_dir = tmp_path / "ckpt"
-        checkpoint_dir.mkdir()
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         original_exc = HTTPException(status_code=403, detail="forbidden")
 
         with (
+            contextlib.ExitStack() as resources,
             patch(
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=original_exc,
@@ -14923,7 +14236,7 @@ class TestExecutePipelineHTTPExceptionPassthrough:
             patch("haute.executor._compile_preamble", return_value={}),
         ):
             with pytest.raises(HTTPException) as exc_info:
-                service._execute_pipeline(body, job_id, checkpoint_dir)
+                service._execute_pipeline(body, job_id, resources)
             assert exc_info.value.status_code == 403
             assert exc_info.value.detail == "forbidden"
 
@@ -14940,7 +14253,13 @@ class TestBuildGridHTTPExceptionPassthrough:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         scored_lf = pl.LazyFrame(
             {
@@ -14961,7 +14280,7 @@ class TestBuildGridHTTPExceptionPassthrough:
         original_exc = HTTPException(status_code=403, detail="not allowed")
 
         with (
-            patch("haute.routes._optimiser_service.bounded_sink") as mock_sink,
+            patch("haute.routes._optimiser_input.bounded_sink") as mock_sink,
             patch("price_contour.build_grid_from_parquet_chunked", side_effect=original_exc),
         ):
             mock_sink.side_effect = lambda lf, path, **kw: lf.collect().write_parquet(path)
@@ -15029,7 +14348,6 @@ class TestIntegrationRealSolver:
             config={
                 "objective": "expected_income",
                 "constraints": {"volume": {"min": 0.90}},
-                "frontier_enabled": True,
                 "frontier_ranges": {"volume": {"min": 4.0, "max": 6.0}},
                 "max_iter": 20,
                 "tolerance": 1e-4,
@@ -15110,50 +14428,15 @@ class TestIntegrationRealSolver:
 class TestOptimiserHelperValidators:
     """Direct tests for defensive validators in routes/optimiser.py."""
 
-    def test_as_finite_float_rejects_bool(self) -> None:
-        from haute.routes.optimiser import _as_finite_float
-
-        with pytest.raises(HTTPException) as exc:
-            _as_finite_float(True, field="x")
-        assert exc.value.status_code == 500
-        assert "x" in exc.value.detail
-
-    def test_as_finite_float_rejects_non_numeric(self) -> None:
-        from haute.routes.optimiser import _as_finite_float
-
-        with pytest.raises(HTTPException) as exc:
-            _as_finite_float("not a number", field="y")
-        assert exc.value.status_code == 500
-
-    def test_as_finite_float_rejects_nan(self) -> None:
-        from haute.routes.optimiser import _as_finite_float
-
-        with pytest.raises(HTTPException) as exc:
-            _as_finite_float(float("nan"), field="z")
-        assert "not finite" in exc.value.detail
-
-    def test_as_finite_float_rejects_inf(self) -> None:
-        from haute.routes.optimiser import _as_finite_float
-
-        with pytest.raises(HTTPException) as exc:
-            _as_finite_float(float("inf"), field="z")
-        assert "not finite" in exc.value.detail
-
-    def test_as_finite_float_accepts_valid_value(self) -> None:
-        from haute.routes.optimiser import _as_finite_float
-
-        assert _as_finite_float(3.14, field="ok") == 3.14
-        assert _as_finite_float(7, field="ok") == 7.0
-
     def test_frontier_points_or_raise_missing_data(self) -> None:
-        from haute.routes.optimiser import _frontier_points_or_raise
+        from haute.routes._optimiser_frontier import _frontier_points_or_raise
 
         with pytest.raises(HTTPException) as exc:
             _frontier_points_or_raise({"frontier_data": None})
         assert exc.value.status_code == 400
 
     def test_frontier_points_or_raise_invalid_points_type(self) -> None:
-        from haute.routes.optimiser import _frontier_points_or_raise
+        from haute.routes._optimiser_frontier import _frontier_points_or_raise
 
         # ``"not a list"`` is truthy, so it bypasses the 400 (no points) branch
         # and trips the 500 (invalid shape) branch — both are desired loud
@@ -15163,14 +14446,14 @@ class TestOptimiserHelperValidators:
         assert exc.value.status_code == 500
 
     def test_frontier_points_or_raise_non_dict_point(self) -> None:
-        from haute.routes.optimiser import _frontier_points_or_raise
+        from haute.routes._optimiser_frontier import _frontier_points_or_raise
 
         with pytest.raises(HTTPException) as exc:
             _frontier_points_or_raise({"frontier_data": {"points": [{"ok": 1}, 42]}})
         assert exc.value.status_code == 500
 
     def test_frontier_point_or_raise_out_of_range(self) -> None:
-        from haute.routes.optimiser import _frontier_point_or_raise
+        from haute.routes._optimiser_frontier import _frontier_point_or_raise
 
         job = {"frontier_data": {"points": [{"a": 1}], "n_points": 5}}
         with pytest.raises(HTTPException) as exc:
@@ -15179,7 +14462,7 @@ class TestOptimiserHelperValidators:
         assert "out of range" in exc.value.detail
 
     def test_frontier_point_or_raise_capped_payload(self) -> None:
-        from haute.routes.optimiser import _frontier_point_or_raise
+        from haute.routes._optimiser_frontier import _frontier_point_or_raise
 
         # n_points (50) > len(points) (1) → capped payload branch.
         job = {
@@ -15194,81 +14477,35 @@ class TestOptimiserHelperValidators:
             _frontier_point_or_raise(job, 5)
         assert "capped frontier payload" in exc.value.detail
 
-    def test_frontier_point_lambdas_no_lambda_keys(self) -> None:
-        from haute.routes.optimiser import _frontier_point_lambdas
-
-        with pytest.raises(HTTPException) as exc:
-            _frontier_point_lambdas({"total_objective": 1.0})
-        assert "no lambda" in exc.value.detail
-
-    def test_frontier_point_lambdas_rejects_bool_values(self) -> None:
-        """``isinstance(True, int)`` is True; bool keys must not become lambdas."""
-        from haute.routes.optimiser import _frontier_point_lambdas
-
-        with pytest.raises(HTTPException):
-            _frontier_point_lambdas({"lambda_volume": True})
-
-    def test_frontier_point_constraint_value_falls_back_through_chain(self) -> None:
-        """The fallback chain: total_<name> → constraints[<name>] → bare <name>."""
-        from haute.routes.optimiser import _frontier_point_constraint_value
-
-        # total_<name> wins.
-        assert (
-            _frontier_point_constraint_value(
-                {"total_volume": 0.9, "constraints": {"volume": 0.7}, "volume": 0.5},
-                "volume",
-            )
-            == 0.9
-        )
-        # No total_, falls back to constraints dict.
-        assert (
-            _frontier_point_constraint_value(
-                {"constraints": {"volume": 0.7}, "volume": 0.5},
-                "volume",
-            )
-            == 0.7
-        )
-        # Falls back to bare key.
-        assert _frontier_point_constraint_value({"volume": 0.5}, "volume") == 0.5
-
-    def test_frontier_point_constraint_value_missing_raises(self) -> None:
-        from haute.routes.optimiser import _frontier_point_constraint_value
-
-        with pytest.raises(HTTPException) as exc:
-            _frontier_point_constraint_value({"other": 1}, "volume")
-        assert exc.value.status_code == 500
-
-    def test_scenario_stats_returns_none_when_absent(self) -> None:
-        from haute.routes.optimiser import _scenario_stats_from_frontier_point
-
-        assert _scenario_stats_from_frontier_point({"total_objective": 1.0}) is None
-
     def test_base_result_for_frontier_uses_base_when_present(self) -> None:
-        from haute.routes.optimiser import _base_result_for_frontier
+        from haute.routes._optimiser_frontier import _base_result_for_frontier
 
         job = {"base_result": {"a": 1}, "result": {"a": 2}}
         assert _base_result_for_frontier(job)["a"] == 1
 
     def test_base_result_for_frontier_falls_back_to_result(self) -> None:
-        from haute.routes.optimiser import _base_result_for_frontier
+        from haute.routes._optimiser_frontier import _base_result_for_frontier
 
         assert _base_result_for_frontier({"result": {"b": 7}})["b"] == 7
 
     def test_base_result_for_frontier_missing_raises(self) -> None:
-        from haute.routes.optimiser import _base_result_for_frontier
+        from haute.routes._optimiser_frontier import _base_result_for_frontier
 
         with pytest.raises(HTTPException) as exc:
             _base_result_for_frontier({})
         assert exc.value.status_code == 500
 
-    def test_base_result_for_recompute_when_no_selection_returns_empty(self) -> None:
-        from haute.routes.optimiser import _base_result_for_frontier_recompute
+    def test_base_result_for_recompute_without_a_result_fails_loudly(self) -> None:
+        from haute.routes._optimiser_frontier import _base_result_for_frontier_recompute
 
-        assert _base_result_for_frontier_recompute({}) == {}
+        with pytest.raises(HTTPException) as exc:
+            _base_result_for_frontier_recompute({})
+        assert exc.value.status_code == 500
+        assert exc.value.detail == "Job summary is missing"
 
     def test_base_result_for_recompute_with_orphan_selection_raises(self) -> None:
         """If the job is mid-selection but has lost its base_result, fail loud."""
-        from haute.routes.optimiser import _base_result_for_frontier_recompute
+        from haute.routes._optimiser_frontier import _base_result_for_frontier_recompute
 
         job = {"selected_frontier_point": 1}  # selection set, no base_result
         with pytest.raises(HTTPException) as exc:
@@ -15276,7 +14513,7 @@ class TestOptimiserHelperValidators:
         assert "Re-run the solve" in exc.value.detail
 
     def test_base_result_for_recompute_strips_selected_point(self) -> None:
-        from haute.routes.optimiser import _base_result_for_frontier_recompute
+        from haute.routes._optimiser_frontier import _base_result_for_frontier_recompute
 
         job = {"base_result": {"x": 1, "selected_frontier_point": 0}}
         result = _base_result_for_frontier_recompute(job)
@@ -15284,12 +14521,14 @@ class TestOptimiserHelperValidators:
         assert result["x"] == 1
 
     def test_frontier_point_result_dict_invalid_constraint_names(self) -> None:
-        from haute.routes.optimiser import _frontier_point_result_dict
+        from haute.routes._optimiser_frontier import _frontier_point_result_dict
 
         job = {
             "frontier_data": {
                 "points": [
-                    {"converged": True, "lambda_a": 1.0, "total_objective": 1.0, "total_a": 1.0},
+                    typed_frontier_point(
+                        {"converged": True, "lambda_a": 1.0, "total_objective": 1.0, "total_a": 1.0}
+                    ),
                 ],
                 "n_points": 1,
                 "constraint_names": "not a list",
@@ -15301,12 +14540,14 @@ class TestOptimiserHelperValidators:
         assert exc.value.status_code == 500
 
     def test_frontier_point_result_dict_non_string_constraint_name(self) -> None:
-        from haute.routes.optimiser import _frontier_point_result_dict
+        from haute.routes._optimiser_frontier import _frontier_point_result_dict
 
         job = {
             "frontier_data": {
                 "points": [
-                    {"converged": True, "lambda_a": 1.0, "total_objective": 1.0, "total_a": 1.0},
+                    typed_frontier_point(
+                        {"converged": True, "lambda_a": 1.0, "total_objective": 1.0, "total_a": 1.0}
+                    ),
                 ],
                 "n_points": 1,
                 "constraint_names": [42],
@@ -15317,27 +14558,12 @@ class TestOptimiserHelperValidators:
             _frontier_point_result_dict(job, 0)
         assert exc.value.status_code == 500
 
-    def test_frontier_point_result_dict_missing_converged(self) -> None:
-        from haute.routes.optimiser import _frontier_point_result_dict
-
-        job = {
-            "frontier_data": {
-                "points": [{"lambda_a": 1.0, "total_objective": 1.0, "total_a": 1.0}],
-                "n_points": 1,
-                "constraint_names": ["a"],
-            },
-            "base_result": {},
-        }
-        with pytest.raises(HTTPException) as exc:
-            _frontier_point_result_dict(job, 0)
-        assert "converged" in exc.value.detail
-
     def test_frontier_point_constraints_override_invalid_config(self) -> None:
-        from haute.routes.optimiser import _frontier_point_constraints_override
+        from haute.routes._optimiser_frontier import _frontier_point_constraints_override
 
         job = {
             "frontier_data": {
-                "points": [{"converged": True, "threshold_a": 1.0}],
+                "points": [make_frontier_point(thresholds={"a": 1.0})],
                 "n_points": 1,
                 "constraint_names": ["a"],
             },
@@ -15348,11 +14574,11 @@ class TestOptimiserHelperValidators:
         assert exc.value.status_code == 500
 
     def test_frontier_point_constraints_override_invalid_name(self) -> None:
-        from haute.routes.optimiser import _frontier_point_constraints_override
+        from haute.routes._optimiser_frontier import _frontier_point_constraints_override
 
         job = {
             "frontier_data": {
-                "points": [{"converged": True, "threshold_a": 1.0}],
+                "points": [make_frontier_point(thresholds={"a": 1.0})],
                 "n_points": 1,
                 "constraint_names": ["a"],
             },
@@ -15362,12 +14588,12 @@ class TestOptimiserHelperValidators:
             _frontier_point_constraints_override(job, 0)
 
     def test_frontier_point_constraints_override_missing_threshold(self) -> None:
-        from haute.routes.optimiser import _frontier_point_constraints_override
+        from haute.routes._optimiser_frontier import _frontier_point_constraints_override
 
         # config defines "a" but with neither min/max/min_pct/max_pct.
         job = {
             "frontier_data": {
-                "points": [{"converged": True, "threshold_a": 1.0}],
+                "points": [make_frontier_point(thresholds={"a": 1.0})],
                 "n_points": 1,
                 "constraint_names": ["a"],
             },
@@ -15377,82 +14603,45 @@ class TestOptimiserHelperValidators:
             _frontier_point_constraints_override(job, 0)
         assert "threshold is invalid" in exc.value.detail
 
-    def test_frontier_point_constraints_override_missing_threshold_field(self) -> None:
-        from haute.routes.optimiser import _frontier_point_constraints_override
-
-        job = {
-            "frontier_data": {
-                "points": [{"converged": True}],  # no threshold_a key
-                "n_points": 1,
-                "constraint_names": ["a"],
-            },
-            "config": {"constraints": {"a": {"min": 0.5}}},
-        }
-        with pytest.raises(HTTPException) as exc:
-            _frontier_point_constraints_override(job, 0)
-        assert "threshold_a" in exc.value.detail
-
     def test_dataframe_or_raise_returns_dataframe_when_present(self) -> None:
-        from haute.routes.optimiser import _dataframe_or_raise
+        from haute.routes._optimiser_frontier import _dataframe_or_raise
 
         result = SimpleNamespace(dataframe=pl.DataFrame({"a": [1]}))
         df = _dataframe_or_raise(result, context="ctx")
         assert df.shape == (1, 1)
 
     def test_artifact_handles_or_raise_invalid_type(self) -> None:
-        from haute.routes.optimiser import _artifact_handles_or_raise
+        from haute.routes._optimiser_frontier import _artifact_handles_or_raise
 
         with pytest.raises(HTTPException) as exc:
             _artifact_handles_or_raise({"artifact_handles": "not a dict"})
         assert exc.value.status_code == 500
 
     def test_lambda_mappings_match_returns_false_for_mismatched_keys(self) -> None:
-        from haute.routes.optimiser import _lambda_mappings_match
+        from haute.routes._optimiser_frontier import _lambda_mappings_match
 
         assert _lambda_mappings_match({"a": 1.0}, {"b": 1.0}) is False
 
     def test_lambda_mappings_match_returns_false_for_unequal_values(self) -> None:
-        from haute.routes.optimiser import _lambda_mappings_match
+        from haute.routes._optimiser_frontier import _lambda_mappings_match
 
         assert _lambda_mappings_match({"a": 1.0}, {"a": 2.0}) is False
 
     def test_lambda_mappings_match_returns_false_for_non_numeric(self) -> None:
-        from haute.routes.optimiser import _lambda_mappings_match
+        from haute.routes._optimiser_frontier import _lambda_mappings_match
 
         assert _lambda_mappings_match({"a": "bad"}, {"a": 1.0}) is False
 
     def test_lambda_mappings_match_returns_true_within_tolerance(self) -> None:
-        from haute.routes.optimiser import _lambda_mappings_match
+        from haute.routes._optimiser_frontier import _lambda_mappings_match
 
         assert _lambda_mappings_match({"a": 1.0}, {"a": 1.0 + 1e-10}) is True
 
     def test_lambda_mappings_match_returns_false_for_non_dict(self) -> None:
-        from haute.routes.optimiser import _lambda_mappings_match
+        from haute.routes._optimiser_frontier import _lambda_mappings_match
 
         assert _lambda_mappings_match("not a dict", {"a": 1.0}) is False
         assert _lambda_mappings_match({"a": 1.0}, "not a dict") is False
-
-    def test_selected_or_requested_uses_request_when_provided(self) -> None:
-        from haute.routes.optimiser import _selected_or_requested_frontier_point
-
-        assert _selected_or_requested_frontier_point({}, 7) == 7
-
-    def test_selected_or_requested_falls_back_to_job_state(self) -> None:
-        from haute.routes.optimiser import _selected_or_requested_frontier_point
-
-        assert _selected_or_requested_frontier_point({"selected_frontier_point": 3}, None) == 3
-
-    def test_selected_or_requested_returns_none_when_state_is_bool(self) -> None:
-        """``isinstance(True, int)`` is True, so we explicitly reject bools."""
-        from haute.routes.optimiser import _selected_or_requested_frontier_point
-
-        assert (
-            _selected_or_requested_frontier_point(
-                {"selected_frontier_point": True},
-                None,
-            )
-            is None
-        )
 
     def test_job_has_frontier_points_handles_bad_shape(self) -> None:
         from haute.routes.optimiser import _job_has_frontier_points
@@ -15466,8 +14655,8 @@ class TestOptimiserHelperValidators:
         primary error path.  When ``_cleanup_apply_result_artifact`` raises,
         log a warning and continue without re-raising.
         """
-        from haute.routes import optimiser as optimiser_module
-        from haute.routes.optimiser import _cleanup_orphan_apply_artifact
+        from haute.routes import _optimiser_frontier as optimiser_module
+        from haute.routes._optimiser_frontier import _cleanup_orphan_apply_artifact
 
         with patch.object(
             optimiser_module,
@@ -15481,8 +14670,8 @@ class TestOptimiserHelperValidators:
             )
 
     def test_cleanup_orphan_apply_artifact_uses_path_when_directory_missing(self) -> None:
-        from haute.routes import optimiser as optimiser_module
-        from haute.routes.optimiser import _cleanup_orphan_apply_artifact
+        from haute.routes import _optimiser_frontier as optimiser_module
+        from haute.routes._optimiser_frontier import _cleanup_orphan_apply_artifact
 
         with patch.object(
             optimiser_module,
@@ -15494,80 +14683,104 @@ class TestOptimiserHelperValidators:
 
     def test_frontier_point_result_dict_includes_optional_diagnostics(self) -> None:
         """Cover the optional iterations/cd_iterations/clamp_rate branches."""
-        from haute.routes.optimiser import _frontier_point_result_dict
+        from haute.routes._optimiser_frontier import _frontier_point_result_dict
 
         job = {
+            "config": {"constraints": {"a": {"min": 0.9}}},
             "frontier_data": {
                 "points": [
-                    {
-                        "converged": True,
-                        "lambda_a": 0.5,
-                        "total_objective": 100.0,
-                        "total_a": 0.9,
-                        "iterations": 3.0,  # float that is actually an int
-                        "cd_iterations": 2.0,
-                        "clamp_rate": 0.05,
-                    }
+                    typed_frontier_point(
+                        {
+                            "converged": True,
+                            "lambda_a": 0.5,
+                            "bound_a": 0.9,
+                            "total_objective": 100.0,
+                            "total_a": 0.9,
+                            "iterations": 3,
+                            "clamp_rate": 0.05,
+                        },
+                        mode="ratebook",
+                    )
                 ],
                 "n_points": 1,
                 "constraint_names": ["a"],
             },
-            "base_result": {"baseline_constraints": {"a": 0.85}},
+            "base_result": {"baseline_objective": 90.0, "baseline_constraints": {"a": 0.85}},
         }
         result = _frontier_point_result_dict(job, 0)
         assert result["iterations"] == 3
-        assert result["cd_iterations"] == 2
+        # The row summary has no CD count; materialisation sets it from iterations.
+        assert "cd_iterations" not in result
         assert result["clamp_rate"] == 0.05
 
     def test_frontier_point_result_dict_emits_non_converged_warning(self) -> None:
-        from haute.routes.optimiser import _frontier_point_result_dict
+        from haute.routes._optimiser_frontier import _frontier_point_result_dict
 
         job = {
+            "config": {"constraints": {"a": {"min": 0.9}}},
             "frontier_data": {
                 "points": [
-                    {
-                        "converged": False,
-                        "lambda_a": 0.5,
-                        "total_objective": 100.0,
-                        "total_a": 0.9,
-                    }
+                    typed_frontier_point(
+                        {
+                            "converged": False,
+                            "lambda_a": 0.5,
+                            "bound_a": 0.9,
+                            "total_objective": 100.0,
+                            "total_a": 0.9,
+                        }
+                    )
                 ],
                 "n_points": 1,
                 "constraint_names": ["a"],
             },
-            "base_result": {},
+            "base_result": {"baseline_objective": 90.0, "baseline_constraints": {"a": 0.85}},
         }
         result = _frontier_point_result_dict(job, 0)
         assert "did not converge" in result["warning"]
 
     def test_frontier_point_result_dict_drops_warning_when_converged(self) -> None:
-        from haute.routes.optimiser import _frontier_point_result_dict
+        from haute.routes._optimiser_frontier import _frontier_point_result_dict
 
         job = {
+            "config": {"constraints": {"a": {"min": 0.9}}},
             "frontier_data": {
                 "points": [
-                    {
-                        "converged": True,
-                        "lambda_a": 0.5,
-                        "total_objective": 100.0,
-                        "total_a": 0.9,
-                    }
+                    typed_frontier_point(
+                        {
+                            "converged": True,
+                            "lambda_a": 0.5,
+                            "bound_a": 0.9,
+                            "total_objective": 100.0,
+                            "total_a": 0.9,
+                        }
+                    )
                 ],
                 "n_points": 1,
                 "constraint_names": ["a"],
             },
-            "base_result": {"warning": "stale warning"},
+            "base_result": {
+                "warning": "stale warning",
+                "baseline_objective": 90.0,
+                "baseline_constraints": {"a": 0.85},
+            },
         }
         result = _frontier_point_result_dict(job, 0)
         assert "warning" not in result
 
     def test_frontier_point_constraints_override_uses_threshold_value(self) -> None:
         """Happy path: walks through every step of constraints_override."""
-        from haute.routes.optimiser import _frontier_point_constraints_override
+        from haute.routes._optimiser_frontier import _frontier_point_constraints_override
 
         job = {
             "frontier_data": {
-                "points": [{"converged": True, "threshold_a": 0.95, "threshold_b": 1.05}],
+                "points": [
+                    make_frontier_point(
+                        thresholds={"a": 0.95, "b": 1.05},
+                        bounds={"a": 0.95, "b": 1.05},
+                        totals={"a": 1.0, "b": 1.0},
+                        lambdas={"a": 0.0, "b": 0.0},
+                    )
+                ],
                 "n_points": 1,
                 "constraint_names": ["a", "b"],
             },
@@ -15577,7 +14790,7 @@ class TestOptimiserHelperValidators:
         assert overrides == {"a": {"min": 0.95}, "b": {"max": 1.05}}
 
     def test_compute_frontier_ratebook_requires_factor_contexts(self) -> None:
-        from haute.routes._optimiser_service import _compute_frontier, solver_worker_context
+        from haute.routes._optimiser_solver import _compute_frontier, solver_worker_context
 
         with solver_worker_context(), pytest.raises(RuntimeError) as exc:
             _compute_frontier(
@@ -15598,11 +14811,11 @@ class TestOptimiserHelperValidators:
 
     def test_frontier_point_constraints_override_invalid_constraint_names_list(self) -> None:
         """Cover the branch where ``frontier_data.constraint_names`` is not a list."""
-        from haute.routes.optimiser import _frontier_point_constraints_override
+        from haute.routes._optimiser_frontier import _frontier_point_constraints_override
 
         job = {
             "frontier_data": {
-                "points": [{"converged": True, "threshold_a": 1.0}],
+                "points": [make_frontier_point(thresholds={"a": 1.0})],
                 "n_points": 1,
                 "constraint_names": "not a list",
             },
@@ -15614,11 +14827,11 @@ class TestOptimiserHelperValidators:
 
     def test_frontier_point_constraints_override_non_string_in_names(self) -> None:
         """Cover the branch where ``constraint_names`` contains a non-string entry."""
-        from haute.routes.optimiser import _frontier_point_constraints_override
+        from haute.routes._optimiser_frontier import _frontier_point_constraints_override
 
         job = {
             "frontier_data": {
-                "points": [{"converged": True, "threshold_a": 1.0}],
+                "points": [make_frontier_point(thresholds={"a": 1.0})],
                 "n_points": 1,
                 "constraint_names": [42],  # non-string
             },
@@ -15630,11 +14843,18 @@ class TestOptimiserHelperValidators:
 
     def test_frontier_point_constraints_override_unknown_constraint(self) -> None:
         """Cover the branch where a constraint_name has no matching config spec."""
-        from haute.routes.optimiser import _frontier_point_constraints_override
+        from haute.routes._optimiser_frontier import _frontier_point_constraints_override
 
         job = {
             "frontier_data": {
-                "points": [{"converged": True, "threshold_a": 1.0, "threshold_unknown": 1.0}],
+                "points": [
+                    make_frontier_point(
+                        thresholds={"a": 1.0, "unknown": 1.0},
+                        bounds={"a": 1.0, "unknown": 1.0},
+                        totals={"a": 1.0, "unknown": 1.0},
+                        lambdas={"a": 0.0, "unknown": 0.0},
+                    )
+                ],
                 "n_points": 1,
                 "constraint_names": ["a", "unknown"],
             },
@@ -15645,7 +14865,7 @@ class TestOptimiserHelperValidators:
         assert "constraint is missing" in exc.value.detail
 
     def test_summary_solve_result_round_trips_optional_fields(self) -> None:
-        from haute.routes.optimiser import _summary_solve_result
+        from haute.routes._optimiser_frontier import _summary_solve_result
 
         result = {
             "lambdas": {"a": 0.1},
@@ -15658,6 +14878,9 @@ class TestOptimiserHelperValidators:
             "cd_iterations": 2,
             "clamp_rate": 0.01,
             "factor_tables": {"region": [{"value": 1.0}]},
+            "diagnostics_errors": [],
+            "input_summary": make_input_summary(),
+            "scenario_grid": SOLVE_SCENARIO_GRID,
         }
         ns = _summary_solve_result(result)
         assert ns.lambdas == {"a": 0.1}
@@ -15666,7 +14889,7 @@ class TestOptimiserHelperValidators:
         assert ns.factor_tables == {"region": [{"value": 1.0}]}
 
     def test_cached_result_matches_frontier_selection_rejects_bools(self) -> None:
-        from haute.routes.optimiser import _cached_result_matches_frontier_selection
+        from haute.routes._optimiser_frontier import _cached_result_matches_frontier_selection
 
         # bool is technically int in Python — must be explicitly rejected.
         assert (
@@ -15693,8 +14916,8 @@ class TestOptimiserHelperValidators:
 
     def test_cleanup_orphan_apply_artifact_uses_unknown_for_missing_path(self) -> None:
         """Covers the ``"<unknown>"`` fallback in the warning log."""
-        from haute.routes import optimiser as optimiser_module
-        from haute.routes.optimiser import _cleanup_orphan_apply_artifact
+        from haute.routes import _optimiser_frontier as optimiser_module
+        from haute.routes._optimiser_frontier import _cleanup_orphan_apply_artifact
 
         with patch.object(
             optimiser_module,
@@ -15740,7 +14963,7 @@ class TestOptimiserMutationBoundaries:
         round-trips and (potentially) across restarts.  A drift to a
         different prefix would orphan every previously-saved handle.
         """
-        from haute.routes.optimiser import (
+        from haute.routes._optimiser_frontier import (
             _FRONTIER_APPLY_HANDLE_PREFIX,
             _frontier_apply_handle_key,
         )
@@ -15810,7 +15033,7 @@ class TestOptimiserMutationBoundaries:
         Test both ``True`` and ``False`` to defend against a mutation
         that drops only one of the bool checks.
         """
-        from haute.routes.optimiser import _cached_result_matches_frontier_selection
+        from haute.routes._optimiser_frontier import _cached_result_matches_frontier_selection
 
         # True looks like 1 numerically — but must be rejected.
         assert (
@@ -15898,12 +15121,17 @@ class TestOptimiserMutationBoundaries:
         """
         mock_solver = MagicMock()
         mock_solver.frontier.return_value = SimpleNamespace(
-            points=pl.DataFrame(
-                {
-                    "total_objective": [42.0],
-                    "volume": [0.9],
-                    "lambda_volume": [0.0],
-                }
+            points=library_frontier_frame(
+                [
+                    {
+                        "total_objective": 42.0,
+                        "total_volume": 0.9,
+                        "lambda_volume": 0.0,
+                        "bound_volume": 0.9,
+                        "converged": True,
+                    }
+                ],
+                constraint_names=["volume"],
             )
         )
         seed_job(
@@ -15924,8 +15152,12 @@ class TestOptimiserMutationBoundaries:
                     "baseline_objective": 38.0,
                     "constraints": {"volume": 0.85},
                     "baseline_constraints": {"volume": 0.85},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 0.0},
                     "converged": True,
+                    "diagnostics_errors": [],
+                    "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "artifact_handles": {},
                 "created_at": time.time(),
@@ -15966,18 +15198,24 @@ class TestOptimiserMutationBoundaries:
         """
         mock_solver = MagicMock()
         mock_solver.frontier.return_value = SimpleNamespace(
-            points=pl.DataFrame(
-                {
-                    "total_objective": [42.0],
-                    "volume": [0.9],
-                    "lambda_volume": [0.0],
-                }
+            points=library_frontier_frame(
+                [
+                    {
+                        "total_objective": 42.0,
+                        "total_volume": 0.9,
+                        "lambda_volume": 0.0,
+                        "bound_volume": 0.9,
+                        "converged": True,
+                    }
+                ],
+                constraint_names=["volume"],
             )
         )
         seed_job(
             clean_job_store,
             "frontier_pinned",
             {
+                "result": make_solved_result(mode="online", constraint_names=["volume"]),
                 "status": "completed",
                 "solver": mock_solver,
                 "quote_grid": MagicMock(),
@@ -16015,18 +15253,31 @@ class TestOptimiserMutationBoundaries:
         """
         mock_solver = MagicMock()
         mock_solver.frontier.return_value = SimpleNamespace(
-            points=pl.DataFrame(
-                {
-                    "total_objective": [50.0, 60.0],
-                    "volume": [0.8, 0.95],
-                    "lambda_volume": [0.0, 0.7128],
-                }
+            points=library_frontier_frame(
+                [
+                    {
+                        "total_objective": 50.0,
+                        "total_volume": 0.8,
+                        "lambda_volume": 0.0,
+                        "bound_volume": 0.9,
+                        "converged": True,
+                    },
+                    {
+                        "total_objective": 60.0,
+                        "total_volume": 0.95,
+                        "lambda_volume": 0.7128,
+                        "bound_volume": 0.9,
+                        "converged": True,
+                    },
+                ],
+                constraint_names=["volume"],
             )
         )
         seed_job(
             clean_job_store,
             "frontier_lambda_zero",
             {
+                "result": make_solved_result(mode="online", constraint_names=["volume"]),
                 "status": "completed",
                 "solver": mock_solver,
                 "quote_grid": MagicMock(),
@@ -16048,6 +15299,281 @@ class TestOptimiserMutationBoundaries:
         points = data["points"]
         assert len(points) == 2
         # Exact zero must serialise as 0 / 0.0, not be coerced to None or string.
-        assert points[0]["lambda_volume"] == 0.0
+        assert points[0]["lambdas"]["volume"] == 0.0
         # Non-trivial precision is preserved (no integer truncation).
-        assert points[1]["lambda_volume"] == pytest.approx(0.7128, rel=1e-6)
+        assert points[1]["lambdas"]["volume"] == pytest.approx(0.7128, rel=1e-6)
+
+
+class TestPublishWithoutHeavyState:
+    """Save and MLflow log publish from lightweight summaries, never heavy state."""
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_save_log_save_succeed_on_a_real_solve_even_after_heavy_state_is_cleared(
+        self, client, clean_job_store, scored_data, tmp_path, monkeypatch
+    ):
+        import json as json_mod
+
+        graph = _make_optimiser_graph(scored_data)
+        started = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+        job_id = started.json()["job_id"]
+        assert _poll_until_done(client, job_id)["status"] == "completed"
+        job = clean_job_store.require_job(job_id)
+        summary = job["publish_summary"]
+        assert summary["metrics"]["total_objective"] == job["result"]["total_objective"]
+        assert job["input_provenance"]["node_id"] == "opt"
+        assert job["input_provenance"]["data_source"] == "batch"
+        store = use_local_mlflow_store(tmp_path, monkeypatch)
+
+        def save(overwrite: bool):
+            return client.post(
+                "/api/optimiser/save",
+                json={
+                    "job_id": job_id,
+                    "output_path": "rating/opt.json",
+                    "overwrite": overwrite,
+                },
+            )
+
+        first = save(False)
+        assert first.status_code == 200, first.text
+        assert first.json()["apply_path"] == "rating/opt.json"
+        logged = client.post("/api/optimiser/mlflow/log", json={"job_id": job_id})
+        assert logged.status_code == 200, logged.text
+        assert save(True).status_code == 200
+
+        # Publishing never released the heavy state ...
+        assert {"solver", "solve_result", "quote_grid"} <= set(clean_job_store.require_job(job_id))
+        # ... and does not need it: publish again once it is gone.
+        clean_job_store.clear_result_data(job_id)
+        assert "solver" not in clean_job_store.require_job(job_id)
+        assert save(True).status_code == 200
+        relogged = client.post("/api/optimiser/mlflow/log", json={"job_id": job_id})
+        assert relogged.status_code == 200, relogged.text
+
+        saved = json_mod.loads((tmp_path / "rating" / "opt.json").read_text(encoding="utf-8"))
+        assert saved["total_objective"] == job["result"]["total_objective"]
+        assert saved["lambdas"] == job["result"]["lambdas"]
+        assert saved["solver_settings"]["max_iter"] == 20
+        assert saved["solver_settings"]["tolerance"] == 1e-4
+        assert saved["input_summary"]["n_quotes"] == job["result"]["n_quotes"]
+        assert saved["input_summary"]["graph_fingerprint"]
+        run = store.get_run(relogged.json()["run_id"])
+        assert run.data.metrics["total_objective"] == job["result"]["total_objective"]
+        assert run.data.params["solver_settings.max_iter"] == "20"
+
+    @staticmethod
+    def _seed(store, job_id: str) -> None:
+        seed_job(
+            store,
+            job_id,
+            {
+                "status": "completed",
+                "result": _anchor_result(),
+                "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+                "node_label": "opt",
+                "created_at": time.time(),
+                "completed_at": time.time(),
+            },
+        )
+
+    def test_relative_path_resolves_against_the_project_root(
+        self, client, clean_job_store, tmp_path
+    ):
+        self._seed(clean_job_store, "rel")
+        set_project_root(tmp_path)
+        pipeline_dir = tmp_path / "pipelines"
+        with patch("haute.routes._helpers.pipeline_dir", return_value=pipeline_dir):
+            resp = client.post(
+                "/api/optimiser/save",
+                json={"job_id": "rel", "output_path": "out/nested/result.json"},
+            )
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["apply_path"] == "out/nested/result.json"
+        assert Path(body["path"]) == (tmp_path / "out" / "nested" / "result.json").resolve()
+        assert (tmp_path / "out" / "nested" / "result.json").is_file()
+        assert not pipeline_dir.exists()
+
+    def test_absolute_path_inside_the_root_answers_a_relative_apply_path(
+        self, client, clean_job_store, tmp_path
+    ):
+        self._seed(clean_job_store, "abs")
+        set_project_root(tmp_path)
+        resp = client.post(
+            "/api/optimiser/save",
+            json={"job_id": "abs", "output_path": str(tmp_path / "a" / "b.json")},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["apply_path"] == "a/b.json"
+
+    def test_existing_file_is_a_409_unless_overwrite(self, client, clean_job_store, tmp_path):
+        import json as json_mod
+
+        self._seed(clean_job_store, "exists")
+        set_project_root(tmp_path)
+        target = tmp_path / "result.json"
+        previous = json_mod.dumps({"version": "previous"})
+        target.write_text(previous, encoding="utf-8")
+
+        refused = client.post(
+            "/api/optimiser/save",
+            json={"job_id": "exists", "output_path": "result.json"},
+        )
+        assert refused.status_code == 409
+        assert refused.json()["detail"] == {
+            "error_code": "optimiser_result_exists",
+            "message": "Optimiser result already exists: result.json",
+        }
+        assert target.read_text(encoding="utf-8") == previous
+
+        replaced = client.post(
+            "/api/optimiser/save",
+            json={
+                "job_id": "exists",
+                "output_path": "result.json",
+                "overwrite": True,
+                "stale": True,
+            },
+        )
+        assert replaced.status_code == 200, replaced.text
+        saved = json_mod.loads(target.read_text(encoding="utf-8"))
+        assert saved["total_objective"] == 100.0
+        assert saved["stale_at_publish"] is True
+
+    def test_anchor_apply_after_a_clear_reads_the_anchor_totals(self, client, clean_job_store):
+        """With a point selected, anchor detail from the artifact reports the anchor's totals."""
+        seed_job(
+            clean_job_store,
+            "anchor_apply",
+            {
+                "status": "completed",
+                "base_result": _anchor_result(),
+                "result": _anchor_result(total_objective=130.0, selected_frontier_point=1),
+                "selected_frontier_point": 1,
+                "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "frontier_generation": 0,
+                "artifact_handles": {"apply_result": {"kind": "stub"}},
+                "created_at": time.time(),
+                "completed_at": time.time(),
+            },
+        )
+        frame = make_online_apply_frame(["q1"])
+        with patch(
+            "haute.routes._optimiser_artifacts._scan_apply_result_artifact",
+            return_value=frame.lazy(),
+        ) as load:
+            resp = client.post("/api/optimiser/apply", json={"job_id": "anchor_apply"})
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["total_objective"] == 100.0
+        assert resp.json()["from_artifact"] is True
+        load.assert_called_once_with({"kind": "stub"})
+
+
+class TestPublishSummary:
+    def test_frames_become_records_and_nothing_heavy_is_kept(self):
+        from haute.routes._optimiser_solver import _publish_summary
+
+        solver = MagicMock()
+        solver.summary.return_value = {
+            "params": {"objective": "income"},
+            "metrics": {"total_objective": 1.0},
+            "artifacts": {
+                "convergence": pl.DataFrame({"iteration": [0, 1]}),
+                "rating_entries": {"region": pl.DataFrame({"region": ["N"], "factor": [1.1]})},
+                "none": None,
+            },
+        }
+
+        summary = _publish_summary(solver, SimpleNamespace(), job_id="j")
+
+        assert summary == {
+            "params": {"objective": "income"},
+            "metrics": {"total_objective": 1.0},
+            "artifacts": {
+                "convergence": [{"iteration": 0}, {"iteration": 1}],
+                "rating_entries": {"region": [{"region": "N", "factor": 1.1}]},
+                "none": None,
+            },
+        }
+
+    def test_a_failing_summary_does_not_fail_the_solve(self):
+        from haute.routes._optimiser_solver import _publish_summary
+
+        solver = MagicMock()
+        solver.summary.side_effect = RuntimeError("no dataframe")
+        with patch("haute.routes._optimiser_solver.logger.warning") as warning:
+            assert _publish_summary(solver, SimpleNamespace(), job_id="j") is None
+        assert warning.call_args.args == ("publish_summary_failed",)
+
+    def test_a_non_mapping_summary_is_refused(self):
+        from haute.routes._optimiser_solver import _publish_summary
+
+        solver = MagicMock()
+        solver.summary.return_value = ["not", "a", "mapping"]
+        with patch("haute.routes._optimiser_solver.logger.warning") as warning:
+            assert _publish_summary(solver, SimpleNamespace(), job_id="j") is None
+        assert warning.call_args.args == ("publish_summary_invalid",)
+
+
+class TestFrontierPointBaselinesAreRequired:
+    """A frontier point's baselines come from its solve; a missing one is an error."""
+
+    def test_a_base_result_without_baselines_fails_loudly(self) -> None:
+        from haute.routes._optimiser_frontier import _frontier_point_result_dict
+
+        job = {
+            "config": {"constraints": {"a": {"min": 0.9}}},
+            "frontier_data": {
+                "points": [
+                    typed_frontier_point(
+                        {
+                            "converged": True,
+                            "lambda_a": 0.5,
+                            "total_objective": 100.0,
+                            "total_a": 0.9,
+                            "bound_a": 0.9,
+                        }
+                    )
+                ],
+                "n_points": 1,
+                "constraint_names": ["a"],
+            },
+            "base_result": {"baseline_constraints": {"a": 0.85}},
+        }
+
+        with pytest.raises(KeyError, match="baseline_objective"):
+            _frontier_point_result_dict(job, 0)
+
+    def test_a_frontier_point_keeps_its_solves_collar(self) -> None:
+        from haute.routes._optimiser_frontier import _frontier_point_result_dict
+
+        bounds = {"min": 0.9, "max": 1.1}
+        job = {
+            "config": {"constraints": {"a": {"min": 0.9}}},
+            "frontier_data": {
+                "points": [
+                    typed_frontier_point(
+                        {
+                            "converged": True,
+                            "lambda_a": 0.5,
+                            "total_objective": 100.0,
+                            "total_a": 0.9,
+                            "bound_a": 0.9,
+                        }
+                    )
+                ],
+                "n_points": 1,
+                "constraint_names": ["a"],
+            },
+            "base_result": {
+                "mode": "ratebook",
+                "baseline_objective": 90.0,
+                "baseline_constraints": {"a": 0.85},
+                "combined_factor_bounds": bounds,
+            },
+        }
+
+        assert _frontier_point_result_dict(job, 0)["combined_factor_bounds"] == bounds

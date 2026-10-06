@@ -1,8 +1,20 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
-import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
+import useOptimiserPublishStore from "../../stores/useOptimiserPublishStore"
 import OptimiserPreview from "../OptimiserPreview"
 import type { OptimiserPreviewData, FrontierData } from "../OptimiserPreview"
 import type { OptimiserSolveResult } from "../../api/types"
+import type { SimpleNode } from "../editors"
+import type { MlflowInventoryState } from "../../utils/mlflowDestinations"
+import {
+  makeAdjustmentReport,
+  makeOnlineFrontier,
+  makeOnlineFrontierPoint,
+  makeOnlineSolveResult,
+  makePointSummary,
+  makeRatebookSolveResult,
+} from "../optimiser/__tests__/fixtures"
+import { makeFrontierSelect } from "../../test-utils/factories"
 
 // ── Mocks ────────────────────────────────────────────────────────
 
@@ -10,8 +22,15 @@ const mockSelectFrontierPointAPI = vi.fn()
 const mockSaveOptimiser = vi.fn()
 const mockLogOptimiserToMlflow = vi.fn()
 const mockApplyOptimiser = vi.fn()
+const mockSolveOptimiser = vi.fn()
+const mockGetOptimiserSegments = vi.fn()
+const mockGetOptimiserSegmentIndex = vi.fn()
 
 vi.mock("../../api/client", () => ({
+  getOptimiserSegments: (...args: unknown[]) => mockGetOptimiserSegments(...args),
+  getOptimiserSegmentIndex: (...args: unknown[]) => mockGetOptimiserSegmentIndex(...args),
+  solveOptimiser: (...args: unknown[]) => mockSolveOptimiser(...args),
+  cancelOptimiserSolve: vi.fn(),
   selectFrontierPoint: (...args: unknown[]) => mockSelectFrontierPointAPI(...args),
   saveOptimiser: (...args: unknown[]) => mockSaveOptimiser(...args),
   logOptimiserToMlflow: (...args: unknown[]) => mockLogOptimiserToMlflow(...args),
@@ -28,67 +47,138 @@ vi.mock("../../hooks/useDragResize", () => ({
 }))
 
 const mockStoreSelectPoint = vi.fn()
-const mockStoreUpdateAfterSelect = vi.fn()
-
-vi.mock("../../stores/useNodeResultsStore", () => ({
-  default: (selector: (s: Record<string, unknown>) => unknown) =>
-    selector({
-      getOptimiserPreview: () => null,
-      selectFrontierPoint: mockStoreSelectPoint,
-      updateFrontierAfterSelect: mockStoreUpdateAfterSelect,
-    }),
+/** The cached solve the stale check compares with the node's config; none by default. */
+const mockSolveState = vi.hoisted(() => ({
+  results: {} as Record<string, unknown>,
+  /** The source-aware data-input column cache the editor and Re-run share. */
+  columnCache: {} as Record<string, unknown>,
 }))
+const mockStoreUpdateAfterSelect = vi.fn()
+const mockStartSolveJob = vi.fn()
+
+vi.mock("../../stores/useNodeResultsStore", async (importOriginal) => {
+  const state = () => ({
+    getOptimiserPreview: () => null,
+    selectFrontierPoint: mockStoreSelectPoint,
+    updateFrontierAfterSelect: mockStoreUpdateAfterSelect,
+    solveResults: mockSolveState.results,
+    solveJobs: {},
+    columnCache: mockSolveState.columnCache,
+    setColumns: vi.fn(),
+    startSolveJob: mockStartSolveJob,
+    failSolveJob: vi.fn(),
+  })
+  return {
+    ...(await importOriginal<typeof import("../../stores/useNodeResultsStore")>()),
+    default: Object.assign(
+      (selector: (s: Record<string, unknown>) => unknown) => selector(state()),
+      { getState: state },
+    ),
+  }
+})
+
+/**
+ * The inventory the preview reads. `base()` is the default workspace: MLflow
+ * installed, local only, so auto is local and every node can log.
+ */
+const mlflowMockState = vi.hoisted(() => {
+  const base = (): MlflowInventoryState => ({
+    status: "ready",
+    installed: true,
+    importable: true,
+    destinations: [
+      {
+        key: "local",
+        configured: true,
+        destination: "C:/proj/mlruns",
+        config_source: "default",
+        detail: "",
+        probed: false,
+        ok: false,
+        category: "",
+      },
+    ],
+    detail: "",
+  })
+  return { base, current: base() }
+})
 
 vi.mock("../../stores/useSettingsStore", () => ({
-  default: (selector: (s: Record<string, unknown>) => unknown) =>
-    selector({
-      mlflow: { status: "connected", backend: "local", host: "" },
-    }),
+  default: Object.assign(
+    (selector: (s: Record<string, unknown>) => unknown) =>
+      selector({ mlflow: mlflowMockState.current, activeSource: "live" }),
+    { getState: () => ({ activeSource: "live" }) },
+  ),
+  useMlflowDestinations: () => mlflowMockState.current,
 }))
+
+/** The input feeding the optimiser in the stale-result tests. */
+const QUOTES_NODE: SimpleNode = {
+  id: "quotes",
+  data: {
+    label: "quotes",
+    description: "",
+    nodeType: "dataInput",
+    config: {},
+    _defaultInputName: "quotes",
+    _sourceHandleInputNames: {},
+    _columns: [
+      { name: "profit", dtype: "Float64" },
+      { name: "quote_id", dtype: "String" },
+      { name: "scenario_index", dtype: "Int64" },
+      { name: "scenario_value", dtype: "Float64" },
+    ],
+  },
+}
+
+/** An optimiser node carrying `config`, as the preview finds it in the graph. */
+function optimiserNode(config: Record<string, unknown> = {}): SimpleNode {
+  return {
+    id: "opt_1",
+    data: { label: "My Optimiser", description: "", nodeType: "optimiser", config },
+  }
+}
 
 // ── Helpers ──────────────────────────────────────────────────────
 
 function makeSolveResult(
   overrides: Partial<OptimiserSolveResult> = {},
 ): OptimiserSolveResult {
-  return {
-    total_objective: 1234567,
-    baseline_objective: 1200000,
-    constraints: { loss_ratio: 0.65 },
-    baseline_constraints: { loss_ratio: 0.60 },
-    lambdas: { loss_ratio: 0.005 },
-    converged: true,
-    iterations: 15,
-    n_quotes: 50000,
-    history: [
-      { iteration: 1, total_objective: 1100000, max_lambda_change: 0.1, all_constraints_satisfied: false },
-      { iteration: 2, total_objective: 1200000, max_lambda_change: 0.01, all_constraints_satisfied: true },
-    ],
-    ...overrides,
-  }
+  return makeOnlineSolveResult(overrides)
 }
 
 function makeFrontier(n = 5, overrides: Partial<FrontierData> = {}): FrontierData {
-  const points = Array.from({ length: n }, (_, i) => ({
-    total_objective: 1200000 + i * 10000,
-    total_loss_ratio: 0.55 + i * 0.02,
-    lambda_loss_ratio: 0.001 + i * 0.001,
-    converged: true,
-  }))
-  return {
-    points,
-    n_points: n,
-    points_returned: n,
-    constraint_names: ["loss_ratio"],
-    points_limit: 2000,
-    points_truncated: false,
-    ...overrides,
-  }
+  // Each point is solved at its own swept max, 0.58, 0.59, ...: point 4
+  // (0.63 against 0.62) breaches it, though it meets the configured 1.05.
+  return makeOnlineFrontier(n, overrides)
+}
+
+/** The displayed result for a selected point, as the results store builds it:
+ *  the point's server summary over the as-solved result. */
+function pointResult(frontier: FrontierData, index: number, base = makeSolveResult()): OptimiserSolveResult {
+  const summary = frontier.point_summaries[index]
+  const overlay: Record<string, unknown> = {}
+  for (const [field, value] of Object.entries(summary)) overlay[field] = value ?? undefined
+  return { ...base, ...overlay, selected_frontier_point: index }
+}
+
+/** The text of each cell in one constraint's attainment row. */
+function attainmentCells(name: string): (string | null)[] {
+  const table = screen.getByRole("table", { name: "Constraint attainment" })
+  const row = within(table).getByRole("rowheader", { name }).closest("tr")
+  if (!row) throw new Error(`No attainment row for ${name}`)
+  return within(row).getAllByRole("cell").map((cell) => cell.textContent)
 }
 
 function makeData(overrides: Partial<OptimiserPreviewData> = {}): OptimiserPreviewData {
+  // A result given without its solve is the as-solved result itself, unless
+  // it is a selected point's (see pointResult), whose solve is the default.
+  const result = overrides.result ?? makeSolveResult()
+  const solvedResult = overrides.solvedResult
+    ?? (result.selected_frontier_point == null ? result : makeSolveResult())
   return {
-    result: makeSolveResult(),
+    result,
+    solvedResult,
     jobId: "job_123",
     constraints: { loss_ratio: { max: 1.05 } },
     nodeLabel: "My Optimiser",
@@ -116,6 +206,10 @@ describe("OptimiserPreview", () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    useOptimiserPublishStore.setState({ byNode: {} })
+    mockSolveState.results = {}
+    mockSolveState.columnCache = {}
+    mlflowMockState.current = mlflowMockState.base()
     mockSelectFrontierPointAPI.mockResolvedValue({
       status: "ok",
       total_objective: 1250000,
@@ -124,6 +218,7 @@ describe("OptimiserPreview", () => {
       baseline_constraints: { loss_ratio: 0.60 },
       lambdas: { loss_ratio: 0.006 },
       converged: true,
+      frontier_generation: 0,
       error: null,
     })
     mockSaveOptimiser.mockResolvedValue({ status: "ok", path: "output/optimiser_My_Optimiser_opt_1.json", message: "" })
@@ -165,7 +260,7 @@ describe("OptimiserPreview", () => {
 
     it("renders quote count", () => {
       renderPreview()
-      expect(screen.getByText(/50,000 quotes/)).toBeInTheDocument()
+      expect(screen.getByText("Converged | 15 iters | 50,000 quotes")).toBeInTheDocument()
     })
 
     it("surfaces frontier computation failures", () => {
@@ -208,7 +303,8 @@ describe("OptimiserPreview", () => {
     it("renders lambda values", () => {
       renderPreview()
       fireEvent.click(screen.getByText("Summary"))
-      expect(screen.getByText("Lambdas")).toBeInTheDocument()
+      expect(screen.getByRole("columnheader", { name: /λ \(multiplier\)/ })).toBeInTheDocument()
+      expect(screen.queryByText(/shadow price/)).not.toBeInTheDocument()
       expect(screen.getByText("0.005000")).toBeInTheDocument()
     })
 
@@ -241,7 +337,7 @@ describe("OptimiserPreview", () => {
       const { rerender } = renderPreview({
         data: makeData({ frontier: makeFrontier() }),
       })
-      expect(screen.getByText(/5 frontier points/)).toBeInTheDocument()
+      expect(screen.getByRole("group", { name: /Efficient frontier/ })).toBeInTheDocument()
 
       rerender(<OptimiserPreview data={makeData({ frontier: null })} nodeId="opt_1" allNodes={[]} edges={[]} />)
 
@@ -258,11 +354,11 @@ describe("OptimiserPreview", () => {
             mode: "ratebook",
             factor_tables: {
               age_band: [
-                { __factor_group__: "17-24", optimal_scenario_value: 0.875 },
-                { __factor_group__: "25-39", optimal_scenario_value: 1.125 },
+                { __factor_group__: "17-24", optimal_scenario_value: 0.875, quote_count: 10 },
+                { __factor_group__: "25-39", optimal_scenario_value: 1.125, quote_count: 10 },
               ],
               region: [
-                { __factor_group__: "North", optimal_scenario_value: 1.05 },
+                { __factor_group__: "North", optimal_scenario_value: 1.05, quote_count: 10 },
               ],
             },
           }),
@@ -271,19 +367,85 @@ describe("OptimiserPreview", () => {
 
       fireEvent.click(screen.getByText("Rates"))
 
-      expect(screen.getByText("age_band")).toBeInTheDocument()
-      expect(screen.getByText("17-24")).toBeInTheDocument()
+      expect(screen.getByRole("heading", { name: "age_band" })).toBeInTheDocument()
+      expect(screen.getAllByText("17-24").length).toBeGreaterThan(0)
       expect(screen.getAllByText("0.8750").length).toBeGreaterThan(0)
-      expect(screen.getByText("25-39")).toBeInTheDocument()
+      expect(screen.getAllByText("25-39").length).toBeGreaterThan(0)
       expect(screen.getAllByText("1.1250").length).toBeGreaterThan(0)
       expect(screen.queryByText("North")).not.toBeInTheDocument()
 
-      fireEvent.change(screen.getByLabelText("Rate factor"), { target: { value: "region" } })
+      fireEvent.click(screen.getByRole("button", { name: "region" }))
 
-      expect(screen.getByText("region")).toBeInTheDocument()
-      expect(screen.getByText("North")).toBeInTheDocument()
+      expect(screen.getByRole("heading", { name: "region" })).toBeInTheDocument()
+      expect(screen.getAllByText("North").length).toBeGreaterThan(0)
       expect(screen.getAllByText("1.0500").length).toBeGreaterThan(0)
       expect(screen.queryByText("17-24")).not.toBeInTheDocument()
+    })
+
+    it("keeps the chosen Rates factor across tab switches", () => {
+      renderPreview({
+        data: makeData({
+          result: makeSolveResult({
+            mode: "ratebook",
+            factor_tables: {
+              age_band: [
+                { __factor_group__: "17-24", optimal_scenario_value: 0.875, quote_count: 10 },
+                { __factor_group__: "25-39", optimal_scenario_value: 1.125, quote_count: 10 },
+              ],
+              region: [
+                { __factor_group__: "North", optimal_scenario_value: 1.05, quote_count: 10 },
+              ],
+            },
+          }),
+        }),
+      })
+
+      fireEvent.click(screen.getByText("Rates"))
+      fireEvent.click(screen.getByRole("button", { name: "region" }))
+      fireEvent.click(screen.getByText("Summary"))
+      fireEvent.click(screen.getByText("Rates"))
+
+      expect(screen.getByRole("heading", { name: "region" })).toBeInTheDocument()
+    })
+
+    it("shares the chosen key between Rates and Segments", async () => {
+      mockGetOptimiserSegmentIndex.mockReturnValue(new Promise(() => {}))
+      mockGetOptimiserSegments.mockReturnValue(new Promise(() => {}))
+      const factorKey = (key: string) => ({
+        key,
+        source: "factor" as const,
+        binning: "categorical" as const,
+        available: true,
+        unavailable_reason: null,
+      })
+      renderPreview({
+        data: makeData({
+          result: makeSolveResult({
+            mode: "ratebook",
+            factor_tables: {
+              age_band: [
+                { __factor_group__: "17-24", optimal_scenario_value: 0.875, quote_count: 10 },
+              ],
+              region: [
+                { __factor_group__: "North", optimal_scenario_value: 1.05, quote_count: 10 },
+              ],
+            },
+            segment_keys: [factorKey("age_band"), factorKey("region")],
+          }),
+        }),
+      })
+
+      fireEvent.click(screen.getByText("Rates"))
+      fireEvent.click(screen.getByRole("button", { name: "region" }))
+      fireEvent.click(screen.getByText("Segments"))
+
+      expect(screen.getByRole("button", { name: "region" }).getAttribute("aria-pressed")).toBe("true")
+      await waitFor(() => expect(mockGetOptimiserSegments).toHaveBeenCalled())
+      expect(mockGetOptimiserSegments.mock.calls[0][0]).toMatchObject({ key: "region", weight: "quotes" })
+
+      fireEvent.click(screen.getByRole("button", { name: "age_band" }))
+      fireEvent.click(screen.getByText("Rates"))
+      expect(screen.getByRole("heading", { name: "age_band" })).toBeInTheDocument()
     })
 
     it("orders Rates tab factors and levels by the configured banding source", () => {
@@ -354,19 +516,19 @@ describe("OptimiserPreview", () => {
             mode: "ratebook",
             factor_tables: {
               channel_band: [
-                { __factor_group__: "broker", optimal_scenario_value: 1.2 },
-                { __factor_group__: "direct_web", optimal_scenario_value: 1.1 },
+                { __factor_group__: "broker", optimal_scenario_value: 1.2, quote_count: 10 },
+                { __factor_group__: "direct_web", optimal_scenario_value: 1.1, quote_count: 10 },
               ],
               vehicle_age_band: [
-                { __factor_group__: "10-11", optimal_scenario_value: 0.9 },
-                { __factor_group__: "1-3", optimal_scenario_value: 1.0 },
-                { __factor_group__: "missing", optimal_scenario_value: 0.8 },
-                { __factor_group__: "4-5", optimal_scenario_value: 1.05 },
+                { __factor_group__: "10-11", optimal_scenario_value: 0.9, quote_count: 10 },
+                { __factor_group__: "1-3", optimal_scenario_value: 1.0, quote_count: 10 },
+                { __factor_group__: "missing", optimal_scenario_value: 0.8, quote_count: 10 },
+                { __factor_group__: "4-5", optimal_scenario_value: 1.05, quote_count: 10 },
               ],
               proposer_age_band: [
-                { __factor_group__: "28-34", optimal_scenario_value: 0.95 },
-                { __factor_group__: "20-27", optimal_scenario_value: 1.1 },
-                { __factor_group__: "missing", optimal_scenario_value: 0.85 },
+                { __factor_group__: "28-34", optimal_scenario_value: 0.95, quote_count: 10 },
+                { __factor_group__: "20-27", optimal_scenario_value: 1.1, quote_count: 10 },
+                { __factor_group__: "missing", optimal_scenario_value: 0.85, quote_count: 10 },
               ],
             },
           }),
@@ -375,17 +537,9 @@ describe("OptimiserPreview", () => {
 
       fireEvent.click(screen.getByText("Rates"))
 
-      const factorSelect = screen.getByLabelText("Rate factor") as HTMLSelectElement
-      expect(Array.from(factorSelect.options).map(option => option.value)).toEqual([
-        "proposer_age_band",
-        "vehicle_age_band",
-        "channel_band",
-      ])
-
-      fireEvent.change(factorSelect, { target: { value: "vehicle_age_band" } })
-      const levelCells = Array.from(document.querySelectorAll("tbody tr td:first-child"))
-        .map(cell => cell.textContent)
-      expect(levelCells).toEqual(["1-3", "4-5", "10-11", "missing"])
+      fireEvent.click(screen.getByRole("button", { name: "vehicle_age_band" }))
+      const levels = screen.getAllByTestId("relativity-row").map(row => row.getAttribute("data-key"))
+      expect(levels).toEqual(["1-3", "4-5", "10-11", "missing"])
     })
 
     it("keeps factor tables out of Summary once the Rates tab exists", () => {
@@ -395,7 +549,7 @@ describe("OptimiserPreview", () => {
             mode: "ratebook",
             factor_tables: {
               age_band: [
-                { __factor_group__: "17-24", optimal_scenario_value: 0.875 },
+                { __factor_group__: "17-24", optimal_scenario_value: 0.875, quote_count: 10 },
               ],
             },
           }),
@@ -405,25 +559,22 @@ describe("OptimiserPreview", () => {
       fireEvent.click(screen.getByText("Summary"))
 
       expect(screen.queryByText("Factor Tables")).not.toBeInTheDocument()
-      expect(screen.queryByText("17-24")).not.toBeInTheDocument()
+      // A level appears on Summary only in the beeswarm's own values table.
+      const levelCells = screen.queryAllByText("17-24")
+      expect(levelCells).toHaveLength(1)
+      expect(levelCells[0].closest("table")).toHaveAttribute("aria-label", "Mechanical price effect values")
     })
 
+    // The beeswarm's own behaviour is pinned in optimiser/__tests__/RatebookImpactBeeswarm.test.tsx.
     it("shows a ratebook mechanical price effect beeswarm on Summary", () => {
       renderPreview({
         data: makeData({
           result: makeSolveResult({
             mode: "ratebook",
             factor_tables: {
-              age_band: [
-                { __factor_group__: "17-24", optimal_scenario_value: 0.75 },
-                { __factor_group__: "25-39", optimal_scenario_value: 1.40 },
-                { __factor_group__: "40-49", optimal_scenario_value: 1.41 },
-                { __factor_group__: "50-59", optimal_scenario_value: 1.42 },
-                { __factor_group__: "60-69", optimal_scenario_value: 1.43 },
-              ],
               region: [
-                { __factor_group__: "North", optimal_scenario_value: 1.05 },
-                { __factor_group__: "South", optimal_scenario_value: 0.98 },
+                { __factor_group__: "North", optimal_scenario_value: 1.05, quote_count: 10 },
+                { __factor_group__: "South", optimal_scenario_value: 0.98, quote_count: 10 },
               ],
             },
           }),
@@ -432,150 +583,8 @@ describe("OptimiserPreview", () => {
 
       fireEvent.click(screen.getByText("Summary"))
 
-      expect(screen.getByText("Mechanical Price Effect")).toBeInTheDocument()
       expect(screen.getByTestId("ratebook-impact-beeswarm")).toBeInTheDocument()
-      const factorLabels = screen.getAllByTestId("ratebook-impact-factor")
-      expect(factorLabels.map((label) => label.textContent)).toEqual(["age_band", "region"])
-      expect(screen.getByLabelText("age_band 17-24: -25.0%")).toBeInTheDocument()
-      expect(screen.getByLabelText("age_band 25-39: +40.0%")).toBeInTheDocument()
-      expect(screen.getByText("Log rate effect")).toBeInTheDocument()
-      expect(screen.getByText("Factor value")).toBeInTheDocument()
-      expect(screen.getByText("Low")).toBeInTheDocument()
-      expect(screen.getByText("High")).toBeInTheDocument()
-
-      const decreasingDot = screen.getByLabelText("age_band 17-24: -25.0%")
-      const increasingDots = [
-        screen.getByLabelText("age_band 25-39: +40.0%"),
-        screen.getByLabelText("age_band 40-49: +41.0%"),
-        screen.getByLabelText("age_band 50-59: +42.0%"),
-        screen.getByLabelText("age_band 60-69: +43.0%"),
-      ]
-      expect(decreasingDot).toHaveAttribute("data-impact-direction", "decreasing")
-      expect(increasingDots[0]).toHaveAttribute("data-impact-direction", "increasing")
-      expect(decreasingDot).toHaveAttribute("data-factor-value-position", "0.00")
-      expect(increasingDots[3]).toHaveAttribute("data-factor-value-position", "1.00")
-      expect(decreasingDot).toHaveAttribute(
-        "fill",
-        "color-mix(in srgb, var(--chart-impact-value-low) 100%, var(--chart-impact-value-high) 0%)",
-      )
-      expect(increasingDots[3]).toHaveAttribute(
-        "fill",
-        "color-mix(in srgb, var(--chart-impact-value-low) 0%, var(--chart-impact-value-high) 100%)",
-      )
-      expect(new Set(increasingDots.map((dot) => dot.getAttribute("cy"))).size).toBeGreaterThan(1)
-    })
-
-    it("orders mechanical price effect factors by quote-count weighted impact", () => {
-      renderPreview({
-        data: makeData({
-          result: makeSolveResult({
-            mode: "ratebook",
-            factor_tables: {
-              sparse_extreme: [
-                { __factor_group__: "Rare", optimal_scenario_value: 2.50, quote_count: 1 },
-                { __factor_group__: "Common", optimal_scenario_value: 1.00, quote_count: 999 },
-              ],
-              common_moderate: [
-                { __factor_group__: "Low", optimal_scenario_value: 0.90, quote_count: 500 },
-                { __factor_group__: "High", optimal_scenario_value: 1.10, quote_count: 500 },
-              ],
-            },
-          }),
-        }),
-      })
-
-      fireEvent.click(screen.getByText("Summary"))
-
-      const factorLabels = screen.getAllByTestId("ratebook-impact-factor")
-      expect(factorLabels.map((label) => label.textContent)).toEqual([
-        "common_moderate",
-        "sparse_extreme",
-      ])
-    })
-
-    it("colours dash-separated numeric bands across unicode dash variants", () => {
-      renderPreview({
-        data: makeData({
-          result: makeSolveResult({
-            mode: "ratebook",
-            factor_tables: {
-              age_band: [
-                { __factor_group__: "18–19", optimal_scenario_value: 0.95, quote_count: 10 },
-                { __factor_group__: "20—29", optimal_scenario_value: 1.00, quote_count: 10 },
-                { __factor_group__: "30 − 39", optimal_scenario_value: 1.05, quote_count: 10 },
-                { __factor_group__: "40 - 49", optimal_scenario_value: 1.10, quote_count: 10 },
-              ],
-            },
-          }),
-        }),
-      })
-
-      fireEvent.click(screen.getByText("Summary"))
-
-      expect(screen.getByLabelText("age_band 18–19: -5.0%")).toHaveAttribute(
-        "data-factor-value-position",
-        "0.00",
-      )
-      expect(screen.getByLabelText("age_band 20—29: 0.0%")).not.toHaveAttribute(
-        "data-factor-value-position",
-        "unknown",
-      )
-      expect(screen.getByLabelText("age_band 30 − 39: +5.0%")).not.toHaveAttribute(
-        "data-factor-value-position",
-        "unknown",
-      )
-      expect(screen.getByLabelText("age_band 40 - 49: +10.0%")).toHaveAttribute(
-        "data-factor-value-position",
-        "1.00",
-      )
-    })
-
-    it("colours ratebook impact dots by factor value rather than impact direction", () => {
-      renderPreview({
-        data: makeData({
-          result: makeSolveResult({
-            mode: "ratebook",
-            factor_tables: {
-              net_premium: [
-                {
-                  __factor_group__: "100",
-                  net_premium: 100,
-                  optimal_scenario_value: 1.25,
-                },
-                {
-                  __factor_group__: "500",
-                  net_premium: 500,
-                  optimal_scenario_value: 0.80,
-                },
-              ],
-              region: [
-                { __factor_group__: "North", optimal_scenario_value: 1.05 },
-              ],
-            },
-          }),
-        }),
-      })
-
-      fireEvent.click(screen.getByText("Summary"))
-
-      const lowValueIncreasingDot = screen.getByLabelText("net_premium 100: +25.0%")
-      const highValueDecreasingDot = screen.getByLabelText("net_premium 500: -20.0%")
-      const unorderedCategoryDot = screen.getByLabelText("region North: +5.0%")
-
-      expect(lowValueIncreasingDot).toHaveAttribute("data-impact-direction", "increasing")
-      expect(lowValueIncreasingDot).toHaveAttribute("data-factor-value-position", "0.00")
-      expect(lowValueIncreasingDot).toHaveAttribute(
-        "fill",
-        "color-mix(in srgb, var(--chart-impact-value-low) 100%, var(--chart-impact-value-high) 0%)",
-      )
-      expect(highValueDecreasingDot).toHaveAttribute("data-impact-direction", "decreasing")
-      expect(highValueDecreasingDot).toHaveAttribute("data-factor-value-position", "1.00")
-      expect(highValueDecreasingDot).toHaveAttribute(
-        "fill",
-        "color-mix(in srgb, var(--chart-impact-value-low) 0%, var(--chart-impact-value-high) 100%)",
-      )
-      expect(unorderedCategoryDot).toHaveAttribute("data-factor-value-position", "unknown")
-      expect(unorderedCategoryDot).toHaveAttribute("fill", "var(--chart-impact-value-neutral)")
+      expect(screen.getByLabelText("region North: +5.0%")).toBeInTheDocument()
     })
 
     it("does not show the mechanical price effect chart for online results", () => {
@@ -585,7 +594,7 @@ describe("OptimiserPreview", () => {
             mode: "online",
             factor_tables: {
               age_band: [
-                { __factor_group__: "17-24", optimal_scenario_value: 0.75 },
+                { __factor_group__: "17-24", optimal_scenario_value: 0.75, quote_count: 10 },
               ],
             },
           }),
@@ -604,7 +613,7 @@ describe("OptimiserPreview", () => {
             mode: "online",
             factor_tables: {
               age_band: [
-                { __factor_group__: "17-24", optimal_scenario_value: 0.875 },
+                { __factor_group__: "17-24", optimal_scenario_value: 0.875, quote_count: 10 },
               ],
             },
           }),
@@ -620,7 +629,7 @@ describe("OptimiserPreview", () => {
         data: makeData({
           result: makeSolveResult({
             mode: "ratebook",
-            factor_tables: undefined,
+            factor_tables: {},
           }),
         }),
       })
@@ -636,7 +645,7 @@ describe("OptimiserPreview", () => {
         data: makeData({
           result: makeSolveResult({
             mode: "ratebook",
-            factor_tables: undefined,
+            factor_tables: {},
           }),
           frontier: makeFrontier(),
           selectedPointIndex: 0,
@@ -654,21 +663,25 @@ describe("OptimiserPreview", () => {
     it("switches to Convergence tab on click", () => {
       renderPreview()
       fireEvent.click(screen.getByText("Convergence"))
-      expect(screen.getByText("Iterations")).toBeInTheDocument()
+      expect(screen.getByRole("img", { name: "Objective by iteration" })).toBeInTheDocument()
     })
 
-    it("hides Convergence tab when no history data", () => {
-      renderPreview({ data: makeData({ result: makeSolveResult({ history: null }) }) })
-      expect(screen.queryByText("Convergence")).not.toBeInTheDocument()
+    it("offers Convergence for a ratebook result without a trace and says why it is empty", () => {
+      renderPreview({
+        data: makeData({ result: makeSolveResult({ mode: "ratebook", history: null, ratebook_cd_trace: null }) }),
+      })
+      fireEvent.click(screen.getByRole("tab", { name: "Convergence" }))
+      expect(screen.getByText(
+        "The coordinate-descent trace is recorded by live solves only; this result has none.",
+      )).toBeInTheDocument()
     })
 
     it("defaults to Frontier tab when frontier data exists", () => {
       renderPreview({ data: makeData({ frontier: makeFrontier() }) })
-      // Chart info text is visible by default
-      expect(screen.getByText(/5 frontier points/)).toBeInTheDocument()
+      expect(screen.getByRole("group", { name: /Efficient frontier/ })).toBeInTheDocument()
     })
 
-    it("keeps frontier point navigation available on the Summary tab", () => {
+    it("keeps frontier point navigation available on another tab", () => {
       renderPreview({
         data: makeData({
           frontier: makeFrontier(),
@@ -676,7 +689,7 @@ describe("OptimiserPreview", () => {
         }),
       })
 
-      fireEvent.click(screen.getByText("Summary"))
+      fireEvent.click(screen.getByRole("tab", { name: "Convergence" }))
 
       expect(screen.getByText("Point 3 of 5")).toBeInTheDocument()
       fireEvent.click(screen.getByRole("button", { name: "Next frontier point" }))
@@ -688,7 +701,7 @@ describe("OptimiserPreview", () => {
   describe("Frontier tab with data", () => {
     it("renders frontier scatter chart area", () => {
       renderPreview({ data: makeData({ frontier: makeFrontier() }) })
-      expect(screen.getByText(/5 frontier points/)).toBeInTheDocument()
+      expect(screen.getByRole("group", { name: /Efficient frontier/ })).toBeInTheDocument()
     })
 
     it("communicates when the frontier payload is capped", () => {
@@ -711,9 +724,12 @@ describe("OptimiserPreview", () => {
         data: makeData({
           frontier: {
             points: [],
+            point_summaries: [],
             n_points: 0,
             points_returned: 0,
+            frontier_generation: 0,
             constraint_names: [],
+            swept_axes: [],
             points_limit: 2000,
             points_truncated: false,
           },
@@ -724,7 +740,7 @@ describe("OptimiserPreview", () => {
 
     it("keeps hook order stable if frontier data disappears while the tab is mounted", () => {
       const { rerender } = renderPreview({ data: makeData({ frontier: makeFrontier() }) })
-      expect(screen.getByText(/5 frontier points/)).toBeInTheDocument()
+      expect(screen.getByRole("group", { name: /Efficient frontier/ })).toBeInTheDocument()
 
       rerender(<OptimiserPreview data={makeData({ frontier: null })} nodeId="opt_1" allNodes={[]} edges={[]} />)
 
@@ -733,74 +749,42 @@ describe("OptimiserPreview", () => {
       expect(screen.getByText("Optimised")).toBeInTheDocument()
     })
 
-    it("shows detail card content when a point is selected", () => {
+    it("highlights the selected point's row in the points table beside the chart", () => {
       renderPreview({
         data: makeData({
           frontier: makeFrontier(),
           selectedPointIndex: 2,
         }),
       })
-      expect(screen.getByText("Point details")).toBeInTheDocument()
+      const table = screen.getByRole("table", { name: "Frontier slice points" })
+      const current = within(table).getAllByRole("row").filter((row) => row.getAttribute("aria-current") === "true")
+      expect(current.map((row) => within(row).getByRole("rowheader").textContent)).toEqual(["Point 3"])
+      expect(within(table).getByRole("button", { name: "Point 3" })).toHaveAttribute("aria-pressed", "true")
     })
 
-    it("detail card shows Save Result button", () => {
-      renderPreview({
-        data: makeData({
-          frontier: makeFrontier(),
-          selectedPointIndex: 0,
-        }),
-      })
-      expect(screen.getByText("Save Result")).toBeInTheDocument()
+    it("selects a point from its table row as a chart click does", () => {
+      renderPreview({ data: makeData({ frontier: makeFrontier(), selectedPointIndex: 0 }) })
+      const table = screen.getByRole("table", { name: "Frontier slice points" })
+      fireEvent.click(within(table).getByRole("button", { name: "Point 5" }))
+      expect(mockStoreSelectPoint).toHaveBeenCalledWith("opt_1", 4)
     })
 
-    it("detail card shows Log to MLflow button when MLflow is available", () => {
-      renderPreview({
-        data: makeData({
-          frontier: makeFrontier(),
-          selectedPointIndex: 0,
-        }),
-      })
-      expect(screen.getByText("Log to MLflow")).toBeInTheDocument()
+    it("has no intro or point details card: the chart and points table carry the values", () => {
+      renderPreview({ data: makeData({ frontier: makeFrontier(), selectedPointIndex: 0 }) })
+      expect(screen.queryByText("Efficient frontier")).not.toBeInTheDocument()
+      expect(screen.queryByText("Feasibility")).not.toBeInTheDocument()
+      expect(screen.queryByText(/Objective per unit/)).not.toBeInTheDocument()
     })
 
-    it("Save passes the selected point index directly without selecting it first", async () => {
-      renderPreview({
-        data: makeData({
-          frontier: makeFrontier(),
-          selectedPointIndex: 0,
-        }),
-      })
-
-      fireEvent.click(screen.getByText("Save Result"))
-
-      await waitFor(() => {
-        expect(mockSaveOptimiser).toHaveBeenCalledWith({
-          job_id: "job_123",
-          // portableKey(label) + node id: casing preserved, node-unique.
-          output_path: "output/optimiser_My_Optimiser_opt_1.json",
-          point_index: 0,
-        })
-      })
-      expect(mockSelectFrontierPointAPI).not.toHaveBeenCalled()
+    it("offers no publish actions on the Frontier pane", () => {
+      renderPreview({ data: makeData({ frontier: makeFrontier(), selectedPointIndex: 0 }) })
+      expect(screen.queryByRole("button", { name: /Save/ })).not.toBeInTheDocument()
+      expect(screen.queryByRole("button", { name: /Log to MLflow/ })).not.toBeInTheDocument()
     })
 
-    it("Log to MLflow passes the selected point index directly without selecting it first", async () => {
-      renderPreview({
-        data: makeData({
-          frontier: makeFrontier(),
-          selectedPointIndex: 0,
-        }),
-      })
-
-      fireEvent.click(screen.getByText("Log to MLflow"))
-
-      await waitFor(() => {
-        expect(mockLogOptimiserToMlflow).toHaveBeenCalledWith({
-          job_id: "job_123",
-          point_index: 0,
-        })
-      })
-      expect(mockSelectFrontierPointAPI).not.toHaveBeenCalled()
+    it("drops the chart's hover detail while the card shows the selected point", () => {
+      renderPreview({ data: makeData({ frontier: makeFrontier(), selectedPointIndex: 0 }) })
+      expect(screen.queryByText("Hover or focus a frontier point to inspect its values.")).not.toBeInTheDocument()
     })
 
     it("clicking a scatter point switches locally without a select API call", () => {
@@ -816,7 +800,7 @@ describe("OptimiserPreview", () => {
       expect(mockStoreUpdateAfterSelect).not.toHaveBeenCalled()
     })
 
-    it("clicking the selected scatter point deselects locally without a select API call", () => {
+    it("clicking the selected scatter point keeps it selected", () => {
       renderPreview({
         data: makeData({
           frontier: makeFrontier(),
@@ -824,22 +808,19 @@ describe("OptimiserPreview", () => {
         }),
       })
 
-      const selectedPoint = screen.getByRole("button", { name: "Select frontier point 3" })
-      fireEvent.click(selectedPoint)
+      fireEvent.click(screen.getByRole("button", { name: "Select frontier point 3" }))
 
-      expect(mockStoreSelectPoint).toHaveBeenCalledWith("opt_1", null)
+      expect(mockStoreSelectPoint).not.toHaveBeenCalled()
       expect(mockSelectFrontierPointAPI).not.toHaveBeenCalled()
     })
 
-    it("detail card shows constraint values with met/unmet indicators", () => {
+    it("the Frontier pane states the selected point's attainment against its own bound in text", () => {
+      const frontier = makeFrontier()
       renderPreview({
-        data: makeData({
-          frontier: makeFrontier(),
-          selectedPointIndex: 0,
-        }),
+        data: makeData({ frontier, selectedPointIndex: 0, result: pointResult(frontier, 0) }),
       })
-      // The constraint name should appear in the detail card
-      expect(screen.getByText("Constraints")).toBeInTheDocument()
+      expect(screen.queryByRole("tab", { name: "Summary" })).not.toBeInTheDocument()
+      expect(attainmentCells("loss_ratio")).toEqual(["max", "0.58", "0.55", "+0.03 (+5.17%)", "Met", "0.001000"])
     })
 
     it("detail card does not show baseline comparisons for selected frontier points", () => {
@@ -847,11 +828,11 @@ describe("OptimiserPreview", () => {
         data: makeData({
           frontier: makeFrontier(1, {
             points: [
-              {
+              makeOnlineFrontierPoint(0, {
                 total_objective: 1250000,
-                total_loss_ratio: 0.72,
-                lambda_loss_ratio: 0.012345,
-              },
+                totals: { loss_ratio: 0.72 },
+                lambdas: { loss_ratio: 0.012345 },
+              }),
             ],
           }),
           selectedPointIndex: 0,
@@ -862,52 +843,46 @@ describe("OptimiserPreview", () => {
       expect(screen.queryByText(/120\.0%/)).not.toBeInTheDocument()
     })
 
-    it("detail card shows lambda values", () => {
+    it("the Frontier pane shows the selected point's lambda values", () => {
+      const frontier = makeFrontier()
       renderPreview({
-        data: makeData({
-          frontier: makeFrontier(),
-          selectedPointIndex: 0,
-        }),
+        data: makeData({ frontier, selectedPointIndex: 0, result: pointResult(frontier, 0) }),
       })
-      expect(screen.getByText("Lambdas")).toBeInTheDocument()
-    })
-
-    it("detail card reads nested constraint and lambda maps from frontier rows", () => {
-      renderPreview({
-        data: makeData({
-          frontier: makeFrontier(1, {
-            points: [
-              {
-                total_objective: 1250000,
-                constraints: { loss_ratio: 0.72 },
-                lambdas: { loss_ratio: 0.012345 },
-              },
-            ],
-          }),
-          selectedPointIndex: 0,
-        }),
-      })
-
-      expect(screen.getByText("0.7200")).toBeInTheDocument()
-      expect(screen.getByText("0.012345")).toBeInTheDocument()
+      expect(screen.getByRole("columnheader", { name: /λ \(multiplier\)/ })).toBeInTheDocument()
+      expect(screen.queryByText(/shadow price/)).not.toBeInTheDocument()
     })
 
     it("constraint dropdown appears when multiple constraints exist", () => {
       const frontier: FrontierData = {
-        points: Array.from({ length: 3 }, (_, i) => ({
+        points: Array.from({ length: 3 }, (_, i) => makeOnlineFrontierPoint(i, {
+          thresholds: { loss_ratio: 0.6, volume: 90 },
+          bounds: { loss_ratio: 0.6, volume: 90 },
+          totals: { loss_ratio: 0.55 + i * 0.02, volume: 100 + i * 10 },
+          lambdas: { loss_ratio: 0.001, volume: 0 },
+        })),
+        point_summaries: Array.from({ length: 3 }, (_, i) => makePointSummary({
           total_objective: 1200000 + i * 10000,
-          total_loss_ratio: 0.55 + i * 0.02,
-          total_volume: 100 + i * 10,
+          constraints: { loss_ratio: 0.55 + i * 0.02, volume: 100 + i * 10 },
         })),
         n_points: 3,
         points_returned: 3,
         constraint_names: ["loss_ratio", "volume"],
+        swept_axes: ["loss_ratio", "volume"],
         points_limit: 2000,
         points_truncated: false,
+        frontier_generation: 0,
       }
       renderPreview({
         data: makeData({
           frontier,
+          result: makeSolveResult({
+            constraints: { loss_ratio: 0.65, volume: 100 },
+            effective_bounds: {
+              loss_ratio: { kind: "max", bound: 1.05 },
+              volume: { kind: "min", bound: 95 },
+            },
+            lambdas: { loss_ratio: 0.005, volume: 0 },
+          }),
           constraints: { loss_ratio: { max: 1.05 }, volume: { min: 95 } },
         }),
       })
@@ -928,230 +903,509 @@ describe("OptimiserPreview", () => {
     })
   })
 
-  describe("Convergence tab", () => {
-    it("renders convergence chart and iteration table", () => {
-      renderPreview()
-      fireEvent.click(screen.getByText("Convergence"))
-      expect(screen.getByText("Iterations")).toBeInTheDocument()
-      // Check iteration numbers are rendered
-      expect(screen.getByText("1")).toBeInTheDocument()
-      expect(screen.getByText("2")).toBeInTheDocument()
-    })
+  describe("frontier slices (OPT-V06)", () => {
+    /** A 2×3 sweep: volume (min) at 5, 5.5, 6 against margin (max) at 400 and
+     *  450, margin varying fastest, so each slice's global indices interleave. */
+    const GRID = [
+      // [volume bound, margin bound, objective, volume total, margin total]
+      [5, 400, 130, 5.2, 390],
+      [5, 450, 140, 5.1, 440],
+      [5.5, 400, 120, 5.6, 395],
+      [5.5, 450, 128, 5.7, 445],
+      [6, 400, 105, 6.1, 398],
+      [6, 450, 110, 6.2, 449],
+    ]
 
-    it("renders objective and lambda change columns", () => {
-      renderPreview()
-      fireEvent.click(screen.getByText("Convergence"))
-      // "Objective" appears in convergence legend
-      expect(screen.getByText("Max dLambda")).toBeInTheDocument()
-    })
-
-    it("renders constraints-satisfied column", () => {
-      renderPreview()
-      fireEvent.click(screen.getByText("Convergence"))
-      // First iteration: N, Second: Y
-      expect(screen.getByText("N")).toBeInTheDocument()
-      expect(screen.getByText("Y")).toBeInTheDocument()
-    })
-  })
-
-  describe("Export tab", () => {
-    it("renders Export tab button", () => {
-      renderPreview()
-      expect(screen.getByText("Export")).toBeInTheDocument()
-    })
-
-    it("switches to Export tab on click and shows save option", () => {
-      renderPreview()
-      fireEvent.click(screen.getByText("Export"))
-      expect(screen.getByText("Save to file")).toBeInTheDocument()
-      expect(screen.getByText("Save result")).toBeInTheDocument()
-    })
-
-    it("Export tab shows Log to MLflow section when MLflow connected", () => {
-      renderPreview()
-      fireEvent.click(screen.getByText("Export"))
-      const mlflowElements = screen.getAllByText("Log to MLflow")
-      expect(mlflowElements.length).toBeGreaterThanOrEqual(2)
-    })
-
-    it("shows on-demand result detail loading state", async () => {
-      let resolveApply: (value: unknown) => void = () => {}
-      mockApplyOptimiser.mockReturnValueOnce(new Promise((resolve) => { resolveApply = resolve }))
-
-      renderPreview()
-      fireEvent.click(screen.getByText("Export"))
-      fireEvent.click(screen.getByRole("button", { name: /Load detail/i }))
-
-      expect(mockApplyOptimiser).toHaveBeenCalledWith(
-        { job_id: "job_123" },
-        { signal: expect.any(AbortSignal) },
-      )
-      expect(screen.getByText("Loading result detail...")).toBeInTheDocument()
-      expect(screen.getByRole("button", { name: /Save result/i })).toBeDisabled()
-      expect(screen.getByRole("button", { name: /Log to MLflow/i })).toBeDisabled()
-
-      resolveApply({
-        status: "ok",
-        total_objective: 1250000,
-        constraints: { loss_ratio: 0.66 },
-        from_artifact: false,
-        preview: [{ quote_id: "Q001" }],
-        row_count: 1,
-        preview_row_count: 1,
-        preview_row_limit: 100,
-        preview_truncated: false,
-        error: null,
+    function gridFrontier(): FrontierData {
+      const points = GRID.map(([volume, margin, objective, volumeTotal, marginTotal], i) => makeOnlineFrontierPoint(i, {
+        total_objective: objective,
+        thresholds: { volume, margin },
+        bounds: { volume, margin },
+        totals: { volume: volumeTotal, margin: marginTotal },
+        lambdas: { volume: 0.5, margin: 0.01 },
+      }))
+      return makeOnlineFrontier(6, {
+        points,
+        point_summaries: points.map((point) => makePointSummary({
+          total_objective: point.total_objective,
+          constraints: point.totals,
+          effective_bounds: {
+            volume: { kind: "min", bound: point.bounds.volume },
+            margin: { kind: "max", bound: point.bounds.margin },
+          },
+          lambdas: point.lambdas,
+          iterations: point.iterations,
+        })),
+        constraint_names: ["volume", "margin"],
+        swept_axes: ["volume", "margin"],
       })
+    }
 
-      await waitFor(() => {
-        expect(screen.queryByText("Loading result detail...")).not.toBeInTheDocument()
+    /** The as-solved result, solved at volume ≥ 5.5 and margin ≤ `margin`. */
+    function gridSolve(margin = 400): OptimiserSolveResult {
+      return makeSolveResult({
+        total_objective: 121,
+        constraints: { volume: 5.6, margin: 396 },
+        effective_bounds: {
+          volume: { kind: "min", bound: 5.5 },
+          margin: { kind: "max", bound: margin },
+        },
+        lambdas: { volume: 0.5, margin: 0.01 },
       })
+    }
+
+    function gridData(overrides: Partial<OptimiserPreviewData> = {}): OptimiserPreviewData {
+      const frontier = gridFrontier()
+      const index = overrides.selectedPointIndex ?? null
+      const solved = overrides.solvedResult ?? gridSolve()
+      return makeData({
+        frontier,
+        solvedResult: solved,
+        result: index == null ? solved : pointResult(frontier, index, solved),
+        constraints: { volume: { min: 5.5 }, margin: { max: 400 } },
+        ...overrides,
+      })
+    }
+
+    function shownPoints(): (string | null)[] {
+      return screen.getAllByRole("button", { name: /^Select frontier point/ })
+        .map((button) => button.getAttribute("aria-label"))
+    }
+
+    it("shows point 1's slice by default, one line in bound order, and names the slice", () => {
+      renderPreview({ data: gridData() })
+
+      expect(shownPoints()).toEqual([
+        "Select frontier point 1",
+        "Select frontier point 3",
+        "Select frontier point 5",
+      ])
+      const holding = screen.getByLabelText("Holding margin at")
+      expect(within(holding).getAllByRole("option").map((option) => option.textContent)).toEqual(["400", "450"])
+      expect(screen.getByText(/This slice holds 3 of the 6 frontier points\./)).toBeInTheDocument()
     })
 
-    it("shows loaded detail metadata and capped slice state", async () => {
-      mockApplyOptimiser.mockResolvedValueOnce({
-        status: "ok",
-        total_objective: 1250000,
-        constraints: { loss_ratio: 0.66 },
-        from_artifact: true,
-        preview: [{ quote_id: "Q001" }],
-        row_count: 1250,
-        preview_row_count: 100,
-        preview_row_limit: 100,
-        preview_truncated: true,
-        error: null,
-      })
+    it("offers only the swept constraints on the X axis and re-slices when it changes", () => {
+      renderPreview({ data: gridData() })
 
-      renderPreview()
-      fireEvent.click(screen.getByText("Export"))
-      fireEvent.click(screen.getByRole("button", { name: /Load detail/i }))
+      fireEvent.change(screen.getByLabelText("X axis:"), { target: { value: "1" } })
 
-      await waitFor(() => {
-        expect(screen.getByText(/100 of 1,250 rows loaded/)).toBeInTheDocument()
-      })
-      expect(screen.getByText(/capped at 100/)).toBeInTheDocument()
-      expect(screen.getByRole("button", { name: /Save result/i })).toBeDisabled()
-      expect(screen.getByRole("button", { name: /Log to MLflow/i })).toBeDisabled()
+      expect(shownPoints()).toEqual(["Select frontier point 1", "Select frontier point 2"])
+      expect(screen.getByLabelText("Holding volume at")).toBeInTheDocument()
     })
 
-    it("shows result detail failure state", async () => {
-      mockApplyOptimiser.mockRejectedValueOnce(new Error("artifact missing"))
+    it("picks another slice from the Holding select", () => {
+      renderPreview({ data: gridData() })
 
-      renderPreview()
-      fireEvent.click(screen.getByText("Export"))
-      fireEvent.click(screen.getByRole("button", { name: /Load detail/i }))
+      fireEvent.change(screen.getByLabelText("Holding margin at"), { target: { value: "1" } })
 
-      await waitFor(() => {
-        expect(screen.getByText(/Detail load failed/)).toBeInTheDocument()
-      })
-      expect(screen.getByText(/artifact missing/)).toBeInTheDocument()
-      expect(screen.getByRole("button", { name: /Save result/i })).not.toBeDisabled()
-      expect(screen.getByRole("button", { name: /Log to MLflow/i })).not.toBeDisabled()
+      expect(shownPoints()).toEqual([
+        "Select frontier point 2",
+        "Select frontier point 4",
+        "Select frontier point 6",
+      ])
     })
 
-    it("loads result detail for the selected frontier point by passing point_index to apply", async () => {
-      renderPreview({
-        data: makeData({
-          frontier: makeFrontier(),
-          selectedPointIndex: 0,
-        }),
-      })
-      fireEvent.click(screen.getByText("Export"))
-      fireEvent.click(screen.getByRole("button", { name: /Load detail/i }))
+    it("selects the global point index from a slice, never its place in the slice", () => {
+      renderPreview({ data: gridData() })
+      fireEvent.change(screen.getByLabelText("Holding margin at"), { target: { value: "1" } })
 
-      await waitFor(() => {
-        expect(mockApplyOptimiser).toHaveBeenCalledWith(
-          { job_id: "job_123", point_index: 0 },
-          { signal: expect.any(AbortSignal) },
-        )
-      })
+      // Point 4 is the second of its slice: global index 3, slice-local 1.
+      fireEvent.click(screen.getByRole("button", { name: "Select frontier point 4" }))
+
+      expect(mockStoreSelectPoint).toHaveBeenCalledWith("opt_1", 3)
       expect(mockSelectFrontierPointAPI).not.toHaveBeenCalled()
     })
 
-    it("clears loaded result detail when the selected frontier point changes", async () => {
-      const firstData = makeData({
-        frontier: makeFrontier(),
-        selectedPointIndex: 0,
-      })
-      const { rerender } = renderPreview({ data: firstData })
-      fireEvent.click(screen.getByText("Export"))
-      fireEvent.click(screen.getByRole("button", { name: /Load detail/i }))
+    it("switches to the slice of a point selected from outside the displayed slice", () => {
+      const { rerender, props } = renderPreview({ data: gridData() })
+      expect(shownPoints()).toContain("Select frontier point 1")
 
-      expect(await screen.findByText(/1 of 1 rows loaded/)).toBeInTheDocument()
-      expect(screen.getByRole("button", { name: /Save result/i })).toBeDisabled()
-      expect(screen.getByRole("button", { name: /Log to MLflow/i })).toBeDisabled()
+      // Summary or the stepper selects point 4, which lies in the other slice.
+      rerender(<OptimiserPreview {...props} data={gridData({ selectedPointIndex: 3 })} />)
 
-      rerender(
-        <OptimiserPreview
-          data={{ ...firstData, selectedPointIndex: 1 }}
-          nodeId="opt_1"
-          allNodes={[]}
-          edges={[]}
-        />,
-      )
-
-      await waitFor(() => {
-        expect(screen.queryByText(/1 of 1 rows loaded/)).not.toBeInTheDocument()
-      })
-      expect(screen.getByRole("button", { name: /Save result/i })).toBeEnabled()
-      expect(screen.getByRole("button", { name: /Log to MLflow/i })).toBeEnabled()
+      expect(shownPoints()).toEqual([
+        "Select frontier point 2",
+        "Select frontier point 4",
+        "Select frontier point 6",
+      ])
+      expect(screen.getByLabelText("Holding margin at")).toHaveValue("1")
     })
 
-    it("aborts an in-flight result detail request when the job changes", async () => {
-      let firstReject: (reason?: unknown) => void = () => {}
-      mockApplyOptimiser
-        .mockImplementationOnce((_payload: unknown, options: { signal: AbortSignal }) => {
-          options.signal.addEventListener("abort", () => {
-            firstReject(new DOMException("Aborted", "AbortError"))
-          })
-          return new Promise((_resolve, reject) => {
-            firstReject = reject
-          })
-        })
+    it("keeps a slice the user picks while the selection stays put", () => {
+      renderPreview({ data: gridData({ selectedPointIndex: 3 }) })
 
-      const { rerender } = renderPreview()
-      fireEvent.click(screen.getByText("Export"))
-      fireEvent.click(screen.getByRole("button", { name: /Load detail/i }))
-      const firstSignal = mockApplyOptimiser.mock.calls[0][1].signal as AbortSignal
+      fireEvent.change(screen.getByLabelText("Holding margin at"), { target: { value: "0" } })
 
-      rerender(<OptimiserPreview data={makeData({ jobId: "job_456" })} nodeId="opt_1" allNodes={[]} edges={[]} />)
-      expect(firstSignal.aborted).toBe(true)
+      expect(shownPoints()).toEqual([
+        "Select frontier point 1",
+        "Select frontier point 3",
+        "Select frontier point 5",
+      ])
+    })
 
-      await waitFor(() => {
-        expect(screen.queryByText("Loading result detail...")).not.toBeInTheDocument()
+    it("steps within the selected point's slice and stops at its ends", () => {
+      const { rerender, props } = renderPreview({ data: gridData({ selectedPointIndex: 2 }) })
+
+      expect(screen.getByText("Point 3 of 6")).toBeInTheDocument()
+      fireEvent.click(screen.getByRole("button", { name: "Next frontier point" }))
+      expect(mockStoreSelectPoint).toHaveBeenLastCalledWith("opt_1", 4)
+      fireEvent.click(screen.getByRole("button", { name: "Previous frontier point" }))
+      expect(mockStoreSelectPoint).toHaveBeenLastCalledWith("opt_1", 0)
+
+      rerender(<OptimiserPreview {...props} data={gridData({ selectedPointIndex: 4 })} />)
+      // Point 6 (index 5) follows globally but lies in the other slice.
+      expect(screen.getByRole("button", { name: "Next frontier point" })).toBeDisabled()
+    })
+
+    it("always draws the as-solved anchor, hollow with a note when it lies off the slice", () => {
+      renderPreview({ data: gridData() })
+      const marker = () => screen.getByTestId("frontier-as-solved-marker")
+      // Solved at margin ≤ 400: the default slice's held bound.
+      expect(marker()).toHaveAttribute("data-on-slice", "true")
+      expect(screen.getByText("As solved")).toBeInTheDocument()
+
+      fireEvent.change(screen.getByLabelText("Holding margin at"), { target: { value: "1" } })
+
+      expect(marker()).toHaveAttribute("data-on-slice", "false")
+      expect(screen.getByText("As solved (different slice)")).toBeInTheDocument()
+    })
+
+    it("names the y axis by the objective column the result was solved for", () => {
+      renderPreview({
+        data: gridData(),
+        allNodes: [optimiserNode({ objective: "expected_income" })],
       })
-      expect(mockApplyOptimiser).toHaveBeenCalledTimes(1)
-      expect(screen.queryByText(/Detail load failed/)).not.toBeInTheDocument()
+      expect(screen.getByRole("group", { name: "Efficient frontier: expected_income against volume" }))
+        .toBeInTheDocument()
+    })
+
+    it("names the y axis Objective when the config no longer matches the result", () => {
+      mockSolveState.results = { opt_1: { configHash: "an-older-config", source: "live", structuralVersion: 0 } }
+      renderPreview({
+        data: gridData(),
+        allNodes: [optimiserNode({ objective: "expected_income" })],
+      })
+      expect(screen.getByRole("group", { name: "Efficient frontier: Objective against volume" }))
+        .toBeInTheDocument()
+    })
+
+    it("lists the slice's points in a values table", () => {
+      renderPreview({ data: gridData() })
+      const table = screen.getByRole("table", { name: "Frontier slice points" })
+      const rows = within(table).getAllByRole("row").slice(1)
+      expect(rows.map((row) => within(row).getByRole("rowheader").textContent)).toEqual([
+        "Point 1",
+        "Point 3",
+        "Point 5",
+      ])
+      expect(within(rows[1]).getAllByRole("cell").map((cell) => cell.textContent)).toEqual([
+        "5.5",
+        "5.6",
+        "120",
+        "Yes",
+        "12",
+        "Feasible",
+      ])
     })
   })
 
-  describe("Summary tab constraint indicators", () => {
-    it("renders met constraint with green indicator dot", () => {
+  describe("Convergence tab", () => {
+    it("draws the solve's history as small multiples on real axes", () => {
+      renderPreview()
+      fireEvent.click(screen.getByText("Convergence"))
+      for (const name of [
+        "Objective by iteration",
+        "Largest λ change by iteration",
+        "loss_ratio total by iteration",
+        "λ by iteration",
+      ]) {
+        expect(screen.getByRole("img", { name })).toBeInTheDocument()
+      }
+    })
+
+    it("lists each iteration, and whether it met every constraint, in the values table", () => {
+      renderPreview()
+      fireEvent.click(screen.getByText("Convergence"))
+      const table = screen.getByRole("table", { name: "Iteration values" })
+      const met = within(table).getAllByRole("row").slice(1).map((row) => within(row).getAllByRole("cell").at(-1)?.textContent)
+      expect(met).toEqual(["No", "Yes"])
+    })
+  })
+
+  describe("Quotes tab", () => {
+    it("offers Quotes for online results and no Export tab", () => {
+      renderPreview()
+      expect(screen.getByRole("tab", { name: "Quotes" })).toBeInTheDocument()
+      expect(screen.queryByRole("tab", { name: "Export" })).not.toBeInTheDocument()
+    })
+
+    it("offers Quotes for ratebook results too", () => {
+      renderPreview({ data: makeData({ result: makeSolveResult({ mode: "ratebook" }) }) })
+      expect(screen.getByRole("tab", { name: "Quotes" })).toBeInTheDocument()
+    })
+  })
+
+  describe("selected-point integrity", () => {
+    /** The preview's data after the stepper selected `index`, as the store builds it. */
+    function selectedData(frontier: FrontierData, index: number, overrides: Partial<OptimiserPreviewData> = {}) {
+      return makeData({
+        frontier,
+        selectedPointIndex: index,
+        result: pointResult(frontier, index),
+        solvedResult: makeSolveResult(),
+        ...overrides,
+      })
+    }
+
+    function adjustmentRequests() {
+      return mockSelectFrontierPointAPI.mock.calls.filter(([payload]) => payload.include_adjustments)
+    }
+
+    it("summarises the as-solved adjustments and opens the Adjustments tab from Summary", () => {
+      renderPreview()
+
+      const summary = screen.getByRole("group", { name: "Adjustments" })
+      expect(within(summary).getByText("Adjusted up").nextSibling).toHaveTextContent("42.0%")
+      fireEvent.click(within(summary).getByRole("button", { name: "View adjustments" }))
+
+      expect(screen.getByRole("tab", { name: "Adjustments" })).toHaveAttribute("aria-selected", "true")
+      expect(screen.getByRole("img", { name: "Chosen scenario values histogram" })).toBeInTheDocument()
+      expect(screen.getByText("As solved: 50,000 quotes")).toBeInTheDocument()
+      expect(adjustmentRequests()).toHaveLength(0)
+    })
+
+    it("loads a selected point's adjustments only while the Adjustments tab is open", async () => {
+      const frontier = makeFrontier()
+      mockSelectFrontierPointAPI.mockResolvedValue(makeFrontierSelect({
+        point_index: 2,
+        adjustments: makeAdjustmentReport({ n_quotes: 50000 }),
+      }))
+      renderPreview({ data: selectedData(frontier, 2) })
+
+      // The Frontier pane's summary shows no adjustments for a selected point.
+      expect(screen.queryByRole("group", { name: "Adjustments" })).not.toBeInTheDocument()
+      expect(adjustmentRequests()).toHaveLength(0)
+
+      fireEvent.click(screen.getByRole("tab", { name: "Adjustments" }))
+      expect(await screen.findByText("Frontier point 3: 50,000 quotes")).toBeInTheDocument()
+      expect(adjustmentRequests()).toEqual([
+        [{ job_id: "job_123", point_index: 2, include_adjustments: true }, expect.anything()],
+      ])
+
+      // The loaded report belongs to the review: reopening the tab asks again for nothing.
+      fireEvent.click(screen.getByRole("tab", { name: "Frontier" }))
+      fireEvent.click(screen.getByRole("tab", { name: "Adjustments" }))
+      expect(screen.getByText("Frontier point 3: 50,000 quotes")).toBeInTheDocument()
+      expect(adjustmentRequests()).toHaveLength(1)
+    })
+
+    it("offers Adjustments for a ratebook result, summarised on Summary", () => {
+      const ratebook = makeRatebookSolveResult()
+      renderPreview({ data: makeData({ result: ratebook, solvedResult: ratebook }) })
+
+      const summary = screen.getByRole("group", { name: "Adjustments" })
+      expect(within(summary).getByText("Deployed ≠ evaluated step").nextSibling)
+        .toHaveTextContent("18 quotes")
+      fireEvent.click(within(summary).getByRole("button", { name: "View adjustments" }))
+
+      expect(screen.getByRole("tab", { name: "Adjustments" })).toHaveAttribute("aria-selected", "true")
+      expect(screen.getByText("As solved: 200 quotes")).toBeInTheDocument()
+      expect(within(screen.getByRole("group", { name: "Deployed factor" }))
+        .getByText("Deployed factor differs from evaluated step").nextSibling)
+        .toHaveTextContent("18 quotes (9.0%)")
+    })
+
+    it("keeps Convergence for a selected point and says whose history it shows", () => {
+      const frontier = makeFrontier()
+      renderPreview({ data: selectedData(frontier, 1) })
+
+      fireEvent.click(screen.getByRole("tab", { name: "Convergence" }))
+
+      expect(screen.getByText(
+        "History is recorded for the solved result; frontier point 2: converged, 11 iterations",
+      )).toBeInTheDocument()
+      // The solve's two recorded iterations.
+      expect(within(screen.getByRole("table", { name: "Iteration values" })).getAllByRole("row")).toHaveLength(3)
+    })
+
+    it("says when the selected point did not converge", () => {
+      const frontier = makeFrontier()
+      frontier.point_summaries[1] = { ...frontier.point_summaries[1], converged: false, iterations: 50 }
+      renderPreview({ data: selectedData(frontier, 1) })
+
+      fireEvent.click(screen.getByRole("tab", { name: "Convergence" }))
+
+      expect(screen.getByText(
+        "History is recorded for the solved result; frontier point 2: not converged, 50 iterations",
+      )).toBeInTheDocument()
+    })
+
+
+    it("keeps the tab when the stepper selects another point", () => {
+      const frontier = makeFrontier()
+      const { rerender, props } = renderPreview({ data: selectedData(frontier, 1) })
+      fireEvent.click(screen.getByRole("tab", { name: "Convergence" }))
+
+      rerender(<OptimiserPreview {...props} data={selectedData(frontier, 2)} />)
+
+      expect(screen.getByRole("tab", { name: "Convergence" })).toHaveAttribute("aria-selected", "true")
+      expect(screen.getByText(/frontier point 3: converged, 12 iterations/)).toBeInTheDocument()
+    })
+
+    it("returns to the default tab for a new solve job", () => {
+      const frontier = makeFrontier()
+      const { rerender, props } = renderPreview({ data: selectedData(frontier, 1) })
+      fireEvent.click(screen.getByRole("tab", { name: "Convergence" }))
+
+      rerender(<OptimiserPreview {...props} data={selectedData(frontier, 0, { jobId: "job_456" })} />)
+
+      expect(screen.getByRole("tab", { name: "Frontier" })).toHaveAttribute("aria-selected", "true")
+    })
+
+    it("returns to the default tab for another optimiser node", () => {
+      const { rerender, props } = renderPreview()
+      fireEvent.click(screen.getByRole("tab", { name: "Convergence" }))
+
+      rerender(<OptimiserPreview {...props} nodeId="opt_2" />)
+
+      expect(screen.getByRole("tab", { name: "Summary" })).toHaveAttribute("aria-selected", "true")
+    })
+
+    it("keeps the as-solved marker where the solve is when a point is selected", () => {
+      const frontier = makeFrontier()
+      const { rerender, props } = renderPreview({ data: selectedData(frontier, 0) })
+      const marker = () => screen.getByTestId("frontier-as-solved-marker").querySelector("circle")!
+      const before = [marker().getAttribute("cx"), marker().getAttribute("cy")]
+
+      rerender(<OptimiserPreview {...props} data={selectedData(frontier, 3)} />)
+
+      expect([marker().getAttribute("cx"), marker().getAttribute("cy")]).toEqual(before)
+    })
+
+    it("shows the displayed result's warning as a strip", () => {
+      const frontier = makeFrontier()
+      frontier.point_summaries[1] = {
+        ...frontier.point_summaries[1],
+        converged: false,
+        warning: "Solver did not converge. Consider increasing max_iter or relaxing tolerance.",
+      }
+      renderPreview({ data: selectedData(frontier, 1) })
+
+      expect(screen.getByRole("status", { name: "Result warning" })).toHaveTextContent(
+        "Solver did not converge. Consider increasing max_iter or relaxing tolerance.",
+      )
+    })
+
+    it("shows no warning strip for a result without a warning", () => {
+      renderPreview()
+      expect(screen.queryByRole("status", { name: "Result warning" })).not.toBeInTheDocument()
+    })
+  })
+
+  describe("stale result", () => {
+    it("says when the config changed since the solve and re-runs from the preview", async () => {
+      mockSolveState.results = { opt_1: { configHash: "an-older-config", source: "live", structuralVersion: 0 } }
+      mockSolveOptimiser.mockResolvedValue({ status: "started", job_id: "job_999" })
+      renderPreview({
+        allNodes: [QUOTES_NODE, optimiserNode({ objective: "profit" })],
+        edges: [{ id: "e1", source: "quotes", target: "opt_1" }],
+      })
+
+      expect(screen.getByText("The configuration has changed since this result was solved.")).toBeInTheDocument()
+      fireEvent.click(screen.getByRole("button", { name: "Re-run" }))
+      await waitFor(() => expect(mockSolveOptimiser).toHaveBeenCalledWith(expect.objectContaining({ node_id: "opt_1" })))
+      await waitFor(() => expect(mockStartSolveJob).toHaveBeenCalledWith(
+        "opt_1", "job_999", "My Optimiser", {}, expect.any(String), "live", expect.any(Number),
+      ))
+    })
+
+    it("keeps Re-run disabled with the reason while the Solve pane would refuse", () => {
+      mockSolveState.results = { opt_1: { configHash: "an-older-config", source: "live", structuralVersion: 0 } }
+      renderPreview({
+        allNodes: [
+          QUOTES_NODE,
+          optimiserNode({
+            objective: "profit",
+            constraints: { volume: { min: 1 } },
+            frontier_steps: 10_001,
+            frontier_ranges: { volume: { min: 0, max: 2 } },
+          }),
+        ],
+        edges: [{ id: "e1", source: "quotes", target: "opt_1" }],
+      })
+
+      expect(screen.getByRole("button", { name: "Re-run" })).toBeDisabled()
+      expect(screen.getByText(/It cannot be re-run yet: The frontier would run 10,001 solves/)).toBeInTheDocument()
+      fireEvent.click(screen.getByRole("button", { name: "Re-run" }))
+      expect(mockSolveOptimiser).not.toHaveBeenCalled()
+    })
+
+    it("judges Re-run against the cached input columns the editor uses", async () => {
+      const { default: useGraphStore } = await import("../../stores/useGraphStore")
+      mockSolveState.results = { opt_1: { configHash: "an-older-config", source: "live", structuralVersion: 0 } }
+      mockSolveState.columnCache = {
+        "opt_1:live": {
+          columns: [{ name: "profit", dtype: "Float64" }, { name: "scenario_index", dtype: "Int64" }, { name: "scenario_value", dtype: "Float64" }],
+          structuralVersion: useGraphStore.getState().structuralVersion,
+        },
+      }
+      const unknownColumnsInput = { ...QUOTES_NODE, data: { ...QUOTES_NODE.data, _columns: undefined } }
+      renderPreview({
+        allNodes: [unknownColumnsInput, optimiserNode({ objective: "profit" })],
+        edges: [{ id: "e1", source: "quotes", target: "opt_1" }],
+      })
+
+      expect(screen.getByRole("button", { name: "Re-run" })).toBeDisabled()
+      expect(screen.getByText(/Row ID uses "quote_id", which the input does not have/)).toBeInTheDocument()
+    })
+
+    it("shows no strip while the result matches the config", () => {
+      renderPreview()
+      expect(screen.queryByText("The configuration has changed since this result was solved.")).not.toBeInTheDocument()
+    })
+  })
+
+  describe("Summary tab constraint status", () => {
+    it("says a met constraint is Met in text", () => {
       const data = makeData({
         result: makeSolveResult({
           constraints: { loss_ratio: 0.60 },
           baseline_constraints: { loss_ratio: 0.60 },
         }),
-        constraints: { loss_ratio: { max: 1.05 } },
       })
-      const { container } = renderPreview({ data })
+      renderPreview({ data })
       fireEvent.click(screen.getByText("Summary"))
-      const dots = container.querySelectorAll('span[style*="background: var(--success)"]')
-      expect(dots.length).toBeGreaterThanOrEqual(1)
+      expect(attainmentCells("loss_ratio")[4]).toBe("Met")
     })
 
-    it("renders unmet constraint with red indicator dot", () => {
+    it("says a breached constraint is Breached, with its signed slack", () => {
       const data = makeData({
         result: makeSolveResult({
           constraints: { loss_ratio: 999 },
           baseline_constraints: { loss_ratio: 1 },
         }),
-        constraints: { loss_ratio: { max: 1.05 } },
       })
-      const { container } = renderPreview({ data })
+      renderPreview({ data })
       fireEvent.click(screen.getByText("Summary"))
-      const redDots = container.querySelectorAll('span[style*="background: var(--danger)"]')
-      expect(redDots.length).toBeGreaterThanOrEqual(1)
+      const cells = attainmentCells("loss_ratio")
+      expect(cells[4]).toBe("Breached")
+      expect(cells[3]).toBe("-997.95 (-95,042.86%)")
+    })
+  })
+
+  describe("constraint attainment across panes (G03)", () => {
+    it("prints the selected point's own bound and status in the Frontier pane", () => {
+      const frontier = makeFrontier()
+      renderPreview({
+        data: makeData({ frontier, selectedPointIndex: 4, result: pointResult(frontier, 4) }),
+      })
+
+      const summary = attainmentCells("loss_ratio")
+
+      // The point's swept 0.62 breaches; the configured and as-solved 1.05 would not.
+      expect(summary.slice(0, 3)).toEqual(["max", "0.62", "0.63"])
+      expect(summary[4]).toBe("Breached")
     })
   })
 
@@ -1162,12 +1416,11 @@ describe("OptimiserPreview", () => {
       expect(screen.getByText("0.005000")).toBeInTheDocument()
     })
 
-    it("renders lambda constraint name", () => {
+    it("renders the λ column beside its constraint", () => {
       renderPreview()
       fireEvent.click(screen.getByText("Summary"))
-      const lambdaSection = screen.getByText("Lambdas")
-      expect(lambdaSection).toBeInTheDocument()
-      expect(screen.getAllByText("loss_ratio").length).toBeGreaterThanOrEqual(1)
+      expect(screen.getByRole("columnheader", { name: /λ \(multiplier\)/ })).toBeInTheDocument()
+      expect(attainmentCells("loss_ratio")[5]).toBe("0.005000")
     })
   })
 
@@ -1180,8 +1433,10 @@ describe("OptimiserPreview", () => {
 
     it("defaults to Frontier tab when frontier data exists", () => {
       renderPreview({ data: makeData({ frontier: makeFrontier() }) })
-      expect(screen.getByText(/5 frontier points/)).toBeInTheDocument()
-      expect(screen.queryByText("Optimised")).not.toBeInTheDocument()
+      expect(screen.getByRole("group", { name: /Efficient frontier/ })).toBeInTheDocument()
+      // The Summary numbers sit in the Frontier pane, under the chart.
+      expect(screen.getByText("Optimised")).toBeInTheDocument()
+      expect(screen.queryByRole("tab", { name: "Summary" })).not.toBeInTheDocument()
     })
   })
 
@@ -1193,81 +1448,6 @@ describe("OptimiserPreview", () => {
     })
   })
 
-  describe("save and log failure messages", () => {
-    it("shows error text when save fails", async () => {
-      mockSaveOptimiser.mockRejectedValueOnce(new Error("disk full"))
-
-      renderPreview({
-        data: makeData({
-          frontier: makeFrontier(),
-          selectedPointIndex: 0,
-        }),
-      })
-
-      fireEvent.click(screen.getByText("Save Result"))
-
-      await waitFor(() => {
-        expect(screen.getByText(/Save failed/)).toBeInTheDocument()
-      })
-    })
-
-    it("prefers structured detail when save fails", async () => {
-      mockSaveOptimiser.mockRejectedValueOnce({
-        message: "HTTP 422",
-        detail: "The selected point cannot be saved.",
-      })
-      renderPreview({
-        data: makeData({
-          frontier: makeFrontier(),
-          selectedPointIndex: 0,
-        }),
-      })
-
-      fireEvent.click(screen.getByText("Save Result"))
-
-      expect(await screen.findByText(
-        "Save failed: The selected point cannot be saved.",
-      )).toBeInTheDocument()
-      expect(screen.queryByText(/\[object Object\]/)).not.toBeInTheDocument()
-    })
-
-    it("shows error text when MLflow log fails", async () => {
-      mockLogOptimiserToMlflow.mockRejectedValueOnce(new Error("tracking server down"))
-
-      renderPreview({
-        data: makeData({
-          frontier: makeFrontier(),
-          selectedPointIndex: 0,
-        }),
-      })
-
-      fireEvent.click(screen.getByText("Log to MLflow"))
-
-      await waitFor(() => {
-        expect(screen.getByText(/MLflow log failed/)).toBeInTheDocument()
-      })
-    })
-
-    it("prefers structured detail when MLflow logging fails", async () => {
-      mockLogOptimiserToMlflow.mockRejectedValueOnce({
-        message: "HTTP 503",
-        detail: "The tracking server rejected this run.",
-      })
-      renderPreview({
-        data: makeData({
-          frontier: makeFrontier(),
-          selectedPointIndex: 0,
-        }),
-      })
-
-      fireEvent.click(screen.getByText("Log to MLflow"))
-
-      expect(await screen.findByText(
-        "MLflow log failed: The tracking server rejected this run.",
-      )).toBeInTheDocument()
-      expect(screen.queryByText(/\[object Object\]/)).not.toBeInTheDocument()
-    })
-  })
 
   describe("ratebook mode", () => {
     it("shows CD iterations for ratebook mode", () => {
@@ -1288,12 +1468,13 @@ describe("OptimiserPreview", () => {
       expect(screen.queryByText(/\? CD iters/)).not.toBeInTheDocument()
     })
 
-    it("hides Lambdas section in ratebook mode", () => {
+    it("shows λ on Summary for a ratebook result, as the detail card does", () => {
       renderPreview({
         data: makeData({ result: makeSolveResult({ mode: "ratebook" }) }),
       })
       fireEvent.click(screen.getByText("Summary"))
-      expect(screen.queryByText("Lambdas")).not.toBeInTheDocument()
+      expect(screen.getByRole("columnheader", { name: /λ \(multiplier\)/ })).toBeInTheDocument()
+      expect(attainmentCells("loss_ratio")[5]).toBe("0.005000")
     })
 
     it("shows clamp rate in ratebook mode", () => {
@@ -1312,17 +1493,77 @@ describe("OptimiserPreview", () => {
             mode: "ratebook",
             factor_tables: {
               age_band: [
-                { __factor_group__: "18-25", optimal_scenario_value: 1.15 },
-                { __factor_group__: "26-35", optimal_scenario_value: 0.95 },
+                { __factor_group__: "18-25", optimal_scenario_value: 1.15, quote_count: 10 },
+                { __factor_group__: "26-35", optimal_scenario_value: 0.95, quote_count: 10 },
               ],
             },
           }),
         }),
       })
       fireEvent.click(screen.getByText("Rates"))
-      expect(screen.getByText("age_band")).toBeInTheDocument()
-      expect(screen.getByText("18-25")).toBeInTheDocument()
+      expect(screen.getByRole("heading", { name: "age_band" })).toBeInTheDocument()
+      expect(screen.getAllByText("18-25").length).toBeGreaterThan(0)
       expect(screen.getAllByText("1.1500").length).toBeGreaterThan(0)
+    })
+  })
+
+  describe("Curves and Statistics panes (the pre-solve input)", () => {
+    const SCENARIO_CONFIG = {
+      objective: "margin",
+      constraints: { volume: { min: 0.9 } },
+      quote_id: "quote_id",
+      scenario_index: "scenario_index",
+      scenario_value: "scenario_value",
+    }
+    const SCENARIO_ROWS = [
+      { quote_id: "Q001", scenario_index: 0, scenario_value: 0.9, margin: 100, volume: 1.0 },
+      { quote_id: "Q001", scenario_index: 1, scenario_value: 1.0, margin: 110, volume: 0.95 },
+      { quote_id: "Q002", scenario_index: 0, scenario_value: 0.9, margin: 200, volume: 1.0 },
+      { quote_id: "Q002", scenario_index: 1, scenario_value: 1.0, margin: 220, volume: 0.93 },
+    ]
+    const scenarioData = {
+      nodeId: "opt_1",
+      nodeLabel: "My Optimiser",
+      status: "ok" as const,
+      row_count: SCENARIO_ROWS.length,
+      column_count: 5,
+      columns: [],
+      preview: SCENARIO_ROWS,
+      error: null,
+    }
+
+    it("keeps the input's quote curves and statistics after a solve", () => {
+      renderPreview({ allNodes: [optimiserNode(SCENARIO_CONFIG)], scenarioData })
+
+      fireEvent.click(screen.getByRole("tab", { name: "Curves" }))
+      expect(screen.getByRole("checkbox", { name: /margin/ })).toBeChecked()
+      expect(screen.getByRole("checkbox", { name: /volume/ })).toBeChecked()
+      // The header describes the sampled input, not the solve.
+      expect(screen.getByText(/^2 quotes \| 2 scenarios/)).toBeInTheDocument()
+      expect(screen.queryByText(/^Converged/)).not.toBeInTheDocument()
+      const navigation = screen.getByTestId("optimiser-quote-navigation")
+      expect(within(navigation).getByText("1/2")).toBeInTheDocument()
+      fireEvent.click(screen.getByRole("button", { name: "Next quote" }))
+      expect(within(navigation).getByText("2/2")).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole("tab", { name: "Statistics" }))
+      expect(screen.queryByTestId("optimiser-quote-navigation")).not.toBeInTheDocument()
+      expect(screen.getByText(/^2 quotes \| 2 scenarios/)).toBeInTheDocument()
+      expect(screen.getByText("objective")).toBeInTheDocument()
+      expect(screen.getAllByRole("table")).toHaveLength(2)
+    })
+
+    it("offers no input panes without the node's preview rows", () => {
+      renderPreview({ allNodes: [optimiserNode(SCENARIO_CONFIG)], scenarioData: null })
+
+      expect(screen.queryByRole("tab", { name: "Curves" })).not.toBeInTheDocument()
+      expect(screen.queryByRole("tab", { name: "Statistics" })).not.toBeInTheDocument()
+    })
+
+    it("offers no input panes when no objective is configured to chart", () => {
+      renderPreview({ allNodes: [optimiserNode({ ...SCENARIO_CONFIG, objective: "" })], scenarioData })
+
+      expect(screen.queryByRole("tab", { name: "Curves" })).not.toBeInTheDocument()
     })
   })
 })

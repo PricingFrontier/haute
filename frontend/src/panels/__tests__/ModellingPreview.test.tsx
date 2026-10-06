@@ -1,11 +1,11 @@
 /**
  * Smoke tests for ModellingPreview.
  *
- * ModellingPreview uses Zustand stores (useNodeResultsStore, useSettingsStore)
- * and useDragResize, so we mock them to keep tests focused on render logic.
+ * ModellingPreview uses Zustand stores (useNodeResultsStore) and useDragResize,
+ * so we mock them to keep tests focused on render logic.
  */
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, within } from "@testing-library/react"
 import { ModellingPreview } from "../ModellingPreview"
 import type { ModellingPreviewData } from "../ModellingPreview"
 import { makeTrainResult } from "../../test-utils/factories"
@@ -15,14 +15,6 @@ vi.mock("../../stores/useNodeResultsStore", () => {
   const store = Object.assign(vi.fn(() => null), {
     getState: vi.fn(() => ({ trainJobs: {} })),
   })
-  return { default: store, __esModule: true }
-})
-
-vi.mock("../../stores/useSettingsStore", () => {
-  const store = Object.assign(
-    vi.fn(() => ({ status: "disconnected", backend: "", host: "" })),
-    { getState: vi.fn(() => ({ mlflow: { status: "disconnected", backend: "", host: "" } })) },
-  )
   return { default: store, __esModule: true }
 })
 
@@ -96,6 +88,58 @@ describe("ModellingPreview", () => {
     expect(screen.getByText("Coefficients")).toBeInTheDocument()
   })
 
+  it.each([
+    {
+      name: "CatBoost loss",
+      result: makeTrainResult({
+        loss_history: [
+          { iteration: 0, train_rmse: 1.0 },
+          { iteration: 1, train_rmse: 0.9 },
+        ],
+      }),
+      nextTab: "Loss",
+      heading: "Training loss",
+    },
+    {
+      name: "GLM coefficients",
+      result: makeTrainResult({
+        glm_coefficients: [{ feature: "age", coefficient: 0.1, std_error: 0.01, z_value: 10, p_value: 0.001, significance: "***" }],
+      }),
+      nextTab: "Coefficients",
+      heading: "GLM coefficients",
+    },
+  ])("supports linked keyboard tabs for $name", ({ result, nextTab, heading }) => {
+    render(<ModellingPreview data={makeData({ result })} nodeId="n1" />)
+
+    const tablist = screen.getByRole("tablist", { name: "Model result panes" })
+    const summaryTab = within(tablist).getByRole("tab", { name: "Summary" })
+    expect(summaryTab).toHaveAttribute("aria-selected", "true")
+    const summaryPane = screen.getByRole("tabpanel", { name: "Summary" })
+    expect(summaryPane).toHaveAttribute("id", summaryTab.getAttribute("aria-controls"))
+
+    fireEvent.keyDown(summaryTab, { key: "ArrowRight" })
+    const selectedTab = within(tablist).getByRole("tab", { name: nextTab })
+    expect(selectedTab).toHaveFocus()
+    expect(selectedTab).toHaveAttribute("aria-selected", "true")
+    const selectedPane = screen.getByRole("tabpanel", { name: nextTab })
+    expect(selectedPane).toHaveAttribute("id", selectedTab.getAttribute("aria-controls"))
+    expect(within(selectedPane).getByRole("heading", { name: heading })).toBeInTheDocument()
+
+    fireEvent.keyDown(selectedTab, { key: "Home" })
+    expect(summaryTab).toHaveFocus()
+    expect(summaryTab).toHaveAttribute("aria-selected", "true")
+  })
+
+  it.each(["result", "node"])("resets Features to Summary when the %s changes", (change) => {
+    const data = makeData()
+    const { rerender } = render(<ModellingPreview data={data} nodeId="n1" />)
+    fireEvent.click(screen.getByRole("tab", { name: "Features" }))
+    expect(screen.getByRole("tab", { name: "Features" })).toHaveAttribute("aria-selected", "true")
+
+    rerender(<ModellingPreview data={change === "result" ? makeData() : data} nodeId={change === "node" ? "n2" : "n1"} />)
+    expect(screen.getByRole("tab", { name: "Summary" })).toHaveAttribute("aria-selected", "true")
+  })
+
   it("can collapse and expand", () => {
     render(<ModellingPreview data={makeData()} nodeId="n1" />)
     fireEvent.click(screen.getByLabelText("Collapse preview panel"))
@@ -112,6 +156,23 @@ describe("ModellingPreview", () => {
     expect(container.innerHTML).not.toBe("")
   })
 
+  it("summarises a refit run without a test set by its validation metrics when collapsed", () => {
+    const base = makeTrainResult()
+    const result = makeTrainResult({
+      final_test_metrics: {},
+      final_test_rows: 0,
+      diagnostics_set: "development",
+      // In-sample: the rows the final model was refit on.
+      diagnostic_metrics: { gini: 0.8963, rmse: 0.0586 },
+    })
+    render(<ModellingPreview data={makeData({ result: { ...result, evaluation: base.evaluation } })} nodeId="n1" />)
+    fireEvent.click(screen.getByLabelText("Collapse preview panel"))
+
+    // The factory's holdout selection metrics: gini 0.45, rmse 0.12.
+    expect(screen.getByText("gini: 0.4500 | rmse: 0.1200")).toBeInTheDocument()
+    expect(screen.queryByText(/0.8963/)).toBeNull()
+  })
+
   it("clicking a tab switches active tab content", () => {
     const result = makeTrainResult({
       feature_importance: [
@@ -126,7 +187,7 @@ describe("ModellingPreview", () => {
   })
 
   it("Loss tab is hidden when result has no loss_history", () => {
-    const result = makeTrainResult({ loss_history: undefined })
+    const result = makeTrainResult({ loss_history: [] })
     render(<ModellingPreview data={makeData({ result })} nodeId="n1" />)
     expect(screen.queryByText("Loss")).not.toBeInTheDocument()
   })
@@ -137,6 +198,20 @@ describe("ModellingPreview", () => {
     })
     render(<ModellingPreview data={makeData({ result })} nodeId="n1" />)
     expect(screen.queryByText("Loss")).not.toBeInTheDocument()
+  })
+
+  it("offers the Loss tab for a holdout validation fit whose refit kept one tree", () => {
+    const result = makeTrainResult({
+      // The refit trained one tree: one row of its own history.
+      loss_history: [{ iteration: 1, train_rmse: 1.0 }],
+      validation_loss_history: [
+        { iteration: 1, train_rmse: 1.0, eval_rmse: 1.1 },
+        { iteration: 2, train_rmse: 0.9, eval_rmse: 1.2 },
+      ],
+    })
+    render(<ModellingPreview data={makeData({ result })} nodeId="n1" />)
+    fireEvent.click(screen.getByRole("tab", { name: "Loss" }))
+    expect(screen.getByText(/^Validation fit: /)).toBeInTheDocument()
   })
 
   it("Features tab shows feature names when clicked", () => {
@@ -193,5 +268,20 @@ describe("ModellingPreview", () => {
     const liftTab = screen.getByText("Lift")
     fireEvent.click(liftTab)
     expect(liftTab).toBeInTheDocument()
+  })
+
+  it("fails loudly when validation diagnostics have no evaluation to count rows from", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {})
+    const result = makeTrainResult({ diagnostics_set: "validation", evaluation: undefined })
+    expect(() => render(<ModellingPreview data={makeData({ result })} nodeId="n1" />)).toThrow(
+      /Validation diagnostics need the evaluation's selection fit/,
+    )
+  })
+
+  it("uses the model accent on the shared results workspace", () => {
+    render(<ModellingPreview data={makeData()} nodeId="n1" />)
+    const pane = screen.getByRole("tabpanel")
+    expect(pane.style.getPropertyValue("--results-accent")).toBe("var(--model-accent)")
+    expect(pane.style.getPropertyValue("--results-accent-soft")).toBe("var(--model-accent-soft)")
   })
 })

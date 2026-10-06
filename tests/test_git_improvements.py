@@ -391,13 +391,13 @@ class TestHistoricalPipelineReads:
         _git(repo, "add", "haute.toml", "rating.py")
         _git(repo, "commit", "-m", "broken historical pipeline")
 
-        def fail_parse(_path: Path) -> None:
+        def fail_parse(_path: Path, **_kwargs: object) -> None:
             raise ValueError("malformed historical pipeline")
 
         monkeypatch.setattr(route_helpers, "parse_pipeline_to_graph", fail_parse)
         monkeypatch.chdir(repo)
-        with pytest.raises(GitHistoryReadError):
-            commit_pipeline_graph("HEAD")
+        with pytest.raises(GitHistoryReadError, match="could not be parsed"):
+            commit_pipeline_graph("HEAD", "rating.py")
 
     def test_malformed_archive_is_a_typed_history_failure(
         self,
@@ -480,7 +480,6 @@ class TestHistoricalPipelineReads:
         repo: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        import haute.discovery as discovery
         import haute.routes._helpers as route_helpers
         from haute._types import PipelineGraph
 
@@ -489,11 +488,6 @@ class TestHistoricalPipelineReads:
             (root / "rating.py").write_text("# historical\n")
 
         monkeypatch.setattr(git_mod, "archive_commit", fake_archive)
-        monkeypatch.setattr(
-            discovery,
-            "discover_pipelines",
-            lambda root: [root / "rating.py"],
-        )
         monkeypatch.setattr(
             route_helpers,
             "parse_pipeline_to_graph",
@@ -513,7 +507,7 @@ class TestHistoricalPipelineReads:
         monkeypatch.setattr(route_helpers.shutil, "rmtree", contended_rmtree)
         monkeypatch.chdir(repo)
 
-        result = commit_pipeline_graph("HEAD")
+        result = commit_pipeline_graph("HEAD", "rating.py")
         assert result.nodes == []
         assert result.source_file == "rating.py"
         assert attempts == 3

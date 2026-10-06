@@ -28,6 +28,33 @@ from tests._projection_helpers import has_pair, pair_value, pair_value_or_none
 from tests.conftest import make_edge, make_graph, make_output_config
 
 
+def _public_output_definition(*, name: str = "opaque_output_id") -> dict[str, object]:
+    return {
+        "definitionId": "definition_public_output",
+        "file": "modules/public_output.py",
+        "graph": {
+            "nodes": [
+                {
+                    "id": "internal_result",
+                    "data": {
+                        "label": "private implementation result",
+                        "nodeType": "polars",
+                        "config": {},
+                    },
+                }
+            ],
+            "edges": [],
+        },
+        "inputPorts": [],
+        "outputPorts": [
+            {
+                "name": name,
+                "source": {"nodeId": "internal_result", "handleId": None},
+            }
+        ],
+    }
+
+
 def test_projection_coverage_map_mentions_every_node_type() -> None:
     coverage = projection_rule_coverage_by_node_type()
     assert set(coverage) == set(NodeType)
@@ -99,6 +126,122 @@ def test_projection_rule_coverage_declares_opaque_node_types_explicitly() -> Non
         assert coverage[node_type].rules == frozenset({"opaque_contract"})
 
 
+def test_projection_resolves_collapsed_submodel_inputs_by_public_port_name() -> None:
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "occurrence",
+                    "type": "submodel",
+                    "data": {
+                        "label": "unrelated_alias",
+                        "nodeType": "submodel",
+                        "config": {
+                            "definitionId": "definition_public_output",
+                            "alias": "unrelated_alias",
+                        },
+                    },
+                },
+                {
+                    "id": "consumer",
+                    "data": {
+                        "label": "consumer",
+                        "nodeType": "polars",
+                        "config": {
+                            "code": "df = opaque_output_id.select(pl.col('premium'))",
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "public-result-edge",
+                    "source": "occurrence",
+                    "target": "consumer",
+                    "sourceHandle": "out__opaque_output_id",
+                }
+            ],
+            "submodels": {
+                "definition_public_output": _public_output_definition(),
+            },
+        }
+    )
+
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="consumer",
+            required_columns_by_node={"consumer": {"premium"}},
+            profile=ExecutionProfile.PREVIEW_EAGER,
+        )
+    )
+
+    [edge_reason] = projection.diagnostics.edge_reasons.values()
+    assert edge_reason.details["input_name"] == "opaque_output_id"
+
+
+def test_live_switch_pruning_uses_collapsed_submodel_public_output_label() -> None:
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "occurrence",
+                    "type": "submodel",
+                    "data": {
+                        "label": "unrelated_alias",
+                        "nodeType": "submodel",
+                        "config": {
+                            "definitionId": "definition_public_output",
+                            "alias": "unrelated_alias",
+                        },
+                    },
+                },
+                {
+                    "id": "fallback",
+                    "data": {
+                        "label": "fallback result",
+                        "nodeType": "dataInput",
+                        "config": {},
+                    },
+                },
+                {
+                    "id": "switch",
+                    "data": {
+                        "label": "switch",
+                        "nodeType": "liveSwitch",
+                        "config": {
+                            "input_scenario_map": {
+                                "public_result": "live",
+                                "fallback_result": "batch",
+                            }
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "public-result-edge",
+                    "source": "occurrence",
+                    "target": "switch",
+                    "sourceHandle": "out__opaque_output_id",
+                },
+                {
+                    "id": "fallback-edge",
+                    "source": "fallback",
+                    "target": "switch",
+                },
+            ],
+            "submodels": {
+                "definition_public_output": _public_output_definition(),
+            },
+        }
+    )
+
+    prepared = prepare_graph(graph, "switch", source="live")
+
+    assert [edge.id for edge in prepared.relevant_edges] == ["public-result-edge"]
+
+
 def _projection_signature(projection_plan):
     def _normalise(mapping):
         return {
@@ -130,7 +273,7 @@ def test_projection_plan_is_stable_when_graph_order_changes() -> None:
                         {
                             "column": "age",
                             "outputColumn": "age_band",
-                            "banding": "continuous",
+                            "banding": "breakpoints",
                             "rules": [],
                             "default": "other",
                         }
@@ -365,7 +508,7 @@ def _edge_join_graph(*, keys: dict[str, object], base_outputs, join_outputs):
                     "id": "join",
                     "data": {
                         "label": "join",
-                        "nodeType": "modelScore",
+                        "nodeType": "polars",
                         "config": {"contract": {"inputs": [], "outputs": join_outputs}},
                     },
                 },
@@ -834,10 +977,14 @@ def test_projection_diagnostics_payload_is_json_safe():
 
 
 def test_execution_facade_attaches_projection_strategy_to_context():
-    from haute._execution_context import ExecutionContext
+    from haute._execution_admission import create_admitted_execution_context
+    from haute._native_memory_limit import native_memory_backend_scope
     from haute.execution import plan_execution_strategy
 
-    context = ExecutionContext(
+    # The fan-in node joins, which EXEC-P07 admits as a materialisation
+    # boundary, so the plan needs an admitted context; the sources are not
+    # readable here, so a hard worker cap supplies the bounded envelope.
+    context = create_admitted_execution_context(
         operation="test_projection_facade",
         profile=ExecutionProfile.LAZY_SINK,
     )
@@ -848,7 +995,8 @@ def test_execution_facade_attaches_projection_strategy_to_context():
         required_columns_by_node={"out": {"quote_id", "left_value"}},
     )
 
-    projection = plan_execution_strategy(request, execution_context=context)
+    with native_memory_backend_scope("rlimit"):
+        projection = plan_execution_strategy(request, execution_context=context)
 
     assert context.projection_plan is projection
     diagnostics = context.projection_plan.projection_plan.diagnostics_payload(
@@ -1758,6 +1906,135 @@ def test_single_parent_polars_helper_call_keeps_visible_full_width_boundary():
     assert reason.details == {"reason": "dynamic_helper", "operation": None}
 
 
+def test_single_parent_polars_preamble_name_keeps_visible_full_width_boundary():
+    """A preamble name may hold an expression that reads columns lineage cannot see."""
+    projection = _single_parent_polars_plan(
+        "df = df.with_columns(x=pl.col('premium') * weight)",
+        ["x"],
+    )
+
+    assert not has_pair(projection.edge_demands, "source", "transform")
+    assert projection.needed_by_node["source"] is None
+    reason = pair_value(projection.diagnostics.edge_reasons, "source", "transform")
+    assert reason.rule == "polars_lineage_unsupported"
+    assert reason.details == {"reason": "unresolved_name", "operation": None}
+
+
+def _external_file_plan(code: str, fields: list[str], *, parents: tuple[str, ...] = ("source",)):
+    """Plan ``parents -> ext(code) -> out(fields)`` for an External File node."""
+    graph = make_graph(
+        {
+            "nodes": [
+                *(
+                    {
+                        "id": parent,
+                        "data": {
+                            "label": parent,
+                            "nodeType": "dataInput",
+                            "config": {"path": f"{parent}.parquet"},
+                        },
+                    }
+                    for parent in parents
+                ),
+                {
+                    "id": "ext",
+                    "data": {
+                        "label": "ext",
+                        "nodeType": "externalFile",
+                        "config": {"path": "factors.json", "fileType": "json", "code": code},
+                    },
+                },
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": make_output_config(fields),
+                    },
+                },
+            ],
+            "edges": [
+                *(make_edge(parent, "ext").model_dump() for parent in parents),
+                make_edge("ext", "out").model_dump(),
+            ],
+        }
+    )
+    return plan(
+        ProjectionRequest(graph=graph, target_node_id="out", profile=ExecutionProfile.LAZY_SINK)
+    )
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "df = df.with_columns(x=pl.col('premium') * obj['factor'])",
+        "df = source.with_columns(x=pl.col('premium') * obj['factor'])",
+        "df = df.with_columns(x=pl.col('premium') + pl.lit(obj['loading']))",
+    ],
+)
+def test_external_file_code_narrows_its_input_through_column_lineage(code: str) -> None:
+    projection = _external_file_plan(code, ["x"])
+
+    assert projection.needed_by_node["ext"] == frozenset({"x"})
+    assert projection.needed_by_node["source"] == frozenset({"premium"})
+    assert pair_value(projection.edge_demands, "source", "ext") == frozenset({"premium"})
+    reason = pair_value(projection.diagnostics.edge_reasons, "source", "ext")
+    assert reason.rule == "polars_column_lineage"
+
+
+def test_external_file_df_is_the_first_incoming_frame() -> None:
+    projection = _external_file_plan(
+        "df = df.with_columns(x=pl.col('premium') * obj['factor'])",
+        ["x"],
+        parents=("source", "lookup"),
+    )
+
+    assert pair_value(projection.edge_demands, "source", "ext") == frozenset({"premium"})
+    assert pair_value(projection.edge_demands, "lookup", "ext") == frozenset()
+
+
+def test_external_file_input_named_df_keeps_its_inputs_full_width() -> None:
+    """The builder rebinds ``df`` to the first frame, so an input named ``df`` is ambiguous."""
+    projection = _external_file_plan(
+        "df = df.with_columns(x=pl.col('premium') * obj['factor'])",
+        ["x"],
+        parents=("lookup", "df"),
+    )
+
+    assert not has_pair(projection.edge_demands, "lookup", "ext")
+    assert not has_pair(projection.edge_demands, "df", "ext")
+    assert projection.needed_by_node["lookup"] is None
+    assert projection.needed_by_node["df"] is None
+    reason = pair_value(projection.diagnostics.edge_reasons, "df", "ext")
+    assert reason.rule == "unprojected_streaming_boundary"
+
+
+@pytest.mark.parametrize(
+    ("code", "lineage_reason"),
+    [
+        ("df = df.select(obj['features'])", "dynamic_select"),
+        (
+            "df = df.with_columns("
+            "x=pl.when(pl.col('premium') > 1).then(obj['column']).otherwise(0))",
+            "dynamic_with_columns",
+        ),
+        ("df = df.with_columns(pl.lit(1).alias(obj['column']))", "dynamic_with_columns"),
+        ("df = df.with_columns(x=obj.predict(df))", "dynamic_with_columns"),
+        ("df = df.with_columns(x=pl.col('premium') * weight)", "unresolved_name"),
+    ],
+)
+def test_external_file_code_outside_lineage_keeps_its_input_full_width(
+    code: str, lineage_reason: str
+) -> None:
+    projection = _external_file_plan(code, ["x"])
+
+    assert not has_pair(projection.edge_demands, "source", "ext")
+    assert projection.needed_by_node["source"] is None
+    reason = pair_value(projection.diagnostics.edge_reasons, "source", "ext")
+    assert reason.rule == "polars_lineage_unsupported"
+    assert reason.details["reason"] == lineage_reason
+
+
 def test_single_parent_polars_named_root_derive_select_narrows_parent_demand():
     """A first chain rooted at the named input is as projectable as ``df``."""
     projection = _single_parent_polars_plan(
@@ -2635,6 +2912,7 @@ def test_public_projection_plan_strict_profile_boundaries_terminal_user_code():
 
 
 def test_public_projection_plan_strict_profile_runs_source_user_code_unprojected():
+    """Code outside the lineage model scans full width: a narrowed ``unique()`` dedupes less."""
     graph = make_graph(
         {
             "nodes": [
@@ -2645,7 +2923,7 @@ def test_public_projection_plan_strict_profile_runs_source_user_code_unprojected
                         "nodeType": "dataInput",
                         "config": {
                             "path": "data.parquet",
-                            "code": "df = df.with_columns(pl.col('a') + 1)",
+                            "code": "df = df.unique()",
                         },
                     },
                 },
@@ -2717,7 +2995,8 @@ def test_public_projection_plan_strict_profile_allows_projection_safe_source_lim
     assert projection.needed_by_node["source"] == frozenset({"quote_id", "premium"})
 
 
-def test_public_projection_plan_strict_profile_runs_source_filter_unprojected():
+def test_public_projection_plan_strict_profile_projects_source_filter_by_column_lineage():
+    """The node's demand stays its output; the scan adds the predicate column at build time."""
     graph = make_graph(
         {
             "nodes": [
@@ -2754,11 +3033,52 @@ def test_public_projection_plan_strict_profile_runs_source_filter_unprojected():
         )
     )
 
-    assert projection.needed_by_node["source"] is None
-    assert (
-        projection.diagnostics.opaque_reasons["source"].rule
-        == UNPROJECTED_STREAMING_BOUNDARY_RULE_NAME
+    assert projection.needed_by_node["source"] == frozenset({"quote_id"})
+    assert "source" not in projection.opaque_boundaries
+
+
+def test_public_projection_plan_proves_source_code_lineage_in_pre_rename_names():
+    """Renames run after the code, so lineage is asked for ``a`` rather than ``b``."""
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataInput",
+                        "config": {
+                            "path": "data.parquet",
+                            "contract": "opaque",
+                            "code": "df = df.select('a')",
+                            "selected_columns": ["a"],
+                            "column_renames": {"a": "b"},
+                        },
+                    },
+                },
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": make_output_config(["b"]),
+                    },
+                },
+            ],
+            "edges": [make_edge("source", "out").model_dump()],
+        }
     )
+
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="out",
+            profile=ExecutionProfile.LAZY_SINK,
+        )
+    )
+
+    assert projection.needed_by_node["source"] == frozenset({"b"})
+    assert "source" not in projection.opaque_boundaries
 
 
 def test_public_projection_plan_strict_profile_allows_contracted_user_code():
@@ -3048,13 +3368,138 @@ def test_source_scan_projection_maps_logical_renames_to_physical_columns():
     )
 
     assert projection.columns == frozenset({"quote_id", "raw_premium"})
-    assert projection.validate_columns == frozenset({"quote_id", "raw_premium", "unused"})
+
+
+def test_source_scan_projection_without_demand_reads_the_full_source_width():
+    projection = source_scan_projection(
+        {"selected_columns": ["quote_id", "raw_premium"]},
+        None,
+    )
+
+    assert projection.columns is None
+
+
+def test_source_scan_projection_with_empty_demand_reads_rows_only():
+    """Zero demanded columns is a row-count request: an empty projection, not full width."""
+    projection = source_scan_projection({"selected_columns": ["quote_id", "premium"]}, frozenset())
+
+    assert projection.columns == frozenset()
+
+
+def test_source_scan_projection_reads_full_width_when_a_rename_is_ambiguous():
+    """An unmappable demand never narrows the scan to ``selected_columns``.
+
+    The selection is applied post-call in every profile, so narrowing the
+    physical read to it here would make a stale selected name fatal in bounded
+    profiles only.
+    """
+    projection = source_scan_projection(
+        {
+            "selected_columns": ["a", "b", "stale"],
+            "column_renames": {"a": "x", "b": "x"},
+        },
+        {"x"},
+    )
+
+    assert projection.columns is None
 
 
 def test_source_scan_projection_broadens_unsafe_rename_without_selected_columns():
     projection = source_scan_projection(
         {"column_renames": {"raw_premium": "premium"}},
         {"premium"},
+    )
+
+    assert projection.columns is None
+
+
+_SCANNED_SOURCE_COLUMNS = ("quote_id", "segment", "unused")
+
+
+@pytest.mark.parametrize(
+    ("code", "demand", "expected"),
+    [
+        pytest.param(
+            "df = df.limit(10)",
+            {"quote_id", "segment"},
+            {"quote_id", "segment"},
+            id="row-only-slicing",
+        ),
+        pytest.param(
+            "df = df.with_columns(SaleFlag=pl.lit(1))",
+            {"quote_id", "SaleFlag"},
+            {"quote_id"},
+            id="created-column-is-not-scanned",
+        ),
+        pytest.param(
+            "df = df.filter(pl.col('segment') == 'A')",
+            frozenset(),
+            {"segment"},
+            id="rows-only-demand-still-reads-the-predicate",
+        ),
+        pytest.param(
+            "df = df.drop('quote_id').with_columns(SaleFlag=pl.lit(1))",
+            {"SaleFlag"},
+            {"quote_id", "segment"},
+            id="dropping-every-demanded-column-keeps-a-row-carrier",
+        ),
+        pytest.param("df = helper(df)", {"quote_id"}, None, id="outside-lineage-model"),
+    ],
+)
+def test_source_scan_projection_reads_the_columns_post_load_code_consumes(
+    code: str,
+    demand: frozenset[str],
+    expected: set[str] | None,
+):
+    projection = source_scan_projection(
+        {"selected_columns": ["quote_id", "SaleFlag", "segment"]},
+        demand,
+        code=code,
+        source_columns=_SCANNED_SOURCE_COLUMNS,
+    )
+
+    assert projection.columns == (None if expected is None else frozenset(expected))
+
+
+def test_source_scan_projection_needs_the_scan_schema_to_narrow_under_post_load_code():
+    """Only a known schema lets lineage add the row carrier a narrowed code scan needs."""
+    projection = source_scan_projection(
+        {},
+        {"quote_id", "SaleFlag"},
+        code="df = df.with_columns(SaleFlag=pl.lit(1))",
+        source_columns=None,
+    )
+
+    assert projection.columns is None
+
+
+def test_source_scan_projection_inverts_renames_before_post_load_code_lineage():
+    """Renames run after the code, so the code produces the pre-rename name."""
+    projection = source_scan_projection(
+        {
+            "selected_columns": ["quote_id", "SaleFlag"],
+            "column_renames": {"SaleFlag": "sale_flag"},
+        },
+        {"sale_flag"},
+        code="df = df.with_columns(SaleFlag=pl.col('segment') == 'A')",
+        source_columns=_SCANNED_SOURCE_COLUMNS,
+    )
+
+    assert projection.columns == frozenset({"segment"})
+
+
+@pytest.mark.parametrize(
+    "code",
+    ["", "df = df.with_columns(flag=pl.lit(1))"],
+    ids=["no-code", "column-creating-code"],
+)
+def test_source_scan_projection_reads_full_width_when_a_rename_would_collide(code: str):
+    """Pruning the colliding column would hide the rename error bounded profiles must raise."""
+    projection = source_scan_projection(
+        {"selected_columns": ["a", "b", "flag"], "column_renames": {"a": "b"}},
+        {"b"},
+        code=code,
+        source_columns=("a", "b"),
     )
 
     assert projection.columns is None
@@ -3080,3 +3525,742 @@ def test_source_scan_projection_rejects_malformed_projection_config():
             {"column_renames": {"raw_premium": 123}},
             {"premium"},
         )
+
+
+# ----------------------------------------------- EXEC-P07 chained boundaries
+
+
+def _chained_boundary_sequences(code: str):
+    from haute._types import GraphNode, NodeData, NodeType
+    from haute.projection import (
+        materialising_operator_sequences_by_input_names,
+    )
+
+    node = GraphNode(
+        id="op",
+        type="custom",
+        position={"x": 0, "y": 0},
+        data=NodeData(label="op", nodeType=NodeType.POLARS, config={"code": code}),
+    )
+    return materialising_operator_sequences_by_input_names(["op"], {"op": node}, {"op": ["src"]})
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("df = src.unique(subset=['k']).reverse()", ("unique", "reverse")),
+        ("df = src.reverse().unique(subset=['k'])", ("reverse", "unique")),
+        ("df = src.sort('a').unique(subset=['k']).reverse()", ("sort", "unique", "reverse")),
+    ],
+)
+def test_chained_boundaries_are_recorded_in_evaluation_order(
+    code: str,
+    expected: tuple[str, ...],
+) -> None:
+    """Chained calls share a source position, so order must come from evaluation.
+
+    Sorting by ``(lineno, col_offset)`` tied every call in one chain and left the
+    operator to a lexical tie-break, which named ``reverse`` for
+    ``unique(...).reverse()``.
+    """
+    assert dict(_chained_boundary_sequences(code)) == {"op": expected}
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("df = src.with_columns(pl.col('p').shift(1).alias('lag'))", ("shift",)),
+        (
+            "df = src.with_columns(pl.col('p').diff().alias('d'), "
+            "pl.col('p').pct_change().alias('pc'))",
+            ("diff", "pct_change"),
+        ),
+        ("f = pl.col('p').diff\ndf = src.with_columns(f())", ("diff",)),
+        (
+            "def delta(expr):\n    return expr.diff()\ndf = src.with_columns(delta(pl.col('p')))",
+            ("diff",),
+        ),
+        (
+            "change = lambda expr: expr.pct_change()\ndf = src.with_columns(change(pl.col('p')))",
+            ("pct_change",),
+        ),
+        (
+            "def window(expr):\n    return expr.over('k')\n"
+            "df = src.with_columns(window(pl.col('p').sum()))",
+            ("over",),
+        ),
+        (
+            "value = src if flag else pl.col('p')\ndf = src.with_columns(value.diff())",
+            ("diff",),
+        ),
+        (
+            # An expression or a namespace is never a frame, but may be an expression.
+            "value = pl.col('l').list if flag else pl.col('p')\n"
+            "df = src.with_columns(value.sort(), value.diff())",
+            ("diff",),
+        ),
+    ],
+)
+def test_neighbouring_row_expressions_are_boundaries_on_any_expression(
+    code: str,
+    expected: tuple[str, ...],
+) -> None:
+    assert dict(_chained_boundary_sequences(code)) == {"op": expected}
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "df = src.with_columns(pl.col('l').list.shift(1), pl.col('l').list.diff())",
+        "df = src.with_columns(pl.col('a').arr.shift(1))",
+        "f = pl.col('l').list.diff\ndf = src.with_columns(f())",
+        "items = pl.col('l').list\ndf = src.with_columns(items.diff())",
+        "items = pl.col('l').list\nlag = items.shift\ndf = src.with_columns(lag(1))",
+        "items = pl.col('l').list if flag else pl.col('m').arr\n"
+        "df = src.with_columns(items.shift(1))",
+    ],
+)
+def test_same_named_expression_namespace_methods_are_not_boundaries(code: str) -> None:
+    """``list.shift`` and ``arr.shift`` work within each row's value."""
+    assert dict(_chained_boundary_sequences(code)) == {}
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("df = src.with_columns((pl.col('a') * 2).sort())", {}),
+        ("df = src.with_columns((-pl.col('a')).sort())", {}),
+        ("df = (src * 2).sort('a')", {"op": ("sort",)}),
+        ("scaled = src * factor\ndf = scaled.sort('a')", {"op": ("sort",)}),
+    ],
+)
+def test_an_operator_result_is_a_frame_only_when_an_operand_may_be_one(
+    code: str,
+    expected: dict[str, tuple[str, ...]],
+) -> None:
+    assert dict(_chained_boundary_sequences(code)) == expected
+
+
+def test_chained_boundary_diagnostic_names_the_first_operator_evaluated() -> None:
+    from haute.projection import first_materialising_operators
+
+    for code, first in (
+        ("df = src.unique(subset=['k']).reverse()", "unique"),
+        ("df = src.reverse().unique(subset=['k'])", "reverse"),
+    ):
+        sequences = _chained_boundary_sequences(code)
+        assert dict(first_materialising_operators(sequences)) == {"op": first}
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("df = left.join(right.sort('a'), on='k')", ("sort", "join")),
+        ("df = left.join(right.unique(subset=['k']), on='k')", ("unique", "join")),
+        (
+            "df = left.sort('a').join(right.unique(subset=['k']), on='k')",
+            ("sort", "unique", "join"),
+        ),
+    ],
+)
+def test_a_boundary_inside_an_argument_is_recorded_before_its_outer_call(
+    code: str,
+    expected: tuple[str, ...],
+) -> None:
+    """Python evaluates the receiver, then the arguments, then the call.
+
+    Recording the outer call first reported ``left.join(right.sort(...))`` as
+    join-then-sort, which is the reverse of the order the frames are transformed.
+    """
+    from haute._types import GraphNode, NodeData, NodeType
+    from haute.projection import materialising_operator_sequences_by_input_names
+
+    node = GraphNode(
+        id="op",
+        type="custom",
+        position={"x": 0, "y": 0},
+        data=NodeData(label="op", nodeType=NodeType.POLARS, config={"code": code}),
+    )
+
+    sequences = materialising_operator_sequences_by_input_names(
+        ["op"], {"op": node}, {"op": ["left", "right"]}
+    )
+
+    assert dict(sequences) == {"op": expected}
+
+
+def test_malformed_api_input_edge_classifies_without_raising() -> None:
+    """A malformed apiInput edge is skipped by the classifier, not fatal.
+
+    ``edge_input_name`` raises for an apiInput edge with no frame label, but
+    strategy planning must still classify the graph: the node builder is the
+    fail-loud point that reports the malformed edge.
+    """
+    from haute._types import GraphNode, NodeData, NodeType
+    from haute.projection import materialising_operator_sequences_by_node
+
+    source = GraphNode(
+        id="src",
+        type="custom",
+        position={"x": 0, "y": 0},
+        data=NodeData(label="src", nodeType=NodeType.API_INPUT, config={}),
+    )
+    target = GraphNode(
+        id="op",
+        type="custom",
+        position={"x": 0, "y": 0},
+        data=NodeData(
+            label="op",
+            nodeType=NodeType.POLARS,
+            config={"code": "df = src.unique(subset=['k'])"},
+        ),
+    )
+    edge = make_edge("src", "op", source_handle=None)
+
+    sequences = materialising_operator_sequences_by_node(
+        ["op"], {"src": source, "op": target}, relevant_edges=[edge]
+    )
+
+    assert dict(sequences) == {"op": ("unique",)}
+
+
+def test_boundary_ast_walker_visits_less_common_valid_syntax() -> None:
+    code = """
+@decorator(src.unique())
+class Example(src.sort('a'), metaclass=meta(src.reverse())):
+    field: object
+    value: object = src.unique()
+    def method(
+        self, item=src.sort('a'), *args, option=src.reverse(), required, **kwargs
+    ) -> src.unique():
+        global_result.attr, mapping['key'], *items = src.unique(), src.sort('a'), src.reverse()
+        factory().attr = src.unique()
+        counter += src.sort('a')
+        holder.attr += src.reverse()
+        mapping['key'] += src.unique()
+        factory().attr += src.sort('a')
+        starred = [*src.reverse()]
+        with src.sort('a') as bound, src.reverse():
+            result = {src.unique(): src.sort('a'), **src.reverse()}
+        async def nested() -> src.unique():
+            async with src.sort('a') as async_bound, src.reverse():
+                return [src.unique() for item in src.sort('a') if src.reverse()]
+        return {src.unique(): src.sort('a') for item in src.reverse() if src.unique()}
+
+async def worker() -> src.sort('a'):
+    @decorator(src.reverse())
+    async def inner(default=src.unique(), *, named=src.sort('a'), **kwargs):
+        yield src.reverse()
+    import package
+    from package import member as alias
+    return src.unique()
+"""
+
+    sequences = _chained_boundary_sequences(code)
+
+    assert dict(sequences) == {"op": ("unique", "sort", "reverse")}
+
+
+def test_boundary_ast_walker_handles_a_malformed_augassign_target_conservatively() -> None:
+    import ast
+
+    from haute._polars_operations import (
+        materialising_expression_methods,
+        materialising_frame_methods,
+    )
+    from haute.projection import _materialising_calls_in_source_order
+
+    tree = ast.parse("counter += src.sort('a')")
+    statement = tree.body[0]
+    assert isinstance(statement, ast.AugAssign)
+    statement.target = ast.Constant(value=0)
+
+    calls = _materialising_calls_in_source_order(
+        tree,
+        frozenset({"src"}),
+        materialising_frame_methods(),
+        materialising_expression_methods(),
+    )
+
+    assert [call[3] for call in calls] == ["sort"]
+
+
+def test_boundary_helpers_skip_missing_sources_and_expose_first_operator_wrapper() -> None:
+    from haute._types import GraphNode, NodeData, NodeType
+    from haute.projection import (
+        materialising_operator_sequences_by_node,
+        materialising_operators_by_input_names,
+    )
+
+    node = GraphNode(
+        id="op",
+        type="custom",
+        position={"x": 0, "y": 0},
+        data=NodeData(label="op", nodeType=NodeType.POLARS, config={"code": "df = src.unique()"}),
+    )
+    edge = make_edge("missing", "op")
+
+    sequences = materialising_operator_sequences_by_node(
+        ["op"], {"op": node}, relevant_edges=[edge]
+    )
+    assert dict(sequences) == {"op": ("unique",)}
+    assert dict(materialising_operators_by_input_names(["op"], {"op": node}, {"op": ["src"]})) == {
+        "op": "unique"
+    }
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("df = pl.LazyFrame.group_by(src, 'segment').agg(pl.len())", "group_by"),
+        ("df = pl.DataFrame.sort(src, 'premium')", "sort"),
+        ("g = src.group_by\ndf = g('segment').agg(pl.len())", "group_by"),
+        ("s = src.sort\ndf = s('premium')", "sort"),
+        ("df = src.with_columns(pl.col('premium').cast(pl.Int64))", None),
+    ],
+)
+def test_bound_methods_and_frame_class_calls_are_materialising_boundaries(
+    code: str, expected: str | None
+) -> None:
+    from haute._types import GraphNode, NodeData, NodeType
+    from haute.projection import materialising_operators_by_input_names
+
+    node = GraphNode(
+        id="op",
+        type="custom",
+        position={"x": 0, "y": 0},
+        data=NodeData(label="op", nodeType=NodeType.POLARS, config={"code": code}),
+    )
+
+    operators = dict(materialising_operators_by_input_names(["op"], {"op": node}, {"op": ["src"]}))
+
+    assert operators == ({} if expected is None else {"op": expected})
+
+
+def test_opaque_contract_polars_fan_in_is_unprojected() -> None:
+    from haute._types import GraphNode, NodeData, NodeType
+    from haute.projection import opaque_contract_demands_for_node
+
+    node = GraphNode(
+        id="op",
+        type="custom",
+        position={"x": 0, "y": 0},
+        data=NodeData(label="op", nodeType=NodeType.POLARS, config={}),
+    )
+
+    result = opaque_contract_demands_for_node(node, ["left", "right"])
+
+    assert result.default is None
+    assert result.for_parent("left") is None
+    assert result.for_parent("right") is None
+
+
+def _post_code_score_graph(code: str):
+    return make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {"label": "source", "nodeType": "dataInput", "config": {}},
+                },
+                {
+                    "id": "score",
+                    "data": {
+                        "label": "score",
+                        "nodeType": "modelScore",
+                        "config": {
+                            "task": "regression",
+                            "output_column": "pred",
+                            "code": code,
+                            "contract": {"inputs": ["f1"], "outputs": ["pred"]},
+                        },
+                    },
+                },
+            ],
+            "edges": [make_edge("source", "score").model_dump()],
+        }
+    )
+
+
+def test_builder_post_code_outputs_are_not_demanded_and_its_inputs_are():
+    projection = plan(
+        ProjectionRequest(
+            graph=_post_code_score_graph(
+                "df = df.with_columns(ratio=pl.col('premium') / pl.col('pred'))"
+            ),
+            target_node_id="score",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"score": {"quote_id", "ratio"}},
+        )
+    )
+
+    assert pair_value(projection.edge_demands, "source", "score") == frozenset(
+        {"quote_id", "premium", "f1"}
+    )
+
+
+def _featured_post_code_score_graph(
+    tmp_path, code: str, task: str = "regression", class_labels: tuple[int, int] | None = None
+):
+    """A Model Score with post-code whose feature contract names f1 and f2."""
+    from haute.modelling._feature_contract import ModelIdentity, build_contract, save_contract
+
+    contract_path = tmp_path / "model.feature_contract.json"
+    save_contract(
+        build_contract(
+            features=["f1", "f2"],
+            feature_types={"f1": "Float64", "f2": "Float64"},
+            categorical_features=[],
+            target_name="target",
+            target_type="Float64",
+            task=task,
+            model=None
+            if class_labels is None
+            else ModelIdentity(
+                algorithm="catboost",
+                link="logit",
+                engine_name="catboost",
+                engine_version="1.2.10",
+                haute_version="0.1.0",
+                class_labels=class_labels,
+            ),
+        ),
+        contract_path,
+    )
+    graph = _post_code_score_graph(code)
+    config = graph.nodes[1].data.config
+    del config["contract"]
+    config["feature_contract_path"] = str(contract_path)
+    config["task"] = task
+    return graph
+
+
+def _plan_score(graph, required: set[str]):
+    return plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="score",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"score": required},
+        )
+    )
+
+
+def _score_parent_demand(graph, required: set[str]):
+    projection = _plan_score(graph, required)
+    assert not projection.opaque_boundaries
+    return pair_value(projection.edge_demands, "source", "score")
+
+
+def test_model_score_post_code_is_planned_from_the_models_features(tmp_path):
+    graph = _featured_post_code_score_graph(
+        tmp_path, "df = df.with_columns(ratio=pl.col('premium') / pl.col('pred'))"
+    )
+
+    assert _score_parent_demand(graph, {"quote_id", "ratio"}) == frozenset(
+        {"quote_id", "premium", "f1", "f2"}
+    )
+
+
+def test_model_score_post_code_keeps_the_declared_inputs_the_executor_checks(tmp_path):
+    graph = _featured_post_code_score_graph(
+        tmp_path, "df = df.with_columns(ratio=pl.col('pred') * 2)"
+    )
+    graph.nodes[1].data.config["contract"] = {"inputs": ["f1", "f3"], "outputs": ["pred"]}
+
+    assert _score_parent_demand(graph, {"quote_id", "ratio"}) == frozenset(
+        {"quote_id", "f1", "f2", "f3"}
+    )
+
+
+def test_classifier_post_code_does_not_demand_the_scorers_probability_upstream(tmp_path):
+    # A Haute-trained binary classifier always scores its positive-class probability.
+    graph = _featured_post_code_score_graph(
+        tmp_path,
+        "df = df.with_columns(pct=pl.col('pred_proba') * 100)",
+        task="classification",
+        class_labels=(0, 1),
+    )
+
+    assert _score_parent_demand(graph, {"quote_id", "pct"}) == frozenset({"quote_id", "f1", "f2"})
+
+
+def test_classifier_post_code_reading_an_unproven_probability_keeps_its_input_whole(tmp_path):
+    # Without class labels the scorer may not predict probabilities, and then it
+    # keeps an input column of that name, so neither dropping nor demanding it
+    # is safe.
+    graph = _featured_post_code_score_graph(
+        tmp_path,
+        "df = df.with_columns(pct=pl.col('pred_proba') * 100)",
+        task="classification",
+    )
+
+    projection = _plan_score(graph, {"quote_id", "pct"})
+
+    assert "source" in projection.opaque_boundaries
+    assert pair_value_or_none(projection.edge_demands, "source", "score") is None
+
+
+def test_classifier_post_code_not_reading_the_probability_is_still_projected(tmp_path):
+    graph = _featured_post_code_score_graph(
+        tmp_path, "df = df.with_columns(half=pl.col('pred') / 2)", task="classification"
+    )
+
+    assert _score_parent_demand(graph, {"quote_id", "half"}) == frozenset({"quote_id", "f1", "f2"})
+
+
+def _single_parent_graph(child_type: str, child_config: dict) -> object:
+    return make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {"label": "source", "nodeType": "dataInput", "config": {}},
+                },
+                {
+                    "id": "child",
+                    "data": {"label": "child", "nodeType": child_type, "config": child_config},
+                },
+            ],
+            "edges": [make_edge("source", "child").model_dump()],
+        }
+    )
+
+
+_ONLINE_APPLY_ARTIFACT = {
+    "version": "v1",
+    "mode": "online",
+    "lambdas": {"volume": 0.5, "loss_ratio": 0.2},
+    "objective": "income",
+    "constraints": {
+        "volume": {"min": 0.9},
+        "loss_ratio": {"max": 0.6, "numerator": "claims", "denominator": "premium"},
+    },
+    "quote_id": "quote_id",
+    "scenario_index": "step",
+    "scenario_value": "adjustment",
+}
+
+
+@pytest.mark.parametrize(
+    "required", [{"quote_id", "optimal_scenario_value"}, {"quote_id"}, {"optimal_volume"}]
+)
+def test_online_optimiser_apply_demands_exactly_the_columns_its_artifact_reads(tmp_path, required):
+    artifact_path = tmp_path / "optimiser.json"
+    artifact_path.write_text(json.dumps(_ONLINE_APPLY_ARTIFACT), encoding="utf-8")
+    graph = _single_parent_graph(
+        "optimiserApply", {"sourceType": "file", "artifact_path": str(artifact_path)}
+    )
+
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="child",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"child": required},
+        )
+    )
+
+    assert not projection.opaque_boundaries
+    assert pair_value(projection.edge_demands, "source", "child") == frozenset(
+        {"quote_id", "step", "adjustment", "income", "volume", "claims", "premium"}
+    )
+
+
+def test_deployed_optimiser_apply_plans_from_its_annotated_columns_without_a_load(
+    tmp_path, monkeypatch
+):
+    from haute._contracts import _DEPLOY_OPTIMISER_INPUT_COLUMNS_CONFIG_KEY
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("planning must not load an optimiser artifact")
+
+    monkeypatch.setattr("haute._node_apply.load_configured_optimiser_artifact", refuse)
+    monkeypatch.setattr("haute._optimiser_io.load_optimiser_artifact", refuse)
+    graph = _single_parent_graph(
+        "optimiserApply",
+        {
+            "sourceType": "file",
+            "artifact_path": str(tmp_path / "optimiser.json"),
+            _DEPLOY_OPTIMISER_INPUT_COLUMNS_CONFIG_KEY: ["quote_id", "step", "adjustment", "m"],
+        },
+    )
+
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="child",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"child": {"quote_id"}},
+        )
+    )
+
+    assert pair_value(projection.edge_demands, "source", "child") == frozenset(
+        {"quote_id", "step", "adjustment", "m"}
+    )
+
+
+@pytest.mark.parametrize("value", ["../../outside/optimiser.json", ["quote_id", ""], None])
+def test_a_malformed_deploy_optimiser_annotation_is_refused_without_a_load(
+    tmp_path, monkeypatch, value
+):
+    from haute._contracts import _DEPLOY_OPTIMISER_INPUT_COLUMNS_CONFIG_KEY
+    from haute.errors import ConfigError
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("planning must not load an optimiser artifact")
+
+    monkeypatch.setattr("haute._node_apply.load_configured_optimiser_artifact", refuse)
+    monkeypatch.setattr("haute._optimiser_io.load_optimiser_artifact", refuse)
+    graph = _single_parent_graph(
+        "optimiserApply",
+        {
+            "sourceType": "file",
+            "artifact_path": str(tmp_path / "optimiser.json"),
+            _DEPLOY_OPTIMISER_INPUT_COLUMNS_CONFIG_KEY: value,
+        },
+    )
+
+    with pytest.raises(ConfigError, match="invalid internal deploy input columns"):
+        plan(
+            ProjectionRequest(
+                graph=graph,
+                target_node_id="child",
+                profile=ExecutionProfile.LAZY_SINK,
+                required_columns_by_node={"child": {"quote_id"}},
+            )
+        )
+
+
+def test_a_model_score_whose_model_is_refused_fails_planning_as_its_setting_error(tmp_path):
+    from haute.errors import FeatureMismatchError, NodeConfigError
+
+    stale = tmp_path / "model.feature_contract.json"
+    stale.write_text(json.dumps({"features": ["a"]}), encoding="utf-8")
+    graph = _single_parent_graph(
+        "modelScore",
+        {"output_column": "prediction", "feature_contract_path": str(stale)},
+    )
+
+    with pytest.raises(NodeConfigError) as raised:
+        plan(
+            ProjectionRequest(
+                graph=graph,
+                target_node_id="child",
+                profile=ExecutionProfile.PREVIEW_EAGER,
+                required_columns_by_node={"child": {"prediction"}},
+            )
+        )
+
+    # The preview names the node and keeps Haute's own reason, not an internal error.
+    assert raised.value.to_payload() == {
+        "error_code": "node_config_invalid",
+        "message": "Model Score 'child' cannot load its model: contract file is not a "
+        "version-3 feature contract; retrain the model to write a current contract",
+        "setting": "model",
+    }
+    assert isinstance(raised.value.__cause__, FeatureMismatchError)
+
+
+def test_a_model_refusal_wrapping_a_dependency_failure_stays_internal(tmp_path, monkeypatch):
+    from haute.errors import ConfigError, NodeConfigError
+
+    def wrapped_download_failure(_path):
+        try:
+            raise OSError("https://storage.internal/?token=secret-token")
+        except OSError as exc:
+            raise ConfigError(f"Run r has no feature contract ({exc}).") from exc
+
+    monkeypatch.setattr(
+        "haute.modelling._feature_contract.load_contract_cached", wrapped_download_failure
+    )
+    graph = _single_parent_graph(
+        "modelScore",
+        {"output_column": "prediction", "feature_contract_path": str(tmp_path / "c.json")},
+    )
+
+    # Its text quotes the dependency failure, so it never becomes the public setting error.
+    with pytest.raises(ConfigError) as raised:
+        plan(
+            ProjectionRequest(
+                graph=graph,
+                target_node_id="child",
+                profile=ExecutionProfile.PREVIEW_EAGER,
+                required_columns_by_node={"child": {"prediction"}},
+            )
+        )
+    assert not isinstance(raised.value, NodeConfigError)
+
+
+def test_ratebook_optimiser_apply_keeps_the_generic_rules(tmp_path):
+    artifact_path = tmp_path / "optimiser.json"
+    artifact_path.write_text(
+        json.dumps({**_ONLINE_APPLY_ARTIFACT, "mode": "ratebook"}), encoding="utf-8"
+    )
+    graph = _single_parent_graph(
+        "optimiserApply", {"sourceType": "file", "artifact_path": str(artifact_path)}
+    )
+
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="child",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"child": {"quote_id"}},
+        )
+    )
+
+    assert "source" in projection.opaque_boundaries
+
+
+def test_explore_with_an_empty_step_list_passes_its_demand_through():
+    projection = plan(
+        ProjectionRequest(
+            graph=_single_parent_graph("explore", {"steps": []}),
+            target_node_id="child",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"child": {"quote_id", "premium"}},
+        )
+    )
+
+    assert pair_value(projection.edge_demands, "source", "child") == frozenset(
+        {"quote_id", "premium"}
+    )
+
+
+def test_builder_post_code_outside_the_lineage_model_names_the_operation():
+    projection = plan(
+        ProjectionRequest(
+            graph=_post_code_score_graph(
+                "df = df.with_columns(pl.max_horizontal(pl.col(['pred'])).alias('top'))"
+            ),
+            target_node_id="score",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"score": {"quote_id", "top"}},
+        )
+    )
+
+    [reason] = [
+        reason
+        for key, reason in projection.diagnostics.edge_reasons.items()
+        if key.source == "source"
+    ]
+    assert reason.rule == "builder_post_code"
+    assert reason.details["operation"] == "with_columns"
+
+
+def test_builder_post_code_outside_the_lineage_model_keeps_a_full_width_boundary():
+    projection = plan(
+        ProjectionRequest(
+            graph=_post_code_score_graph("for _ in range(1):\n    df = df"),
+            target_node_id="score",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"score": {"quote_id"}},
+        )
+    )
+
+    assert "source" in projection.opaque_boundaries
+    reasons = projection.diagnostics.edge_reasons
+    assert [reason.rule for key, reason in reasons.items() if key.source == "source"] == [
+        "builder_post_code"
+    ]

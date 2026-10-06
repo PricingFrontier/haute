@@ -39,21 +39,15 @@ def project_dir(tmp_path: Path) -> Path:
     input_path = (data / "input.parquet").as_posix()
     source_config = write_data_input_config(tmp_path, "source", input_path)
     code = f'''\
-import polars as pl
 import haute
+import polars as pl
 
 pipeline = haute.Pipeline("test_cli", description="CLI test pipeline")
 
 
 @pipeline.data_input(config="{source_config}")
-def source() -> pl.DataFrame:
+def source():
     """Read data."""
-    from pathlib import Path
-    from haute.graph_utils import resolve_data_input_from_config
-    df = resolve_data_input_from_config(
-        "{source_config}", base_dir=Path(__file__).parent
-    )
-    return df
 
 
 @pipeline.polars
@@ -132,7 +126,7 @@ class TestInit:
         assert (tmp_path / ".gitignore").exists()
         assert (tmp_path / "rating" / "main.py").exists()
         assert (tmp_path / "rating" / "config").is_dir()
-        assert (tmp_path / "rating" / "models").is_dir()
+        assert not (tmp_path / "rating" / "models").exists()
         assert (tmp_path / "rating" / "outputs").is_dir()
         assert (tmp_path / "pyproject.toml").exists()
 
@@ -403,6 +397,18 @@ class TestRun:
         assert "transform" in result.output
         assert "rows" in result.output
 
+    def test_run_refuses_a_file_with_a_name_violation(self, runner: CliRunner, project_dir: Path):
+        """A node named like what the module binds itself is refused before anything runs."""
+        main = project_dir / "main.py"
+        main.write_text(
+            main.read_text(encoding="utf-8")
+            + "\n\n@pipeline.polars\ndef pl() -> pl.LazyFrame:\n    return None\n",
+            encoding="utf-8",
+        )
+        result = runner.invoke(cli, ["run", str(main)])
+        assert result.exit_code == 1
+        assert "takes the name `pl`" in result.output
+
     def test_run_auto_discover(
         self, runner: CliRunner, project_dir: Path, monkeypatch: pytest.MonkeyPatch
     ):
@@ -459,20 +465,14 @@ class TestRun:
         path = (data / "d.parquet").as_posix()
         source_config = write_data_input_config(tmp_path, "source", path)
         code = f'''\
-import polars as pl
 import haute
+import polars as pl
 
 pipeline = haute.Pipeline("broken")
 
 
 @pipeline.data_input(config="{source_config}")
-def source() -> pl.DataFrame:
-    from pathlib import Path
-    from haute.graph_utils import resolve_data_input_from_config
-    df = resolve_data_input_from_config(
-        "{source_config}", base_dir=Path(__file__).parent
-    )
-    return df
+def source(): ...
 
 
 @pipeline.polars
@@ -499,6 +499,27 @@ pipeline.connect("source", "bad")
         assert result.exit_code == 0, result.output
         # The output preview should show data from the last node
         assert "Output" in result.output or "rows" in result.output
+
+    def test_run_executes_a_submodel_in_place_of_its_occurrence(
+        self, runner: CliRunner, tmp_path: Path
+    ):
+        from tests.test_pipeline import _submodel_pipeline
+
+        path, _pipeline = _submodel_pipeline(
+            tmp_path,
+            "@pipeline.polars\n"
+            "def premium(factored: pl.LazyFrame) -> pl.LazyFrame:\n"
+            "    return factored.with_columns(premium=pl.col('factor') * 100)\n\n\n"
+            'pipeline.submodel("modules/factors.py", "factors")\n'
+            'pipeline.connect("quotes", "factors", target_port="rows")\n'
+            'pipeline.connect("factors", "premium", source_port="factored")\n',
+        )
+
+        result = runner.invoke(cli, ["run", str(path)], catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        assert "premium: 1 rows" in result.output
+        assert "120.0" in result.output
 
     def test_run_shows_pipeline_name(self, runner: CliRunner, project_dir: Path):
         """Run output should display pipeline name and node count."""

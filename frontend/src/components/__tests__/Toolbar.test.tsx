@@ -1,12 +1,25 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, act, within } from "@testing-library/react"
+
+vi.mock("../MlflowSettingsModal", () => ({
+  default: () => <div data-testid="mlflow-modal-stub" />,
+}))
+
+// Stubbed like the MLflow modal: what the toolbar owns is opening it. What the
+// pane shows has its own test in PipelineSettingsModal.test.tsx.
+vi.mock("../PipelineSettingsModal", () => ({
+  default: () => <div data-testid="pipeline-settings-stub" />,
+}))
+
 import Toolbar from "../Toolbar"
 import useSettingsStore from "../../stores/useSettingsStore"
+import useGraphStore from "../../stores/useGraphStore"
+import useUIStore from "../../stores/useUIStore"
+import useGitStore from "../../stores/useGitStore"
 
 function makeProps(overrides: Partial<Parameters<typeof Toolbar>[0]> = {}) {
   return {
     nodeCount: 5,
-    dirty: false,
     canUndo: true,
     canRedo: false,
     onUndo: vi.fn(),
@@ -14,9 +27,10 @@ function makeProps(overrides: Partial<Parameters<typeof Toolbar>[0]> = {}) {
     onZoomIn: vi.fn(),
     onZoomOut: vi.fn(),
     onOpenUtility: vi.fn(),
-    onOpenImports: vi.fn(),
-    canCreateSubmodel: true,
-    onCreateSubmodel: vi.fn(),
+    onOpenConstants: vi.fn(),
+    submodelAction: "create" as const,
+    canRunSubmodelAction: true,
+    onSubmodelAction: vi.fn(),
     canCreateInstance: true,
     onCreateInstance: vi.fn(),
     onCentre: vi.fn(),
@@ -33,17 +47,45 @@ describe("Toolbar", () => {
   beforeEach(() => {
     useSettingsStore.setState({
       rowLimit: 1000,
-      streamingChunkSize: 500_000,
       sources: ["live"],
       activeSource: "live",
     })
+    useUIStore.setState({ mlflowSettingsOpen: false })
   })
 
   afterEach(cleanup)
 
-  it("renders Haute brand name", () => {
+  it("renders haute brand name with version centered underneath", () => {
     render(<Toolbar {...makeProps()} />)
-    expect(screen.getByText("Haute")).toBeInTheDocument()
+    const brand = screen.getByTestId("toolbar-brand")
+    expect(brand).toBeInTheDocument()
+
+    const heading = screen.getByRole("heading", { level: 1, name: "haute" })
+    const version = screen.getByText("v999.0.0-test")
+    expect(brand).toContainElement(heading)
+    expect(brand).toContainElement(version)
+
+    // Heading and version are stacked in a centered column container
+    expect(heading.parentElement).toHaveClass("flex-col", "items-center")
+    // Heading precedes version in document order (brand on top, version underneath)
+    expect(heading.compareDocumentPosition(version) & 4).toBeTruthy()
+  })
+
+  it("renders no MLflow control", () => {
+    // The destination is a per-node choice now, so the toolbar carries no
+    // MLflow control of its own — it only still mounts the settings modal for
+    // the UI flag the node selectors set. Asserting on rendered text rather
+    // than the retired chip's test id keeps the guard alive without naming a
+    // symbol the codebase no longer has.
+    render(<Toolbar {...makeProps()} />)
+    expect(screen.queryByText(/mlflow/i)).toBeNull()
+    expect(screen.queryByTestId("mlflow-modal-stub")).toBeNull()
+
+    cleanup()
+    useUIStore.setState({ mlflowSettingsOpen: true })
+    render(<Toolbar {...makeProps()} />)
+    expect(screen.queryByText(/mlflow/i)).toBeNull()
+    expect(screen.getByTestId("mlflow-modal-stub")).toBeInTheDocument()
   })
 
   it("renders the package-derived browser version", () => {
@@ -65,6 +107,228 @@ describe("Toolbar", () => {
     expect(screen.queryByTestId("toolbar-save-menu")).toBeNull()
     fireEvent.click(screen.getByTestId("toolbar-save-commit"))
     expect(props.onSaveCommit).toHaveBeenCalledOnce()
+  })
+
+  it("renders Save and Commit underneath the branch indicator", () => {
+    useGitStore.setState({
+      status: {
+        state: "ready",
+        working_branch: "dev",
+        clean: true,
+        commits_ahead: 0,
+        divergence_reason: null,
+        storage: "unsupported",
+        sync: null,
+      } as never,
+    })
+    render(<Toolbar {...makeProps()} />)
+    const branchIndicator = screen.getByTestId("toolbar-branch-indicator")
+    const branchNameBtn = screen.getByTestId("branch-indicator-name")
+    const saveBtn = screen.getByTestId("toolbar-save")
+    const commitBtn = screen.getByTestId("toolbar-save-commit")
+
+    expect(branchIndicator).toContainElement(saveBtn)
+    expect(branchIndicator).toContainElement(commitBtn)
+
+    const columnContainer = branchNameBtn.parentElement
+    expect(columnContainer).toBeInTheDocument()
+    expect(columnContainer).toHaveClass("flex-col")
+    expect(columnContainer).toContainElement(saveBtn)
+    expect(columnContainer).toContainElement(commitBtn)
+
+    const saveCommitRow = saveBtn.parentElement
+    expect(saveCommitRow).toHaveClass("w-full")
+    expect(saveBtn).toHaveClass("flex-1")
+    expect(commitBtn).toHaveClass("flex-1")
+  })
+
+  it("renders Assistant next to the branch name and Help underneath with equal width", () => {
+    useGitStore.setState({
+      status: {
+        state: "ready",
+        working_branch: "dev",
+        clean: true,
+        commits_ahead: 0,
+        divergence_reason: null,
+        storage: "unsupported",
+        sync: null,
+      } as never,
+    })
+    render(<Toolbar {...makeProps()} />)
+    const assistantBtn = screen.getByTestId("toolbar-assistant")
+    const helpBtn = screen.getByTestId("toolbar-help")
+    const branchIndicator = screen.getByTestId("toolbar-branch-indicator")
+
+    expect(helpBtn).toHaveTextContent("Help")
+    expect(helpBtn).toHaveAttribute("aria-haspopup", "menu")
+    expect(helpBtn).toHaveAttribute("aria-expanded", "false")
+
+    const assistantColumn = assistantBtn.parentElement
+    expect(assistantColumn).toBeInTheDocument()
+    expect(assistantColumn).toHaveClass("flex-col")
+    expect(assistantColumn).toContainElement(helpBtn)
+    expect(assistantBtn).toHaveClass("w-full")
+    expect(helpBtn).toHaveClass("w-full")
+
+    expect(assistantColumn).not.toBeNull()
+    expect(assistantColumn!.compareDocumentPosition(branchIndicator) & 4).toBeTruthy()
+  })
+
+  it("renders Centre on top of Layout in a column next to Submodel/Instance", () => {
+    render(<Toolbar {...makeProps()} />)
+    const centreBtn = screen.getByTestId("toolbar-centre")
+    const layoutBtn = screen.getByTestId("toolbar-layout")
+    const submodelBtn = screen.getByTestId("toolbar-submodel")
+
+    const centreColumn = centreBtn.parentElement
+    expect(centreColumn).toBeInTheDocument()
+    expect(centreColumn).toHaveClass("flex-col")
+    expect(centreColumn).toContainElement(layoutBtn)
+    expect(centreBtn).toHaveClass("w-full")
+    expect(layoutBtn).toHaveClass("w-full")
+
+    expect(centreBtn.compareDocumentPosition(layoutBtn) & 4).toBeTruthy()
+
+    const submodelColumn = submodelBtn.parentElement
+    expect(centreColumn).not.toBeNull()
+    expect(submodelColumn).not.toBeNull()
+    expect(centreColumn!.compareDocumentPosition(submodelColumn!) & 4).toBeTruthy()
+  })
+
+  it("renders Zoom In on top of Zoom Out with text labels in a column next to Centre/Layout", () => {
+    render(<Toolbar {...makeProps()} />)
+    const zoomInBtn = screen.getByTestId("toolbar-zoom-in")
+    const zoomOutBtn = screen.getByTestId("toolbar-zoom-out")
+    const centreBtn = screen.getByTestId("toolbar-centre")
+
+    const zoomColumn = zoomInBtn.parentElement
+    expect(zoomColumn).toBeInTheDocument()
+    expect(zoomColumn).toHaveClass("flex-col")
+    expect(zoomColumn).toContainElement(zoomOutBtn)
+
+    expect(zoomInBtn).toHaveTextContent(/zoom in/i)
+    expect(zoomOutBtn).toHaveTextContent(/zoom out/i)
+    expect(zoomInBtn).toHaveClass("w-full")
+    expect(zoomOutBtn).toHaveClass("w-full")
+
+    expect(zoomInBtn.compareDocumentPosition(zoomOutBtn) & 4).toBeTruthy()
+
+    const centreColumn = centreBtn.parentElement
+    expect(zoomColumn).not.toBeNull()
+    expect(centreColumn).not.toBeNull()
+    expect(zoomColumn!.compareDocumentPosition(centreColumn!) & 4).toBeTruthy()
+  })
+
+  it("renders Utility on top of Constants in a column next to Assistant/Documentation", () => {
+    render(<Toolbar {...makeProps()} />)
+    const utilityBtn = screen.getByTestId("toolbar-utility")
+    const constantsBtn = screen.getByTestId("toolbar-constants")
+    const assistantBtn = screen.getByTestId("toolbar-assistant")
+
+    const utilityColumn = utilityBtn.parentElement
+    expect(utilityColumn).toBeInTheDocument()
+    expect(utilityColumn).toHaveClass("flex-col")
+    expect(utilityColumn).toContainElement(constantsBtn)
+
+    expect(utilityBtn).toHaveTextContent(/utility/i)
+    expect(constantsBtn).toHaveTextContent(/constants/i)
+    expect(utilityBtn).toHaveClass("w-full")
+    expect(constantsBtn).toHaveClass("w-full")
+
+    expect(utilityBtn.compareDocumentPosition(constantsBtn) & 4).toBeTruthy()
+
+    const assistantColumn = assistantBtn.parentElement
+    expect(utilityColumn).not.toBeNull()
+    expect(assistantColumn).not.toBeNull()
+    expect(utilityColumn!.compareDocumentPosition(assistantColumn!) & 4).toBeTruthy()
+  })
+
+  it("renders Submodel on top of Instance in a column next to Utility/Constants", () => {
+    render(<Toolbar {...makeProps()} />)
+    const submodelBtn = screen.getByTestId("toolbar-submodel")
+    const instanceBtn = screen.getByTestId("toolbar-instance")
+    const utilityBtn = screen.getByTestId("toolbar-utility")
+
+    const submodelColumn = submodelBtn.parentElement
+    expect(submodelColumn).toBeInTheDocument()
+    expect(submodelColumn).toHaveClass("flex-col")
+    expect(submodelColumn).toContainElement(instanceBtn)
+
+    expect(submodelBtn).toHaveTextContent(/submodel/i)
+    expect(instanceBtn).toHaveTextContent(/instance/i)
+    expect(submodelBtn).toHaveClass("w-full")
+    expect(instanceBtn).toHaveClass("w-full")
+
+    expect(submodelBtn.compareDocumentPosition(instanceBtn) & 4).toBeTruthy()
+
+    const utilityColumn = utilityBtn.parentElement
+    expect(submodelColumn).not.toBeNull()
+    expect(utilityColumn).not.toBeNull()
+    expect(submodelColumn!.compareDocumentPosition(utilityColumn!) & 4).toBeTruthy()
+  })
+
+  it("renders Timing on top of Memory in a stacked column", () => {
+    render(<Toolbar {...makeProps()} />)
+    const breakdownsContainer = screen.getByTestId("toolbar-breakdowns")
+    expect(breakdownsContainer).toHaveClass("flex-col")
+
+    const timingBtn = screen.getByTitle("Pipeline Timing")
+    const memoryBtn = screen.getByTitle("Pipeline Memory")
+
+    expect(breakdownsContainer).toContainElement(timingBtn)
+    expect(breakdownsContainer).toContainElement(memoryBtn)
+    expect(timingBtn.compareDocumentPosition(memoryBtn) & 4).toBeTruthy()
+  })
+
+  it("formats timing in milliseconds without decimal places and with a space before the unit", () => {
+    const { rerender } = render(<Toolbar {...makeProps({ timings: [{ node_id: "n1", label: "Node 1", timing_ms: 42.4 }] })} />)
+    expect(screen.getByText("42 ms")).toBeInTheDocument()
+
+    rerender(<Toolbar {...makeProps({ timings: [{ node_id: "n1", label: "Node 1", timing_ms: 42.6 }] })} />)
+    expect(screen.getByText("43 ms")).toBeInTheDocument()
+
+    rerender(<Toolbar {...makeProps({ timings: [{ node_id: "n1", label: "Node 1", timing_ms: 0 }] })} />)
+    expect(screen.getByText("0 ms")).toBeInTheDocument()
+
+    rerender(<Toolbar {...makeProps({ timings: [{ node_id: "n1", label: "Node 1", timing_ms: 1500 }] })} />)
+    expect(screen.getByText("1.50 s")).toBeInTheDocument()
+  })
+
+  it("places the Undo through Constants columns between Source/Pipeline and Timing/Memory", () => {
+    render(<Toolbar {...makeProps()} />)
+    const sourcePipeline = screen.getByTestId("toolbar-source-pipeline")
+    const canvasActions = screen.getByTestId("toolbar-canvas-actions")
+    const breakdowns = screen.getByTestId("toolbar-breakdowns")
+
+    expect(sourcePipeline.compareDocumentPosition(canvasActions) & 4).toBeTruthy()
+    expect(canvasActions.compareDocumentPosition(breakdowns) & 4).toBeTruthy()
+    for (const id of ["toolbar-undo", "toolbar-zoom-in", "toolbar-centre", "toolbar-submodel", "toolbar-constants"]) {
+      expect(canvasActions).toContainElement(screen.getByTestId(id))
+    }
+    expect(canvasActions).not.toContainElement(screen.getByTestId("toolbar-assistant"))
+  })
+
+  it("renders Undo on top of Redo with text labels leading the canvas action group", () => {
+    render(<Toolbar {...makeProps()} />)
+    const undoRedoContainer = screen.getByTestId("toolbar-undo-redo")
+    expect(undoRedoContainer).toHaveClass("flex-col")
+
+    const undoBtn = screen.getByTestId("toolbar-undo")
+    const redoBtn = screen.getByTestId("toolbar-redo")
+    const zoomInBtn = screen.getByTestId("toolbar-zoom-in")
+
+    expect(undoRedoContainer).toContainElement(undoBtn)
+    expect(undoRedoContainer).toContainElement(redoBtn)
+
+    expect(undoBtn).toHaveTextContent(/undo/i)
+    expect(redoBtn).toHaveTextContent(/redo/i)
+    expect(undoBtn).toHaveClass("w-full")
+    expect(redoBtn).toHaveClass("w-full")
+
+    expect(undoBtn.compareDocumentPosition(redoBtn) & 4).toBeTruthy()
+
+    const zoomColumn = zoomInBtn.parentElement
+    expect(undoRedoContainer.compareDocumentPosition(zoomColumn!) & 4).toBeTruthy()
   })
 
   it("Layout button is disabled when nodeCount is 0", () => {
@@ -102,7 +366,33 @@ describe("Toolbar", () => {
     const props = makeProps()
     render(<Toolbar {...props} />)
     fireEvent.click(screen.getByTestId("toolbar-submodel"))
-    expect(props.onCreateSubmodel).toHaveBeenCalledOnce()
+    expect(props.onSubmodelAction).toHaveBeenCalledOnce()
+  })
+
+  it("reads Dissolve in the dissolve mode and still runs the caller's action", () => {
+    const props = makeProps({ submodelAction: "dissolve" })
+    render(<Toolbar {...props} />)
+    const button = screen.getByRole("button", { name: "Dissolve" })
+    expect(button).toHaveAttribute("data-testid", "toolbar-submodel")
+    expect(button).toHaveAttribute("title", "Dissolve the selected submodel back into its nodes")
+    expect(screen.queryByRole("button", { name: "Submodel" })).not.toBeInTheDocument()
+
+    fireEvent.click(button)
+    expect(props.onSubmodelAction).toHaveBeenCalledOnce()
+  })
+
+  it("keeps the inactive label in the button so switching modes never changes its width", () => {
+    const { rerender } = render(<Toolbar {...makeProps()} />)
+    const button = screen.getByTestId("toolbar-submodel")
+    const label = (text: string) => within(button).getByText(text)
+    // jsdom has no layout, so this pins the mechanism: both labels share one
+    // grid cell and the hidden one still sizes it.
+    expect(label("Submodel")).not.toHaveClass("invisible")
+    expect(label("Dissolve")).toHaveClass("invisible")
+
+    rerender(<Toolbar {...makeProps({ submodelAction: "dissolve" })} />)
+    expect(label("Submodel")).toHaveClass("invisible")
+    expect(label("Dissolve")).not.toHaveClass("invisible")
   })
 
   it("clicking Instance creates an instance of the selection", () => {
@@ -113,7 +403,7 @@ describe("Toolbar", () => {
   })
 
   it("greys out the selection actions when the selection cannot support them", () => {
-    const props = makeProps({ canCreateSubmodel: false, canCreateInstance: false })
+    const props = makeProps({ canRunSubmodelAction: false, canCreateInstance: false })
     render(<Toolbar {...props} />)
 
     expect(screen.getByTestId("toolbar-submodel")).toHaveAttribute("aria-disabled", "true")
@@ -121,7 +411,7 @@ describe("Toolbar", () => {
   })
 
   it("still calls the handler when unavailable, so the refusal can explain itself", () => {
-    const props = makeProps({ canCreateSubmodel: false, canCreateInstance: false })
+    const props = makeProps({ canRunSubmodelAction: false, canCreateInstance: false })
     render(<Toolbar {...props} />)
 
     // ``can*`` drives presentation only. The handler owns the policy and
@@ -129,12 +419,12 @@ describe("Toolbar", () => {
     // would make the toolbar the one entry point that refuses in silence.
     fireEvent.click(screen.getByTestId("toolbar-submodel"))
     fireEvent.click(screen.getByTestId("toolbar-instance"))
-    expect(props.onCreateSubmodel).toHaveBeenCalledOnce()
+    expect(props.onSubmodelAction).toHaveBeenCalledOnce()
     expect(props.onCreateInstance).toHaveBeenCalledOnce()
   })
 
   it("keeps unavailable selection actions reachable so they can explain themselves", () => {
-    render(<Toolbar {...makeProps({ canCreateSubmodel: false, canCreateInstance: false })} />)
+    render(<Toolbar {...makeProps({ canRunSubmodelAction: false, canCreateInstance: false })} />)
     const submodel = screen.getByTestId("toolbar-submodel")
     // Not the `disabled` attribute: that would drop the button from the tab
     // order and suppress the title that states the requirement.
@@ -143,7 +433,7 @@ describe("Toolbar", () => {
   })
 
   it("enables the two selection actions independently", () => {
-    render(<Toolbar {...makeProps({ canCreateSubmodel: false, canCreateInstance: true })} />)
+    render(<Toolbar {...makeProps({ canRunSubmodelAction: false, canCreateInstance: true })} />)
     // One node selected: instancing works, grouping needs a second node.
     expect(screen.getByTestId("toolbar-submodel")).toHaveAttribute("aria-disabled", "true")
     expect(screen.getByTestId("toolbar-instance")).toHaveAttribute("aria-disabled", "false")
@@ -170,14 +460,46 @@ describe("Toolbar", () => {
     expect(screen.getByTestId("toolbar-redo")).toBeDisabled()
     expect(screen.getByTestId("toolbar-layout")).toBeDisabled()
     expect(screen.getByTestId("toolbar-utility")).toBeDisabled()
-    expect(screen.getByTestId("toolbar-imports")).toBeDisabled()
+    expect(screen.getByTestId("toolbar-constants")).toBeDisabled()
     expect(screen.getByTestId("toolbar-assistant")).toBeDisabled()
     fireEvent.click(screen.getByTestId("toolbar-layout"))
     fireEvent.click(screen.getByTestId("toolbar-utility"))
-    fireEvent.click(screen.getByTestId("toolbar-imports"))
+    fireEvent.click(screen.getByTestId("toolbar-constants"))
     expect(props.onAutoLayout).not.toHaveBeenCalled()
     expect(props.onOpenUtility).not.toHaveBeenCalled()
-    expect(props.onOpenImports).not.toHaveBeenCalled()
+    expect(props.onOpenConstants).not.toHaveBeenCalled()
+  })
+
+  describe("assistant progress", () => {
+    afterEach(() => {
+      useUIStore.setState({ assistantOpen: false, assistantTurn: null, assistantUnseenOutcome: false })
+    })
+
+    it("shows a running turn and stays reachable under the editing fence it causes", () => {
+      useUIStore.setState({ assistantTurn: { stop: vi.fn() } })
+      render(<Toolbar {...makeProps({ editingDisabled: true })} />)
+
+      const assistant = screen.getByTestId("toolbar-assistant")
+      expect(assistant).toBeEnabled()
+      expect(assistant).toHaveAttribute("title", "The assistant is working")
+      expect(screen.getByTestId("toolbar-assistant-working")).toBeInTheDocument()
+      expect(screen.getByTestId("toolbar-save")).toBeDisabled()
+      expect(screen.queryByTestId("toolbar-assistant-unseen")).not.toBeInTheDocument()
+    })
+
+    it("marks an outcome the closed panel has not shown, until the panel opens", () => {
+      useUIStore.setState({ assistantUnseenOutcome: true })
+      render(<Toolbar {...makeProps()} />)
+
+      const assistant = screen.getByTestId("toolbar-assistant")
+      expect(screen.getByTestId("toolbar-assistant-unseen")).toBeInTheDocument()
+      expect(assistant).toHaveAttribute("title", "The assistant finished while the panel was closed")
+      expect(screen.queryByTestId("toolbar-assistant-working")).not.toBeInTheDocument()
+
+      fireEvent.click(assistant)
+      expect(useUIStore.getState().assistantOpen).toBe(true)
+      expect(screen.queryByTestId("toolbar-assistant-unseen")).not.toBeInTheDocument()
+    })
   })
 
   it("Centre button is disabled when nodeCount is 0", () => {
@@ -193,11 +515,11 @@ describe("Toolbar", () => {
     expect(props.onCentre).toHaveBeenCalledOnce()
   })
 
-  it("clicking Imports calls onOpenImports", () => {
+  it("clicking Constants calls onOpenConstants", () => {
     const props = makeProps()
     render(<Toolbar {...props} />)
-    fireEvent.click(screen.getByText("Imports"))
-    expect(props.onOpenImports).toHaveBeenCalledOnce()
+    fireEvent.click(screen.getByText("Constants"))
+    expect(props.onOpenConstants).toHaveBeenCalledOnce()
   })
 
   it("clicking Utility calls onOpenUtility", () => {
@@ -227,91 +549,15 @@ describe("Toolbar", () => {
     expect(redoBtn).toBeDisabled()
   })
 
-  it("shows unsaved indicator when dirty", () => {
-    render(<Toolbar {...makeProps({ dirty: true })} />)
-    expect(screen.getByTitle("Unsaved changes")).toBeInTheDocument()
-  })
-
-  function getRowLimitInput(): HTMLInputElement {
-    return screen.getByLabelText("Rows") as HTMLInputElement
-  }
-
-  function getChunkInput(): HTMLInputElement {
-    return screen.getByLabelText("Chunk") as HTMLInputElement
-  }
-
-  it("row limit input changes the store value", () => {
-    render(<Toolbar {...makeProps()} />)
-    fireEvent.change(getRowLimitInput(), { target: { value: "500" } })
-    expect(useSettingsStore.getState().rowLimit).toBe(500)
-  })
-
-  it("row limit clamps negative values to 0", () => {
-    render(<Toolbar {...makeProps()} />)
-    fireEvent.change(getRowLimitInput(), { target: { value: "-50" } })
-    expect(useSettingsStore.getState().rowLimit).toBe(0)
-  })
-
-  it("row limit treats NaN input as 0", () => {
-    render(<Toolbar {...makeProps()} />)
-    fireEvent.change(getRowLimitInput(), { target: { value: "abc" } })
-    expect(useSettingsStore.getState().rowLimit).toBe(0)
-  })
-
-  it("row limit input shows current store value", () => {
-    useSettingsStore.setState({ rowLimit: 2000 })
-    render(<Toolbar {...makeProps()} />)
-    expect(getRowLimitInput().value).toBe("2000")
-  })
-
-  it("chunk input renders with the current streaming chunk size", () => {
-    useSettingsStore.setState({ streamingChunkSize: 250_000 })
-    render(<Toolbar {...makeProps()} />)
-    expect(getChunkInput().value).toBe("250000")
-  })
-
-  it("chunk input updates the streaming chunk size in the store", () => {
-    render(<Toolbar {...makeProps()} />)
-    fireEvent.change(getChunkInput(), { target: { value: "100000" } })
-    expect(useSettingsStore.getState().streamingChunkSize).toBe(100_000)
-  })
-
-  it("chunk input clamps sub-1000 values up to 1000", () => {
-    render(<Toolbar {...makeProps()} />)
-    fireEvent.change(getChunkInput(), { target: { value: "5" } })
-    expect(useSettingsStore.getState().streamingChunkSize).toBe(1000)
-  })
-
-  it("chunk input ignores non-numeric input (no setter call, value preserved)", () => {
-    useSettingsStore.setState({ streamingChunkSize: 250_000 })
-    render(<Toolbar {...makeProps()} />)
-    fireEvent.change(getChunkInput(), { target: { value: "abc" } })
-    expect(useSettingsStore.getState().streamingChunkSize).toBe(250_000)
-  })
-
-  it("chunk input accepts scientific notation (5e5 -> 500000)", () => {
-    render(<Toolbar {...makeProps()} />)
-    fireEvent.change(getChunkInput(), { target: { value: "5e5" } })
-    expect(useSettingsStore.getState().streamingChunkSize).toBe(500_000)
-  })
-
-  it("chunk input clamps over-max values to the backend bound (10_000_000)", () => {
-    render(<Toolbar {...makeProps()} />)
-    fireEvent.change(getChunkInput(), { target: { value: "15000000" } })
-    expect(useSettingsStore.getState().streamingChunkSize).toBe(10_000_000)
-  })
-
-  it("chunk input has max attribute matching the backend bound", () => {
-    render(<Toolbar {...makeProps()} />)
-    expect(getChunkInput()).toHaveAttribute("max", "10000000")
-  })
-
-  it("sizes numeric fields for the complete configured value and valid maximum", () => {
-    useSettingsStore.setState({ rowLimit: 125_000, streamingChunkSize: 10_000_000 })
-    render(<Toolbar {...makeProps()} />)
-
-    expect(getRowLimitInput()).toHaveStyle({ width: "calc(6ch + 16px)" })
-    expect(getChunkInput()).toHaveStyle({ width: "calc(8ch + 16px)" })
+  it("carries no status dots beside the brand, connected or not", () => {
+    for (const wsStatus of ["connected", "reconnecting", "disconnected"] as const) {
+      const { unmount } = render(<Toolbar {...makeProps({ wsStatus })} />)
+      const brand = screen.getByTestId("toolbar-brand")
+      // Only the heading and the version remain.
+      expect(brand.textContent).toBe("hautev999.0.0-test")
+      expect(brand.querySelector(".rounded-full")).toBeNull()
+      unmount()
+    }
   })
 
   it("zoom in button calls onZoomIn", () => {
@@ -350,33 +596,195 @@ describe("Toolbar", () => {
     expect(props.onRedo).toHaveBeenCalledOnce()
   })
 
-  it("shows websocket connected status dot", () => {
-    render(<Toolbar {...makeProps({ wsStatus: "connected" })} />)
-    const dot = screen.getByTitle("Live sync connected")
-    expect(dot).toBeInTheDocument()
+  it.each([
+    ["reconnecting", "Server offline - reconnecting\u2026"],
+    ["disconnected", "Server offline - reload the page once haute serve is running"],
+  ] as const)("the Pipeline button reads Offline while live sync is %s", async (wsStatus, title) => {
+    render(<Toolbar {...makeProps({ wsStatus })} />)
+    const button = screen.getByTestId("toolbar-pipeline-settings")
+    expect(button).toHaveTextContent(/^Offline$/)
+    expect(button).toHaveAttribute("title", title)
+    expect(button).toHaveStyle({ color: "var(--danger)" })
+
+    // Still the pipeline settings control.
+    fireEvent.click(button)
+    expect(await screen.findByTestId("pipeline-settings-stub")).toBeInTheDocument()
   })
 
-  it("shows websocket reconnecting status dot", () => {
-    render(<Toolbar {...makeProps({ wsStatus: "reconnecting" })} />)
-    const dot = screen.getByTitle("Reconnecting to server\u2026")
-    expect(dot).toBeInTheDocument()
-  })
+  it.each(["idle", "connecting", "connected"] as const)(
+    "the Pipeline button names the calculation mode while live sync is %s",
+    (wsStatus) => {
+      // Neither idle nor a first attempt in flight is evidence the server is
+      // down, so a page load never flashes "Offline".
+      render(<Toolbar {...makeProps({ wsStatus })} />)
+      const button = screen.getByTestId("toolbar-pipeline-settings")
+      expect(button).toHaveTextContent(/^Calculating$/)
+      expect(button).toHaveAttribute(
+        "title",
+        "Pipeline settings - preview rows, chunk rows and cached data",
+      )
+      expect(button.style.color).toBe("")
+    },
+  )
 
-  it("shows websocket disconnected status dot", () => {
-    render(<Toolbar {...makeProps({ wsStatus: "disconnected" })} />)
-    const dot = screen.getByTitle("Server unreachable \u2014 restart haute serve")
-    expect(dot).toBeInTheDocument()
-  })
-
-  it("does not show unsaved indicator when not dirty", () => {
-    render(<Toolbar {...makeProps({ dirty: false })} />)
-    expect(screen.queryByTitle("Unsaved changes")).not.toBeInTheDocument()
+  it("returns from Offline to the calculation mode when the server comes back", () => {
+    useUIStore.setState({ calculationMode: "manual" })
+    const { rerender } = render(<Toolbar {...makeProps({ wsStatus: "reconnecting" })} />)
+    const button = screen.getByTestId("toolbar-pipeline-settings")
+    expect(button).toHaveTextContent("Offline")
+    rerender(<Toolbar {...makeProps({ wsStatus: "connected" })} />)
+    expect(button).toHaveTextContent(/^Manual$/)
+    useUIStore.setState({ calculationMode: "automatic" })
   })
 
   it("source selector shows active source on trigger button", () => {
     render(<Toolbar {...makeProps()} />)
     const trigger = screen.getByTitle("Data source")
     expect(trigger.textContent).toContain("live")
+  })
+
+  it("positions Source text directly after brand width aligned to node toolbar width (x + 1)", () => {
+    render(<Toolbar {...makeProps()} />)
+    const brand = screen.getByTestId("toolbar-brand")
+    expect(brand).toHaveClass("w-[165px]")
+
+    const sourceLabel = screen.getByText("Source:")
+    const sourceContainer = sourceLabel.parentElement
+    expect(sourceContainer).not.toHaveClass("ml-12")
+    // Brand container immediately precedes sourceContainer in document order
+    expect(brand.nextElementSibling).toBe(sourceContainer)
+  })
+
+  it("stacks the Source selector over a Pipeline control in one grid column", () => {
+    render(<Toolbar {...makeProps()} />)
+    const column = screen.getByTestId("toolbar-source-pipeline")
+    const source = screen.getByTestId("source-selector")
+    const cache = screen.getByTestId("toolbar-pipeline-settings")
+
+    expect(column).toContainElement(source)
+    expect(column).toContainElement(cache)
+    expect(screen.getByText("Pipeline:")).toBeInTheDocument()
+    expect(cache).toHaveTextContent("Calculating")
+    // The Source selector shares the toolbar button surface and type.
+    expect(source).toHaveClass("toolbar-btn", "text-[12px]", "font-medium")
+    expect(source).not.toHaveClass("font-mono")
+    // Same type and horizontal padding on both, so the two texts line up.
+    for (const cls of ["text-[12px]", "font-medium", "px-2.5"]) {
+      expect(source).toHaveClass(cls)
+      expect(cache).toHaveClass(cls)
+    }
+
+    // Source on the top row, Pipeline underneath it.
+    expect(source.compareDocumentPosition(cache) & 4).toBeTruthy()
+
+    // Both controls stretch to fill the same grid column, which is what makes
+    // the Pipeline button exactly as wide as the Source selector above it.
+    expect(column.className).toContain("grid-cols-[auto_auto]")
+    expect(source).toHaveClass("w-full")
+    expect(cache).toHaveClass("w-full")
+
+    // The Pipeline control opens the pipeline settings pane.
+    expect(cache).toHaveAttribute("aria-haspopup", "dialog")
+    expect(cache).not.toHaveAttribute("aria-disabled")
+  })
+
+  it("the Pipeline button opens the pipeline settings pane", async () => {
+    render(<Toolbar {...makeProps()} />)
+    expect(screen.queryByTestId("pipeline-settings-stub")).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId("toolbar-pipeline-settings"))
+
+    expect(await screen.findByTestId("pipeline-settings-stub")).toBeInTheDocument()
+  })
+
+  it("Help opens a menu of Documentation, Hotkeys and Report a bug", () => {
+    render(<Toolbar {...makeProps()} />)
+    expect(screen.queryByRole("menu", { name: "Help" })).toBeNull()
+
+    fireEvent.click(screen.getByTestId("toolbar-help"))
+
+    const menu = screen.getByRole("menu", { name: "Help" })
+    const items = screen.getAllByRole("menuitem")
+    expect(items.map((item) => item.textContent)).toEqual(["Documentation", "Hotkeys", "Report a bug"])
+    expect(menu).toContainElement(items[0])
+    expect(screen.getByTestId("toolbar-help")).toHaveAttribute("aria-expanded", "true")
+
+    const docs = screen.getByTestId("toolbar-documentation")
+    expect(docs).toHaveAttribute("href", "https://pricingfrontier.github.io/haute/")
+    expect(docs).toHaveAttribute("target", "_blank")
+    expect(docs).toHaveAttribute("rel", "noopener noreferrer")
+    const bug = screen.getByTestId("toolbar-report-bug")
+    expect(bug).toHaveAttribute("href", "https://github.com/PricingFrontier/haute/issues/new")
+    expect(bug).toHaveAttribute("target", "_blank")
+    expect(bug).toHaveAttribute("rel", "noopener noreferrer")
+  })
+
+  it("focuses the first Help item on open and moves with the arrow keys", () => {
+    render(<Toolbar {...makeProps()} />)
+    fireEvent.click(screen.getByTestId("toolbar-help"))
+    const [docs, hotkeys, bug] = screen.getAllByRole("menuitem")
+    expect(docs).toHaveFocus()
+    fireEvent.keyDown(docs, { key: "ArrowDown" })
+    expect(hotkeys).toHaveFocus()
+    fireEvent.keyDown(hotkeys, { key: "ArrowDown" })
+    expect(bug).toHaveFocus()
+    fireEvent.keyDown(bug, { key: "ArrowDown" })
+    expect(docs).toHaveFocus()
+    fireEvent.keyDown(docs, { key: "ArrowUp" })
+    expect(bug).toHaveFocus()
+    fireEvent.keyDown(bug, { key: "Escape" })
+    expect(screen.getByTestId("toolbar-help")).toHaveFocus()
+  })
+
+  it("Hotkeys opens the keyboard shortcuts and closes the menu", () => {
+    useUIStore.setState({ shortcutsOpen: false })
+    render(<Toolbar {...makeProps()} />)
+    fireEvent.click(screen.getByTestId("toolbar-help"))
+    fireEvent.click(screen.getByTestId("toolbar-hotkeys"))
+
+    expect(useUIStore.getState().shortcutsOpen).toBe(true)
+    expect(screen.queryByRole("menu", { name: "Help" })).toBeNull()
+    useUIStore.setState({ shortcutsOpen: false })
+  })
+
+  it("Escape and a second click close the Help menu", () => {
+    render(<Toolbar {...makeProps()} />)
+    const help = screen.getByTestId("toolbar-help")
+    fireEvent.click(help)
+    fireEvent.keyDown(screen.getByTestId("toolbar-hotkeys"), { key: "Escape" })
+    expect(screen.queryByRole("menu", { name: "Help" })).toBeNull()
+
+    fireEvent.click(help)
+    fireEvent.click(help)
+    expect(screen.queryByRole("menu", { name: "Help" })).toBeNull()
+  })
+
+  it("renders dropdown text in the primary (white) text colour", () => {
+    useSettingsStore.setState({ sources: ["live", "test_scenario"], activeSource: "live" })
+    render(<Toolbar {...makeProps()} />)
+    fireEvent.click(screen.getByTitle("Data source"))
+    expect(screen.getByText("test_scenario").closest("button")).toHaveStyle({ color: "var(--text-primary)" })
+    expect(screen.getByText("Add source").closest("button")).toHaveStyle({ color: "var(--text-primary)" })
+
+    fireEvent.click(screen.getByTestId("toolbar-help"))
+    expect(screen.getByRole("menu", { name: "Help" })).toHaveStyle({ color: "var(--text-primary)" })
+  })
+
+  it("the Pipeline button names the calculation mode", () => {
+    useUIStore.setState({ calculationMode: "automatic" })
+    render(<Toolbar {...makeProps()} />)
+    const button = screen.getByTestId("toolbar-pipeline-settings")
+    expect(button).toHaveTextContent("Calculating")
+
+    act(() => useUIStore.setState({ calculationMode: "manual" }))
+    expect(button).toHaveTextContent("Manual")
+    useUIStore.setState({ calculationMode: "automatic" })
+  })
+
+  it("keeps the preview and chunk row settings out of the toolbar", () => {
+    render(<Toolbar {...makeProps()} />)
+    expect(screen.queryByLabelText(/preview rows/i)).toBeNull()
+    expect(screen.queryByLabelText(/chunk rows/i)).toBeNull()
   })
 
   it("source selector shows all sources when opened", () => {
@@ -401,6 +809,29 @@ describe("Toolbar", () => {
     render(<Toolbar {...makeProps()} />)
     fireEvent.click(screen.getByTitle("Data source"))
     expect(screen.getByText(/Remove "test_scenario"/)).toBeInTheDocument()
+  })
+
+  it("asks before removing a source whose values split constants hold, then removes them", () => {
+    useSettingsStore.setState({ sources: ["live", "nb_batch"], activeSource: "nb_batch" })
+    useGraphStore.getState().resetForTests()
+    useGraphStore.getState().setGlobalConstantsRaw([
+      { name: "rate", type: "float", split: true, value: "", bySource: { live: "1", nb_batch: "2" } },
+    ])
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true)
+    render(<Toolbar {...makeProps()} />)
+
+    fireEvent.click(screen.getByTitle("Data source"))
+    fireEvent.click(screen.getByText(/Remove "nb_batch"/))
+    expect(confirm).toHaveBeenLastCalledWith('Remove source "nb_batch"? Its values for rate will be deleted.')
+    expect(useSettingsStore.getState().sources).toEqual(["live", "nb_batch"])
+    expect(useGraphStore.getState().globalConstants[0].bySource).toEqual({ live: "1", nb_batch: "2" })
+
+    fireEvent.click(screen.getByTitle("Data source"))
+    fireEvent.click(screen.getByText(/Remove "nb_batch"/))
+    expect(useSettingsStore.getState().sources).toEqual(["live"])
+    expect(useGraphStore.getState().globalConstants[0].bySource).toEqual({ live: "1" })
+    confirm.mockRestore()
+    useGraphStore.getState().resetForTests()
   })
 
   it("does not show remove option when live is active", () => {

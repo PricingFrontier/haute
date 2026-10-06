@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from typing import Any
 
 from haute._graph_builders import _edge_param_names_for_node
-from haute._types import GraphEdge, GraphNode, PipelineGraph
+from haute._types import GraphEdge, GraphNode
 from haute.errors import ParseError
 
 _EdgeIdentity = tuple[str, str, str | None, str | None]
@@ -22,7 +22,7 @@ def _edge_identity(edge: GraphEdge) -> _EdgeIdentity:
     return edge.source, edge.target, edge.sourceHandle, edge.targetHandle
 
 
-def _edge_detail(identity: _EdgeIdentity) -> dict[str, str | None]:
+def _edge_detail(identity: _EdgeIdentity) -> dict[str, str | None]:  # pragma: no mutate
     source, target, source_handle, target_handle = identity
     return {
         "source": source,
@@ -39,16 +39,16 @@ def assert_parser_structure_conserved(
     root_nodes: Sequence[GraphNode],
     root_edges: Sequence[GraphEdge],
     submodel_paths: Sequence[str] = (),
-    submodel_graphs: Mapping[str, PipelineGraph] | None = None,
-    submodel_files: Mapping[str, str] | None = None,
-    submodel_instance_paths: Sequence[str] | None = None,
+    submodel_occurrence_paths: Sequence[str] = (),
     submodel_aliases: Collection[str] = (),
 ) -> None:
     """Reject any parser result that lost an authored structural identity.
 
     Root nodes and locally-resolvable edges are compared exactly before
-    submodel boundary rewiring. Cross-boundary edge endpoints are accepted
-    only when they identify a child in one of the loaded submodel graphs.
+    submodel boundary rewiring. A parent ``connect`` endpoint must be a root
+    node or a registered occurrence alias; a definition-owned child id, like
+    any other unknown name, is reported as dangling with its authored
+    identity so the connection can never be dropped silently.
     Authored submodel paths must match the loaded metadata in source order.
     """
     authored_node_ids = [str(node["func_name"]) for node in raw_nodes]
@@ -102,9 +102,10 @@ def assert_parser_structure_conserved(
             duplicate_edges=duplicate_edges,
         )
 
-    loaded_graphs = submodel_graphs or {}
-    child_ids = {node.id for graph in loaded_graphs.values() for node in graph.nodes}
-    known_endpoint_ids = root_ids | child_ids | set(submodel_aliases)
+    # Definition-owned child ids are deliberately not endpoints: a parent may
+    # only reach a definition through a registered occurrence alias and its
+    # declared public ports (expression-parsing and codegen contracts).
+    known_endpoint_ids = root_ids | set(submodel_aliases)
     dangling = [
         identity
         for identity in connect_identities
@@ -117,11 +118,7 @@ def assert_parser_structure_conserved(
         )
 
     authored_paths = list(submodel_paths)
-    loaded_paths = (
-        list(submodel_instance_paths)
-        if submodel_instance_paths is not None
-        else list((submodel_files or {}).values())
-    )
+    loaded_paths = list(submodel_occurrence_paths)
     if authored_paths != loaded_paths:
         raise ParseError(
             "Pipeline parser did not conserve authored submodel references.",

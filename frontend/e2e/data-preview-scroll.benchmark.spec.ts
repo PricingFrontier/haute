@@ -274,11 +274,12 @@ test.describe("data preview scroll benchmark", () => {
     await page.goto("/")
 
     await expect(page.getByRole("toolbar", { name: /pipeline toolbar/i })).toBeVisible()
-    const rowLimitInput = page
-      .getByTitle("Row limit for preview (0 = no limit)")
-      .locator('input[type="number"]')
+    await page.getByTestId("toolbar-pipeline-settings").click()
+    const rowLimitInput = page.getByLabel("Preview rows")
     await rowLimitInput.fill(String(PREVIEW_ROW_COUNT))
     await expect(rowLimitInput).toHaveValue(String(PREVIEW_ROW_COUNT))
+    await page.keyboard.press("Escape")
+    await expect(page.getByTestId("pipeline-settings")).toBeHidden()
 
     const sourceNode = page.getByRole("button", { name: /raw_rows/i })
     await expect(sourceNode).toBeVisible()

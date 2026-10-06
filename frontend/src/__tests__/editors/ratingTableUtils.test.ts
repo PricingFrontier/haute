@@ -46,7 +46,20 @@ describe("normaliseRatingTables", () => {
     const result = normaliseRatingTables({})
     expect(result).toHaveLength(1)
     expect(result[0].factors).toEqual([])
-    expect(result[0].defaultValue).toBe("1.0")
+    expect(result[0]).not.toHaveProperty("defaultValue")
+  })
+
+  it("keeps a table's onMissing and leaves an absent defaultValue absent", () => {
+    const result = normaliseRatingTables({
+      tables: [
+        { factors: ["age"], outputColumn: "af", onMissing: "neutral", entries: [] },
+        { factors: ["age"], outputColumn: "bf", defaultValue: null, entries: [] },
+      ],
+    })
+    expect(result).toEqual([
+      { factors: ["age"], outputColumn: "af", onMissing: "neutral", entries: [] },
+      { factors: ["age"], outputColumn: "bf", defaultValue: null, entries: [] },
+    ])
   })
 
   it("returns default table when tables is empty array", () => {
@@ -84,8 +97,8 @@ describe("normaliseRatingTables", () => {
     })
 
     expect(result).toEqual([
-      { factors: [], outputColumn: "", defaultValue: "1.0", entries: [] },
-      { factors: [], outputColumn: "", defaultValue: "1.0", entries: [] },
+      { factors: [], outputColumn: "", entries: [] },
+      { factors: [], outputColumn: "", entries: [] },
       {
         factors: ["age", "region"],
         outputColumn: "risk_factor",
@@ -95,7 +108,6 @@ describe("normaliseRatingTables", () => {
       {
         factors: [],
         outputColumn: "fallback_factor",
-        defaultValue: "1.0",
         entries: [],
       },
     ])

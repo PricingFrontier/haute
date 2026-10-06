@@ -1,4 +1,5 @@
 const BASE_INTERVAL_MS = 500
+const PROGRESS_INTERVAL_MS = 1_000
 const MAX_INTERVAL_MS = 5_000
 const MAX_LIFETIME_MS = 24 * 60 * 60 * 1_000
 const POLL_TIMEOUT_MS = 30_000
@@ -9,6 +10,13 @@ export interface JobPollingConfig<TJob, TStatus> {
   pollFn: (jobId: string, signal: AbortSignal) => Promise<TStatus>
   onProgress: (nodeId: string, status: TStatus) => void
   progressThrottleMs?: number
+  /**
+   * Opts into progress-aware backoff: the signature of the progress a status
+   * shows. While it changes from one poll to the next the interval stays at
+   * or below `PROGRESS_INTERVAL_MS`; it backs off to `MAX_INTERVAL_MS` only
+   * while unchanged or after errors. Without it every poll backs off.
+   */
+  progressKey?: (status: TStatus) => string
   onComplete: (nodeId: string, result: TStatus) => void
   onFail: (nodeId: string, errorMsg: string, terminalStatus?: TStatus) => void
   labelFn: (job: TJob) => string
@@ -23,10 +31,93 @@ export interface JobPollingConfig<TJob, TStatus> {
   failLabel: string
 }
 
+/** An awaited job wait passed its deadline without a terminal status. */
+export class JobWaitTimeoutError extends Error {
+  override name = "JobWaitTimeout"
+  readonly timeoutMs: number
+
+  constructor(timeoutMs: number) {
+    super(`The job did not finish within ${Math.round(timeoutMs / 1_000)} seconds.`)
+    this.timeoutMs = timeoutMs
+  }
+}
+
+export interface WaitForJobOptions<TStatus> {
+  /** Read the job's status; the signal ends with the wait. */
+  poll: (signal: AbortSignal) => Promise<TStatus>
+  isTerminal: (status: TStatus) => boolean
+  /** Delay between one response and the next request. */
+  intervalMs: number
+  /** The lifetime of the component or request that owns the wait. */
+  signal?: AbortSignal
+  /** Defaults to the polling lifetime shared with the controller. */
+  timeoutMs?: number
+  /** Each non-terminal status; it may abort `signal` or throw to end the wait. */
+  onStatus?: (status: TStatus) => void
+}
+
+function jobWaitAborted(): DOMException {
+  return new DOMException("The job wait was aborted.", "AbortError")
+}
+
+/**
+ * Wait for one job that an operation started and awaits, with no store entry
+ * to track it. Rejects on the first poll error, on `signal`, and at the
+ * deadline; the job itself is left to the caller that owns it.
+ */
+export function waitForJob<TStatus>({
+  poll,
+  isTerminal,
+  intervalMs,
+  signal,
+  timeoutMs = MAX_LIFETIME_MS,
+  onStatus,
+}: WaitForJobOptions<TStatus>): Promise<TStatus> {
+  if (signal?.aborted) return Promise.reject(jobWaitAborted())
+  return new Promise<TStatus>((resolve, reject) => {
+    const requests = new AbortController()
+    let settled = false
+    let pollTimeoutId: ReturnType<typeof setTimeout> | undefined
+    const settle = (finish: () => void) => {
+      if (settled) return
+      settled = true
+      clearTimeout(pollTimeoutId)
+      clearTimeout(deadlineId)
+      signal?.removeEventListener("abort", onAbort)
+      requests.abort()
+      finish()
+    }
+    const onAbort = () => settle(() => reject(jobWaitAborted()))
+    const deadlineId = setTimeout(
+      () => settle(() => reject(new JobWaitTimeoutError(timeoutMs))),
+      timeoutMs,
+    )
+    signal?.addEventListener("abort", onAbort, { once: true })
+
+    const request = () => {
+      Promise.resolve()
+        .then(() => poll(requests.signal))
+        .then((status) => {
+          if (settled) return
+          if (isTerminal(status)) {
+            settle(() => resolve(status))
+            return
+          }
+          onStatus?.(status)
+          if (!settled) pollTimeoutId = setTimeout(request, intervalMs)
+        })
+        .catch((error: unknown) => settle(() => reject(error)))
+    }
+    request()
+  })
+}
+
 interface JobPollerState<TStatus> {
   jobId: string
   startedAt: number
   intervalMs: number
+  /** The previous status's `progressKey`; unset until the first status. */
+  lastProgressKey?: string
   consecutiveErrors: number
   toastedWarning: boolean
   lastProgressPublishedAt: number
@@ -124,7 +215,7 @@ export class JobPollingController<TJob, TStatus> {
     const job = this.config.jobs[nodeId]
     this.retire(nodeId, state)
     this.config.onFail(nodeId, "Job timed out after 24 hours")
-    this.config.addToast("error", `${this.config.failLabel}: ${this.config.labelFn(job)} — Job timed out after 24 hours`)
+    this.config.addToast("error", `${this.config.failLabel}: ${this.config.labelFn(job)} - Job timed out after 24 hours`)
   }
 
   private poll(nodeId: string, state: JobPollerState<TStatus>): void {
@@ -168,13 +259,30 @@ export class JobPollingController<TJob, TStatus> {
       } else {
         const message = this.config.getErrorMessage(status) || "Unknown error"
         this.config.onFail(nodeId, message, status)
-        this.config.addToast("error", `${this.config.failLabel}: ${this.config.labelFn(job)} — ${message}`)
+        this.config.addToast("error", `${this.config.failLabel}: ${this.config.labelFn(job)} - ${message}`)
       }
       return
     }
-    state.intervalMs = Math.min(state.intervalMs * 2, MAX_INTERVAL_MS)
+    state.intervalMs = this.nextStatusInterval(state, status)
     this.schedulePoll(nodeId, state)
     this.queueProgress(nodeId, state, status)
+  }
+
+  /**
+   * Every status doubles the interval up to `MAX_INTERVAL_MS`, unless the
+   * caller keys progress and it moved: then the interval doubles only up to
+   * `PROGRESS_INTERVAL_MS`, and one that had backed off beyond that returns to
+   * the base interval.
+   */
+  private nextStatusInterval(state: JobPollerState<TStatus>, status: TStatus): number {
+    const progressKey = this.config.progressKey
+    if (!progressKey) return Math.min(state.intervalMs * 2, MAX_INTERVAL_MS)
+    const key = progressKey(status)
+    const moved = key !== state.lastProgressKey
+    state.lastProgressKey = key
+    if (!moved) return Math.min(state.intervalMs * 2, MAX_INTERVAL_MS)
+    if (state.intervalMs > PROGRESS_INTERVAL_MS) return BASE_INTERVAL_MS
+    return Math.min(state.intervalMs * 2, PROGRESS_INTERVAL_MS)
   }
 
   private handlePollError(nodeId: string, state: JobPollerState<TStatus>, error: unknown): void {
@@ -184,7 +292,7 @@ export class JobPollingController<TJob, TStatus> {
     if (terminalMessage) {
       this.retire(nodeId, state)
       this.config.onFail(nodeId, terminalMessage)
-      this.config.addToast("error", `${this.config.failLabel}: ${this.config.labelFn(job)} — ${terminalMessage}`)
+      this.config.addToast("error", `${this.config.failLabel}: ${this.config.labelFn(job)} - ${terminalMessage}`)
       return
     }
     state.consecutiveErrors += 1
@@ -193,7 +301,7 @@ export class JobPollingController<TJob, TStatus> {
     console.warn(`${this.config.failLabel} poll failed (attempt ${state.consecutiveErrors}, will retry):`, error)
     if (state.consecutiveErrors >= CONSECUTIVE_FAILURES_FOR_TOAST && !state.toastedWarning) {
       state.toastedWarning = true
-      this.config.addToast("warning", `Polling is struggling for ${this.config.labelFn(job)} — ${state.consecutiveErrors} consecutive errors`)
+      this.config.addToast("warning", `Polling is struggling for ${this.config.labelFn(job)} - ${state.consecutiveErrors} consecutive errors`)
     }
     state.intervalMs = Math.min(state.intervalMs * 2, MAX_INTERVAL_MS)
     this.schedulePoll(nodeId, state)

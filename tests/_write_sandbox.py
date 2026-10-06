@@ -50,7 +50,6 @@ STRICT_FILES = frozenset(
         "test_write_sandbox_guard.py",
         "test_optimiser_apply.py",
         "test_bugfixes.py",
-        "test_streaming_chunk_size_threading.py",
         "test_partial_failure.py",
     }
 )

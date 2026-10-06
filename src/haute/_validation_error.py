@@ -9,6 +9,25 @@ module's docstring describes.
 
 from __future__ import annotations
 
+from typing import Any
+
+
+def restore_exception(
+    cls: type[BaseException], args: tuple[Any, ...], state: dict[str, Any]
+) -> BaseException:
+    """Rebuild a pickled Haute exception without calling its ``__init__``.
+
+    Worker processes pickle a raised error back to their parent. The default
+    pickling calls ``cls(*args)``, which fails for an error whose ``__init__``
+    takes keyword-only fields; restoring ``args`` and the instance attributes
+    directly works for every signature.
+    """
+
+    error = cls.__new__(cls)
+    BaseException.__init__(error, *args)
+    error.__dict__.update(state)
+    return error
+
 
 class HauteValidationError(ValueError):
     """Marker for haute-authored validation messages on the ``ValueError`` channel.
@@ -27,3 +46,35 @@ class HauteValidationError(ValueError):
     ``ValueError`` subclass into its own ``ValidationError``, which drops the
     marker — the message would then take the fallback, not travel verbatim.
     """
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (restore_exception, (type(self), self.args, dict(self.__dict__)))
+
+
+class ConfigSettingError(HauteValidationError):
+    """A node setting a config parser refuses: a banding factor, a rating table.
+
+    Raised where a parser reads a node's configuration, in the editor and at
+    run time alike; ``str(error)`` is the message. ``setting`` is the config
+    key the refused value sits under (``factors``, ``tables``,
+    ``combinedOutputs``), ``fix`` one correction when the parser knows it, and
+    ``values`` the configured values the message quotes: a node's saved
+    configuration, unlike the column and output names a message also names,
+    so a caller that must not disclose configuration knows what it would.
+
+    A ``ValueError`` like every other validation message, so a node that
+    raises it fails on its own in a preview rather than failing the run.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        setting: str,
+        fix: str | None = None,
+        values: tuple[object, ...] = (),
+    ) -> None:
+        self.setting = setting
+        self.fix = fix
+        self.values = values
+        super().__init__(message)

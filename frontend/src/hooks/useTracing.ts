@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import type { Node, Edge } from "@xyflow/react"
 import { MarkerType, useStore } from "@xyflow/react"
 import type { TraceResult } from "../types/trace"
+import type { PreviewSeedPlanEntry } from "../api/types"
 import { NODE_TYPES } from "../utils/nodeTypes"
 import {
   isSubmodelDefinition,
@@ -23,6 +24,8 @@ import {
 import useSettingsStore from "../stores/useSettingsStore"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import useGraphStore from "../stores/useGraphStore"
+import useNodeDataStore from "../stores/useNodeDataStore"
+import { apiErrorCode } from "../api/errors"
 
 export const TRACE_MOTION_GRAPH_SIZE_LIMIT = GRAPH_EFFECTS_LITE_GRAPH_SIZE_LIMIT
 const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)"
@@ -42,7 +45,13 @@ interface TracingParams {
   preambleRef: React.MutableRefObject<string>
   nodeStatuses: Record<string, NodeStatus>
   hoveredNodeId: string | null
+  /** The node a trace card or derivation row points at, ringed while a trace shows. */
+  traceFocusNodeId?: string | null
+  /** The nodes the latest assistant change or undo touched, ringed while set. */
+  changeFocusNodeIds?: readonly string[] | null
   refreshPreview?: (node: Node) => void
+  /** The `seed_plan` of the preview shown for the selected node. */
+  previewSeedPlan?: PreviewSeedPlanEntry[]
 }
 
 export type TraceRequestState =
@@ -61,6 +70,8 @@ export interface TracingReturn {
   retryTrace: () => void
   nodesWithStatus: Node[]
   edgesWithTrace: Edge[]
+  /** The canvas node showing a trace step: a submodel's card, a boundary, or the node itself. */
+  resolveTraceNodeId: (id: string) => string
 }
 
 export interface EdgeAdjacency {
@@ -208,7 +219,10 @@ function stableValue(value: unknown): string {
   return `{${Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => `${JSON.stringify(key)}:${stableValue(item)}`).join(",")}}`
 }
 
-function errorDetail(err: unknown): string {
+/** The server's raw error detail for the trace panel's "Technical details"
+ *  disclosure: structured details are kept whole (keys sorted), not reduced to
+ *  the message `apiErrorMessage` would show beside them. */
+function technicalDetail(err: unknown): string {
   const detail = (err as { detail?: unknown; rawDetail?: unknown })?.rawDetail ?? (err as { detail?: unknown })?.detail
   if (typeof detail === "string") return detail
   if (detail !== undefined) return stableValue(detail)
@@ -221,12 +235,15 @@ export default function useTracing({
   preambleRef,
   nodeStatuses,
   hoveredNodeId,
+  traceFocusNodeId = null,
+  changeFocusNodeIds = null,
   refreshPreview,
+  previewSeedPlan,
 }: TracingParams): TracingReturn {
   const rowLimit = useSettingsStore((s) => s.rowLimit)
-  const streamingChunkSize = useSettingsStore((s) => s.streamingChunkSize)
   const activeSource = useSettingsStore((s) => s.activeSource)
   const structuralVersion = useGraphStore((s) => s.structuralVersion)
+  const nodeDataEpoch = useNodeDataStore((s) => s.epoch)
   // Boost edge contrast at low zoom — only re-renders on threshold change
   const zoomedOut = useStore((s) => s.transform[2] < 0.45)
   const prefersReducedMotion = usePrefersReducedMotion()
@@ -268,12 +285,27 @@ export default function useTracing({
     setStoredTraceState({ status: "idle" })
   }, [])
 
-  const semanticContext = stableValue({
+  // What a 409's recovery notice belongs to. The preview refresh it starts
+  // replaces the seed plan and may raise the node-data epoch; the notice
+  // asking for the row again must outlive exactly that refresh.
+  const recoveryContext = stableValue({
     structuralVersion,
     activeSource,
     rowLimit,
-    streamingChunkSize,
     targetNodeId: selectedNode?.id ?? null,
+  })
+  const recoveryContextToken = useMemo<object>(
+    () => ({ recoveryContext }),
+    [recoveryContext],
+  )
+  const semanticContext = stableValue({
+    recoveryContext,
+    // The generations the explained preview read, and the node-data epoch:
+    // a snapshot published, refreshed, or cleared invalidates the evidence.
+    seedPlan: (previewSeedPlan ?? []).map(
+      (entry) => [entry.node_id, entry.identity_digest, entry.generation_id],
+    ),
+    nodeDataEpoch,
   })
   // The token is renewed on every context transition, including A → B → A,
   // so evidence invalidated by an intermediate change can never reappear.
@@ -287,6 +319,7 @@ export default function useTracing({
   const traceContextIsCurrent = (
     storedTraceState.status === "idle"
     || storedSemanticContextToken === semanticContextToken
+    || storedSemanticContextToken === recoveryContextToken
   )
   const traceResult = traceContextIsCurrent ? storedTraceResult : null
   const tracedCell = traceContextIsCurrent ? storedTracedCell : null
@@ -371,7 +404,12 @@ export default function useTracing({
       row_limit: rowLimit,
       source: activeSource,
       row_values: rowValues,
-      streamingChunkSize,
+      seed_plan: (previewSeedPlan ?? []).map((entry) => ({
+        node_id: entry.node_id,
+        port_label: null,
+        identity_digest: entry.identity_digest,
+        generation_id: entry.generation_id,
+      })),
       signal: controller.signal,
     })
       .then((data) => {
@@ -419,18 +457,22 @@ export default function useTracing({
           activeRequestContext.current = null
           setStoredTraceResult(null)
           setStoredTracedCell(null)
-          setStoredTraceState({ status: "error", message: "This row changed before it could be traced. The preview is being refreshed — select the intended row again when it is ready.", detail: errorDetail(err), retryable: false })
+          const message = apiErrorCode(err) === "preview_seed_plan_expired"
+            ? "The cached data this preview read has changed. The preview is being refreshed - select the row again when it is ready."
+            : "This row changed before it could be traced. The preview is being refreshed - select the intended row again when it is ready."
+          setStoredSemanticContextToken(recoveryContextToken)
+          setStoredTraceState({ status: "error", message, detail: technicalDetail(err), retryable: false })
           return
         }
         setStoredTraceResult(null)
-        setStoredTraceState({ status: "error", message: "Unable to trace this value. Check the details and try again.", detail: errorDetail(err), retryable: true })
+        setStoredTraceState({ status: "error", message: "Unable to trace this value. Check the details and try again.", detail: technicalDetail(err), retryable: true })
       })
       .finally(() => {
         if (traceRequestSeq.current === requestId) {
           traceAbort.current = null
         }
       })
-  }, [selectedNode, nodes, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, rowLimit, streamingChunkSize, activeSource, semanticContext, semanticContextToken, refreshPreview])
+  }, [selectedNode, nodes, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, rowLimit, activeSource, semanticContext, semanticContextToken, recoveryContextToken, refreshPreview, previewSeedPlan])
 
   const handleCellClick = startTrace
   const cancelTrace = clearTrace
@@ -455,6 +497,7 @@ export default function useTracing({
 
       visibleChildNodes.push(node)
       if (data.nodeType !== NODE_TYPES.SUBMODEL) continue
+      if (data._loadAvailability === "unavailable") continue
       if (!isSubmodelInstanceConfig(data.config)) {
         throw new Error(
           "Submodel instance " + node.id + " has malformed canonical identity config",
@@ -536,6 +579,14 @@ export default function useTracing({
     for (const s of traceResult.steps) {
       ids.add(resolveTraceId(s.node_id))
     }
+    // A node the trace could not follow above a shared snapshot (its
+    // diagnostic names the seeds) is still on the value's path — its data
+    // reached the target through that snapshot — so it is not dimmed as
+    // unrelated, though it carries no traced value.
+    for (const omission of traceResult.omissions) {
+      const diagnostic = traceResult.correlation_diagnostics[omission.diagnostic_index]
+      if (diagnostic?.seed_node_ids.length) ids.add(resolveTraceId(omission.node_id))
+    }
     return ids
   }, [traceResult, resolveTraceId])
 
@@ -547,12 +598,12 @@ export default function useTracing({
       if (!s.column_relevant) continue
       const visibleId = resolveTraceId(s.node_id)
       relIds.add(visibleId)
-      if (traceResult.column && s.output_values[traceResult.column] !== undefined) {
-        valMap.set(visibleId, s.output_values[traceResult.column])
-      } else {
-        const k = s.schema_diff.columns_added[0] || s.schema_diff.columns_modified[0]
-        if (k) valMap.set(visibleId, s.output_values[k])
-      }
+      // A column trace shows the traced value, else what the step computed
+      // for it; a step that only carries the value's inputs shows none.
+      const k = traceResult.column
+        ? (s.output_values[traceResult.column] !== undefined ? traceResult.column : s.contributed_columns[0])
+        : s.schema_diff.columns_added[0] || s.schema_diff.columns_modified[0]
+      if (k) valMap.set(visibleId, s.output_values[k])
     }
     return { traceValueMap: valMap, relevantNodeIds: relIds }
   }, [traceResult, resolveTraceId])
@@ -600,6 +651,8 @@ export default function useTracing({
     traceActive: boolean
     traceDimmed: boolean
     hoverDimmed: boolean
+    traceFocused: boolean
+    changeFocused: boolean
     traceValue: unknown
     traceMotionLite: boolean
     projected: Node
@@ -608,6 +661,8 @@ export default function useTracing({
 
   const nodesWithStatus = useMemo(() => {
     const hasTrace = traceResult !== null
+    const focusedId = traceFocusNodeId === null ? null : resolveTraceId(traceFocusNodeId)
+    const changeFocusedIds = new Set(changeFocusNodeIds ?? [])
     const seenIds = new Set<string>()
     const next: Node[] = new Array(nodes.length)
 
@@ -620,6 +675,8 @@ export default function useTracing({
       const traceDimmed = hasTrace && !inTrace
       // Hover dim: when hovering a node and no trace is active, dim unconnected nodes
       const hoverDimmed = !hasTrace && hoverConnectedIds !== null && !hoverConnectedIds.has(n.id)
+      const traceFocused = hasTrace && n.id === focusedId
+      const changeFocused = changeFocusedIds.has(n.id)
       const traceValue = traceValueMap.get(n.id)
 
       const cached = projectionCache.get(n.id)
@@ -630,6 +687,8 @@ export default function useTracing({
         cached.traceActive === traceActive &&
         cached.traceDimmed === traceDimmed &&
         cached.hoverDimmed === hoverDimmed &&
+        cached.traceFocused === traceFocused &&
+        cached.changeFocused === changeFocused &&
         cached.traceValue === traceValue &&
         cached.traceMotionLite === traceMotionLite
       ) {
@@ -645,6 +704,8 @@ export default function useTracing({
           _traceActive: traceActive,
           _traceDimmed: traceDimmed,
           _hoverDimmed: hoverDimmed,
+          _traceFocused: traceFocused,
+          _changeFocused: changeFocused,
           _traceValue: traceValue,
           _traceMotionDisabled: traceMotionLite,
         },
@@ -660,6 +721,8 @@ export default function useTracing({
         traceActive,
         traceDimmed,
         hoverDimmed,
+        traceFocused,
+        changeFocused,
         traceValue,
         traceMotionLite,
         projected,
@@ -676,7 +739,7 @@ export default function useTracing({
     }
 
     return next
-  }, [nodes, nodeStatuses, traceResult, allTraceNodeIds, relevantNodeIds, traceValueMap, hoverConnectedIds, projectionCache, traceMotionLite])
+  }, [nodes, nodeStatuses, traceResult, allTraceNodeIds, relevantNodeIds, traceValueMap, hoverConnectedIds, traceFocusNodeId, changeFocusNodeIds, resolveTraceId, projectionCache, traceMotionLite])
 
   const edgesWithTrace = useMemo(() => {
     // Trace styling takes priority over hover styling
@@ -791,5 +854,6 @@ export default function useTracing({
     traceResult, tracedCell, traceState,
     handleCellClick, clearTrace, cancelTrace, retryTrace,
     nodesWithStatus, edgesWithTrace,
+    resolveTraceNodeId: resolveTraceId,
   }
 }

@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "motor_optimiser_clarify",
+  "case": "motor_optimiser_clarify",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "refs",
+              "tool": "read_reference",
+              "arguments": {
+                "ids": [
+                  "node:scenarioExpander",
+                  "node:optimiser"
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "NEEDS_INPUT: Which price factor range and how many steps should the scenarios cover, which column should the optimisation maximise, and which totals should it constrain (for example a minimum share of baseline volume)?",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

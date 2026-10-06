@@ -602,7 +602,7 @@ describe("ExplorePivotsConfig", () => {
     const order = within(sortingControls).getByRole("combobox", { name: "Order" })
     expect(sortBy.closest("label")?.parentElement).toBe(sortingControls)
     expect(order.closest("label")?.parentElement).toBe(sortingControls)
-    expect(within(sortBy).getByRole("option", { name: "Default — Row labels" })).toBeInTheDocument()
+    expect(within(sortBy).getByRole("option", { name: "Default - Row labels" })).toBeInTheDocument()
     fireEvent.change(sortBy, { target: { value: "row_1" } })
     fireEvent.change(order, { target: { value: "descending" } })
     fireEvent.change(sortBy, { target: { value: "value_2" } })
@@ -638,10 +638,10 @@ describe("ExplorePivotsConfig", () => {
     const secondSplit = within(rules[1]).getByRole("combobox", {
       name: "Split scale by for conditional formatting rule 2",
     })
-    expect(within(firstSplit).getByRole("option", { name: "None — entire Value" })).toBeInTheDocument()
-    expect(within(firstSplit).getByRole("option", { name: "Row — region" })).toBeInTheDocument()
-    expect(within(firstSplit).getByRole("option", { name: "Column — year" })).toBeInTheDocument()
-    expect(within(firstSplit).queryByRole("option", { name: /Filter|Value — claims/ })).not.toBeInTheDocument()
+    expect(within(firstSplit).getByRole("option", { name: "None - entire Value" })).toBeInTheDocument()
+    expect(within(firstSplit).getByRole("option", { name: "Row - region" })).toBeInTheDocument()
+    expect(within(firstSplit).getByRole("option", { name: "Column - year" })).toBeInTheDocument()
+    expect(within(firstSplit).queryByRole("option", { name: /Filter|Value - claims/ })).not.toBeInTheDocument()
     fireEvent.change(firstSplit, { target: { value: "row_1" } })
     fireEvent.change(secondSplit, { target: { value: "column_1" } })
     const forwardPreview = within(rules[0]).getByRole("img", {
@@ -769,35 +769,35 @@ describe("ExplorePivotsConfig", () => {
     const formatting = screen.getByTestId("pivot-formatting-section")
     expect(within(formatting).getByRole("heading", { name: "Formatting" })).toBeVisible()
     expect(within(formatting).getByRole("group", {
-      name: "Column 1 — year formatting",
+      name: "Column 1 - year formatting",
     })).toBeVisible()
     expect(within(formatting).getByRole("group", {
-      name: "Row 1 — region formatting",
+      name: "Row 1 - region formatting",
     })).toHaveTextContent("Not numeric")
     expect(within(formatting).queryByRole("group", {
       name: /Filter 1/,
     })).not.toBeInTheDocument()
 
     const columnFormat = within(formatting).getByRole("combobox", {
-      name: "Number format for Column 1 — year",
+      name: "Number format for Column 1 - year",
     })
     const columnDecimals = within(formatting).getByRole("combobox", {
-      name: "Decimal places for Column 1 — year",
+      name: "Decimal places for Column 1 - year",
     })
     const columnGrouping = within(formatting).getByRole("checkbox", {
-      name: "Use thousands separator for Column 1 — year",
+      name: "Use thousands separator for Column 1 - year",
     })
     const valueFormat = within(formatting).getByRole("combobox", {
-      name: "Number format for Value 1 — Claims",
+      name: "Number format for Value 1 - Claims",
     })
     const valueDecimals = within(formatting).getByRole("combobox", {
-      name: "Decimal places for Value 1 — Claims",
+      name: "Decimal places for Value 1 - Claims",
     })
     const countDecimals = within(formatting).getByRole("combobox", {
-      name: "Decimal places for Value 2 — Region count",
+      name: "Decimal places for Value 2 - Region count",
     })
     const countGrouping = within(formatting).getByRole("checkbox", {
-      name: "Use thousands separator for Value 2 — Region count",
+      name: "Use thousands separator for Value 2 - Region count",
     })
     expect(columnFormat).toHaveValue("general")
     expect(columnDecimals).toHaveValue("automatic")
@@ -876,8 +876,8 @@ describe("ExplorePivotsConfig", () => {
     const formatting = screen.getByTestId("pivot-formatting-section")
     const groups = within(formatting).getAllByRole("group")
     expect(groups.map((group) => group.getAttribute("aria-label"))).toEqual([
-      "Formula 1 — Double claims formatting",
-      "Value 1 — Claims formatting",
+      "Formula 1 - Double claims formatting",
+      "Value 1 - Claims formatting",
     ])
   })
 

@@ -40,10 +40,10 @@ function makeBandingNode(outputColumn: string, assignments: string[]): SimpleNod
       nodeType: "banding",
       config: {
         factors: [{
-          banding: "continuous",
+          banding: "categorical",
           column: outputColumn,
           outputColumn,
-          rules: assignments.map(a => ({ op1: ">", val1: "0", op2: "", val2: "", assignment: a })),
+          rules: assignments.map(a => ({ value: a, assignment: a })),
         }],
       },
     },
@@ -103,7 +103,7 @@ describe("RatingStepEditor", () => {
         {
           id: "banding_empty", data: {
             label: "Banding", description: "", nodeType: "banding", config: { factors: [
-              { banding: "continuous", outputColumn: "empty_one", rules: [] },
+              { banding: "breakpoints", outputColumn: "empty_one", rules: [] },
               { banding: "categorical", outputColumn: "empty_two", rules: [{}] },
               { banding: "breakpoints", outputColumn: "healthy", rules: [{ label: "Known" }] },
             ] },
@@ -278,6 +278,86 @@ describe("RatingStepEditor", () => {
 
     expect(onUpdate).toHaveBeenCalledWith("tables", [
       expect.objectContaining({ outputColumn: "age_factor" }),
+    ])
+  })
+
+  it("keeps a table's onMissing and absent default through an edit", () => {
+    const onUpdate = vi.fn()
+    render(
+      <RatingStepEditor
+        config={{
+          tables: [{ factors: [], outputColumn: "", onMissing: "neutral", entries: [] }],
+        }}
+        onUpdate={onUpdate}
+        inputSources={[]}
+        accentColor="#14b8a6"
+      />,
+      { allNodes: [] }
+    )
+
+    expect(screen.getByLabelText("Default")).toHaveValue(null)
+    expect(screen.getByLabelText("On miss")).toHaveValue("neutral")
+    const outputColumnInput = screen.getByLabelText("Output Column")
+    fireEvent.change(outputColumnInput, { target: { value: "age_factor" } })
+    fireEvent.blur(outputColumnInput)
+
+    expect(onUpdate).toHaveBeenLastCalledWith("tables", [
+      { factors: [], outputColumn: "age_factor", onMissing: "neutral", entries: [] },
+    ])
+  })
+
+  it("sets onMissing while Default is empty", () => {
+    const onUpdate = vi.fn()
+    render(
+      <RatingStepEditor
+        config={{ tables: [{ factors: [], outputColumn: "af", entries: [] }] }}
+        onUpdate={onUpdate}
+        inputSources={[]}
+        accentColor="#14b8a6"
+      />,
+      { allNodes: [] }
+    )
+
+    const onMiss = screen.getByLabelText("On miss")
+    expect(onMiss).toHaveValue("error")
+    fireEvent.change(onMiss, { target: { value: "neutral" } })
+    expect(onUpdate).toHaveBeenLastCalledWith("tables", [
+      { factors: [], outputColumn: "af", onMissing: "neutral", entries: [] },
+    ])
+
+  })
+
+  it("disables On miss while a default fills every miss", () => {
+    render(
+      <RatingStepEditor
+        config={{ tables: [{ factors: [], outputColumn: "af", defaultValue: "1.0", entries: [] }] }}
+        onUpdate={vi.fn()}
+        inputSources={[]}
+        accentColor="#14b8a6"
+      />,
+      { allNodes: [] }
+    )
+    expect(screen.getByLabelText("On miss")).toBeDisabled()
+  })
+
+  it("clearing Default removes it, so a miss stops the run", () => {
+    const onUpdate = vi.fn()
+    render(
+      <RatingStepEditor
+        config={{ tables: [{ factors: [], outputColumn: "af", defaultValue: "1.0", entries: [] }] }}
+        onUpdate={onUpdate}
+        inputSources={[]}
+        accentColor="#14b8a6"
+      />,
+      { allNodes: [] }
+    )
+
+    const defaultInput = screen.getByLabelText("Default")
+    fireEvent.change(defaultInput, { target: { value: "" } })
+    fireEvent.blur(defaultInput)
+
+    expect(onUpdate).toHaveBeenLastCalledWith("tables", [
+      { factors: [], outputColumn: "af", entries: [] },
     ])
   })
 
@@ -637,6 +717,9 @@ describe("RatingStepEditor", () => {
       expect.objectContaining({ outputColumn: "" }),
       expect.objectContaining({ outputColumn: "" }),
     ]))
+    // A new table has no default, so a level it does not list stops the run.
+    const added = onUpdate.mock.calls.at(-1)?.[1] as Record<string, unknown>[]
+    expect(added.at(-1)).toEqual({ factors: [], outputColumn: "", entries: [] })
   })
 
   it("removing a table when >1 tables", () => {
@@ -977,7 +1060,7 @@ describe("RatingStepEditor", () => {
       />,
       { allNodes: BANDING_NODES }
     )
-    const addSelect = screen.getByRole("combobox") as HTMLSelectElement
+    const addSelect = screen.getByRole("combobox", { name: "Add factor" }) as HTMLSelectElement
     const options = Array.from(addSelect.options).map(o => o.textContent)
     expect(options).toContain("+ Add factor...")
     expect(options.some(o => o?.includes("age_band"))).toBe(true)
@@ -1005,7 +1088,7 @@ describe("RatingStepEditor", () => {
       { allNodes: BANDING_NODES }
     )
 
-    const addSelect = screen.getByRole("combobox") as HTMLSelectElement
+    const addSelect = screen.getByRole("combobox", { name: "Add factor" }) as HTMLSelectElement
     const options = Array.from(addSelect.options).map(o => o.textContent)
     expect(options.some(o => o?.includes("age_band"))).toBe(true)
     expect(options.some(o => o?.includes("channel (2 levels)"))).toBe(true)
@@ -1034,7 +1117,7 @@ describe("RatingStepEditor", () => {
       { allNodes: BANDING_NODES }
     )
 
-    fireEvent.change(screen.getByRole("combobox"), { target: { value: "channel" } })
+    fireEvent.change(screen.getByRole("combobox", { name: "Add factor" }), { target: { value: "channel" } })
 
     expect(onUpdate).toHaveBeenCalledWith("tables", expect.arrayContaining([
       expect.objectContaining({
@@ -1215,7 +1298,7 @@ describe("RatingStepEditor", () => {
       }
     )
 
-    const addSelect = screen.getByRole("combobox") as HTMLSelectElement
+    const addSelect = screen.getByRole("combobox", { name: "Add factor" }) as HTMLSelectElement
     const options = Array.from(addSelect.options).map(o => o.textContent)
     expect(options.some(o => o?.includes("proposer_age_band"))).toBe(true)
     expect(options.some(o => o?.includes("vehicle_age_band"))).toBe(true)
@@ -1300,7 +1383,7 @@ describe("RatingStepEditor", () => {
       />,
       { allNodes: BANDING_NODES }
     )
-    const addSelect = screen.getByRole("combobox")
+    const addSelect = screen.getByRole("combobox", { name: "Add factor" })
     fireEvent.change(addSelect, { target: { value: "age_band" } })
     // Should update tables with the new factor
     expect(onUpdate).toHaveBeenCalledWith("tables", expect.arrayContaining([
@@ -1329,7 +1412,7 @@ describe("RatingStepEditor", () => {
       { allNodes: BANDING_NODES },
     )
 
-    fireEvent.change(screen.getAllByRole("combobox").at(-1)!, { target: { value: "region" } })
+    fireEvent.change(screen.getAllByRole("combobox", { name: "Add factor" }).at(-1)!, { target: { value: "region" } })
 
     expect(onUpdate).toHaveBeenCalledWith("tables", expect.arrayContaining([
       expect.objectContaining({
