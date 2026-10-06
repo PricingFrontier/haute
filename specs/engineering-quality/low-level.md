@@ -646,13 +646,15 @@
   return-code orchestration without contacting advisory services.
 - `tests/test_lint_pins.py` covers the published floor/cap rule and its
   rejection of exact pins, prefix matching, compatible-release and direct
-  references; tooling exactness including the concrete-version requirement and
-  the project self-reference exemption; npm exactness across the install
-  sections and the deliberate `peerDependencies` exemption; `npx` detection in
-  shell grouping, line continuations and package scripts against its
-  non-detection of comments, prose and shim paths; annotation line selection;
-  and both ratchet directions against the real manifests — the live tree stays
-  clean, and removing a real cap is caught.
+  references; tooling exactness as one `==` with a concrete version, and the
+  bare project self-reference exemption against a self-reference carrying a
+  specifier; npm exactness across the install sections and the deliberate
+  `peerDependencies` exemption; lexical `npx` detection in shell grouping,
+  line continuations and package scripts against its non-detection of shell
+  comments, markdown prose and shim paths; annotation line selection and
+  workflow-command escaping; and both ratchet directions against the real
+  manifests through the collector — the live tree stays clean, and removing a
+  real Python cap or relaxing a real npm pin is caught.
 - `mutation/` is tested as configuration/orchestration through its active
   script/tests and CI workflow. `specs/roadmap/`, `scripts/benchmarks/`, and generated
   artifacts are intentionally not claimed as a current test suite.

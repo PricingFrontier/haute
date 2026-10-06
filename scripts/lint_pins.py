@@ -99,10 +99,14 @@ _NPX_ALLOWLIST: frozenset[str] = frozenset()
 # whitespace" pattern misses every one of those real invocations.
 _NPX_CALL = re.compile(r"(?<![\w./-])npx(?![\w-])")
 
-# Known limit: only line-oriented shell/YAML surfaces are scanned. A Python
+# Known limits. Only line-oriented shell/YAML surfaces are scanned: a Python
 # script shelling out via `subprocess.run(["npx", ...])` is not caught, because
 # distinguishing code from a string literal needs a parser, and this module's
-# own diagnostics would be the first false positive.
+# own diagnostics would be the first false positive. Within a scanned line the
+# detection is lexical: the token anywhere outside a comment is reported, so a
+# quoted mention (`echo "do not use npx"`) or a heredoc body is flagged too.
+# That is the chosen direction -- rewording a mention on an executable surface
+# is cheap and visible, while an invocation hidden by quoting would be silent.
 
 
 def _strip_comment(line: str) -> str:
@@ -290,18 +294,33 @@ def check_pyproject(path: Path) -> list[Violation]:
                 )
                 continue
             # A self-reference (`haute[databricks]`) installs the project itself
-            # and carries no version by design.
+            # and carries no version by design. Only the bare form is exempt: a
+            # specifier, URL or marker on the project's own name would have uv
+            # resolve it from the index rather than the checkout.
             if canonicalize_name(requirement.name) == own_name:
+                if requirement.specifier or requirement.url or requirement.marker:
+                    violations.append(
+                        Violation(
+                            rel,
+                            line,
+                            f"[dependency-groups.{group}]: {spec!r} is a self-reference "
+                            f"with a specifier, URL or marker. The project installs itself "
+                            f"from the checkout; write it bare, as "
+                            f"'{project.get('name')}[extra]'.",
+                        ),
+                    )
                 continue
-            # Exactness is operator AND concrete version: `pytest==9.*` carries
-            # the exact operator but matches the whole 9.x line, so an
-            # operator-only test would wave a range through as a pin.
-            if not _ops(requirement) & _EXACT_OPS or _has_wildcard(requirement):
+            # Exactness is one `==` with a concrete version: `pytest==9.*`
+            # carries the exact operator but matches the whole 9.x line, and
+            # `pytest==9.0.3,<9` or `===` are not the single pin the message
+            # promises, so an operator-only test would wave those through.
+            specifiers = list(requirement.specifier)
+            if len(specifiers) != 1 or specifiers[0].operator != "==" or _has_wildcard(requirement):
                 violations.append(
                     Violation(
                         rel,
                         line,
-                        f"[dependency-groups.{group}]: {spec!r} is not exact-pinned. "
+                        f"[dependency-groups.{group}]: {spec!r} is not a single exact pin. "
                         f"Tooling is pinned in the manifest as well as the lockfile, so "
                         f"a stray 'uv add' cannot quietly relax it -- use "
                         f"'{requirement.name}==X.Y.Z' with a concrete version.",
@@ -382,6 +401,12 @@ def collect(root: Path = REPO_ROOT) -> list[Violation]:
     ]
 
 
+def _annotation(violation: Violation) -> str:
+    """A GitHub workflow command; `%`, CR and LF are reserved in its grammar."""
+    message = violation.message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    return f"::error file={violation.path},line={violation.line},title=Dependency pin::{message}"
+
+
 def main() -> int:
     violations = collect()
     if not violations:
@@ -390,10 +415,7 @@ def main() -> int:
     for violation in violations:
         print(violation.render(), file=sys.stderr)
         # Surfaced on the run summary, not just in the log.
-        print(
-            f"::error file={violation.path},line={violation.line},"
-            f"title=Dependency pin::{violation.message}",
-        )
+        print(_annotation(violation))
     plural = "" if len(violations) == 1 else "s"
     print(
         f"\nlint_pins: {len(violations)} violation{plural}. "

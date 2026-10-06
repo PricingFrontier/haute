@@ -9,6 +9,7 @@ is the standing ratchet -- it fails the build on the next entrant that drifts.
 import importlib.util
 import json
 import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -182,7 +183,7 @@ def test_non_exact_dev_group_pin_is_caught(tmp_path):
     violations = lint_pins.check_pyproject(path)
 
     assert len(violations) == 1
-    assert "not exact-pinned" in violations[0].message
+    assert "not a single exact pin" in violations[0].message
 
 
 def test_wildcard_dev_group_pin_is_not_exact(tmp_path):
@@ -191,7 +192,7 @@ def test_wildcard_dev_group_pin_is_not_exact(tmp_path):
     violations = lint_pins.check_pyproject(path)
 
     assert len(violations) == 1
-    assert "not exact-pinned" in violations[0].message
+    assert "not a single exact pin" in violations[0].message
 
 
 def test_arbitrary_equality_wildcard_is_also_caught(tmp_path):
@@ -459,22 +460,73 @@ def test_live_tree_is_clean():
     assert violations == [], "\n".join(v.render() for v in violations)
 
 
+def _real_tree(tmp_path: Path) -> tuple[Path, str, dict]:
+    """A root holding the real manifests, so `collect()` runs end to end against them."""
+    repo = _SCRIPT.parent.parent
+    (tmp_path / "frontend").mkdir()
+    shutil.copy(repo / "frontend" / "package.json", tmp_path / "frontend" / "package.json")
+    pyproject = (repo / "pyproject.toml").read_text(encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(pyproject, encoding="utf-8")
+    package = json.loads((repo / "frontend" / "package.json").read_text(encoding="utf-8"))
+    return tmp_path, pyproject, package
+
+
 def test_removing_a_real_cap_is_caught(tmp_path):
-    """Mutate the REAL manifest and confirm the lint fails on it.
+    """Mutate the REAL manifest and confirm the lint, through `collect()`, fails on it.
 
     Guards the false-negative direction: a refactor that quietly stopped
-    inspecting `[project] dependencies` would leave every other test green.
+    inspecting `[project] dependencies`, or a `collect()` that stopped calling
+    the checker, would leave every other test green.
     """
-    live = (_SCRIPT.parent.parent / "pyproject.toml").read_text(encoding="utf-8")
+    root, live, _ = _real_tree(tmp_path)
     # Found rather than hard-coded: the floor moves with the lockfile and this
     # test must not go red for a floor bump that leaves the cap in place.
     match = re.search(r'"polars>=[^",<]+(,<[^"]+)"', live)
     assert match, "fixture assumption broken: polars is no longer declared with a floor and a cap"
+    (root / "pyproject.toml").write_text(live.replace(match.group(1), "", 1), encoding="utf-8")
 
-    mutated = tmp_path / "pyproject.toml"
-    mutated.write_text(live.replace(match.group(1), "", 1), encoding="utf-8")
-    violations = lint_pins.check_pyproject(mutated)
+    violations = lint_pins.collect(root)
 
     assert len(violations) == 1
     assert "has no cap" in violations[0].message
     assert "polars" in violations[0].message
+
+
+def test_relaxing_a_real_npm_pin_is_caught(tmp_path):
+    """The same ratchet for the npm half, again through `collect()`."""
+    root, _, package = _real_tree(tmp_path)
+    name, version = next(iter(package["devDependencies"].items()))
+    package["devDependencies"][name] = f"^{version}"
+    (root / "frontend" / "package.json").write_text(json.dumps(package, indent=2), encoding="utf-8")
+
+    violations = lint_pins.collect(root)
+
+    assert len(violations) == 1
+    assert name in violations[0].message
+    assert "not an exact version" in violations[0].message
+
+
+def test_self_reference_with_a_specifier_is_not_exempt(tmp_path):
+    path = write_project(tmp_path, dev='"haute[databricks]>=999"')
+    violations = lint_pins.check_pyproject(path)
+    assert len(violations) == 1
+    assert "self-reference" in violations[0].message
+
+
+def test_dev_group_pin_with_extra_specifiers_is_not_a_single_exact_pin(tmp_path):
+    path = write_project(tmp_path, dev='"pytest==9.0.3,<9"')
+    violations = lint_pins.check_pyproject(path)
+    assert len(violations) == 1
+    assert "not a single exact pin" in violations[0].message
+
+
+def test_annotations_escape_workflow_command_characters(monkeypatch, capsys):
+    monkeypatch.setattr(
+        lint_pins,
+        "collect",
+        lambda: [lint_pins.Violation("pyproject.toml", 3, "'x @ https://h/p%20w.whl'\nsecond")],
+    )
+    assert lint_pins.main() == 1
+    out = capsys.readouterr().out
+    assert "p%2520w.whl'%0Asecond" in out
+    assert out.count("::error") == 1
