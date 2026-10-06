@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import ast
 import re
 import tomllib
+from importlib.metadata import packages_distributions
 from pathlib import Path
 
+import pytest
 from packaging.requirements import Requirement
 from packaging.specifiers import SpecifierSet
+from packaging.utils import canonicalize_name
 from packaging.version import Version
 
 
@@ -150,3 +154,109 @@ def test_every_workflow_pins_the_same_uv_version() -> None:
     versions = {pin for pins in pins_by_workflow.values() for pin in pins}
     assert versions, "no astral-sh/setup-uv steps found under .github/workflows"
     assert len(versions) == 1, f"setup-uv steps pin different uv versions: {sorted(versions)}"
+
+
+def _unlocked_lane_tooling(workflow_text: str) -> set[str]:
+    """The dev-group names the unlocked-resolve lane greps out of the lock export.
+
+    The lane installs the built wheel plus a hand-kept list of test tooling at
+    its locked pins (``grep -E '^(a|b|c)=='`` over ``uv export``); everything
+    else resolves fresh. Exactly one such grep is expected.
+    """
+    lists = re.findall(r"grep -E '\^\(([^)]+)\)=='", workflow_text)
+    assert len(lists) == 1, f"expected one dev-tooling grep in the unlocked lane, found {lists}"
+    return set(lists[0].split("|"))
+
+
+def _top_level_imports(paths: list[Path]) -> set[str]:
+    """Top-level module names imported anywhere in *paths* and the test helpers they pull in.
+
+    ``from tests import _helper`` and ``from tests._helper import x`` both add
+    ``tests/_helper.py`` to the closure, so a helper that imports a dev package
+    counts against the file that imports the helper.
+    """
+    pending = list(paths)
+    seen: set[Path] = set()
+    names: set[str] = set()
+    while pending:
+        path = pending.pop()
+        if path in seen:
+            continue
+        seen.add(path)
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names.update(alias.name.split(".", 1)[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                parts = node.module.split(".")
+                names.add(parts[0])
+                if parts[0] == "tests":
+                    helper_names = parts[1:2] or [alias.name for alias in node.names]
+                    for helper in helper_names:
+                        helper_path = Path("tests") / f"{helper}.py"
+                        if helper_path.is_file():
+                            pending.append(helper_path)
+    return names
+
+
+def _canonical(name: str) -> str:
+    return str(canonicalize_name(name))
+
+
+def _dev_only_distributions() -> set[str]:
+    """Dev-group distributions that the published wheel does not also depend on."""
+    project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    runtime = {_canonical(Requirement(dep).name) for dep in project["project"]["dependencies"]}
+    for extra in project["project"].get("optional-dependencies", {}).values():
+        runtime.update(_canonical(Requirement(dep).name) for dep in extra)
+    dev = {_canonical(Requirement(dep).name) for dep in project["dependency-groups"]["dev"]}
+    return dev - runtime - {"haute"}
+
+
+def test_unlocked_lane_installs_every_dev_package_the_core_subset_imports() -> None:
+    """The unlocked-resolve lane's hand-kept tooling list covers what the subset imports.
+
+    The lane (``.github/workflows/dependencies.yml``) installs only the dev
+    packages its grep names, so a dev package that ``tests/conftest.py`` or a
+    core-subset file imports but the grep omits makes pytest fail to load
+    conftest before any test runs. ``hypothesis`` did exactly that from
+    7 September 2026, when conftest began registering a profile at import, and
+    the lane was red for four weekly runs with a cause that had nothing to do
+    with the index it watches. Import names map to distributions through the
+    installed metadata rather than a second hand-kept list.
+    """
+    workflow = Path(".github/workflows/dependencies.yml").read_text(encoding="utf-8")
+    lane = {_canonical(name) for name in _unlocked_lane_tooling(workflow)}
+
+    subset = [
+        Path(line.strip())
+        for line in Path("scripts/core_test_files.txt").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("#")
+    ]
+    imported = _top_level_imports([Path("tests/conftest.py"), *subset])
+
+    dev_only = _dev_only_distributions()
+    by_import = packages_distributions()
+    installed = {_canonical(dist) for dists in by_import.values() for dist in dists}
+    assert dev_only <= installed, (
+        f"dev-group packages missing from this environment: {sorted(dev_only - installed)}"
+    )
+
+    needed = {
+        _canonical(dist)
+        for name in imported
+        for dist in by_import.get(name, ())
+        if _canonical(dist) in dev_only
+    }
+    assert needed <= lane, (
+        "tests/conftest.py or the core subset imports dev-group packages the "
+        f"unlocked-resolve lane never installs: {sorted(needed - lane)}; add them to the "
+        "grep in .github/workflows/dependencies.yml"
+    )
+
+
+def test_unlocked_lane_tooling_parser_reads_the_grep_list() -> None:
+    snippet = "uv export | grep -E '^(pytest|httpx|hypothesis)==' > deps.txt"
+    assert _unlocked_lane_tooling(snippet) == {"pytest", "httpx", "hypothesis"}
+    with pytest.raises(AssertionError, match="expected one dev-tooling grep"):
+        _unlocked_lane_tooling("no grep here")
