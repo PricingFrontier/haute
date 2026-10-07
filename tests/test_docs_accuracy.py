@@ -156,6 +156,7 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "explore-eda",
     "frontend-shared",
     "model-scoring",
+    "modelling",
     "name-collisions",
     "optimiser-validation",
     "pipeline-config",
