@@ -18,6 +18,13 @@
 #   (extras-adjacent surface) and codegen_builders (overlaps codegen).
 #   ~2.5 min at -n 4. The known load-sensitive wall-clock benchmark in
 #   test_column_contracts_adoption is deliberately excluded.
+# test_assistant_providers is here by design too, for the same reason and a
+# specific gap: `anthropic` and `openai` are the only dependencies whose SDKs
+# no file in this subset touched, so both lanes resolved them and then never
+# imported them. That is how the two shipped uncapped and unnoticed. It
+# constructs real clients from the installed SDKs and maps their error types,
+# so the floors lane now proves the declared floors actually work and the
+# unlocked lane catches an in-cap SDK release breaking the adapter. ~6s.
 # test_polars_io_interface_contracts is here by design, not fix-frequency: it
 # re-extracts the polars I/O surface from the installed polars and checks it
 # against the committed schema JSON, so the dependency-floors and
@@ -41,3 +48,4 @@ tests/test_api_contract_generation.py
 tests/test_optional_dependency_extras.py
 tests/test_polars_io_interface_contracts.py
 tests/test_price_contour_guard.py
+tests/test_assistant_providers.py

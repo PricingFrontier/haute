@@ -133,11 +133,21 @@ jobs:
       # caps are live-tested too, plus the test tooling at its dev-group pins
       # (exported from uv.lock — no hand-maintained version list to drift).
       # Everything else in this venv resolves fresh from the index.
+      #
+      # The NAME list below is hand-kept, and it is the one thing here that can
+      # drift: it must name every dev-group package that tests/conftest.py or a
+      # core-subset test file imports, or pytest fails to load conftest before
+      # a single test runs (hypothesis did exactly that for four weeks from
+      # 7 September 2026, when conftest started importing it). The list is
+      # pinned by test_unlocked_lane_installs_every_dev_package_the_core_subset_
+      # needs in tests/test_dependency_contracts.py, which derives what the
+      # subset imports and which plugins the pytest flags below rely on, so a
+      # new import needs only this grep extended.
       - name: Fresh venv with extras (unlocked resolve)
         run: |
           uv venv .unlocked --python 3.12
           uv export --only-group dev --no-hashes --no-emit-project --no-annotate \
-            | grep -E '^(pytest|pytest-asyncio|pytest-timeout|pytest-xdist|httpx)==' \
+            | grep -E '^(pytest|pytest-asyncio|pytest-timeout|pytest-xdist|httpx|hypothesis)==' \
             > .unlocked-testdeps.txt
           WHEEL="$(ls dist-unlocked/haute-*.whl)"
           uv pip install --python .unlocked/bin/python \
@@ -250,9 +260,15 @@ jobs:
       contents: read
       issues: write
     steps:
+      # This job has no checkout, so gh cannot infer the repository from a git
+      # remote; without GH_REPO every gh call below dies with "not a git
+      # repository" and a red audit raises nothing — which is what happened on
+      # 6 October 2026. The unlocked-resolve alarm above runs after a checkout
+      # and does not need this.
       - name: Raise the advisory alarm (find-or-create dependency-watch issue)
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           title="Locked dependency advisory audit is red"

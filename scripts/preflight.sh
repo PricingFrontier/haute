@@ -151,6 +151,21 @@ if [[ "$INIT_SMOKE" == true ]]; then
   fi
 fi
 
+# Deliberately outside both blocks: this checks pyproject.toml AND
+# frontend/package.json, so scoping it to the backend would let
+# `--frontend-only` -- the command CI's own `frontend` job runs, and the one a
+# contributor editing package.json would reach for -- report "safe to push"
+# on a caret range it never looked at. Cheap and manifest-only, so it also
+# runs under --quick.
+if [[ "$RUN_BACKEND" == true || "$RUN_FRONTEND" == true ]]; then
+  step "Dependency pins (Python + npm manifests)"
+  if uv run python scripts/lint_pins.py; then
+    pass "Dependency pins"
+  else
+    fail "Dependency pins - see the annotated lines above and scripts/lint_pins.py for the rule"
+  fi
+fi
+
 if [[ "$RUN_BACKEND" == true ]]; then
   step "Ruff lint (Python)"
   if uv run ruff check .; then

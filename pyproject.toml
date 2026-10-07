@@ -91,10 +91,14 @@ dependencies = [
     # (imported lazily at the adapter seam, so importing haute stays inert).
     # Capped at the major versions the adapters are tested on: openai 3 moved
     # its transport to httpx2 and anthropic 1 is a new major, so a project that
-    # resolved either failed at the first assistant turn.
+    # resolved either failed at the first assistant turn. openai's floor is
+    # 1.55.3, not 1.55: the three releases below it pass `proxies=` to httpx,
+    # which httpx 0.28 removed, so no fresh install today could construct a
+    # client at them. The dependency-floors lane proved that on 6 October 2026,
+    # the first time it imported the SDK.
     "anthropic>=0.40,<1",
-    "openai>=1.55,<3",
-    "tomlkit>=0.15.1",
+    "openai>=1.55.3,<3",
+    "tomlkit>=0.15.1,<0.16",
     # One reader for process and host memory on every platform: resident, private and
     # virtual bytes for worker caps and supervision, and host available RAM.
     "psutil>=7.0,<8",

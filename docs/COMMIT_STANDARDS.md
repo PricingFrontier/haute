@@ -112,8 +112,24 @@ Every output value must be traceable back through the graph to its inputs, showi
 ## 8. Dependency Discipline
 
 - No heavy optional dependencies in core `[project.dependencies]`. Use `[project.optional-dependencies]`.
-- Pin minimum versions, not exact versions.
 - Every new dependency must be justified in the PR description.
+
+**Pinning is asymmetric**, because the right posture differs by who resolves the manifest. `scripts/lint_pins.py` enforces this in CI (the `backend-static` job); it names the offending line and the remedy.
+
+| Surface | Rule | Why |
+|---|---|---|
+| `[project] dependencies`, `[project.optional-dependencies]` | Floor **and** cap — `polars>=1.44.2,<2`. Never an exact pin, and not `~=`, which bounds both sides but not visibly; write the band out. | End users resolve these fresh, with no lockfile of ours (the lockfiles are tracked but never shipped in the wheel). An exact pin gives them no integrity protection — a version string is a label, not a hash — and can make the package uninstallable when a transitive artefact is yanked, which has already happened here to `polars`. |
+| `[dependency-groups]`, and `dependencies` / `devDependencies` / `optionalDependencies` in `frontend/package.json` | Exact — `pytest==9.0.3`, `"vitest": "4.1.9"`. A concrete version, not a prefix match: `pytest==9.*` carries the exact operator but matches the whole 9.x line. | These never reach an end user; they are the toolchain the repo runs on. Manifest exactness reinforces the lockfile, so a stray `uv add` or `npm install` cannot quietly relax one. `frontend/.npmrc` sets `save-exact=true` to make the default correct. |
+| `peerDependencies` in `frontend/package.json` | A range is correct here. Not linted. | A peer dependency declares which *hosts* are acceptable, not what gets installed. Pinning it exactly would under-declare compatibility. |
+| `requires-python` | Bare floor — `>=3.11`. | The downstream interpreter contract, not a dependency spec. Never linted. |
+
+`overrides` / `resolutions` in `frontend/package.json` are not linted either, and neither is currently used. They exist to force a transitive version — a direct supply-chain lever — so adding one is a reviewed decision rather than a lint-shaped one. If they start appearing, they need their own rule.
+
+How *tight* a cap is remains a review decision, not a lint rule. The guidance is to cap below the next major for ≥1.0 packages and below the next minor for 0.x ones, but a literal reading does not always survive contact: `anthropic` sits at 0.117.0, which `<0.41` would exclude outright. The lint asserts that a bound exists and leaves its value to the reviewer.
+
+The lockfile — not the manifest — is the actual supply-chain control: it records a sha256 per package, so a re-uploaded artefact fails at install time. `uv sync --locked` and `npm ci` enforce it on every CI job. The pin lint guards the separate failure where a new entrant adopts a different posture from everything around it and no lane notices, because they all resolve from the lock.
+
+**Invoke through the lockfile, not around it.** Prefer `npm test` / `npm run <script>` / `npm exec <bin>` / `frontend/node_modules/.bin/<bin>` over `npx <bin>`, which falls back to the registry when local resolution fails and silently runs a different version than the lockfile pins — a globally installed vitest once shadowed the pinned one and broke jsdom setup with no visible cause. In Python prefer `uv run <bin>` over a bare `python -m <bin>` or a global binary on `$PATH`. The lint fails on the token `npx` anywhere on an executable surface — workflows, shell scripts and `package.json` scripts — including inside quoted strings and heredocs, because it does not parse shell: reword a mention there rather than quote it. Markdown is not scanned, so documentation stays free to quote the command it is warning about.
 
 ## 9. No Resource Leaks
 
