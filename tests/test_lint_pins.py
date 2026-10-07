@@ -460,15 +460,20 @@ def test_live_tree_is_clean():
     assert violations == [], "\n".join(v.render() for v in violations)
 
 
-def _real_tree(tmp_path: Path) -> tuple[Path, str, dict]:
-    """A root holding the real manifests, so `collect()` runs end to end against them."""
+def _real_tree(tmp_path: Path) -> tuple[str, dict]:
+    """Copy the real manifests under *tmp_path*, so `collect()` runs end to end against them.
+
+    Returns the live pyproject text and the parsed package.json; the caller
+    writes its mutation through ``tmp_path`` itself, which keeps the write
+    target visibly derived from the fixture for the write-sandbox lint.
+    """
     repo = _SCRIPT.parent.parent
     (tmp_path / "frontend").mkdir()
     shutil.copy(repo / "frontend" / "package.json", tmp_path / "frontend" / "package.json")
     pyproject = (repo / "pyproject.toml").read_text(encoding="utf-8")
     (tmp_path / "pyproject.toml").write_text(pyproject, encoding="utf-8")
     package = json.loads((repo / "frontend" / "package.json").read_text(encoding="utf-8"))
-    return tmp_path, pyproject, package
+    return pyproject, package
 
 
 def test_removing_a_real_cap_is_caught(tmp_path):
@@ -478,14 +483,14 @@ def test_removing_a_real_cap_is_caught(tmp_path):
     inspecting `[project] dependencies`, or a `collect()` that stopped calling
     the checker, would leave every other test green.
     """
-    root, live, _ = _real_tree(tmp_path)
+    live, _ = _real_tree(tmp_path)
     # Found rather than hard-coded: the floor moves with the lockfile and this
     # test must not go red for a floor bump that leaves the cap in place.
     match = re.search(r'"polars>=[^",<]+(,<[^"]+)"', live)
     assert match, "fixture assumption broken: polars is no longer declared with a floor and a cap"
-    (root / "pyproject.toml").write_text(live.replace(match.group(1), "", 1), encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(live.replace(match.group(1), "", 1), encoding="utf-8")
 
-    violations = lint_pins.collect(root)
+    violations = lint_pins.collect(tmp_path)
 
     assert len(violations) == 1
     assert "has no cap" in violations[0].message
@@ -494,12 +499,14 @@ def test_removing_a_real_cap_is_caught(tmp_path):
 
 def test_relaxing_a_real_npm_pin_is_caught(tmp_path):
     """The same ratchet for the npm half, again through `collect()`."""
-    root, _, package = _real_tree(tmp_path)
+    _, package = _real_tree(tmp_path)
     name, version = next(iter(package["devDependencies"].items()))
     package["devDependencies"][name] = f"^{version}"
-    (root / "frontend" / "package.json").write_text(json.dumps(package, indent=2), encoding="utf-8")
+    (tmp_path / "frontend" / "package.json").write_text(
+        json.dumps(package, indent=2), encoding="utf-8"
+    )
 
-    violations = lint_pins.collect(root)
+    violations = lint_pins.collect(tmp_path)
 
     assert len(violations) == 1
     assert name in violations[0].message
