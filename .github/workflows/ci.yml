@@ -175,6 +175,15 @@ jobs:
       - name: Mypy
         run: uv run mypy src/haute/
 
+      # Guards the DECLARATION layer only — the lockfile is the supply-chain
+      # control and `uv sync --locked` / `npm ci` already enforce it everywhere.
+      # This catches the other failure: a new entrant adopting a different
+      # pinning posture from everything around it, invisible to every lane
+      # because they all resolve from the lock. The script carries the rule and
+      # its rationale; it emits its own file-and-line annotations.
+      - name: Dependency pins (rule and remedy in scripts/lint_pins.py)
+        run: uv run python scripts/lint_pins.py
+
   # Coverage authority: the full suite on the reference interpreter (3.12),
   # split by test module into 4 shards that run in parallel. Recorded
   # per-module durations (scripts/test_file_durations.json) balance them, and

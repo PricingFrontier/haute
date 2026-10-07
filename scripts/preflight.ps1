@@ -160,6 +160,15 @@ if ($InitSmoke) {
     } "Fresh-install smoke"
 }
 
+# Mirrors preflight.sh: outside both blocks because it checks pyproject.toml
+# AND frontend/package.json, so scoping it to the backend would let
+# --frontend-only report success on a caret range it never looked at.
+if ($RunBackend -or $RunFrontend) {
+    Invoke-Check "Dependency pins (Python + npm manifests)" {
+        & uv run python scripts/lint_pins.py
+    } "Dependency pins - see the annotated lines above and scripts/lint_pins.py for the rule"
+}
+
 if ($RunBackend) {
     Invoke-Check "Ruff lint (Python)" {
         & uv run ruff check .
