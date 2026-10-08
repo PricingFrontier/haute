@@ -56,25 +56,37 @@ Out of scope:
   (`ready`), with a `detail` saying what to do when it does not. With nothing installed the
   list is empty and the editor looks exactly as it does without this feature.
 - **Switching views.** When the list is not empty, the bottom of the left palette shows the
-  view switcher: "Haute", then one button per extension label, the current view pressed.
+  view switcher: "Pricing" for the pipeline editor, then one button per extension label, one
+  per row at the palette's full width so a long label fits, the current view pressed.
   When the node palette is collapsed the switcher stays, as icon buttons under the reveal
-  strip. It stays usable while the pipeline is read-only: switching views changes nothing
-  in the pipeline. Choosing an extension:
+  strip. An extension's palette collapses with it: collapsing either collapses both, so the
+  switcher stays put when you switch. It stays usable while the pipeline is read-only:
+  switching views changes nothing in the pipeline. Choosing an extension:
   - hides the pipeline editor without unmounting it. It keeps its graph, undo history,
     selection, viewport and live sync, but is invisible and inert, and its keyboard
     shortcuts (React Flow's delete and pan keys, Ctrl/Cmd+Enter and every canvas shortcut)
     are off, so no key pressed in the extension edits the hidden pipeline;
   - closes the canvas context menu and the connection-drop menu;
-  - shows the extension's view over the whole area below the toolbar;
+  - shows the extension's view over the area below the toolbar, beside the Git or Assistant
+    panel while one is open;
   - replaces the toolbar's pipeline controls with a space the extension fills with its own
-    controls. The brand column stays.
+    controls. The brand column stays, and so do the project's controls: Assistant, Help,
+    the working branch, Save and Commit. Save and Commit act on the pipeline project exactly
+    as they do in the pipeline editor; the extension's own files are not part of them.
 - **The extension's view.** Haute imports the extension's module from its URL and calls
-  `mount` with the element to render the view in, the space in the toolbar, its API base
-  and the name of the slot for the switcher. The extension puts that slot at the bottom of
-  its own palette and Haute fills it with the same switcher. Where the extension shows no
+  `mount` with the element to render the view in, the space in the toolbar, its API base,
+  the name of the slot for the switcher and the palette's state. The extension puts that
+  slot at the bottom of its own palette and Haute fills it with the same switcher, compact
+  while the palette is collapsed. Where the extension shows no
   palette, as in Obverse's Preview (what underwriters see), there is no switcher: it is for
   the people building the pipeline and the form. Switching back to Haute unmounts the
   extension's view; the extension keeps its own state between mounts.
+- **Looking like Haute.** An extension builds its toolbar controls from `haute-ui`, the
+  kit Haute's own toolbar is built from ([frontend-shared](../frontend-shared/high-level.md)):
+  the same two-row columns, labelled buttons, Undo/Redo, Zoom In/Zoom Out and Save, in
+  the same colours, and its palette from the kit's palette column, header and reveal strip.
+  It installs the kit as a package and imports the kit's stylesheets into its own shadow
+  roots.
 - **Until the view mounts.** While the module loads, and when it cannot (front end not
   built, import failed, no `mount` function, `mount` threw), the view shows what is
   happening or what went wrong beside a palette-width column holding the switcher, so there
@@ -96,6 +108,10 @@ Out of scope:
   extension's job: Obverse renders into shadow roots because two Tailwind stylesheets on
   one page re-order each other's utilities. The switcher reaches the extension's palette
   through a named `<slot>`, so it stays Haute's own component in Haute's styles.
+- **The toolbar kit is shared at build time.** The extension renders its controls with its
+  own React, in its own shadow root, so Haute cannot lend it components at run time. It
+  builds against `haute-ui` instead, the same source Haute's toolbar renders, and runs the
+  same way under `haute serve` and on its own.
 - **The pipeline editor stays mounted.** It owns live sync, the editor document and undo
   history; unmounting it would reconnect and reload on every switch. `visibility: hidden`
   keeps React Flow's measured size, and `inert` keeps focus and assistive technology out.
@@ -116,8 +132,8 @@ Out of scope:
 - [sandbox-security](../sandbox-security/high-level.md): the local Host, Origin and session
   middleware gate extension API routes.
 - [frontend-shared](../frontend-shared/high-level.md): the toolbar gives its pipeline
-  controls' space to the extension, and the API client validates `GET /api/extensions`
-  with the generated contract.
+  controls' space to the extension, the extension builds its controls from `haute-ui`,
+  and the API client validates `GET /api/extensions` with the generated contract.
 - [frontend-graph-canvas](../frontend-graph-canvas/high-level.md): the editor shell renders
   the switcher under the palette, hides the pipeline editor and turns its shortcuts off.
 - [build-and-distribution](../build-and-distribution/high-level.md): the Vite dev server

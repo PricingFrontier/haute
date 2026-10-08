@@ -16,6 +16,15 @@ export interface ExtensionMountOptions {
   apiBase: string
   /** `SWITCHER_SLOT`. */
   switcherSlot: string
+  /** The palette's state, which both views share: collapsing one collapses the other. */
+  palette: ExtensionPalette
+}
+
+export interface ExtensionPalette {
+  /** Whether the node palette was open when the view mounted. */
+  open: boolean
+  /** Open or collapse the palette; the slotted switcher turns compact while it is collapsed. */
+  setOpen: (open: boolean) => void
 }
 
 export interface ExtensionHandle {

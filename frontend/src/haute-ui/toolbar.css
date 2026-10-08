@@ -1,0 +1,160 @@
+/* haute-ui: the toolbar's styles, shared by Haute's editor and its extensions
+   (specs/frontend-shared). Plain CSS rather than Tailwind utilities, so the rules
+   apply in any consumer, a shadow root included. Colours come only from tokens
+   that tokens.css provides (pinned by __tests__/tokens.test.ts). */
+
+/* The bar. */
+.toolbar {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  box-sizing: border-box;
+  min-height: 44px;
+  padding: 6px 16px;
+  background: var(--chrome);
+  border-bottom: 1px solid var(--chrome-border);
+}
+
+/* The product's name over its version. 165px is the 180px palette plus its 1px
+   border, less the bar's 16px padding, so whatever follows the brand starts over
+   the palette's edge. */
+.toolbar-brand {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  width: 165px;
+  height: 56px;
+  user-select: none;
+}
+.toolbar-brand-mark {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+.toolbar-brand-name {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  line-height: 1;
+}
+.toolbar-brand-version {
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 10px;
+  letter-spacing: -0.025em;
+  line-height: 1;
+}
+
+/* Two controls stacked: the bar's two rows. */
+.toolbar-column {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: fit-content;
+}
+
+/* Toolbar action buttons — undo/redo, zoom, centre/layout, submodel/instance,
+   utility/imports/assistant.  These used to be bare labels on the chrome
+   (--text-secondary, ~5.5:1) that only grew a background on hover, so the bar
+   read as a row of words rather than a row of controls.
+   Three tiers deliberately remain distinct: Save stays a filled accent button
+   (primary), these are the recessive-but-visible default, and the numeric
+   fields keep their inset input styling. */
+.toolbar-btn {
+  background: var(--btn-surface);
+  border: 1px solid var(--btn-border);
+  color: var(--text-primary);
+  transition: background 150ms, border-color 150ms, color 150ms;
+}
+.toolbar-btn:hover:not(:disabled):not([aria-disabled="true"]),
+.toolbar-btn:focus-visible:not(:disabled):not([aria-disabled="true"]) {
+  background: var(--btn-surface-hover);
+  border-color: var(--btn-border-hover);
+}
+.toolbar-btn:active:not(:disabled):not([aria-disabled="true"]) {
+  background: var(--btn-surface-pressed);
+}
+/* Engaged toggle (Assistant): accent-tinted so "open" is legible at a glance
+   without relying on a hover the user isn't performing. */
+.toolbar-btn[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent-ring);
+  color: var(--text-accent);
+}
+/* Unavailable.  Losing the raised surface is the signal — a flat control next
+   to raised ones reads as "not right now" without any colour knowledge. The
+   label stays readable so you can still tell what it is and why you might
+   want it; hover and press feedback are withheld, and the cursor says so. */
+.toolbar-btn:disabled,
+.toolbar-btn[aria-disabled="true"] {
+  background: transparent;
+  border-color: var(--border-subtle);
+  color: var(--text-disabled);
+  cursor: not-allowed;
+}
+
+/* A labelled toolbar button: icon and label centred, as wide as its column so
+   the two buttons of a column match. */
+.toolbar-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+.toolbar-action-compact {
+  padding-inline: 8px;
+}
+
+/* Save and Commit: filled, side by side and of equal width. */
+.toolbar-save-commit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+.toolbar-fill {
+  flex: 1 1 0%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text-on-accent);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  text-align: center;
+  transition: background 150ms;
+}
+.toolbar-fill-save {
+  background: var(--accent);
+}
+.toolbar-fill-save:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+.toolbar-fill-commit {
+  background: var(--success-fill);
+}
+.toolbar-fill-commit:hover:not(:disabled) {
+  background: var(--success-fill-hover);
+}
+.toolbar-fill:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

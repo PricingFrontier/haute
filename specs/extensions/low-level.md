@@ -7,9 +7,9 @@
 | `src/haute/_extensions.py` | Server side of extensions: `EXTENSIONS_GROUP`, `RESERVED_NAMES`, the frozen `Extension` record (with `api_base`, `assets_url` and `entry_url`), `ExtensionError`, `discover_extensions` (loads and validates every entry point in name order), `mount_extensions` (mounts each router and asset directory and registers `GET /api/extensions`), and `extension_package_dirs` (the package directories dev mode's reloader watches, found without importing the extensions). |
 | `frontend/src/api/extensions.ts` | `fetchExtensions`: `GET /api/extensions` through the shared request machinery, validated by the generated `extensions` contract, whose validators load with the first response. |
 | `frontend/src/stores/useExtensionsStore.ts` | `useExtensionsStore` and `PIPELINE_VIEW`: the installed extensions, the active view (`"pipeline"` or an extension name), and the toolbar element the active extension renders its controls into. `load` fetches the list, leaves the store untouched when none is installed (so the editor never re-renders for it) and reports a failure as one error toast; `showView` rejects a view that is not installed. |
-| `frontend/src/extensions/ViewSwitcher.tsx` | The view switcher: "Haute" and one button per extension, the active one `aria-pressed`, on the shared `.toolbar-btn` surface. Full width as a row of labelled buttons, or `compact` as a column of icon buttons for the collapsed palette strip. Renders nothing until the list holds an extension. |
-| `frontend/src/extensions/ExtensionView.tsx` | Hosts one extension's view over the area below the toolbar: loads its module, calls `mount` with the view element, the toolbar slot, its API base and `SWITCHER_SLOT`, fills that slot with the switcher once mounted, unmounts on leave, and shows loading or the failure beside a fallback switcher column until the view mounts. |
-| `frontend/src/extensions/loadExtensionModule.ts` | The browser contract: `SWITCHER_SLOT`, `ExtensionMountOptions`, `ExtensionHandle`, `ExtensionModule`, `loadExtensionModule` (dynamic import from the listed URL, kept out of Vite's graph, checked for a `mount` function) and `mountExtension` (calls `mount` and checks it returned a handle with `unmount`). |
+| `frontend/src/extensions/ViewSwitcher.tsx` | The view switcher: "Pricing" (the pipeline editor) and one button per extension, labelled with the extension's `label`, the active one `aria-pressed`, on the shared `.toolbar-btn` surface. Full width as a column of labelled buttons, one per row and each as wide as the palette, or `compact` as a column of icon buttons for the collapsed palette strip. Renders nothing until the list holds an extension. |
+| `frontend/src/extensions/ExtensionView.tsx` | Hosts one extension's view over the area below the toolbar: loads its module, calls `mount` with the view element, the toolbar slot, its API base, `SWITCHER_SLOT` and the palette's state (`useUIStore`'s `paletteOpen` when it mounts, and `setPaletteOpen`), fills that slot with the switcher once mounted (compact while the palette is collapsed), unmounts on leave, and shows loading or the failure beside a fallback switcher column until the view mounts. Beside the view it shows the Git panel while `gitOpen` is set, or else the Assistant panel while `assistantOpen` is, taking `onSave` for the Git panel and `isInsideSubmodel` and `readOnly` for the Assistant panel from the editor shell. |
+| `frontend/src/extensions/loadExtensionModule.ts` | The browser contract: `SWITCHER_SLOT`, `ExtensionMountOptions` (with `ExtensionPalette`), `ExtensionHandle`, `ExtensionModule`, `loadExtensionModule` (dynamic import from the listed URL, kept out of Vite's graph, checked for a `mount` function) and `mountExtension` (calls `mount` and checks it returned a handle with `unmount`). |
 
 `src/haute/schemas.py` defines `ExtensionInfo` and `ExtensionsResponse`;
 `scripts/generate_api_contracts.py` lists `ExtensionsResponse` as the `extensions` response
@@ -33,9 +33,20 @@ group; `frontend/src/api/types.ts` re-exports the generated types.
 - **Browser contract** (`frontend/src/extensions/loadExtensionModule.ts`): the module exports
   `mount(options: ExtensionMountOptions): ExtensionHandle`, where the options are `main` (the
   element filling the area below the toolbar), `toolbar` (the toolbar's slot element),
-  `apiBase` and `switcherSlot` (`SWITCHER_SLOT`, `"haute-view-switcher"`), and the handle has
-  `unmount()`. The extension may attach a shadow root to `main` and `toolbar`; the light-DOM
-  child Haute places in `main` carries `slot="haute-view-switcher"`.
+  `apiBase`, `switcherSlot` (`SWITCHER_SLOT`, `"haute-view-switcher"`) and `palette`
+  (`ExtensionPalette`: `open`, whether the node palette was open when the view mounted, and
+  `setOpen(open)`, which opens or collapses it), and the handle has `unmount()`. The extension
+  shows its palette open or collapsed to match and calls `setOpen` from its own minimiser, so
+  both views share one palette state. The extension may attach a shadow root to `main` and
+  `toolbar`; the light-DOM child Haute places in `main` carries `slot="haute-view-switcher"`.
+- **The toolbar kit** (`frontend/src/haute-ui/`, specified in
+  [frontend-shared](../frontend-shared/low-level.md)): an extension installs the directory
+  as the `haute-ui` package (Obverse uses an npm `file:` dependency on the Haute checkout
+  beside it), renders its toolbar controls and palette shell with the kit's components, and
+  imports `haute-ui/tokens.css`, `haute-ui/toolbar.css` and `haute-ui/palette.css` into the
+  stylesheet its shadow roots adopt. The kit's tokens are on `:root, :host`, so they apply inside a shadow root. The
+  slot sits after Haute's brand column, so the extension's first control starts over the
+  palette's edge, as Haute's first pipeline control does.
 
 ## Control flow
 
@@ -64,12 +75,18 @@ group; `frontend/src/api/types.ts` re-exports the generated types.
    `useKeyboardShortcuts`, skips its Ctrl/Cmd+Enter handler, gives React Flow `null`
    delete and pan-activation keys, and renders `ExtensionView` (lazy) over that region. A
    subscription to the store's view changes closes the context and connection-drop menus
-   when the pipeline view is left. The toolbar renders its brand and a
-   slot element it registers with `setToolbarSlot`.
+   when the pipeline view is left. The toolbar renders its brand, a slot element it
+   registers with `setToolbarSlot`, and the project controls (Assistant, Help, the branch
+   indicator with Save and Commit). The shell passes `gitOpen` and `assistantOpen` to the
+   node properties panel only while the pipeline view is active, so `ExtensionView` shows
+   those panels instead and neither mounts twice.
 7. **Mounting the view.** Once the toolbar slot exists, `ExtensionView` checks `ready`
    (not ready: show `detail`), imports the module through `loadExtensionModule(entry_url)`,
-   and calls `mountExtension` with its own host element. Then it renders
-   `<div slot="haute-view-switcher">` holding a `ViewSwitcher` inside the host.
+   and calls `mountExtension` with its own host element and the palette's state, read from
+   `useUIStore` when it mounts. The palette state is not an effect dependency, so opening or
+   collapsing the palette never remounts the view. Then it renders
+   `<div slot="haute-view-switcher">` holding a `ViewSwitcher` inside the host, compact while
+   `paletteOpen` is false.
 8. **Switching back.** `showView(PIPELINE_VIEW)` unmounts `ExtensionView`, whose effect
    cleanup calls the handle's `unmount()`; the toolbar slot unregisters, and the pipeline
    region becomes visible and interactive with its shortcuts on.
@@ -132,7 +149,9 @@ group; `frontend/src/api/types.ts` re-exports the generated types.
 - `frontend/src/extensions/__tests__/ExtensionView.test.tsx` covers mounting with the
   documented options, the slotted switcher, unmounting on leave, never mounting after a
   late load, waiting for the toolbar slot, an unbuilt extension, and load and mount
-  failures keeping the switcher.
+  failures keeping the switcher; the palette state (the extension's `setOpen` collapses the
+  palette, the switcher turns compact, and the view is not remounted); and the Git or
+  Assistant panel beside the view.
 - `frontend/src/extensions/__tests__/loadExtensionModule.test.ts` covers importing a module
   by URL and the module and handle checks.
 - `frontend/src/hooks/__tests__/useKeyboardShortcuts.test.ts` checks that shortcuts do

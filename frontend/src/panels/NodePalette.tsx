@@ -1,5 +1,5 @@
-import { PanelLeftClose } from "lucide-react"
 import type { DragEvent } from "react"
+import { PaletteColumn, PaletteHeader } from "../haute-ui"
 import { NODE_TYPE_META, PALETTE_TYPES, SINGLETON_TYPES } from "../utils/nodeTypes"
 import type { NodeTypeValue } from "../utils/nodeTypes"
 
@@ -18,20 +18,8 @@ export default function NodePalette({
   existingSingletonTypes?: ReadonlySet<NodeTypeValue>
 }) {
   return (
-    <div className="w-[180px] h-full overflow-y-auto shrink-0 flex flex-col" style={{ background: "var(--chrome)", borderRight: "1px solid var(--chrome-border)" }}>
-      <div className="px-4 py-3 flex items-center justify-between">
-        <h2 className="text-[11px] font-bold uppercase tracking-[0.1em]" style={{ color: "var(--text-muted)" }}>Nodes</h2>
-        {onCollapse && (
-          <button
-            onClick={onCollapse}
-            className="p-0.5 rounded transition-colors hover:bg-[var(--chrome-hover)] hover:text-[var(--text-secondary)]"
-            style={{ color: 'var(--text-muted)' }}
-            title="Collapse palette"
-          >
-            <PanelLeftClose size={14} />
-          </button>
-        )}
-      </div>
+    <PaletteColumn>
+      <PaletteHeader title="Nodes" onCollapse={onCollapse} />
 
       <div className="px-2 space-y-0.5 flex-1">
         {PALETTE_TYPES.map((type) => {
@@ -55,6 +43,6 @@ export default function NodePalette({
           )
         })}
       </div>
-    </div>
+    </PaletteColumn>
   )
 }

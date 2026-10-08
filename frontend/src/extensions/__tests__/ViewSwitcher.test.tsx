@@ -25,24 +25,36 @@ describe("ViewSwitcher", () => {
     expect(container).toBeEmptyDOMElement()
   })
 
-  it("offers Haute and each extension, pressing the view that shows, and switches on click", () => {
+  it("offers Pricing and each extension, pressing the view that shows, and switches on click", () => {
     useExtensionsStore.setState({ extensions: [obverse] })
     render(<ViewSwitcher compact={false} />)
     const group = screen.getByRole("group", { name: "Views" })
-    const haute = within(group).getByRole("button", { name: "Haute" })
+    const pricing = within(group).getByRole("button", { name: "Pricing" })
     const forms = within(group).getByRole("button", { name: "Obverse" })
 
-    expect(haute).toHaveAttribute("aria-pressed", "true")
+    expect(pricing).toHaveTextContent("Pricing")
+    expect(pricing).toHaveAttribute("aria-pressed", "true")
     expect(forms).toHaveAttribute("aria-pressed", "false")
 
     fireEvent.click(forms)
 
     expect(useExtensionsStore.getState().activeView).toBe("obverse")
     expect(forms).toHaveAttribute("aria-pressed", "true")
-    expect(haute).toHaveAttribute("aria-pressed", "false")
+    expect(pricing).toHaveAttribute("aria-pressed", "false")
 
-    fireEvent.click(haute)
+    fireEvent.click(pricing)
     expect(useExtensionsStore.getState().activeView).toBe(PIPELINE_VIEW)
+  })
+
+  it("stacks the views one per row, each as wide as the palette, so a long label fits", () => {
+    useExtensionsStore.setState({ extensions: [obverse] })
+    render(<ViewSwitcher compact={false} />)
+    const group = screen.getByRole("group", { name: "Views" })
+
+    expect(group).toHaveClass("flex-col")
+    const buttons = within(group).getAllByRole("button")
+    expect(buttons.map((button) => button.textContent)).toEqual(["Pricing", "Obverse"])
+    for (const button of buttons) expect(button).toHaveClass("w-full")
   })
 
   it("is a column of icon buttons named by their labels beside the collapsed palette", () => {
@@ -51,7 +63,7 @@ describe("ViewSwitcher", () => {
     const group = screen.getByRole("group", { name: "Views" })
 
     expect(group).toHaveClass("flex-col")
-    expect(within(group).getByRole("button", { name: "Haute" })).not.toHaveTextContent("Haute")
+    expect(within(group).getByRole("button", { name: "Pricing" })).not.toHaveTextContent("Pricing")
     fireEvent.click(within(group).getByRole("button", { name: "Obverse" }))
     expect(useExtensionsStore.getState().activeView).toBe("obverse")
   })

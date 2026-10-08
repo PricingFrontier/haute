@@ -154,6 +154,7 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "caching",
     "engineering-quality",
     "explore-eda",
+    "extensions",
     "frontend-shared",
     "model-scoring",
     "modelling",

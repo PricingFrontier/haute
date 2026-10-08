@@ -8,6 +8,7 @@ const options: ExtensionMountOptions = {
   toolbar: document.createElement("div"),
   apiBase: "/api/extensions/obverse",
   switcherSlot: "haute-view-switcher",
+  palette: { open: true, setOpen: vi.fn() },
 }
 
 describe("loadExtensionModule", () => {

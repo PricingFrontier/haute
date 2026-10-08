@@ -1,11 +1,25 @@
-import { useEffect, useRef, useState } from "react"
+import { Suspense, lazy, useEffect, useRef, useState } from "react"
 import { apiErrorMessage } from "../api/errors"
 import type { ExtensionInfo } from "../api/types"
+import { ErrorBoundary } from "../components/ErrorBoundary"
 import useExtensionsStore from "../stores/useExtensionsStore"
+import useUIStore from "../stores/useUIStore"
 import { SWITCHER_SLOT, loadExtensionModule, mountExtension, type ExtensionHandle } from "./loadExtensionModule"
 import ViewSwitcher from "./ViewSwitcher"
 
+const GitPanel = lazy(() => import("../panels/GitPanel"))
+const AssistantPanel = lazy(() => import("../panels/assistant/AssistantPanel"))
+
 type ViewState = { status: "loading" } | { status: "mounted" } | { status: "failed"; message: string }
+
+interface ExtensionViewProps {
+  extension: ExtensionInfo
+  /** The Git panel's save, as the node properties panel gives it. */
+  onSave: () => Promise<boolean>
+  /** The Assistant panel's props, as the node properties panel gives them. */
+  isInsideSubmodel: boolean
+  readOnly: boolean
+}
 
 /**
  * One extension's view, over the area below the toolbar while it is the
@@ -13,10 +27,15 @@ type ViewState = { status: "loading" } | { status: "mounted" } | { status: "fail
  * it into its host element and the toolbar's slot. Once mounted, the switcher
  * reaches the extension's palette through the `haute-view-switcher` slot;
  * until then (or if loading fails) it stays in a column of its own, so there
- * is always a way back to the pipeline.
+ * is always a way back to the pipeline. The toolbar's Git and Assistant panels
+ * open beside the view, since the pipeline region they normally open in is hidden.
  */
-export default function ExtensionView({ extension }: { extension: ExtensionInfo }) {
+export default function ExtensionView({ extension, onSave, isInsideSubmodel, readOnly }: ExtensionViewProps) {
   const toolbarSlot = useExtensionsStore((s) => s.toolbarSlot)
+  const paletteOpen = useUIStore((s) => s.paletteOpen)
+  const gitOpen = useUIStore((s) => s.gitOpen)
+  const setGitOpen = useUIStore((s) => s.setGitOpen)
+  const assistantOpen = useUIStore((s) => s.assistantOpen)
   const hostRef = useRef<HTMLDivElement>(null)
   const [state, setState] = useState<ViewState>({ status: "loading" })
 
@@ -28,11 +47,15 @@ export default function ExtensionView({ extension }: { extension: ExtensionInfo 
     loadExtensionModule(extension.entry_url)
       .then((module) => {
         if (left) return
+        // Read when it mounts, not a dependency: opening or collapsing the palette
+        // must not remount the view. The extension tracks it from here.
+        const { paletteOpen: open, setPaletteOpen: setOpen } = useUIStore.getState()
         handle = mountExtension(module, {
           main,
           toolbar: toolbarSlot,
           apiBase: extension.api_base,
           switcherSlot: SWITCHER_SLOT,
+          palette: { open, setOpen },
         })
         setState({ status: "mounted" })
       })
@@ -66,7 +89,7 @@ export default function ExtensionView({ extension }: { extension: ExtensionInfo 
         <div ref={hostRef} className="absolute inset-0" data-testid="extension-view-host">
           {mounted && (
             <div slot={SWITCHER_SLOT}>
-              <ViewSwitcher compact={false} />
+              <ViewSwitcher compact={!paletteOpen} />
             </div>
           )}
         </div>
@@ -81,6 +104,21 @@ export default function ExtensionView({ extension }: { extension: ExtensionInfo 
           </div>
         )}
       </div>
+      {gitOpen ? (
+        <aside aria-label="Version control">
+          <Suspense fallback={null}>
+            <GitPanel onClose={() => setGitOpen(false)} onSave={onSave} />
+          </Suspense>
+        </aside>
+      ) : assistantOpen ? (
+        <aside aria-label="Assistant">
+          <ErrorBoundary name="AssistantPanel">
+            <Suspense fallback={null}>
+              <AssistantPanel isInsideSubmodel={isInsideSubmodel} readOnly={readOnly} />
+            </Suspense>
+          </ErrorBoundary>
+        </aside>
+      ) : null}
     </div>
   )
 }

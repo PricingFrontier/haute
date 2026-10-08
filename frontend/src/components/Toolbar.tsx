@@ -1,7 +1,8 @@
 import { Suspense, lazy, useState, useMemo, useRef, useCallback, useEffect } from "react"
-import { Undo2, Redo2, ZoomIn, ZoomOut, Scan, Network, Timer, HardDrive, ChevronDown, Plus, Trash2, FileCode2, Variable, Bot, Loader2, Group, Ungroup, Link2, BookOpen, CircleHelp, Keyboard, Bug } from "lucide-react"
+import { Scan, Network, Timer, HardDrive, ChevronDown, Plus, Trash2, FileCode2, Variable, Bot, Loader2, Group, Ungroup, Link2, BookOpen, CircleHelp, Keyboard, Bug } from "lucide-react"
 import type { WsStatus } from "../hooks/useWebSocketSync"
 import type { NodeTiming, NodeMemory } from "../api/types"
+import { SaveCommit, ToolbarBrand, UndoRedo, ZoomInOut } from "../haute-ui"
 import BreakdownDropdown, { type BreakdownItem } from "./BreakdownDropdown"
 import BranchIndicator from "./BranchIndicator"
 import useSettingsStore from "../stores/useSettingsStore"
@@ -159,25 +160,135 @@ export default function Toolbar({
     [memory],
   )
 
-  // While an extension's view shows, the toolbar is the brand and a space for
-  // that extension's own controls (specs/extensions).
+  // While an extension's view shows, the toolbar is the brand, a space for that
+  // extension's own controls, and the project's controls (specs/extensions).
   const activeView = useExtensionsStore((s) => s.activeView)
   const extensionLabel = useExtensionsStore((s) => s.extensions.find((e) => e.name === s.activeView)?.label)
   const setToolbarSlot = useExtensionsStore((s) => s.setToolbarSlot)
 
-  const toolbarStyle = { background: 'var(--chrome)', borderBottom: '1px solid var(--chrome-border)' }
-  const brand = (
-    // Haute brand column — lowercase "haute" heading taking ~2/3 vertical space, centered version underneath.
-    // Width is pinned to 165px (180px node palette + 1px border - 16px header px-4 padding) so the Source label starts at exactly x + 1 = 181px from the left edge of the page.
-    <div className="h-[56px] w-[165px] flex items-center gap-2 select-none" data-testid="toolbar-brand">
-      <div className="flex flex-col items-center justify-center">
-        <h1 className="text-[24px] font-bold tracking-tight leading-none" style={{ color: 'var(--text-primary)' }}>
-          haute
-        </h1>
-        <span className="text-[10px] font-mono tracking-tight leading-none mt-1" style={{ color: 'var(--text-muted)' }}>
-          v{__APP_VERSION__}
-        </span>
+  // The brand column is as wide as the node palette, less the bar's padding, so the
+  // Source label starts over the palette's edge (haute-ui/toolbar.css).
+  const brand = <ToolbarBrand name="haute" version={__APP_VERSION__} />
+
+  // The project's controls, in the pipeline toolbar and an extension's alike.
+  // 10px is the toolbar's one spacing value: between adjacent buttons and
+  // between sections alike.  Only a label and the field it names sit
+  // closer (4px), so they still read as one control.
+  const projectControls = (
+    <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-2.5">
+      {/* Assistant and Help column — equal width, paired with branch name & save/commit */}
+      <div className="flex flex-col gap-1 w-fit">
+        {/* A running turn fences the canvas, but the panel that shows and
+            stops it stays reachable. */}
+        <button
+          data-testid="toolbar-assistant"
+          onClick={() => setAssistantOpen(!assistantOpen)}
+          disabled={editingDisabled && assistantTurn === null}
+          aria-label={assistantState === null ? "Assistant" : `Assistant: ${assistantState}`}
+          aria-pressed={assistantOpen}
+          className="toolbar-btn relative px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full"
+          title={assistantState ?? "Pricing assistant"}
+        >
+          {assistantTurn !== null ? (
+            <Loader2 size={13} className="animate-spin" data-testid="toolbar-assistant-working" aria-hidden="true" />
+          ) : (
+            <Bot size={13} />
+          )}
+          Assistant
+          {assistantUnseenOutcome && assistantTurn === null && (
+            <span
+              data-testid="toolbar-assistant-unseen"
+              aria-hidden="true"
+              className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full"
+              style={{ background: "var(--accent)" }}
+            />
+          )}
+        </button>
+        <div
+          ref={helpRef}
+          className="relative w-full"
+          onKeyDown={(e) => {
+            if (!helpOpen) return
+            if (e.key === "Escape") {
+              e.stopPropagation()
+              setHelpOpen(false)
+              helpRef.current?.querySelector<HTMLElement>('[data-testid="toolbar-help"]')?.focus()
+              return
+            }
+            if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return
+            e.preventDefault()
+            const items = helpItems()
+            const index = items.indexOf(document.activeElement as HTMLElement)
+            const step = e.key === "ArrowDown" ? 1 : -1
+            items[(index + step + items.length) % items.length]?.focus()
+          }}
+        >
+          <button
+            data-testid="toolbar-help"
+            onClick={() => setHelpOpen((v) => !v)}
+            aria-haspopup="menu"
+            aria-expanded={helpOpen}
+            className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full"
+            title="Help"
+          >
+            <CircleHelp size={13} />
+            Help
+          </button>
+          {helpOpen && (
+            <div
+              role="menu"
+              aria-label="Help"
+              data-testid="toolbar-help-menu"
+              className="absolute top-full right-0 mt-1 rounded-lg shadow-2xl z-50 min-w-[160px] overflow-hidden py-1"
+              style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+            >
+              <a
+                role="menuitem"
+                data-testid="toolbar-documentation"
+                href={DOCUMENTATION_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={closeHelp}
+                className={HELP_ITEM_CLASS}
+                title="Documentation - opens in a new tab"
+              >
+                <BookOpen size={12} />
+                Documentation
+              </a>
+              <button
+                role="menuitem"
+                data-testid="toolbar-hotkeys"
+                onClick={() => { setShortcutsOpen(true); setHelpOpen(false) }}
+                className={HELP_ITEM_CLASS}
+                title="Keyboard shortcuts (?)"
+              >
+                <Keyboard size={12} />
+                Hotkeys
+              </button>
+              <a
+                role="menuitem"
+                data-testid="toolbar-report-bug"
+                href={REPORT_BUG_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={closeHelp}
+                className={HELP_ITEM_CLASS}
+                title="Report a bug on GitHub - opens in a new tab"
+              >
+                <Bug size={12} />
+                Report a bug
+              </a>
+            </div>
+          )}
+        </div>
       </div>
+      <BranchIndicator>
+        {/* Save then Commit, in the order the work happens: a save is itself a
+            commit to the save branch, and Commit rolls those saves into a
+            milestone.  Two filled buttons, distinguished by hue rather than by
+            one being demoted, sharing the branch name button's width. */}
+        <SaveCommit onSave={onSave} onCommit={onSaveCommit} disabled={editingDisabled} />
+      </BranchIndicator>
     </div>
   )
 
@@ -186,15 +297,16 @@ export default function Toolbar({
     // extension's: the extension attaches a shadow root to the slot, which would hide
     // whatever React later rendered into it.
     return (
-      <header key={`extension:${activeView}`} role="toolbar" aria-label={`${extensionLabel ?? activeView} toolbar`} className="min-h-11 flex items-center px-4 py-1.5 shrink-0" style={toolbarStyle}>
+      <header key={`extension:${activeView}`} role="toolbar" aria-label={`${extensionLabel ?? activeView} toolbar`} className="toolbar">
         {brand}
-        <div ref={setToolbarSlot} data-testid="toolbar-extension-slot" className="flex-1 min-w-0 self-stretch" />
+        <div ref={setToolbarSlot} data-testid="toolbar-extension-slot" className="flex-1 min-w-0 self-stretch mr-2.5" />
+        {projectControls}
       </header>
     )
   }
 
   return (
-    <header key="pipeline" role="toolbar" aria-label="Pipeline toolbar" className="min-h-11 flex flex-wrap items-center gap-y-2 px-4 py-1.5 shrink-0 [&>div]:shrink-0" style={toolbarStyle}>
+    <header key="pipeline" role="toolbar" aria-label="Pipeline toolbar" className="toolbar flex-wrap gap-y-2 [&>div]:shrink-0">
       {brand}
       {/* Source and Pipeline column — the Source selector sits on the top row, in
           line with Timing and Undo, and the Pipeline control underneath it.
@@ -340,53 +452,14 @@ export default function Toolbar({
           between the Source/Pipeline column and the Timing/Memory readouts. */}
       <div className="ml-2.5 flex flex-wrap items-center gap-2.5" data-testid="toolbar-canvas-actions">
         {/* Undo / Redo column — Undo at the top, Redo underneath, leading the canvas action group */}
-        <div className="flex flex-col gap-1 w-fit" data-testid="toolbar-undo-redo">
-          <button
-            data-testid="toolbar-undo"
-            onClick={onUndo}
-            disabled={editingDisabled || !canUndo}
-            aria-label="Undo"
-            className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full"
-            title="Undo (Ctrl+Z)"
-          >
-            <Undo2 size={13} aria-hidden="true" />
-            Undo
-          </button>
-          <button
-            data-testid="toolbar-redo"
-            onClick={onRedo}
-            disabled={editingDisabled || !canRedo}
-            aria-label="Redo"
-            className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full"
-            title="Redo (Ctrl+Shift+Z)"
-          >
-            <Redo2 size={13} aria-hidden="true" />
-            Redo
-          </button>
-        </div>
+        <UndoRedo
+          canUndo={!editingDisabled && canUndo}
+          canRedo={!editingDisabled && canRedo}
+          onUndo={onUndo}
+          onRedo={onRedo}
+        />
         {/* Zoom controls column — Zoom In on top of Zoom Out */}
-        <div className="flex flex-col gap-1 w-fit">
-          <button
-            data-testid="toolbar-zoom-in"
-            onClick={onZoomIn}
-            aria-label="Zoom in"
-            className="toolbar-btn px-2 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full"
-            title="Zoom in"
-          >
-            <ZoomIn size={13} aria-hidden="true" />
-            Zoom In
-          </button>
-          <button
-            data-testid="toolbar-zoom-out"
-            onClick={onZoomOut}
-            aria-label="Zoom out"
-            className="toolbar-btn px-2 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full"
-            title="Zoom out"
-          >
-            <ZoomOut size={13} aria-hidden="true" />
-            Zoom Out
-          </button>
-        </div>
+        <ZoomInOut onZoomIn={onZoomIn} onZoomOut={onZoomOut} />
         {/* Centre and Layout column — Centre on top of Layout */}
         <div className="flex flex-col gap-1 w-fit">
           <button
@@ -511,146 +584,7 @@ export default function Toolbar({
           valueWidth="w-14"
         />
       </div>
-      {/* 10px is the toolbar's one spacing value: between adjacent buttons and
-          between sections alike.  Only a label and the field it names sit
-          closer (4px), so they still read as one control. */}
-      <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-2.5">
-        {/* Assistant and Help column — equal width, paired with branch name & save/commit */}
-        <div className="flex flex-col gap-1 w-fit">
-          {/* A running turn fences the canvas, but the panel that shows and
-              stops it stays reachable. */}
-          <button
-            data-testid="toolbar-assistant"
-            onClick={() => setAssistantOpen(!assistantOpen)}
-            disabled={editingDisabled && assistantTurn === null}
-            aria-label={assistantState === null ? "Assistant" : `Assistant: ${assistantState}`}
-            aria-pressed={assistantOpen}
-            className="toolbar-btn relative px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full"
-            title={assistantState ?? "Pricing assistant"}
-          >
-            {assistantTurn !== null ? (
-              <Loader2 size={13} className="animate-spin" data-testid="toolbar-assistant-working" aria-hidden="true" />
-            ) : (
-              <Bot size={13} />
-            )}
-            Assistant
-            {assistantUnseenOutcome && assistantTurn === null && (
-              <span
-                data-testid="toolbar-assistant-unseen"
-                aria-hidden="true"
-                className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full"
-                style={{ background: "var(--accent)" }}
-              />
-            )}
-          </button>
-          <div
-            ref={helpRef}
-            className="relative w-full"
-            onKeyDown={(e) => {
-              if (!helpOpen) return
-              if (e.key === "Escape") {
-                e.stopPropagation()
-                setHelpOpen(false)
-                helpRef.current?.querySelector<HTMLElement>('[data-testid="toolbar-help"]')?.focus()
-                return
-              }
-              if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return
-              e.preventDefault()
-              const items = helpItems()
-              const index = items.indexOf(document.activeElement as HTMLElement)
-              const step = e.key === "ArrowDown" ? 1 : -1
-              items[(index + step + items.length) % items.length]?.focus()
-            }}
-          >
-            <button
-              data-testid="toolbar-help"
-              onClick={() => setHelpOpen((v) => !v)}
-              aria-haspopup="menu"
-              aria-expanded={helpOpen}
-              className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full"
-              title="Help"
-            >
-              <CircleHelp size={13} />
-              Help
-            </button>
-            {helpOpen && (
-              <div
-                role="menu"
-                aria-label="Help"
-                data-testid="toolbar-help-menu"
-                className="absolute top-full right-0 mt-1 rounded-lg shadow-2xl z-50 min-w-[160px] overflow-hidden py-1"
-                style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
-              >
-                <a
-                  role="menuitem"
-                  data-testid="toolbar-documentation"
-                  href={DOCUMENTATION_URL}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  onClick={closeHelp}
-                  className={HELP_ITEM_CLASS}
-                  title="Documentation - opens in a new tab"
-                >
-                  <BookOpen size={12} />
-                  Documentation
-                </a>
-                <button
-                  role="menuitem"
-                  data-testid="toolbar-hotkeys"
-                  onClick={() => { setShortcutsOpen(true); setHelpOpen(false) }}
-                  className={HELP_ITEM_CLASS}
-                  title="Keyboard shortcuts (?)"
-                >
-                  <Keyboard size={12} />
-                  Hotkeys
-                </button>
-                <a
-                  role="menuitem"
-                  data-testid="toolbar-report-bug"
-                  href={REPORT_BUG_URL}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  onClick={closeHelp}
-                  className={HELP_ITEM_CLASS}
-                  title="Report a bug on GitHub - opens in a new tab"
-                >
-                  <Bug size={12} />
-                  Report a bug
-                </a>
-              </div>
-            )}
-          </div>
-        </div>
-        <BranchIndicator>
-          {/* Save then Commit, in the order the work happens: a save is itself a
-              commit to the save branch, and Commit rolls those saves into a
-              milestone.  Two filled buttons, distinguished by hue rather than by
-              one being demoted. The widths expand with flex-1 while keeping a
-              fixed distance apart, matching the branch name button above. */}
-          <div className="flex items-center gap-1.5 w-full">
-            <button
-              data-testid="toolbar-save"
-              onClick={onSave}
-              disabled={editingDisabled}
-              className="flex-1 px-2 py-1 text-[12px] font-semibold text-white rounded-md transition-colors hover:bg-[var(--accent-hover)] text-center"
-              style={{ background: 'var(--accent)' }}
-              title="Save - Ctrl+S"
-            >
-              Save
-            </button>
-            <button
-              data-testid="toolbar-save-commit"
-              onClick={onSaveCommit}
-              disabled={editingDisabled}
-              className="flex-1 px-2 py-1 text-[12px] font-semibold text-white rounded-md transition-colors hover:bg-[var(--success-fill-hover)] text-center"
-              style={{ background: 'var(--success-fill)' }}
-              title="Commit - record a milestone on your working branch"
-            >
-              Commit
-            </button>
-          </div>
-        </BranchIndicator>
-      </div>
+      {projectControls}
       {mlflowSettingsOpen && <MlflowSettingsModal onClose={closeMlflowSettings} />}
       {pipelineSettingsOpen && (
         <Suspense fallback={null}>

@@ -66,13 +66,13 @@ describe("Toolbar", () => {
     expect(brand).toContainElement(heading)
     expect(brand).toContainElement(version)
 
-    // Heading and version are stacked in a centered column container
-    expect(heading.parentElement).toHaveClass("flex-col", "items-center")
+    // Heading and version are stacked in the brand's centred column (haute-ui/toolbar.css)
+    expect(heading.parentElement).toHaveClass("toolbar-brand-mark")
     // Heading precedes version in document order (brand on top, version underneath)
     expect(heading.compareDocumentPosition(version) & 4).toBeTruthy()
   })
 
-  it("gives an extension's view the brand and a slot for its own controls", () => {
+  it("gives an extension's view the brand, a slot for its own controls and the project's controls", () => {
     useExtensionsStore.setState({
       extensions: [{
         name: "obverse",
@@ -86,14 +86,23 @@ describe("Toolbar", () => {
       toolbarSlot: null,
     })
     try {
-      const { unmount } = render(<Toolbar {...makeProps()} />)
+      const props = makeProps()
+      const { unmount } = render(<Toolbar {...props} />)
       const toolbar = screen.getByRole("toolbar", { name: "Obverse toolbar" })
 
       expect(within(toolbar).getByTestId("toolbar-brand")).toBeInTheDocument()
       expect(useExtensionsStore.getState().toolbarSlot).toBe(within(toolbar).getByTestId("toolbar-extension-slot"))
-      for (const pipelineControl of ["toolbar-save", "toolbar-save-commit", "toolbar-assistant", "toolbar-help"]) {
+      for (const projectControl of ["toolbar-assistant", "toolbar-help", "toolbar-save", "toolbar-save-commit"]) {
+        expect(within(toolbar).getByTestId(projectControl)).toBeInTheDocument()
+      }
+      for (const pipelineControl of ["source-selector", "toolbar-undo", "toolbar-zoom-in", "toolbar-centre", "toolbar-constants"]) {
         expect(screen.queryByTestId(pipelineControl)).toBeNull()
       }
+      // Save and Commit act on the pipeline project, as in the pipeline view.
+      fireEvent.click(within(toolbar).getByTestId("toolbar-save"))
+      fireEvent.click(within(toolbar).getByTestId("toolbar-save-commit"))
+      expect(props.onSave).toHaveBeenCalledOnce()
+      expect(props.onSaveCommit).toHaveBeenCalledOnce()
       unmount()
       expect(useExtensionsStore.getState().toolbarSlot).toBeNull()
     } finally {
@@ -194,10 +203,11 @@ describe("Toolbar", () => {
     expect(columnContainer).toContainElement(saveBtn)
     expect(columnContainer).toContainElement(commitBtn)
 
+    // A full-width row of equal-width filled buttons (haute-ui/toolbar.css)
     const saveCommitRow = saveBtn.parentElement
-    expect(saveCommitRow).toHaveClass("w-full")
-    expect(saveBtn).toHaveClass("flex-1")
-    expect(commitBtn).toHaveClass("flex-1")
+    expect(saveCommitRow).toHaveClass("toolbar-save-commit")
+    expect(saveBtn).toHaveClass("toolbar-fill")
+    expect(commitBtn).toHaveClass("toolbar-fill")
   })
 
   it("renders Assistant next to the branch name and Help underneath with equal width", () => {
@@ -261,13 +271,13 @@ describe("Toolbar", () => {
 
     const zoomColumn = zoomInBtn.parentElement
     expect(zoomColumn).toBeInTheDocument()
-    expect(zoomColumn).toHaveClass("flex-col")
+    expect(zoomColumn).toHaveClass("toolbar-column")
     expect(zoomColumn).toContainElement(zoomOutBtn)
 
     expect(zoomInBtn).toHaveTextContent(/zoom in/i)
     expect(zoomOutBtn).toHaveTextContent(/zoom out/i)
-    expect(zoomInBtn).toHaveClass("w-full")
-    expect(zoomOutBtn).toHaveClass("w-full")
+    expect(zoomInBtn).toHaveClass("toolbar-action")
+    expect(zoomOutBtn).toHaveClass("toolbar-action")
 
     expect(zoomInBtn.compareDocumentPosition(zoomOutBtn) & 4).toBeTruthy()
 
@@ -369,7 +379,7 @@ describe("Toolbar", () => {
   it("renders Undo on top of Redo with text labels leading the canvas action group", () => {
     render(<Toolbar {...makeProps()} />)
     const undoRedoContainer = screen.getByTestId("toolbar-undo-redo")
-    expect(undoRedoContainer).toHaveClass("flex-col")
+    expect(undoRedoContainer).toHaveClass("toolbar-column")
 
     const undoBtn = screen.getByTestId("toolbar-undo")
     const redoBtn = screen.getByTestId("toolbar-redo")
@@ -380,8 +390,8 @@ describe("Toolbar", () => {
 
     expect(undoBtn).toHaveTextContent(/undo/i)
     expect(redoBtn).toHaveTextContent(/redo/i)
-    expect(undoBtn).toHaveClass("w-full")
-    expect(redoBtn).toHaveClass("w-full")
+    expect(undoBtn).toHaveClass("toolbar-action")
+    expect(redoBtn).toHaveClass("toolbar-action")
 
     expect(undoBtn.compareDocumentPosition(redoBtn) & 4).toBeTruthy()
 
@@ -704,7 +714,8 @@ describe("Toolbar", () => {
   it("positions Source text directly after brand width aligned to node toolbar width (x + 1)", () => {
     render(<Toolbar {...makeProps()} />)
     const brand = screen.getByTestId("toolbar-brand")
-    expect(brand).toHaveClass("w-[165px]")
+    // 165px wide (haute-ui/toolbar.css, pinned by haute-ui's tokens.test.ts)
+    expect(brand).toHaveClass("toolbar-brand")
 
     const sourceLabel = screen.getByText("Source:")
     const sourceContainer = sourceLabel.parentElement

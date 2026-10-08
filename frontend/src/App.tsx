@@ -102,7 +102,7 @@ import AssistantWorkingPill from "./components/AssistantWorkingPill"
 import { withNativeDeletePolicy } from "./utils/submodelDeletionPolicy"
 import { requestSubmodelCreation } from "./utils/submodelCreation"
 import { resolveEditorGraphIdentities } from "./utils/editorIdentities"
-import { PanelLeftOpen } from "lucide-react"
+import { PaletteRevealStrip } from "./haute-ui"
 
 // ---------------------------------------------------------------------------
 // Lazy-loaded version-control surfaces — code-split out of the initial bundle.
@@ -1846,15 +1846,7 @@ function FlowEditor() {
               />
             </ErrorBoundary>
           ) : (
-            <button
-              onClick={() => setPaletteOpen(true)}
-              aria-label="Show node palette"
-              className="shrink-0 flex items-center justify-center w-10 h-full hover-chrome-solid"
-              style={{ borderRight: '1px solid var(--chrome-border)' }}
-              title="Show node palette"
-            >
-              <PanelLeftOpen size={16} style={{ color: 'var(--text-muted)' }} />
-            </button>
+            <PaletteRevealStrip onReveal={() => setPaletteOpen(true)} />
           )}
         </nav>
         {extensions.length > 0 && (
@@ -1973,11 +1965,13 @@ function FlowEditor() {
           </ErrorBoundary>
         </main>
 
+        {/* While an extension's view shows, its view opens the Git and Assistant
+            panels instead, so they never mount twice (specs/extensions). */}
         <NodePropertiesPanel
-          gitOpen={gitOpen}
+          gitOpen={gitOpen && pipelineActive}
           utilityOpen={utilityOpen}
           constantsOpen={constantsOpen}
-          assistantOpen={assistantOpen}
+          assistantOpen={assistantOpen && pipelineActive}
           onCloseGit={() => setGitOpen(false)}
           onCloseUtility={() => setUtilityOpen(false)}
           onCloseConstants={() => setConstantsOpen(false)}
@@ -2018,7 +2012,13 @@ function FlowEditor() {
       {activeExtension && (
         <ErrorBoundary name="ExtensionView">
           <Suspense fallback={null}>
-            <ExtensionView key={activeExtension.name} extension={activeExtension} />
+            <ExtensionView
+              key={activeExtension.name}
+              extension={activeExtension}
+              onSave={saveWithPendingCommits}
+              isInsideSubmodel={viewStack.length > 1}
+              readOnly={documentReadOnly}
+            />
           </Suspense>
         </ErrorBoundary>
       )}

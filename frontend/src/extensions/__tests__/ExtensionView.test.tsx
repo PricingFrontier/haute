@@ -1,14 +1,31 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 
 vi.mock("../loadExtensionModule", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../loadExtensionModule")>()),
   loadExtensionModule: vi.fn(),
 }))
 
+// What the panels show has their own tests; the view owns where they open.
+vi.mock("../../panels/GitPanel", () => ({
+  default: ({ onClose, onSave }: { onClose: () => void; onSave: () => Promise<boolean> }) => (
+    <div data-testid="git-panel-stub">
+      <button onClick={onClose}>Close Git</button>
+      <button onClick={() => void onSave()}>Save from Git</button>
+    </div>
+  ),
+}))
+vi.mock("../../panels/assistant/AssistantPanel", () => ({
+  default: ({ isInsideSubmodel, readOnly }: { isInsideSubmodel: boolean; readOnly: boolean }) => (
+    <div data-testid="assistant-panel-stub" data-inside-submodel={String(isInsideSubmodel)} data-read-only={String(readOnly)} />
+  ),
+}))
+
+import type { ExtensionInfo } from "../../api/types"
 import ExtensionView from "../ExtensionView"
 import { loadExtensionModule, type ExtensionMountOptions, type ExtensionModule } from "../loadExtensionModule"
 import useExtensionsStore, { PIPELINE_VIEW } from "../../stores/useExtensionsStore"
+import useUIStore from "../../stores/useUIStore"
 
 const obverse = {
   name: "obverse",
@@ -35,6 +52,12 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
+const onSave = vi.fn(() => Promise.resolve(true))
+
+function view(extension: ExtensionInfo = obverse) {
+  return <ExtensionView extension={extension} onSave={onSave} isInsideSubmodel={false} readOnly={false} />
+}
+
 describe("ExtensionView", () => {
   let toolbar: HTMLDivElement
 
@@ -48,14 +71,16 @@ describe("ExtensionView", () => {
     cleanup()
     toolbar.remove()
     load.mockReset()
+    onSave.mockClear()
     useExtensionsStore.setState({ extensions: [], activeView: PIPELINE_VIEW, toolbarSlot: null })
+    useUIStore.setState({ paletteOpen: true, gitOpen: false, assistantOpen: false })
   })
 
   it("mounts the extension into its host and the toolbar slot, then slots in the switcher", async () => {
     const { module, mount } = extensionModule()
     load.mockResolvedValue(module)
 
-    render(<ExtensionView extension={obverse} />)
+    render(view())
 
     await waitFor(() => expect(mount).toHaveBeenCalledOnce())
     const host = screen.getByTestId("extension-view-host")
@@ -65,19 +90,59 @@ describe("ExtensionView", () => {
       toolbar,
       apiBase: "/api/extensions/obverse",
       switcherSlot: "haute-view-switcher",
+      palette: { open: true, setOpen: useUIStore.getState().setPaletteOpen },
     })
     const slotted = host.querySelector('[slot="haute-view-switcher"]')
     expect(slotted).toContainElement(screen.getByRole("group", { name: "Views" }))
     expect(screen.queryByRole("status")).toBeNull()
   })
 
+  it("shares the palette's state: the extension collapses it, the switcher turns compact, and nothing remounts", async () => {
+    const { module, mount, unmount } = extensionModule()
+    load.mockResolvedValue(module)
+    useUIStore.setState({ paletteOpen: false })
+    render(view())
+    await waitFor(() => expect(mount).toHaveBeenCalledOnce())
+    const { palette } = mount.mock.calls[0][0]
+    expect(palette.open).toBe(false)
+
+    act(() => palette.setOpen(true))
+    expect(useUIStore.getState().paletteOpen).toBe(true)
+    expect(within(screen.getByRole("group", { name: "Views" })).getByRole("button", { name: "Pricing" })).toHaveTextContent("Pricing")
+
+    act(() => palette.setOpen(false))
+    // Compact: icon buttons named by their labels, with no visible text.
+    expect(within(screen.getByRole("group", { name: "Views" })).getByRole("button", { name: "Pricing" })).toHaveTextContent("")
+    expect(mount).toHaveBeenCalledOnce()
+    expect(unmount).not.toHaveBeenCalled()
+  })
+
+  it("opens the Git panel beside the view, and otherwise the Assistant panel", async () => {
+    load.mockResolvedValue(extensionModule().module)
+    useUIStore.setState({ gitOpen: true })
+    render(<ExtensionView extension={obverse} onSave={onSave} isInsideSubmodel readOnly />)
+
+    const git = within(screen.getByRole("complementary", { name: "Version control" }))
+    fireEvent.click(await git.findByRole("button", { name: "Save from Git" }))
+    expect(onSave).toHaveBeenCalledOnce()
+    fireEvent.click(git.getByRole("button", { name: "Close Git" }))
+    expect(useUIStore.getState().gitOpen).toBe(false)
+    expect(screen.queryByTestId("git-panel-stub")).toBeNull()
+
+    act(() => useUIStore.getState().setAssistantOpen(true))
+    const assistant = await screen.findByTestId("assistant-panel-stub")
+    expect(screen.getByRole("complementary", { name: "Assistant" })).toContainElement(assistant)
+    expect(assistant).toHaveAttribute("data-inside-submodel", "true")
+    expect(assistant).toHaveAttribute("data-read-only", "true")
+  })
+
   it("unmounts the extension when its view closes", async () => {
     const { module, mount, unmount } = extensionModule()
     load.mockResolvedValue(module)
-    const view = render(<ExtensionView extension={obverse} />)
+    const rendered = render(view())
     await waitFor(() => expect(mount).toHaveBeenCalledOnce())
 
-    view.unmount()
+    rendered.unmount()
 
     expect(unmount).toHaveBeenCalledOnce()
   })
@@ -86,10 +151,10 @@ describe("ExtensionView", () => {
     const { module, mount } = extensionModule()
     const pending = deferred<ExtensionModule>()
     load.mockReturnValue(pending.promise)
-    const view = render(<ExtensionView extension={obverse} />)
+    const rendered = render(view())
     expect(screen.getByRole("status")).toHaveTextContent("Loading Obverse")
 
-    view.unmount()
+    rendered.unmount()
     await act(async () => pending.resolve(module))
 
     expect(mount).not.toHaveBeenCalled()
@@ -99,7 +164,7 @@ describe("ExtensionView", () => {
     const { module, mount } = extensionModule()
     load.mockResolvedValue(module)
     useExtensionsStore.setState({ toolbarSlot: null })
-    render(<ExtensionView extension={obverse} />)
+    render(view())
     expect(load).not.toHaveBeenCalled()
 
     act(() => useExtensionsStore.getState().setToolbarSlot(toolbar))
@@ -110,7 +175,7 @@ describe("ExtensionView", () => {
   it("shows what to do for an unbuilt extension, without loading it, beside the switcher", () => {
     const unbuilt = { ...obverse, ready: false, detail: "obverse-embed.js does not exist. Build Obverse's front end, then reload." }
 
-    render(<ExtensionView extension={unbuilt} />)
+    render(view(unbuilt))
 
     expect(screen.getByRole("alert")).toHaveTextContent("Build Obverse's front end, then reload.")
     expect(screen.getByRole("group", { name: "Views" })).toBeInTheDocument()
@@ -127,7 +192,7 @@ describe("ExtensionView", () => {
   ])("shows %s beside the switcher", async (_case, arrange, reason) => {
     arrange()
 
-    render(<ExtensionView extension={obverse} />)
+    render(view())
 
     expect(await screen.findByRole("alert")).toHaveTextContent(`Obverse could not be loaded: ${reason}`)
     expect(screen.getByRole("group", { name: "Views" })).toBeInTheDocument()
