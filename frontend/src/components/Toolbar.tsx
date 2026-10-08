@@ -7,6 +7,7 @@ import BranchIndicator from "./BranchIndicator"
 import useSettingsStore from "../stores/useSettingsStore"
 import useUIStore from "../stores/useUIStore"
 import useGraphStore from "../stores/useGraphStore"
+import useExtensionsStore, { PIPELINE_VIEW } from "../stores/useExtensionsStore"
 import { constantsWithSourceValue, withoutSource } from "../utils/globalConstants"
 import useClickOutside from "../hooks/useClickOutside"
 import { formatBytes } from "../utils/formatBytes"
@@ -158,20 +159,43 @@ export default function Toolbar({
     [memory],
   )
 
-  return (
-    <header role="toolbar" aria-label="Pipeline toolbar" className="min-h-11 flex flex-wrap items-center gap-y-2 px-4 py-1.5 shrink-0 [&>div]:shrink-0" style={{ background: 'var(--chrome)', borderBottom: '1px solid var(--chrome-border)' }}>
-      {/* Haute brand column — lowercase "haute" heading taking ~2/3 vertical space, centered version underneath.
-          Width is pinned to 165px (180px node palette + 1px border - 16px header px-4 padding) so the Source label starts at exactly x + 1 = 181px from the left edge of the page. */}
-      <div className="h-[56px] w-[165px] flex items-center gap-2 select-none" data-testid="toolbar-brand">
-        <div className="flex flex-col items-center justify-center">
-          <h1 className="text-[24px] font-bold tracking-tight leading-none" style={{ color: 'var(--text-primary)' }}>
-            haute
-          </h1>
-          <span className="text-[10px] font-mono tracking-tight leading-none mt-1" style={{ color: 'var(--text-muted)' }}>
-            v{__APP_VERSION__}
-          </span>
-        </div>
+  // While an extension's view shows, the toolbar is the brand and a space for
+  // that extension's own controls (specs/extensions).
+  const activeView = useExtensionsStore((s) => s.activeView)
+  const extensionLabel = useExtensionsStore((s) => s.extensions.find((e) => e.name === s.activeView)?.label)
+  const setToolbarSlot = useExtensionsStore((s) => s.setToolbarSlot)
+
+  const toolbarStyle = { background: 'var(--chrome)', borderBottom: '1px solid var(--chrome-border)' }
+  const brand = (
+    // Haute brand column — lowercase "haute" heading taking ~2/3 vertical space, centered version underneath.
+    // Width is pinned to 165px (180px node palette + 1px border - 16px header px-4 padding) so the Source label starts at exactly x + 1 = 181px from the left edge of the page.
+    <div className="h-[56px] w-[165px] flex items-center gap-2 select-none" data-testid="toolbar-brand">
+      <div className="flex flex-col items-center justify-center">
+        <h1 className="text-[24px] font-bold tracking-tight leading-none" style={{ color: 'var(--text-primary)' }}>
+          haute
+        </h1>
+        <span className="text-[10px] font-mono tracking-tight leading-none mt-1" style={{ color: 'var(--text-muted)' }}>
+          v{__APP_VERSION__}
+        </span>
       </div>
+    </div>
+  )
+
+  if (activeView !== PIPELINE_VIEW) {
+    // Keyed so React never reuses these elements for the pipeline toolbar or another
+    // extension's: the extension attaches a shadow root to the slot, which would hide
+    // whatever React later rendered into it.
+    return (
+      <header key={`extension:${activeView}`} role="toolbar" aria-label={`${extensionLabel ?? activeView} toolbar`} className="min-h-11 flex items-center px-4 py-1.5 shrink-0" style={toolbarStyle}>
+        {brand}
+        <div ref={setToolbarSlot} data-testid="toolbar-extension-slot" className="flex-1 min-w-0 self-stretch" />
+      </header>
+    )
+  }
+
+  return (
+    <header key="pipeline" role="toolbar" aria-label="Pipeline toolbar" className="min-h-11 flex flex-wrap items-center gap-y-2 px-4 py-1.5 shrink-0 [&>div]:shrink-0" style={toolbarStyle}>
+      {brand}
       {/* Source and Pipeline column — the Source selector sits on the top row, in
           line with Timing and Undo, and the Pipeline control underneath it.
           The two rows are one grid so the control column takes the width of the

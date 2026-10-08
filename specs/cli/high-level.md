@@ -64,7 +64,9 @@ Out of scope, owned elsewhere:
   or the frontend beside the imported editable Haute source checkout. The working-directory
   frontend has priority. Wheel installs and source checkouts without frontend dependencies use
   production mode with the pre-built static bundle. It binds to `localhost` by default so the
-  browser session works with a bare `haute serve`.
+  browser session works with a bare `haute serve`. Installed
+  [extensions](../extensions/high-level.md) add their views to the same UI, and dev mode's
+  autoreload also watches their packages.
 - `haute deploy [pipeline_file] [--model-name] [--dry-run] [--endpoint-suffix]` validates a pipeline,
   scores its test quotes, and deploys it to the configured target. Non-dry-run deploys are blocked
   outside a recognised CI environment.

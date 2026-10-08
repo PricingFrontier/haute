@@ -34,6 +34,7 @@ from haute.schemas import (
     ExplorePivotMembersResponse,
     ExplorePivotRunResponse,
     ExplorePivotStatusResponse,
+    ExtensionsResponse,
     GitArchiveResponse,
     GitBindStorageResponse,
     GitBranchAwayResponse,
@@ -188,6 +189,7 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         RatingLevelsResponse,
     ),
     "io": (IoCapabilitiesResponse,),
+    "extensions": (ExtensionsResponse,),
     "session": (
         SessionStatusResponse,
         BrowseFilesResponse,

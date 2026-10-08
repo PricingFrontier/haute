@@ -130,8 +130,10 @@ mode rather than serving source through an unrelated generated bundle.
     once both are accepting connections
     (`_open_browser_after_servers_ready` → `_wait_for_servers_then_open_browser` → `_wait_for_tcp_ready`),
     then runs `uvicorn.run(...,
-    reload=True, reload_dirs=[haute package dir])`. The Vite subprocess is terminated in a `finally`
-    block on every uvicorn exit path.
+    reload=True, reload_dirs=[haute package dir, *extension package dirs])`, the extension
+    directories coming from `haute._extensions.extension_package_dirs()` so an edit to an installed
+    [extension](../extensions/low-level.md) reloads the server too. The Vite subprocess is
+    terminated in a `finally` block on every uvicorn exit path.
   - **Prod mode** (`_run_prod_mode`): checks `static_build_ready(STATIC_DIR)`, fails loudly with a
     build-hint message (`_missing_static_message`, which distinguishes a source checkout — "run npm
     build" — from an installed wheel — "reinstall haute") if not ready, schedules a delayed browser

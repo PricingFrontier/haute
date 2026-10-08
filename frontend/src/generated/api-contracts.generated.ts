@@ -858,6 +858,20 @@ export interface ExploreDataQualityIssue {
   label: string;
   severity: 'warning' | 'danger';
 }
+export interface ExtensionsResponse {
+  extensions: ExtensionInfo[];
+}
+/**
+ * An installed extension, as the view switcher lists it (see ``haute._extensions``).
+ */
+export interface ExtensionInfo {
+  api_base: string;
+  detail: string | null;
+  entry_url: string;
+  label: string;
+  name: string;
+  ready: boolean;
+}
 /**
  * Whole-dataset statistics for one factor, or why there are none.
  */

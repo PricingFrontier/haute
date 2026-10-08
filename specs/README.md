@@ -264,6 +264,7 @@ tabular persistence; the removed `dataSource` and `dataSink` types have no compa
 | [assistant](assistant/high-level.md) | In-app AI assistant: agent loop, LLM provider adapters, graph-authoring tools, chat sessions and streaming routes |
 | [deploy](deploy/high-level.md) | Deployment bundling: containerisation, pruning, scoring service, validators |
 | [cli](cli/high-level.md) | `haute` CLI commands: init, run, serve, train, deploy, lint, smoke, status, impact |
+| [extensions](extensions/high-level.md) | Installed packages that add a view beside the pipeline editor (Obverse): entry-point discovery, API and asset mounting, the view switcher and the browser host for the extension's view |
 
 ## Frontend components (`frontend/src/`)
 

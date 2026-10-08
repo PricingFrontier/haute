@@ -68,6 +68,8 @@ import useUIStore from "./stores/useUIStore"
 import useGraphStore from "./stores/useGraphStore"
 import useGitStore from "./stores/useGitStore"
 import useToastStore from "./stores/useToastStore"
+import useExtensionsStore, { PIPELINE_VIEW } from "./stores/useExtensionsStore"
+import ViewSwitcher from "./extensions/ViewSwitcher"
 import useNodeResultsStore from "./stores/useNodeResultsStore"
 import { refreshNodeDataCache } from "./hooks/useNodeDataCache"
 import { stopNodeWork, useNodeWorkRunning } from "./stores/useNodeWorkStore"
@@ -124,6 +126,8 @@ const AssistantPanel = lazy(() => import("./panels/assistant/AssistantPanel"))
 const ComparisonView = lazy(() => import("./components/ComparisonView"))
 const ComparisonInspector = lazy(() => import("./components/ComparisonInspector"))
 const NodeSearch = lazy(() => import("./components/NodeSearch"))
+// An installed extension's view (specs/extensions), loaded when one is first opened.
+const ExtensionView = lazy(() => import("./extensions/ExtensionView"))
 const ModellingPreview = lazy(() => import("./panels/ModellingPreview").then(
   ({ ModellingPreview }) => ({ default: ModellingPreview }),
 ))
@@ -726,6 +730,15 @@ function FlowEditor() {
   // UI store (chrome / layout)
   const paletteOpen = useUIStore((s) => s.paletteOpen)
   const setPaletteOpen = useUIStore((s) => s.setPaletteOpen)
+  // Installed extensions (specs/extensions). While one's view shows, the
+  // pipeline editor stays mounted but hidden, inert and deaf to the keyboard.
+  const extensions = useExtensionsStore((s) => s.extensions)
+  const shownView = useExtensionsStore((s) => s.activeView)
+  const pipelineActive = shownView === PIPELINE_VIEW
+  const activeExtension = extensions.find((extension) => extension.name === shownView)
+  useEffect(() => {
+    void useExtensionsStore.getState().load()
+  }, [])
   const utilityOpen = useUIStore((s) => s.utilityOpen)
   const setUtilityOpen = useUIStore((s) => s.setUtilityOpen)
   const constantsOpen = useUIStore((s) => s.constantsOpen)
@@ -1317,6 +1330,7 @@ function FlowEditor() {
   )
 
   useKeyboardShortcuts({
+    enabled: pipelineActive,
     handleSave: requestSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
     graphRef, clipboard, nodeIdCounter,
     setSelectedNode, setPreviewData: (d: null) => setPreviewData(d),
@@ -1500,6 +1514,14 @@ function FlowEditor() {
     deleteBoundaryEdge,
   })
 
+  // Leaving the pipeline view closes the canvas's floating menus, which render
+  // outside the hidden pipeline region.
+  useEffect(() => useExtensionsStore.subscribe((state, previous) => {
+    if (previous.activeView !== PIPELINE_VIEW || state.activeView === PIPELINE_VIEW) return
+    setContextMenu(null)
+    closeConnectionDropMenu()
+  }), [closeConnectionDropMenu])
+
   // A panel names a node on this canvas (a join its estimate depends on); a
   // missing one is a caller bug, not something to open silently.
   const openCanvasNode = useCallback((nodeId: string) => {
@@ -1667,6 +1689,7 @@ function FlowEditor() {
   // Ctrl/Cmd+Enter presses the open panel's Refresh — the way to calculate
   // when clicking a node no longer does (manual calculation).
   useEffect(() => {
+    if (!pipelineActive) return
     const handler = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey) || e.key !== "Enter") return
       const el = e.target as HTMLElement | null
@@ -1677,7 +1700,7 @@ function FlowEditor() {
     }
     window.addEventListener("keydown", handler)
     return () => window.removeEventListener("keydown", handler)
-  }, [handlePanelPreviewRefresh])
+  }, [handlePanelPreviewRefresh, pipelineActive])
 
   // ---------------------------------------------------------------------------
   // Render
@@ -1747,6 +1770,15 @@ function FlowEditor() {
         sourceSelectionTrusted={documentSourceSelectionTrusted}
       />
 
+      {/* The pipeline editor. While an extension's view shows it stays mounted
+          (live sync, the document, undo history) but invisible and inert, and the
+          extension's view covers it (specs/extensions). */}
+      <div className="flex-1 min-h-0 relative flex flex-col">
+      <div
+        className={pipelineActive ? "flex-1 min-h-0 flex flex-col" : "flex-1 min-h-0 flex flex-col invisible"}
+        inert={pipelineActive ? undefined : true}
+        data-testid="pipeline-view"
+      >
       {loadError || documentSystemFailure ? (
         <PipelineLoadFailureView detail={loadError ?? documentSystemFailure ?? "Unknown failure"} />
       ) : documentLoadStatus === "source_only" ? (
@@ -1796,10 +1828,14 @@ function FlowEditor() {
         </div>
       ) : (
       <div className="flex-1 flex min-h-0">
+        {/* The palette column: the node palette, then the view switcher, which
+            stays usable while the palette is read-only (specs/extensions). */}
+        <div className="flex flex-col shrink-0 min-h-0">
         <nav
           aria-label="Node palette"
           aria-disabled={editingReadOnly}
           inert={editingReadOnly ? true : undefined}
+          className="flex-1 min-h-0"
           style={editingReadOnly ? { opacity: 0.45 } : undefined}
         >
           {paletteOpen ? (
@@ -1821,6 +1857,12 @@ function FlowEditor() {
             </button>
           )}
         </nav>
+        {extensions.length > 0 && (
+          <div style={{ background: "var(--chrome)", borderRight: "1px solid var(--chrome-border)" }}>
+            <ViewSwitcher compact={!paletteOpen} />
+          </div>
+        )}
+        </div>
 
         <main className="flex-1 flex flex-col min-w-0">
           <PipelineRecoveryBanner onSelectElement={handleSelectRecoveryElement} />
@@ -1896,6 +1938,10 @@ function FlowEditor() {
                 selectNodesOnDrag
                 selectionMode={SelectionMode.Partial}
                 selectionKeyCode={null}
+                // React Flow listens on the document, so a hidden canvas would
+                // still delete its selection on Backspace from another view.
+                deleteKeyCode={pipelineActive ? undefined : null}
+                panActivationKeyCode={pipelineActive ? undefined : null}
                 minZoom={0.1}
                 proOptions={proOptions}
                 defaultEdgeOptions={defaultEdgeOptions}
@@ -1968,6 +2014,15 @@ function FlowEditor() {
         />
       </div>
       )}
+      </div>
+      {activeExtension && (
+        <ErrorBoundary name="ExtensionView">
+          <Suspense fallback={null}>
+            <ExtensionView key={activeExtension.name} extension={activeExtension} />
+          </Suspense>
+        </ErrorBoundary>
+      )}
+      </div>
 
       <FlowEditorOverlays
         editingReadOnly={editingReadOnly}

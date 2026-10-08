@@ -150,6 +150,22 @@ class SessionStatusResponse(BaseModel):
     ok: bool = True
 
 
+class ExtensionInfo(BaseModel):
+    """An installed extension, as the view switcher lists it (see ``haute._extensions``)."""
+
+    name: str
+    label: str
+    api_base: str
+    entry_url: str
+    # Whether the browser module exists now; ``detail`` says what to do when it doesn't.
+    ready: bool
+    detail: str | None
+
+
+class ExtensionsResponse(BaseModel):
+    extensions: list[ExtensionInfo]
+
+
 # ---------------------------------------------------------------------------
 # Assistant HTTP request/response models
 # ---------------------------------------------------------------------------

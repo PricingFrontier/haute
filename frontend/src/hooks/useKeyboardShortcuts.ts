@@ -9,6 +9,9 @@ import { requestSubmodelCreation } from "../utils/submodelCreation"
 import type { SharedNodeDeletionResult } from "./useSubmodelBoundaryEditing"
 
 interface KeyboardShortcutsParams {
+  /** False while an installed extension's view shows: then no shortcut is
+   *  registered, so keys pressed in the extension never edit the hidden canvas. */
+  enabled: boolean
   handleSave: () => void
   setNodes: (updater: Node[] | ((nds: Node[]) => Node[])) => void
   setEdges: (updater: Edge[] | ((eds: Edge[]) => Edge[])) => void
@@ -70,6 +73,7 @@ function assertResolvedPasteMatchesCandidate(
 }
 
 export default function useKeyboardShortcuts({
+  enabled,
   handleSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
   graphRef, clipboard, nodeIdCounter,
   setSelectedNode, setLastSelectedId, setPreviewData, clearTrace, closePanel,
@@ -81,6 +85,7 @@ export default function useKeyboardShortcuts({
   const { setShortcutsOpen, setSubmodelDialog, setNodeSearchOpen } = useUIStore()
   const pasteRequestSerialRef = useRef(0)
   useEffect(() => {
+    if (!enabled) return
     const handler = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName
       const el = e.target as HTMLElement
@@ -344,6 +349,7 @@ export default function useKeyboardShortcuts({
     window.addEventListener("keydown", handler)
     return () => window.removeEventListener("keydown", handler)
   }, [
+    enabled,
     handleSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
     graphRef, clipboard, nodeIdCounter,
     setSelectedNode, setLastSelectedId, setPreviewData, clearTrace, closePanel,

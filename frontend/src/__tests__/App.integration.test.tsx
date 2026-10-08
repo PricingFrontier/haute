@@ -44,6 +44,11 @@ import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 // the real module via `typeof import(...)` for fidelity.
 // ═══════════════════════════════════════════════════════════════════════════
 
+// The editor lists installed extensions on start (specs/extensions); none here.
+vi.mock("../api/extensions", () => ({
+  fetchExtensions: vi.fn(() => Promise.resolve({ extensions: [] })),
+}))
+
 vi.mock("../api/client", async () => {
   const actual = await vi.importActual<typeof import("../api/client")>("../api/client")
   const { makeLoadedPipeline } = await import("../testSupport/pipelineDocumentFixture")

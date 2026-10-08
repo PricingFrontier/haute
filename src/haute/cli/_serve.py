@@ -476,6 +476,8 @@ def _run_dev_mode(config: ServeConfig, frontend_dir: Path) -> None:
     """
     import uvicorn
 
+    from haute._extensions import extension_package_dirs
+
     click.echo("[dev] Dev mode: starting Vite dev server + FastAPI backend")
     click.echo(f"  Frontend -> http://{_VITE_HOST}:{_VITE_PORT}  (open this)")
     click.echo(f"  Backend  -> {_http_url(config)}   (API only)")
@@ -494,7 +496,8 @@ def _run_dev_mode(config: ServeConfig, frontend_dir: Path) -> None:
             host=config.host,
             port=config.port,
             reload=True,
-            reload_dirs=[_haute_package_dir()],
+            # Installed extensions' packages too, so editing one reloads the server.
+            reload_dirs=[_haute_package_dir(), *map(str, extension_package_dirs())],
             log_level="warning",
         )
     finally:

@@ -5132,6 +5132,68 @@
       "title": "ExplorePivotValueIdentity",
       "type": "object"
     },
+    "ExtensionInfo": {
+      "description": "An installed extension, as the view switcher lists it (see ``haute._extensions``).",
+      "properties": {
+        "api_base": {
+          "title": "Api Base",
+          "type": "string"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Detail"
+        },
+        "entry_url": {
+          "title": "Entry Url",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "ready": {
+          "title": "Ready",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "label",
+        "api_base",
+        "entry_url",
+        "ready",
+        "detail"
+      ],
+      "title": "ExtensionInfo",
+      "type": "object"
+    },
+    "ExtensionsResponse": {
+      "properties": {
+        "extensions": {
+          "items": {
+            "$ref": "#/$defs/ExtensionInfo"
+          },
+          "title": "Extensions",
+          "type": "array"
+        }
+      },
+      "required": [
+        "extensions"
+      ],
+      "title": "ExtensionsResponse",
+      "type": "object"
+    },
     "FileItem": {
       "properties": {
         "name": {
@@ -13691,6 +13753,9 @@
     "ExplorePivotStatusResponse": {
       "$ref": "#/$defs/ExplorePivotStatusResponse"
     },
+    "ExtensionsResponse": {
+      "$ref": "#/$defs/ExtensionsResponse"
+    },
     "GitArchiveResponse": {
       "$ref": "#/$defs/GitArchiveResponse"
     },
@@ -13955,6 +14020,7 @@
     "BandingStatsResponse",
     "RatingLevelsResponse",
     "IoCapabilitiesResponse",
+    "ExtensionsResponse",
     "SessionStatusResponse",
     "BrowseFilesResponse",
     "ModelFileInspectionResponse",
@@ -13995,6 +14061,9 @@
       "ExplorePivotStatusResponse",
       "ExplorePivotMembersResponse",
       "NodeDataProfileResponse"
+    ],
+    "extensions": [
+      "ExtensionsResponse"
     ],
     "factors": [
       "BandingStatsResponse",

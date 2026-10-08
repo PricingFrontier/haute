@@ -513,6 +513,15 @@ export type {
 } from "../generated/api-contracts.generated"
 
 // ---------------------------------------------------------------------------
+// Installed extensions (GET /api/extensions)
+// ---------------------------------------------------------------------------
+
+export type {
+  ExtensionInfo,
+  ExtensionsResponse,
+} from "../generated/api-contracts.generated"
+
+// ---------------------------------------------------------------------------
 // Cache-inventory contracts (/api/cache)
 // ---------------------------------------------------------------------------
 

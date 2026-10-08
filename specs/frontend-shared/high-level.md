@@ -229,7 +229,9 @@ text labels, zoom in/out, centre/layout, Submodel/Instance selection actions, Ut
 assistant and a Help menu (Documentation, Hotkeys, Report a bug), and the working branch indicator stacked above
 equal-width Save and Commit buttons. The Pipeline control reports the pipeline's live state:
 the calculation mode while the server is reachable, and "Offline" once live sync has lost
-the server. The toolbar carries no unsaved-changes indicator.
+the server. The toolbar carries no unsaved-changes indicator. While an installed
+[extension](../extensions/high-level.md)'s view shows, the toolbar keeps only the brand
+column and gives the rest of its width to a slot the extension renders its own controls into.
 `NodeSearch` is the Ctrl+K command palette, windowed to
 render only visible rows for large graphs; the application loads its module
 only when the palette is opened, so this user-triggered surface is not part

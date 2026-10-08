@@ -156,6 +156,11 @@ vi.mock("../components/NodeSearch", () => ({ default: () => <div data-testid="no
 vi.mock("../components/ErrorBoundary", () => ({
   ErrorBoundary: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
+// The editor lists installed extensions on start (specs/extensions); none here.
+vi.mock("../api/extensions", () => ({
+  fetchExtensions: vi.fn(() => Promise.resolve({ extensions: [] })),
+}))
+
 vi.mock("../api/client", () => ({
   HAUTE_SESSION_EXPIRED_EVENT: "haute:session-expired",
   HAUTE_SESSION_EXPIRED_REASON: "Missing or invalid Haute session token",
