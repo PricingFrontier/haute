@@ -124,6 +124,43 @@ describe("useWorkbenchPreviewStore", () => {
     expect(Object.keys({ [cellKey("t1", 0, "c1")]: "Required" })).toHaveLength(1)
   })
 
+  it("drops an answer that arrives after Clear, or after the view replaced its pricer", async () => {
+    const store = useWorkbenchPreviewStore.getState
+    let answer: (value: PricedSample) => void = () => {}
+    let refuse: (reason: Error) => void = () => {}
+    const pricer = () =>
+      new Promise<PricedSample>((resolve, reject) => {
+        answer = resolve
+        refuse = reject
+      })
+    useWorkbenchPricingStore.setState({ pricer })
+    store().setCell("t1", 0, "c1", "100")
+
+    const first = store().priceQuote()
+    await vi.waitFor(() => expect(store().pricing).toBe(true))
+    store().clear()
+    expect(store().pricing).toBe(false)
+    answer(priced(1))
+    await first
+    expect(store()).toMatchObject({ price: null, error: null, pricing: false })
+
+    store().setCell("t1", 0, "c1", "200")
+    const second = store().priceQuote()
+    await vi.waitFor(() => expect(store().pricing).toBe(true))
+    store().clear()
+    refuse(new Error("late"))
+    await second
+    expect(store()).toMatchObject({ price: null, error: null })
+
+    store().setCell("t1", 0, "c1", "300")
+    const third = store().priceQuote()
+    await vi.waitFor(() => expect(store().pricing).toBe(true))
+    useWorkbenchPricingStore.setState({ pricer: null })
+    answer(priced(3))
+    await third
+    expect(store()).toMatchObject({ price: null, pricing: false })
+  })
+
   it("says why pricing failed, and prices nothing without a pricer, before the form is read, or while a pricing runs", async () => {
     const store = useWorkbenchPreviewStore.getState
     store().setCell("t1", 0, "c1", "100")

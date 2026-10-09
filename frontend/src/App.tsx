@@ -1235,7 +1235,7 @@ function FlowEditor() {
 
   // A Workbench Input and a Workbench Output keep their copies of the workbench's
   // tables current; they are at the top level, so only that level is updated.
-  const { nodeCreated } = useWorkbenchTables({
+  const { nodeCreated, bringUpToDate } = useWorkbenchTables({
     graphRef,
     onUpdateNode,
     editable: !editingReadOnly && viewStack.length === 1,
@@ -1262,17 +1262,21 @@ function FlowEditor() {
   }, [addToast, handleSave, waitForPendingCommits])
 
   // The git flows' save, before a milestone, a move, a branch switch or an
-  // identity retry: the pipeline through the graph-commit fence, then the
-  // workbench's form when it holds unsaved edits or a save the ledger did not
-  // capture. The form store is a lazy chunk, imported here only while the
-  // workbench is enabled and never on start.
+  // identity retry: the workbench's form first, when it holds unsaved edits or
+  // a save the ledger did not capture, then the workbench nodes' copies brought
+  // up to date with it, then the pipeline through the graph-commit fence, so
+  // what is saved runs on the form that was saved. The form store is a lazy
+  // chunk, imported here only while the workbench is enabled and never on start.
   const saveProject = useCallback(async (): Promise<boolean> => {
+    let formSaved = true
+    if (useWorkbenchStore.getState().enabled) {
+      const { default: formStore } = await import("./stores/useWorkbenchFormStore")
+      formSaved = await formStore.getState().flush()
+      await bringUpToDate()
+    }
     const pipelineSaved = await saveWithPendingCommits()
-    if (!useWorkbenchStore.getState().enabled) return pipelineSaved
-    const { default: formStore } = await import("./stores/useWorkbenchFormStore")
-    const formSaved = await formStore.getState().flush()
-    return pipelineSaved && formSaved
-  }, [saveWithPendingCommits])
+    return formSaved && pipelineSaved
+  }, [bringUpToDate, saveWithPendingCommits])
 
   // Flush the editor through the graph-commit fence before opening the
   // milestone modal, so Commit can never capture an older ledger snapshot.

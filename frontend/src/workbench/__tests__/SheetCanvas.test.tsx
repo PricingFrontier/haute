@@ -141,6 +141,14 @@ describe("SheetCanvas", () => {
     expect(screen.getByTestId("sheet")).toHaveStyle({ width: "2080px", transform: "scale(0.45)" })
   })
 
+  it("fits a very wide sheet at the zoom's minimum, never at nothing", () => {
+    loadForm({ ...sheetForm(), pages: [{ id: "p1", title: "Sheet 1", widgets: [{ id: "w", type: "tableInput", x: 0, y: 0, w: 100_000, h: 100, title: "", rows: 3, fields: [] }] }] })
+    render(<SheetCanvas />)
+
+    expect(useWorkbenchViewStore.getState().zoom).toBe(0.25)
+    expect(screen.getByTestId("sheet")).toHaveStyle({ transform: "scale(0.25)" })
+  })
+
   it("in Preview, neither selects nor moves a component, offers no drop, and types into the quote", () => {
     useWorkbenchViewStore.setState({ section: "preview" })
     render(

@@ -49,12 +49,31 @@ describe("useWorkbenchTables", () => {
       enabled: true,
       tables: null,
       refreshTables: vi.fn(() => ++fetches),
+      awaitTables: vi.fn(async () => {}),
     })
   })
 
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+  })
+
+  it("brings the nodes up to date on request once the newest fetch has settled, so a save that follows carries the tables", async () => {
+    let settle: () => void = () => {}
+    useWorkbenchStore.setState({ awaitTables: vi.fn(() => new Promise<void>((resolve) => { settle = resolve })) })
+    const { result } = render()
+    let brought = false
+    const bringing = result.current.bringUpToDate().then(() => {
+      brought = true
+    })
+    await Promise.resolve()
+    expect(brought).toBe(false)
+    expect(onUpdateNode).not.toHaveBeenCalled()
+
+    publish(1, "policy")
+    settle()
+    await bringing
+    expect(updates()).toEqual([["workbench", tables("policy")]])
   })
 
   it("fetches when the workbench is enabled and on each document adoption", () => {

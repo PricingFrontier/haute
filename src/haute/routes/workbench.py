@@ -7,7 +7,8 @@ next request. A bad table or form answers 409 with what to fix
 (``haute.routes._error_handlers``) while the pipeline editor goes on working. A save quotes
 the revision the form was read at and is refused, writing nothing, when the file has
 changed since; a save that lands is captured on the clone's save ledger as the pipeline's
-saves are, and answers what the capture gave.
+saves are, and answers what the capture gave. A save runs under the pipeline save's lock,
+as every write to the project does.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from haute._logging import get_logger
 from haute._workbench_config import WorkbenchConfig, read_workbench_config
 from haute._workbench_form import FormSpec, form_file_revision, read_form_document, write_form
 from haute._workbench_tables import workbench_tables
+from haute.routes._helpers import save_lock
 from haute.routes._save_pipeline import StaleDocumentRevisionError, capture_save_in_ledger
 from haute.routes.json_cache import api_input_schema_error_response
 from haute.schemas import (
@@ -138,7 +140,11 @@ async def put_workbench_form(body: WorkbenchFormSaveRequest) -> WorkbenchFormSav
     """Write the form, unless its file changed since the view read it, and capture the write."""
     config = await _enabled_config()
     try:
-        return await run_in_threadpool(_save_form, config, body)
+        # Under the shared save lock, as the pipeline's save is: two saves never pass the
+        # revision check together, and a capture never races a pipeline save's on the
+        # git index.
+        async with save_lock:
+            return await run_in_threadpool(_save_form, config, body)
     except StaleDocumentRevisionError as exc:
         # The view's form is behind the disk; nothing was written. The detail leads with
         # the same stable code the pipeline save answers, so the client matches one.

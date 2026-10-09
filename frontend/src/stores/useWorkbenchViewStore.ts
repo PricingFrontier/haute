@@ -78,7 +78,9 @@ const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
     const { viewport, pageId } = get()
     const { form } = useWorkbenchFormStore.getState()
     if (viewport === null || form === null) return
-    set({ zoom: zoomToFit(viewport.clientWidth - SHEET_PADDING * 2, activePage(form, pageId).widgets) })
+    // Through the same bounds as the other zoom controls: a very wide sheet fits at the
+    // minimum, never at nothing.
+    get().setZoom(zoomToFit(viewport.clientWidth - SHEET_PADDING * 2, activePage(form, pageId).widgets))
   },
   setCreating: (creating) => set({ creating }),
   setPanelWidth: (panelWidth) => set({ panelWidth }),

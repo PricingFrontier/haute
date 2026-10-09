@@ -1,8 +1,10 @@
 /**
  * Zustand store for the project's workbench (specs/workbench): whether it is enabled
  * (GET /api/workbench) and where its form is, which view the editor shows (the pipeline
- * editor's or the workbench's), and the Workbench Input's tables and sample quote and the
- * Workbench Output's tables from the newest fetch of GET /api/workbench/tables.
+ * editor's or the workbench's), whether the form holds unsaved edits (mirrored from the
+ * form store, a lazy chunk, for the editor's navigation guards), and the Workbench
+ * Input's tables and sample quote and the Workbench Output's tables from the newest fetch
+ * of GET /api/workbench/tables, which the git flows' save can wait for.
  */
 import { create } from "zustand"
 import { apiErrorMessage } from "../api/errors"
@@ -24,6 +26,12 @@ interface WorkbenchState {
   activeView: EditorView
   /** Show a view; the workbench's only while it is enabled. */
   showView: (view: EditorView) => void
+  /**
+   * The form holds unsaved edits: the form store's `dirty`, mirrored here by that store
+   * (a lazy chunk) so the editor's guards against losing edits can read it; false until
+   * the form store is loaded.
+   */
+  formDirty: boolean
   /** The workbench's tables from the newest fetch that succeeded; null until one has. */
   tables: WorkbenchTables | null
   /**
@@ -33,10 +41,14 @@ interface WorkbenchState {
    * dropped, toast and all.
    */
   refreshTables: () => number | null
+  /** Settles once the newest fetch has published or failed; at once while none is in flight. */
+  awaitTables: () => Promise<void>
 }
 
 // Fetches are numbered across the store's life, so a later one always has a larger number.
 let latestFetch = 0
+/** The newest fetch's settlement. */
+let settling: Promise<void> = Promise.resolve()
 
 const useWorkbenchStore = create<WorkbenchState>()((set, get) => ({
   enabled: false,
@@ -55,11 +67,12 @@ const useWorkbenchStore = create<WorkbenchState>()((set, get) => ({
     if (view === "workbench" && !get().enabled) throw new Error("The workbench is not enabled")
     set({ activeView: view })
   },
+  formDirty: false,
   tables: null,
   refreshTables: () => {
     if (!get().enabled) return null
     const fetch = ++latestFetch
-    fetchWorkbenchTables().then(
+    settling = fetchWorkbenchTables().then(
       (response) => {
         if (fetch === latestFetch) {
           set({
@@ -79,6 +92,7 @@ const useWorkbenchStore = create<WorkbenchState>()((set, get) => ({
     )
     return fetch
   },
+  awaitTables: () => settling,
 }))
 
 export default useWorkbenchStore

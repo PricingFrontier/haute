@@ -34,10 +34,14 @@ interface WorkbenchPreviewState {
   /**
    * Check the quote against the columns' rules and, when every cell passes, price it on
    * the pipeline through the pricer the view gave the pricing store; one pricing at a
-   * time, a press meanwhile doing nothing.
+   * time, a press meanwhile doing nothing. An answer that arrives after Clear, or after
+   * the view replaced or dropped its pricer, is nobody's.
    */
   priceQuote: () => Promise<void>
 }
+
+/** The pricing asked for last; an answer to an earlier one is dropped. */
+let asked = 0
 
 const useWorkbenchPreviewStore = create<WorkbenchPreviewState>()((set, get) => ({
   quote: {},
@@ -48,7 +52,10 @@ const useWorkbenchPreviewStore = create<WorkbenchPreviewState>()((set, get) => (
   setCell: (tableId, row, columnId, value) =>
     set((s) => ({ quote: { ...s.quote, [tableId]: withCell(s.quote[tableId] ?? [], row, columnId, value) } })),
   setRows: (rowsByTable) => set((s) => ({ quote: { ...s.quote, ...rowsByTable } })),
-  clear: () => set({ quote: {}, checked: false, price: null, error: null }),
+  clear: () => {
+    asked += 1
+    set({ quote: {}, checked: false, price: null, error: null, pricing: false })
+  },
   priceQuote: async () => {
     const { form, status } = useWorkbenchFormStore.getState()
     const { pricer } = useWorkbenchPricingStore.getState()
@@ -60,14 +67,17 @@ const useWorkbenchPreviewStore = create<WorkbenchPreviewState>()((set, get) => (
       return
     }
     const basis = valuesBasis(form.schema, quote)
+    const attempt = ++asked
     set({ checked: true, pricing: true, error: null })
+    // Cleared meanwhile, or the view left: the answer is nobody's.
+    const current = () => attempt === asked && useWorkbenchPricingStore.getState().pricer === pricer
     try {
       const priced = await priceForm({ ...form, sample: quote }, pricer)
-      set({ price: { basis, ...priced } })
+      if (current()) set({ price: { basis, ...priced } })
     } catch (error: unknown) {
-      set({ price: null, error: `Pricing failed: ${apiErrorMessage(error)}` })
+      if (current()) set({ price: null, error: `Pricing failed: ${apiErrorMessage(error)}` })
     } finally {
-      set({ pricing: false })
+      if (attempt === asked) set({ pricing: false })
     }
   },
 }))

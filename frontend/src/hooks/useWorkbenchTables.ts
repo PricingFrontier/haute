@@ -4,7 +4,7 @@ import type { Edge, Node } from "@xyflow/react"
 import type { OnUpdateConfigResult } from "../panels/editors/_shared"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
-import { WORKBENCH_COPY_PATCHES } from "../utils/workbenchTables"
+import { WORKBENCH_COPY_PATCHES, type WorkbenchTables } from "../utils/workbenchTables"
 import type { GraphCommitController } from "./useGraphCommitController"
 
 export type UseWorkbenchTablesOptions = {
@@ -22,13 +22,14 @@ export type UseWorkbenchTablesOptions = {
  * fetched for: once per node for each fetch, while the document is editable and its top
  * level shows. A graph edit, an undo or a redo never runs it; a node created from the
  * palette is reported through `nodeCreated`, so one made while its tables were being
- * fetched still gets them.
+ * fetched still gets them. `bringUpToDate` waits for the newest fetch and applies it at
+ * once, for a save that must carry the form's tables rather than wait for a render.
  */
 export default function useWorkbenchTables({
   graphRef,
   onUpdateNode,
   editable,
-}: UseWorkbenchTablesOptions): { nodeCreated: (nodeId: string) => void } {
+}: UseWorkbenchTablesOptions): { nodeCreated: (nodeId: string) => void; bringUpToDate: () => Promise<void> } {
   const enabled = useWorkbenchStore((state) => state.enabled)
   const workbench = useWorkbenchStore((state) => state.tables)
   const generation = useDocumentStatusStore((state) => state.executionGeneration)
@@ -46,7 +47,7 @@ export default function useWorkbenchTables({
     if (fetch !== null) adoptionFetch.current = { generation, fetch }
   }, [enabled, generation])
 
-  const apply = useCallback((only: ReadonlySet<string> | null) => {
+  const apply = useCallback((workbench: WorkbenchTables | null, only: ReadonlySet<string> | null) => {
     const adoption = adoptionFetch.current
     if (!editable || workbench === null || adoption === null) return
     if (adoption.generation !== generation || workbench.fetch < adoption.fetch) return
@@ -70,20 +71,26 @@ export default function useWorkbenchTables({
       }
       onUpdateNode(node.id, { ...node.data, config: { ...config, ...patch } }, { isCurrent, onSettled })
     }
-  }, [editable, generation, graphRef, onUpdateNode, workbench])
+  }, [editable, generation, graphRef, onUpdateNode])
 
   useEffect(() => {
-    apply(null)
-  }, [apply])
+    apply(workbench, null)
+  }, [apply, workbench])
 
   useEffect(() => {
     if (created.current.length === 0) return
-    apply(new Set(created.current.splice(0)))
-  }, [apply, creations])
+    apply(workbench, new Set(created.current.splice(0)))
+  }, [apply, workbench, creations])
 
   const nodeCreated = useCallback((nodeId: string) => {
     created.current.push(nodeId)
     setCreations((count) => count + 1)
   }, [])
-  return { nodeCreated }
+  // The fetch the form's save started has settled by the time this resolves, and its
+  // tables are in the nodes, so a pipeline save that follows carries them.
+  const bringUpToDate = useCallback(async () => {
+    await useWorkbenchStore.getState().awaitTables()
+    apply(useWorkbenchStore.getState().tables, null)
+  }, [apply])
+  return { nodeCreated, bringUpToDate }
 }

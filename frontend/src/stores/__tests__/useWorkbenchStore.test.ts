@@ -101,6 +101,27 @@ describe("refreshTables", () => {
     vi.restoreAllMocks()
   })
 
+  it("settles awaitTables once the newest fetch has published or failed, and at once while none is in flight", async () => {
+    await expect(useWorkbenchStore.getState().awaitTables()).resolves.toBeUndefined()
+    const server = heldResponses()
+    useWorkbenchStore.getState().refreshTables()
+    let settled = false
+    const waiting = useWorkbenchStore.getState().awaitTables().then(() => {
+      settled = true
+    })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    server.answer(0, { tables: tables("policy"), sample: {}, response_tables: [] })
+    await waiting
+    expect(useWorkbenchStore.getState().tables?.tables).toEqual(tables("policy"))
+
+    useWorkbenchStore.getState().refreshTables()
+    server.answer(1, { detail: "boom" }, 409)
+    await expect(useWorkbenchStore.getState().awaitTables()).resolves.toBeUndefined()
+    expect(useWorkbenchStore.getState().tables?.tables).toEqual(tables("policy"))
+  })
+
   it("fetches nothing while the workbench is not enabled", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch")
     useWorkbenchStore.setState({ enabled: false })

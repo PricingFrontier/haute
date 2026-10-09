@@ -69,11 +69,15 @@ def write_form(project: Path, spec: dict[str, Any], at: str = "forms/form.json")
     path.write_text(json.dumps(spec), encoding="utf-8")
 
 
+def app() -> FastAPI:
+    application = FastAPI()
+    install_exception_handlers(application)
+    application.include_router(router)
+    return application
+
+
 def client() -> TestClient:
-    app = FastAPI()
-    install_exception_handlers(app)
-    app.include_router(router)
-    return TestClient(app)
+    return TestClient(app())
 
 
 WORKING = "pricing-dev"
@@ -438,3 +442,90 @@ def test_haute_server_answers_the_status_ahead_of_its_404_guard_behind_the_sessi
     # The /api 404 guard would answer {"detail": "No such route: ..."} instead.
     assert answered.status_code == 200
     assert isinstance(answered.json()["enabled"], bool)
+
+
+def test_the_form_s_save_holds_the_shared_save_lock() -> None:
+    """``put_workbench_form`` opens ``async with save_lock``, as the pipeline's save does."""
+    import ast
+
+    from haute.routes import workbench as workbench_module
+
+    tree = ast.parse(Path(workbench_module.__file__).read_text(encoding="utf-8"))
+    route = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "put_workbench_form"
+    )
+    assert any(
+        isinstance(child, ast.AsyncWith)
+        and any(
+            isinstance(item.context_expr, ast.Name) and item.context_expr.id == "save_lock"
+            for item in child.items
+        )
+        for child in ast.walk(route)
+    )
+
+
+async def test_two_saves_against_one_revision_take_turns_and_the_second_is_refused(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two saves quoting the same revision: the lock serialises them, so the second reads
+    the first's revision and is refused, and the file holds the first's form."""
+    import asyncio
+    import threading
+
+    import httpx
+
+    from haute.routes import workbench as route
+
+    enable(project)
+    write_form(project, form(POLICY))
+    reads = 0
+    writes = 0
+    go = threading.Event()
+    read_revision = route.form_file_revision
+    write = route.write_form
+
+    def counted_read(config: Any) -> str | None:
+        nonlocal reads
+        reads += 1
+        return read_revision(config)
+
+    def gated_write(path: Path, spec: Any) -> str:
+        # The first save stalls inside its write until the test lets it go.
+        nonlocal writes
+        writes += 1
+        if writes == 1:
+            go.wait(timeout=5)
+        return write(path, spec)
+
+    monkeypatch.setattr(route, "form_file_revision", counted_read)
+    monkeypatch.setattr(route, "write_form", gated_write)
+    transport = httpx.ASGITransport(app=app())
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        served = (await client.get("/api/workbench/form")).json()
+        reads = 0
+        saves = [
+            {"form": {**served["form"], "name": name}, "base_revision": served["revision"]}
+            for name in ("first", "second")
+        ]
+
+        async def release() -> None:
+            # Once the other save has read the revision too (which the lock never lets it
+            # while the first holds it) or after a moment, let the stalled write go.
+            for _ in range(100):
+                if reads >= 2:
+                    break
+                await asyncio.sleep(0.01)
+            go.set()
+
+        one, other, _ = await asyncio.gather(
+            client.put("/api/workbench/form", json=saves[0]),
+            client.put("/api/workbench/form", json=saves[1]),
+            release(),
+        )
+
+    assert sorted([one.status_code, other.status_code]) == [200, 409]
+    winner = one if one.status_code == 200 else other
+    on_disk = json.loads((project / "forms" / "form.json").read_text(encoding="utf-8"))
+    assert on_disk["name"] == winner.json()["form"]["name"]

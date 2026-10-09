@@ -45,7 +45,12 @@ interface WorkbenchFormState {
    */
   stale: boolean
   saving: boolean
-  /** The last save was written but not captured on the ledger for want of a git identity. */
+  /**
+   * The last save was written but not captured on the ledger, for want of a git identity
+   * or because the capture failed: the next flush saves the form again, unchanged, so a
+   * capture can be made (a new file is otherwise never tracked, and a milestone's sweep
+   * takes tracked files alone).
+   */
   uncaptured: boolean
   /** Read the form, unless it has been. */
   load: () => Promise<void>
@@ -218,7 +223,8 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
             savedForm,
             dirty: serialise(get().form ?? saved.form) !== savedForm,
             stale: false,
-            uncaptured: saved.identity_required,
+            // Every warning on a form save is the capture's: there is nothing else to warn of.
+            uncaptured: saved.identity_required || (saved.git_sha === null && saved.warnings.length > 0),
           })
           addToast("success", `Saved → ${path}`)
           reportSaveCapture(saved)
@@ -243,6 +249,12 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
       return status === "ready" && (dirty || uncaptured) ? get().save() : Promise.resolve(true)
     },
   }
+})
+
+// The editor's guards against losing edits (a branch switch, a move) ask about the form's
+// too: they read the mirror on the eager workbench store, since this store is a lazy chunk.
+useWorkbenchFormStore.subscribe((state, previous) => {
+  if (state.dirty !== previous.dirty) useWorkbenchStore.setState({ formDirty: state.dirty })
 })
 
 // The form follows the pipeline's document: each adoption of one (`executionGeneration`),

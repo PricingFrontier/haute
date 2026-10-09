@@ -99,8 +99,9 @@ another branch's history) never switches the working branch; switching, archivin
 deleting, and restoring do, each behind role-appropriate confirmation (switch has a
 persistable "don't ask again"; delete always confirms and names what it discards;
 archiving the current branch with uncommitted tracked project changes redirects to "commit
-a milestone first" instead of proceeding). A switch or Create & Move that would replace a
-dirty in-memory graph always requires Cancel, Discard, or Save first; the persisted
+a milestone first" instead of proceeding). A switch or Create & Move that would replace
+unsaved edits, in the canvas or the workbench's form, always requires Cancel, Discard, or
+Save first; the persisted
 preference to skip clean switch confirmation never bypasses this dirty-work guard.
 Current-branch archive and delete
 use the same guard before their mutation/reload path, including when the branch also has
@@ -118,8 +119,9 @@ HEAD disagree (the repo was moved outside Haute) and offers three resolutions: r
 the recorded branch, adopt the current one (only if attached and eligible), or defer to the
 branch manager. Detached HEAD is named as detached at its commit, never as a branch called
 `HEAD`. `MoveConfirmModal` gates every move-to-version action (`GitPanel`'s row/lane
-"move to this version" affordance): on a clean canvas it is a single confirm; when the
-canvas has unsaved edits it forces an explicit choice between saving them onto the
+"move to this version" affordance): on a clean project it is a single confirm; when the
+canvas or the workbench's form has unsaved edits it forces an explicit choice between
+saving them onto the
 current branch first or discarding them, because a move is a real checkout that replaces
 the whole working canvas and in-memory-only edits — which never reached disk — would
 otherwise be lost silently. Once a move starts, its modal ignores Cancel, Escape, and

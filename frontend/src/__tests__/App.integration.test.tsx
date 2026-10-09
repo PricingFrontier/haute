@@ -2980,11 +2980,18 @@ describe("App integration - the workbench view (specs/workbench)", () => {
 
     fireEvent.click(await screen.findByTestId("toolbar-save-commit", {}, { timeout: 10_000 }))
 
-    // The form's edits and the pipeline reach the ledger before the milestone is asked for.
+    // The form's edits reach the ledger first, its tables are fetched again for the
+    // workbench nodes, and only then is the pipeline saved and the milestone asked for.
     await waitFor(() => expect(screen.getByTestId("milestone-commit-modal")).toBeInTheDocument())
     expect(workbenchApi.saveWorkbenchForm).toHaveBeenCalledTimes(1)
     expect(vi.mocked(workbenchApi.saveWorkbenchForm).mock.calls[0][0]).toMatchObject({ name: "renamed" })
     expect(api.savePipeline).toHaveBeenCalled()
     expect(useWorkbenchFormStore.getState().dirty).toBe(false)
+    const formSaved = vi.mocked(workbenchApi.saveWorkbenchForm).mock.invocationCallOrder[0]
+    const pipelineSaved = vi.mocked(api.savePipeline).mock.invocationCallOrder[0]
+    const tablesFetched = vi.mocked(workbenchApi.fetchWorkbenchTables).mock.invocationCallOrder.find((order) => order > formSaved)
+    expect(tablesFetched).toBeDefined()
+    expect(formSaved).toBeLessThan(tablesFetched ?? 0)
+    expect(tablesFetched ?? 0).toBeLessThan(pipelineSaved)
   })
 })

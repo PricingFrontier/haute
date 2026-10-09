@@ -85,7 +85,7 @@ function reset(): void {
     saving: false,
     uncaptured: false,
   })
-  useWorkbenchStore.setState({ enabled: true, formPath: "forms/form.json", refreshTables: vi.fn(() => 1) })
+  useWorkbenchStore.setState({ enabled: true, formPath: "forms/form.json", formDirty: false, refreshTables: vi.fn(() => 1) })
   useGitStore.setState({ status: makeGitWorkingBranch({ state: "ready", last_save_sha: null }), modal: null, historyNonce: 0 })
   useToastStore.setState({ toasts: [], _toastCounter: 0 })
   resetIdentityPromptForTests()
@@ -281,6 +281,35 @@ describe("useWorkbenchFormStore", () => {
     expect(api.puts[2]).toEqual({ form: named("boat"), base_revision: "rev-2" })
     expect(store().uncaptured).toBe(false)
     expect(useGitStore.getState().status?.last_save_sha).toBe("ledger-2")
+
+    // A capture that failed leaves the file uncaptured too, until the next flush saves it
+    // again; a save without a working branch has nothing to capture and nothing to retry.
+    api.captureWith({ git_sha: null, warnings: ["Changes saved; version capture failed: no such branch"] })
+    store().change((form) => ({ ...form, name: "van" }))
+    await store().save()
+    expect(store().uncaptured).toBe(true)
+    api.captureWith({ git_sha: "ledger-3" })
+    await expect(store().flush()).resolves.toBe(true)
+    expect(store().uncaptured).toBe(false)
+    api.captureWith({})
+    store().change((form) => ({ ...form, name: "bus" }))
+    await store().save()
+    expect(store().uncaptured).toBe(false)
+  })
+
+  it("mirrors whether the form holds unsaved edits onto the workbench store, for the editor's guards", async () => {
+    server({ form: blank, revision: "rev-0" })
+    const store = useWorkbenchFormStore.getState
+    await store().load()
+    expect(useWorkbenchStore.getState().formDirty).toBe(false)
+
+    store().change((form) => ({ ...form, name: "home" }))
+    expect(useWorkbenchStore.getState().formDirty).toBe(true)
+    await store().save()
+    expect(useWorkbenchStore.getState().formDirty).toBe(false)
+    store().change((form) => ({ ...form, name: "boat" }))
+    store().undo()
+    expect(useWorkbenchStore.getState().formDirty).toBe(false)
   })
 
   it("flushes only what there is to save: unsaved edits, or a save the ledger did not capture", async () => {

@@ -3,6 +3,7 @@ import { render, screen, fireEvent, cleanup, waitFor, act } from "@testing-libra
 import BranchManager from "../BranchManager"
 import useGitStore from "../../stores/useGitStore"
 import useGraphStore from "../../stores/useGraphStore"
+import useWorkbenchStore from "../../stores/useWorkbenchStore"
 
 const mockGetWorkingBranches = vi.fn()
 const mockSetWorkingBranch = vi.fn()
@@ -65,6 +66,7 @@ describe("BranchManager", () => {
     })
     // In-app branch ops record undoable VC entries on the graph store.
     useGraphStore.setState({ undoStack: [], redoStack: [], vcBusy: false, dirty: false })
+    useWorkbenchStore.setState({ formDirty: false })
     mockGetWorkingBranches.mockResolvedValue(listing)
     mockSetWorkingBranch.mockResolvedValue({})
     mockCreateWorkingBranch.mockResolvedValue({ working_branch: "x", moved: false, switched: false, last_save_sha: null })
@@ -158,6 +160,16 @@ describe("BranchManager", () => {
     expect(mockSetWorkingBranch).not.toHaveBeenCalled()
     fireEvent.click(screen.getByTestId("git-navigation-save"))
     await waitFor(() => expect(mockSetWorkingBranch).toHaveBeenCalledWith("experiment", false))
+  })
+
+  it("guards a switch while the workbench's form has unsaved edits, as it guards the canvas", async () => {
+    useWorkbenchStore.setState({ formDirty: true })
+    render(<BranchManager />)
+    await waitFor(() => expect(screen.getByTestId("branch-manager-switch")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("branch-manager-switch"))
+    fireEvent.click(await screen.findByTestId("branch-manager-confirm-switch-go"))
+    expect(await screen.findByTestId("git-navigation-confirm")).toBeInTheDocument()
+    expect(mockSetWorkingBranch).not.toHaveBeenCalled()
   })
 
   it("does not let the skip-switch-confirm preference bypass the dirty guard", async () => {

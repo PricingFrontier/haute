@@ -115,11 +115,14 @@ Out of scope:
   holds it now and the file's `revision`, the content hash of its bytes: `null` while the
   file does not exist, when the form is the blank one. `PUT /api/workbench/form` takes the
   whole form and the `base_revision` it was read at, writes the file (every field, in its
-  canonical spelling) and answers the form with its new revision. The written file is one
+  canonical spelling) under the pipeline save's lock, as every write to the project is, so
+  two saves never pass the revision check together, and answers the form with its new
+  revision. The written file is one
   save on the clone's save ledger, captured as the pipeline's save captures the files it
   wrote and through the same capture: no working branch, no capture; a missing git
   identity leaves the file uncaptured and is reported for the editor to ask for; a capture
-  that fails is a warning. The response says what the capture gave (`git_sha`, `warnings`
+  that fails is a warning, and leaves the file uncaptured too. The response says what the
+  capture gave (`git_sha`, `warnings`
   and `identity_required`, as the pipeline save's response has them), and from its first
   captured save on the file is tracked, so a milestone's sweep takes an edit made to it by
   hand. A file whose revision is no longer `base_revision`, edited by hand or by a branch
@@ -141,10 +144,14 @@ Out of scope:
   focused field's edit included, and the save is reported as the pipeline's is: the ledger
   commit on the branch indicator, each warning in a toast of its own, and the git-identity
   prompt when the capture waits on one, once per session. Commit runs the project's
-  milestone flow, the same from either toolbar: the pipeline is saved, the form too when
-  it holds unsaved edits or a save the ledger did not capture, and then the milestone is
-  asked for; the identity prompt's retry, a move's Save first and the Git panel's save
-  before a switch save the project the same way. The Git and Assistant panels open beside
+  milestone flow, the same from either toolbar: the form is saved first when it holds
+  unsaved edits or a save the ledger did not capture (for want of an identity, or because
+  the capture failed), the Workbench Input's and Workbench Output's copies follow it, and
+  then the pipeline is saved and the milestone asked for, so what the milestone records
+  runs on the form it records; the identity prompt's retry, a move's Save first and the
+  Git panel's save before a switch save the project the same way. A move, a branch switch,
+  an archive or a delete that would replace the working tree asks about unsaved edits in
+  the form as it asks about the canvas. The Git and Assistant panels open beside
   the view, in the properties panel's place. The Workbench Input's and Workbench Output's
   panels offer "Edit in Workbench", which shows the view. The view reads the form when it
   first shows and keeps it, with its unsaved edits and history, across a trip to the
@@ -269,7 +276,8 @@ Out of scope:
   editor with the quote in the sample's place, and every output column shows its value, a
   Collection's its table's one row and a Table's the row keyed like each grid row, dimmed
   once the quote changes until Price again; a pricing that fails shows its reason in the
-  toolbar. Clear, after a confirmation, empties the quote, its marks and its price.
+  toolbar. Clear, after a confirmation, empties the quote, its marks and its price, and an
+  answer to a pricing still on its way is dropped, as one is once the view has left.
   Ctrl/Cmd+S still saves the form in Preview and Ctrl/Cmd+1 fits the sheet; the sheet's
   editing keys and undo do nothing.
 - **Saved.** A successful save adopts the file's new revision and fetches the tables
@@ -490,7 +498,9 @@ Out of scope:
   only tracked files, and the form is tracked from its first captured save, so a hand edit
   reaches the milestone without the view's help. Commit saves the form only when there is
   something to save, unsaved edits or an uncaptured save, so a milestone from the pipeline
-  editor costs the form no request and no toast while it is as saved.
+  editor costs the form no request and no toast while it is as saved. It saves the form
+  before the pipeline and lets the nodes' copies follow in between, so a milestone records
+  a pipeline that runs on the form it records.
 - **The blank form is a form.** A project whose workbench was enabled by hand has no file
   yet, and the view is where its first form is made, so an absent file reads as the blank
   form with no revision rather than as an error, and the first save creates it.
@@ -600,6 +610,9 @@ Out of scope:
   takes `forms/` with the pipeline's files; a form save is one save on the clone's ledger
   through the pipeline save's capture, reported in the editor through the shared
   save-capture report, and a milestone's sweep takes the tracked form.
+- [frontend-git-ui](../frontend-git-ui/high-level.md): the navigation guards (a move, a
+  switch, an archive, a delete) ask about the form's unsaved edits through the workbench
+  store's mirror of them, and the Git panel's save before a switch is the project's save.
 - [sandbox-security](../sandbox-security/high-level.md): the local Host, Origin and session
   middleware gate the workbench routes.
 - [frontend-shared](../frontend-shared/high-level.md): the API client validates the three
@@ -654,7 +667,9 @@ Out of scope:
   "stale_document_revision: The workbench's form changed on disk after the workbench read
   it. Reload the workbench before saving." when the file's revision is not the
   `base_revision` quoted (a file that appeared since a first save included), writing
-  nothing; and FastAPI's 422 for a body that is not a form, as any typed body answers. The
+  nothing; and FastAPI's 422 for a body that is not a form, as any typed body answers.
+  Saves take turns under the pipeline save's lock: of two quoting one revision, the second
+  finds the first's and is refused. The
   view reports a stale refusal in a toast and a banner, keeping the edits until Reload, and
   any other failed save in one error toast naming the cause. A save that lands but whose
   capture failed or was skipped answers 200 with the warning, as the pipeline's save does;
@@ -664,7 +679,8 @@ Out of scope:
 - A sheet's components are deleted with it, after a confirmation; the last sheet cannot
   be removed, and the view never offers to. A layout value outside its range (a Table's
   rows 1 to 50, a Collection's columns 1 to 12) is refused at the field, which says the
-  range. A component dropped outside the sheet's viewport is not added.
+  range. A component dropped outside the sheet's viewport is not added. Fit never takes
+  the zoom below its minimum: a sheet too wide to fit at 25% fits at 25%.
 - `POST /api/workbench/tables` answers 404 while the workbench is not enabled, the
   structured 422 for tables the Quote Input's rules refuse and FastAPI's 422 for a body
   that is not a form; it writes nothing. A pricing that fails for any reason, a pipeline
