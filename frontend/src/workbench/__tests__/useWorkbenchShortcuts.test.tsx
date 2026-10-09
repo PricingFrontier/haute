@@ -2,7 +2,7 @@
  * The view's shortcuts on the sheets (specs/workbench): Ctrl+1 fits the sheet, and with a
  * component selected Escape deselects, Delete removes, Ctrl+D duplicates and the arrows
  * nudge as one undo step per burst; none of it from a field or a select, nor on the
- * schema section.
+ * schema section, nor in Preview, where only Ctrl+1 applies.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { cleanup, renderHook } from "@testing-library/react"
@@ -82,5 +82,23 @@ describe("useWorkbenchShortcuts on the sheets", () => {
     key({ key: "Delete" })
     key({ key: "d", ctrlKey: true })
     expect(widgets()).toHaveLength(2)
+  })
+
+  it("in Preview, fits the sheet on Ctrl+1 but neither edits the sheet nor undoes", () => {
+    const fitZoom = vi.fn()
+    const undo = vi.fn()
+    useWorkbenchViewStore.setState({ section: "preview", fitZoom })
+    useWorkbenchFormStore.setState({ undo })
+
+    key({ key: "1", ctrlKey: true })
+    key({ key: "Delete" })
+    key({ key: "d", ctrlKey: true })
+    key({ key: "ArrowRight" })
+    key({ key: "z", ctrlKey: true })
+
+    expect(fitZoom).toHaveBeenCalledTimes(1)
+    expect(widgets()).toHaveLength(2)
+    expect(widgets()[0]).toMatchObject({ x: 16, y: 16 })
+    expect(undo).not.toHaveBeenCalled()
   })
 })

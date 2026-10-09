@@ -1,16 +1,21 @@
 /**
- * A component's cells while building (specs/workbench): the sample typed into a
- * Collection's boxes and a Table's grid, rows added and deleted across the tables a grid
- * shows, and an output box showing what pricing the sample gave, dimmed once the sample
- * has moved on.
+ * A component's cells (specs/workbench): the sample typed into a Collection's boxes and a
+ * Table's grid while building, rows added and deleted across the tables a grid shows,
+ * an output box showing what pricing the sample gave, dimmed once the sample has moved
+ * on, a Table's output columns matched to its rows by key, and in Preview the quote
+ * typed apart from the sample with the cells that break their column's rules marked.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
+import type { ReactNode } from "react"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore from "../../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
+import { valuesBasis } from "../../utils/sheetValues"
 import { pricingBasis, shownFields, toggleField } from "../../utils/workbenchForm"
 import SheetCanvas from "../SheetCanvas"
+import { SheetValuesContext, usePreviewValues, useSampleValues } from "../useSheetValues"
 import WidgetBody from "../WidgetBody"
 import { currentForm, loadForm, releasePointer, sheetForm, stubLayout } from "./fixtures"
 
@@ -20,9 +25,21 @@ const widget = (id: string) => {
   return found
 }
 
-function renderBody(id: string) {
-  const form = currentForm()
-  return render(<WidgetBody widget={widget(id)} fields={shownFields(form, widget(id))} />)
+/** The sheet's values around a component: the sample, or the quote in Preview. */
+function OnSheet({ preview = false, children }: { preview?: boolean; children: ReactNode }) {
+  const sample = useSampleValues()
+  const quote = usePreviewValues()
+  return <SheetValuesContext value={preview ? quote : sample}>{children}</SheetValuesContext>
+}
+
+const body = (id: string, preview = false) => (
+  <OnSheet preview={preview}>
+    <WidgetBody widget={widget(id)} fields={shownFields(currentForm(), widget(id))} />
+  </OnSheet>
+)
+
+function renderBody(id: string, preview = false) {
+  return render(body(id, preview))
 }
 
 describe("WidgetBody", () => {
@@ -30,6 +47,7 @@ describe("WidgetBody", () => {
     stubLayout()
     loadForm()
     useWorkbenchPricingStore.setState({ price: null, error: null })
+    useWorkbenchPreviewStore.setState({ quote: {}, checked: false, price: null, error: null, pricing: false })
   })
 
   afterEach(() => {
@@ -82,20 +100,83 @@ describe("WidgetBody", () => {
     const box = () => screen.getByTestId("priced-premiums:premiums.premium")
     expect(box()).toHaveTextContent("—")
 
-    useWorkbenchPricingStore.setState({ price: { basis: pricingBasis(form), tables: { premiums: [{ premium: 1234.5 }] } } })
-    rerender(<WidgetBody widget={widget("w_boxes")} fields={shownFields(currentForm(), widget("w_boxes"))} />)
+    useWorkbenchPricingStore.setState({ price: { basis: pricingBasis(form), sample: {}, tables: { premiums: [{ premium: 1234.5 }] } } })
+    rerender(body("w_boxes"))
     expect(box()).toHaveTextContent("1,234.5")
     expect(box()).not.toHaveAttribute("data-stale")
 
     fireEvent.change(screen.getByRole("combobox", { name: "State" }), { target: { value: "CA" } })
-    rerender(<WidgetBody widget={widget("w_boxes")} fields={shownFields(currentForm(), widget("w_boxes"))} />)
+    rerender(body("w_boxes"))
     expect(box()).toHaveAttribute("data-stale", "true")
     expect(box()).toHaveStyle({ opacity: "0.5" })
 
-    useWorkbenchPricingStore.setState({ price: { basis: pricingBasis(currentForm()), tables: { premiums: [{ premium: null }] } } })
-    rerender(<WidgetBody widget={widget("w_boxes")} fields={shownFields(currentForm(), widget("w_boxes"))} />)
+    useWorkbenchPricingStore.setState({ price: { basis: pricingBasis(currentForm()), sample: {}, tables: { premiums: [{ premium: null }] } } })
+    rerender(body("w_boxes"))
     expect(box()).toHaveTextContent("—")
     expect(box()).not.toHaveAttribute("data-stale")
+  })
+
+  it("shows a Table's output columns matched to its rows by key, as the server typed the keys", () => {
+    const form = toggleField(sheetForm(), "w_grid", { table: "premiums", column: "premiums.premium" })
+    form.sample = { equipment: [{ "equipment.item": "Crane" }, {}, { "equipment.item": "Paver" }] }
+    loadForm(form)
+    useWorkbenchPricingStore.setState({
+      price: {
+        basis: pricingBasis(form),
+        sample: { equipment: [{ item: "Crane" }, { item: "Paver" }] },
+        tables: { premiums: [{ item: "Paver", premium: 20 }, { item: "Crane", premium: 10 }] },
+      },
+    })
+    renderBody("w_grid")
+    const cell = (row: number) => screen.getByTestId(`priced-premiums:premiums.premium-${row}`)
+
+    expect(cell(1)).toHaveTextContent("10")
+    expect(cell(2)).toHaveTextContent("—")
+    expect(cell(3)).toHaveTextContent("20")
+    expect(cell(1)).not.toHaveAttribute("data-stale")
+
+    // Typed since: the answer is for other values, dimmed, until the next pricing lines
+    // the rows up again.
+    const item = screen.getByRole("textbox", { name: "Item row 2" })
+    fireEvent.change(item, { target: { value: "Dozer" } })
+    fireEvent.keyDown(item, { key: "Enter" })
+    cleanup()
+    renderBody("w_grid")
+    expect(cell(1)).toHaveAttribute("data-stale", "true")
+    expect(cell(2)).toHaveAttribute("data-stale", "true")
+    expect(cell(3)).toHaveTextContent("—")
+  })
+
+  it("in Preview, types the quote apart from the sample, and marks the cells that break their column's rules once checked", () => {
+    useWorkbenchViewStore.setState({ section: "preview" })
+    const { rerender } = renderBody("w_boxes", true)
+
+    fireEvent.change(screen.getByRole("combobox", { name: "State" }), { target: { value: "NY" } })
+    expect(useWorkbenchPreviewStore.getState().quote).toEqual({ policy: [{ "policy.state": "NY" }] })
+    expect(currentForm().sample).toEqual({})
+    expect(useWorkbenchFormStore.getState().undoStack).toEqual([])
+    expect(screen.getByRole("combobox", { name: "State" })).not.toHaveAttribute("aria-invalid")
+
+    // Price pressed with the state blank: the required cell is marked, and cleared as soon as it is filled.
+    useWorkbenchPreviewStore.setState({ quote: {}, checked: true })
+    rerender(body("w_boxes", true))
+    const state = screen.getByRole("combobox", { name: "State" })
+    expect(state).toHaveAttribute("aria-invalid", "true")
+    expect(state).toHaveAttribute("title", "Required")
+    fireEvent.change(state, { target: { value: "CA" } })
+    rerender(body("w_boxes", true))
+    expect(screen.getByRole("combobox", { name: "State" })).not.toHaveAttribute("aria-invalid")
+
+    // An output box shows the quote's price, not the sample's.
+    loadForm(toggleField(sheetForm(), "w_boxes", { table: "premiums", column: "premiums.premium" }))
+    useWorkbenchPricingStore.setState({ price: { basis: pricingBasis(currentForm()), sample: {}, tables: { premiums: [{ premium: 1 }] } } })
+    useWorkbenchPreviewStore.setState({
+      quote: { policy: [{ "policy.state": "CA" }] },
+      price: { basis: valuesBasis(currentForm().schema, { policy: [{ "policy.state": "CA" }] }), sample: {}, tables: { premiums: [{ premium: 777 }] } },
+    })
+    cleanup()
+    renderBody("w_boxes", true)
+    expect(screen.getByTestId("priced-premiums:premiums.premium")).toHaveTextContent("777")
   })
 
   it("selects the component when a cell is pressed, without moving it", () => {

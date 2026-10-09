@@ -34,7 +34,6 @@ or maintenance issue; `P3` opportunistic work.
 | [Server API](server-api.md) | Domain errors, generated browser contract | `API-R02` |
 | [Submodels](submodels.md) | Submodels registered by import, one reuse mechanism | `SUB-R02` |
 | [t-boost](t-boost.md) | What rating-table models make possible: cell-level holdout A/E, unfolding into rating steps, model comparison with premium attribution, measured analyst adjustments (all awaiting a decision) | `TBOOST-02` |
-| [Workbench](workbench.md) | The rest of the Workbench view inside Haute: Preview | `WB-06` |
 
 ## Delivery plan — 24 September 2026
 

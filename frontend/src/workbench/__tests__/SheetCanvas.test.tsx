@@ -1,11 +1,13 @@
 /**
  * The sheet (specs/workbench): components drawn where the form places them, selected by
  * a press, moved and resized by drags that snap and undo as one step, a component dragged
- * out of the palette and dropped on the sheet, and the sheet fitted to its viewport.
+ * out of the palette and dropped on the sheet, the sheet fitted to its viewport, and in
+ * Preview the components left where they are with their cells taking the quote.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import SheetCanvas from "../SheetCanvas"
 import WorkbenchPalette from "../WorkbenchPalette"
@@ -18,6 +20,7 @@ describe("SheetCanvas", () => {
   beforeEach(() => {
     stubLayout()
     loadForm()
+    useWorkbenchPreviewStore.setState({ quote: {}, checked: false, price: null })
   })
 
   afterEach(() => {
@@ -136,5 +139,36 @@ describe("SheetCanvas", () => {
     // 1000 wide less the padding, over the component's reach plus the edge, in steps of 5%.
     expect(useWorkbenchViewStore.getState().zoom).toBe(0.45)
     expect(screen.getByTestId("sheet")).toHaveStyle({ width: "2080px", transform: "scale(0.45)" })
+  })
+
+  it("in Preview, neither selects nor moves a component, offers no drop, and types into the quote", () => {
+    useWorkbenchViewStore.setState({ section: "preview" })
+    render(
+      <>
+        <WorkbenchPalette />
+        <SheetCanvas />
+      </>,
+    )
+
+    fireEvent.pointerDown(frame("w_grid"), { button: 0 })
+    expect(useWorkbenchViewStore.getState().selectedId).toBeNull()
+    expect(frame("w_grid")).not.toHaveAttribute("data-selected")
+    expect(frame("w_grid").querySelectorAll("[data-handle]")).toHaveLength(0)
+    drag(frame("w_boxes"), [100, 100], [153, 121])
+    expect(widget("w_boxes")).toMatchObject({ x: 16, y: 16 })
+    expect(useWorkbenchFormStore.getState().undoStack).toEqual([])
+
+    const item = screen.getByTestId("palette-item-collection")
+    expect(item).toHaveAttribute("aria-disabled", "true")
+    act(() => {
+      item.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 10, clientY: 10 }))
+      window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 300, clientY: 500 }))
+    })
+    expect(screen.queryByTestId("drop-ghost")).not.toBeInTheDocument()
+    expect(useWorkbenchViewStore.getState().creating).toBeNull()
+
+    fireEvent.change(within(frame("w_boxes")).getByRole("combobox", { name: "State" }), { target: { value: "NY" } })
+    expect(useWorkbenchPreviewStore.getState().quote).toEqual({ policy: [{ "policy.state": "NY" }] })
+    expect(currentForm().sample).toEqual({})
   })
 })

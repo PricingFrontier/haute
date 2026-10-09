@@ -16,25 +16,28 @@
 | `frontend/src/panels/editors/WorkbenchInputEditor.tsx` | The Workbench Input's panel, which `frontend/src/panels/NodeConfigEditor.tsx` renders for a Workbench Input: the tables read-only with each label's `apiInputLabelIssue`, a note on what previews run on, chosen by whether the config's sample is a non-empty object, a note while the workbench is not enabled, and one while a submodel is open (`insideSubmodel`, passed down from `frontend/src/panels/NodePanel.tsx`). It exports `WorkbenchTable`, one table read-only, and `WorkbenchTablesHeader`, the section's title, its "Edit in Workbench" button while the workbench is enabled (`showView`) and its notes, which the Workbench Output's panel shares, and `WORKBENCH_DISABLED_NOTE`, the note's one wording. |
 | `frontend/src/panels/editors/WorkbenchOutputEditor.tsx` | The Workbench Output's panel, which `frontend/src/panels/NodeConfigEditor.tsx` renders for a Workbench Output: under `WorkbenchTablesHeader`, each table with its label's `apiInputLabelIssue`, the node connected to its port (from the `targetHandle` of the panel's input sources) or "Not connected", and a row per column with a select of the connected frame's columns (the input source's `columns`) that fills it, chosen by `mappedSource`, through `onUpdate` with the new `mapping`. |
 | `frontend/src/stores/useWorkbenchFormStore.ts` | `useWorkbenchFormStore`, the form while the view edits it: `form` and `revision` as read (`load`, once; `reload`, again, dropping edits and history) through `fetchWorkbenchForm`, with `status` and `loadError`; `change` (an edit that undo reverses, on the graph store's `appendHistoryEntry` and its history cap), `undo`, `redo`, `undoStack`, `redoStack`, `savedForm` and `dirty`; `save`, which takes its turn after the saves and syncs before it, writes the form as it stands through `saveWorkbenchForm` with the revision, adopts the new revision, toasts "Saved → <form>", reports the capture through `reportSaveCapture` (`uncaptured` set while the capture waited on a git identity) and fetches the tables again through `useWorkbenchStore.refreshTables`; `flush`, the git flows' save: `save` while the form holds unsaved edits or an uncaptured save, else true without a request; `sync`, run after each adoption of the pipeline's document (`executionGeneration`, subscribed at module load) and after any save in flight: the file read again through `fetchWorkbenchForm`, nothing at the same revision, a changed file adopted with history dropped while the form is as saved, else `stale` set, and a failed read one error toast; `stale`, set by a save refused as `stale_document_revision` (one error toast, the edits kept) or by a sync that found the file changed under unsaved edits, and cleared by a reload; `saving`; and the gesture setters `pushSnapshot` (the form recorded for undo, the redo stack cleared) and `setFormRaw` (the form replaced without history, `dirty` recomputed), so a drag is one undo step. |
-| `frontend/src/stores/useWorkbenchViewStore.ts` | `useWorkbenchViewStore`, the view's own state, neither saved nor undone: `section` (`sheets` or `schema`), `pageId` (null until chosen; `activePage` reads the form's first), `selectedId`, `zoom` (25% to 200%, `ZOOM_STEP` 10%), `creating` (a component being dragged out of the palette, with the pointer), `panelWidth`, and the `sheet` and `viewport` elements; `showSection`, `showPage` (the sheets section, nothing selected), `select`, `setZoom`, `zoomBy`, `fitZoom` (the viewport's width less the padding over the sheet's reach, through `sheetGeometry.fitZoom`), `setCreating`, `setPanelWidth`, `setSheet` and `setViewport`. |
-| `frontend/src/stores/useWorkbenchPricingStore.ts` | `useWorkbenchPricingStore`, the sample priced live: `pricer` (the view host's `Pricer`, null while the view is away), `price` (a `SamplePrice`: the tables and the basis priced for), `error` (why the last pricing failed, until one succeeds) and `pricing`; `setPricer` (null also drops a scheduled pricing), `schedule` (`PRICING_DELAY_MS` after the last call) and `priceNow`, which runs one pricing at a time and once more for a request made meanwhile: the form's tables through `fetchWorkbenchFormTables`, then the pricer, an answer after the pricer changed dropped. |
+| `frontend/src/stores/useWorkbenchViewStore.ts` | `useWorkbenchViewStore`, the view's own state, neither saved nor undone: `section` (`sheets` or `schema` while building, or `preview`), `pageId` (null until chosen; `activePage` reads the form's first), `selectedId`, `zoom` (25% to 200%, `ZOOM_STEP` 10%), `creating` (a component being dragged out of the palette, with the pointer), `panelWidth`, and the `sheet` and `viewport` elements; `showSection`, `showPage` (the sheets section, or Preview as before, nothing selected), `select`, `setZoom`, `zoomBy`, `fitZoom` (the viewport's width less the padding over the sheet's reach, through `sheetGeometry.fitZoom`), `setCreating`, `setPanelWidth`, `setSheet` and `setViewport`. |
+| `frontend/src/stores/useWorkbenchPricingStore.ts` | `useWorkbenchPricingStore`, the sample priced live: `pricer` (the view host's `Pricer`, null while the view is away), `price` (a `SamplePrice`: the tables, the values as the server typed them and the basis priced for), `error` (why the last pricing failed, until one succeeds) and `pricing`; `setPricer` (null also drops a scheduled pricing), `schedule` (`PRICING_DELAY_MS` after the last call) and `priceNow`, which runs one pricing at a time and once more for a request made meanwhile, an answer after the pricer changed dropped. `priceForm(form, pricer)`, the pricing itself (the form's tables through `fetchWorkbenchFormTables`, then the pricer, answering the tables with the typed sample as `PricedValues`), is Preview's too. |
+| `frontend/src/stores/useWorkbenchPreviewStore.ts` | `useWorkbenchPreviewStore`, Preview's quote, apart from the sample and never saved or undone: `quote` (rows by table id, as typed), `checked` (Price has been pressed, so the cells that break a rule are marked), `price` (a `SamplePrice` for the quote), `error` (why there is no price, as the toolbar says it) and `pricing`; `setCell` (`withCell`), `setRows`, `clear`, and `priceQuote`, which does nothing while a pricing runs, the form is not read or the view has given no pricer, else checks `quoteProblems` (any: `checked` set, `error` "N cells need attention", nothing sent) and prices through `priceForm` with the quote in the sample's place, keeping the price with `valuesBasis` of the schema and the quote, or "Pricing failed: …". |
 | `frontend/src/workbench/priceSample.ts` | `priceSample(graph, workbench, source)`: the document's top-level nodes patched through `WORKBENCH_COPY_PATCHES` with the form's tables, sample and response tables, the Workbench Output found (none: an error naming what to add), and each of its `workbenchOutputTableLabels` previewed through `previewNode` with `portLabel`, a failure rejecting with the server's reason or the preview's error; the document itself untouched. |
 | `frontend/src/utils/sheetGeometry.ts` | Placing components on a sheet, in unzoomed pixels: `GRID` (8), `snap`, `moveRect` (snapped, kept off the top and left edges), `resizeRect` (by a `Handle`, the opposite edges kept, no smaller than a minimum), `placeAt`, `nextFreeSpot`, `contains`, `contentRight`, `sheetWidth` (the viewport's at the zoom, or wider to hold the components plus `SHEET_EDGE`), `sheetHeight` (at least `MIN_SHEET_HEIGHT`, with room below the lowest component), `fitZoom` (in steps of 5%, never past 100%), `SHEET_PADDING` and `HANDLES`. |
-| `frontend/src/utils/workbenchForm.ts` | Pure operations on the form, each returning a new form: `newId`, `uniqueName`, `readableName` and `allWidgets`; the sheets, `createPage` (named in turn), `addPage`, `renamePage` and `removePage` (never the last); the components, `findWidget`, `createWidget` (720 wide, a Table 200 high with 3 rows or a Collection 120 high with 3 columns, no fields), `addWidget`, `updateWidget` (a `WidgetPatch`, `rows` refused on a Collection and `columns` on a Table), `removeWidget` and `duplicateWidget` (16px below and to the right, a new id); what they show, `rowsShown`, `tableGrain`, `toggleField`, `moveField` and `shownFields` (each field with its column, or null); `widgetName` and `widgetProblems`, what stops a component showing what it should (no fields, a column gone, a table of the other kind, tables whose rows do not line up), each a `WidgetProblem` naming its component; the sample, `withCell`, `withSampleCell` (one cell, empty rows added up to it) and `withSampleRows` (several tables' rows as one edit); and `pricingBasis`, the schema and the sample as one string; `createSchemaTable`, `createSchemaColumn` and `createIndexColumn` (`row_number`, an Integer, `index`); `addSchemaTable`, `updateSchemaTable`, `removeSchemaTable` (its columns taken out of the widgets that show them, its rows out of the sample), `setSchemaTableRows` (keys cleared for one row), `addSchemaColumn` (at an index), `moveSchemaColumn`, `updateSchemaColumn` and `removeSchemaColumn` (taken out of the widgets and the sample); `fieldUses` and `fieldColumn`; and `schemaProblems`, what would stop the schema being the pipeline's tables, each a `SchemaProblem` naming its table: a table's name through `apiInputLabelIssue` with the document's reserved labels, a column's name an identifier unique in its table, a many-row table's key, and an input column's range and allowed values. `Widget` and `ColumnType` are derived from the generated form types. |
+| `frontend/src/utils/workbenchForm.ts` | Pure operations on the form, each returning a new form: `newId`, `uniqueName`, `readableName` and `allWidgets`; the sheets, `createPage` (named in turn), `addPage`, `renamePage` and `removePage` (never the last); the components, `findWidget`, `createWidget` (720 wide, a Table 200 high with 3 rows or a Collection 120 high with 3 columns, no fields), `addWidget`, `updateWidget` (a `WidgetPatch`, `rows` refused on a Collection and `columns` on a Table), `removeWidget` and `duplicateWidget` (16px below and to the right, a new id); what they show, `rowsShown`, `tableGrain`, `toggleField`, `moveField` and `shownFields` (each field with its column, or null); `widgetName` and `widgetProblems`, what stops a component showing what it should (no fields, a column gone, a table of the other kind, tables whose rows do not line up), each a `WidgetProblem` naming its component; the sample, `withCell`, `withSampleCell` (one cell, empty rows added up to it) and `withSampleRows` (several tables' rows as one edit); and `pricingBasis`, the schema and the sample as one string (`valuesBasis` of them, memoised per form); `createSchemaTable`, `createSchemaColumn` and `createIndexColumn` (`row_number`, an Integer, `index`); `addSchemaTable`, `updateSchemaTable`, `removeSchemaTable` (its columns taken out of the widgets that show them, its rows out of the sample), `setSchemaTableRows` (keys cleared for one row), `addSchemaColumn` (at an index), `moveSchemaColumn`, `updateSchemaColumn` and `removeSchemaColumn` (taken out of the widgets and the sample); `fieldUses` and `fieldColumn`; and `schemaProblems`, what would stop the schema being the pipeline's tables, each a `SchemaProblem` naming its table: a table's name through `apiInputLabelIssue` with the document's reserved labels, a column's name an identifier unique in its table, a many-row table's key, and an input column's range and allowed values. `Widget` and `ColumnType` are derived from the generated form types. |
+| `frontend/src/utils/sheetValues.ts` | The values typed into a sheet, the sample or a quote (`RowsByTable`): `cellKey`; `filled` and `rowFilled`, a value and a row as the server counts them (a tick or text other than blank, in any column but the index); `parseTypedNumber`, a number as the server types it, a currency sign, separators and spaces allowed; `cellProblem`, what breaks an input column's rules in a value (required, not a number, not a whole number, below `min`, above `max`, not one of the options; never a tick box or the index) and `quoteProblems`, the problems by cell over each input table's rows, a one-row table's one row always and a many-row table's filled rows only; `valuesBasis`, the schema and the values as one string; and `pricedRows`, a priced output table's rows (`PricedRows`) lined up with a grid's rows of an input table keyed alike, each filled grid row taking the next typed row and the output row whose key columns hold the same values as text. |
 | `frontend/src/workbench/widgetKinds.ts` | `WIDGET_KINDS`, each kind of component's label, icon, hint, starting size and minimum; `PALETTE_KINDS`, what the palette offers; `COMPONENT_COLOR`, the entry colour. |
 | `frontend/src/workbench/sheetInteractions.ts` | The pointer interactions on a sheet: `dropAt` (where a palette item released at a pointer position lands, through the view store's sheet and viewport, null off the viewport), `startCreate` (a palette item dragged onto the sheet, `creating` following the pointer, the component added and selected on release; a click adds nothing) and `startTransform` (a component moved, or resized by a handle: selected on press, the form snapshotted on the first move and replaced on each move through `setFormRaw`), each tracking the pointer on the window until it is released. |
-| `frontend/src/workbench/SheetCanvas.tsx` | `SheetCanvas`, the showing sheet in its scrolling viewport: the viewport measured by a `ResizeObserver` and registered with the view store along with the sheet, the sheet sized by `sheetWidth` and `sheetHeight` and scaled by the zoom, a `SheetWidget` per component with its `shownFields` and its first problem, `DropGhost` where a component being dragged in would land, the sheet fitted on first show, and a press on the empty sheet deselecting. |
-| `frontend/src/workbench/SheetWidget.tsx` | `SheetWidget`, one component on the sheet: its `WidgetBody`, inert, in a frame that selects and drags it (`startTransform`), the frame accented when selected, dashed in the warning colour naming a problem, and eight `ResizeHandle`s once selected. |
-| `frontend/src/workbench/WidgetBody.tsx` | `WidgetBody`, a component while building: its title, "Choose its fields from the schema in the panel on the right" with none, else `FieldBoxes` (a Collection's fields as labelled boxes, its columns across) or `FieldGrid` (a Table's fields as the columns of a grid of at least its rows, the index column numbering them, Add row and a delete per row through `withSampleRows` across the input tables shown). Each input column's `Cell` is the control its type calls for (a checkbox, a select of the options, a date, else a `CommittedTextField`), holding the sample's value and committing it through `withSampleCell`; pressing one selects the component (`useTypeHere`). A label from its column with a star for a required input, a gone column "Missing column"; an output column shaded, in a Collection showing the pricing store's value for its table's one row through `formatValue`, a dash for none, dimmed (`data-stale`) while `price.basis` is not the form's `pricingBasis`. |
-| `frontend/src/workbench/PageTabs.tsx` | `PageTabs`, the sheets' tabs: one per sheet (`showPage`), the showing one marked; a plus adding a sheet (`createPage`, `addPage`); a double-click renaming one in a `CommittedTextField` (a blank name kept out); the showing sheet's cross deleting it (`removePage`) after `window.confirm` when components are on it, while another sheet remains. |
+| `frontend/src/workbench/SheetCanvas.tsx` | `SheetCanvas`, the showing sheet in its scrolling viewport: the viewport measured by a `ResizeObserver` and registered with the view store along with the sheet, the sheet sized by `sheetWidth` and `sheetHeight` and scaled by the zoom, the sheet's values given to the components through `SheetValuesContext` (`useSampleValues` while building, `usePreviewValues` in Preview), a `SheetWidget` per component with its `shownFields` and its first problem, editable and selectable while building alone, `DropGhost` where a component being dragged in would land while building, the sheet fitted on first show, and a press on the empty sheet deselecting. |
+| `frontend/src/workbench/SheetWidget.tsx` | `SheetWidget`, one component on the sheet: its `WidgetBody`, inert but for its cells, in a frame that while `editable` selects and drags it (`startTransform`) and grows eight `ResizeHandle`s once selected, and in Preview does nothing; the frame accented when selected, dashed in the warning colour naming a problem. |
+| `frontend/src/workbench/WidgetBody.tsx` | `WidgetBody`, a component on a sheet: its title, "Choose its fields from the schema in the panel on the right" with none, else `FieldBoxes` (a Collection's fields as labelled boxes, its columns across) or `FieldGrid` (a Table's fields as the columns of a grid of at least its rows, the index column numbering them, Add row and a delete per row across the input tables shown). Each input column's `Cell` is the control its type calls for (a checkbox, a select of the options, a date, else a `CommittedTextField`), holding the sheet's value from `useSheetValues` and changing it through its `setCell` or `setRows`, outlined with its problem as the title when the values' `problems` name it by `cellKey`; pressing one selects the component (`useTypeHere`). A label from its column with a star for a required input, a gone column "Missing column"; an output column shaded, showing the values' `price`: in a Collection its table's one row through `formatValue`, in a Table the row `pricedRows` lines up with the grid row through the first input table shown that is keyed alike (`tableGrain`), a dash for none, dimmed (`data-stale`) while `price.basis` is not the values' `basis`. |
+| `frontend/src/workbench/PageTabs.tsx` | `PageTabs`, the sheets' tabs: one per sheet (`showPage`), the showing one marked; a plus adding a sheet (`createPage`, `addPage`); a double-click renaming one in a `CommittedTextField` (a blank name kept out); the showing sheet's cross deleting it (`removePage`) after `window.confirm` when components are on it, while another sheet remains; `readOnly`, in Preview, the tabs only switch sheets. |
 | `frontend/src/workbench/PropertiesPanel.tsx` | `PropertiesPanel`, the selected component's panel on the kit's `SidePanel` (its width in the view store): its kind, Title (`CommittedTextField`), Layout (rows or columns in a `ValidatedTextField` holding the range), Order (`FieldOrder`, rows through `useListReorder` and Alt+Up/Alt+Down, each with a cross through `toggleField`) and Fields (`TableFields` per schema table of the component's kind, collapsible, a checkbox per column through `toggleField`, greyed with its unticked columns disabled when `tableGrain` does not match the fields already chosen), or a pointer to the schema when there is no table of the kind. |
-| `frontend/src/workbench/WorkbenchPalette.tsx` | `WorkbenchPalette`, the view's left column in the kit's palette shell: a `PaletteItem` per `PALETTE_KINDS` entry starting `startCreate` on press, and the switcher under them; sharing `useUIStore.paletteOpen`, collapsed to the reveal strip (labelled "Show component palette") with the compact switcher. |
+| `frontend/src/workbench/WorkbenchPalette.tsx` | `WorkbenchPalette`, the view's left column in the kit's palette shell: a `PaletteItem` per `PALETTE_KINDS` entry starting `startCreate` on press while building and disabled in Preview (titled "Build to lay out the sheets"), and the switcher under them; sharing `useUIStore.paletteOpen`, collapsed to the reveal strip (labelled "Show component palette") with the compact switcher. |
 | `frontend/src/workbench/ViewSwitcher.tsx` | `ViewSwitcher`, the Pricing and Workbench buttons at the bottom of the left palette while the workbench is enabled (nothing otherwise), pressing `activeView` and calling `showView`; `compact` is the column of icon buttons beside the collapsed node palette. |
-| `frontend/src/workbench/WorkbenchView.tsx` | `WorkbenchView`, the view over the area below the toolbar while it is active: given `resolveGraph` by the host, it sets the pricing store's pricer (`priceSample` on the resolved document with the settings store's active source) while mounted and schedules a pricing when the form's `pricingBasis` changes while the sheets show; `WorkbenchPalette`, then the form read on first show (`load`), "Loading the workbench…", a read failure with Try again (`reload`), the stale banner with Reload, and once the form is read the section the view store names, `PageTabs` over `SheetCanvas` or `SchemaEditor`; `useWorkbenchShortcuts`; the lazy Git and Assistant panels as asides, else `PropertiesPanel` beside the sheets; and `DragChip`, which follows the pointer while a component is dragged out of the palette until the sheet's ghost takes over. |
-| `frontend/src/workbench/WorkbenchToolbar.tsx` | `WorkbenchToolbar`, the toolbar while the view shows: `ToolbarBrand`, a `ToolbarColumn` of Sheets over Schema (`showSection`), `UndoRedo` on the form store's history, `ZoomInOut` (`zoomBy`) while the sheets show, the pricing store's `error` as "Pricing failed: …", and `ProjectControls` with Save calling the form store's `save` and Commit the host's `onCommit`, both disabled while the form loads or saves. |
+| `frontend/src/workbench/WorkbenchView.tsx` | `WorkbenchView`, the view over the area below the toolbar while it is active: given `resolveGraph` by the host, it sets the pricing store's pricer (`priceSample` on the resolved document with the settings store's active source) while mounted and schedules a pricing when the form's `pricingBasis` changes while the sheets show; `WorkbenchPalette`, then the form read on first show (`load`), "Loading the workbench…", a read failure with Try again (`reload`), the stale banner with Reload, and once the form is read the section the view store names, `PageTabs` (read only in Preview) over `SheetCanvas`, or `SchemaEditor`; `useWorkbenchShortcuts`; the lazy Git and Assistant panels as asides, else `PropertiesPanel` beside the sheets; and `DragChip`, which follows the pointer while a component is dragged out of the palette until the sheet's ghost takes over. |
+| `frontend/src/workbench/WorkbenchToolbar.tsx` | `WorkbenchToolbar`, the toolbar while the view shows: `ToolbarBrand`; a `ToolbarColumn` of Build over Preview (`showSection` to `sheets` or `preview`); while building, a `ToolbarColumn` of Sheets over Schema and `UndoRedo` on the form store's history, or in Preview a `ToolbarColumn` of Price (the preview store's `priceQuote`, disabled while pricing or before the form is read) over Clear (`clear` after `window.confirm`, disabled while nothing is typed); `ZoomInOut` (`zoomBy`) while the schema is not showing; the pricing store's `error` as "Pricing failed: …" while building, or the preview store's `error` in Preview; and `ProjectControls` with Save calling the form store's `save` and Commit the host's `onCommit`, both disabled while the form loads or saves. |
 | `frontend/src/workbench/SchemaEditor.tsx` | `SchemaEditor`, the Schema section: a block per table (its name in a `CommittedTextField`, role and rows selects, the column count with the table's problems, Delete with a confirmation when a sheet shows its columns, collapsible) with a row per column (the type marker, an `IconSelect` of `COLUMN_TYPE_OPTIONS`, or the fixed Integer of the index; the name, committing on blur or Enter, Enter adding the next column and Alt+Up and Alt+Down moving it; the rules summary; the key toggle in a many-row table; Label and rules opening `ColumnDetails`: the label and, for an input column, Required, a Min to Max range in `ValidatedTextField`s that refuse a non-number, and Allowed values; Remove with a confirmation when a sheet shows it), Add column and, for a many-row table, the index checkbox; then Add table. A new table's or column's name takes the focus and is selected. Problems come from `schemaProblems` with the document's `reserved_api_input_frame_labels`. |
 | `frontend/src/workbench/columnTypes.ts` | `COLUMN_TYPES`, each column type's label, icon (the step editor's for the kind) and colour (`getDtypeColor` of its dtype), `COLUMN_TYPE_OPTIONS` for the marker, and `isNumeric`. |
-| `frontend/src/workbench/useWorkbenchShortcuts.ts` | `useWorkbenchShortcuts`, the view's window-level shortcuts through `hooks/keyboardTargets.ts`: Ctrl/Cmd+S saves (a focused field blurred first), Ctrl/Cmd+Z undoes and Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y redoes outside a text field; while the sheets show and outside a control (`isFormControl`), Ctrl/Cmd+1 fits the sheet and, with a component selected, Escape deselects, Delete or Backspace removes, Ctrl/Cmd+D duplicates (`duplicateWidget`, the copy selected) and the arrows nudge by `GRID` or, with Shift, a pixel, a burst within 800ms one undo step through `pushSnapshot` and `setFormRaw`; keys in a modal dialog are left to it. |
+| `frontend/src/workbench/useWorkbenchShortcuts.ts` | `useWorkbenchShortcuts`, the view's window-level shortcuts through `hooks/keyboardTargets.ts`: Ctrl/Cmd+S saves (a focused field blurred first), Ctrl/Cmd+Z undoes and Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y redoes outside a text field; while the sheets show and outside a control (`isFormControl`), Ctrl/Cmd+1 fits the sheet and, with a component selected, Escape deselects, Delete or Backspace removes, Ctrl/Cmd+D duplicates (`duplicateWidget`, the copy selected) and the arrows nudge by `GRID` or, with Shift, a pixel, a burst within 800ms one undo step through `pushSnapshot` and `setFormRaw`; in Preview, Ctrl/Cmd+S and Ctrl/Cmd+1 alone apply; keys in a modal dialog are left to it. |
+| `frontend/src/workbench/useSheetValues.ts` | `SheetValues`, what a sheet's cells hold and show (`rows`, `setCell`, `setRows`, `price`, `basis` and `problems` by cell key), given to the components through `SheetValuesContext` and read with `useSheetValues`; `useSampleValues`, the form's sample edited through `change` with `withSampleCell` and `withSampleRows`, the pricing store's `price`, `pricingBasis` and no problems; `usePreviewValues`, the preview store's `quote`, `setCell` and `setRows`, its `price`, `valuesBasis` of the schema and the quote, and `quoteProblems` once `checked`. |
 
 `src/haute/schemas.py` defines `WorkbenchStatusResponse`, `WorkbenchTablesResponse`,
 `WorkbenchFormResponse`, `WorkbenchFormSaveRequest` and `WorkbenchFormTablesRequest`; `scripts/generate_api_contracts.py`
@@ -177,9 +180,15 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   `uncaptured` (the last save was written but not captured on the ledger for want of a git
   identity).
 - **`SampleValue`** and **`SampleRow`** (`frontend/src/utils/workbenchForm.ts`): text or a
-  tick, and a row of them keyed by column id. **`Pricer`** and **`SamplePrice`**
-  (`frontend/src/stores/useWorkbenchPricingStore.ts`): a function of a
-  `WorkbenchTablesResponse` to a `PricedSample`, and a `PricedSample` with its `basis`.
+  tick, and a row of them keyed by column id. **`Pricer`**, **`PricedValues`** and
+  **`SamplePrice`** (`frontend/src/stores/useWorkbenchPricingStore.ts`): a function of a
+  `WorkbenchTablesResponse` to a `PricedSample`; a `PricedSample` with `sample`, the values
+  priced as the server typed them; and that with its `basis`. **`RowsByTable`** and
+  **`PricedRows`** (`frontend/src/utils/sheetValues.ts`): rows by table id, and a priced
+  table's rows. **`SheetValues`** (`frontend/src/workbench/useSheetValues.ts`): `rows`,
+  `setCell`, `setRows`, `price`, `basis` and `problems`, a message by cell key.
+  **Preview store state** (`frontend/src/stores/useWorkbenchPreviewStore.ts`): `quote`,
+  `checked`, `price`, `error` and `pricing`.
 - **`SchemaProblem`** (`frontend/src/utils/workbenchForm.ts`): `tableId` and `message`.
   **`WidgetProblem`**: `widgetId` and `message`. **`WidgetPatch`**: a partial `Rect` with
   `title`, `fields`, `rows` (a Table's) or `columns` (a Collection's). **`ShownField`**:
@@ -420,12 +429,14 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
     Workbench Input and Workbench Output through `useWorkbenchTables`. A 409 whose detail
     starts with `stale_document_revision` sets `stale` and toasts; `reload` reads the form
     again and clears it.
-20. **The sheets, shown.** With the view's `section` at `sheets`, `WorkbenchView` renders
-    `PageTabs` over `SheetCanvas`, which registers its viewport and sheet with the view
-    store, measures the viewport, fits the zoom once, and draws `activePage(form, pageId)`'s
-    components, each `SheetWidget` with its `shownFields` and the first of its
-    `widgetProblems`. The toolbar's Sheets and Schema call `showSection`, which clears the
-    selection; `showPage` from a tab shows that sheet.
+20. **The sheets, shown.** With the view's `section` at `sheets` or `preview`,
+    `WorkbenchView` renders `PageTabs` over `SheetCanvas`, which registers its viewport and
+    sheet with the view store, measures the viewport, fits the zoom once, gives the
+    components the sheet's values (`useSampleValues` or `usePreviewValues` through
+    `SheetValuesContext`), and draws `activePage(form, pageId)`'s components, each
+    `SheetWidget` with its `shownFields` and the first of its `widgetProblems`. The
+    toolbar's Sheets and Schema call `showSection`, which clears the selection; `showPage`
+    from a tab shows that sheet, in Preview as before.
 21. **A component added.** `startCreate` on a palette item tracks the pointer, publishing
     `creating` on each move: `DragChip` follows it while `dropAt` finds no place, and
     `DropGhost` draws the place once it does. Released on the sheet, the item becomes
@@ -440,21 +451,26 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
     through `change` with `updateWidget`, `moveField` and `toggleField`; the fields offered
     are the schema tables whose `rows` match `rowsShown(widget)`, each usable when its
     `tableGrain` matches the grain of the first field already shown.
-24. **The sample, typed.** A `Cell` commits a value through `change` with
-    `withSampleCell(spec, tableId, row, columnId, value)`, row 0 for a Collection's one-row
-    tables and the grid's row otherwise; Add row and a delete call `withSampleRows` with
-    every input table the grid shows, so one edit changes them all.
+24. **The sample, typed.** A `Cell` commits a value through the sheet's values' `setCell`,
+    while building `change` with `withSampleCell(spec, tableId, row, columnId, value)`, row
+    0 for a Collection's one-row tables and the grid's row otherwise; Add row and a delete
+    call `setRows`, while building `withSampleRows`, with every input table the grid shows,
+    so one edit changes them all.
 25. **Priced.** The view sets the pricing store's pricer on mount and clears it on unmount,
     and calls `schedule` when `pricingBasis(form)` changes while the sheets show. After
     `PRICING_DELAY_MS`, `priceNow` runs one pricing: `fetchWorkbenchFormTables(form)`
     (`POST /api/workbench/tables`, `_tables_response` on the posted form), then the pricer,
     `priceSample(resolveGraph(), workbench, activeSource)`, which patches the top-level
     workbench nodes through `WORKBENCH_COPY_PATCHES` and previews the Workbench Output per
-    table label; the store keeps `{basis, tables}` or the reason. A request made while one
-    runs sets a flag, and the run prices once more when it finishes.
-26. **Shown.** `FieldBoxes` reads the pricing store's `price` and shows
-    `price.tables[table.name][0][column.name]` for an output column, dimmed when
-    `price.basis` is not the form's basis; `WorkbenchToolbar` shows `error`.
+    table label (both through `priceForm`); the store keeps `{basis, tables, sample}`, the
+    sample as the server typed it, or the reason. A request made while one runs sets a
+    flag, and the run prices once more when it finishes.
+26. **Shown.** `FieldBoxes` reads the values' `price` and shows
+    `price.tables[table.name][0][column.name]` for an output column; `FieldGrid` shows, for
+    a many-row output column, the row `pricedRows` lines up with each grid row (the typed
+    rows from `price.sample[input.name]`, the output rows from `price.tables[output.name]`,
+    the input table the first shown with the output table's `tableGrain`); both dimmed when
+    `price.basis` is not the values' `basis`; `WorkbenchToolbar` shows `error`.
 27. **Committed.** Commit in `WorkbenchToolbar` calls the host's `requestCommit`
     (`App.tsx`): the git readiness gate, then `saveProject`, which saves the pipeline
     through `saveWithPendingCommits` and, while the workbench is enabled, the form through
@@ -465,6 +481,19 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
     `sync` on each advance, after any save in flight: `fetchWorkbenchForm`, then nothing at
     the same revision, the form adopted (history dropped) while `dirty` is false, else
     `stale` set; a failed read is one error toast and leaves the form as it is.
+29. **Preview.** Preview in `WorkbenchToolbar` calls `showSection("preview")`:
+    `WorkbenchView` renders `PageTabs` read only over `SheetCanvas`, which gives the
+    components `usePreviewValues` (the preview store's `quote`, `setCell` and `setRows`, its
+    `price`, `valuesBasis` of the schema and the quote, and `quoteProblems` while `checked`)
+    and draws each `SheetWidget` neither editable nor selected, with no ghost;
+    `WorkbenchPalette` disables its items, and `useWorkbenchShortcuts` leaves the editing
+    keys and undo alone. Build calls `showSection("sheets")`.
+30. **Priced on request.** Price calls the preview store's `priceQuote`: nothing while a
+    pricing runs, the form is not read or the view has given no pricer; else
+    `quoteProblems` on the schema and the quote, and with any the store sets `checked` and
+    `error` ("N cells need attention") and stops; else `priceForm({...form, sample: quote},
+    pricer)`, the store keeping `{basis, tables, sample}` or "Pricing failed: …". Clear,
+    after `window.confirm`, empties the quote, `checked`, the price and the error.
 
 ## Edge cases and invariants
 
@@ -552,6 +581,22 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   a move, a resize, a rename of a sheet or a component changes nothing in it.
 - One pricing runs at a time, and a pricing never writes into the store after the pricer
   it ran with was replaced or cleared.
+- The quote is the preview store's alone: never in the form, never saved, never on the
+  undo stack; it outlives a trip to Build and to the pipeline editor, and a column removed
+  from the schema leaves its values in the quote unread, since `quoteProblems` and the
+  server read the schema's columns, not the quote's keys.
+- `rowFilled` and `filled` mirror the server's `_record` and `_filled`: a row counts when
+  any column but the index holds a tick or text other than blank, so a grid's filled rows
+  are the typed rows the pricing answers with, in order, and the index is the grid's row
+  number.
+- A Table's output rows are matched by every key column's value as the server typed it,
+  compared as text; a key missing or null on either side matches nothing. A price for
+  other values is shown dimmed on every row, and may line up with the grid differently
+  until the next pricing.
+- `cellProblem` is stricter than the server in one place: a fraction in a whole-number
+  column is a problem here, where the server would keep the float for the pipeline to
+  refuse. `parseTypedNumber` reads what the server reads, a decimal with a sign, a point
+  or an exponent once the currency sign, separators and spaces are gone, and nothing else.
 
 ## Error handling
 
@@ -582,6 +627,9 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
 - `fetchWorkbenchForm` and `saveWorkbenchForm` throw `ApiError` or a contract error like
   any typed request; the form store shows a read failure in the view (`loadError`) and a
   save failure as one error toast, telling a stale refusal by the detail's code.
+- `priceQuote` turns a quote that breaks a rule into the preview store's `error`, "N cells
+  need attention", and a failed pricing into "Pricing failed: " and the reason; neither is
+  a toast, and a press while a pricing runs does nothing.
 - `priceSample` rejects with an `Error` naming the reason: no Workbench Output, a table's
   preview error, or the server's reason for a failed preview request
   (`apiErrorMessage`); the pricing store keeps it as `error` and the toolbar shows it.
@@ -712,14 +760,16 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   fixtures in `frontend/src/workbench/__tests__/fixtures.ts`) the components drawn where
   the form places them, the problem frame, selection, a drag moving one snapped and
   divided by the zoom as one undo step, a resize by a handle at its minimum, a component
-  dragged out of the palette and dropped (the chip, the ghost, a click adding nothing), and
-  the fit; `frontend/src/workbench/__tests__/PageTabs.test.tsx` the tabs, adding, renaming
-  and deleting with the confirmation; `frontend/src/workbench/__tests__/PropertiesPanel.test.tsx`
-  the title and layout, the fields ticked, a table greyed out, the order and the pointer to
-  the schema; `frontend/src/workbench/__tests__/useWorkbenchShortcuts.test.tsx` the sheet's
-  keys, their guards and the nudge burst; and
-  `frontend/src/workbench/__tests__/WorkbenchPalette.test.tsx` the palette and its collapse
-  with the node palette's.
+  dragged out of the palette and dropped (the chip, the ghost, a click adding nothing), the
+  fit, and Preview (nothing selected or moved, no drop, the quote typed);
+  `frontend/src/workbench/__tests__/PageTabs.test.tsx` the tabs, adding, renaming and
+  deleting with the confirmation, and read only in Preview;
+  `frontend/src/workbench/__tests__/PropertiesPanel.test.tsx` the title and layout, the
+  fields ticked, a table greyed out, the order and the pointer to the schema;
+  `frontend/src/workbench/__tests__/useWorkbenchShortcuts.test.tsx` the sheet's keys, their
+  guards, the nudge burst and Preview's; and
+  `frontend/src/workbench/__tests__/WorkbenchPalette.test.tsx` the palette, its collapse
+  with the node palette's and its items disabled in Preview.
 - The sample: `tests/test_workbench_routes.py` covers `POST /api/workbench/tables` for an
   unsaved form (its tables, sample and response tables, the file untouched), the structured
   422 and a misshapen body, and 404 while disabled; `frontend/src/utils/__tests__/workbenchForm.test.ts`
@@ -733,11 +783,24 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   the last values dimmed meanwhile, the reason on failure, nothing without a pricer or
   before the form is read, and a late answer dropped;
   `frontend/src/workbench/__tests__/WidgetBody.test.tsx` typing into a Collection's boxes
-  and a Table's grid with rows added and deleted, an output box's value and its dimming,
-  and a press on a cell selecting the component without moving it;
+  and a Table's grid with rows added and deleted, an output box's value and its dimming, a
+  Table's output columns matched by key and dimmed once typed over, and a press on a cell
+  selecting the component without moving it;
   `frontend/src/workbench/__tests__/WorkbenchView.test.tsx` the pricer set and cleared and
-  the pricing scheduled on the basis alone; and
+  the pricing scheduled on the basis alone, while building; and
   `frontend/src/workbench/__tests__/WorkbenchToolbar.test.tsx` the failure's reason.
+- Preview: `frontend/src/utils/__tests__/sheetValues.test.ts` covers filled rows, numbers
+  as the server reads them, each rule, `quoteProblems` by cell, the basis and `pricedRows`;
+  `frontend/src/stores/__tests__/useWorkbenchPreviewStore.test.ts` the quote apart from the
+  sample (cells, rows, clear), pricing through `priceForm` with the quote in the sample's
+  place and the typed sample kept, the check that marks and counts instead of pricing, a
+  failure's reason, and nothing without a pricer, before the form is read or while a pricing
+  runs; `frontend/src/workbench/__tests__/WidgetBody.test.tsx` the quote typed apart from
+  the sample with its marked cells and its own price;
+  `frontend/src/workbench/__tests__/WorkbenchToolbar.test.tsx` Build and Preview, Price,
+  Clear with its confirmation and the quote's reason; and
+  `frontend/src/workbench/__tests__/WorkbenchView.test.tsx` Preview read only without the
+  properties panel.
 - The quote's tables: `tests/test_api_input_table_snapshots.py` shreds a two-quote request
   through tables in the workbench's shape into one frame per table; `tests/test_config_io.py`
   writes a Workbench Input's config file, its sample included, to `config/workbench_input/`

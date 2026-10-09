@@ -25,9 +25,10 @@ holds lives in a file in the project, `forms/form.json`, versioned beside the pi
 editor; **Pricing** brings the pipeline back. The pipeline editor keeps everything it had
 (its document, its undo history, live sync) while the Workbench shows; its keyboard
 shortcuts are off meanwhile, so nothing you press in the Workbench edits the pipeline. The
-toolbar keeps Haute's project controls (Assistant, Help, the branch and **Save**) and shows
-the Workbench's own: **Sheets** over **Schema**, **Undo** over **Redo**, and **Zoom In**
-over **Zoom Out** on the sheets.
+toolbar keeps Haute's project controls (Assistant, Help, the branch, **Save** and
+**Commit**) and shows the Workbench's own: **Build** over **Preview**, then, while building,
+**Sheets** over **Schema**, **Undo** over **Redo**, and **Zoom In** over **Zoom Out** on
+the sheets.
 
 **Save** and Ctrl+S write `forms/form.json`, and each save is recorded on your branch's
 save ledger like a save of the pipeline, so it shows in the Git panel's history. **Commit**
@@ -106,4 +107,18 @@ pauses, Haute prices it on the pipeline open in the editor, as it stands, saved 
 a Collection's output columns show what the pipeline gave them, dimmed while a newer
 answer is on its way. When pricing fails — no Workbench Output on the pipeline, a table
 with nothing connected, a value that does not fit its column — the toolbar says why. A
-Table's output columns stay shaded for now.
+Table's output columns show the row in the answer keyed like each grid row.
+
+## Preview
+
+**Preview** shows the sheets as an underwriter uses them: the same components at the same
+positions, with nothing to move or lay out. Type a quote into the cells, kept apart from
+the sample (it is never saved, and stays while you switch to Build and back), and press
+**Price**. Haute first checks every cell against its column's rules: a required cell left
+empty, a number that is not one, a whole number that is not whole, a number outside its
+range, a value that is not one of the allowed ones. A cell that breaks a rule is outlined,
+naming the problem when you hover, and the toolbar says how many need attention; the marks
+follow the cells as you fix them. A quote that passes is priced on the pipeline open in the
+editor, and every output column shows its value: a Collection's its table's one row, and a
+Table's the row keyed like each grid row. The values dim when you change the quote, until
+you press **Price** again. **Clear** empties the quote.

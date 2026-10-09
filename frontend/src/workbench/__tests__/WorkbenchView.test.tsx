@@ -20,7 +20,9 @@ vi.mock("../SchemaEditor", () => ({
   ),
 }))
 vi.mock("../SheetCanvas", () => ({ default: () => <div data-testid="sheet-canvas" /> }))
-vi.mock("../PageTabs", () => ({ default: () => <div data-testid="page-tabs" /> }))
+vi.mock("../PageTabs", () => ({
+  default: ({ readOnly }: { readOnly?: boolean }) => <div data-testid="page-tabs" data-readonly={readOnly ? "true" : undefined} />,
+}))
 vi.mock("../PropertiesPanel", () => ({ default: () => <div data-testid="properties-panel" /> }))
 vi.mock("../../panels/GitPanel", () => ({ default: () => <div data-testid="git-panel" /> }))
 vi.mock("../../panels/assistant/AssistantPanel", () => ({ default: () => <div data-testid="assistant-panel" /> }))
@@ -78,6 +80,19 @@ describe("WorkbenchView", () => {
       useWorkbenchViewStore.getState().showSection("sheets")
     })
     expect(screen.getByTestId("properties-panel")).toBeInTheDocument()
+  })
+
+  it("shows the sheets read only in Preview, with no properties panel", () => {
+    renderView()
+    expect(screen.getByTestId("page-tabs")).not.toHaveAttribute("data-readonly")
+
+    act(() => {
+      useWorkbenchViewStore.getState().showSection("preview")
+    })
+    expect(screen.getByTestId("page-tabs")).toHaveAttribute("data-readonly", "true")
+    expect(screen.getByTestId("sheet-canvas")).toBeInTheDocument()
+    expect(screen.queryByTestId("properties-panel")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("schema-editor")).not.toBeInTheDocument()
   })
 
   it("says the workbench is loading, or why it could not be read with a way to try again", () => {
@@ -173,6 +188,12 @@ describe("WorkbenchView", () => {
     act(() => {
       useWorkbenchViewStore.getState().showSection("schema")
       useWorkbenchFormStore.setState({ form: { ...form, sample: { t: [{ c: "2" }] } } })
+    })
+    expect(pricing.schedule).toHaveBeenCalledTimes(2)
+    // Nor Preview, where the quote is priced when Price is pressed.
+    act(() => {
+      useWorkbenchViewStore.getState().showSection("preview")
+      useWorkbenchFormStore.setState({ form: { ...form, sample: { t: [{ c: "3" }] } } })
     })
     expect(pricing.schedule).toHaveBeenCalledTimes(2)
 

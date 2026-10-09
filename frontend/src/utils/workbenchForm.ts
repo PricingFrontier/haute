@@ -7,6 +7,7 @@
 import type { FieldRef, FormSpec, Page, SchemaColumn, SchemaTable } from "../api/types"
 import { apiInputLabelIssue, apiInputLabelIssueMessage } from "./apiInputPorts"
 import type { Rect } from "./sheetGeometry"
+import { valuesBasis } from "./sheetValues"
 
 /** A sheet's widget: a Table or a Collection. */
 export type Widget = Page["widgets"][number]
@@ -326,7 +327,7 @@ const bases = new WeakMap<FormSpec, string>()
 export function pricingBasis(spec: FormSpec): string {
   let basis = bases.get(spec)
   if (basis === undefined) {
-    basis = JSON.stringify([spec.schema, spec.sample])
+    basis = valuesBasis(spec.schema, spec.sample)
     bases.set(spec, basis)
   }
   return basis

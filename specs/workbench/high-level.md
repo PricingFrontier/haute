@@ -18,11 +18,11 @@ This component owns the switch, the form file with its reading, its saving and i
 revision, the routes that serve the form and its tables to the editor, the
 `haute init --workbench` scaffold, the Workbench view in which the form is edited inside
 Haute (its host beside the pipeline editor, its toolbar and shortcuts, its schema editor,
-its sheets, and the sample typed into them and priced live), and the two workbench node
-types: where their tables come from, how the
-editor keeps them current, what a Workbench Input gives without a request and how a
-Workbench Output's frames fill the response. Preview is planned
-([the workbench roadmap](../roadmap/workbench.md)).
+its sheets, the sample typed into them and priced live, and Preview, the sheets as an
+underwriter uses them, with a quote checked against the columns' rules and priced), and
+the two workbench node types: where their tables come from, how the editor keeps them
+current, what a Workbench Input gives without a request and how a Workbench Output's
+frames fill the response.
 
 ## Scope
 
@@ -43,8 +43,9 @@ In scope:
 - The Workbench view: how it is shown beside the pipeline editor and what the pipeline
   editor does meanwhile, its toolbar and keyboard shortcuts, its schema editor, its sheets
   (the canvas, the Table and the Collection, their palette and properties panel, and the
-  sheet tabs), the sample typed into the components and priced live on the pipeline, and
-  how the form is read into it and saved from it.
+  sheet tabs), the sample typed into the components and priced live on the pipeline,
+  Preview, where an underwriter's quote is keyed into the sheets, checked against the
+  columns' rules and priced, and how the form is read into it and saved from it.
 - The Workbench Input, the node type that holds a copy of the tables and sample, which the
   editor keeps current and shows, and previews on.
 - The Workbench Output, the node type that holds a copy of the output tables, which the
@@ -52,7 +53,6 @@ In scope:
 
 Out of scope:
 
-- Preview, a package of the [workbench roadmap](../roadmap/workbench.md).
 - The toolbar's pipeline controls ([frontend-shared](../frontend-shared/high-level.md)) and
   the canvas, palette and keyboard shortcuts
   ([frontend-graph-canvas](../frontend-graph-canvas/high-level.md)).
@@ -245,8 +245,33 @@ Out of scope:
   column shows its table's value in the answer, formatted as the data preview formats a
   value, dimmed while a newer answer is on its way, and a dash before the first answer, for
   a column nothing filled, and after pricing fails, when the toolbar says why ("Pricing
-  failed: …") until a pricing succeeds. A Table's output columns stay shaded: matching rows
-  by key is Preview's.
+  failed: …") until a pricing succeeds. A Table's output column shows, on each grid row,
+  the value of the row in the answer keyed like it: the output table's key columns hold
+  what the server typed for the grid row's (the index numbered as the grid numbers the
+  row), found through the first many-row input table the grid shows that is keyed alike;
+  a grid row with nothing typed, or none keyed like it, shows a dash, and a price for other
+  values is dimmed on every row.
+- **Preview.** The toolbar's Build over Preview switches the view between building and
+  the sheets as an underwriter uses them: the same sheets at the same positions, their
+  tabs only switching sheets, the components neither selected nor moved, the palette's
+  components disabled, no properties panel, no Undo or Redo, and the zoom. An
+  underwriter's quote is keyed into the components' input cells as the sample is, through
+  the same controls, and is kept apart from the sample: it lasts while the editor is open,
+  through Build and back, is never saved with the form and never undone. Price checks the
+  quote against the columns' rules first: a required cell left empty, text that is not a
+  number in a number column or not a whole number in a whole-number column, a number
+  outside the column's range, a value that is not one of the allowed values; a one-row
+  table's one row is always checked, a many-row table's filled rows only, and a tick box
+  and the index never fault. A quote that breaks a rule is not priced: each such cell is
+  outlined, naming its problem on hover, the toolbar says how many cells need attention,
+  and from then on the marks follow the cells as they are edited, until the quote is
+  cleared. A quote that passes is priced as the sample is, on the pipeline open in the
+  editor with the quote in the sample's place, and every output column shows its value, a
+  Collection's its table's one row and a Table's the row keyed like each grid row, dimmed
+  once the quote changes until Price again; a pricing that fails shows its reason in the
+  toolbar. Clear, after a confirmation, empties the quote, its marks and its price.
+  Ctrl/Cmd+S still saves the form in Preview and Ctrl/Cmd+1 fits the sheet; the sheet's
+  editing keys and undo do nothing.
 - **Saved.** A successful save adopts the file's new revision and fetches the tables
   again, so the Workbench Input's and Workbench Output's copies follow the schema and the
   pipeline has changes to save, as after any fetch. A save refused as stale keeps the edits
@@ -485,6 +510,19 @@ Out of scope:
   rather than reading the saved file, so a Collection shows the pipeline's answer for what
   is on the sheet now, as a rater's cell would; the pipeline's own Workbench Input still
   follows the saved form, so a save is still what changes the pipeline.
+- **One sheet, two sets of values.** The components draw the sample and the quote through
+  one set of values given to the sheet, rather than a second body for Preview: what a cell
+  holds, how it changes, what the last pricing gave and which cells are marked come from
+  the form store while building and from the preview store in Preview, so a change to how
+  a cell looks or a row is matched is made once.
+- **Price on request.** The quote is priced when Price is pressed, not as it is typed: an
+  underwriter fills a quote in before wanting its price, the check against the rules would
+  otherwise mark every required cell at the first keystroke, and the pipeline is spared a
+  pricing per pause. The sample, priced while building, keeps its pause.
+- **Rows matched as the server typed them.** A Table's output rows are matched through
+  the typed sample the pricing answers with, not the text in the grid: the server leaves
+  empty rows out and numbers the index as the grid does, so the filled grid rows are its
+  typed rows in order, and a key typed as "$1,000" matches an output row holding 1000.
 - **The view's state is the view's.** Which sheet and section show, the selection, the
   zoom and the panel's width are neither saved with the form nor undone with it: they
   live in a store of their own, read against the form, so a sheet or a component that
@@ -634,6 +672,10 @@ Out of scope:
   its tables or the preview route's failure, shows as the toolbar's reason and empties the
   output columns, never as a toast; an answer that arrives after the view has left is
   dropped.
+- A quote that breaks a column's rule is not priced: the cells are marked, the toolbar
+  says how many need attention, and nothing is sent. A pricing of the quote that fails
+  shows "Pricing failed: …" in the toolbar and empties the output columns, as the sample's
+  does; a press of Price while one runs does nothing.
 - The schema editor refuses nothing: a problem is shown beside its table, and a save
   writes the form as it is. The tables route then answers the structured 422 for a table
   the Quote Input's rules refuse, which the tables fetch shows as one toast, so the

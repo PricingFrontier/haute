@@ -10,13 +10,14 @@ const NUDGE_BURST_MS = 800
 
 /**
  * The workbench view's keyboard shortcuts, registered while it shows (specs/workbench):
- * Ctrl+S saves the form, with a focused field's edit included; Ctrl+Z and Ctrl+Shift+Z
- * (or Ctrl+Y) undo and redo an edit outside a text field. While the sheets show, Ctrl+1
- * fits the sheet to its viewport, and with a component selected Escape deselects it,
- * Delete or Backspace removes it, Ctrl+D duplicates it and the arrow keys nudge it by a
- * grid step (Shift: a pixel), a burst of nudges being one undo step; none of that from a
- * control, whose own keys pick an option. Keys in a modal dialog are the dialog's, as they
- * are for the pipeline editor's shortcuts.
+ * Ctrl+S saves the form, with a focused field's edit included; while building, Ctrl+Z
+ * and Ctrl+Shift+Z (or Ctrl+Y) undo and redo an edit outside a text field. While the
+ * sheets show, building or in Preview, Ctrl+1 fits the sheet to its viewport; while
+ * building, with a component selected, Escape deselects it, Delete or Backspace removes
+ * it, Ctrl+D duplicates it and the arrow keys nudge it by a grid step (Shift: a pixel), a
+ * burst of nudges being one undo step; none of that from a control, whose own keys pick
+ * an option. Keys in a modal dialog are the dialog's, as they are for the pipeline
+ * editor's shortcuts.
  */
 export default function useWorkbenchShortcuts(): void {
   // The component being nudged and when its burst ends.
@@ -35,23 +36,25 @@ export default function useWorkbenchShortcuts(): void {
         return
       }
       if (isTypingTarget(e.target)) return
-      if (mod && key === "z" && !e.shiftKey) {
+      const view = useWorkbenchViewStore.getState()
+      const previewing = view.section === "preview"
+      if (!previewing && mod && key === "z" && !e.shiftKey) {
         e.preventDefault()
         forms.undo()
         return
       }
-      if (mod && ((key === "z" && e.shiftKey) || key === "y")) {
+      if (!previewing && mod && ((key === "z" && e.shiftKey) || key === "y")) {
         e.preventDefault()
         forms.redo()
         return
       }
-      const view = useWorkbenchViewStore.getState()
-      if (view.section !== "sheets" || forms.form === null || isFormControl(e.target)) return
+      if ((view.section !== "sheets" && !previewing) || forms.form === null || isFormControl(e.target)) return
       if (mod && key === "1") {
         e.preventDefault()
         view.fitZoom()
         return
       }
+      if (previewing) return
       const selected = view.selectedId === null ? null : findWidget(forms.form, view.selectedId)?.widget ?? null
       if (selected === null) return
       if (e.key === "Escape") {

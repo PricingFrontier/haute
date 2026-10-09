@@ -1,30 +1,22 @@
 /**
- * How a component looks on a sheet while building (specs/workbench): a Collection's
- * fields as labelled boxes and a Table's as the columns of a grid. An input column takes
- * the sample quote typed into it, through the control its type calls for; an output
- * column is shaded, and in a Collection shows what pricing the sample gave, dimmed until
+ * How a component looks on a sheet (specs/workbench): a Collection's fields as labelled
+ * boxes and a Table's as the columns of a grid. An input column takes the values the
+ * sheet holds, the sample while building or an underwriter's quote in Preview, through
+ * the control its type calls for, marked when the value breaks the column's rules; an
+ * output column is shaded and shows what pricing those values gave its row, dimmed until
  * the next answer. Pressing a cell types there and selects the component rather than
  * moving it.
  */
 import { Plus, Trash2 } from "lucide-react"
-import type { PointerEvent as ReactPointerEvent } from "react"
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react"
 import { CommittedTextField } from "../components/form"
 import { INPUT_STYLE } from "../panels/editors/_shared"
-import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
-import useWorkbenchPricingStore from "../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
 import { formatValue } from "../utils/formatValue"
-import {
-  pricingBasis,
-  readableName,
-  withSampleCell,
-  withSampleRows,
-  type SampleRow,
-  type SampleValue,
-  type ShownField,
-  type Widget,
-} from "../utils/workbenchForm"
+import { cellKey, pricedRows, type PricedRows } from "../utils/sheetValues"
+import { readableName, tableGrain, type SampleRow, type SampleValue, type ShownField, type Widget } from "../utils/workbenchForm"
 import { isNumeric } from "./columnTypes"
+import { useSheetValues } from "./useSheetValues"
 
 type Found = ShownField["found"]
 /** A column of an input table that is still in the schema, other than its index. */
@@ -55,25 +47,34 @@ function FieldLabel({ found }: { found: Found }) {
 
 const BOX_CLASS = "focus-ring h-9 w-full rounded-md px-2.5 text-xs"
 const GRID_CELL_CLASS = "focus-ring h-8 w-full rounded-none border-0 bg-transparent px-2.5 text-xs"
+/** A cell whose value breaks its column's rules: outlined as a field in error is, naming the problem. */
+const PROBLEM_STYLE: CSSProperties = { boxShadow: "inset 0 0 0 1px var(--danger-border-strong)" }
 
-/** The control a field's type calls for, holding what the sample has for it. */
+/** What an output cell shows: a dash before the first answer, for a column nothing filled, and after pricing fails. */
+const shown = (value: unknown): string => (value === undefined || value === null ? "—" : formatValue(value))
+
+/** The control a field's type calls for, holding what the sheet has for it. */
 function Cell({
   found,
   value,
   onChange,
   label,
   compact,
+  problem,
 }: {
   found: Fillable
   value: SampleValue | undefined
   onChange: (value: SampleValue) => void
   label: string
   compact: boolean
+  /** What breaks the column's rules in the value, or null. */
+  problem: string | null
 }) {
   const { column } = found
   const text = typeof value === "string" ? value : ""
   const className = compact ? GRID_CELL_CLASS : BOX_CLASS
-  const style = compact ? undefined : INPUT_STYLE
+  const style = { ...(compact ? {} : INPUT_STYLE), ...(problem === null ? {} : PROBLEM_STYLE) }
+  const marked = problem === null ? {} : { "aria-invalid": true as const, title: problem }
   if (column.type === "bool") {
     return (
       <input
@@ -88,7 +89,7 @@ function Cell({
   }
   if (column.options.length > 0) {
     return (
-      <select aria-label={label} value={text} onChange={(event) => onChange(event.target.value)} className={className} style={style}>
+      <select {...marked} aria-label={label} value={text} onChange={(event) => onChange(event.target.value)} className={className} style={style}>
         <option value="">{compact ? "" : "Select…"}</option>
         {column.options.map((option) => (
           <option key={option} value={option}>
@@ -99,10 +100,11 @@ function Cell({
     )
   }
   if (column.type === "date") {
-    return <input type="date" aria-label={label} value={text} onChange={(event) => onChange(event.target.value)} className={className} style={style} />
+    return <input {...marked} type="date" aria-label={label} value={text} onChange={(event) => onChange(event.target.value)} className={className} style={style} />
   }
   return (
     <CommittedTextField
+      {...marked}
       aria-label={label}
       value={text}
       onCommit={onChange}
@@ -120,13 +122,6 @@ function useTypeHere(widgetId: string) {
     event.stopPropagation()
     select(widgetId)
   }
-}
-
-/** What a sample's cell shows: nothing typed reads as an empty string. */
-const EMPTY_SAMPLE: Record<string, SampleRow[]> = {}
-
-function useSample(): Record<string, SampleRow[]> {
-  return useWorkbenchFormStore((s) => s.form?.sample ?? EMPTY_SAMPLE)
 }
 
 export default function WidgetBody({ widget, fields }: { widget: Widget; fields: ShownField[] }) {
@@ -155,14 +150,11 @@ export default function WidgetBody({ widget, fields }: { widget: Widget; fields:
 
 /**
  * One-row columns as boxes, labels above, `columns` across and as many rows as it takes.
- * An output column shows what pricing the sample gave its table's one row, dimmed while a
- * newer answer is on its way, and a dash before the first answer or after pricing fails.
+ * An output column shows what pricing gave its table's one row, dimmed while the price
+ * is for other values, and a dash before the first answer or after pricing fails.
  */
 function FieldBoxes({ widgetId, fields, columns }: { widgetId: string; fields: ShownField[]; columns: number }) {
-  const sample = useSample()
-  const change = useWorkbenchFormStore((s) => s.change)
-  const basis = useWorkbenchFormStore((s) => (s.form === null ? "" : pricingBasis(s.form)))
-  const price = useWorkbenchPricingStore((s) => s.price)
+  const { rows, setCell, price, basis, problems } = useSheetValues()
   const typeHere = useTypeHere(widgetId)
   const stale = price !== null && price.basis !== basis
   return (
@@ -181,10 +173,11 @@ function FieldBoxes({ widgetId, fields, columns }: { widgetId: string; fields: S
               <div className={`pointer-events-auto ${found.column.type === "bool" ? "flex h-9 items-center" : ""}`} onPointerDown={typeHere}>
                 <Cell
                   found={found}
-                  value={sample[found.table.id]?.[0]?.[found.column.id]}
-                  onChange={(value) => change((spec) => withSampleCell(spec, found.table.id, 0, found.column.id, value))}
+                  value={rows[found.table.id]?.[0]?.[found.column.id]}
+                  onChange={(value) => setCell(found.table.id, 0, found.column.id, value)}
                   label={fieldLabel(found)}
                   compact={false}
+                  problem={problems[cellKey(found.table.id, 0, found.column.id)] ?? null}
                 />
               </div>
             ) : (
@@ -199,7 +192,7 @@ function FieldBoxes({ widgetId, fields, columns }: { widgetId: string; fields: S
                   opacity: stale ? 0.5 : 1,
                 }}
               >
-                <span className="truncate">{found?.column.index ? "1" : priced === undefined || priced === null ? "—" : formatValue(priced)}</span>
+                <span className="truncate">{found?.column.index ? "1" : shown(priced)}</span>
               </div>
             )}
           </div>
@@ -219,19 +212,36 @@ const padRows = (rows: readonly SampleRow[], length: number): SampleRow[] => [
  * Many-row columns as a grid of at least `rows` rows. Its input columns take typing, row
  * by row, and rows are added and deleted in every input table the grid shows at once, so
  * their cells stay side by side; a one-row table's column, which the checks flag here,
- * shows that table's one value on every row. Output columns stay shaded.
+ * shows that table's one value on every row. An output column shows what pricing gave
+ * the row keyed like each grid row, through the first input table the grid shows that
+ * is keyed alike, dimmed while the price is for other values.
  */
 function FieldGrid({ widgetId, fields, rows }: { widgetId: string; fields: ShownField[]; rows: number }) {
-  const sample = useSample()
-  const change = useWorkbenchFormStore((s) => s.change)
+  const { rows: held, setCell, setRows, price, basis, problems } = useSheetValues()
   const typeHere = useTypeHere(widgetId)
   const oneRow = (found: Fillable) => found.table.rows === "one"
   const inputTables = [...new Set(fields.flatMap(({ found }) => (fillable(found) && !oneRow(found) ? [found.table.id] : [])))]
-  const count = Math.max(rows, ...inputTables.map((id) => sample[id]?.length ?? 0))
-  const addRow = () =>
-    change((spec) => withSampleRows(spec, Object.fromEntries(inputTables.map((id) => [id, padRows(spec.sample[id] ?? [], count + 1)]))))
-  const deleteRow = (row: number) =>
-    change((spec) => withSampleRows(spec, Object.fromEntries(inputTables.map((id) => [id, (spec.sample[id] ?? []).filter((_, i) => i !== row)]))))
+  const count = Math.max(rows, ...inputTables.map((id) => held[id]?.length ?? 0))
+  const addRow = () => setRows(Object.fromEntries(inputTables.map((id) => [id, padRows(held[id] ?? [], count + 1)])))
+  const deleteRow = (row: number) => setRows(Object.fromEntries(inputTables.map((id) => [id, (held[id] ?? []).filter((_, i) => i !== row)])))
+  const stale = price !== null && price.basis !== basis
+  // Each many-row output table's rows lined up with the grid's.
+  const matched = new Map<string, (Record<string, unknown> | undefined)[]>()
+  if (price !== null) {
+    for (const { found } of fields) {
+      if (found === null || found.table.role !== "output" || found.table.rows !== "many" || matched.has(found.table.id)) continue
+      const output = found.table
+      const input = fields.flatMap(({ found: shownField }) =>
+        fillable(shownField) && !oneRow(shownField) && tableGrain(shownField.table) === tableGrain(output) ? [shownField.table] : [],
+      )[0]
+      if (input === undefined) continue
+      const typed = price.sample[input.name]
+      const grid = Array.from({ length: count }, (_, row) => held[input.id]?.[row])
+      matched.set(output.id, pricedRows(input, grid, Array.isArray(typed) ? (typed as PricedRows) : [], price.tables[output.name] ?? []))
+    }
+  }
+  const pricedAt = (found: NonNullable<Found>, row: number): unknown =>
+    found.table.rows === "one" ? price?.tables[found.table.name]?.[0]?.[found.column.name] : matched.get(found.table.id)?.[row]?.[found.column.name]
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -261,36 +271,46 @@ function FieldGrid({ widgetId, fields, rows }: { widgetId: string; fields: Shown
                 <td className="text-center" style={{ color: "var(--text-secondary)" }}>
                   {row + 1}
                 </td>
-                {fields.map(({ key, found }) =>
-                  fillable(found) ? (
+                {fields.map(({ key, found }) => {
+                  if (fillable(found)) {
+                    const at = oneRow(found) ? 0 : row
+                    return (
+                      <td
+                        key={key}
+                        className={`pointer-events-auto p-0 ${found.column.type === "bool" ? "text-center" : ""}`}
+                        style={{ borderLeft: "1px solid var(--border)" }}
+                        onPointerDown={typeHere}
+                      >
+                        <Cell
+                          found={found}
+                          value={held[found.table.id]?.[at]?.[found.column.id]}
+                          onChange={(value) => setCell(found.table.id, at, found.column.id, value)}
+                          label={`${fieldLabel(found)} row ${row + 1}`}
+                          compact
+                          problem={problems[cellKey(found.table.id, at, found.column.id)] ?? null}
+                        />
+                      </td>
+                    )
+                  }
+                  const output = found !== null && found.table.role === "output"
+                  const priced = output ? pricedAt(found, row) : undefined
+                  return (
                     <td
                       key={key}
-                      className={`pointer-events-auto p-0 ${found.column.type === "bool" ? "text-center" : ""}`}
-                      style={{ borderLeft: "1px solid var(--border)" }}
-                      onPointerDown={typeHere}
-                    >
-                      <Cell
-                        found={found}
-                        value={sample[found.table.id]?.[oneRow(found) ? 0 : row]?.[found.column.id]}
-                        onChange={(value) => change((spec) => withSampleCell(spec, found.table.id, oneRow(found) ? 0 : row, found.column.id, value))}
-                        label={`${fieldLabel(found)} row ${row + 1}`}
-                        compact
-                      />
-                    </td>
-                  ) : (
-                    <td
-                      key={key}
-                      className="h-8 px-2.5 text-right tabular-nums"
+                      data-testid={output ? `priced-${key}-${row + 1}` : undefined}
+                      data-stale={output && stale && priced !== undefined ? "true" : undefined}
+                      className="h-8 px-2.5 text-right tabular-nums transition-opacity"
                       style={{
                         borderLeft: "1px solid var(--border)",
-                        background: found?.table.role === "output" ? "var(--bg-elevated)" : undefined,
-                        color: "var(--text-secondary)",
+                        background: output ? "var(--bg-elevated)" : undefined,
+                        color: priced === undefined || priced === null ? "var(--text-secondary)" : "var(--text-primary)",
+                        opacity: output && stale ? 0.5 : 1,
                       }}
                     >
-                      {found?.column.index ? row + 1 : null}
+                      {found?.column.index ? row + 1 : output ? shown(priced) : null}
                     </td>
-                  ),
-                )}
+                  )
+                })}
                 <td className="text-center">
                   {inputTables.length > 0 && (
                     <button

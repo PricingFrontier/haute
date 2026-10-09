@@ -1,6 +1,7 @@
 /**
  * The sheets' tabs (specs/workbench): one per sheet, the showing one marked; a sheet
- * added, renamed by double-click, and deleted with a confirmation when components are on it.
+ * added, renamed by double-click, and deleted with a confirmation when components are on
+ * it; and, read only in Preview, only switching sheets.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { cleanup, fireEvent, render, screen } from "@testing-library/react"
@@ -69,5 +70,18 @@ describe("PageTabs", () => {
     expect(currentForm().schema.tables).toHaveLength(3)
     expect(useWorkbenchViewStore.getState().pageId).toBe("p2")
     expect(screen.queryByRole("button", { name: /Delete sheet/ })).not.toBeInTheDocument()
+  })
+
+  it("read only, in Preview, only switches sheets, staying in Preview", () => {
+    useWorkbenchViewStore.setState({ section: "preview" })
+    render(<PageTabs readOnly />)
+
+    expect(screen.queryByRole("button", { name: "Add a sheet" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /Delete sheet/ })).not.toBeInTheDocument()
+    fireEvent.doubleClick(screen.getByRole("tab", { name: "Sheet 1" }))
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("tab", { name: "Sheet 2" }))
+    expect(useWorkbenchViewStore.getState()).toMatchObject({ pageId: "p2", section: "preview" })
   })
 })

@@ -1,9 +1,10 @@
 /**
  * Zustand store for the workbench view's own state while it shows (specs/workbench):
- * which section shows (the sheets or the schema), which sheet, the selected component,
- * the sheet's zoom, a component being dragged out of the palette, the properties panel's
- * width, and the sheet and viewport elements that drops are placed on and the zoom fits
- * to. None of it is part of the form, so none is saved or undone.
+ * which section shows (the sheets or the schema while building, or Preview), which
+ * sheet, the selected component, the sheet's zoom, a component being dragged out of the
+ * palette, the properties panel's width, and the sheet and viewport elements that drops
+ * are placed on and the zoom fits to. None of it is part of the form, so none is saved
+ * or undone.
  */
 import { create } from "zustand"
 import type { FormSpec, Page } from "../api/types"
@@ -11,7 +12,8 @@ import { SHEET_PADDING, fitZoom as zoomToFit } from "../utils/sheetGeometry"
 import type { WidgetType } from "../utils/workbenchForm"
 import useWorkbenchFormStore from "./useWorkbenchFormStore"
 
-export type WorkbenchSection = "sheets" | "schema"
+/** The sheets and the schema are Build's; Preview shows the sheets as an underwriter sees them. */
+export type WorkbenchSection = "sheets" | "schema" | "preview"
 
 /** A component being dragged out of the palette, and where the pointer is. */
 export interface Creating {
@@ -45,7 +47,7 @@ interface WorkbenchViewState {
   sheet: HTMLElement | null
   viewport: HTMLElement | null
   showSection: (section: WorkbenchSection) => void
-  /** Show a sheet: the sheets section, with nothing selected. */
+  /** Show a sheet, with nothing selected: in Preview as before, else on the sheets section. */
   showPage: (pageId: string) => void
   select: (id: string | null) => void
   setZoom: (zoom: number) => void
@@ -68,7 +70,7 @@ const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
   sheet: null,
   viewport: null,
   showSection: (section) => set({ section, selectedId: null }),
-  showPage: (pageId) => set({ section: "sheets", pageId, selectedId: null }),
+  showPage: (pageId) => set((s) => ({ section: s.section === "preview" ? "preview" : "sheets", pageId, selectedId: null })),
   select: (selectedId) => set({ selectedId }),
   setZoom: (zoom) => set({ zoom: Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom)) }),
   zoomBy: (step) => get().setZoom(get().zoom + step),

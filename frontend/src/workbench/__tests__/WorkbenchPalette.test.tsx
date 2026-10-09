@@ -1,11 +1,13 @@
 /**
  * The workbench's palette (specs/workbench): Table and Collection in Haute's palette
- * shell with the switcher under them, collapsing with the node palette.
+ * shell with the switcher under them, collapsing with the node palette, and disabled in
+ * Preview.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import useUIStore from "../../stores/useUIStore"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
+import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import WorkbenchPalette from "../WorkbenchPalette"
 
 describe("WorkbenchPalette", () => {
@@ -18,6 +20,7 @@ describe("WorkbenchPalette", () => {
     cleanup()
     useUIStore.setState({ paletteOpen: true })
     useWorkbenchStore.setState({ enabled: false, activeView: "pipeline" })
+    useWorkbenchViewStore.setState({ section: "sheets", creating: null })
   })
 
   it("offers a Table and a Collection, with the switcher at the bottom", () => {
@@ -40,5 +43,16 @@ describe("WorkbenchPalette", () => {
     fireEvent.click(screen.getByRole("button", { name: "Show component palette" }))
     expect(useUIStore.getState().paletteOpen).toBe(true)
     expect(screen.getByTestId("palette-item-tableInput")).toBeInTheDocument()
+  })
+
+  it("disables the components in Preview, saying where to lay out the sheets", () => {
+    useWorkbenchViewStore.setState({ section: "preview" })
+    render(<WorkbenchPalette />)
+
+    const item = screen.getByTestId("palette-item-tableInput")
+    expect(item).toHaveAttribute("aria-disabled", "true")
+    expect(item).toHaveAttribute("title", "Build to lay out the sheets")
+    fireEvent.pointerDown(item, { button: 0, clientX: 10, clientY: 10 })
+    expect(useWorkbenchViewStore.getState().creating).toBeNull()
   })
 })

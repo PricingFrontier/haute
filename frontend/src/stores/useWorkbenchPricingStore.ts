@@ -2,11 +2,12 @@
  * Zustand store for the sample priced live while building (specs/workbench): the form's
  * sample priced on the pipeline open in the editor, through the pricer the view host
  * gives it, whenever the schema or the sample changes once typing pauses; what the last
- * pricing gave, with the basis it was priced for, and why it last failed.
+ * pricing gave, with the basis it was priced for, and why it last failed. `priceForm`,
+ * the pricing itself, is Preview's too.
  */
 import { create } from "zustand"
 import { apiErrorMessage } from "../api/errors"
-import type { WorkbenchTablesResponse } from "../api/types"
+import type { FormSpec, WorkbenchTablesResponse } from "../api/types"
 import { fetchWorkbenchFormTables } from "../api/workbench"
 import { pricingBasis } from "../utils/workbenchForm"
 import type { PricedSample } from "../utils/workbenchTables"
@@ -15,9 +16,28 @@ import useWorkbenchFormStore from "./useWorkbenchFormStore"
 /** Prices a sample, given the tables, sample and response tables Haute takes from the form. */
 export type Pricer = (workbench: WorkbenchTablesResponse) => Promise<PricedSample>
 
+/** What pricing a form's values gave, with those values as the server typed them. */
+export interface PricedValues extends PricedSample {
+  /**
+   * The values priced, as the server typed them: each many-row input table's filled rows
+   * in order, which lines a Table's output rows up with its input rows by key.
+   */
+  sample: Readonly<Record<string, unknown>>
+}
+
 /** A priced sample, with the basis (the schema and the sample) it was priced for. */
-export interface SamplePrice extends PricedSample {
+export interface SamplePrice extends PricedValues {
   basis: string
+}
+
+/**
+ * Price a form's values on the pipeline: the tables, sample and response tables the
+ * server takes from the form (`POST /api/workbench/tables`), then the pricer on them.
+ */
+export async function priceForm(form: FormSpec, pricer: Pricer): Promise<PricedValues> {
+  const workbench = await fetchWorkbenchFormTables(form)
+  const { tables } = await pricer(workbench)
+  return { tables, sample: workbench.sample }
 }
 
 /** How long the form stays unchanged before its sample is priced: a pause in typing. */
@@ -78,10 +98,10 @@ const useWorkbenchPricingStore = create<WorkbenchPricingState>()((set, get) => (
       const basis = pricingBasis(form)
       set({ pricing: true })
       try {
-        const { tables } = await pricer(await fetchWorkbenchFormTables(form))
+        const priced = await priceForm(form, pricer)
         // The view left meanwhile: a late answer is nobody's.
         if (get().pricer !== pricer) return
-        set({ price: { basis, tables }, error: null })
+        set({ price: { basis, ...priced }, error: null })
       } catch (error: unknown) {
         if (get().pricer !== pricer) return
         set({ price: null, error: apiErrorMessage(error) })

@@ -9,9 +9,10 @@ import { addPage, createPage, removePage, renamePage } from "../utils/workbenchF
 /**
  * The sheets' tabs along the top (specs/workbench): one per sheet, the showing one
  * marked; double-click a tab to rename it; a plus adds a sheet; the showing sheet's cross
- * deletes it, asking first when components are on it, while another sheet remains.
+ * deletes it, asking first when components are on it, while another sheet remains. Read
+ * only, in Preview, the tabs only switch sheets.
  */
-export default function PageTabs() {
+export default function PageTabs({ readOnly = false }: { readOnly?: boolean }) {
   const form = useWorkbenchFormStore((s) => s.form)
   const change = useWorkbenchFormStore((s) => s.change)
   const pageId = useWorkbenchViewStore((s) => s.pageId)
@@ -70,8 +71,8 @@ export default function PageTabs() {
               role="tab"
               aria-selected={active}
               onClick={() => showPage(sheet.id)}
-              onDoubleClick={() => setRenaming(sheet.id)}
-              title="Double-click to rename"
+              onDoubleClick={readOnly ? undefined : () => setRenaming(sheet.id)}
+              title={readOnly ? undefined : "Double-click to rename"}
               className="-mb-px border-b-2 px-3 py-2 text-xs"
               style={{
                 borderColor: active ? "var(--accent)" : "transparent",
@@ -80,7 +81,7 @@ export default function PageTabs() {
             >
               {sheet.title}
             </button>
-            {active && form.pages.length > 1 && (
+            {!readOnly && active && form.pages.length > 1 && (
               <button
                 type="button"
                 onClick={deleteSheet}
@@ -94,16 +95,18 @@ export default function PageTabs() {
           </div>
         )
       })}
-      <button
-        type="button"
-        onClick={addSheet}
-        aria-label="Add a sheet"
-        title="Add a sheet"
-        className="focus-ring hover-bg rounded p-1.5"
-        style={{ color: "var(--text-secondary)" }}
-      >
-        <Plus size={14} aria-hidden="true" />
-      </button>
+      {!readOnly && (
+        <button
+          type="button"
+          onClick={addSheet}
+          aria-label="Add a sheet"
+          title="Add a sheet"
+          className="focus-ring hover-bg rounded p-1.5"
+          style={{ color: "var(--text-secondary)" }}
+        >
+          <Plus size={14} aria-hidden="true" />
+        </button>
+      )}
     </div>
   )
 }

@@ -5,25 +5,30 @@ import { GRID, SHEET_PADDING, sheetHeight, sheetWidth } from "../utils/sheetGeom
 import { shownFields, widgetProblems } from "../utils/workbenchForm"
 import { dropAt } from "./sheetInteractions"
 import SheetWidget from "./SheetWidget"
+import { SheetValuesContext, usePreviewValues, useSampleValues } from "./useSheetValues"
 import { WIDGET_KINDS } from "./widgetKinds"
 
 /**
  * The sheet showing, in a scrolling viewport (specs/workbench): a snap grid that fills
  * the viewport across at the zoom and grows to hold its components, each a
- * `SheetWidget`, with a ghost where a component dragged out of the palette would land.
- * Pressing the empty sheet deselects. The sheet and its viewport are registered with the
- * view store, which places drops on them and fits the zoom to them; what is on the sheet
- * is fitted to the viewport when the sheets first show.
+ * `SheetWidget` given the sheet's values (the sample while building, the quote in
+ * Preview), with, while building, a ghost where a component dragged out of the palette
+ * would land. Pressing the empty sheet deselects. The sheet and its viewport are
+ * registered with the view store, which places drops on them and fits the zoom to them;
+ * what is on the sheet is fitted to the viewport when the sheets first show.
  */
 export default function SheetCanvas() {
   const form = useWorkbenchFormStore((s) => s.form)
   const pageId = useWorkbenchViewStore((s) => s.pageId)
+  const previewing = useWorkbenchViewStore((s) => s.section === "preview")
   const zoom = useWorkbenchViewStore((s) => s.zoom)
   const selectedId = useWorkbenchViewStore((s) => s.selectedId)
   const select = useWorkbenchViewStore((s) => s.select)
   const setSheet = useWorkbenchViewStore((s) => s.setSheet)
   const setViewport = useWorkbenchViewStore((s) => s.setViewport)
   const fitZoom = useWorkbenchViewStore((s) => s.fitZoom)
+  const sample = useSampleValues()
+  const preview = usePreviewValues()
   const viewportRef = useRef<HTMLDivElement>(null)
   // The viewport's width changes with the window and the panels either side of it.
   const [viewportWidth, setViewportWidth] = useState(0)
@@ -80,16 +85,19 @@ export default function SheetCanvas() {
             backgroundSize: `${GRID * 2}px ${GRID * 2}px`,
           }}
         >
-          {page.widgets.map((widget) => (
-            <SheetWidget
-              key={widget.id}
-              widget={widget}
-              fields={shownFields(form, widget)}
-              selected={selectedId === widget.id}
-              problem={problems.get(widget.id) ?? null}
-            />
-          ))}
-          <DropGhost />
+          <SheetValuesContext value={previewing ? preview : sample}>
+            {page.widgets.map((widget) => (
+              <SheetWidget
+                key={widget.id}
+                widget={widget}
+                fields={shownFields(form, widget)}
+                selected={!previewing && selectedId === widget.id}
+                problem={problems.get(widget.id) ?? null}
+                editable={!previewing}
+              />
+            ))}
+          </SheetValuesContext>
+          {!previewing && <DropGhost />}
         </div>
       </div>
     </div>

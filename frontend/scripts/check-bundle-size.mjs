@@ -115,7 +115,10 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // The sample typed into the components and priced live (the cells, the pricing
 // store and priceSample, all lazy) bring it to 1,623.9 KiB; 1,626 KiB restores
 // about 2 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1626
+// Preview (the preview store, the sheet values and their rules, and the Table
+// output rows matched by key, all lazy) brings it to 1,627.1 KiB; 1,629 KiB
+// restores about 2 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1629
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

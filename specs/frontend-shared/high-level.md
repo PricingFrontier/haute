@@ -54,9 +54,8 @@ In scope:
   JS value, plus the literal `NODE_GROUP_COLORS` palette — it is a
   consumer-facing view of the token layer, not the layer itself.
 - `haute-ui` (`frontend/src/haute-ui/`), the kit Haute's toolbars and palettes are built
-  from and shares with Obverse's standalone form builder, which lays out the workbench's
-  sheets until they land in Haute ([workbench roadmap](../roadmap/workbench.md)), so its
-  views look like the
+  from and shared with Obverse's standalone form builder, which laid out the workbench's
+  sheets until they landed in Haute, so its views look like the
   editor: the toolbar's stylesheet, the React components the toolbar is built
   from (the brand, a two-row column, a labelled toolbar button, Undo/Redo,
   Zoom In/Zoom Out and Save/Commit), the palette's shell (its column, its

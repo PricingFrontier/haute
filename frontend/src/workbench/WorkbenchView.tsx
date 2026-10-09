@@ -41,12 +41,14 @@ const BANNER_STYLE = {
  * The workbench's view, over the area below the toolbar while it is the active view
  * (specs/workbench): the component palette with the switcher back to the pipeline, then
  * the section the toolbar chose, the sheets (their tabs over the sheet showing, with the
- * selected component's properties panel on the right) or the schema editor, on the form
- * the store reads when the view first shows. A save refused because the file changed on
- * disk is reported in a banner with the way out, a reload. The toolbar's Git and Assistant
+ * selected component's properties panel on the right), the schema editor, or Preview,
+ * the sheets as an underwriter sees them with the quote keyed into them, on the form the
+ * store reads when the view first shows. A save refused because the file changed on disk
+ * is reported in a banner with the way out, a reload. The toolbar's Git and Assistant
  * panels open beside the view, in the properties panel's place. While the view shows, the
  * sample is priced on the pipeline whenever the schema or the sample changes once typing
- * pauses, and when the sheets show, as the pipeline may have changed meanwhile.
+ * pauses, and when the sheets show while building, as the pipeline may have changed
+ * meanwhile.
  */
 export default function WorkbenchView({ onSave, isInsideSubmodel, readOnly, resolveGraph }: WorkbenchViewProps) {
   const status = useWorkbenchFormStore((s) => s.status)
@@ -99,7 +101,7 @@ export default function WorkbenchView({ onSave, isInsideSubmodel, readOnly, reso
           ) : (
             <>
               <div className="px-4 pt-2">
-                <PageTabs />
+                <PageTabs readOnly={section === "preview"} />
               </div>
               <SheetCanvas />
             </>

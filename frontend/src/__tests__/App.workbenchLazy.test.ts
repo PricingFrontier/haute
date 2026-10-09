@@ -16,7 +16,7 @@ const SRC = path.resolve(__dirname, "..")
 const appSource = readFileSync(path.join(SRC, "App.tsx"), "utf8")
 // The lazy workbench chunks: only the view and its toolbar may import these statically.
 const LAZY_WORKBENCH_MODULES =
-  /(?:workbench\/WorkbenchView|workbench\/WorkbenchToolbar|workbench\/SchemaEditor|stores\/useWorkbenchFormStore|utils\/workbenchForm$)/
+  /(?:workbench\/WorkbenchView|workbench\/WorkbenchToolbar|workbench\/SchemaEditor|stores\/useWorkbenchFormStore|stores\/useWorkbenchPreviewStore|utils\/workbenchForm$)/
 // Eager modules that take part in the view's host: they read the status store alone.
 const EAGER_WORKBENCH_CHROME = [
   "App.tsx",

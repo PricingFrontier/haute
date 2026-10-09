@@ -15,43 +15,49 @@ const HANDLE_CLASS: Record<Handle, string> = {
 }
 
 /**
- * A component on the sheet while building (specs/workbench): its picture, inert, in a
- * frame that selects it and drags it, and, once selected, eight handles that resize it.
- * A problem with what it shows draws its frame dashed in the warning colour, naming the
- * problem on hover.
+ * A component on the sheet (specs/workbench): its picture, inert but for its cells, in a
+ * frame that, while building, selects it and drags it and, once selected, grows eight
+ * handles that resize it. In Preview the frame does nothing: the sheet is an
+ * underwriter's, and only the cells respond. A problem with what it shows draws the
+ * frame dashed in the warning colour, naming the problem on hover.
  */
 export default function SheetWidget({
   widget,
   fields,
   selected,
   problem,
+  editable,
 }: {
   widget: Widget
   fields: ShownField[]
   selected: boolean
   /** What stops it showing what it should, or null. */
   problem: string | null
+  /** While building: selected, moved and resized by its frame. */
+  editable: boolean
 }) {
   const frame = selected
     ? "border-[var(--accent)]"
     : problem !== null
       ? "border-dashed border-[var(--warning)]"
-      : "border-transparent group-hover:border-[var(--border-strong)]"
+      : editable
+        ? "border-transparent group-hover:border-[var(--border-bright)]"
+        : "border-transparent"
   return (
     <div
       role="group"
       aria-label={widgetName(widget)}
       data-testid={`sheet-widget-${widget.id}`}
       data-selected={selected ? "true" : undefined}
-      className="group absolute cursor-move"
+      className={`group absolute ${editable ? "cursor-move" : ""}`}
       style={{ left: widget.x, top: widget.y, width: widget.w, height: widget.h, zIndex: selected ? 5 : 1 }}
-      onPointerDown={(event) => startTransform(event, widget.id)}
+      onPointerDown={editable ? (event) => startTransform(event, widget.id) : undefined}
     >
       <div className="pointer-events-none h-full">
         <WidgetBody widget={widget} fields={fields} />
       </div>
       <div className={`pointer-events-none absolute -inset-1 rounded-md border ${frame}`} title={problem ?? undefined} />
-      {selected && HANDLES.map((handle) => <ResizeHandle key={handle} id={widget.id} handle={handle} />)}
+      {editable && selected && HANDLES.map((handle) => <ResizeHandle key={handle} id={widget.id} handle={handle} />)}
     </div>
   )
 }

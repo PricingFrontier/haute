@@ -1,9 +1,11 @@
-import { Database, Sheet } from "lucide-react"
+import { Calculator, Database, Eraser, Eye, Sheet, Wrench } from "lucide-react"
 import ProjectControls from "../components/ProjectControls"
 import { ToolbarBrand, ToolbarButton, ToolbarColumn, UndoRedo, ZoomInOut } from "../haute-ui"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
+import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore from "../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore, { ZOOM_STEP } from "../stores/useWorkbenchViewStore"
+import { filled } from "../utils/sheetValues"
 
 declare const __APP_VERSION__: string
 
@@ -13,11 +15,12 @@ interface WorkbenchToolbarProps {
 }
 
 /**
- * The toolbar while the workbench's view shows (specs/workbench): the brand, the view's
- * sections (Sheets over Schema), the form's Undo and Redo, Zoom In over Zoom Out while the
- * sheets show, why pricing the sample last failed, and the project's controls, whose Save
- * saves the form and whose Commit records a milestone through the host, the form and the
- * pipeline saved first.
+ * The toolbar while the workbench's view shows (specs/workbench): the brand; Build over
+ * Preview; while building, Sheets over Schema, the form's Undo and Redo and, while the
+ * sheets show, Zoom In over Zoom Out and why pricing the sample last failed; in Preview,
+ * Price over Clear for the quote, the zoom, and why the quote has no price; and the
+ * project's controls, whose Save saves the form and whose Commit records a milestone
+ * through the host, the form and the pipeline saved first.
  */
 export default function WorkbenchToolbar({ onCommit }: WorkbenchToolbarProps) {
   const ready = useWorkbenchFormStore((s) => s.status === "ready")
@@ -30,30 +33,65 @@ export default function WorkbenchToolbar({ onCommit }: WorkbenchToolbarProps) {
   const section = useWorkbenchViewStore((s) => s.section)
   const showSection = useWorkbenchViewStore((s) => s.showSection)
   const zoomBy = useWorkbenchViewStore((s) => s.zoomBy)
-  const pricingError = useWorkbenchPricingStore((s) => s.error)
+  const sampleError = useWorkbenchPricingStore((s) => s.error)
+  const previewError = useWorkbenchPreviewStore((s) => s.error)
+  const pricing = useWorkbenchPreviewStore((s) => s.pricing)
+  const blank = useWorkbenchPreviewStore((s) => !Object.values(s.quote).some((rows) => rows.some((row) => Object.values(row).some(filled))))
+  const priceQuote = useWorkbenchPreviewStore((s) => s.priceQuote)
+  const clear = useWorkbenchPreviewStore((s) => s.clear)
+  const previewing = section === "preview"
+  const note = previewing
+    ? previewError === null ? null : { text: previewError, title: previewError }
+    : sampleError === null ? null : { text: `Pricing failed: ${sampleError}`, title: sampleError }
 
   return (
     <header role="toolbar" aria-label="Workbench toolbar" className="toolbar flex-wrap gap-y-2 [&>div]:shrink-0">
       <ToolbarBrand name="haute" version={__APP_VERSION__} />
       <div className="ml-2.5 flex flex-wrap items-center gap-2.5" data-testid="workbench-toolbar-actions">
-        <ToolbarColumn role="group" aria-label="Section">
-          <ToolbarButton icon={Sheet} aria-pressed={section === "sheets"} onClick={() => showSection("sheets")} title="Lay out the sheets">
-            Sheets
+        <ToolbarColumn role="group" aria-label="Mode">
+          <ToolbarButton icon={Wrench} aria-pressed={!previewing} onClick={() => showSection("sheets")} title="Lay out the sheets and the schema">
+            Build
           </ToolbarButton>
-          <ToolbarButton icon={Database} aria-pressed={section === "schema"} onClick={() => showSection("schema")} title="The tables the sheets work with">
-            Schema
+          <ToolbarButton icon={Eye} aria-pressed={previewing} onClick={() => showSection("preview")} title="Use the sheets as an underwriter would">
+            Preview
           </ToolbarButton>
         </ToolbarColumn>
-        <UndoRedo canUndo={ready && canUndo} canRedo={ready && canRedo} onUndo={undo} onRedo={redo} />
-        {section === "sheets" && <ZoomInOut onZoomIn={() => zoomBy(ZOOM_STEP)} onZoomOut={() => zoomBy(-ZOOM_STEP)} />}
-        {pricingError !== null && (
+        {previewing ? (
+          <ToolbarColumn role="group" aria-label="Quote">
+            <ToolbarButton icon={Calculator} onClick={() => { void priceQuote() }} disabled={!ready || pricing} title="Check the quote and price it on the pipeline">
+              Price
+            </ToolbarButton>
+            <ToolbarButton
+              icon={Eraser}
+              onClick={() => { if (window.confirm("Clear the quote? Every cell will be emptied.")) clear() }}
+              disabled={blank}
+              title="Start a new quote"
+            >
+              Clear
+            </ToolbarButton>
+          </ToolbarColumn>
+        ) : (
+          <>
+            <ToolbarColumn role="group" aria-label="Section">
+              <ToolbarButton icon={Sheet} aria-pressed={section === "sheets"} onClick={() => showSection("sheets")} title="Lay out the sheets">
+                Sheets
+              </ToolbarButton>
+              <ToolbarButton icon={Database} aria-pressed={section === "schema"} onClick={() => showSection("schema")} title="The tables the sheets work with">
+                Schema
+              </ToolbarButton>
+            </ToolbarColumn>
+            <UndoRedo canUndo={ready && canUndo} canRedo={ready && canRedo} onUndo={undo} onRedo={redo} />
+          </>
+        )}
+        {section !== "schema" && <ZoomInOut onZoomIn={() => zoomBy(ZOOM_STEP)} onZoomOut={() => zoomBy(-ZOOM_STEP)} />}
+        {note !== null && (
           <span
             data-testid="workbench-pricing-error"
             className="max-w-72 truncate text-xs"
             style={{ color: "var(--warning)" }}
-            title={pricingError}
+            title={note.title}
           >
-            Pricing failed: {pricingError}
+            {note.text}
           </span>
         )}
       </div>
