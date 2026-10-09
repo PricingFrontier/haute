@@ -131,4 +131,12 @@ describe("WorkbenchOutputEditor", () => {
       "The editor updates these tables only at the pipeline's top level.",
     )
   })
+
+  it("offers to edit the tables in the workbench's view while the workbench is enabled", () => {
+    renderEditor()
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit in Workbench" }))
+    expect(useWorkbenchStore.getState().activeView).toBe("workbench")
+    useWorkbenchStore.setState({ activeView: "pipeline" })
+  })
 })

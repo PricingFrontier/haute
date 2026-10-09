@@ -100,6 +100,7 @@ from haute.schemas import (
     UtilityReadResponse,
     UtilityWriteResponse,
     WarehouseListResponse,
+    WorkbenchFormResponse,
     WorkbenchStatusResponse,
     WorkbenchTablesResponse,
 )
@@ -190,7 +191,7 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         RatingLevelsResponse,
     ),
     "io": (IoCapabilitiesResponse,),
-    "workbench": (WorkbenchStatusResponse, WorkbenchTablesResponse),
+    "workbench": (WorkbenchStatusResponse, WorkbenchTablesResponse, WorkbenchFormResponse),
     "session": (
         SessionStatusResponse,
         BrowseFilesResponse,
@@ -219,7 +220,22 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
 }
 
 
-class _ResponseJsonSchema(GenerateJsonSchema):
+class _BundleJsonSchema(GenerateJsonSchema):
+    """Describe a model in the JSON Schema dialect the bundle's validators compile.
+
+    A tagged union is its ``oneOf`` alone: each branch carries the tag as a
+    ``const``, which is what decides the branch, while the ``discriminator``
+    keyword pydantic adds beside it is OpenAPI's, undefined in JSON Schema
+    2020-12 and refused by Ajv in strict mode.
+    """
+
+    def tagged_union_schema(self, schema: core_schema.TaggedUnionSchema) -> JsonSchemaValue:
+        json_schema = super().tagged_union_schema(schema)
+        json_schema.pop("discriminator", None)
+        return json_schema
+
+
+class _ResponseJsonSchema(_BundleJsonSchema):
     """Describe a response as the server serializes it.
 
     FastAPI always sends every declared field, defaults included, so each one
@@ -359,7 +375,7 @@ def _definitions_for(
     model: _ContractModel,
     *,
     mode: JsonSchemaMode = "validation",
-    schema_generator: type[GenerateJsonSchema] = GenerateJsonSchema,
+    schema_generator: type[GenerateJsonSchema] = _BundleJsonSchema,
 ) -> dict[str, Any]:
     schema = model.model_json_schema(
         ref_template="#/$defs/{model}",

@@ -61,6 +61,7 @@ from haute._types import GraphEdge as GraphEdge  # noqa: F401
 from haute._types import GraphNode as GraphNode  # noqa: F401
 from haute._types import NodeData as GraphNodeData  # noqa: F401
 from haute._types import PipelineGraph as Graph  # noqa: F401
+from haute._workbench_form import FormSpec
 
 
 def _reject_bool(value: object) -> object:
@@ -170,6 +171,28 @@ class WorkbenchTablesResponse(BaseModel):
     tables: list[dict[str, Any]]
     sample: dict[str, Any] = Field(default_factory=dict)
     response_tables: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class WorkbenchFormResponse(BaseModel):
+    """The workbench's form as its file holds it now, with the file's revision.
+
+    ``revision`` is the file's content hash, which a save quotes as its ``base_revision``;
+    null while the form has never been saved, when ``form`` is the blank form.
+    """
+
+    form: FormSpec
+    revision: str | None = None
+
+
+class WorkbenchFormSaveRequest(BaseModel):
+    """The whole form to write, with the revision of the file it was read from.
+
+    ``base_revision`` must still be the file's revision (null: the file did not exist), or
+    the save is refused as stale and nothing is written.
+    """
+
+    form: FormSpec
+    base_revision: str | None = None
 
 
 # ---------------------------------------------------------------------------

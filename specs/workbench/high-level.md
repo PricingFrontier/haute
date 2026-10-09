@@ -14,14 +14,17 @@ own copy of them, with the sample quote its previews run on. The schema's output
 what a priced quote fills in: the pipeline fills them through a Workbench Output, a node
 type of its own beside the Quote Response, whose input ports are those tables.
 
-This component owns the switch, the form file and its reading, the routes that serve the
-form's tables to the editor, the `haute init --workbench` scaffold, and the two workbench
-node types: where their tables come from, how the editor keeps them current, what a
-Workbench Input gives without a request and how a Workbench Output's frames fill the
-response. The view in which the form is edited inside Haute is planned
-([`WB-02`](../roadmap/workbench.md#wb-02--the-workbench-view-with-the-schema-editor) and
-after); until it lands the form is edited by Obverse's standalone builder, which writes the
-same file.
+This component owns the switch, the form file with its reading, its saving and its
+revision, the routes that serve the form and its tables to the editor, the
+`haute init --workbench` scaffold, the Workbench view in which the form is edited inside
+Haute (its host beside the pipeline editor, its toolbar and shortcuts, and so far its
+schema editor), and the two workbench node types: where their tables come from, how the
+editor keeps them current, what a Workbench Input gives without a request and how a
+Workbench Output's frames fill the response. The view's sheets, the sample typed while
+building, Preview and the form's place on the save ledger are planned
+([the workbench roadmap](../roadmap/workbench.md)); until they land, a form's sheets are
+laid out outside Haute, by Obverse's standalone builder, which writes the same file, or by
+hand.
 
 ## Scope
 
@@ -36,6 +39,11 @@ In scope:
   same shape.
 - `GET /api/workbench`, the status the editor reads, and `GET /api/workbench/tables`, the
   tables, sample and response tables as the form defines them now.
+- `GET /api/workbench/form`, the form with its file's revision, and
+  `PUT /api/workbench/form`, which writes the form unless the file changed since it was read.
+- The Workbench view: how it is shown beside the pipeline editor and what the pipeline
+  editor does meanwhile, its toolbar and keyboard shortcuts, its schema editor, and how
+  the form is read into it and saved from it.
 - The Workbench Input, the node type that holds a copy of the tables and sample, which the
   editor keeps current and shows, and previews on.
 - The Workbench Output, the node type that holds a copy of the output tables, which the
@@ -43,9 +51,9 @@ In scope:
 
 Out of scope:
 
-- Editing the form inside Haute: the workbench view, its schema editor, sheets, the sample
-  typed while building and priced live, Preview, and the form on the save ledger. Each is a
-  package of the [workbench roadmap](../roadmap/workbench.md).
+- The view's sheets, the sample typed while building and priced live, Preview, and the
+  form on the save ledger. Each is a package of the
+  [workbench roadmap](../roadmap/workbench.md).
 - The toolbar's pipeline controls ([frontend-shared](../frontend-shared/high-level.md)) and
   the canvas, palette and keyboard shortcuts
   ([frontend-graph-canvas](../frontend-graph-canvas/high-level.md)).
@@ -89,7 +97,8 @@ Out of scope:
   and showing its `fields`, schema columns named by table id and column id so a rename keeps
   them. The sample holds, by table id, rows keyed by column id, each value as typed: text or
   a tick. Haute reads the file whole whenever it needs it and never keeps it in memory, so an
-  edit by the standalone builder or by hand reaches the next request.
+  edit made outside the view reaches the next request. A file that does not exist is the
+  blank form, never saved: one sheet, no tables, no sample.
 - **Status.** `GET /api/workbench` answers `enabled` and, while enabled, `form`, the path as
   `haute.toml` names it. The editor reads it once when it starts. While the workbench is not
   enabled nothing in the editor changes on its account.
@@ -100,6 +109,53 @@ Out of scope:
   ([json-shredding](../json-shredding/high-level.md)) and a breach answers the structured 422
   that Infer Tables answers; the sample is served unchecked, since a sample that does not fit
   fails the previews that read it and never stops the tables updating.
+- **The form, served and saved.** `GET /api/workbench/form` answers the form as its file
+  holds it now and the file's `revision`, the content hash of its bytes: `null` while the
+  file does not exist, when the form is the blank one. `PUT /api/workbench/form` takes the
+  whole form and the `base_revision` it was read at, writes the file (every field, in its
+  canonical spelling) and answers the form with its new revision. A file whose revision is
+  no longer `base_revision`, edited by hand or by a branch switch, is left as it is and the
+  save is refused with 409 and a `stale_document_revision` detail, as the pipeline's save
+  refuses a stale document; a first save (`base_revision` `null`) creates the file unless
+  one has appeared. Both routes answer 404 while the workbench is not enabled.
+- **The view.** While the workbench is enabled, a view switcher at the bottom of the left
+  palette offers "Pricing", the pipeline editor, and "Workbench". The Workbench view
+  covers the area below the toolbar: its own left column, with the view's sections (so far
+  Schema) and the switcher back, and the schema editor. Meanwhile the pipeline editor stays
+  mounted (live sync, the document and its undo history go on) but invisible and inert, its
+  keyboard shortcuts, Ctrl/Cmd+Enter and React Flow's delete and pan keys off and its
+  floating menus closed, so a key pressed in the view never edits the hidden pipeline. The
+  toolbar keeps the brand and the project's controls (Assistant, Help, the branch and Save)
+  and shows the view's own, the form's Undo and Redo. Save and Ctrl/Cmd+S save the form,
+  with a focused field's edit included; the view has no Commit until the form is on the
+  save ledger, and the Git panel's own Commit still records the pipeline. The Git and
+  Assistant panels open beside the view. The Workbench Input's and Workbench Output's
+  panels offer "Edit in Workbench", which shows the view. The view reads the form when it
+  first shows and keeps it, with its unsaved edits and history, across a trip to the
+  pipeline editor; a form that cannot be read is reported in the view, with what is wrong
+  and a way to try again.
+- **The schema editor.** The form's tables, each with its name, its role (Input, sent to
+  the pricing engine, or Output, returned by it), its rows (One row per quote, or Many
+  rows) and its columns; each column with its type, drawn as the step editor's marker for
+  the kind (a number, text, true/false, a date) in the data preview's colour and changed
+  from it, its name and, in a many-row table, whether it is a key. A column's label and, in
+  an input table, its rules (required, a range for a number, the allowed values) open
+  beside it. Every text field commits on blur or Enter, so an edit is one undo step; Enter
+  in a column's name adds the next column, Alt+Up and Alt+Down move one, and a new table's
+  or column's name takes the focus. A many-row table can have an index: a column first in
+  the table, `row_number` until renamed, an Integer whose type cannot change, numbering
+  the rows from 1; switching a table to one row clears its keys. Removing a column or a
+  table a sheet shows asks first, and takes it off the sheet and out of the sample. The
+  editor says what would stop the schema being the pipeline's tables: a table's name is
+  held to the port rules the Quote Input's labels are held to (an identifier, none of the
+  document's reserved labels, unique whatever its case), a column's name is an identifier
+  unique in its table, a many-row table needs a key, and an input column's range must not
+  be inverted and its allowed values must be of its type.
+- **Saved.** A successful save adopts the file's new revision and fetches the tables
+  again, so the Workbench Input's and Workbench Output's copies follow the schema and the
+  pipeline has changes to save, as after any fetch. A save refused as stale keeps the edits
+  and says so, in a toast and in a banner in the view whose Reload reads the file again,
+  dropping the edits and the history.
 - **The tables as Haute takes them.** The input tables are the Workbench Input's, in schema
   order. In each quote a one-row table is an object under its own name (table path `$[:]`,
   columns `$[:].<table>.<column>`) and a many-row table is an array of objects under its name
@@ -294,10 +350,25 @@ Out of scope:
   that needs it rather than caching it, so the standalone builder's save, a hand edit and a
   branch switch each reach the next fetch without a restart or a stale copy.
 - **Read per request, fail where it can be fixed.** The status and tables routes read
-  `haute.toml` and the form each time. A bad `[workbench]` table or a missing or invalid form
+  `haute.toml` and the form each time. A bad `[workbench]` table or an invalid form
   answers 409 with what to fix, which the editor shows as a toast, and the pipeline editor goes
   on working; a server that refused to start would hide the pipeline for a typo in the
   workbench's settings.
+- **One view host, natively.** The view is shown the way the extension host showed
+  Obverse's: the pipeline editor stays mounted, so nothing it holds is lost, and only its
+  keyboard and React Flow's document-level keys are fenced. A second React or a shadow root
+  bought nothing once the view was Haute's own, so the host returned natively with it.
+- **One revision rule.** The form's revision is the content hash of its file's bytes, as
+  the pipeline's manifest hashes its files, and a stale save answers the pipeline save's
+  code, so the editor matches one refusal. The bytes are hashed rather than the parsed
+  form, so a hand edit that changes only whitespace still counts as a change: the view
+  read other bytes, and a save over them must say so.
+- **The blank form is a form.** A project whose workbench was enabled by hand has no file
+  yet, and the view is where its first form is made, so an absent file reads as the blank
+  form with no revision rather than as an error, and the first save creates it.
+- **Commit on blur.** The schema editor's fields commit as Haute's editors commit, once
+  per edit, so an undo step is an edit rather than a keystroke and no timer decides where
+  one edit ends and the next begins.
 - **Canonical only.** The form has one shape. A field is always written, so a file never says
   one thing by presence and another by absence, and an unknown field is refused by name rather
   than carried or dropped; nothing migrates an older spelling, as the repository's
@@ -356,8 +427,9 @@ Out of scope:
 ## Interactions
 
 - [server-api](../server-api/high-level.md): `haute.server` includes the workbench router
-  with its feature routers and owns the response models; the application's exception
-  handlers answer a workbench problem as 409.
+  with its feature routers and owns the response and request models; the application's
+  exception handlers answer a workbench problem as 409, and a stale save answers the
+  pipeline save's `stale_document_revision` code.
 - [cli](../cli/high-level.md): `haute init --workbench` writes the table and the blank form.
 - [pipeline-config](../pipeline-config/high-level.md): the `[workbench]` table in the shared
   `haute.toml` schema, the starter form among the scaffold's templates, and the
@@ -370,8 +442,11 @@ Out of scope:
   takes `forms/` with the pipeline's files.
 - [sandbox-security](../sandbox-security/high-level.md): the local Host, Origin and session
   middleware gate the workbench routes.
-- [frontend-shared](../frontend-shared/high-level.md): the API client validates the two
-  workbench responses with the generated contract.
+- [frontend-shared](../frontend-shared/high-level.md): the API client validates the three
+  workbench responses with the generated contract; the workbench's toolbar is built from
+  the kit's brand and Undo/Redo and the project's controls the pipeline toolbar ends with,
+  and the schema editor's fields are the shared form primitives (the committed and
+  validated text fields, the checkbox and the icon select).
 - [engineering-quality](../engineering-quality/high-level.md): the generated contract bundle
   carries the `workbench` response group.
 - [json-shredding](../json-shredding/high-level.md): the v2 tables the form defines, checked by
@@ -379,10 +454,12 @@ Out of scope:
   in memory, and the Quote Response's assembler building a Workbench Output's response.
 - [frontend-node-editors](../frontend-node-editors/high-level.md): the palette's Workbench
   Input and Workbench Output and their panels.
-- [frontend-graph-canvas](../frontend-graph-canvas/high-level.md): a palette drop reports the
-  node it creates, the commit controller checks an update's `isCurrent`, the request inputs
-  share one singleton slot and the response nodes another, and a Workbench Output's
-  connections land on its tables' ports.
+- [frontend-graph-canvas](../frontend-graph-canvas/high-level.md): the editor shell hosts
+  the view, hiding and fencing the pipeline editor while it shows, and its keyboard
+  shortcuts register nothing then; a palette drop reports the node it creates, the commit
+  controller checks an update's `isCurrent`, the request inputs share one singleton slot
+  and the response nodes another, and a Workbench Output's connections land on its
+  tables' ports.
 - [caching](../caching/high-level.md): a Workbench Input's `tables` and `sample`, and a
   Workbench Output's `tables`, are classified as node config, and a Workbench Input's tables
   have no input snapshots.
@@ -400,15 +477,26 @@ Out of scope:
   is refused like a configured path that escapes it. The editor shows the message as one error toast and goes on; the
   table is read again on the next request. `haute deploy` refuses an unknown key under
   `[workbench]` as it refuses any unknown `haute.toml` key.
-- While the workbench is enabled, a form that does not exist fails `GET /api/workbench/tables`
-  with 409 "<form> does not exist: create it, point [workbench].form at the form, or set
-  [workbench] enabled = false in haute.toml." (`haute init --workbench` is for a new project:
-  it refuses a project that already has a `haute.toml`), and one that cannot be read, is not
-  UTF-8 text, is not JSON or does not fit the form's shape with 409 naming the file and the
-  first thing wrong with it. A fetch that fails
-  shows one error toast and changes no Workbench Input or Workbench Output; a fetch made for
-  an earlier document never changes the current one, and an update it started that is still
-  waiting on identity resolution is dropped with the commit controller's usual message.
+- While the workbench is enabled, a form file that cannot be read, is not UTF-8 text, is
+  not JSON or does not fit the form's shape fails `GET /api/workbench/tables` and
+  `GET /api/workbench/form` with 409 naming the file and the first thing wrong with it; a
+  file that does not exist is the blank form. A fetch of the tables that fails shows one
+  error toast and changes no Workbench Input or Workbench Output; a fetch made for an
+  earlier document never changes the current one, and an update it started that is still
+  waiting on identity resolution is dropped with the commit controller's usual message. A
+  read of the form that fails is shown in the view in place of the schema editor, with a
+  way to try again.
+- `PUT /api/workbench/form` answers 404 while the workbench is not enabled; 409
+  "stale_document_revision: The workbench's form changed on disk after the workbench read
+  it. Reload the workbench before saving." when the file's revision is not the
+  `base_revision` quoted (a file that appeared since a first save included), writing
+  nothing; and FastAPI's 422 for a body that is not a form, as any typed body answers. The
+  view reports a stale refusal in a toast and a banner, keeping the edits until Reload, and
+  any other failed save in one error toast naming the cause.
+- The schema editor refuses nothing: a problem is shown beside its table, and a save
+  writes the form as it is. The tables route then answers the structured 422 for a table
+  the Quote Input's rules refuse, which the tables fetch shows as one toast, so the
+  problem is visible in both views until it is fixed.
 - `GET /api/workbench/tables` answers 404 while the workbench is not enabled; the editor
   never asks then. Tables or response tables that break the Quote Input's schema rules, such
   as a table named with a Python keyword, answer the structured 422 that Infer Tables answers.

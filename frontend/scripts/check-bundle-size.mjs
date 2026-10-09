@@ -104,7 +104,11 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // Showing EBM terms and t-boost tables as tables first, with a chart on request
 // (the shared term view, level table and interaction lines), brings it to
 // 1,595.2 KiB; 1,597 KiB, approved, restores about 1.8 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1597
+// The workbench view's lazy chunks (the view with its schema editor and the
+// form's operations, 6.4 KiB; the form store; the workbench toolbar; and the
+// workbench validators, grown by the form's schema) bring the complete
+// production bundle to 1,613.9 KiB; 1,616 KiB restores about 2 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1616
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All
@@ -222,13 +226,22 @@ const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // status store fence, banner, revalidation hook) and the naming context every
 // node creation and rename sends. The merged initial bundle is 287.6 KiB;
 // 289 KiB restores ~1.4 KiB of headroom.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 289
+// The workbench view adds ~3.8 KiB of deliberate eager code: the view switcher
+// at the bottom of the palette, the host in App that hides and fences the
+// pipeline editor while the view shows, the status store's active view, the
+// form routes' client functions and the keystroke-target helpers both shortcut
+// hooks share. The view, its toolbar, the schema editor, the form store and
+// the form's generated validator stay lazy (App.workbenchLazy.test.ts). The
+// merged initial bundle is 291.4 KiB; 293 KiB restores ~1.6 KiB of headroom.
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 293
 
 // Chunks that should only be fetched when their preview or editor is needed.
 // If one appears as a startup modulepreload, the app has likely
 // reintroduced an eager import path even if the initial gzip budget still fits.
 export const LAZY_ONLY_MODULEPRELOAD_CHUNK_PREFIXES = [
   "ensureInputSnapshots",
+  "WorkbenchView",
+  "WorkbenchToolbar",
   "TracePanel",
   "ModellingPreview",
   "PipelineRepairDialog",

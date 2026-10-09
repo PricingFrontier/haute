@@ -846,6 +846,16 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/WorkbenchStatusResponse"},
         },
     },
+    "/api/workbench/form": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchFormResponse"},
+        },
+        "PUT": {
+            "request_ref": "#/components/schemas/WorkbenchFormSaveRequest",
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchFormResponse"},
+        },
+    },
     "/api/workbench/tables": {
         "GET": {
             "request_ref": None,

@@ -1,5 +1,6 @@
-"""The workbench routes (specs/workbench): the status the editor reads, and the tables as
-the form defines them now, read from the working directory on each request."""
+"""The workbench routes (specs/workbench): the status the editor reads, the tables as the
+form defines them now, and the form itself with its revision, read from the working
+directory on each request, and saved only against the revision it was read at."""
 
 from __future__ import annotations
 
@@ -11,6 +12,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from haute._workbench_form import FormSpec, blank_form, render_form
 from haute.routes._error_handlers import install_exception_handlers
 from haute.routes.workbench import router
 
@@ -112,16 +114,124 @@ def test_the_form_is_read_from_where_the_table_says(project: Path) -> None:
     assert client().get("/api/workbench/tables").json()["tables"][0]["label"] == "policy_details"
 
 
-def test_a_missing_form_answers_409_saying_how_to_create_it(project: Path) -> None:
+def test_a_missing_form_is_the_blank_form_with_no_tables(project: Path) -> None:
     enable(project)
 
-    response = client().get("/api/workbench/tables")
+    tables = client().get("/api/workbench/tables")
+    served = client().get("/api/workbench/form")
 
-    assert response.status_code == 409
-    assert response.json()["detail"] == (
-        "forms/form.json does not exist: create it, point [workbench].form at the form, "
-        "or set [workbench] enabled = false in haute.toml."
+    assert tables.json() == {"tables": [], "sample": {}, "response_tables": []}
+    assert served.status_code == 200, served.text
+    # Never saved, so there is no revision to quote: the first save creates the file.
+    assert served.json() == {
+        "form": json.loads(render_form(blank_form(project.name))),
+        "revision": None,
+    }
+
+
+def test_the_form_is_served_with_its_revision_and_saved_against_it(project: Path) -> None:
+    enable(project)
+    write_form(project, form(POLICY, PRICING))
+
+    served = client().get("/api/workbench/form")
+    assert served.status_code == 200, served.text
+    body = served.json()
+    # Every field is served, defaults included, as the file is written.
+    assert body["form"]["schema"]["tables"][0]["columns"][1] == {
+        "id": "c_exposure",
+        "name": "exposure",
+        "type": "float",
+        "label": "",
+        "key": False,
+        "required": False,
+        "min": None,
+        "max": None,
+        "options": [],
+        "index": False,
+    }
+    revision = body["revision"]
+    assert isinstance(revision, str) and len(revision) == 16
+
+    policy, pricing = body["form"]["schema"]["tables"]
+    renamed = {**body["form"], "schema": {"tables": [{**policy, "name": "policy"}, pricing]}}
+    saved = client().put("/api/workbench/form", json={"form": renamed, "base_revision": revision})
+
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["form"] == renamed
+    assert saved.json()["revision"] != revision
+    # The file holds the form's canonical text, and the next read answers the new revision.
+    text = (project / "forms" / "form.json").read_text(encoding="utf-8")
+    assert text == render_form(FormSpec.model_validate(renamed))
+    assert client().get("/api/workbench/form").json() == {
+        "form": renamed,
+        "revision": saved.json()["revision"],
+    }
+    assert [t["label"] for t in client().get("/api/workbench/tables").json()["tables"]] == [
+        "policy"
+    ]
+
+
+def test_a_save_against_a_form_that_changed_on_disk_is_refused_writing_nothing(
+    project: Path,
+) -> None:
+    enable(project)
+    write_form(project, form(POLICY))
+    served = client().get("/api/workbench/form").json()
+
+    # Edited after the workbench read it: by hand, or by a branch switch.
+    write_form(project, form({**POLICY, "name": "policy"}))
+    stale = client().put(
+        "/api/workbench/form", json={"form": served["form"], "base_revision": served["revision"]}
     )
+
+    assert stale.status_code == 409
+    assert stale.json()["detail"] == (
+        "stale_document_revision: The workbench's form changed on disk after the workbench "
+        "read it. Reload the workbench before saving."
+    )
+    on_disk = json.loads((project / "forms" / "form.json").read_text(encoding="utf-8"))
+    assert on_disk["schema"]["tables"][0]["name"] == "policy"
+
+
+def test_the_first_save_creates_the_form_unless_one_has_appeared(project: Path) -> None:
+    enable(project)
+    blank = client().get("/api/workbench/form").json()
+
+    created = client().put(
+        "/api/workbench/form", json={"form": blank["form"], "base_revision": None}
+    )
+    assert created.status_code == 200, created.text
+    assert (project / "forms" / "form.json").is_file()
+    assert client().get("/api/workbench/form").json()["revision"] == created.json()["revision"]
+
+    # Another first save would overwrite the form the file now holds.
+    again = client().put("/api/workbench/form", json={"form": blank["form"], "base_revision": None})
+    assert again.status_code == 409
+    assert again.json()["detail"].startswith("stale_document_revision")
+
+
+def test_a_body_that_is_not_a_form_is_refused_and_nothing_is_written(project: Path) -> None:
+    enable(project)
+
+    refused = client().put(
+        "/api/workbench/form",
+        json={"form": {**form(), "pages": [], "colour": "red"}, "base_revision": None},
+    )
+
+    assert refused.status_code == 422
+    assert not (project / "forms").exists()
+
+
+def test_the_form_routes_answer_404_while_the_workbench_is_not_enabled(project: Path) -> None:
+    enable(project, "[workbench]\nenabled = false\n")
+    message = "The workbench is not enabled: set [workbench] enabled = true in haute.toml."
+
+    served = client().get("/api/workbench/form")
+    saved = client().put("/api/workbench/form", json={"form": form(), "base_revision": None})
+
+    assert (served.status_code, served.json()["detail"]) == (404, message)
+    assert (saved.status_code, saved.json()["detail"]) == (404, message)
+    assert not (project / "forms").exists()
 
 
 def test_a_form_that_is_not_utf8_answers_409_naming_the_file(project: Path) -> None:
@@ -129,10 +239,10 @@ def test_a_form_that_is_not_utf8_answers_409_naming_the_file(project: Path) -> N
     (project / "forms").mkdir()
     (project / "forms" / "form.json").write_bytes(b'{"name": "\xff\xfe"}')
 
-    response = client().get("/api/workbench/tables")
-
-    assert response.status_code == 409
-    assert response.json()["detail"].startswith("forms/form.json is not UTF-8 text")
+    for route in ("/api/workbench/tables", "/api/workbench/form"):
+        response = client().get(route)
+        assert response.status_code == 409
+        assert response.json()["detail"].startswith("forms/form.json is not UTF-8 text")
 
 
 def test_a_misshapen_form_and_a_bad_table_answer_409_naming_what_to_fix(project: Path) -> None:

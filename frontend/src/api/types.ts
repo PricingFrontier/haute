@@ -513,10 +513,20 @@ export type {
 } from "../generated/api-contracts.generated"
 
 // ---------------------------------------------------------------------------
-// The workbench (GET /api/workbench, GET /api/workbench/tables)
+// The workbench (GET /api/workbench, GET /api/workbench/tables, GET and PUT
+// /api/workbench/form, whose form is the file's canonical shape)
 // ---------------------------------------------------------------------------
 
 export type {
+  CollectionWidget,
+  FieldRef,
+  FormSchema,
+  FormSpec,
+  Page,
+  SchemaColumn,
+  SchemaTable,
+  TableInputWidget,
+  WorkbenchFormResponse,
   WorkbenchStatusResponse,
   WorkbenchTablesResponse,
 } from "../generated/api-contracts.generated"

@@ -10,7 +10,7 @@ function respond(body: unknown, status = 200) {
 
 describe("useWorkbenchStore", () => {
   beforeEach(() => {
-    useWorkbenchStore.setState({ enabled: false, tables: null })
+    useWorkbenchStore.setState({ enabled: false, formPath: null, activeView: "pipeline", tables: null })
     useToastStore.setState({ toasts: [], _toastCounter: 0 })
   })
 
@@ -18,14 +18,25 @@ describe("useWorkbenchStore", () => {
     vi.restoreAllMocks()
   })
 
-  it("reads whether the project's workbench is enabled from GET /api/workbench", async () => {
+  it("reads whether the project's workbench is enabled, and where its form is, from GET /api/workbench", async () => {
     const fetchSpy = respond({ enabled: true, form: "forms/form.json" })
 
     await useWorkbenchStore.getState().load()
 
     expect(String(fetchSpy.mock.calls[0][0])).toContain("/api/workbench")
-    expect(useWorkbenchStore.getState().enabled).toBe(true)
+    expect(useWorkbenchStore.getState()).toMatchObject({ enabled: true, formPath: "forms/form.json" })
     expect(useToastStore.getState().toasts).toEqual([])
+  })
+
+  it("shows the workbench's view only while the workbench is enabled", () => {
+    expect(useWorkbenchStore.getState().activeView).toBe("pipeline")
+    expect(() => useWorkbenchStore.getState().showView("workbench")).toThrow("The workbench is not enabled")
+
+    useWorkbenchStore.setState({ enabled: true })
+    useWorkbenchStore.getState().showView("workbench")
+    expect(useWorkbenchStore.getState().activeView).toBe("workbench")
+    useWorkbenchStore.getState().showView("pipeline")
+    expect(useWorkbenchStore.getState().activeView).toBe("pipeline")
   })
 
   it("leaves the store untouched while the workbench is not enabled, so the editor does not re-render", async () => {

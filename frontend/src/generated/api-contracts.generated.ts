@@ -2394,3 +2394,98 @@ export interface WorkbenchTablesResponse {
     [k: string]: unknown;
   }[];
 }
+/**
+ * The workbench's form as its file holds it now, with the file's revision.
+ *
+ * ``revision`` is the file's content hash, which a save quotes as its ``base_revision``;
+ * null while the form has never been saved, when ``form`` is the blank form.
+ */
+export interface WorkbenchFormResponse {
+  form: FormSpec;
+  revision: string | null;
+}
+/**
+ * The form: what the workbench edits and ``forms/form.json`` stores.
+ */
+export interface FormSpec {
+  name: string;
+  /**
+   * @minItems 1
+   */
+  pages: Page[];
+  sample: {
+    [k: string]: {
+      [k: string]: string | boolean;
+    }[];
+  };
+  schema: FormSchema;
+  version: 1;
+}
+/**
+ * A sheet: its widgets, each placed freely on the canvas.
+ */
+export interface Page {
+  id: string;
+  title: string;
+  widgets: (TableInputWidget | CollectionWidget)[];
+}
+/**
+ * A Table: a grid of at least ``rows`` rows showing columns of many-row schema tables.
+ */
+export interface TableInputWidget {
+  fields: FieldRef[];
+  h: number;
+  id: string;
+  rows: number;
+  title: string;
+  type: 'tableInput';
+  w: number;
+  x: number;
+  y: number;
+}
+/**
+ * A schema column a widget shows, by table and column id, so a rename keeps it.
+ */
+export interface FieldRef {
+  column: string;
+  table: string;
+}
+/**
+ * A Collection: boxes showing columns of one-row schema tables, ``columns`` across.
+ */
+export interface CollectionWidget {
+  columns: number;
+  fields: FieldRef[];
+  h: number;
+  id: string;
+  title: string;
+  type: 'collection';
+  w: number;
+  x: number;
+  y: number;
+}
+/**
+ * The data the sheets work with: tables of named, typed columns.
+ */
+export interface FormSchema {
+  tables: SchemaTable[];
+}
+export interface SchemaTable {
+  columns: SchemaColumn[];
+  id: string;
+  name: string;
+  role: 'input' | 'output';
+  rows: 'one' | 'many';
+}
+export interface SchemaColumn {
+  id: string;
+  index: boolean;
+  key: boolean;
+  label: string;
+  max: number | null;
+  min: number | null;
+  name: string;
+  options: string[];
+  required: boolean;
+  type: 'int' | 'float' | 'str' | 'bool' | 'date';
+}

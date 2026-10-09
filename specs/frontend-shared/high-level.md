@@ -53,9 +53,10 @@ In scope:
   (structure/status/model/chart/syntax) for code that needs a token as a
   JS value, plus the literal `NODE_GROUP_COLORS` palette — it is a
   consumer-facing view of the token layer, not the layer itself.
-- `haute-ui` (`frontend/src/haute-ui/`), the kit Haute shares with Obverse's standalone
-  form builder, which edits the workbench's form until the builder lands in Haute
-  ([workbench roadmap](../roadmap/workbench.md)), so its views look like the
+- `haute-ui` (`frontend/src/haute-ui/`), the kit Haute's toolbars and palettes are built
+  from and shares with Obverse's standalone form builder, which lays out the workbench's
+  sheets until they land in Haute ([workbench roadmap](../roadmap/workbench.md)), so its
+  views look like the
   editor: the toolbar's stylesheet, the React components the toolbar is built
   from (the brand, a two-row column, a labelled toolbar button, Undo/Redo,
   Zoom In/Zoom Out and Save/Commit), the palette's shell (its column, its
@@ -245,7 +246,9 @@ equal-width Save and Commit buttons. The Pipeline control reports the pipeline's
 the calculation mode while the server is reachable, and "Offline" once live sync has lost
 the server. The toolbar carries no unsaved-changes indicator. Its frame, brand, Undo/Redo
 and Zoom In/Zoom Out columns and Save/Commit pair are `haute-ui` components, the same ones
-Obverse's standalone builder's toolbar is built from.
+Obverse's standalone builder's toolbar is built from. Its right-hand group, Assistant, Help
+and the branch indicator with Save and Commit, is `ProjectControls`, which the workbench's
+toolbar ends with too ([workbench](../workbench/high-level.md)).
 `NodeSearch` is the Ctrl+K command palette, windowed to
 render only visible rows for large graphs; the application loads its module
 only when the palette is opened, so this user-triggered surface is not part
@@ -387,8 +390,10 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   `useSettingsStore` / `useToastStore` / `useUIStore`, and render inside the
   chrome this component provides.
 - [workbench](../workbench/high-level.md): the API client validates the workbench's
-  status and tables with the generated contract, and Obverse's standalone builder
-  builds its toolbar from `haute-ui`, so its controls match the editor's.
+  status, tables and form with the generated contract; the workbench's toolbar is built
+  from `haute-ui` and `ProjectControls`, and its schema editor from the shared form
+  primitives; Obverse's standalone builder builds its toolbar from `haute-ui`, so its
+  controls match the editor's.
 - Talks to [server-api](../server-api/high-level.md) exclusively through the
   typed functions in `api/client.ts` — no other module in the frontend is
   expected to call `fetch()` directly against `/api/*`; split endpoint

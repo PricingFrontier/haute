@@ -608,6 +608,73 @@
       "title": "ChartValueEncoding",
       "type": "object"
     },
+    "CollectionWidget": {
+      "additionalProperties": false,
+      "description": "A Collection: boxes showing columns of one-row schema tables, ``columns`` across.",
+      "properties": {
+        "columns": {
+          "default": 3,
+          "maximum": 12,
+          "minimum": 1,
+          "title": "Columns",
+          "type": "integer"
+        },
+        "fields": {
+          "items": {
+            "$ref": "#/$defs/FieldRef"
+          },
+          "title": "Fields",
+          "type": "array"
+        },
+        "h": {
+          "exclusiveMinimum": 0,
+          "title": "H",
+          "type": "integer"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "title": {
+          "default": "",
+          "title": "Title",
+          "type": "string"
+        },
+        "type": {
+          "const": "collection",
+          "title": "Type",
+          "type": "string"
+        },
+        "w": {
+          "exclusiveMinimum": 0,
+          "title": "W",
+          "type": "integer"
+        },
+        "x": {
+          "minimum": 0,
+          "title": "X",
+          "type": "integer"
+        },
+        "y": {
+          "minimum": 0,
+          "title": "Y",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "x",
+        "y",
+        "w",
+        "h",
+        "type",
+        "title",
+        "fields",
+        "columns"
+      ],
+      "title": "CollectionWidget",
+      "type": "object"
+    },
     "ColumnInfo": {
       "properties": {
         "dtype": {
@@ -5132,6 +5199,26 @@
       "title": "ExplorePivotValueIdentity",
       "type": "object"
     },
+    "FieldRef": {
+      "additionalProperties": false,
+      "description": "A schema column a widget shows, by table and column id, so a rename keeps it.",
+      "properties": {
+        "column": {
+          "title": "Column",
+          "type": "string"
+        },
+        "table": {
+          "title": "Table",
+          "type": "string"
+        }
+      },
+      "required": [
+        "table",
+        "column"
+      ],
+      "title": "FieldRef",
+      "type": "object"
+    },
     "FileItem": {
       "properties": {
         "name": {
@@ -5263,6 +5350,80 @@
         "device"
       ],
       "title": "FitEvidencePayload",
+      "type": "object"
+    },
+    "FormSchema": {
+      "additionalProperties": false,
+      "description": "The data the sheets work with: tables of named, typed columns.",
+      "properties": {
+        "tables": {
+          "items": {
+            "$ref": "#/$defs/SchemaTable"
+          },
+          "title": "Tables",
+          "type": "array"
+        }
+      },
+      "required": [
+        "tables"
+      ],
+      "title": "FormSchema",
+      "type": "object"
+    },
+    "FormSpec": {
+      "additionalProperties": false,
+      "description": "The form: what the workbench edits and ``forms/form.json`` stores.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "pages": {
+          "items": {
+            "$ref": "#/$defs/Page"
+          },
+          "minItems": 1,
+          "title": "Pages",
+          "type": "array"
+        },
+        "sample": {
+          "additionalProperties": {
+            "items": {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ]
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "title": "Sample",
+          "type": "object"
+        },
+        "schema": {
+          "$ref": "#/$defs/FormSchema"
+        },
+        "version": {
+          "const": 1,
+          "default": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "name",
+        "schema",
+        "pages",
+        "sample"
+      ],
+      "title": "FormSpec",
       "type": "object"
     },
     "FreeCodeColumns": {
@@ -11142,6 +11303,41 @@
       "title": "OptimiserStatusResponse",
       "type": "object"
     },
+    "Page": {
+      "additionalProperties": false,
+      "description": "A sheet: its widgets, each placed freely on the canvas.",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "widgets": {
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/TableInputWidget"
+              },
+              {
+                "$ref": "#/$defs/CollectionWidget"
+              }
+            ]
+          },
+          "title": "Widgets",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "widgets"
+      ],
+      "title": "Page",
+      "type": "object"
+    },
     "PipelineNameViolation": {
       "additionalProperties": false,
       "description": "One name violation (codegen's naming rule, or support code's), with its message.\n\nA support-code violation that involves no node (two helpers binding one\nname, a statement the inventory cannot read) has no parties, and an\nunreadable statement has no name.",
@@ -11621,6 +11817,96 @@
       "title": "SaveModelResponse",
       "type": "object"
     },
+    "SchemaColumn": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "index": {
+          "default": false,
+          "title": "Index",
+          "type": "boolean"
+        },
+        "key": {
+          "default": false,
+          "title": "Key",
+          "type": "boolean"
+        },
+        "label": {
+          "default": "",
+          "title": "Label",
+          "type": "string"
+        },
+        "max": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max"
+        },
+        "min": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Options",
+          "type": "array"
+        },
+        "required": {
+          "default": false,
+          "title": "Required",
+          "type": "boolean"
+        },
+        "type": {
+          "default": "str",
+          "enum": [
+            "int",
+            "float",
+            "str",
+            "bool",
+            "date"
+          ],
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "type",
+        "label",
+        "key",
+        "required",
+        "min",
+        "max",
+        "options",
+        "index"
+      ],
+      "title": "SchemaColumn",
+      "type": "object"
+    },
     "SchemaItem": {
       "properties": {
         "comment": {
@@ -11654,6 +11940,53 @@
         "schemas"
       ],
       "title": "SchemaListResponse",
+      "type": "object"
+    },
+    "SchemaTable": {
+      "additionalProperties": false,
+      "properties": {
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/SchemaColumn"
+          },
+          "title": "Columns",
+          "type": "array"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "role": {
+          "default": "input",
+          "enum": [
+            "input",
+            "output"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "rows": {
+          "default": "one",
+          "enum": [
+            "one",
+            "many"
+          ],
+          "title": "Rows",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "role",
+        "rows",
+        "columns"
+      ],
+      "title": "SchemaTable",
       "type": "object"
     },
     "SessionStatusResponse": {
@@ -11901,6 +12234,73 @@
         "columns"
       ],
       "title": "SharedSnapshotSeedPayload",
+      "type": "object"
+    },
+    "TableInputWidget": {
+      "additionalProperties": false,
+      "description": "A Table: a grid of at least ``rows`` rows showing columns of many-row schema tables.",
+      "properties": {
+        "fields": {
+          "items": {
+            "$ref": "#/$defs/FieldRef"
+          },
+          "title": "Fields",
+          "type": "array"
+        },
+        "h": {
+          "exclusiveMinimum": 0,
+          "title": "H",
+          "type": "integer"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "rows": {
+          "default": 3,
+          "maximum": 50,
+          "minimum": 1,
+          "title": "Rows",
+          "type": "integer"
+        },
+        "title": {
+          "default": "",
+          "title": "Title",
+          "type": "string"
+        },
+        "type": {
+          "const": "tableInput",
+          "title": "Type",
+          "type": "string"
+        },
+        "w": {
+          "exclusiveMinimum": 0,
+          "title": "W",
+          "type": "integer"
+        },
+        "x": {
+          "minimum": 0,
+          "title": "X",
+          "type": "integer"
+        },
+        "y": {
+          "minimum": 0,
+          "title": "Y",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "x",
+        "y",
+        "w",
+        "h",
+        "type",
+        "title",
+        "fields",
+        "rows"
+      ],
+      "title": "TableInputWidget",
       "type": "object"
     },
     "TableItem": {
@@ -13659,6 +14059,32 @@
       "title": "WarehouseListResponse",
       "type": "object"
     },
+    "WorkbenchFormResponse": {
+      "description": "The workbench's form as its file holds it now, with the file's revision.\n\n``revision`` is the file's content hash, which a save quotes as its ``base_revision``;\nnull while the form has never been saved, when ``form`` is the blank form.",
+      "properties": {
+        "form": {
+          "$ref": "#/$defs/FormSpec"
+        },
+        "revision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Revision"
+        }
+      },
+      "required": [
+        "form",
+        "revision"
+      ],
+      "title": "WorkbenchFormResponse",
+      "type": "object"
+    },
     "WorkbenchStatusResponse": {
       "description": "Whether the project's workbench is enabled (``[workbench]`` in ``haute.toml``).",
       "properties": {
@@ -13949,6 +14375,9 @@
     "WarehouseListResponse": {
       "$ref": "#/$defs/WarehouseListResponse"
     },
+    "WorkbenchFormResponse": {
+      "$ref": "#/$defs/WorkbenchFormResponse"
+    },
     "WorkbenchStatusResponse": {
       "$ref": "#/$defs/WorkbenchStatusResponse"
     },
@@ -14023,6 +14452,7 @@
     "IoCapabilitiesResponse",
     "WorkbenchStatusResponse",
     "WorkbenchTablesResponse",
+    "WorkbenchFormResponse",
     "SessionStatusResponse",
     "BrowseFilesResponse",
     "ModelFileInspectionResponse",
@@ -14147,7 +14577,8 @@
     ],
     "workbench": [
       "WorkbenchStatusResponse",
-      "WorkbenchTablesResponse"
+      "WorkbenchTablesResponse",
+      "WorkbenchFormResponse"
     ]
   }
 }

@@ -26,7 +26,7 @@ import {
 } from "lucide-react"
 import { useId, useState, type ReactNode } from "react"
 
-import { CommittedTextField } from "../../../components/form"
+import { CommittedTextField, IconSelect } from "../../../components/form"
 import { getDtypeColor } from "../../../utils/dtypeColors"
 import { INPUT_STYLE } from "../_shared"
 import type { GlobalConstantType } from "../../../utils/globalConstants"
@@ -848,32 +848,22 @@ const operandKind = (operand: Operand): OperandKind => (operand.kind === "litera
 
 /**
  * The marker at the start of a value: an icon for what the value is, over an
- * invisible native select of the kinds allowed there, so a click (or Alt+Down)
- * opens the choice and the select keeps its keyboard and screen-reader
- * behaviour.
+ * invisible native select of the kinds allowed there (`IconSelect`), so a click
+ * (or Alt+Down) opens the choice and the select keeps its keyboard and
+ * screen-reader behaviour.
  */
 function KindMarker({ kind, kinds, onChange, ariaLabel }: { kind: OperandKind; kinds: OperandKind[]; onChange: (kind: OperandKind) => void; ariaLabel: string }) {
-  const Icon = KIND_ICONS[kind]
   return (
-    <span
-      className="relative flex w-7 shrink-0 self-stretch items-center justify-center rounded-md focus-within:ring-2 focus-within:ring-[var(--accent-ring)]"
-      style={{ background: "var(--chrome-hover)", border: "1px solid var(--border)", color: "var(--text-secondary)" }}
+    <IconSelect
+      icon={KIND_ICONS[kind]}
+      value={kind}
+      options={kinds.map((k) => ({ value: k, label: KIND_LABELS[k] }))}
+      onChange={onChange}
+      ariaLabel={ariaLabel}
       title={`${KIND_LABELS[kind]} (change what this value is)`}
-    >
-      <Icon size={12} aria-hidden="true" />
-      <select
-        aria-label={ariaLabel}
-        value={kind}
-        onChange={(event) => onChange(event.target.value as OperandKind)}
-        className="absolute inset-0 w-full cursor-pointer opacity-0"
-      >
-        {kinds.map((k) => (
-          <option key={k} value={k}>
-            {KIND_LABELS[k]}
-          </option>
-        ))}
-      </select>
-    </span>
+      className="w-7 self-stretch rounded-md"
+      style={{ background: "var(--chrome-hover)", border: "1px solid var(--border)", color: "var(--text-secondary)" }}
+    />
   )
 }
 

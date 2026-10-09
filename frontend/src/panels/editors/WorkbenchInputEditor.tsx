@@ -90,8 +90,8 @@ export const WORKBENCH_DISABLED_NOTE =
   "The workbench is not enabled in haute.toml, so these tables are the last copy and nothing updates them."
 
 /**
- * The title of a workbench node's tables and its notes: the workbench is not enabled, or
- * a submodel is open.
+ * The title of a workbench node's tables, the way to the workbench's view while the
+ * workbench is enabled, and its notes: the workbench is not enabled, or a submodel is open.
  */
 export function WorkbenchTablesHeader({
   enabled,
@@ -104,9 +104,21 @@ export function WorkbenchTablesHeader({
 }) {
   return (
     <>
-      <h3 className={SECTION_LABEL} style={{ color: "var(--text-muted)" }}>
-        {enabled ? "Tables from the workbench" : "Tables"}
-      </h3>
+      <div className="flex items-baseline justify-between gap-2">
+        <h3 className={SECTION_LABEL} style={{ color: "var(--text-muted)" }}>
+          {enabled ? "Tables from the workbench" : "Tables"}
+        </h3>
+        {enabled && (
+          <button
+            type="button"
+            data-testid="edit-in-workbench"
+            onClick={() => useWorkbenchStore.getState().showView("workbench")}
+            className="quiet-action focus-ring shrink-0 rounded px-1 py-0.5 text-[11px] font-medium"
+          >
+            Edit in Workbench
+          </button>
+        )}
+      </div>
       {!enabled && (
         <p role="note" className="text-[11px]" style={{ color: "var(--text-muted)" }}>
           {WORKBENCH_DISABLED_NOTE}

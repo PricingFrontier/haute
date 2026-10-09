@@ -44,9 +44,16 @@ import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 // the real module via `typeof import(...)` for fidelity.
 // ═══════════════════════════════════════════════════════════════════════════
 
-// The editor reads the workbench's status on start (specs/workbench); not enabled here.
+// The editor reads the workbench's status on start (specs/workbench): not enabled unless
+// a test says so, and then its tables and its form are blank.
 vi.mock("../api/workbench", () => ({
   fetchWorkbenchStatus: vi.fn(() => Promise.resolve({ enabled: false, form: null })),
+  fetchWorkbenchTables: vi.fn(() => Promise.resolve({ tables: [], sample: {}, response_tables: [] })),
+  fetchWorkbenchForm: vi.fn(() => Promise.resolve({
+    form: { version: 1, name: "motor", schema: { tables: [] }, pages: [{ id: "page_1", title: "Sheet 1", widgets: [] }], sample: {} },
+    revision: "form-rev-0",
+  })),
+  saveWorkbenchForm: vi.fn((form: unknown) => Promise.resolve({ form, revision: "form-rev-1" })),
 }))
 
 vi.mock("../api/client", async () => {
@@ -274,6 +281,9 @@ import useToastStore from "../stores/useToastStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import * as api from "../api/client"
+import * as workbenchApi from "../api/workbench"
+import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
+import useWorkbenchStore from "../stores/useWorkbenchStore"
 import { makeGitWorkingBranch, makeTrainResult } from "../test-utils/factories"
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2908,5 +2918,47 @@ describe("App integration - a Model Training node's results panel", () => {
     // The node's ordinary preview frame is shown instead.
     await waitFor(() => expect(screen.getAllByText("Claims Model").length).toBeGreaterThan(1))
     expect(screen.queryByText(RESULTS_GONE)).toBeNull()
+  })
+})
+
+describe("App integration - the workbench view (specs/workbench)", () => {
+  afterEach(() => {
+    useWorkbenchStore.setState({ enabled: false, formPath: null, activeView: "pipeline", tables: null })
+    useWorkbenchFormStore.setState({ form: null, revision: null, status: "idle", undoStack: [], redoStack: [], dirty: false, stale: false })
+    vi.mocked(workbenchApi.saveWorkbenchForm).mockClear()
+  })
+
+  it("shows the workbench over the hidden, inert pipeline editor with its own toolbar and shortcuts, and switches back", async () => {
+    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "forms/form.json" })
+    render(<App />)
+    await waitForAppReady()
+
+    // The switcher appears at the bottom of the node palette once the status says the
+    // workbench is enabled; the pipeline editor shows until it is used.
+    const pipeline = screen.getByTestId("pipeline-view")
+    const switcher = await within(pipeline).findByRole("group", { name: "Views" })
+    expect(pipeline).not.toHaveClass("invisible")
+    expect(pipeline).not.toHaveAttribute("inert")
+    expect(screen.getByRole("toolbar", { name: "Pipeline toolbar" })).toBeInTheDocument()
+
+    fireEvent.click(within(switcher).getByRole("button", { name: "Workbench" }))
+
+    const view = await screen.findByTestId("workbench-view", {}, { timeout: 10_000 })
+    expect(pipeline).toHaveClass("invisible")
+    expect(pipeline).toHaveAttribute("inert")
+    expect(await screen.findByRole("toolbar", { name: "Workbench toolbar" }, { timeout: 10_000 })).toBeInTheDocument()
+    expect(screen.queryByRole("toolbar", { name: "Pipeline toolbar" })).toBeNull()
+    expect(await within(view).findByTestId("schema-editor", {}, { timeout: 10_000 })).toBeInTheDocument()
+
+    // Ctrl+S saves the form, not the hidden pipeline.
+    fireEvent.keyDown(window, { key: "s", ctrlKey: true })
+    await waitFor(() => expect(workbenchApi.saveWorkbenchForm).toHaveBeenCalledTimes(1))
+    expect(api.savePipeline).not.toHaveBeenCalled()
+
+    fireEvent.click(within(view).getByRole("button", { name: "Pricing" }))
+
+    expect(pipeline).not.toHaveClass("invisible")
+    expect(screen.queryByTestId("workbench-view")).toBeNull()
+    expect(await screen.findByRole("toolbar", { name: "Pipeline toolbar" })).toBeInTheDocument()
   })
 })

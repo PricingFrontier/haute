@@ -51,7 +51,7 @@ The panel lists the workbench's output tables. You can't change the tables here,
 
 Changing a pick is an edit to the pipeline, saved and undone like any other.
 
-The tables are the workbench's schema, edited in its form, `forms/form.json` (the Workbench view that edits it inside Haute is on the roadmap). When the form is saved and the editor next fetches the tables, the node's tables and inputs follow, and the pipeline has changes to save, as after any edit. Connections follow table names: a connection to a table that keeps its name stays, and one to a table that was renamed or removed is removed, with a message. Changes not yet saved in the form don't reach the pipeline.
+The tables are the workbench's schema, edited in the Workbench view: **Edit in Workbench** in this section opens it, and the switcher at the bottom of the node palette brings you back to **Pricing**. When the form is saved there (**Save**, or Ctrl+S), the editor fetches the tables again and the node's tables and inputs follow, and the pipeline has changes to save, as after any edit. Connections follow table names: a connection to a table that keeps its name stays, and one to a table that was renamed or removed is removed, with a message. Changes not yet saved in the Workbench don't reach the pipeline.
 
 While the workbench is not enabled, the section says "The workbench is not enabled in haute.toml, so these tables are the last copy and nothing updates them." The pipeline still runs, tests and deploys from that copy. Inside a submodel the section says "The editor updates these tables only at the pipeline's top level."
 

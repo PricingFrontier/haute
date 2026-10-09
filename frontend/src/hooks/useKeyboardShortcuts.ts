@@ -6,9 +6,13 @@ import useNodeResultsStore from "../stores/useNodeResultsStore"
 import { isProtectedSubmodelNodeData, nodeData } from "../types/node"
 import { isSingletonType, singletonTypesOccupiedBy, type NodeTypeValue } from "../utils/nodeTypes"
 import { requestSubmodelCreation } from "../utils/submodelCreation"
+import { hasModifier, inModalDialog, isTypingTarget, saveCommittingField } from "./keyboardTargets"
 import type { SharedNodeDeletionResult } from "./useSubmodelBoundaryEditing"
 
 interface KeyboardShortcutsParams {
+  /** False while the workbench's view shows over the pipeline editor: then no shortcut
+   *  is registered, so keys pressed there never edit the hidden canvas. */
+  enabled: boolean
   handleSave: () => void
   setNodes: (updater: Node[] | ((nds: Node[]) => Node[])) => void
   setEdges: (updater: Edge[] | ((eds: Edge[]) => Edge[])) => void
@@ -70,6 +74,7 @@ function assertResolvedPasteMatchesCandidate(
 }
 
 export default function useKeyboardShortcuts({
+  enabled,
   handleSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
   graphRef, clipboard, nodeIdCounter,
   setSelectedNode, setLastSelectedId, setPreviewData, clearTrace, closePanel,
@@ -81,29 +86,21 @@ export default function useKeyboardShortcuts({
   const { setShortcutsOpen, setSubmodelDialog, setNodeSearchOpen } = useUIStore()
   const pasteRequestSerialRef = useRef(0)
   useEffect(() => {
+    if (!enabled) return
     const handler = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName
-      const el = e.target as HTMLElement
-      const mod = e.ctrlKey || e.metaKey
+      const mod = hasModifier(e)
       // Focused dialogs own their keyboard interactions, including Escape. The
       // node-search palette is itself a modal dialog, so its toggle key still
       // reaches the Ctrl+K handler below while it is open.
       const closesNodeSearch = mod && e.key === "k" && useUIStore.getState().nodeSearchOpen
       if (e.defaultPrevented) return
-      if (el.closest?.('[role="dialog"][aria-modal="true"]') && !closesNodeSearch) return
-      const isTyping = tag === "INPUT" || tag === "TEXTAREA" || el.closest?.(".cm-editor") != null
+      if (inModalDialog(e.target) && !closesNodeSearch) return
+      const isTyping = isTypingTarget(e.target)
 
-      // Ctrl+S / Cmd+S → save. Editor fields commit on blur, so a focused field
-      // is blurred first and the save runs once React has rendered that commit;
-      // otherwise the value being typed would be left out of the save.
+      // Ctrl+S / Cmd+S → save, with a focused field's edit included.
       if (mod && e.key === "s") {
         e.preventDefault()
-        if (tag === "INPUT" || tag === "TEXTAREA") {
-          el.blur()
-          window.setTimeout(handleSave, 0)
-          return
-        }
-        handleSave()
+        saveCommittingField(e.target, handleSave)
         return
       }
 
@@ -343,6 +340,7 @@ export default function useKeyboardShortcuts({
     window.addEventListener("keydown", handler)
     return () => window.removeEventListener("keydown", handler)
   }, [
+    enabled,
     handleSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
     graphRef, clipboard, nodeIdCounter,
     setSelectedNode, setLastSelectedId, setPreviewData, clearTrace, closePanel,

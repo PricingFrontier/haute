@@ -1,5 +1,5 @@
-"""The workbench's form file (specs/workbench): one canonical shape, read whole and written
-atomically, with what is wrong named when it cannot be read."""
+"""The workbench's form file (specs/workbench): one canonical shape, read whole with the
+file's revision and written atomically, with what is wrong named when it cannot be read."""
 
 from __future__ import annotations
 
@@ -11,10 +11,13 @@ import pytest
 
 from haute._workbench_config import WorkbenchConfig
 from haute._workbench_form import (
+    FormDocument,
     FormSpec,
     WorkbenchFormError,
     blank_form,
-    read_form,
+    form_file_revision,
+    form_revision,
+    read_form_document,
     render_form,
     write_form,
 )
@@ -126,14 +129,29 @@ def test_the_blank_form_is_one_empty_sheet_named_after_the_project() -> None:
     assert text.endswith("}\n")
 
 
-def test_a_form_round_trips_through_write_and_read(tmp_path: Path) -> None:
+def test_a_form_round_trips_through_write_and_read_with_the_file_s_revision(
+    tmp_path: Path,
+) -> None:
     spec = FormSpec.model_validate(FORM)
 
-    write_form(tmp_path / "forms" / "form.json", spec)
-    read = read_form(config(tmp_path))
+    revision = write_form(tmp_path / "forms" / "form.json", spec)
+    document = read_form_document(config(tmp_path))
 
-    assert read == spec
-    assert json.loads((tmp_path / "forms" / "form.json").read_text(encoding="utf-8")) == FORM
+    assert document == FormDocument(spec, revision)
+    data = (tmp_path / "forms" / "form.json").read_bytes()
+    assert json.loads(data) == FORM
+    # The revision is the file's content hash, so the same bytes read as the same revision.
+    assert revision == form_revision(data) == form_file_revision(config(tmp_path))
+    assert len(revision) == 16
+
+
+def test_an_edit_to_the_file_changes_its_revision(tmp_path: Path) -> None:
+    path = tmp_path / "forms" / "form.json"
+    first = write_form(path, blank_form("motor"))
+
+    assert write_form(path, blank_form("motor")) == first
+    path.write_bytes(path.read_bytes().replace(b'"motor"', b'"home"'))
+    assert form_file_revision(config(tmp_path)) != first
 
 
 def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> None:
@@ -148,7 +166,7 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
     (tmp_path / "forms").mkdir()
     (tmp_path / "forms" / "form.json").write_text(json.dumps(sparse), encoding="utf-8")
 
-    spec = read_form(config(tmp_path))
+    spec = read_form_document(config(tmp_path)).spec
 
     assert spec.sample == {}
     assert [c.index for c in spec.data_schema.tables[1].columns] == [True, False]
@@ -179,7 +197,7 @@ def test_an_unknown_field_or_a_value_outside_the_shape_is_refused(
     with pytest.raises(
         WorkbenchFormError, match="forms/form.json is not a workbench form"
     ) as caught:
-        read_form(config(tmp_path))
+        read_form_document(config(tmp_path))
     assert where in str(caught.value)
 
 
@@ -188,25 +206,25 @@ def test_a_form_that_is_not_utf8_names_the_file(tmp_path: Path) -> None:
     (tmp_path / "forms" / "form.json").write_bytes(b'{"name": "\xff\xfe"}')
 
     with pytest.raises(WorkbenchFormError, match="forms/form.json is not UTF-8 text"):
-        read_form(config(tmp_path))
+        read_form_document(config(tmp_path))
 
 
-def test_a_missing_form_says_how_to_create_it(tmp_path: Path) -> None:
-    with pytest.raises(WorkbenchFormError) as caught:
-        read_form(config(tmp_path))
+def test_a_missing_form_is_the_blank_form_that_was_never_saved(tmp_path: Path) -> None:
+    project = tmp_path / "motor"
+    project.mkdir()
 
-    assert caught.value.message == (
-        "forms/form.json does not exist: create it, point [workbench].form at the form, "
-        "or set [workbench] enabled = false in haute.toml."
-    )
+    assert read_form_document(config(project)) == FormDocument(blank_form("motor"), None)
+    assert form_file_revision(config(project)) is None
 
 
 def test_a_form_that_is_not_json_or_cannot_be_read_names_the_file(tmp_path: Path) -> None:
     (tmp_path / "forms").mkdir()
     (tmp_path / "forms" / "form.json").write_text("{not json", encoding="utf-8")
     with pytest.raises(WorkbenchFormError, match="forms/form.json is not JSON"):
-        read_form(config(tmp_path))
+        read_form_document(config(tmp_path))
 
     (tmp_path / "unreadable").mkdir()
     with pytest.raises(WorkbenchFormError, match="unreadable could not be read"):
-        read_form(config(tmp_path, form="unreadable"))
+        read_form_document(config(tmp_path, form="unreadable"))
+    with pytest.raises(WorkbenchFormError, match="unreadable could not be read"):
+        form_file_revision(config(tmp_path, form="unreadable"))

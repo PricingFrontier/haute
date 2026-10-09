@@ -3,17 +3,17 @@
 ## Scope
 
 The workbench inside Haute: the form file and its tables, the Workbench Input and Workbench
-Output, and the view in which the form is edited. Current behaviour is specified in
+Output, and the Workbench view with its schema editor. Current behaviour is specified in
 [the workbench specification](../workbench/high-level.md), and the save ledger and
 milestones in [the git integration specification](../git-integration/high-level.md). The
-packages below bring the form's editing into Haute one slice at a time, each useful on its
-own; until they land, Obverse's standalone builder edits the same `forms/form.json`.
+packages below bring the rest of the form's editing into Haute one slice at a time, each
+useful on its own; until they land, a form's sheets are laid out outside Haute, by
+Obverse's standalone builder, which writes the same `forms/form.json`.
 
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| WB-02 | Planned | P2 | The Workbench view, with the schema editor: tables and columns are defined inside Haute. |
 | WB-03 | Planned | P3 | Sheets: Tables and Collections laid out on a canvas, with their properties panel. |
 | WB-04 | Planned | P3 | The sample typed while building, saved with the form and priced live on the pipeline. |
 | WB-05 | Planned | P2 | The form on the save ledger: saved, committed and reread on a branch switch like the pipeline. |
@@ -21,34 +21,9 @@ own; until they land, Obverse's standalone builder edits the same `forms/form.js
 
 ## Planned improvements
 
-### WB-02 — The Workbench view with the schema editor
-**Why:** The pipeline's quote tables come from the form's schema, but Haute has no view in
-which to edit it: the form is written by Obverse's standalone builder or by hand, and the
-Workbench Input's and Workbench Output's panels have no way to it.
-
-**Plan:** A second view beside the pipeline editor, "Workbench", switched from the bottom of
-the left palette; while it shows, the pipeline editor stays mounted but hidden and inert with
-its keyboard shortcuts off, and the toolbar keeps the brand and the project's controls and
-shows the view's own (the host this branch built for the extension, restored natively). The
-view's first content is the schema editor, ported from Obverse: tables with their role, rows,
-keys and index, columns with their type, label and rules, each drawn with the step editor's
-type icons. `GET /api/workbench/form` serves the form with a revision; `PUT /api/workbench/form`
-takes the form with that `base_revision` and refuses a stale one with 409, as the pipeline
-save refuses one. Save in the toolbar and Ctrl+S save the form while the view shows. The two
-panels' "Edit in Workbench" button opens the view.
-
-**Acceptance:** A table and its columns defined in the view and saved appear as the Workbench
-Input's ports when the pipeline view shows, and the pipeline has changes to save; a form
-changed on disk since the view read it is not overwritten.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_workbench_form.py::read_form`;
-`frontend/src/panels/editors/WorkbenchInputEditor.tsx::WorkbenchTablesHeader`.
-
 ### WB-03 — Sheets, Tables and Collections
-**Why:** The schema says what the quote is; the sheets say how an underwriter keys it in, and
-they are still laid out outside Haute.
+**Why:** The schema says what the quote is and is defined in the Workbench view; the sheets
+say how an underwriter keys it in, and they are still laid out outside Haute.
 
 **Plan:** The view's Sheets: a canvas on a snap grid that fills its width and grows to hold
 what is on it, sheet tabs, a palette of Table and Collection in Haute's palette shell, drag
@@ -60,7 +35,7 @@ with the builder's stores split by concern and its API calls through `api/client
 **Acceptance:** A Table showing a many-row table's columns and a Collection showing a one-row
 table's, placed, resized and saved, read back in the same positions after a reload.
 
-**Dependencies:** `WB-02`.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/_workbench_form.py::FormSpec`.
 
@@ -89,22 +64,24 @@ the sample as it stands, saved or not.
 ### WB-05 — The form on the save ledger
 **Why:** The pipeline's Save commits exactly the files it wrote to the clone's ledger, and
 Commit's sweep takes only files Git already tracks, so a form the view saves never enters
-history on its own, and a branch switch leaves the view showing the old branch's form.
+history on its own, the view has no Commit, and a branch switch leaves the view showing
+the old branch's form until its Reload.
 
 **Plan:** `PUT /api/workbench/form` records `forms/form.json` on the ledger through the same
-capture the pipeline save uses, so Commit's sweep includes it once it is tracked; Commit saves
-the view's unsaved edits first, as it saves the pipeline first; the view rereads the form on
-the same document-adoption signal that reloads the pipeline after a branch switch or a change
-on disk; and its save never overwrites a form that changed on disk since it was read.
+capture the pipeline save uses, so Commit's sweep includes it once it is tracked; the view's
+toolbar gets Commit, which saves the view's unsaved edits first, as it saves the pipeline
+first; and the view rereads the form on the same document-adoption signal that reloads the
+pipeline after a branch switch or a change on disk, keeping its refusal to overwrite a form
+that changed on disk since it was read.
 
 **Acceptance:** In the Workbench view, Save records `forms/form.json` on the ledger and Commit
 includes it in the milestone, a new file included; a developer's direct edit to it is included
 at Commit; after a branch switch the view shows that branch's form.
 
-**Dependencies:** `WB-02`.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/routes/_save_pipeline.py::_capture_save_in_ledger`;
-`src/haute/_git_transactions.py::_residual_tracked_changes`.
+`src/haute/routes/workbench.py::put_workbench_form`.
 
 ### WB-06 — Preview: an underwriter's quote priced on the pipeline
 **Why:** The view shows the sheets as an underwriter sees them, but the quote keyed into them

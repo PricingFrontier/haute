@@ -417,7 +417,11 @@ function computePersistedFingerprint(
   return serializeSnapshot({ nodes, edges, preamble, submodels, globalConstants })
 }
 
-function appendHistoryEntry(stack: HistoryEntry[], entry: HistoryEntry): HistoryEntry[] {
+/**
+ * `stack` with `entry` appended, the oldest entry dropped once `MAX_HISTORY` is reached:
+ * the one history rule, which the workbench's form store (`useWorkbenchFormStore`) shares.
+ */
+export function appendHistoryEntry<T>(stack: T[], entry: T): T[] {
   return stack.length >= MAX_HISTORY
     ? [...stack.slice(stack.length - MAX_HISTORY + 1), entry]
     : [...stack, entry]

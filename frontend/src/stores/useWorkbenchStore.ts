@@ -1,6 +1,7 @@
 /**
  * Zustand store for the project's workbench (specs/workbench): whether it is enabled
- * (GET /api/workbench), and the Workbench Input's tables and sample quote and the
+ * (GET /api/workbench) and where its form is, which view the editor shows (the pipeline
+ * editor's or the workbench's), and the Workbench Input's tables and sample quote and the
  * Workbench Output's tables from the newest fetch of GET /api/workbench/tables.
  */
 import { create } from "zustand"
@@ -9,11 +10,20 @@ import { fetchWorkbenchStatus, fetchWorkbenchTables } from "../api/workbench"
 import type { WorkbenchTables } from "../utils/workbenchTables"
 import useToastStore from "./useToastStore"
 
+/** The editor's views: the pipeline editor's, and the workbench's while it is enabled. */
+export type EditorView = "pipeline" | "workbench"
+
 interface WorkbenchState {
   /** Whether the project's workbench is enabled in haute.toml; false until the status says so. */
   enabled: boolean
+  /** The form's path as haute.toml names it; null until the status says the workbench is enabled. */
+  formPath: string | null
   /** Fetch the status. A failure shows one error toast and leaves the workbench not enabled. */
   load: () => Promise<void>
+  /** Which view shows: the pipeline editor's, or the workbench's. */
+  activeView: EditorView
+  /** Show a view; the workbench's only while it is enabled. */
+  showView: (view: EditorView) => void
   /** The workbench's tables from the newest fetch that succeeded; null until one has. */
   tables: WorkbenchTables | null
   /**
@@ -30,6 +40,7 @@ let latestFetch = 0
 
 const useWorkbenchStore = create<WorkbenchState>()((set, get) => ({
   enabled: false,
+  formPath: null,
   load: async () => {
     const status = await fetchWorkbenchStatus().catch((error: unknown) => {
       useToastStore.getState().addToast("error", `Could not read the workbench's status: ${apiErrorMessage(error)}`)
@@ -37,7 +48,12 @@ const useWorkbenchStore = create<WorkbenchState>()((set, get) => ({
     })
     // While the workbench is not enabled the store stays as it started, so the editor
     // never re-renders on its account.
-    if (status?.enabled) set({ enabled: true })
+    if (status?.enabled) set({ enabled: true, formPath: status.form })
+  },
+  activeView: "pipeline",
+  showView: (view) => {
+    if (view === "workbench" && !get().enabled) throw new Error("The workbench is not enabled")
+    set({ activeView: view })
   },
   tables: null,
   refreshTables: () => {

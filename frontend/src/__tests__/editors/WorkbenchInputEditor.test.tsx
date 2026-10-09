@@ -4,7 +4,7 @@
  * the tables.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { cleanup, render, screen, within } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import WorkbenchInputEditor, { WORKBENCH_DISABLED_NOTE } from "../../panels/editors/WorkbenchInputEditor"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
 
@@ -44,7 +44,7 @@ describe("WorkbenchInputEditor", () => {
   })
   afterEach(() => {
     cleanup()
-    useWorkbenchStore.setState({ enabled: false })
+    useWorkbenchStore.setState({ enabled: false, activeView: "pipeline" })
   })
 
   it("shows the workbench's tables read-only, with nothing to edit them", () => {
@@ -104,5 +104,17 @@ describe("WorkbenchInputEditor", () => {
     expect(screen.getByRole("note")).toHaveTextContent(
       "The editor updates these tables only at the pipeline's top level.",
     )
+  })
+
+  it("offers to edit the tables in the workbench's view while the workbench is enabled", () => {
+    renderEditor()
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit in Workbench" }))
+    expect(useWorkbenchStore.getState().activeView).toBe("workbench")
+
+    cleanup()
+    useWorkbenchStore.setState({ enabled: false, activeView: "pipeline" })
+    renderEditor()
+    expect(screen.queryByRole("button", { name: "Edit in Workbench" })).not.toBeInTheDocument()
   })
 })

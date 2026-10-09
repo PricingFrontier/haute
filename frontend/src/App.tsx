@@ -69,6 +69,7 @@ import useGraphStore from "./stores/useGraphStore"
 import useGitStore from "./stores/useGitStore"
 import useToastStore from "./stores/useToastStore"
 import useWorkbenchStore from "./stores/useWorkbenchStore"
+import ViewSwitcher from "./workbench/ViewSwitcher"
 import useWorkbenchTables from "./hooks/useWorkbenchTables"
 import useNodeResultsStore from "./stores/useNodeResultsStore"
 import { refreshNodeDataCache } from "./hooks/useNodeDataCache"
@@ -126,6 +127,9 @@ const AssistantPanel = lazy(() => import("./panels/assistant/AssistantPanel"))
 const ComparisonView = lazy(() => import("./components/ComparisonView"))
 const ComparisonInspector = lazy(() => import("./components/ComparisonInspector"))
 const NodeSearch = lazy(() => import("./components/NodeSearch"))
+// The workbench's view and its toolbar (specs/workbench), loaded when it is first shown.
+const WorkbenchView = lazy(() => import("./workbench/WorkbenchView"))
+const WorkbenchToolbar = lazy(() => import("./workbench/WorkbenchToolbar"))
 const ModellingPreview = lazy(() => import("./panels/ModellingPreview").then(
   ({ ModellingPreview }) => ({ default: ModellingPreview }),
 ))
@@ -730,7 +734,10 @@ function FlowEditor() {
   const paletteOpen = useUIStore((s) => s.paletteOpen)
   const setPaletteOpen = useUIStore((s) => s.setPaletteOpen)
   // The project's workbench (specs/workbench): whether it is enabled decides what the
-  // palette offers and whether the workbench nodes' copies are kept current.
+  // palette offers and whether the workbench nodes' copies are kept current. While its
+  // view shows, the pipeline editor stays mounted but hidden, inert and deaf to the keyboard.
+  const workbenchEnabled = useWorkbenchStore((s) => s.enabled)
+  const pipelineActive = useWorkbenchStore((s) => s.activeView === "pipeline")
   useEffect(() => {
     void useWorkbenchStore.getState().load()
   }, [])
@@ -1333,6 +1340,7 @@ function FlowEditor() {
   )
 
   useKeyboardShortcuts({
+    enabled: pipelineActive,
     handleSave: requestSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
     graphRef, clipboard, nodeIdCounter,
     setSelectedNode, setPreviewData: (d: null) => setPreviewData(d),
@@ -1517,6 +1525,14 @@ function FlowEditor() {
     onNodeCreated: nodeCreated,
   })
 
+  // Leaving the pipeline view closes the canvas's floating menus, which render
+  // outside the hidden pipeline region.
+  useEffect(() => useWorkbenchStore.subscribe((state, previous) => {
+    if (previous.activeView !== "pipeline" || state.activeView === "pipeline") return
+    setContextMenu(null)
+    closeConnectionDropMenu()
+  }), [closeConnectionDropMenu])
+
   // A panel names a node on this canvas (a join its estimate depends on); a
   // missing one is a caller bug, not something to open silently.
   const openCanvasNode = useCallback((nodeId: string) => {
@@ -1684,6 +1700,7 @@ function FlowEditor() {
   // Ctrl/Cmd+Enter presses the open panel's Refresh — the way to calculate
   // when clicking a node no longer does (manual calculation).
   useEffect(() => {
+    if (!pipelineActive) return
     const handler = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey) || e.key !== "Enter") return
       const el = e.target as HTMLElement | null
@@ -1694,7 +1711,7 @@ function FlowEditor() {
     }
     window.addEventListener("keydown", handler)
     return () => window.removeEventListener("keydown", handler)
-  }, [handlePanelPreviewRefresh])
+  }, [handlePanelPreviewRefresh, pipelineActive])
 
   // ---------------------------------------------------------------------------
   // Render
@@ -1737,33 +1754,50 @@ function FlowEditor() {
   )
   return (
     <div className="h-full w-full flex flex-col" style={{ background: 'var(--bg-base)' }}>
-      <Toolbar
-        nodeCount={nodes.length}
-        canUndo={canUndo}
-        canRedo={canRedo}
-        onUndo={undo}
-        onRedo={redo}
-        onZoomIn={() => zoomIn()}
-        onZoomOut={() => zoomOut()}
-        onOpenUtility={() => { setUtilityOpen(true); setSelectedNode(null); setLastSelectedId(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
-        onOpenConstants={() => { setConstantsOpen(true); setSelectedNode(null); setLastSelectedId(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
-        submodelAction={selectedSubmodelId === null ? "create" : "dissolve"}
-        canRunSubmodelAction={canRunSubmodelAction}
-        onSubmodelAction={handleToolbarSubmodelAction}
-        canCreateInstance={canCreateInstance}
-        onCreateInstance={handleToolbarCreateInstance}
-        onCentre={() => fitView({ padding: 0.15 })}
-        onAutoLayout={handleAutoLayout}
-        isAutoLayouting={isAutoLayouting}
-        onSave={requestSave}
-        onSaveCommit={requestCommit}
-        wsStatus={wsStatus}
-        timings={previewData?.timings}
-        memory={previewData?.memory}
-        editingDisabled={editingReadOnly}
-        sourceSelectionTrusted={documentSourceSelectionTrusted}
-      />
+      {pipelineActive ? (
+        <Toolbar
+          nodeCount={nodes.length}
+          canUndo={canUndo}
+          canRedo={canRedo}
+          onUndo={undo}
+          onRedo={redo}
+          onZoomIn={() => zoomIn()}
+          onZoomOut={() => zoomOut()}
+          onOpenUtility={() => { setUtilityOpen(true); setSelectedNode(null); setLastSelectedId(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
+          onOpenConstants={() => { setConstantsOpen(true); setSelectedNode(null); setLastSelectedId(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
+          submodelAction={selectedSubmodelId === null ? "create" : "dissolve"}
+          canRunSubmodelAction={canRunSubmodelAction}
+          onSubmodelAction={handleToolbarSubmodelAction}
+          canCreateInstance={canCreateInstance}
+          onCreateInstance={handleToolbarCreateInstance}
+          onCentre={() => fitView({ padding: 0.15 })}
+          onAutoLayout={handleAutoLayout}
+          isAutoLayouting={isAutoLayouting}
+          onSave={requestSave}
+          onSaveCommit={requestCommit}
+          wsStatus={wsStatus}
+          timings={previewData?.timings}
+          memory={previewData?.memory}
+          editingDisabled={editingReadOnly}
+          sourceSelectionTrusted={documentSourceSelectionTrusted}
+        />
+      ) : (
+        <ErrorBoundary name="WorkbenchToolbar">
+          <Suspense fallback={<header role="toolbar" aria-label="Workbench toolbar" className="toolbar" />}>
+            <WorkbenchToolbar />
+          </Suspense>
+        </ErrorBoundary>
+      )}
 
+      {/* The pipeline editor. While the workbench's view shows it stays mounted (live
+          sync, the document, undo history) but invisible and inert, and the view covers
+          it (specs/workbench). */}
+      <div className="flex-1 min-h-0 relative flex flex-col">
+      <div
+        className={pipelineActive ? "flex-1 min-h-0 flex flex-col" : "flex-1 min-h-0 flex flex-col invisible"}
+        inert={pipelineActive ? undefined : true}
+        data-testid="pipeline-view"
+      >
       {loadError || documentSystemFailure ? (
         <PipelineLoadFailureView detail={loadError ?? documentSystemFailure ?? "Unknown failure"} />
       ) : documentLoadStatus === "source_only" ? (
@@ -1813,10 +1847,14 @@ function FlowEditor() {
         </div>
       ) : (
       <div className="flex-1 flex min-h-0">
+        {/* The palette column: the node palette, then the view switcher, which stays
+            usable while the palette is read-only (specs/workbench). */}
+        <div className="flex flex-col shrink-0 min-h-0">
         <nav
           aria-label="Node palette"
           aria-disabled={editingReadOnly}
           inert={editingReadOnly ? true : undefined}
+          className="flex-1 min-h-0"
           style={editingReadOnly ? { opacity: 0.45 } : undefined}
         >
           {paletteOpen ? (
@@ -1830,6 +1868,12 @@ function FlowEditor() {
             <PaletteRevealStrip onReveal={() => setPaletteOpen(true)} />
           )}
         </nav>
+        {workbenchEnabled && (
+          <div style={{ background: "var(--chrome)", borderRight: "1px solid var(--chrome-border)" }}>
+            <ViewSwitcher compact={!paletteOpen} />
+          </div>
+        )}
+        </div>
 
         <main className="flex-1 flex flex-col min-w-0">
           <PipelineRecoveryBanner onSelectElement={handleSelectRecoveryElement} />
@@ -1905,6 +1949,10 @@ function FlowEditor() {
                 selectNodesOnDrag
                 selectionMode={SelectionMode.Partial}
                 selectionKeyCode={null}
+                // React Flow listens on the document, so a hidden canvas would
+                // still delete its selection on Backspace from another view.
+                deleteKeyCode={pipelineActive ? undefined : null}
+                panActivationKeyCode={pipelineActive ? undefined : null}
                 minZoom={0.1}
                 proOptions={proOptions}
                 defaultEdgeOptions={defaultEdgeOptions}
@@ -1977,6 +2025,19 @@ function FlowEditor() {
         />
       </div>
       )}
+      </div>
+      {!pipelineActive && (
+        <ErrorBoundary name="WorkbenchView">
+          <Suspense fallback={null}>
+            <WorkbenchView
+              onSave={saveWithPendingCommits}
+              isInsideSubmodel={viewStack.length > 1}
+              readOnly={documentReadOnly}
+            />
+          </Suspense>
+        </ErrorBoundary>
+      )}
+      </div>
 
       <FlowEditorOverlays
         editingReadOnly={editingReadOnly}

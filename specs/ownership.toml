@@ -54,10 +54,10 @@ consumers = ["frontend-node-editors"]
 reason = "The canvas owns authoritative document replacement after repair; the unavailable-node inspector invokes its remove-only confirmation surface."
 
 [[shared_file]]
-path = "frontend/src/components/Toolbar.tsx"
+path = "frontend/src/components/ProjectControls.tsx"
 primary = "frontend-shared"
 consumers = ["frontend-assistant-ui"]
-reason = "The common toolbar is extended by the assistant entry point."
+reason = "The project's controls, which both toolbars end with, hold the assistant entry point."
 
 [[shared_file]]
 path = "frontend/src/components/form/CommittedTextField.tsx"
