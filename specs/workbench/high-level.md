@@ -148,10 +148,14 @@ Out of scope:
   unsaved edits or a save the ledger did not capture (for want of an identity, or because
   the capture failed), the Workbench Input's and Workbench Output's copies follow it, and
   then the pipeline is saved and the milestone asked for, so what the milestone records
-  runs on the form it records; the identity prompt's retry, a move's Save first and the
+  runs on the form it records (the tables are fetched afresh for that, and a fetch that
+  fails refuses the save, with a toast saying the pipeline was not saved, rather than
+  record copies behind the form); the identity prompt's retry, a move's Save first and the
   Git panel's save before a switch save the project the same way. A move, a branch switch,
   an archive or a delete that would replace the working tree asks about unsaved edits in
-  the form as it asks about the canvas. The Git and Assistant panels open beside
+  the form as it asks about the canvas, and a switch chosen over them reads the
+  destination's form in their place once it has succeeded. The Git and Assistant panels
+  open beside
   the view, in the properties panel's place. The Workbench Input's and Workbench Output's
   panels offer "Edit in Workbench", which shows the view. The view reads the form when it
   first shows and keeps it, with its unsaved edits and history, across a trip to the

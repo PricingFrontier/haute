@@ -15,7 +15,7 @@
 | `frontend/src/stores/singleFlight.ts` | Shared resettable single-flight utility: request joining, the trailing-refresh queue (exactly one follow-up per active request, generation-anchored), and the stalled-request watchdog. Consumed by `useGitStore.ts` (working-branch status) and `gitBranchLoader.ts` (branch list). Test seam: both stores' `reset…ForTests` exports delegate to its `reset()`. |
 | `frontend/src/components/BranchIndicator.tsx` | Toolbar entry point: explicit repository/readiness/error labels with Retry, plus a ready branch-name button that opens the panel on the current branch. Truncated errors use the shared `Tooltip` to expose the full diagnostic on error hover or Retry focus; its function child places `aria-describedby` on Retry. |
 | `frontend/src/components/BranchManager.tsx` | Branch list/create/switch/archive/delete/restore, embedded in the Git panel; owns its own confirm dialogs and row context menu. |
-| `frontend/src/hooks/useProjectDirty.ts` | `useProjectDirty`: whether the project holds unsaved edits, the canvas's (`useGraphStore`) or the workbench's form's (`useWorkbenchStore`'s `formDirty`, mirrored by the form store, a lazy chunk); what every navigation guard asks about. |
+| `frontend/src/hooks/useProjectDirty.ts` | `useProjectDirty`: whether the project holds unsaved edits, the canvas's (`useGraphStore`) or the workbench's form's (`useWorkbenchStore`'s `formDirty`, mirrored by the form store, a lazy chunk); what every navigation guard asks about. `discardFormEdits`: after a switch chosen over the form's unsaved edits has succeeded, the form read again (the form store imported then), so the destination's form shows; nothing while the form is as saved. |
 | `frontend/src/components/GitNavigationConfirm.tsx` | Shared clean/dirty navigation confirmation used by branch-manager and graph-lane switches plus Create & Move; dirty mode offers Cancel, Discard, and Save first. |
 | `frontend/src/components/CommitBreadcrumb.tsx` | `CommitBreadcrumb` (version-relative label for a comparison canvas) and `ComparisonDelta` (historic↔current commit-count chip). |
 | `frontend/src/components/MilestoneCommitModal.tsx` | Commit modal: required message (500-character maximum with visible validation) + version label form, and the 409 fork-warning override flow. |
@@ -188,8 +188,10 @@ create instead just calls `refresh()`. Before any switch or move-mode create,
 workbench's form's (`useProjectDirty`): clean navigation gets the ordinary
 confirmation, while dirty navigation requires an explicit discard or a successful
 caller-supplied `onSave()` result before mutation. `GitPanel.performSwitch` and
-`BranchManager.switchNow` both call `setWorkingBranch(branch, false)` and `recordSwitch`
-(pushing a `useGraphStore` VC undo entry) on success, while retaining local busy state.
+`BranchManager.switchNow` both call `setWorkingBranch(branch, false)`, then
+`discardFormEdits` (the workbench's form read again when its unsaved edits were the ones
+discarded) and `recordSwitch` (pushing a `useGraphStore` VC undo entry) on success, while
+retaining local busy state.
 `BranchManager.run()` is the
 shared wrapper for its own five mutations (create, switch, archive, delete, restore): on
 success, unless `opts.reloadOnDone` is set or `opts.reloadWhen(result)` returns true, it
@@ -383,7 +385,8 @@ Library component/unit tests (no e2e for this surface).
   (fork/view/move) in every row context (milestone / pending save / expanded save),
   peeking's effect on menu contents, the fork-creation dialog, the graph rail's dots/
   stubs/chips/magnifier, lane and dot context menus, in-app branch switching from the
-  lane menu (including the dirty-canvas guard), and the peek in-flight mislabel guard.
+  lane menu (including the dirty-canvas guard, and the workbench's form's edits dropped
+  once a lane switch chosen over them succeeds), and the peek in-flight mislabel guard.
 - **`frontend/src/panels/__tests__/GitPanel.gaps.test.tsx`** — targeted gap-fill: fork-with-switch page reload, fork
   failure toast, fork-with-move submission, the view affordance opening a comparison,
   peeking's menu contents (a second angle on the same invariant as the main suite).
@@ -425,8 +428,9 @@ Library component/unit tests (no e2e for this surface).
   peek-without-switch, create (with and without move, including the move confirm step),
   switch confirmation (including persisted "don't ask again") and its in-app (no-reload)
   behaviour plus the VC undo entry, dirty-navigation Cancel/Discard/Save-first behavior
-  for switch and Create & Move (including the skipped-confirmation preference, and the
-  guard on the workbench's form's unsaved edits), archive
+  for switch and Create & Move (including the skipped-confirmation preference, the guard
+  on the workbench's form's unsaved edits, and those edits dropped once a switch chosen
+  over them succeeds and kept when it fails), archive
   (direct and the dirty-current redirect), delete with confirm, restore, the
   uncommitted/unsaved indicator display, the persistent error banner, and the full row
   context-menu surface (open, per-state item visibility, each action's routing, backdrop

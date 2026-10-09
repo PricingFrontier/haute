@@ -1265,18 +1265,22 @@ function FlowEditor() {
   // identity retry: the workbench's form first, when it holds unsaved edits or
   // a save the ledger did not capture, then the workbench nodes' copies brought
   // up to date with it, then the pipeline through the graph-commit fence, so
-  // what is saved runs on the form that was saved. The form store is a lazy
-  // chunk, imported here only while the workbench is enabled and never on start.
+  // what is saved runs on the form that was saved; a pipeline whose copies could
+  // not be brought up to date is not saved. The form store is a lazy chunk,
+  // imported here only while the workbench is enabled and never on start.
   const saveProject = useCallback(async (): Promise<boolean> => {
     let formSaved = true
     if (useWorkbenchStore.getState().enabled) {
       const { default: formStore } = await import("./stores/useWorkbenchFormStore")
       formSaved = await formStore.getState().flush()
-      await bringUpToDate()
+      if (!(await bringUpToDate())) {
+        addToast("error", "The pipeline was not saved: its workbench nodes could not be brought up to date with the workbench's tables.")
+        return false
+      }
     }
     const pipelineSaved = await saveWithPendingCommits()
     return formSaved && pipelineSaved
-  }, [bringUpToDate, saveWithPendingCommits])
+  }, [addToast, bringUpToDate, saveWithPendingCommits])
 
   // Flush the editor through the graph-commit fence before opening the
   // milestone modal, so Commit can never capture an older ledger snapshot.

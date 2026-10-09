@@ -4,6 +4,8 @@ import GitPanel from "../GitPanel"
 import { clearGitPanelCaches } from "../gitPanelCache"
 import useGitStore, { resetGitStoreForTests } from "../../stores/useGitStore"
 import useGraphStore from "../../stores/useGraphStore"
+import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import useWorkbenchStore from "../../stores/useWorkbenchStore"
 import useToastStore from "../../stores/useToastStore"
 
 // The panel reads working-branch status from useGitStore (which calls
@@ -684,6 +686,36 @@ describe("GitPanel", () => {
 
     fireEvent.click(screen.getByTestId("git-navigation-discard"))
     await waitFor(() => expect(mockSetWorkingBranch).toHaveBeenCalledWith("pricing/nick/spur", false))
+  })
+
+  it("drops the form's edits once a lane switch chosen over them succeeds", async () => {
+    const reload = vi.fn(async () => {})
+    useWorkbenchFormStore.setState({ reload })
+    useWorkbenchStore.setState({ formDirty: true })
+    useGitStore.setState({ peekBranch: "pricing/nick/spur" })
+    mockGetGitGraph.mockResolvedValue(graphTwoBranch)
+    mockGetMilestones.mockResolvedValue({
+      working_branch: "pricing-dev",
+      entries: [
+        { sha: "b1full", short_sha: "b1abcd", message: "Spur milestone", timestamp: now(), version_label: null },
+        { sha: "m2full", short_sha: "m2def", message: "Second milestone", timestamp: now(), version_label: null, is_root: true },
+      ],
+    })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-graph-rail").length).toBeGreaterThan(0))
+
+    const spurEdge = screen
+      .getAllByTestId("git-graph-edge")
+      .find((e) => e.getAttribute("data-branch") === "pricing/nick/spur")!
+    fireEvent.contextMenu(spurEdge)
+    await waitFor(() => expect(screen.getByTestId("git-graph-lane-menu")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("git-graph-lane-menu-switch"))
+    expect(screen.getByTestId("git-navigation-confirm")).toBeInTheDocument()
+    expect(reload).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByTestId("git-navigation-discard"))
+    await waitFor(() => expect(mockSetWorkingBranch).toHaveBeenCalledWith("pricing/nick/spur", false))
+    await waitFor(() => expect(reload).toHaveBeenCalledTimes(1))
   })
 
   it("the lane menu disables Switch and View on the already-current, already-viewed lane", async () => {

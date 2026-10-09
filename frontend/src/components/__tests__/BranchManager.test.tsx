@@ -3,6 +3,7 @@ import { render, screen, fireEvent, cleanup, waitFor, act } from "@testing-libra
 import BranchManager from "../BranchManager"
 import useGitStore from "../../stores/useGitStore"
 import useGraphStore from "../../stores/useGraphStore"
+import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
 
 const mockGetWorkingBranches = vi.fn()
@@ -170,6 +171,27 @@ describe("BranchManager", () => {
     fireEvent.click(await screen.findByTestId("branch-manager-confirm-switch-go"))
     expect(await screen.findByTestId("git-navigation-confirm")).toBeInTheDocument()
     expect(mockSetWorkingBranch).not.toHaveBeenCalled()
+  })
+
+  it("drops the form's edits once a switch chosen over them succeeds, and keeps them when it fails", async () => {
+    const reload = vi.fn(async () => {})
+    useWorkbenchFormStore.setState({ reload })
+    useWorkbenchStore.setState({ formDirty: true })
+    mockSetWorkingBranch.mockRejectedValueOnce(new Error("no such branch"))
+    render(<BranchManager />)
+    await waitFor(() => expect(screen.getByTestId("branch-manager-switch")).toBeInTheDocument())
+
+    fireEvent.click(screen.getByTestId("branch-manager-switch"))
+    fireEvent.click(await screen.findByTestId("branch-manager-confirm-switch-go"))
+    fireEvent.click(await screen.findByTestId("git-navigation-discard"))
+    await waitFor(() => expect(mockSetWorkingBranch).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.getAllByText(/Could not switch/).length).toBeGreaterThan(0))
+    expect(reload).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByTestId("branch-manager-switch"))
+    fireEvent.click(await screen.findByTestId("branch-manager-confirm-switch-go"))
+    fireEvent.click(await screen.findByTestId("git-navigation-discard"))
+    await waitFor(() => expect(reload).toHaveBeenCalledTimes(1))
   })
 
   it("does not let the skip-switch-confirm preference bypass the dirty guard", async () => {

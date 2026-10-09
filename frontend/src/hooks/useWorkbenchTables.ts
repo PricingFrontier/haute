@@ -22,14 +22,15 @@ export type UseWorkbenchTablesOptions = {
  * fetched for: once per node for each fetch, while the document is editable and its top
  * level shows. A graph edit, an undo or a redo never runs it; a node created from the
  * palette is reported through `nodeCreated`, so one made while its tables were being
- * fetched still gets them. `bringUpToDate` waits for the newest fetch and applies it at
- * once, for a save that must carry the form's tables rather than wait for a render.
+ * fetched still gets them. `bringUpToDate` fetches afresh, waits for that fetch and
+ * applies it at once, for a save that must carry the form's tables rather than wait for
+ * a render; it resolves false when the fetch failed, so the save is refused.
  */
 export default function useWorkbenchTables({
   graphRef,
   onUpdateNode,
   editable,
-}: UseWorkbenchTablesOptions): { nodeCreated: (nodeId: string) => void; bringUpToDate: () => Promise<void> } {
+}: UseWorkbenchTablesOptions): { nodeCreated: (nodeId: string) => void; bringUpToDate: () => Promise<boolean> } {
   const enabled = useWorkbenchStore((state) => state.enabled)
   const workbench = useWorkbenchStore((state) => state.tables)
   const generation = useDocumentStatusStore((state) => state.executionGeneration)
@@ -86,11 +87,18 @@ export default function useWorkbenchTables({
     created.current.push(nodeId)
     setCreations((count) => count + 1)
   }, [])
-  // The fetch the form's save started has settled by the time this resolves, and its
-  // tables are in the nodes, so a pipeline save that follows carries them.
-  const bringUpToDate = useCallback(async () => {
-    await useWorkbenchStore.getState().awaitTables()
+  // A fetch of its own, waited for and applied here rather than on a render: when this
+  // resolves true the nodes carry the workbench's tables as the form now has them, so a
+  // pipeline save that follows carries them too. False when the fetch failed: the nodes
+  // may be behind the form, and the save must not go on. While the document cannot change
+  // nothing can be applied, and the save that follows refuses for its own reason.
+  const bringUpToDate = useCallback(async (): Promise<boolean> => {
+    if (!editable) return true
+    const store = useWorkbenchStore.getState()
+    if (store.refreshTables() === null) return true
+    if (!(await store.awaitTables())) return false
     apply(useWorkbenchStore.getState().tables, null)
-  }, [apply])
+    return true
+  }, [apply, editable])
   return { nodeCreated, bringUpToDate }
 }

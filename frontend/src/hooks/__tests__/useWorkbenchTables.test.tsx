@@ -49,7 +49,7 @@ describe("useWorkbenchTables", () => {
       enabled: true,
       tables: null,
       refreshTables: vi.fn(() => ++fetches),
-      awaitTables: vi.fn(async () => {}),
+      awaitTables: vi.fn(async () => true),
     })
   })
 
@@ -58,22 +58,43 @@ describe("useWorkbenchTables", () => {
     vi.restoreAllMocks()
   })
 
-  it("brings the nodes up to date on request once the newest fetch has settled, so a save that follows carries the tables", async () => {
-    let settle: () => void = () => {}
-    useWorkbenchStore.setState({ awaitTables: vi.fn(() => new Promise<void>((resolve) => { settle = resolve })) })
+  it("brings a node no render reached up to date on request, once its own fetch has settled, and reports a fetch that failed", async () => {
     const { result } = render()
-    let brought = false
-    const bringing = result.current.bringUpToDate().then(() => {
-      brought = true
-    })
-    await Promise.resolve()
-    expect(brought).toBe(false)
-    expect(onUpdateNode).not.toHaveBeenCalled()
-
     publish(1, "policy")
-    settle()
-    await bringing
     expect(updates()).toEqual([["workbench", tables("policy")]])
+    // A node in the graph since, unreported: no render brings it the tables.
+    graphRef.current.nodes.push(workbenchInput({ tables: [] }, "later"))
+    let settle: (published: boolean) => void = () => {}
+    useWorkbenchStore.setState({ awaitTables: vi.fn(() => new Promise<boolean>((resolve) => { settle = resolve })) })
+
+    let brought: boolean | null = null
+    const bringing = result.current.bringUpToDate().then((current) => {
+      brought = current
+    })
+    expect(useWorkbenchStore.getState().refreshTables).toHaveBeenCalledTimes(2)
+    await Promise.resolve()
+    expect(brought).toBeNull()
+    settle(true)
+    await bringing
+    expect(brought).toBe(true)
+    expect(updates()).toEqual([["workbench", tables("policy")], ["later", tables("policy")]])
+
+    // The fetch failed: nothing applied, and the caller told so.
+    graphRef.current.nodes.push(workbenchInput({ tables: [] }, "latest"))
+    const refused = result.current.bringUpToDate()
+    settle(false)
+    await expect(refused).resolves.toBe(false)
+    expect(updates()).toHaveLength(2)
+  })
+
+  it("has nothing to bring while the document cannot change, and fetches nothing then", async () => {
+    const { result } = render(false)
+    const fetches = vi.mocked(useWorkbenchStore.getState().refreshTables).mock.calls.length
+
+    await expect(result.current.bringUpToDate()).resolves.toBe(true)
+
+    expect(useWorkbenchStore.getState().refreshTables).toHaveBeenCalledTimes(fetches)
+    expect(onUpdateNode).not.toHaveBeenCalled()
   })
 
   it("fetches when the workbench is enabled and on each document adoption", () => {

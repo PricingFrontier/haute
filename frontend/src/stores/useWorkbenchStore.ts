@@ -41,14 +41,18 @@ interface WorkbenchState {
    * dropped, toast and all.
    */
   refreshTables: () => number | null
-  /** Settles once the newest fetch has published or failed; at once while none is in flight. */
-  awaitTables: () => Promise<void>
+  /**
+   * Settles with whether the newest fetch published: true once it has, false once it
+   * failed (a fetch a newer one superseded takes the newer one's outcome), and true at
+   * once while none is in flight.
+   */
+  awaitTables: () => Promise<boolean>
 }
 
 // Fetches are numbered across the store's life, so a later one always has a larger number.
 let latestFetch = 0
-/** The newest fetch's settlement. */
-let settling: Promise<void> = Promise.resolve()
+/** The newest fetch's settlement: whether it published. */
+let settling: Promise<boolean> = Promise.resolve(true)
 
 const useWorkbenchStore = create<WorkbenchState>()((set, get) => ({
   enabled: false,
@@ -73,21 +77,23 @@ const useWorkbenchStore = create<WorkbenchState>()((set, get) => ({
     if (!get().enabled) return null
     const fetch = ++latestFetch
     settling = fetchWorkbenchTables().then(
-      (response) => {
-        if (fetch === latestFetch) {
-          set({
-            tables: {
-              tables: response.tables,
-              sample: response.sample,
-              responseTables: response.response_tables,
-              fetch,
-            },
-          })
-        }
+      (response): boolean | Promise<boolean> => {
+        // Superseded: the newer fetch's outcome is the one that counts.
+        if (fetch !== latestFetch) return settling
+        set({
+          tables: {
+            tables: response.tables,
+            sample: response.sample,
+            responseTables: response.response_tables,
+            fetch,
+          },
+        })
+        return true
       },
-      (error: unknown) => {
-        if (fetch !== latestFetch) return
+      (error: unknown): boolean | Promise<boolean> => {
+        if (fetch !== latestFetch) return settling
         useToastStore.getState().addToast("error", `Could not fetch the workbench's tables: ${apiErrorMessage(error)}`)
+        return false
       },
     )
     return fetch

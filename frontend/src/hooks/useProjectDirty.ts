@@ -12,3 +12,16 @@ export default function useProjectDirty(): boolean {
   const form = useWorkbenchStore((s) => s.formDirty)
   return canvas || form
 }
+
+/**
+ * After a switch the user chose over the form's unsaved edits: read the file again, so
+ * the destination's form shows rather than the edits they discarded (the form store keeps
+ * a dirty form through a document adoption, as it should when nothing was chosen).
+ * Nothing while the form is as saved, when the adoption brings the file by itself, and
+ * nothing when the switch failed, since the edits are then still wanted.
+ */
+export async function discardFormEdits(): Promise<void> {
+  if (!useWorkbenchStore.getState().formDirty) return
+  const { default: formStore } = await import("../stores/useWorkbenchFormStore")
+  await formStore.getState().reload()
+}
