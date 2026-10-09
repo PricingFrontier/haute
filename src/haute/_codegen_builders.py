@@ -528,6 +528,7 @@ def _gen_data_output(node: GraphNode, source_names: list[str]) -> NodeSource:
     return _config_backed(node, source_names)
 
 
+@_register_codegen(NodeType.WORKBENCH_OUTPUT)
 @_register_codegen(NodeType.OUTPUT)
 def _gen_output(node: GraphNode, source_names: list[str]) -> NodeSource:
     # The decorator assembles the response document from the sidecar mapping,

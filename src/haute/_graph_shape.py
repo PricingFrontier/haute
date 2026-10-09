@@ -5,15 +5,15 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 
 from haute._submodel_instances import resolve_submodel_instances
-from haute._types import REQUEST_INPUT_NODE_TYPES, NodeType, PipelineGraph
+from haute._types import REQUEST_INPUT_NODE_TYPES, RESPONSE_NODE_TYPES, NodeType, PipelineGraph
 from haute.errors import ParseError
 
 #: Node-type groups a pipeline holds at most one node of: it reads one quote
-#: request, through either request input, and answers through one Quote
-#: Response. Save and deploy both enforce them (``validate_singleton_groups``).
+#: request, through either request input, and answers through one response node.
+#: Save and deploy both enforce them (``validate_singleton_groups``).
 SINGLETON_NODE_GROUPS: tuple[tuple[frozenset[NodeType], str], ...] = (
     (REQUEST_INPUT_NODE_TYPES, "Quote Input or Workbench Input"),
-    (frozenset({NodeType.OUTPUT}), "Output"),
+    (RESPONSE_NODE_TYPES, "Quote Response or Workbench Output"),
 )
 
 

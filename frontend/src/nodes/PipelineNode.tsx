@@ -10,6 +10,7 @@ import type { PipelineFlowNode } from "../types/node"
 import { EDGE_JOIN_BASE_HANDLE, EDGE_JOIN_JOIN_BOTTOM_HANDLE, EDGE_JOIN_JOIN_HANDLE } from "../utils/edgeJoinRoles"
 import { OUTPUT_ORIGIN_HANDLE_CLASS } from "../utils/flowHandles"
 import { authoritativeSourceHandles } from "../utils/apiInputPorts"
+import { workbenchOutputTableLabels } from "../utils/extensionQuoteTables"
 import FramePortRows, { DefaultInputPort } from "./FramePortRows"
 
 const statusColors: Record<string, string> = {
@@ -157,6 +158,7 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   const accent = nodeTypeColors[nodeType] || nodeTypeColors[NODE_TYPES.POLARS]
   const typeLabel = nodeTypeLabels[nodeType] || "NODE"
   const isDeployInput = isRequestInputType(nodeType)
+  const isWorkbenchOutput = nodeType === NODE_TYPES.WORKBENCH_OUTPUT
   const isLiveSwitch = nodeType === NODE_TYPES.LIVE_SWITCH
   const isInstance = !!(nodeData.config?.instanceOf)
   const isSourceOnly = SOURCE_ONLY_TYPES.has(nodeType)
@@ -173,6 +175,11 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
       : []),
     [id, isDeployInput, nodeData],
   )
+  // A Workbench Output's tables are its input ports (specs/extensions).
+  const tableLabels = useMemo<string[]>(
+    () => (isWorkbenchOutput ? workbenchOutputTableLabels(nodeData.config) : []),
+    [isWorkbenchOutput, nodeData.config],
+  )
 
   // JSON serialization is a collision-safe value-equality proxy for the
   // labels arrays; raw labels are unrestricted strings, so delimiter joins
@@ -180,7 +187,7 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   // ["a", "b|c"]) and skip a required re-measure. The effect still
   // refires only when labels actually change, not on a fresh config object
   // whose topology is unchanged (e.g. a column edit inside a table).
-  const frameLabelsSig = JSON.stringify(frameLabels)
+  const frameLabelsSig = JSON.stringify([frameLabels, tableLabels])
   const edgeJoinJoinHandlePosition = useStore((s) =>
     _edgeJoinJoinHandlePosition(s, id, nodeType),
   )
@@ -204,6 +211,7 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
     />
   ) : null
   const defaultInputPort = !isSourceOnly
+    && !isWorkbenchOutput
     && nodeType !== NODE_TYPES.EDGE_JOIN ? (
     <DefaultInputPort
       accent={accent}
@@ -450,7 +458,21 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
           content in one row. `bodyStyle` keeps the opaque face the card's
           border and header are composited over (VC S38 opaque-face redesign). */}
       <div className="px-3 py-2" style={bodyStyle}>
-        {showApiInputFrameRows ? (
+        {isWorkbenchOutput ? (
+          tableLabels.length > 0 ? (
+            <FramePortRows
+              ports={tableLabels.map((label) => ({ id: label, label, parentEdges: [] }))}
+              direction="target"
+              accent={accent}
+              testIdPrefix="workbench-output"
+              handleTestId={(_port, index) => `input-connector[${index}]:${nodeData.label}`}
+            />
+          ) : (
+            <div className="text-left text-[11px] leading-tight truncate" style={{ color: "var(--text-muted)" }}>
+              No tables
+            </div>
+          )
+        ) : showApiInputFrameRows ? (
           <>
             {traceActive && traceValue !== undefined && (
               <div

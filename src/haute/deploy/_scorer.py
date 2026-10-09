@@ -41,6 +41,7 @@ from haute._types import (
     PipelineGraph,
     _Frame,
 )
+from haute._workbench_output import as_response
 from haute.execution import (
     _stat_gated_runtime_path_fingerprint,
     execute_lazy_graph,
@@ -1087,6 +1088,9 @@ def _score_graph_lazy(
             raise RuntimeError(
                 f"Output node '{output_node_id}' produced no result. Executed nodes: {order}"
             )
+        # A Workbench Output's result is its tables; the request is answered with their
+        # response, as a Quote Response's result is already.
+        output_lf = as_response(output_lf)
 
         if output_fields:
             retained_lazy_frames.append(output_lf)

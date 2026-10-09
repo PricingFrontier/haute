@@ -71,6 +71,8 @@ import useToastStore from "./stores/useToastStore"
 import useExtensionsStore, { PIPELINE_VIEW } from "./stores/useExtensionsStore"
 import useExtensionQuoteTables from "./hooks/useExtensionQuoteTables"
 import ViewSwitcher from "./extensions/ViewSwitcher"
+import { priceSample } from "./extensions/priceSample"
+import type { WorkbenchTables } from "./extensions/loadExtensionModule"
 import useNodeResultsStore from "./stores/useNodeResultsStore"
 import { refreshNodeDataCache } from "./hooks/useNodeDataCache"
 import { stopNodeWork, useNodeWorkRunning } from "./stores/useNodeWorkStore"
@@ -1241,6 +1243,17 @@ function FlowEditor() {
     editable: !editingReadOnly && viewStack.length === 1,
   })
 
+  // An extension's view prices its sample on the document as it is then: the whole
+  // pipeline, even while a submodel is open.
+  const priceExtensionSample = useCallback(
+    (workbench: WorkbenchTables) => priceSample(
+      resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef),
+      workbench,
+      useSettingsStore.getState().activeSource,
+    ),
+    [],
+  )
+
   const {
     handlePanelUpdateNode,
     handleScopedSave,
@@ -2031,6 +2044,7 @@ function FlowEditor() {
               onSave={saveWithPendingCommits}
               isInsideSubmodel={viewStack.length > 1}
               readOnly={documentReadOnly}
+              priceSample={priceExtensionSample}
             />
           </Suspense>
         </ErrorBoundary>

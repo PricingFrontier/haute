@@ -40,6 +40,7 @@ class TestNodeType:
     EXPECTED_MEMBERS = {
         "API_INPUT": "apiInput",
         "WORKBENCH_INPUT": "workbenchInput",
+        "WORKBENCH_OUTPUT": "workbenchOutput",
         "DATA_INPUT": "dataInput",
         "DATA_OUTPUT": "dataOutput",
         "POLARS": "polars",

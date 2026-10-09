@@ -182,6 +182,7 @@ def _build_node_config(
         NodeType.DATA_OUTPUT,
         NodeType.EXTERNAL_FILE,
         NodeType.OUTPUT,
+        NodeType.WORKBENCH_OUTPUT,
     ):
         # Config-folder nodes: format/mode/source fields/arguments live in the
         # JSON sidecar loaded via config= *before* this builder runs, so this

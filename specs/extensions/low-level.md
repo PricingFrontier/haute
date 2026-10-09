@@ -4,15 +4,18 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/_extensions.py` | Server side of extensions: `EXTENSIONS_GROUP`, `RESERVED_NAMES`, the frozen `Extension` record (with `api_base`, `assets_url` and `entry_url`), `ExtensionError`, `discover_extensions` (loads and validates every entry point in name order), `mount_extensions` (mounts each router and asset directory and registers `GET /api/extensions`), and `extension_package_dirs` (the package directories dev mode's reloader watches, found without importing the extensions). It also reads an extension's optional `quote_tables` function, of which at most one installed extension may have one, and beside it an optional `quote_sample`, and `mount_extensions` serves both as `GET /api/quote-tables`: run in the thread pool, the tables checked with `validate_v2_schema` and the sample served unchecked. |
+| `src/haute/_extensions.py` | Server side of extensions: `EXTENSIONS_GROUP`, `RESERVED_NAMES`, the frozen `Extension` record (with `api_base`, `assets_url` and `entry_url`), `ExtensionError`, `discover_extensions` (loads and validates every entry point in name order), `mount_extensions` (mounts each router and asset directory and registers `GET /api/extensions`), and `extension_package_dirs` (the package directories dev mode's reloader watches, found without importing the extensions). It also reads an extension's optional `quote_tables` function, of which at most one installed extension may have one, and beside it an optional `quote_sample` and an optional `response_tables`, and `mount_extensions` serves all three as `GET /api/quote-tables`: run in the thread pool, the tables and the response's tables each checked with `validate_v2_schema` and the sample served unchecked. |
+| `src/haute/_workbench_output.py` | The Workbench Output's tables and response: `WorkbenchOutputError`, `workbench_output_tables` (its tables read from its config: checked with `validate_v2_schema`, each one-row or many-row by its path, each column at its table's level), `workbench_output_mapping` (its mapping read from its config, checked against the tables), `WorkbenchOutputTables` (its result: its tables' frames by label, carrying the tables they fill), `fill_workbench_tables` (the tables filled from the frames by port through the mapping, each column checked against and cast to its declared type, a one-row table checked for its one row when it is read), `workbench_response` (the response built from the tables by the Quote Response's assembler) and `as_response` (a response node's result as the frame a request is answered with). |
 | `frontend/src/api/extensions.ts` | `fetchExtensions`: `GET /api/extensions` through the shared request machinery, validated by the generated `extensions` contract, whose validators load with the first response. `fetchQuoteTables`: `GET /api/quote-tables`, validated by the same group's `QuoteTablesResponse`. |
 | `frontend/src/stores/useExtensionsStore.ts` | `useExtensionsStore` and `PIPELINE_VIEW`: the installed extensions, the active view (`"pipeline"` or an extension name), the toolbar element the active extension renders its controls into, and `viewSave`, the mounted extension's `save`. `saveView` is the toolbar's Save in an extension's view: when that view has a `save` it calls it, toasts "Saved <label>" or that it could not be saved, and returns true; otherwise it returns false and the editor saves the pipeline. `load` fetches the list, leaves the store untouched when none is installed (so the editor never re-renders for it) and reports a failure as one error toast; `showView` rejects a view that is not installed. It also holds `quoteTables`, the quote's tables from the newest fetch that succeeded, and `refreshQuoteTables`, which numbers its fetches so that only the newest publishes them or toasts its failure; `showView` starts one when the pipeline view shows after an extension's. |
-| `frontend/src/utils/extensionQuoteTables.ts` | The copy rules for a Workbench Input: `QuoteTables`, `quoteTablesSupplier`, `quoteTablesPatch` (the update a Workbench Input's copy needs, `{tables, sample}`, both compared as JSON with object keys sorted and a missing sample read as `{}`, or null) and `paletteWorkbenchInputConfig` (what the palette's Workbench Input starts with: the newest tables and sample fetched). |
-| `frontend/src/hooks/useExtensionQuoteTables.ts` | The hook the editor shell (`frontend/src/App.tsx`) calls to keep those copies current: a fetch when a supplier is listed and on each `executionGeneration`, recorded against the generation; eligible tables applied once per Workbench Input for each fetch through `onUpdateNode`, with an `isCurrent` that checks the generation, while the document is editable and its top level shows; `nodeCreated` for a node a palette drop created. |
-| `frontend/src/panels/editors/WorkbenchInputEditor.tsx` | The Workbench Input's panel, which `frontend/src/panels/NodeConfigEditor.tsx` renders for a Workbench Input: the tables read-only with each label's `apiInputLabelIssue`, an "Edit in <label>" button calling `showView`, a note on what previews run on, chosen by whether the config's sample is a non-empty object, a note when no installed extension supplies tables, and one while a submodel is open (`insideSubmodel`, passed down from `frontend/src/panels/NodePanel.tsx`). |
+| `frontend/src/utils/extensionQuoteTables.ts` | The copy rules for a Workbench Input and a Workbench Output: `QuoteTables`, `quoteTablesSupplier`, `responseTablesSupplier`, `quoteTablesPatch` (the update a Workbench Input's copy needs, `{tables, sample}`, both compared as JSON with object keys sorted and a missing sample read as `{}`, or null), `responseTablesPatch` (the update a Workbench Output's copy needs, `{tables}` compared the same way and `mapping` without the entries of tables and columns the new tables lack, or null), `paletteWorkbenchInputConfig` and `paletteWorkbenchOutputConfig` (what the palette's Workbench Input and Workbench Output start with: the newest tables, and sample, fetched), `workbenchOutputTableLabels` (a Workbench Output's ports, its tables' labels in order), and `WORKBENCH_COPY_PATCHES` (the update rule for each workbench node type, `quoteTablesPatch` for a Workbench Input and `responseTablesPatch` for a Workbench Output). |
+| `frontend/src/hooks/useExtensionQuoteTables.ts` | The hook the editor shell (`frontend/src/App.tsx`) calls to keep those copies current: a fetch when a supplier is listed and on each `executionGeneration`, recorded against the generation; eligible tables applied once per Workbench Input and Workbench Output for each fetch, by `WORKBENCH_COPY_PATCHES`, through `onUpdateNode`, with an `isCurrent` that checks the generation, while the document is editable and its top level shows; `nodeCreated` for a node a palette drop created. |
+| `frontend/src/panels/editors/WorkbenchInputEditor.tsx` | The Workbench Input's panel, which `frontend/src/panels/NodeConfigEditor.tsx` renders for a Workbench Input: the tables read-only with each label's `apiInputLabelIssue`, an "Edit in <label>" button calling `showView`, a note on what previews run on, chosen by whether the config's sample is a non-empty object, a note when no installed extension supplies tables, and one while a submodel is open (`insideSubmodel`, passed down from `frontend/src/panels/NodePanel.tsx`). It exports `WorkbenchTable`, one table read-only, and `WorkbenchTablesHeader`, the section's title, its "Edit in <label>" button and its notes, which the Workbench Output's panel shares. |
+| `frontend/src/panels/editors/WorkbenchOutputEditor.tsx` | The Workbench Output's panel, which `frontend/src/panels/NodeConfigEditor.tsx` renders for a Workbench Output: under `WorkbenchTablesHeader`, each table with its label's `apiInputLabelIssue`, the node connected to its port (from the `targetHandle` of the panel's input sources) or "Not connected", and a row per column with a select of the connected frame's columns (the input source's `columns`) that fills it, chosen by `mappedSource`, through `onUpdate` with the new `mapping`. |
 | `frontend/src/extensions/ViewSwitcher.tsx` | The view switcher: "Pricing" (the pipeline editor) and one button per extension, labelled with the extension's `label`, the active one `aria-pressed`, on the shared `.toolbar-btn` surface. Full width as a column of labelled buttons, one per row and each as wide as the palette, or `compact` as a column of icon buttons for the collapsed palette strip. Renders nothing until the list holds an extension. |
-| `frontend/src/extensions/ExtensionView.tsx` | Hosts one extension's view over the area below the toolbar: loads its module, calls `mount` with the view element, the toolbar slot, its API base, `SWITCHER_SLOT` and the palette's state (`useUIStore`'s `paletteOpen` when it mounts, and `setPaletteOpen`), fills that slot with the switcher once mounted (compact while the palette is collapsed), registers the module's `save` (or none) as the store's `viewSave` while mounted, unmounts on leave, and shows loading or the failure beside a fallback switcher column until the view mounts. Beside the view it shows the Git panel while `gitOpen` is set, or else the Assistant panel while `assistantOpen` is, taking `onSave` for the Git panel and `isInsideSubmodel` and `readOnly` for the Assistant panel from the editor shell. |
-| `frontend/src/extensions/loadExtensionModule.ts` | The browser contract: `SWITCHER_SLOT`, `ExtensionMountOptions` (with `ExtensionPalette`), `ExtensionHandle`, `ExtensionModule`, `loadExtensionModule` (dynamic import from the listed URL, kept out of Vite's graph, checked for a `mount` function and, when it exports one, a `save` function) and `mountExtension` (calls `mount` and checks it returned a handle with `unmount`). |
+| `frontend/src/extensions/ExtensionView.tsx` | Hosts one extension's view over the area below the toolbar: loads its module, calls `mount` with the view element, the toolbar slot, its API base, `SWITCHER_SLOT`, the palette's state (`useUIStore`'s `paletteOpen` when it mounts, and `setPaletteOpen`) and a `priceSample` that calls the editor shell's `priceSample` prop as it is when called, fills that slot with the switcher once mounted (compact while the palette is collapsed), registers the module's `save` (or none) as the store's `viewSave` while mounted, unmounts on leave, and shows loading or the failure beside a fallback switcher column until the view mounts. Beside the view it shows the Git panel while `gitOpen` is set, or else the Assistant panel while `assistantOpen` is, taking `onSave` for the Git panel and `isInsideSubmodel` and `readOnly` for the Assistant panel from the editor shell. |
+| `frontend/src/extensions/priceSample.ts` | `priceSample(graph, workbench, source)`, a sample priced on *graph*: it gives each top-level node `WORKBENCH_COPY_PATCHES` has a rule for the update its copy needs to match *workbench*, in a copy of the graph, previews the first top-level Workbench Output once per label of `workbenchOutputTableLabels` with that `portLabel`, in parallel, and resolves `{tables}` with each table's `preview` rows by label; a preview whose status is not `ok` throws its `error`, and a failed preview request the request's `apiErrorMessage`. |
+| `frontend/src/extensions/loadExtensionModule.ts` | The browser contract: `SWITCHER_SLOT`, `ExtensionMountOptions` (with `ExtensionPalette`, `WorkbenchTables` and `PricedSample`), `ExtensionHandle`, `ExtensionModule`, `loadExtensionModule` (dynamic import from the listed URL, kept out of Vite's graph, checked for a `mount` function and, when it exports one, a `save` function) and `mountExtension` (calls `mount` and checks it returned a handle with `unmount`). |
 
 `src/haute/schemas.py` defines `ExtensionInfo`, `ExtensionsResponse` and
 `QuoteTablesResponse`; `scripts/generate_api_contracts.py` lists the two responses as the
@@ -57,6 +60,36 @@ Quote Input's place while a supplier is listed and drags it with `paletteWorkben
 `NodeConfigEditor` renders `WorkbenchInputEditor` for a Workbench Input and `ApiInputEditor`, the
 table editor, for a Quote Input.
 
+The Workbench Output reaches across Haute the same way. `src/haute/_types.py` declares
+`NodeType.WORKBENCH_OUTPUT`, its `workbench_output` decorator name, `WorkbenchOutputConfig`,
+its place in `SINK_ONLY_NODE_TYPES`, and `RESPONSE_NODE_TYPES`, the Quote Response and the
+Workbench Output; `workbench_output` is a decorator of `NodeRegistry`; `src/haute/_config_io.py`,
+`src/haute/_config_validation.py`, `src/haute/_config_builder.py`, `src/haute/_cache.py` and
+`src/haute/node_defaults.json` give it its folder, config shape, config-folder parsing, cache
+classification and default. `_build_workbench_output` in `src/haute/_builders.py` and the
+standalone runner in `src/haute/_standalone_nodes.py` both call
+`assemble_workbench_output_from_config` in `src/haute/_node_apply.py`, the first with the
+target handles of the node's incoming edges and the second with the target ports of its
+`pipeline.connect` calls, which `Pipeline` passes to the node it runs; `_gen_output` in
+`src/haute/_codegen_builders.py` is registered for it. The checks that mean "the pipeline's
+response" test membership of `RESPONSE_NODE_TYPES`: `Pipeline._resolve_output_node`,
+`find_output_node` in `src/haute/deploy/_pruner.py`, the trace pass-through in
+`src/haute/_trace_correlation.py`, and `SINGLETON_NODE_GROUPS`; `as_response` in
+`src/haute/_workbench_output.py` turns either's result into the frame a request is answered
+with, and `src/haute/projection.py` covers it with the generic contract rule. The assistant's
+`src/haute/assistant/_ops.py` refuses to author a Workbench Output as it refuses a Workbench
+Input, and its node card is `src/haute/assistant/assets/node_cards/workbenchOutput.json`. In
+the editor, `frontend/src/utils/nodeTypes.ts` holds its `NODE_TYPE_META` entry,
+`RESPONSE_TYPES` and `isResponseType`, which `singletonTypesOccupiedBy` and
+`singletonLimitMessage` use for the response pair; `frontend/src/nodes/PipelineNode.tsx` renders
+its tables as target port rows through `FramePortRows`; `frontend/src/panels/NodePalette.tsx`
+shows it in the Quote Response's place while `responseTablesSupplier` finds a supplier and drags
+it with `paletteWorkbenchOutputConfig`; `validatePipelineConnection` in
+`frontend/src/utils/connectionValidation.ts` takes a connection to it only on a table's port;
+`prepareNodeUpdate` in `frontend/src/utils/nodeUpdatePlan.ts` removes the connections whose port
+its new tables lack, which `useGraphCommitController` reports; and `InputSource` in
+`frontend/src/panels/editors/_shared.tsx` carries each input's `targetHandle` for its panel.
+
 ## Key types and data structures
 
 - **Entry point object.** Whatever `EntryPoint.load()` returns (Obverse uses a module) must
@@ -66,21 +99,24 @@ table editor, for a Quote Input.
   have `quote_tables(project_dir: Path) -> list`, the quote's tables in the Quote Input's v2
   shape as its files define them now; `None` or absent supplies none. Beside it, it may
   have `quote_sample(project_dir: Path) -> dict | None`, one quote as a request holds it, as
-  its files define it now.
+  its files define it now, and `response_tables(project_dir: Path) -> list`, the response's
+  tables in the same shape, as its files define them now.
 - **`Extension`** (`src/haute/_extensions.py`): `name`, `label`, `router`, `assets_dir`,
-  `entry`, and `quote_tables` and `quote_sample`, the extension's functions bound to the
-  project directory, or `None`. `api_base` is `/api/extensions/<name>`, `assets_url` is `/extensions/<name>` and
+  `entry`, and `quote_tables`, `quote_sample` and `response_tables`, the extension's functions
+  bound to the project directory, or `None`. `api_base` is `/api/extensions/<name>`, `assets_url` is `/extensions/<name>` and
   `entry_url` is `/extensions/<name>/<entry>`.
 - **`ExtensionInfo`** (`src/haute/schemas.py`): `name`, `label`, `api_base`, `entry_url`,
   `ready` (the entry file exists now) and `detail` (`null` when ready, otherwise what to do).
   **`ExtensionsResponse`**: `extensions: list[ExtensionInfo]`, in name order. `ExtensionInfo`
-  also has `quote_tables`, true for the extension that supplies the quote's tables.
-  **`QuoteTablesResponse`**: `extension` (its name), `tables` (the v2 tables) and `sample`
-  (an object, `{}` for none).
+  also has `quote_tables`, true for the extension that supplies the quote's tables, and
+  `response_tables`, true when that extension supplies the response's tables too.
+  **`QuoteTablesResponse`**: `extension` (its name), `tables` (the v2 tables), `sample`
+  (an object, `{}` for none) and `response_tables` (the v2 tables, `[]` for none).
 - **Store state** (`frontend/src/stores/useExtensionsStore.ts`): `extensions` (empty until
   a non-empty list loads), `activeView` (`PIPELINE_VIEW` initially), `toolbarSlot`
   (`HTMLElement | null`), `viewSave` (`(() => Promise<boolean>) | null`), and `quoteTables`
-  (`QuoteTables | null`: `extension`, `tables`, `sample` and `fetch`, the fetch's number).
+  (`QuoteTables | null`: `extension`, `tables`, `sample`, `responseTables` and `fetch`, the
+  fetch's number).
 - **`NodeUpdateOptions`** (`frontend/src/hooks/useGraphCommitController.ts`): `isCurrent`, which
   returning false makes an update count as superseded, and `onSettled`, called once with the
   update's final result: at once for an ordinary node, after identity resolution for a request
@@ -90,13 +126,33 @@ table editor, for a Quote Input.
   values and `REQUEST_INPUT_TYPES` (`frontend/src/utils/nodeTypes.ts`) is the editor's twin.
   **`WorkbenchInputConfig`**: `tables` and `sample`.
 - **`SINGLETON_NODE_GROUPS`** (`src/haute/_graph_shape.py`): `(REQUEST_INPUT_NODE_TYPES, "Quote
-  Input or Workbench Input")` and `(frozenset({NodeType.OUTPUT}), "Output")`.
+  Input or Workbench Input")` and `(RESPONSE_NODE_TYPES, "Quote Response or Workbench Output")`.
+- **`RESPONSE_NODE_TYPES`** (`src/haute/_types.py`): the frozenset of `NodeType.OUTPUT` and
+  `NodeType.WORKBENCH_OUTPUT`; `RESPONSE_TYPES` (`frontend/src/utils/nodeTypes.ts`) is the
+  editor's twin. **`WorkbenchOutputConfig`**: `tables`, the response's tables in the v2 shape,
+  and `mapping`, `dict[str, dict[str, str | None]]` by table label and column name: a frame
+  column's name, or `None` for none; a column without an entry is filled by name.
+- **A Workbench Output's tables** (`src/haute/_workbench_output.py`): each table is one-row
+  when its path is the root, `$[:]`, and many-row when its path has one array step below it,
+  `$[:].<name>[:]`; every column's path must have its table's path as its array prefix (no
+  `[:]` after it), so it sits at its table's level. A port is a table's label. A column's
+  declared type admits a frame's column of that dtype or `pl.Null`, and also any integer
+  dtype for `int`, any integer, float or decimal dtype for `float`, and `pl.Categorical` or
+  `pl.Enum` for `str`; the column is cast to the declared dtype (`_POLARS_TYPE_MAP`).
+- **`assemble_workbench_output_from_config(*dfs, config, base_dir=None, ports=None)`**
+  (`src/haute/_node_apply.py`): `dfs` are the incoming frames in edge order and `ports` the
+  target port of each, aligned; without `ports` it refuses to run. It returns
+  `WorkbenchOutputTables`, a `dict` of lazy frames by table label with the tables as `.tables`.
 - **Browser contract** (`frontend/src/extensions/loadExtensionModule.ts`): the module exports
   `mount(options: ExtensionMountOptions): ExtensionHandle`, where the options are `main` (the
   element filling the area below the toolbar), `toolbar` (the toolbar's slot element),
-  `apiBase`, `switcherSlot` (`SWITCHER_SLOT`, `"haute-view-switcher"`) and `palette`
+  `apiBase`, `switcherSlot` (`SWITCHER_SLOT`, `"haute-view-switcher"`), `palette`
   (`ExtensionPalette`: `open`, whether the node palette was open when the view mounted, and
-  `setOpen(open)`, which opens or collapses it), and the handle has `unmount()`. The extension
+  `setOpen(open)`, which opens or collapses it) and
+  `priceSample(workbench: WorkbenchTables): Promise<PricedSample>`, `WorkbenchTables` being
+  `{tables, sample, response_tables}` as `GET /api/quote-tables` serves them and
+  `PricedSample` being `{tables}`, each Workbench Output table's rows (objects by column
+  name) under its label, and the handle has `unmount()`. The extension
   shows its palette open or collapsed to match and calls `setOpen` from its own minimiser, so
   both views share one palette state. The module may also export `save(): Promise<boolean>`,
   which writes the view's unsaved work to the project and resolves whether it saved; the
@@ -240,6 +296,94 @@ table editor, for a Quote Input.
     `prepare_batch_scoring` as `input_schema`, carried on `BatchScoreRequest`, and the worker
     builds its input frame with it, so a record of nulls keeps its types; a served request
     passes none.
+17. **The response's tables, served and applied.** `_load` binds `response_tables` as it binds
+    `quote_sample`. `GET /api/quote-tables` calls it after the tables, in the thread pool,
+    answering 500 naming the extension when it raises or returns something other than a list,
+    checks the list with `validate_v2_schema({"tables": response_tables})`, answering the
+    structured 422 when that fails, and answers them as `response_tables`, `[]` without the
+    function. `refreshQuoteTables` keeps them in `quoteTables.responseTables`, and
+    `useExtensionQuoteTables` applies them in the same pass and under the same rules as the
+    tables: for each Workbench Output on the canvas that has not had this fetch, it calls
+    `onUpdateNode` with `responseTablesPatch` (none when the copy matches). There
+    `prepareNodeUpdate` keeps each connection into the node whose `targetHandle` is one of the
+    new tables' labels and removes the rest, which the commit controller reports in one
+    warning toast as connections whose tables no longer exist.
+18. **Shown and connected.** While `responseTablesSupplier` finds a listed supplier whose
+    `response_tables` is true, `NodePalette` renders the Workbench Output in the Quote
+    Response's place and drags it with `paletteWorkbenchOutputConfig`: the latest response
+    tables, or `[]` before the first fetch. `PipelineNode` renders a Workbench Output's body as
+    `FramePortRows` with `direction="target"`, one row per label from
+    `workbenchOutputTableLabels`, each a target `Handle` whose id is the label, or "No tables"
+    with none; it has no default input and no source handle, and the labels join the signature
+    that re-measures the node's handles. `validatePipelineConnection` refuses a connection into
+    a Workbench Output whose target handle is none of its tables ("Connect to one of
+    <node>'s tables"), one to a table that already has a connection ("<table> is already
+    filled by <node>"), and one from a node that already fills another of its tables
+    ("<source> already fills <table>; a node fills one table"), before the shared input-name
+    check. `onConnect` keeps the handle as the edge's `targetHandle`, and save and codegen
+    write it as `target_port`.
+19. **Run.** `_build_workbench_output` builds a function of the incoming frames that calls
+    `assemble_workbench_output_from_config` with the config and `ports=ctx.target_handles`. It
+    is registered opaque, so projection asks its parents for their whole frames: the mapping may
+    pick any of their columns, and a mapping entry naming a column a frame lacks reaches the
+    node, to be named, rather than failing a projection contract upstream. With nothing
+    connected it reports itself a source, so the walk calls it with no frames and it says what
+    to connect. The standalone runner calls it with the node's sidecar and `target_ports`:
+    `Pipeline._execute_transform` passes the target port of each incoming `pipeline.connect`,
+    through `Node._invoke` and `run_configured_node`. The function pairs each frame with its
+    port, raising when a port is missing, is none of the tables' labels or repeats one, reads
+    `workbench_output_tables` and `workbench_output_mapping`, and calls
+    `fill_workbench_tables`, which for each table takes its frame (raising when none is
+    connected) and, against its `collect_schema()`, gives each column its source: the mapping's
+    entry, else the column of the same name when the frame has it, else none. A source the frame
+    lacks or whose dtype does not fit raises; a column with no source is a typed null literal.
+    The table is the frame with each column added under its own name, cast to its declared
+    dtype, then cut to the table's columns in order, so a pick may swap two names. A one-row
+    table is wrapped in `limited_python_scan` of a producer that collects it through
+    `execution_collect` and raises unless it has exactly one row. Nothing is collected while
+    the tables are built, so a schema-only walk reads them as it reads any frame.
+20. **Its tables, previewed.** The walk keeps the result as a multi-frame bundle, as it keeps
+    a Workbench Input's, so the preview of a Workbench Output with several tables shows the
+    table named by the request's `port_label`, its `frame_columns` listing every table for the
+    preview's table picker, and one with a single table shows that table.
+    `previewPortLabel` in `frontend/src/hooks/usePipelineAPI.ts` asks for the first of
+    `workbenchOutputTableLabels`. `is_node_output` in `src/haute/_seed_plans.py` never makes a
+    Workbench Output a node-output snapshot point, as it never makes a request input one: a
+    bundle is not one frame, so a preview with shared snapshots never captures it, though two
+    inputs make it a join point. The executor renders only a Quote Response's preview with
+    `render_output_document`. `execute_trace` in `src/haute/trace.py` refuses a Workbench
+    Output's bundle as it refuses any multi-frame target, saying to trace the node connected to
+    the table instead.
+21. **The response node.** `Pipeline._resolve_output_node` returns the one node whose
+    `_node_type` is in `RESPONSE_NODE_TYPES`, raising `ExecutionError` naming them when there
+    are several; `find_output_node` picks the response node the same way; trace correlation
+    carries values through a response node unchanged. Where the pipeline answers a request,
+    `as_response` turns the response node's result into the frame it answers with:
+    `Pipeline.run` and `Pipeline.score` before collecting, and `_score_graph_lazy` in
+    `src/haute/deploy/_scorer.py`, which a deployed pipeline's `/quote`, test quotes, the
+    output-schema dry run and batch scoring share, before selecting `output_fields`. For a
+    Workbench Output it calls `workbench_response`: the tables' columns renamed to their paths,
+    the response's schema from `output_document_schema` with an identity mapping (the one-row
+    tables' columns as one source frame and each many-row table's as its own), and a
+    `limited_python_scan` whose producer collects the one-row tables, puts their single rows
+    side by side with `pl.concat(how="horizontal")`, and builds the document with
+    `assemble_output_from_mapping`. A Quote Response's result is its document already, so
+    `_quote_response_content` renders either unchanged.
+22. **One response node.** `validate_singleton_groups` counts both response node types as one
+    group. In the editor, `singletonTypesOccupiedBy` gives both for either, so the palette greys
+    out the one it offers and the drop and paste checks refuse a second, with
+    `singletonLimitMessage` naming "Quote Response or Workbench Output".
+23. **The sample, priced.** The editor shell passes `ExtensionView` a `priceSample` that calls
+    `priceSample(resolveGraphFromRefs(...), workbench, activeSource)`: the document's top level
+    even while a submodel is open, and the settings store's active source, both read when it is
+    called. `ExtensionView` gives the extension a function that calls the prop it holds then,
+    so the prop is not an effect dependency and never remounts the view. `priceSample` replaces
+    the config of each top-level node whose type `WORKBENCH_COPY_PATCHES` names with the config
+    patched as that rule says for `workbench`, when it says to, in a copy of the graph; a
+    submodel's nodes keep theirs, as the copy hook leaves them. It previews the first top-level
+    `workbenchOutput` with `row_limit` 10,000, the preview route's maximum, once per label in
+    parallel, each with its `port_label` and so a supersession key of its own, and gathers
+    each `preview` under its label. Nothing it does reaches the graph store.
 
 ## Edge cases and invariants
 
@@ -285,6 +429,18 @@ table editor, for a Quote Input.
   so while that submodel is open.
 - Tables and samples are compared as JSON with object keys sorted, so a copy written to its
   config file and read back never reads as changed.
+- A Workbench Output's connections are bound by `targetHandle`, never by position or input
+  name: reordering its tables moves no connection, and an upstream rename leaves its bindings
+  as they are.
+- A fetch never changes a Quote Response, and a Workbench Output inside a submodel definition
+  keeps its copy.
+- An empty `response_tables` list is a valid answer: the Workbench Output has no ports, and
+  running it fails.
+- The one-row tables' rows are put side by side only once each has been shown to hold exactly
+  one row, so no row is paired by position with another quote's.
+- `priceSample` never changes the document: the copies it gives the workbench nodes are in its
+  request's graph alone, and the pipeline view gives the document the ones the extension saved
+  when it next shows.
 
 ## Error handling
 
@@ -299,9 +455,9 @@ table editor, for a Quote Input.
   it, with names from the list.
 - `loadExtensionModule` throws when the module has no `mount` function; `mountExtension`
   throws when `mount` throws or returns no `unmount`. `ExtensionView` shows either message.
-- `_load` raises `ExtensionError` for a `quote_tables` or `quote_sample` that is not callable
-  and for a `quote_sample` without `quote_tables`, and `discover_extensions` for more than one
-  supplier, naming every one.
+- `_load` raises `ExtensionError` for a `quote_tables`, `quote_sample` or `response_tables`
+  that is not callable and for a `quote_sample` or `response_tables` without `quote_tables`,
+  and `discover_extensions` for more than one supplier, naming every one.
 - `GET /api/quote-tables` raises `HTTPException` 404 or 500, chaining the extension's error,
   and answers schema errors through `api_input_schema_error_response`; the request client
   retries a 5xx like any idempotent request before the store sees the failure.
@@ -318,6 +474,21 @@ table editor, for a Quote Input.
   cache report. `request_record_schema` raises `ApiInputSchemaError` when two paths disagree
   about a request field, which `_workbench_request_schema` turns into a `ValueError` naming
   the node, as it does for tables that give no schema.
+- `WorkbenchOutputError`, an `ExecutionError` with no public error code, carries every
+  failure of a Workbench Output's run: no tables, a port with no connection, a connection on a
+  port that is none of its tables or on a port another connection has, a mapping entry for a
+  table or column it does not have, a mapping entry naming a column its frame lacks, a column
+  whose dtype does not fit, and a one-row table without exactly one row. It names the table. A preview shows it on the node, `run()` and `score()` raise it, and a
+  deployed pipeline answers it as its other internal errors, a 500 carrying the message.
+  Tables that break the v2 rules raise `ApiInputSchemaError` from `validate_v2_schema`, and a
+  table whose path or a column's path is not of the shapes above raises `WorkbenchOutputError`.
+- The assistant's operations raise `OpValidationError` for a Workbench Output they may not
+  author, as for a Workbench Input.
+- `priceSample` throws an `Error` "The pipeline has no Workbench Output: add one from the
+  palette and connect a frame to each of its tables." when the graph's top level has none,
+  and an `Error` carrying a table's preview `error` when its status is not `ok`; a failed
+  `previewNode` request throws an `Error` carrying its `apiErrorMessage`, so the server's
+  reason, such as a sample that does not fit, reaches the extension rather than a status.
 
 ## Testing
 
@@ -341,8 +512,14 @@ table editor, for a Quote Input.
   documented options, the slotted switcher, unmounting on leave, never mounting after a
   late load, waiting for the toolbar slot, an unbuilt extension, and load and mount
   failures keeping the switcher; the module's `save` held as `viewSave` while mounted; the palette state (the extension's `setOpen` collapses the
-  palette, the switcher turns compact, and the view is not remounted); and the Git or
+  palette, the switcher turns compact, and the view is not remounted); `priceSample` passing
+  its tables to the shell's latest prop without remounting the view; and the Git or
   Assistant panel beside the view.
+- `frontend/src/extensions/__tests__/priceSample.test.ts` covers the given copies taken by the
+  request's top-level workbench nodes and not by the graph it was given or a submodel's, one
+  preview per table with its `portLabel` and the rows gathered by label, a pipeline without a
+  Workbench Output, a table whose preview fails, a preview request failing with the server's
+  reason, and a Workbench Output with no tables.
 - `frontend/src/extensions/__tests__/loadExtensionModule.test.ts` covers importing a module
   by URL and the module and handle checks, an optional `save` included.
 - `frontend/src/hooks/__tests__/useKeyboardShortcuts.test.ts` checks that shortcuts do
@@ -398,3 +575,38 @@ table editor, for a Quote Input.
   Data picker and its note following the sample; `frontend/src/hooks/__tests__/useNodeDataCache.test.tsx`
   clearing a point that reads directly without the input-cache route; and
   `frontend/src/panels/__tests__/NodePanel.test.tsx` the panel chosen for each request input.
+- The Workbench Output: `tests/test_extensions.py` covers the response's tables served beside
+  the tables (`[]` without `response_tables`), `response_tables` true in the listing, a
+  raising or misshapen `response_tables` answering 500 and tables breaking the v2 rules 422,
+  and a `response_tables` without `quote_tables` or not a function refused.
+  `tests/test_workbench_output.py` previews a Workbench Output's tables (through
+  `execute_graph` too, on a saved pipeline with shared snapshots, a table at a time), each a dataframe
+  typed as declared without the frames' other columns, filled by name, by a mapping's pick
+  (two names swapped included) and with nulls where nothing fills a column; answers with
+  their response through its generated code (`run()` and `score()`) and through deploy scoring
+  (`output_fields` naming the response's fields) and `resolve_config`, the connections
+  round-tripping as `target_port`; previews one typed row of nulls per one-row table before
+  the workbench has a sample; says what to connect when nothing is connected, in the editor's
+  preview too; fails each run
+  failure with its message (no tables, a table with no connection, a mapping entry naming a
+  column the frame lacks, a mapping entry for a column the table lacks, a column whose type
+  does not fit, a one-row table of two rows or none, a request of two quotes); reads the tables'
+  schemas without collecting; and refuses a second response node in save, `resolve_config` and
+  `run()`.
+  `tests/test_assistant_ops.py` covers the assistant's refusals and its wiring to a Workbench
+  Output's tables, and `tests/test_config_io.py` writes its config file to
+  `config/workbench_output/` and reads it back.
+- In the frontend, `frontend/src/utils/__tests__/extensionQuoteTables.test.ts` covers
+  `responseTablesPatch` (its mapping pruned with the tables), `paletteWorkbenchOutputConfig`
+  and `workbenchOutputTableLabels`;
+  `frontend/src/hooks/__tests__/useExtensionQuoteTables.test.tsx` the response's tables applied
+  to a Workbench Output and never to a Quote Response;
+  `frontend/src/utils/__tests__/connectionValidation.test.ts` the connections a Workbench
+  Output refuses; `frontend/src/utils/__tests__/nodeUpdatePlan.test.ts` a connection kept while
+  its table remains, wherever it moved, and removed with it, and
+  `frontend/src/hooks/__tests__/useGraphCommitController.pending.test.ts` the warning that says so;
+  `frontend/src/panels/__tests__/NodePalette.test.tsx` the palette's swap of the Quote Response
+  and the response nodes' shared slot; `frontend/src/nodes/__tests__/PipelineNode.test.tsx` a
+  target port per table; and `frontend/src/__tests__/editors/WorkbenchOutputEditor.test.tsx`
+  the panel, with each table's connection and its mapping: a column filled by name, by a pick,
+  or by nothing and flagged, and a pick sent as the new `mapping`.

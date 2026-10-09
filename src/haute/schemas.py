@@ -162,6 +162,8 @@ class ExtensionInfo(BaseModel):
     detail: str | None
     # Whether it supplies the Quote Input's tables (``GET /api/quote-tables``).
     quote_tables: bool
+    # Whether it also supplies the response's tables, which a Workbench Output fills.
+    response_tables: bool
 
 
 class ExtensionsResponse(BaseModel):
@@ -172,11 +174,14 @@ class QuoteTablesResponse(BaseModel):
     """The Quote Input's tables, in its v2 shape, from the extension that supplies them.
 
     ``sample`` is the extension's sample quote, as a request holds it: ``{}`` for none.
+    ``response_tables`` are the tables a priced quote fills in, in the same shape, which a
+    Workbench Output fills: ``[]`` for none.
     """
 
     extension: str
     tables: list[dict[str, Any]]
     sample: dict[str, Any] = Field(default_factory=dict)
+    response_tables: list[dict[str, Any]] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

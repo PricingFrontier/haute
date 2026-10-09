@@ -2,6 +2,7 @@ import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
 import { isSubmodelDefinition, isSubmodelInstanceConfig } from "../types/node"
 import { NODE_TYPES, isRequestInputType } from "./nodeTypes"
 import { SUBMODEL_INPUT_HANDLE } from "./flowHandles"
+import { workbenchOutputTableLabels } from "./extensionQuoteTables"
 import {
   edgeInputName,
   incomingEdgeInputNames,
@@ -88,6 +89,30 @@ function targetEndpointIsSource(connection: ConnectionLike): boolean {
     || handleType(connection.toHandle) === "source"
 }
 
+/**
+ * Why a connection cannot fill a table of the Workbench Output *target*, or null when it
+ * can: it lands on one of its tables' ports, a table takes one connection, and a node
+ * fills one table (specs/extensions).
+ */
+function workbenchOutputConnectionFailure(
+  candidate: { source: string; targetHandle: string | null | undefined },
+  target: SimpleNode,
+  nodesById: Map<string, SimpleNode>,
+  edges: readonly SimpleEdge[],
+): string | null {
+  const name = (nodeId: string) => String(nodesById.get(nodeId)?.data.label ?? nodeId)
+  const table = candidate.targetHandle
+  if (typeof table !== "string" || !workbenchOutputTableLabels(target.data.config).includes(table)) {
+    return `Connect to one of ${name(target.id)}'s tables`
+  }
+  const incoming = edges.filter((edge) => edge.target === target.id)
+  const filled = incoming.find((edge) => edge.targetHandle === table)
+  if (filled) return `${table} is already filled by ${name(filled.source)}`
+  const fills = incoming.find((edge) => edge.source === candidate.source)
+  if (fills) return `${name(candidate.source)} already fills ${String(fills.targetHandle)}; a node fills one table`
+  return null
+}
+
 function resolvedTarget(
   targetNode: SimpleNode,
   targetHandle: string | null | undefined,
@@ -135,6 +160,11 @@ export function validatePipelineConnection(
   if (isRequestInputType(sourceNode.data.nodeType)
     && (candidate.sourceHandle === null || candidate.sourceHandle === undefined)) {
     return { ok: false, reason: { kind: "invalid-connection", message: `${sourceNode.data.nodeType} connections require a frame handle` } }
+  }
+
+  if (targetNode.data.nodeType === NODE_TYPES.WORKBENCH_OUTPUT) {
+    const failure = workbenchOutputConnectionFailure(candidate, targetNode, nodesById, edges)
+    if (failure !== null) return { ok: false, reason: { kind: "invalid-connection", message: failure } }
   }
 
   let candidateName: string

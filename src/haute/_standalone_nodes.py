@@ -229,8 +229,13 @@ def _run_configured_work(
     frames: Sequence[Any],
     input_names: Sequence[str],
     pipeline_dir: str,
+    target_ports: Sequence[str | None] | None = None,
 ) -> Any:
-    """Perform *node_type*'s configured work on *frames*, as canvas execution does."""
+    """Perform *node_type*'s configured work on *frames*, as canvas execution does.
+
+    *target_ports* are the ports *frames* arrive on, aligned with them, when the run
+    knows them; a Workbench Output needs them to know which table each frame fills.
+    """
     if node_type == MODELLING_NODE_SEMANTICS.node_type:
         if MODELLING_NODE_SEMANTICS.input_policy is not NodeInputPolicy.FIRST_CONNECTED:
             raise RuntimeError(
@@ -295,6 +300,15 @@ def _run_configured_work(
         return assemble_output_from_config(
             *frames, config=path, base_dir=base_dir, source_names=list(input_names)
         )
+    if node_type == NodeType.WORKBENCH_OUTPUT:
+        from haute._node_apply import assemble_workbench_output_from_config
+
+        return assemble_workbench_output_from_config(
+            *frames,
+            config=path,
+            base_dir=base_dir,
+            ports=None if target_ports is None else list(target_ports),
+        )
 
     from haute._config_io import load_node_config
 
@@ -338,11 +352,13 @@ def run_configured_node(
     fn: Callable[..., Any],
     frames: Sequence[Any],
     pipeline_dir: str = ".",
+    target_ports: Sequence[str | None] | None = None,
 ) -> Any:
     """Run a configured node: its declaration's work, or that work handed to its hook.
 
     *pipeline_dir* leads from the file defining *fn* to its pipeline's directory,
     where ``config=`` paths resolve (``.`` except in a submodel definition file).
+    *target_ports* are the ports *frames* arrive on, when the caller knows them.
     """
     positional, _keyword_only = _parameters(fn)
 
@@ -355,6 +371,7 @@ def run_configured_node(
             frames=frames,
             input_names=positional,
             pipeline_dir=pipeline_dir,
+            target_ports=target_ports,
         )
 
     if kind == "declaration":

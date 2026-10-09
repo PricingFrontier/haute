@@ -19,6 +19,11 @@ Quote Input, and keeps its own copy of them. The extension may also supply a sam
 which the pipeline's previews run on: Obverse's is the values typed into its tables while
 building.
 
+It can supply the response's tables too: the tables a priced quote fills in, Obverse's being
+its schema's output tables. The pipeline fills them through a Workbench Output, a node type of
+its own beside the Quote Response, whose input ports are those tables: the frame connected to
+each fills it when the pipeline runs.
+
 ## Scope
 
 In scope:
@@ -34,6 +39,12 @@ In scope:
 - An extension supplying the quote's tables and a sample quote: the optional `quote_tables`
   and `quote_sample` functions, `GET /api/quote-tables`, and the Workbench Input, the node
   type that holds a copy of both, which the editor keeps current and shows, and previews on.
+- An extension supplying the response's tables: the optional `response_tables` function,
+  served by `GET /api/quote-tables` beside the quote's tables, and the Workbench Output, the
+  node type that holds a copy of them, which the editor keeps current and shows, and whose
+  ports take the frames that fill them.
+- Pricing a sample quote the extension gives on the pipeline open in the editor:
+  `priceSample`, which `mount` is given, resolving to the Workbench Output's tables.
 
 Out of scope:
 
@@ -90,12 +101,23 @@ Out of scope:
     committed (planned as `EXT-01` in the [extensions roadmap](../roadmap/extensions.md)).
 - **The extension's view.** Haute imports the extension's module from its URL and calls
   `mount` with the element to render the view in, the space in the toolbar, its API base,
-  the name of the slot for the switcher and the palette's state. The extension puts that
+  the name of the slot for the switcher, the palette's state and `priceSample`. The extension puts that
   slot at the bottom of its own palette and Haute fills it with the same switcher, compact
   while the palette is collapsed. Where the extension shows no
   palette, as in Obverse's Preview (what underwriters see), there is no switcher: it is for
   the people building the pipeline and the form. Switching back to Haute unmounts the
   extension's view; the extension keeps its own state between mounts.
+- **Pricing the sample.** `priceSample(workbench)` prices a sample quote on the pipeline open
+  in the editor and resolves to the Workbench Output's tables: each table's rows under its
+  label, as the node's preview shows them. `workbench` holds the tables, the sample and the
+  response's tables, shaped as `GET /api/quote-tables` serves them, as the extension has them
+  then, saved or not. It runs the editor's document as it is when called, unsaved edits
+  included, and the whole pipeline even while a submodel is open. The workbench nodes at the
+  document's top level run with the tables and sample it is given, as the pipeline view gives
+  them a fetch's, but only for this run: the document does not change. It rejects with the
+  reason when it cannot price: the pipeline has no Workbench Output at its top level, or a
+  table's preview fails. Obverse calls it while building, whenever its schema or sample
+  changes, so its output columns follow what is typed.
 - **Looking like Haute.** An extension builds its toolbar controls from `haute-ui`, the
   kit Haute's own toolbar is built from ([frontend-shared](../frontend-shared/high-level.md)):
   the same two-row columns, labelled buttons, Undo/Redo, Zoom In/Zoom Out and Save, in
@@ -209,13 +231,102 @@ Out of scope:
   `$[:].<table>[:]`, columns `$[:].<table>[:].<column>`); a request is one quote or a list of
   them. Column types carry over, a column's allowed values become its `levels`, every column
   is selected, every table emits, and a many-row table with exactly one key column uses it as
-  its `row_id_column`. Rules such as required and ranges stay in the Workbench. Output tables
-  have no part in this, nor does a quote's identity on its many-row tables for requests that
-  hold several quotes. Its sample is the values typed into its Tables and Collections while
+  its `row_id_column`. Rules such as required and ranges stay in the Workbench. A quote's
+  identity on its many-row tables, for requests that hold several quotes, has no part in
+  this. Its sample is the values typed into its Tables and Collections while
   building, saved with the form: each input table with values under its name, each value as
   its column's type holds it (a number typed with a currency sign or separators is a number,
   and an unticked box in a filled row is false), rows with nothing typed left out. What an
   underwriter types in Obverse's Preview is not part of it.
+- **The response's tables and the Workbench Output.** Beside `quote_tables`, the entry-point
+  object may define `response_tables(project_dir)`, returning the tables a priced quote fills
+  in, in the Quote Input's v2 shape, as the extension's files define them now. The listing
+  says whether the supplier has it (`response_tables: true`), and `GET /api/quote-tables`
+  returns them as `response_tables` beside the tables and the sample, checked by the same
+  schema rules as the tables, an empty list when there are none. A pipeline fills them
+  through a Workbench Output, a node type of its own: `workbenchOutput` in the pipeline
+  document, declared in the pipeline file with `@pipeline.workbench_output(config=...)` (a
+  submodel's file uses `@submodel.workbench_output`) and configured in
+  `config/workbench_output/<function>.json`, whose `tables` are a copy of the extension's and
+  whose `mapping` says which frame column fills which table column. In the editor it is
+  "Workbench Output", badged "WORKBENCH OUT", in the exit group with the Quote Response's colour
+  and shape and an icon of its own.
+  - **A port per table.** A Workbench Output has one input port per table, named by the
+    table's label, in the tables' order, and nothing downstream. A connection lands on one
+    table's port: its `targetHandle` is the table's label, and the pipeline file says
+    `pipeline.connect("<node>", "<workbench output>", target_port="<table>")`. A table takes
+    one connection, and a node fills one table: its frame reaches the Workbench Output under
+    the node's own name, as it reaches any node, so a second connection from the same node is
+    refused, saying which table that node already fills.
+  - **The mapping.** Each table column is filled from one column of the frame connected to
+    its table's port: the frame's column of the same name, unless the mapping picks another or
+    none. The mapping is `mapping` in the config, by table label and then column name, each
+    entry a frame column's name or `null` for none; a column without an entry is filled by
+    name. A column with no source, because the mapping says none or the frame has no column of
+    its name, is filled with nulls, and the panel flags it. An entry naming a frame column the
+    frame lacks fails the run, naming both. The fetch that updates the tables drops the entries
+    of tables and columns the new tables no longer have.
+  - **Its tables are its result.** When the node runs, its result is its tables, one frame per
+    table under the table's label, each holding the table's columns in the tables' order with
+    their declared types, and nothing else of the frames it was given. A column fits its
+    declared type when it is of that type or null throughout, when it is any integer for an
+    Integer column or any number for a Decimal one, and when it is categorical for a Text one.
+    A one-row table holds exactly one row; a many-row table holds any number. Clicking the node
+    previews its tables as dataframes, one at a time, chosen from the preview's table picker
+    when there are several, the first table first. A value in them is traced from the node
+    connected to its table: tracing one of the tables' own cells says so.
+  - **The response.** The tables are what a priced quote's output tables are filled with. Where
+    the pipeline answers a request, its tables become the response for one quote: a list of one
+    object holding each one-row table as an object under its label and each many-row table as
+    a list of objects under its label, each column at its path. The Quote Response's assembler
+    builds it from the columns placed at their paths, so a null value or an empty list is left
+    out as a Quote Response leaves it out, and two rows of a many-row table that agree on every
+    column are one row, as in a Quote Response.
+  - **A response node.** A Workbench Output is the pipeline's response as a Quote Response is:
+    `Pipeline.run` and `Pipeline.score` return its response, deploy prunes the pipeline to it
+    and takes the response's schema from it, and a deployed pipeline answers `/quote` with its
+    response. Haute calls
+    the two the response nodes. A pipeline holds at most one, counting those inside its
+    submodels: saving or deploying a pipeline with two is refused with "Only one Quote Response
+    or Workbench Output node is allowed per pipeline (found 2).", `Pipeline.run` and
+    `Pipeline.score` refuse to run such a pipeline, and while it has either, the palette greys out
+    the response node it offers, titled "Only one Quote Response or Workbench Output allowed per
+    pipeline", and dropping or pasting another is refused.
+  - **One quote per request.** A request read through a request input gives each one-row table
+    one row per quote, and its many-row tables' rows say nothing of their quote, so a
+    Workbench Output answers one quote: a request of several fails it on its first one-row
+    table, and a pipeline whose Workbench Output has only many-row tables puts every row of
+    every quote under one.
+  - **The palette.** While an installed extension supplies the response's tables, the palette
+    shows the Workbench Output where the Quote Response was, and otherwise the Quote Response;
+    never both. A Workbench Output dragged from it starts with the newest tables fetched, or
+    none while the first fetch is running, and gets them when it finishes. Installing or
+    removing the extension changes only what the palette offers: a pipeline keeps the response
+    node it has.
+  - **Kept current.** The fetch that keeps each Workbench Input current brings each Workbench
+    Output's tables up to date at the same moments and in the same way: once per fetch, through
+    the same update an edit in its panel makes, as one undoable step saved with the pipeline,
+    never in a read-only document, and only while the top level shows. A copy whose tables
+    match is left alone, a Workbench Output inside a submodel keeps the copy it has, and a
+    fetch never changes a Quote Response.
+  - **Connections follow table names.** A connection to a table whose name the new tables
+    still have stays, wherever the table has moved; one to a table whose name has gone is
+    removed and reported, as for a Workbench Input. A renamed table is a new port.
+  - **Its panel** shows each table: its name, whether it has one row per quote or many, the
+    node connected to it or "Not connected", and whatever the editor finds wrong with its name
+    as a port; then, for each of its columns, the column's name and type and a choice of the
+    connected frame's columns that fills it (the columns its last preview recorded), showing a
+    same-named column as chosen "by name" and flagging a column nothing fills. Changing a choice
+    is an edit to the pipeline like any other. The tables themselves are read-only: the panel has
+    the Workbench Input panel's "Edit in <label>" button and its notes for when no installed
+    extension supplies the tables and while a submodel is open.
+  - **The assistant** reads a Workbench Output and connects nodes to its tables, or removes
+    such connections, but cannot add, change, rename or delete one: its node card says the
+    tables are the installed workbench's and the analyst adds the node from the palette.
+
+  Obverse supplies the output tables of its Workbench schema, in schema order and in the shape
+  its input tables take: in the response, a one-row table is an object under its name and a
+  many-row table an array of objects under its name.
 
 ## Design rationale
 
@@ -277,6 +388,36 @@ Out of scope:
   settle out of order, so only the newest publishes and none applies to a document adopted
   after it started, including through an update still waiting on identity resolution. Graph
   edits, undo and redo never start one, so the refresh never fights the user's history.
+- **The response's tables, filled through a mapping.** The workbench defines what a priced
+  quote fills in as it defines the quote, so the pipeline's part is to connect a frame to each
+  table and say which of its columns fills which. Filling by name until the analyst picks
+  otherwise keeps a pipeline built to the workbench's names free of mapping, and a column
+  nothing fills is visible in the panel and the preview rather than stopping every run while
+  the pipeline is being built.
+- **Tables, not a document.** The workbench's output tables are tables, and a pricing analyst
+  checks them as tables, so the node's result is its tables and its preview a dataframe per
+  table, as a Workbench Input's is per input table. The response document is how the tables
+  travel in a request's answer, so it is built where the pipeline answers one.
+- **One assembler.** The Workbench Output's response places each column at its path and hands
+  them to the Quote Response's assembler, so the two response nodes build, prune and type a
+  response alike, and deploy serves either unchanged.
+- **One quote per request.** A request's quotes carry no identity into their tables' rows, so
+  the rows of several quotes cannot be told apart once they are tables. A workbench prices
+  one quote at a time, so a Workbench Output answers one, and a one-row table with other than
+  one row fails rather than joining rows by position.
+- **Ports are the tables, inputs are the nodes.** Every node receives a frame under its
+  source's name, and codegen, parsing, projection and tracing rely on it, so the table a frame
+  fills is the connection's target port, as an Edge Join's role is, rather than its input
+  name. The price is that a node fills one table.
+- **The sample priced in the browser, on the editor's document.** A pricing analyst builds
+  the workbench's sheet against the pipeline as they would an Excel rater, so its output
+  columns follow what is on the sheet as it changes. The sample is priced on the editor's
+  document, the one the Workbench Output's preview runs, through the same preview route, with
+  its worker isolation, supersession and caching, rather than on the saved pipeline file
+  through a route of its own; and the extension gives the tables and sample as it has them,
+  so neither needs saving first. The copies go into the request rather than the document, so
+  pricing never edits the pipeline, and the pipeline view's own previews keep running on the
+  copies it was last given, from what the extension saved.
 
 ## Interactions
 
@@ -298,19 +439,24 @@ Out of scope:
   checked by the Quote Input's schema rules and read as a Quote Input's are, and its sample
   read through them in memory.
 - [frontend-node-editors](../frontend-node-editors/high-level.md): the palette's Workbench
-  Input and its panel.
+  Input and Workbench Output and their panels.
 - [frontend-graph-canvas](../frontend-graph-canvas/high-level.md): a palette drop reports the
-  node it creates, the commit controller checks an update's `isCurrent`, and the request
-  inputs share one singleton slot.
-- [caching](../caching/high-level.md): a Workbench Input's `tables` and `sample` are
-  classified as node config, and its tables have no input snapshots.
-- [pipeline-config](../pipeline-config/high-level.md): the `workbench_input` decorator and its
-  config folder.
+  node it creates, the commit controller checks an update's `isCurrent`, the request inputs
+  share one singleton slot and the response nodes another, and a Workbench Output's
+  connections land on its tables' ports.
+- [caching](../caching/high-level.md): a Workbench Input's `tables` and `sample`, and a
+  Workbench Output's `tables`, are classified as node config, and a Workbench Input's tables
+  have no input snapshots.
+- [pipeline-config](../pipeline-config/high-level.md): the `workbench_input` and
+  `workbench_output` decorators and their config folders.
 - [server-api](../server-api/high-level.md) and [deploy](../deploy/high-level.md): save and
-  deploy refuse a second request input, and deploy takes a Workbench Input's request schema
-  and sample record from its tables.
-- [assistant](../assistant/high-level.md): the Workbench Input's node card and the operations
-  that refuse to author one.
+  deploy refuse a second request input or response node, deploy takes a Workbench Input's
+  request schema and sample record from its tables, and a deployed pipeline answers with a
+  Workbench Output's response as with a Quote Response's.
+- [json-shredding](../json-shredding/high-level.md): the Quote Response's assembler builds a
+  Workbench Output's response.
+- [assistant](../assistant/high-level.md): the Workbench Input's and Workbench Output's node
+  cards and the operations that refuse to author either.
 
 ## Failure model
 
@@ -360,3 +506,30 @@ Out of scope:
   with "Only one Quote Input or Workbench Input node is allowed per pipeline (found 2)." and
   `Pipeline.score` as two Quote Inputs do. A config key a Workbench Input does not declare,
   `path` among them, is refused as it is for any node type.
+- A `response_tables` that is not a function, or one on an extension without `quote_tables`,
+  raises `ExtensionError` naming the entry point while `haute.server` is imported. One that
+  raises or returns something other than a list makes `GET /api/quote-tables` answer 500
+  naming the extension, and response tables that break the Quote Input's schema rules make it
+  answer the same structured 422 as the tables do.
+- A Workbench Output with no installed extension supplying tables keeps its copy and runs from
+  it; its panel says so and nothing updates it.
+- Running a Workbench Output, in a preview, `run()`, `score()` or a deployed pipeline, fails
+  with a message naming its table:
+  - with no tables, "This Workbench Output has no tables: add output tables to the
+    workbench's schema and save it.";
+  - for a table nothing is connected to, "Connect a frame to the Workbench Output's
+    '<table>' table.";
+  - for a connection to a port that is no table of the node's;
+  - for a mapping entry naming a column its table's frame lacks, naming the frame's columns,
+    and for a column whose type does not fit, naming both types;
+  - for a mapping entry for a table or column the node does not have;
+  - for a one-row table whose frame has other than one row, saying how many it has.
+- Two response nodes of either type, at the top level or in a submodel, fail save and deploy
+  with "Only one Quote Response or Workbench Output node is allowed per pipeline (found 2).",
+  and `Pipeline.run` and `Pipeline.score` refuse the pipeline, naming both.
+- `priceSample` rejects, changing nothing: with "The pipeline has no Workbench Output: add one
+  from the palette and connect a frame to each of its tables." when the document's top level
+  has none; with a table's preview error, such as "Connect a frame to the Workbench Output's
+  '<table>' table.", when one fails; and with the server's reason, such as a sample that does
+  not fit its tables, when a preview request fails. A Workbench Output with no tables resolves
+  to no tables.

@@ -1,4 +1,4 @@
-import { Database, Brain, TableProperties, CircleDot, HardDriveDownload, FileArchive, Package, ArrowRight, Radio, ToggleLeft, SlidersHorizontal, FlaskConical, Target, Crosshair, Rows3, Hash, Search, GitMerge, ClipboardList } from "lucide-react"
+import { Database, Brain, TableProperties, CircleDot, HardDriveDownload, FileArchive, Package, ArrowRight, Radio, ToggleLeft, SlidersHorizontal, FlaskConical, Target, Crosshair, Rows3, Hash, Search, GitMerge, ClipboardList, ClipboardCheck } from "lucide-react"
 import type { Node } from "@xyflow/react"
 import PolarsIcon from "../components/PolarsIcon"
 import { NODE_GROUP_COLORS } from "../theme/colors"
@@ -43,6 +43,7 @@ export const NODE_TYPE_META: Record<NodeTypeValue, {
   [NODE_TYPES.LIVE_SWITCH]:        { icon: ToggleLeft,         color: NODE_GROUP_COLORS.entry, label: "SWITCH",         name: "Source Switch",        description: "Switch between live API and batch data",                      defaultConfig: nodeDefaults[NODE_TYPES.LIVE_SWITCH], shape: "pill" },
   // Exit (vermillion) — pipeline destination
   [NODE_TYPES.OUTPUT]:             { icon: CircleDot,          color: NODE_GROUP_COLORS.exit, label: "QUOTE OUT",      name: "Quote Response",       description: "Final price / prediction",                                    defaultConfig: nodeDefaults[NODE_TYPES.OUTPUT], shape: "pill" },
+  [NODE_TYPES.WORKBENCH_OUTPUT]:   { icon: ClipboardCheck,     color: NODE_GROUP_COLORS.exit, label: "WORKBENCH OUT",  name: "Workbench Output",     description: "Fills the workbench's output tables (max 1)",                 defaultConfig: nodeDefaults[NODE_TYPES.WORKBENCH_OUTPUT], shape: "pill" },
   // Data group (bluish green) — read/write external data
   [NODE_TYPES.DATA_INPUT]:         { icon: Database, color: NODE_GROUP_COLORS.data, label: "DATA IN", name: "Data Input", description: "Read a configured external dataset", defaultConfig: nodeDefaults[NODE_TYPES.DATA_INPUT] },
   [NODE_TYPES.DATA_OUTPUT]:        { icon: HardDriveDownload, color: NODE_GROUP_COLORS.data, label: "DATA OUT", name: "Data Output", description: "Write a configured external dataset", defaultConfig: nodeDefaults[NODE_TYPES.DATA_OUTPUT], maxInputs: 1 },
@@ -81,8 +82,21 @@ export function isRequestInputType(nodeType: unknown): boolean {
   return typeof nodeType === "string" && REQUEST_INPUT_TYPES.has(nodeType as NodeTypeValue)
 }
 
+/**
+ * The response nodes: the node types whose result is the pipeline's response. The
+ * Quote Response maps columns to paths in its panel and the Workbench Output fills
+ * the tables the installed extension supplies (specs/extensions); a pipeline holds
+ * one of either. The backend's `RESPONSE_NODE_TYPES` is the twin.
+ */
+export const RESPONSE_TYPES = new Set<NodeTypeValue>([NODE_TYPES.OUTPUT, NODE_TYPES.WORKBENCH_OUTPUT])
+
+/** Whether a node of this type is the pipeline's response. */
+export function isResponseType(nodeType: unknown): boolean {
+  return typeof nodeType === "string" && RESPONSE_TYPES.has(nodeType as NodeTypeValue)
+}
+
 export const SINGLETON_TYPES = new Set<NodeTypeValue>([
-  NODE_TYPES.API_INPUT, NODE_TYPES.WORKBENCH_INPUT, NODE_TYPES.OUTPUT,
+  NODE_TYPES.API_INPUT, NODE_TYPES.WORKBENCH_INPUT, NODE_TYPES.OUTPUT, NODE_TYPES.WORKBENCH_OUTPUT,
 ])
 
 /** Whether a node type allows only one instance per pipeline. */
@@ -92,17 +106,24 @@ export function isSingletonType(nodeType: string | undefined): boolean {
 
 /**
  * The singleton types a node of this type occupies: a pipeline holds one
- * request input, so either request input occupies both.
+ * request input and one response node, so either of a pair occupies both.
  */
 export function singletonTypesOccupiedBy(nodeType: unknown): NodeTypeValue[] {
   if (isRequestInputType(nodeType)) return [...REQUEST_INPUT_TYPES]
+  if (isResponseType(nodeType)) return [...RESPONSE_TYPES]
   return typeof nodeType === "string" && isSingletonType(nodeType) ? [nodeType as NodeTypeValue] : []
+}
+
+/** What a singleton slot is called: a pair's two names, or the type's own. */
+export function singletonSlotName(nodeType: NodeTypeValue): string {
+  if (isRequestInputType(nodeType)) return "Quote Input or Workbench Input"
+  if (isResponseType(nodeType)) return "Quote Response or Workbench Output"
+  return NODE_TYPE_META[nodeType].name
 }
 
 /** Why a singleton of this type cannot be added: the pipeline already has one. */
 export function singletonLimitMessage(nodeType: NodeTypeValue): string {
-  const name = isRequestInputType(nodeType) ? "Quote Input or Workbench Input" : NODE_TYPE_META[nodeType].name
-  return `Only one ${name} node is allowed per pipeline`
+  return `Only one ${singletonSlotName(nodeType)} node is allowed per pipeline`
 }
 
 type NodeTypeCarrier = Pick<Node, "data">
@@ -164,13 +185,14 @@ export const GENERATED_COLUMN_ORIGIN_TYPES = new Set<string>([
 
 /** Nodes that only consume data — no output handle. */
 export const SINK_ONLY_TYPES = new Set<string>([
-  NODE_TYPES.OUTPUT, NODE_TYPES.DATA_OUTPUT, NODE_TYPES.EXPLORE, NODE_TYPES.MODELLING, NODE_TYPES.OPTIMISER,
+  NODE_TYPES.OUTPUT, NODE_TYPES.WORKBENCH_OUTPUT, NODE_TYPES.DATA_OUTPUT, NODE_TYPES.EXPLORE, NODE_TYPES.MODELLING, NODE_TYPES.OPTIMISER,
 ])
 
 /**
  * Node types shown in the palette, in display order. Submodel/port are excluded
  * (created via dialog). The palette shows the Workbench Input in the Quote
- * Input's place while an installed extension supplies the tables.
+ * Input's place while an installed extension supplies the tables, and the
+ * Workbench Output in the Quote Response's while it supplies the response's.
  */
 export const PALETTE_TYPES: NodeTypeValue[] = [
   NODE_TYPES.API_INPUT, NODE_TYPES.LIVE_SWITCH, NODE_TYPES.OUTPUT,

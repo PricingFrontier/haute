@@ -5169,6 +5169,10 @@
         "ready": {
           "title": "Ready",
           "type": "boolean"
+        },
+        "response_tables": {
+          "title": "Response Tables",
+          "type": "boolean"
         }
       },
       "required": [
@@ -5178,7 +5182,8 @@
         "entry_url",
         "ready",
         "detail",
-        "quote_tables"
+        "quote_tables",
+        "response_tables"
       ],
       "title": "ExtensionInfo",
       "type": "object"
@@ -11562,11 +11567,19 @@
       "type": "object"
     },
     "QuoteTablesResponse": {
-      "description": "The Quote Input's tables, in its v2 shape, from the extension that supplies them.\n\n``sample`` is the extension's sample quote, as a request holds it: ``{}`` for none.",
+      "description": "The Quote Input's tables, in its v2 shape, from the extension that supplies them.\n\n``sample`` is the extension's sample quote, as a request holds it: ``{}`` for none.\n``response_tables`` are the tables a priced quote fills in, in the same shape, which a\nWorkbench Output fills: ``[]`` for none.",
       "properties": {
         "extension": {
           "title": "Extension",
           "type": "string"
+        },
+        "response_tables": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Response Tables",
+          "type": "array"
         },
         "sample": {
           "additionalProperties": true,
@@ -11585,7 +11598,8 @@
       "required": [
         "extension",
         "tables",
-        "sample"
+        "sample",
+        "response_tables"
       ],
       "title": "QuoteTablesResponse",
       "type": "object"

@@ -25,7 +25,7 @@ const ALLOWED: Record<string, RegExp[]> = {
   "utils/nodeTypes.ts": [/^\s*\[NODE_TYPES\.API_INPUT\]:/, /^\s*NODE_TYPES\.API_INPUT, NODE_TYPES\.LIVE_SWITCH, NODE_TYPES\.OUTPUT,$/],
   "utils/nodeTypeRegistry.ts": [/^\s*\[NODE_TYPES\.API_INPUT\]: PipelineNode,$/],
   "panels/NodeConfigEditor.tsx": [/^\s*case NODE_TYPES\.API_INPUT:$/],
-  "panels/NodePalette.tsx": [/workbench && type === NODE_TYPES\.API_INPUT \? NODE_TYPES\.WORKBENCH_INPUT : type/],
+  "panels/NodePalette.tsx": [/if \(workbench && type === NODE_TYPES\.API_INPUT\) return NODE_TYPES\.WORKBENCH_INPUT$/],
   "api/types.ts": [SOURCE_KIND],
   "utils/inputSnapshotSource.ts": [SOURCE_KIND],
   "hooks/ensureInputSnapshots.ts": [SOURCE_KIND],
@@ -107,7 +107,9 @@ describe("the request inputs", () => {
 
   it("share one singleton slot: either occupies both", () => {
     expect(singletonTypesOccupiedBy(NODE_TYPES.WORKBENCH_INPUT)).toEqual([NODE_TYPES.API_INPUT, NODE_TYPES.WORKBENCH_INPUT])
-    expect(singletonTypesOccupiedBy(NODE_TYPES.OUTPUT)).toEqual([NODE_TYPES.OUTPUT])
+    // The response nodes share another.
+    expect(singletonTypesOccupiedBy(NODE_TYPES.OUTPUT)).toEqual([NODE_TYPES.OUTPUT, NODE_TYPES.WORKBENCH_OUTPUT])
+    expect(singletonTypesOccupiedBy(NODE_TYPES.WORKBENCH_OUTPUT)).toEqual([NODE_TYPES.OUTPUT, NODE_TYPES.WORKBENCH_OUTPUT])
     expect(singletonTypesOccupiedBy(NODE_TYPES.POLARS)).toEqual([])
 
     for (const nodeType of [NODE_TYPES.API_INPUT, NODE_TYPES.WORKBENCH_INPUT]) {

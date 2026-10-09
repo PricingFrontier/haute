@@ -212,7 +212,7 @@ Specs are organised by owning subsystem, not one-per-node-type. Two blanket rule
 every node type: its generated-code template (`_gen_*`) is specced in
 [codegen](codegen/high-level.md), and its config-editor UI in
 [frontend-node-editors](frontend-node-editors/high-level.md). The table below covers all
-20 node types and gives the components owning each node's core behaviour beyond those two.
+21 node types and gives the components owning each node's core behaviour beyond those two.
 The canonical set uses `dataInput` for all supported tabular sources and `dataOutput` for
 tabular persistence; the removed `dataSource` and `dataSink` types have no compatibility path.
 
@@ -227,6 +227,7 @@ tabular persistence; the removed `dataSource` and `dataSink` types have no compa
 | `modelScore` | [mlflow-model-registry](mlflow-model-registry/high-level.md) (loading/scoring/explainability) |
 | `banding` / `ratingStep` | [rating](rating/high-level.md) |
 | `output` | [json-shredding](json-shredding/high-level.md) (output mapping and assembly), [server-api](server-api/high-level.md) (editor dry-run route), [deploy](deploy/high-level.md) (served response) |
+| `workbenchOutput` | [extensions](extensions/high-level.md) (where its tables come from, how the editor keeps them current, and how the frames connected to them fill the response); the Quote Response's assembler builds it ([json-shredding](json-shredding/high-level.md)) |
 | `explore` | [explore-eda](explore-eda/high-level.md) (backend), [frontend-preview-explore](frontend-preview-explore/high-level.md) (UI) |
 | `externalFile` | [pipeline-config](pipeline-config/high-level.md) (config/builders), [io-layer](io-layer/high-level.md) (reading), [deploy](deploy/high-level.md) (bundling) |
 | `liveSwitch` | [execution-engine](execution-engine/high-level.md) (`_node_apply.py`), [deploy](deploy/high-level.md) (live-branch collapse at deploy time) |

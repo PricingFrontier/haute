@@ -114,6 +114,7 @@ describe("NodePalette", () => {
       ready: true,
       detail: null,
       quote_tables: true,
+      response_tables: false,
     }
     const tables = [{ path: "$[:]", label: "policy_details", emit: true, row_id_column: null, columns: [] }]
     const dragConfig = (name: string) => {
@@ -145,7 +146,10 @@ describe("NodePalette", () => {
       expect(dragConfig("Workbench Input")).toEqual({ tables: [], sample: {} })
 
       const sample = { policy_details: { state: "NY" } }
-      act(() => useExtensionsStore.setState({ quoteTables: { extension: "obverse", tables, sample, fetch: 1 } }))
+      act(() =>
+        useExtensionsStore.setState({
+          quoteTables: { extension: "obverse", tables, sample, responseTables: [], fetch: 1 },
+        }))
       expect(dragConfig("Workbench Input")).toEqual({ tables, sample })
     })
 
@@ -157,6 +161,55 @@ describe("NodePalette", () => {
         )
         const item = screen.getByTitle("Only one Quote Input or Workbench Input allowed per pipeline")
         expect(item).toHaveTextContent("Workbench Input")
+        expect(item).toHaveAttribute("aria-disabled", "true")
+        unmount()
+      }
+    })
+  })
+
+  describe("while the supplier supplies the response's tables too", () => {
+    const supplier = {
+      name: "obverse",
+      label: "Workbench",
+      api_base: "/api/extensions/obverse",
+      entry_url: "/extensions/obverse/obverse-embed.js",
+      ready: true,
+      detail: null,
+      quote_tables: true,
+      response_tables: true,
+    }
+    const responseTables = [{ path: "$[:]", label: "pricing_output", emit: true, row_id_column: null, columns: [] }]
+    afterEach(() => useExtensionsStore.setState({ extensions: [], quoteTables: null }))
+
+    it("shows the Workbench Output in the Quote Response's place, and drags it with the newest tables", () => {
+      useExtensionsStore.setState({ extensions: [{ ...supplier, response_tables: false }] })
+      render(<NodePalette />)
+      expect(screen.getByText("Quote Response")).toBeInTheDocument()
+      expect(screen.queryByText("Workbench Output")).not.toBeInTheDocument()
+
+      act(() =>
+        useExtensionsStore.setState({
+          extensions: [supplier],
+          quoteTables: { extension: "obverse", tables: [], sample: {}, responseTables, fetch: 1 },
+        }))
+      expect(screen.queryByText("Quote Response")).not.toBeInTheDocument()
+      const setData = vi.fn()
+      fireEvent.dragStart(screen.getByText("Workbench Output").closest("[draggable]")!, {
+        dataTransfer: { setData, effectAllowed: "" },
+      })
+      expect(setData).toHaveBeenCalledWith("application/reactflow-type", NODE_TYPES.WORKBENCH_OUTPUT)
+      const [, json] = setData.mock.calls.find(([format]) => format === "application/reactflow-config")!
+      expect(JSON.parse(json)).toEqual({ tables: responseTables })
+    })
+
+    it("greys out the Workbench Output while the pipeline has either response node", () => {
+      useExtensionsStore.setState({ extensions: [supplier] })
+      for (const present of [NODE_TYPES.OUTPUT, NODE_TYPES.WORKBENCH_OUTPUT]) {
+        const { unmount } = render(
+          <NodePalette existingSingletonTypes={new Set([present, NODE_TYPES.WORKBENCH_OUTPUT])} />,
+        )
+        const item = screen.getByTitle("Only one Quote Response or Workbench Output allowed per pipeline")
+        expect(item).toHaveTextContent("Workbench Output")
         expect(item).toHaveAttribute("aria-disabled", "true")
         unmount()
       }

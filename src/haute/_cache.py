@@ -796,6 +796,7 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
         NodeType.OUTPUT: _classify_config_fields(
             node_config=("outputFormat", "outputMapping"),
         ),
+        NodeType.WORKBENCH_OUTPUT: _classify_config_fields(node_config=("mapping", "tables")),
         NodeType.EXPLORE: _classify_config_fields(
             user_code=("code", "steps"),
             excluded={

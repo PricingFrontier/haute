@@ -1184,8 +1184,9 @@ array-only payload or omitted-edge compatibility branch is supported.
   Singleton occupancy is document-wide, not limited to the graph currently
   visible on the canvas: root nodes and every embedded submodel definition are
   considered together. The palette disables an occupied `SINGLETON_TYPES`
-  entry (`apiInput`, `workbenchInput` or `output`; the two request inputs
-  occupy one slot, so either disables both), while the drop handler repeats
+  entry (`apiInput`, `workbenchInput`, `output` or `workbenchOutput`; the two
+  request inputs occupy one slot and the two response nodes another, so either of
+  a pair disables both), while the drop handler repeats
   the check at commit time so stale or synthetic drag data cannot bypass it.
   Duplicating a singleton remains a silent no-op and paste filters occupied
   singleton types against the same document-wide set. Generic duplication of

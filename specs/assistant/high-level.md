@@ -1029,11 +1029,13 @@ online and ratebook Apply Optimisation, and Data Input, Data Output, Constant, E
 and Explore configurations. A field meaning also carries a material choice its node
 needs: the Rating Step card says its factor values, relativities and missing-factor
 value come from the analyst, are never invented, and are asked for with `NEEDS_INPUT:`
-unless the analyst delegated them. A card for Submodel, Port or Workbench Input states that
-the assistant cannot author it, in the words of the operation layer's refusal. A Workbench
-Input's tables are the installed workbench's, so the operations refuse to add one or to
-update, rename, delete or edit the steps of one, and connect nodes to its frames, or remove
-those connections, as for a Quote Input's. Cards are library
+unless the analyst delegated them. A card for Submodel, Port, Workbench Input or Workbench
+Output states that the assistant cannot author it, in the words of the operation layer's
+refusal. A Workbench Input's tables are the installed workbench's, so the operations refuse to
+add one or to update, rename, delete or edit the steps of one, and connect nodes to its frames,
+or remove those connections, as for a Quote Input's. A Workbench Output's tables are the
+workbench's too: the operations refuse to add, update, rename or delete one, and connect a node
+to one of its tables with `add_edge`'s `target_handle`, or remove that connection. Cards are library
 content, never project data. A card file also carries a synthetic fixture (tiny rows,
 files, surrounding operations) that is test evidence and never reaches the model: CI
 writes each configuration into a fresh project with that fixture, dry-runs and applies

@@ -11,6 +11,7 @@ const obverse = {
   ready: true,
   detail: null,
   quote_tables: false,
+  response_tables: false,
 }
 
 describe("ViewSwitcher", () => {

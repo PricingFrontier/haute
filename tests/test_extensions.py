@@ -210,6 +210,7 @@ def test_listing_reports_whether_the_browser_module_is_built(
         "ready": True,
         "detail": None,
         "quote_tables": False,
+        "response_tables": False,
     }
 
 
@@ -317,7 +318,12 @@ def test_quote_tables_come_from_the_extension_that_supplies_them(
     served = client.get("/api/quote-tables")
 
     assert {e["name"]: e["quote_tables"] for e in listing} == {"forms": False, "workbench": True}
-    assert served.json() == {"extension": "workbench", "tables": [_TABLE], "sample": {}}
+    assert served.json() == {
+        "extension": "workbench",
+        "tables": [_TABLE],
+        "sample": {},
+        "response_tables": [],
+    }
     assert sys.modules[supplier].asked_for == [tmp_path]
 
     installed(("forms", plain))
@@ -378,7 +384,12 @@ def test_the_supplier_serves_its_sample_beside_its_tables(
 
     served = TestClient(_app_like_haute_server(tmp_path)).get("/api/quote-tables")
 
-    assert served.json() == {"extension": "workbench", "tables": [_TABLE], "sample": sample}
+    assert served.json() == {
+        "extension": "workbench",
+        "tables": [_TABLE],
+        "sample": sample,
+        "response_tables": [],
+    }
 
     installed(("workbench", write_extension(_sampler("return None"))))
     none = TestClient(_app_like_haute_server(tmp_path)).get("/api/quote-tables")
@@ -418,4 +429,84 @@ def test_quote_sample_needs_quote_tables_and_must_be_a_function(
     not_a_function = write_extension(_sampler("return {}") + "\nquote_sample = {'a': 1}\n")
     installed(("workbench", not_a_function))
     with pytest.raises(ExtensionError, match="quote_sample must be a function"):
+        discover_extensions(tmp_path)
+
+
+# The response's tables, in the same shape: one output table a priced quote fills in.
+_RESPONSE_TABLE = {
+    "path": "$[:]",
+    "label": "pricing_output",
+    "emit": True,
+    "row_id_column": None,
+    "columns": [
+        {
+            "name": "premium",
+            "path": "$[:].pricing_output.premium",
+            "type": "float",
+            "status": "Confirmed",
+            "selected": True,
+            "levels": None,
+        }
+    ],
+}
+
+
+def _responder(response_body: str) -> str:
+    """A supplier of one table that also supplies the response's: ``response_body`` is its body."""
+    return _supplier(f"return [{_TABLE!r}]") + (
+        f"\n\ndef response_tables(project_dir):\n    {response_body}\n"
+    )
+
+
+def test_the_supplier_serves_the_responses_tables_beside_its_tables(
+    tmp_path: Path, write_extension, installed
+) -> None:
+    installed(("workbench", write_extension(_responder(f"return [{_RESPONSE_TABLE!r}]"))))
+    client = TestClient(_app_like_haute_server(tmp_path))
+
+    (listed,) = client.get("/api/extensions").json()["extensions"]
+    served = client.get("/api/quote-tables").json()
+
+    assert (listed["quote_tables"], listed["response_tables"]) == (True, True)
+    assert served["tables"] == [_TABLE]
+    assert served["response_tables"] == [_RESPONSE_TABLE]
+
+
+@pytest.mark.parametrize(
+    ("body", "status", "says"),
+    [
+        ("raise RuntimeError('form.json is unreadable')", 500, "form.json is unreadable"),
+        ("return {}", 500, "the response's tables as a dict"),
+        (f"return [{{**{_RESPONSE_TABLE!r}, 'label': 'class'}}]", 422, "'class'"),
+    ],
+)
+def test_the_responses_tables_fail_loudly(
+    tmp_path: Path, write_extension, installed, body: str, status: int, says: str
+) -> None:
+    installed(("workbench", write_extension(_responder(body))))
+
+    response = TestClient(_app_like_haute_server(tmp_path)).get("/api/quote-tables")
+
+    assert response.status_code == status
+    assert says in response.json()["detail"]
+    if status == 500:
+        assert "'workbench'" in response.json()["detail"]
+    else:
+        assert response.json()["type"] == "ApiInputSchemaError"
+
+
+def test_response_tables_need_quote_tables_and_must_be_a_function(
+    tmp_path: Path, write_extension, installed
+) -> None:
+    without_tables = write_extension(
+        textwrap.dedent(_EXTENSION.format(assets=str(tmp_path / "assets")))
+        + "\n\ndef response_tables(project_dir):\n    return []\n"
+    )
+    installed(("forms", without_tables))
+    with pytest.raises(ExtensionError, match="response_tables without quote_tables"):
+        discover_extensions(tmp_path)
+
+    not_a_function = write_extension(_responder("return []") + "\nresponse_tables = [1]\n")
+    installed(("workbench", not_a_function))
+    with pytest.raises(ExtensionError, match="response_tables must be a function"):
         discover_extensions(tmp_path)

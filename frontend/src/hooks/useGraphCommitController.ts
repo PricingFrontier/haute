@@ -185,9 +185,15 @@ export default function useGraphCommitController({
     ))
     if (prepared.removed.length === 0) return
     const label = String(prepared.data.label ?? prepared.nodeId)
+    const one = prepared.removed.length === 1
+    // A Workbench Output loses the connections whose tables went; anything else, those
+    // whose source frames went.
+    const gone = prepared.data.nodeType === NODE_TYPES.WORKBENCH_OUTPUT
+      ? (one ? "the table it filled no longer exists" : "the tables they filled no longer exist")
+      : (one ? "the source frame no longer exists" : "the source frames no longer exist")
     addToast(
       "warning",
-      `Disconnected ${prepared.removed.length} edge${prepared.removed.length === 1 ? "" : "s"} from ${label}: the source ${prepared.removed.length === 1 ? "frame no longer exists" : "frames no longer exist"} after your edit.`,
+      `Disconnected ${prepared.removed.length} edge${one ? "" : "s"} from ${label}: ${gone} after your edit.`,
     )
   }, [addToast, commitGraph, graphRef, setSelectedNode, submodelsRef])
 

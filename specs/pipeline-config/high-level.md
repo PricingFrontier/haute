@@ -38,7 +38,7 @@ save/load/discovery to the GUI are [server-api](../server-api/high-level.md).
 
 **Decorator API.** `Pipeline`/`Submodel` (both `NodeRegistry` subclasses) expose one
 decorator per authorable node type — `api_input`, `workbench_input`, `polars`, `banding`, `rating_step`,
-`model_score`, `output`, `edge_join`, `live_switch`, `optimiser`, `optimiser_apply`,
+`model_score`, `output`, `workbench_output`, `edge_join`, `live_switch`, `optimiser`, `optimiser_apply`,
 `scenario_expander`, `modelling`, `constant`, `data_input`, `data_output`,
 `explore`, `external_file`, `instance` — each a thin wrapper that tags the function with its
 `NodeType` and delegates to a shared registration path. Configured request inputs (Quote
@@ -138,7 +138,8 @@ deployment/preview, which operates on the parsed `GraphNode`/`GraphEdge` represe
 instead). They topologically sort the registered nodes and edges, run each node with its
 wired-in DataFrame(s) — a transform's function directly, a configured node's work through its
 decorator and then its hook, if it has one — and resolve which node's output to return: an explicit
-`@pipeline.output` node wins if there is exactly one; otherwise the single node with no
+response node (`@pipeline.output` or `@pipeline.workbench_output`) wins if there is exactly one;
+two raise, naming both; otherwise the single node with no
 outgoing edge is used; anything more ambiguous than that raises, naming every candidate.
 `score(df)` additionally seeds a live input DataFrame into whichever source is marked as the
 deploy input (`@pipeline.api_input` or `@pipeline.workbench_input`, or `api_input=True`) — or, when nothing is marked and

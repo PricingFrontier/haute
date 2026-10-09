@@ -4,7 +4,14 @@ import type { ExtensionInfo } from "../api/types"
 import { ErrorBoundary } from "../components/ErrorBoundary"
 import useExtensionsStore from "../stores/useExtensionsStore"
 import useUIStore from "../stores/useUIStore"
-import { SWITCHER_SLOT, loadExtensionModule, mountExtension, type ExtensionHandle } from "./loadExtensionModule"
+import {
+  SWITCHER_SLOT,
+  loadExtensionModule,
+  mountExtension,
+  type ExtensionHandle,
+  type PricedSample,
+  type WorkbenchTables,
+} from "./loadExtensionModule"
 import ViewSwitcher from "./ViewSwitcher"
 
 const GitPanel = lazy(() => import("../panels/GitPanel"))
@@ -19,6 +26,8 @@ interface ExtensionViewProps {
   /** The Assistant panel's props, as the node properties panel gives them. */
   isInsideSubmodel: boolean
   readOnly: boolean
+  /** A sample priced on the pipeline open in the editor, with the workbench's tables as given. */
+  priceSample: (workbench: WorkbenchTables) => Promise<PricedSample>
 }
 
 /**
@@ -30,7 +39,7 @@ interface ExtensionViewProps {
  * is always a way back to the pipeline. The toolbar's Git and Assistant panels
  * open beside the view, since the pipeline region they normally open in is hidden.
  */
-export default function ExtensionView({ extension, onSave, isInsideSubmodel, readOnly }: ExtensionViewProps) {
+export default function ExtensionView({ extension, onSave, isInsideSubmodel, readOnly, priceSample }: ExtensionViewProps) {
   const toolbarSlot = useExtensionsStore((s) => s.toolbarSlot)
   const paletteOpen = useUIStore((s) => s.paletteOpen)
   const gitOpen = useUIStore((s) => s.gitOpen)
@@ -38,6 +47,12 @@ export default function ExtensionView({ extension, onSave, isInsideSubmodel, rea
   const assistantOpen = useUIStore((s) => s.assistantOpen)
   const hostRef = useRef<HTMLDivElement>(null)
   const [state, setState] = useState<ViewState>({ status: "loading" })
+  // Called as it is then, so a new one never remounts the view.
+  const priceSampleRef = useRef(priceSample)
+
+  useEffect(() => {
+    priceSampleRef.current = priceSample
+  }, [priceSample])
 
   useEffect(() => {
     const main = hostRef.current
@@ -56,6 +71,7 @@ export default function ExtensionView({ extension, onSave, isInsideSubmodel, rea
           apiBase: extension.api_base,
           switcherSlot: SWITCHER_SLOT,
           palette: { open, setOpen },
+          priceSample: (workbench) => priceSampleRef.current(workbench),
         })
         // The toolbar's Save now saves this view's work, if the module can.
         useExtensionsStore.getState().setViewSave(module.save ?? null)

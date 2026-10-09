@@ -7,7 +7,7 @@ from typing import Any
 
 from haute._graph_utils import edge_input_name
 from haute._logging import get_logger
-from haute._types import REQUEST_INPUT_NODE_TYPES
+from haute._types import REQUEST_INPUT_NODE_TYPES, RESPONSE_NODE_TYPES
 from haute.graph_utils import (
     GraphEdge,
     GraphNode,
@@ -124,7 +124,8 @@ def prune_for_deploy(
 def find_output_node(graph: PipelineGraph) -> str:
     """Find the single output node in a graph.
 
-    Looks for nodes with ``nodeType="output"`` or ``config.output=True``.
+    Looks for a response node (a Quote Response or Workbench Output, see
+    ``RESPONSE_NODE_TYPES``) or a node with ``config.output=True``.
 
     Raises:
         ValueError: If zero or multiple output nodes are found.
@@ -134,7 +135,7 @@ def find_output_node(graph: PipelineGraph) -> str:
     for n in graph.nodes:
         if n.id in seen:
             continue
-        if n.data.nodeType == NodeType.OUTPUT or n.data.config.get("output"):
+        if n.data.nodeType in RESPONSE_NODE_TYPES or n.data.config.get("output"):
             candidates.append(n.id)
             seen.add(n.id)
 

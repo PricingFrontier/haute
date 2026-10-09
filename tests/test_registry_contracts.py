@@ -43,6 +43,7 @@ _BEHAVIOURAL_TYPES = frozenset(
         NodeType.OUTPUT,
         NodeType.RATING_STEP,
         NodeType.SCENARIO_EXPANDER,
+        NodeType.WORKBENCH_OUTPUT,
     }
 )
 
@@ -709,6 +710,7 @@ def test_every_node_type_declares_recompute_cost() -> None:
         NodeType.OPTIMISER_APPLY: "costly",
         NodeType.BANDING: "cheap",
         NodeType.OUTPUT: "cheap",
+        NodeType.WORKBENCH_OUTPUT: "cheap",
         NodeType.DATA_OUTPUT: "cheap",
         NodeType.LIVE_SWITCH: "cheap",
         NodeType.OPTIMISER: "cheap",

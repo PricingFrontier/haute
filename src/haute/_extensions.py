@@ -14,7 +14,10 @@ an entry point loads (Obverse's is a module) declares:
   ``GET /api/quote-tables`` serves them, checked against the Quote Input's schema rules;
 - optionally, beside ``quote_tables``, ``quote_sample(project_dir)``: one quote as a request
   holds it, as the extension's files define it now, which ``GET /api/quote-tables`` serves
-  as ``sample`` and a Workbench Input previews on.
+  as ``sample`` and a Workbench Input previews on;
+- optionally, beside ``quote_tables``, ``response_tables(project_dir)``: the tables a priced
+  quote fills in, in the same v2 shape, which ``GET /api/quote-tables`` serves as
+  ``response_tables``, checked as the tables are, and a Workbench Output fills.
 
 ``haute.server`` mounts every installed extension when it is imported, before its catch-all
 routes, which would otherwise answer the extension's ``GET`` requests.
@@ -70,6 +73,9 @@ class Extension:
     quote_tables: Callable[[], object] | None = None
     # ``quote_sample`` bound to the project directory, when it also supplies a sample quote.
     quote_sample: Callable[[], object] | None = None
+    # ``response_tables`` bound to the project directory, when it also supplies the
+    # response's tables.
+    response_tables: Callable[[], object] | None = None
 
     @property
     def api_base(self) -> str:
@@ -142,7 +148,13 @@ def _load(entry_point: EntryPoint, project_dir: Path) -> Extension:
             f"{where} defines quote_sample without quote_tables: a sample quote is read "
             "through the tables, so define both."
         )
-    return Extension(entry_point.name, label, router, assets_dir, entry, supplied, sample)
+    response = _bound(declared, "response_tables", project_dir, where)
+    if response is not None and supplied is None:
+        raise ExtensionError(
+            f"{where} defines response_tables without quote_tables: the response answers "
+            "the quote the tables define, so define both."
+        )
+    return Extension(entry_point.name, label, router, assets_dir, entry, supplied, sample, response)
 
 
 def _bound(
@@ -192,37 +204,53 @@ def mount_extensions(app: FastAPI, extensions: Sequence[Extension]) -> None:
         """The Quote Input's tables from the extension that supplies them, as they are now."""
         if supplier is None or supplier.quote_tables is None:
             raise HTTPException(404, "No installed extension supplies the Quote Input's tables.")
-        return await _supplied_tables(supplier.name, supplier.quote_tables, supplier.quote_sample)
+        return await _supplied_tables(supplier)
 
     app.include_router(listing)
 
 
-async def _supplied_tables(
-    name: str, quote_tables: Callable[[], object], quote_sample: Callable[[], object] | None
-) -> QuoteTablesResponse | JSONResponse:
-    try:
-        # The extension reads its own files, so keep it off the event loop.
-        tables = await run_in_threadpool(quote_tables)
-    except Exception as exc:
-        logger.exception("extension_quote_tables_failed", extension=name)
-        raise HTTPException(
-            500, f"Extension {name!r} could not supply the Quote Input's tables: {exc}"
-        ) from exc
-    if not isinstance(tables, list):
-        raise HTTPException(
-            500,
-            f"Extension {name!r} supplied the Quote Input's tables as a "
-            f"{type(tables).__name__}, not a list.",
+async def _supplied_tables(supplier: Extension) -> QuoteTablesResponse | JSONResponse:
+    name = supplier.name
+    assert supplier.quote_tables is not None
+    tables = await _supplied_table_list(name, supplier.quote_tables, "the Quote Input's tables")
+    response_tables: list[dict[str, Any]] = []
+    if supplier.response_tables is not None:
+        response_tables = await _supplied_table_list(
+            name, supplier.response_tables, "the response's tables"
         )
     try:
         validate_v2_schema({"tables": tables})
+        validate_v2_schema({"tables": response_tables})
     except ApiInputSchemaError as exc:
         return api_input_schema_error_response(exc)
-    rows: list[dict[str, Any]] = tables
     # Not checked against the tables here: a sample that doesn't fit fails the previews
     # that read it, and never stops the tables updating.
-    sample = None if quote_sample is None else await _supplied_sample(name, quote_sample)
-    return QuoteTablesResponse(extension=name, tables=rows, sample=sample or {})
+    sample = (
+        None
+        if supplier.quote_sample is None
+        else await _supplied_sample(name, supplier.quote_sample)
+    )
+    return QuoteTablesResponse(
+        extension=name, tables=tables, sample=sample or {}, response_tables=response_tables
+    )
+
+
+async def _supplied_table_list(
+    name: str, supply: Callable[[], object], what: str
+) -> list[dict[str, Any]]:
+    """The tables *supply* returns, run off the event loop, or a 500 saying why not."""
+    try:
+        # The extension reads its own files, so keep it off the event loop.
+        tables = await run_in_threadpool(supply)
+    except Exception as exc:
+        logger.exception("extension_quote_tables_failed", extension=name, supplying=what)
+        raise HTTPException(500, f"Extension {name!r} could not supply {what}: {exc}") from exc
+    if not isinstance(tables, list):
+        raise HTTPException(
+            500,
+            f"Extension {name!r} supplied {what} as a {type(tables).__name__}, not a list.",
+        )
+    return tables
 
 
 async def _supplied_sample(name: str, quote_sample: Callable[[], object]) -> dict[str, Any] | None:
@@ -276,6 +304,7 @@ def _info(extension: Extension) -> ExtensionInfo:
         if ready
         else f"{entry_file} does not exist. Build {extension.label}'s front end, then reload.",
         quote_tables=extension.quote_tables is not None,
+        response_tables=extension.response_tables is not None,
     )
 
 

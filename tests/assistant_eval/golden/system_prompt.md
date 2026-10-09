@@ -19,6 +19,7 @@ When a request matches one of these summaries, write it as a recipe operation in
 ### Node index
 - `apiInput` (Quote Input): The live quote request, one frame per declared request table.
 - `workbenchInput` (Workbench Input, read-only to you): The live quote request, one frame per table the workbench defines.
+- `workbenchOutput` (Workbench Output, read-only to you): The quote's response: the tables the workbench defines, filled.
 - `dataInput` (Data Input): Read a file, database, lakehouse, Databricks table or inline records.
 - `dataOutput` (Data Output): Write a frame to a file, database or lakehouse when the output is run.
 - `polars` (Transform): Transform one or more frames with Polars steps.

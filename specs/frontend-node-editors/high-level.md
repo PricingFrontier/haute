@@ -56,6 +56,10 @@ backend API modules own validation and persistence.
   editor updates them only at the pipeline's top level. While an extension supplies tables,
   the palette offers the Workbench Input in the Quote Input's place. Where the tables come from
   and when they change is the [extensions specification](../extensions/high-level.md).
+- The Workbench Output's panel shows the response's tables an installed extension supplies
+  read-only in the same way, each with the node connected to its port or "Not connected", and
+  the same button and notes. While the extension supplies the response's tables, the palette
+  offers the Workbench Output in the Quote Response's place.
 - API Input preview browsing advertises and filters JSON, JSONL, NDJSON, and XML. Selecting any
   of those structured formats fetches its schema preview, and all four expose the cache/infer
   action. Directory rows remain navigable when the server reports a null size; only numeric file

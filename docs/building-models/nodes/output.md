@@ -53,7 +53,7 @@ Returning the quote ID, the final premium and the area factor:
 The API response then holds only the quote ID, the final premium, and the area factor. All other columns (raw inputs, intermediate calculations) are still computed but not exposed. Fields whose value is null, and empty arrays or objects, are left out of the response.
 
 !!! warning "One per pipeline"
-    You can only have one Quote Response node in a pipeline.
+    You can only have one Quote Response or [Workbench Output](workbench-output.md) node in a pipeline.
 
 !!! note "Required for live pricing"
     The Quote Response node is required for live pricing deployments. If your pipeline is batch-only (using Data Output), you don't need one.
@@ -86,4 +86,5 @@ The API response then holds only the quote ID, the final premium, and the area f
 **See also:**
 
 - [Data Output](data-output.md)  - save results to a file for batch scoring
+- [Workbench Output](workbench-output.md)  - the response whose tables a workbench defines
 - [Deployment guide](../../deployment/index.md)  - how the Quote Response node maps to your live API response

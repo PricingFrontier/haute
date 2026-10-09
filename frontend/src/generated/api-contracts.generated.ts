@@ -872,14 +872,20 @@ export interface ExtensionInfo {
   name: string;
   quote_tables: boolean;
   ready: boolean;
+  response_tables: boolean;
 }
 /**
  * The Quote Input's tables, in its v2 shape, from the extension that supplies them.
  *
  * ``sample`` is the extension's sample quote, as a request holds it: ``{}`` for none.
+ * ``response_tables`` are the tables a priced quote fills in, in the same shape, which a
+ * Workbench Output fills: ``[]`` for none.
  */
 export interface QuoteTablesResponse {
   extension: string;
+  response_tables: {
+    [k: string]: unknown;
+  }[];
   sample: {
     [k: string]: unknown;
   };

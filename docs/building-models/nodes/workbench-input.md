@@ -40,3 +40,4 @@ When no installed workbench supplies tables, the section says "No installed exte
 
 - [Quote Input](quote-input.md)  - the entry point whose tables you build from a sample file
 - [Quote Response](output.md)  - for the columns the API returns
+- [Workbench Output](workbench-output.md)  - for the output tables the workbench defines

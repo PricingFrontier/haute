@@ -110,7 +110,7 @@ Creating another instance is a pure parent-graph mutation performed by the
 canvas: it adds a new occurrence with a fresh immutable id and stable alias
 whose `instanceOf` points at the definition owner, and does not create or copy
 a file. A definition containing a document-wide singleton node (`apiInput`,
-`workbenchInput` or `output`) cannot be instantiated because flattening would
+`workbenchInput`, `output` or `workbenchOutput`) cannot be instantiated because flattening would
 create another executable occurrence of that singleton. Removing an instance
 copy removes only that occurrence and its parent bindings, and is permitted
 from every canvas delete surface. The definition owner is never raw-deleted

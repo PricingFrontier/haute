@@ -116,9 +116,10 @@
 2. Load `.env` (idempotent).
 3. `parse_pipeline_file(config.pipeline_file)` → `full_graph`; error if empty;
    `validate_singleton_groups(flatten_graph(full_graph))` refuses a second request input or
-   output, as save does.
-4. `find_output_node(full_graph)` — exactly one node with `nodeType="output"` or
-   `config.output=True`, else `ValueError`.
+   response node, as save does.
+4. `find_output_node(full_graph)` — exactly one response node (`nodeType` `"output"` or
+   `"workbenchOutput"`, `RESPONSE_NODE_TYPES`) or node with `config.output=True`, else
+   `ValueError`.
 5. `prune_for_deploy(full_graph, output_node_id)` → `pruned_graph`, kept ids, removed ids.
    Internally: `_live_only_edges()` first drops every non-live input edge into each
    `liveSwitch` node — selection is **per edge**, matching `input_scenario_map`'s

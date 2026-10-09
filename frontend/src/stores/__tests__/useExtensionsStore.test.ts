@@ -10,6 +10,7 @@ const obverse = {
   ready: true,
   detail: null,
   quote_tables: false,
+  response_tables: false,
 }
 
 function respond(body: unknown, status = 200) {
@@ -166,17 +167,23 @@ describe("refreshQuoteTables", () => {
 
     const older = store().refreshQuoteTables()
     const newer = store().refreshQuoteTables()
-    held.answer(1, { extension: "obverse", tables: tables("newer"), sample: {} })
+    held.answer(1, { extension: "obverse", tables: tables("newer"), sample: {}, response_tables: [] })
     await vi.waitFor(() => expect(store().quoteTables?.fetch).toBe(newer))
-    held.answer(0, { extension: "obverse", tables: tables("older"), sample: {} })
+    held.answer(0, { extension: "obverse", tables: tables("older"), sample: {}, response_tables: [] })
     await new Promise((resolve) => setTimeout(resolve, 0))
 
     expect(older).toBeLessThan(newer!)
-    expect(store().quoteTables).toEqual({ extension: "obverse", tables: tables("newer"), sample: {}, fetch: newer })
+    expect(store().quoteTables).toEqual({
+      extension: "obverse",
+      tables: tables("newer"),
+      sample: {},
+      responseTables: [],
+      fetch: newer,
+    })
 
     const failing = store().refreshQuoteTables()
     const newest = store().refreshQuoteTables()
-    held.answer(3, { extension: "obverse", tables: tables("newest"), sample: {} })
+    held.answer(3, { extension: "obverse", tables: tables("newest"), sample: {}, response_tables: [] })
     await vi.waitFor(() => expect(store().quoteTables?.fetch).toBe(newest))
     held.answer(2, { detail: "v2 table label 'class' must be an ASCII Python identifier", type: "ApiInputSchemaError" }, 422)
     await new Promise((resolve) => setTimeout(resolve, 0))
@@ -192,7 +199,7 @@ describe("refreshQuoteTables", () => {
     const sample = { policy: { state: "NY" } }
 
     const fetch = store().refreshQuoteTables()
-    held.answer(0, { extension: "obverse", tables: tables("policy"), sample })
+    held.answer(0, { extension: "obverse", tables: tables("policy"), sample, response_tables: [] })
 
     await vi.waitFor(() => expect(store().quoteTables?.fetch).toBe(fetch))
     expect(store().quoteTables?.sample).toEqual(sample)
@@ -203,7 +210,7 @@ describe("refreshQuoteTables", () => {
     useExtensionsStore.setState({ extensions: [workbench] })
     const store = useExtensionsStore.getState
     store().refreshQuoteTables()
-    held.answer(0, { extension: "obverse", tables: tables("policy"), sample: {} })
+    held.answer(0, { extension: "obverse", tables: tables("policy"), sample: {}, response_tables: [] })
     await vi.waitFor(() => expect(store().quoteTables).not.toBeNull())
     const kept = store().quoteTables
 

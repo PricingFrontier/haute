@@ -1046,6 +1046,14 @@ def _execute_trace_core(
     # downstream of a specific frame, never the bundle itself.
     target_output = eager_outputs.get(target_node_id)
     if isinstance(target_output, dict):
+        target = node_map.get(target_node_id)
+        if target is not None and target.data.nodeType == NodeType.WORKBENCH_OUTPUT:
+            # Its tables are its result, and nothing is downstream of it.
+            raise ValueError(
+                f"Target node {target_node_id!r} is a Workbench Output, whose tables are "
+                "filled by the nodes connected to them; trace the node connected to the "
+                "table instead."
+            )
         raise ValueError(
             f"Target node {target_node_id!r} emits multiple frames; "
             "trace a node downstream of a specific frame instead."

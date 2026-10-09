@@ -105,6 +105,31 @@ describe("useGraphCommitController pending commits", () => {
     expect(options.commitGraph).toHaveBeenCalledOnce()
   })
 
+  it("drops a Workbench Output's connections whose tables went, and says so", () => {
+    const table = (label: string) => ({ path: "$[:]", label, emit: true, columns: [] })
+    const node = makeNode("response", "workbenchOutput", {
+      data: { label: "response", nodeType: "workbenchOutput", config: { tables: [table("pricing_output"), table("layers")] } },
+    })
+    const options = controllerOptions(node, async (nodes) => [...nodes])
+    const fill = (id: string, source: string, targetHandle: string): Edge =>
+      ({ id, source, target: "response", sourceHandle: null, targetHandle })
+    options.graphRef.current.nodes = [node, makeNode("priced"), makeNode("layered")]
+    options.graphRef.current.edges = [fill("e_priced", "priced", "pricing_output"), fill("e_layered", "layered", "layers")]
+    const { result } = renderHook(() => useGraphCommitController(options))
+
+    act(() => {
+      expect(result.current.onUpdateNode("response", { ...node.data, config: { tables: [table("pricing_output")] } }))
+        .toEqual({ ok: true })
+    })
+
+    const [, committedEdges] = options.commitGraph.mock.calls[0]
+    expect((committedEdges as Edge[]).map((edge) => edge.id)).toEqual(["e_priced"])
+    expect(options.addToast).toHaveBeenCalledWith(
+      "warning",
+      "Disconnected 1 edge from response: the table it filled no longer exists after your edit.",
+    )
+  })
+
   it("registers rename failures synchronously and returns the failure to savers", async () => {
     const node = makeNode("node")
     const resolution = deferred<Node[]>()

@@ -95,6 +95,10 @@ provides schema/sample information before live requests replace it. A `constant`
 other source type is never promoted accidentally; deployment fails with a correction that
 names the node and asks for a Quote Input or a Workbench Input.
 
+The response node, a Quote Response (`output`) or a Workbench Output (`workbenchOutput`), is
+the declared output node: deploy prunes to it, dry-runs its schema and serves its response
+document, alike for either ([extensions](../extensions/high-level.md)).
+
 **Validation.** Before anything ships, `validate_deploy()` checks structural invariants
 (output/input nodes present in the pruned graph, input nodes are true sources, artefacts
 exist on disk, schemas are non-empty, configured `output_fields` are distinct non-empty

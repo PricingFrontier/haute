@@ -28,6 +28,7 @@ MKDOCS_CONFIG = ROOT / "mkdocs.yml"
 NODE_REFERENCE_PAGES: dict[NodeType, str] = {
     NodeType.API_INPUT: "quote-input.md",
     NodeType.WORKBENCH_INPUT: "workbench-input.md",
+    NodeType.WORKBENCH_OUTPUT: "workbench-output.md",
     NodeType.DATA_INPUT: "data-input.md",
     NodeType.DATA_OUTPUT: "data-output.md",
     NodeType.CONSTANT: "constant.md",

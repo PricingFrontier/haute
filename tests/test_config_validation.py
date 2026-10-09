@@ -57,6 +57,7 @@ class TestValidKeysRegistry:
         expected = {
             NodeType.API_INPUT,
             NodeType.WORKBENCH_INPUT,
+            NodeType.WORKBENCH_OUTPUT,
             NodeType.DATA_INPUT,
             NodeType.DATA_INPUT,
             NodeType.DATA_OUTPUT,

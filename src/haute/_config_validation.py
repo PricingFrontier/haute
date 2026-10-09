@@ -32,6 +32,7 @@ from haute._types import (
     SubmodelConfig,
     TransformConfig,
     WorkbenchInputConfig,
+    WorkbenchOutputConfig,
 )
 from haute.errors import ConfigError
 
@@ -50,6 +51,7 @@ _TYPED_DICT_BY_NODE_TYPE: dict[NodeType, type] = {
     NodeType.BANDING: BandingConfig,
     NodeType.RATING_STEP: RatingStepConfig,
     NodeType.OUTPUT: OutputConfig,
+    NodeType.WORKBENCH_OUTPUT: WorkbenchOutputConfig,
     NodeType.EXPLORE: ExploreConfig,
     NodeType.EXTERNAL_FILE: ExternalFileConfig,
     NodeType.LIVE_SWITCH: LiveSwitchConfig,

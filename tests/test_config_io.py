@@ -272,6 +272,34 @@ class TestSaveAndLoad:
             _write_node_config_sidecar(NodeType.WORKBENCH_INPUT, "quote", config, tmp_path)
         assert not (tmp_path / "config" / "workbench_input" / "quote.json").exists()
 
+    def test_workbench_output_tables_survive_its_config_file(self, tmp_path):
+        config = {
+            "tables": [
+                {
+                    "path": "$[:].layers[:]",
+                    "label": "layers",
+                    "emit": True,
+                    "row_id_column": "layer",
+                    "columns": [
+                        {
+                            "name": "layer",
+                            "path": "$[:].layers[:].layer",
+                            "type": "int",
+                            "status": "Confirmed",
+                            "selected": True,
+                            "levels": None,
+                        }
+                    ],
+                }
+            ],
+            "mapping": {"layers": {"layer": "layer_number"}},
+        }
+        rel = _write_node_config_sidecar(NodeType.WORKBENCH_OUTPUT, "response", config, tmp_path)
+        assert rel.as_posix() == "config/workbench_output/response.json"
+        loaded = load_node_config(rel, base_dir=tmp_path)
+        assert loaded == config
+        validate_v2_schema(loaded)
+
     def test_code_key_excluded_from_json(self, tmp_path):
         config = {"path": "model.pkl", "fileType": "pickle", "code": "df = obj.predict(df)"}
         _write_node_config_sidecar(NodeType.EXTERNAL_FILE, "ext", config, tmp_path)

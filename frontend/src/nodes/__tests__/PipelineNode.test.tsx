@@ -572,6 +572,32 @@ describe("PipelineNode", () => {
     expect(targetHandle).not.toBeNull()
   })
 
+  it("gives a Workbench Output a target port per table, and no other handle", () => {
+    const { container } = renderNode({
+      label: "response",
+      nodeType: NODE_TYPES.WORKBENCH_OUTPUT,
+      config: {
+        tables: [
+          { path: "$[:]", label: "pricing_output", emit: true, columns: [] },
+          { path: "$[:].layers[:]", label: "layers", emit: true, columns: [] },
+        ],
+      },
+    })
+
+    const ports = [...container.querySelectorAll(".react-flow__handle-left")]
+    expect(ports.map((port) => port.getAttribute("data-handleid"))).toEqual(["pricing_output", "layers"])
+    expect(screen.getByTestId("input-connector[1]:response")).toHaveAttribute("data-handleid", "layers")
+    expect(screen.getByTestId("workbench-output-body-label-layers")).toHaveTextContent("layers")
+    expect(container.querySelector(".react-flow__handle-right")).toBeNull()
+    expect(screen.queryByText("inputs")).not.toBeInTheDocument()
+  })
+
+  it("says a Workbench Output without tables has none, with no port", () => {
+    const { container } = renderNode({ label: "response", nodeType: NODE_TYPES.WORKBENCH_OUTPUT, config: { tables: [] } })
+    expect(screen.getByText("No tables")).toBeInTheDocument()
+    expect(container.querySelector(".react-flow__handle")).toBeNull()
+  })
+
   it("explore nodes are sink-only on the canvas", () => {
     const { container } = renderNode({ label: "Explore", nodeType: NODE_TYPES.EXPLORE })
     expect(container.querySelector(".react-flow__handle-right")).toBeNull()

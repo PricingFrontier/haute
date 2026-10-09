@@ -20,6 +20,7 @@ const workbench = {
   ready: true,
   detail: null,
   quote_tables: true,
+  response_tables: true,
 }
 const tables = (label: string) => [{ path: "$[:]", label, emit: true, row_id_column: null, columns: [] }]
 
@@ -39,7 +40,10 @@ describe("useExtensionQuoteTables", () => {
 
   /** Publishes tables, and a sample, as the store does when a fetch settles. */
   const publish = (fetch: number, label: string, sample: Record<string, unknown> = {}) =>
-    act(() => useExtensionsStore.setState({ quoteTables: { extension: "obverse", tables: tables(label), sample, fetch } }))
+    act(() =>
+      useExtensionsStore.setState({
+        quoteTables: { extension: "obverse", tables: tables(label), sample, responseTables: [], fetch },
+      }))
   const adopt = (generation: number) => act(() => useDocumentStatusStore.setState({ executionGeneration: generation }))
   const render = (editable = true) =>
     renderHook(({ editable: canEdit }) => useExtensionQuoteTables({ graphRef, onUpdateNode, editable: canEdit }), {
@@ -196,6 +200,52 @@ describe("useExtensionQuoteTables", () => {
       await hook.result.current.waitForPendingCommits()
     })
     expect(commitGraph).toHaveBeenCalledOnce()
+  })
+
+  it("updates each Workbench Output with the response's tables in the same pass, never a Quote Response", () => {
+    const output = (nodeType: "workbenchOutput" | "output", id: string, config: Record<string, unknown>): Node => ({
+      id,
+      type: nodeType,
+      position: { x: 0, y: 0 },
+      data: { label: id, nodeType, config },
+    })
+    graphRef.current.nodes = [
+      workbenchInput({ tables: [] }),
+      output("workbenchOutput", "response", { tables: [] }),
+      output("output", "quote_response", { outputMapping: [], outputFormat: "json" }),
+    ]
+    render()
+    act(() =>
+      useExtensionsStore.setState({
+        quoteTables: {
+          extension: "obverse",
+          tables: tables("policy_details"),
+          sample: {},
+          responseTables: tables("pricing_output"),
+          fetch: 1,
+        },
+      }))
+
+    expect(updates()).toEqual([
+      ["workbench", tables("policy_details")],
+      ["response", tables("pricing_output")],
+    ])
+    expect(onUpdateNode.mock.calls[1][1].config).toEqual({ tables: tables("pricing_output") })
+
+    // A copy that matches is left alone.
+    graphRef.current.nodes = [output("workbenchOutput", "response", { tables: tables("pricing_output") })]
+    adopt(2)
+    act(() =>
+      useExtensionsStore.setState({
+        quoteTables: {
+          extension: "obverse",
+          tables: [],
+          sample: {},
+          responseTables: tables("pricing_output"),
+          fetch: 2,
+        },
+      }))
+    expect(onUpdateNode).toHaveBeenCalledTimes(2)
   })
 
   it("gives a Workbench Input reported as created the tables fetched while it was being made", () => {

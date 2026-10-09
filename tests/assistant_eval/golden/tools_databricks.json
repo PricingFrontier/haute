@@ -162,6 +162,7 @@
                   "enum": [
                     "apiInput",
                     "workbenchInput",
+                    "workbenchOutput",
                     "dataInput",
                     "dataOutput",
                     "polars",

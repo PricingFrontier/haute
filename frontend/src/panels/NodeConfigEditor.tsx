@@ -25,6 +25,7 @@ import {
   SubmodelPortEditor,
   TransformEditor,
   WorkbenchInputEditor,
+  WorkbenchOutputEditor,
 } from "./LazyNodeEditors"
 import type { LoadPivotFilterMembers } from "./editors/ExplorePivotsConfig"
 import type { InputSource, OnReplaceConfig, OnUpdateConfig, OnUpdateConfigResult, SimpleNode } from "./editors"
@@ -156,6 +157,17 @@ export function NodeConfigEditor({
           config={config}
           accentColor={accentColor}
           reservedFrameLabels={reservedApiInputFrameLabels}
+          insideSubmodel={insideSubmodel}
+        />
+      )
+
+    case NODE_TYPES.WORKBENCH_OUTPUT:
+      return (
+        <WorkbenchOutputEditor
+          config={config}
+          onUpdate={onUpdateConfig}
+          accentColor={accentColor}
+          inputSources={inputSources}
           insideSubmodel={insideSubmodel}
         />
       )

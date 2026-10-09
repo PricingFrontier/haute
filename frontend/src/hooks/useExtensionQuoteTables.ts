@@ -4,8 +4,7 @@ import type { Edge, Node } from "@xyflow/react"
 import type { OnUpdateConfigResult } from "../panels/editors/_shared"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import useExtensionsStore from "../stores/useExtensionsStore"
-import { quoteTablesPatch, quoteTablesSupplier } from "../utils/extensionQuoteTables"
-import { NODE_TYPES } from "../utils/nodeTypes"
+import { WORKBENCH_COPY_PATCHES, quoteTablesSupplier } from "../utils/extensionQuoteTables"
 import type { GraphCommitController } from "./useGraphCommitController"
 
 export type UseExtensionQuoteTablesOptions = {
@@ -17,12 +16,13 @@ export type UseExtensionQuoteTablesOptions = {
 
 /**
  * Keeps each Workbench Input up to date with the tables the installed extension
- * supplies (specs/extensions). The tables are fetched when the supplier is listed and
- * whenever a document is adopted (`executionGeneration`), and applied only to the
- * document they were fetched for: once per Workbench Input for each fetch, while the
- * document is editable and its top level shows. A graph edit, an undo or a redo never
- * runs it; a node created from the palette is reported through `nodeCreated`, so a
- * Workbench Input made while its tables were being fetched still gets them.
+ * supplies, and each Workbench Output with the response's tables (specs/extensions).
+ * The tables are fetched when the supplier is listed and whenever a document is adopted
+ * (`executionGeneration`), and applied only to the document they were fetched for: once
+ * per node for each fetch, while the document is editable and its top level shows. A
+ * graph edit, an undo or a redo never runs it; a node created from the palette is
+ * reported through `nodeCreated`, so one made while its tables were being fetched still
+ * gets them.
  */
 export default function useExtensionQuoteTables({
   graphRef,
@@ -55,11 +55,12 @@ export default function useExtensionQuoteTables({
     const { fetch } = quoteTables
     const fetches = given.current.fetches
     for (const node of graphRef.current.nodes) {
-      if (node.data.nodeType !== NODE_TYPES.WORKBENCH_INPUT || (only !== null && !only.has(node.id))) continue
+      const patchFor = WORKBENCH_COPY_PATCHES[String(node.data.nodeType)]
+      if (patchFor === undefined || (only !== null && !only.has(node.id))) continue
       const config = (node.data.config ?? {}) as Record<string, unknown>
       if (fetches.get(node.id) === fetch) continue
       fetches.set(node.id, fetch)
-      const patch = quoteTablesPatch(config, quoteTables)
+      const patch = patchFor(config, quoteTables)
       if (patch === null) continue
       // An update that does not commit, such as one a submodel opened while its identity
       // was resolving, is forgotten, so the next pass (the top level showing again, or the

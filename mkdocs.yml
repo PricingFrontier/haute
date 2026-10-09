@@ -130,6 +130,7 @@ nav:
         - Apply Optimisation: building-models/nodes/optimiser-apply.md
       - Pipeline Outputs:
         - Quote Response: building-models/nodes/output.md
+        - Workbench Output: building-models/nodes/workbench-output.md
         - Data Output: building-models/nodes/data-output.md
       - Analysis:
         - Explore: building-models/nodes/explore.md

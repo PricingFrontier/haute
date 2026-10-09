@@ -9,6 +9,7 @@ const options: ExtensionMountOptions = {
   apiBase: "/api/extensions/obverse",
   switcherSlot: "haute-view-switcher",
   palette: { open: true, setOpen: vi.fn() },
+  priceSample: vi.fn(),
 }
 
 describe("loadExtensionModule", () => {

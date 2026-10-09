@@ -6,6 +6,7 @@ import type { Edge, Node } from "@xyflow/react"
 export const PIPELINE_NODE_TYPES = {
   API_INPUT: "apiInput",
   WORKBENCH_INPUT: "workbenchInput",
+  WORKBENCH_OUTPUT: "workbenchOutput",
   DATA_INPUT: "dataInput",
   DATA_OUTPUT: "dataOutput",
   POLARS: "polars",

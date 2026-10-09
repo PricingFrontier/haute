@@ -92,6 +92,7 @@ ALLOWED_OPAQUE_NODE_TYPES: frozenset[NodeType] = frozenset(
     {
         NodeType.API_INPUT,  # output schema determined by file
         NodeType.WORKBENCH_INPUT,  # read as API_INPUT is
+        NodeType.WORKBENCH_OUTPUT,  # reads its frames whole, so it names a missing column
         NodeType.DATA_INPUT,  # output schema determined by the configured source
         NodeType.POLARS,  # arbitrary user code
         NodeType.EXTERNAL_FILE,  # arbitrary user code

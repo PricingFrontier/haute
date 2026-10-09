@@ -35,6 +35,7 @@ const workbench = {
   ready: true,
   detail: null,
   quote_tables: true,
+  response_tables: false,
 }
 
 function renderEditor(props: { insideSubmodel?: boolean; sample?: Record<string, unknown> } = {}) {

@@ -18,6 +18,11 @@ export interface ExtensionMountOptions {
   switcherSlot: string
   /** The palette's state, which both views share: collapsing one collapses the other. */
   palette: ExtensionPalette
+  /**
+   * Price a sample quote, with the workbench's tables as given, on the pipeline open in the
+   * editor. Rejects with the reason when it cannot.
+   */
+  priceSample: (workbench: WorkbenchTables) => Promise<PricedSample>
 }
 
 export interface ExtensionPalette {
@@ -25,6 +30,18 @@ export interface ExtensionPalette {
   open: boolean
   /** Open or collapse the palette; the slotted switcher turns compact while it is collapsed. */
   setOpen: (open: boolean) => void
+}
+
+/** The workbench's tables and sample quote, as `GET /api/quote-tables` serves them. */
+export interface WorkbenchTables {
+  tables: Record<string, unknown>[]
+  sample: Record<string, unknown>
+  response_tables: Record<string, unknown>[]
+}
+
+/** The sample quote priced: the Workbench Output's tables, each table's rows under its label. */
+export interface PricedSample {
+  tables: Record<string, Record<string, unknown>[]>
 }
 
 export interface ExtensionHandle {

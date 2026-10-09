@@ -38,6 +38,7 @@ Most node types carry up to four names: the **wire value** used in config and AP
 | `banding` | `banding/` | BANDING | Banding |
 | `ratingStep` | `rating_step/` | RATING | Rating Step |
 | `output` | `quote_response/` | QUOTE OUT | Quote Response |
+| `workbenchOutput` | `workbench_output/` | WORKBENCH OUT | Workbench Output |
 | `dataSink` | `data_sink/` | SINK | Data Sink |
 | `explore` | — | EXPLORE | Explore |
 | `externalFile` | `load_file/` | LOAD FILE | Load File |

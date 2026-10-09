@@ -51,6 +51,7 @@ logger = get_logger(component="config_io")
 NODE_TYPE_TO_FOLDER: dict[NodeType, str] = {
     NodeType.API_INPUT: "quote_input",
     NodeType.WORKBENCH_INPUT: "workbench_input",
+    NodeType.WORKBENCH_OUTPUT: "workbench_output",
     NodeType.DATA_INPUT: "data_input",
     NodeType.DATA_OUTPUT: "data_output",
     NodeType.LIVE_SWITCH: "source_switch",

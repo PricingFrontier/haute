@@ -459,8 +459,11 @@ class _Resolver:
 
         A request input is never one, even read without a port: a Quote Input's
         tables are input snapshots, a Workbench Input's are computed, and a
-        multi-port bundle is not one frame.
+        multi-port bundle is not one frame. A Workbench Output's tables are such a
+        bundle too.
         """
+        if self.node_map[node_id].data.nodeType is NodeType.WORKBENCH_OUTPUT:
+            return False
         kind = self._kinds.get(node_id)
         if kind is None:
             if self.node_map[node_id].data.nodeType in REQUEST_INPUT_NODE_TYPES:

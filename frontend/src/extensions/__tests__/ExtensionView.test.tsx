@@ -23,7 +23,13 @@ vi.mock("../../panels/assistant/AssistantPanel", () => ({
 
 import type { ExtensionInfo } from "../../api/types"
 import ExtensionView from "../ExtensionView"
-import { loadExtensionModule, type ExtensionMountOptions, type ExtensionModule } from "../loadExtensionModule"
+import {
+  loadExtensionModule,
+  type ExtensionMountOptions,
+  type ExtensionModule,
+  type PricedSample,
+  type WorkbenchTables,
+} from "../loadExtensionModule"
 import useExtensionsStore, { PIPELINE_VIEW } from "../../stores/useExtensionsStore"
 import useUIStore from "../../stores/useUIStore"
 
@@ -35,6 +41,7 @@ const obverse = {
   ready: true,
   detail: null,
   quote_tables: false,
+  response_tables: false,
 }
 
 const load = vi.mocked(loadExtensionModule)
@@ -54,9 +61,11 @@ function deferred<T>() {
 }
 
 const onSave = vi.fn(() => Promise.resolve(true))
+const priceSample = vi.fn((_workbench: WorkbenchTables) => Promise.resolve<PricedSample>({ tables: {} }))
+const workbench: WorkbenchTables = { tables: [], sample: { policy_details: { exposure: 100000 } }, response_tables: [] }
 
-function view(extension: ExtensionInfo = obverse) {
-  return <ExtensionView extension={extension} onSave={onSave} isInsideSubmodel={false} readOnly={false} />
+function view(extension: ExtensionInfo = obverse, price: (workbench: WorkbenchTables) => Promise<PricedSample> = priceSample) {
+  return <ExtensionView extension={extension} onSave={onSave} isInsideSubmodel={false} readOnly={false} priceSample={price} />
 }
 
 describe("ExtensionView", () => {
@@ -73,6 +82,7 @@ describe("ExtensionView", () => {
     toolbar.remove()
     load.mockReset()
     onSave.mockClear()
+    priceSample.mockClear()
     useExtensionsStore.setState({ extensions: [], activeView: PIPELINE_VIEW, toolbarSlot: null })
     useUIStore.setState({ paletteOpen: true, gitOpen: false, assistantOpen: false })
   })
@@ -92,10 +102,27 @@ describe("ExtensionView", () => {
       apiBase: "/api/extensions/obverse",
       switcherSlot: "haute-view-switcher",
       palette: { open: true, setOpen: useUIStore.getState().setPaletteOpen },
+      priceSample: expect.any(Function),
     })
     const slotted = host.querySelector('[slot="haute-view-switcher"]')
     expect(slotted).toContainElement(screen.getByRole("group", { name: "Views" }))
     expect(screen.queryByRole("status")).toBeNull()
+  })
+
+  it("prices the sample with the editor's latest, without remounting the view", async () => {
+    const { module, mount, unmount } = extensionModule()
+    load.mockResolvedValue(module)
+    const { rerender } = render(view())
+    await waitFor(() => expect(mount).toHaveBeenCalledOnce())
+    const later = vi.fn((_workbench: WorkbenchTables) => Promise.resolve({ tables: { pricing_output: [{ premium: 2000 }] } }))
+
+    rerender(view(obverse, later))
+
+    await expect(mount.mock.calls[0][0].priceSample(workbench)).resolves.toEqual({ tables: { pricing_output: [{ premium: 2000 }] } })
+    expect(later).toHaveBeenCalledWith(workbench)
+    expect(priceSample).not.toHaveBeenCalled()
+    expect(mount).toHaveBeenCalledOnce()
+    expect(unmount).not.toHaveBeenCalled()
   })
 
   it("shares the palette's state: the extension collapses it, the switcher turns compact, and nothing remounts", async () => {
@@ -121,7 +148,7 @@ describe("ExtensionView", () => {
   it("opens the Git panel beside the view, and otherwise the Assistant panel", async () => {
     load.mockResolvedValue(extensionModule().module)
     useUIStore.setState({ gitOpen: true })
-    render(<ExtensionView extension={obverse} onSave={onSave} isInsideSubmodel readOnly />)
+    render(<ExtensionView extension={obverse} onSave={onSave} isInsideSubmodel readOnly priceSample={priceSample} />)
 
     const git = within(screen.getByRole("complementary", { name: "Version control" }))
     fireEvent.click(await git.findByRole("button", { name: "Save from Git" }))

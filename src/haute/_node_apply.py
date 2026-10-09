@@ -21,14 +21,17 @@ function so this module never forms an import cycle with ``_builders``.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from os import PathLike
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import polars as pl
 
 from haute._types import _Frame
+
+if TYPE_CHECKING:
+    from haute._workbench_output import WorkbenchOutputTables
 
 #: A frame in either evaluation mode, returned in the mode it was given.
 _EagerOrLazy = TypeVar("_EagerOrLazy", pl.LazyFrame, pl.DataFrame)
@@ -559,3 +562,55 @@ def assemble_output_from_config(
         return pl.DataFrame(document, schema=schema)
 
     return limited_python_scan(produce, schema=schema)
+
+
+# ---------------------------------------------------------------------------
+# workbenchOutput
+# ---------------------------------------------------------------------------
+
+
+def assemble_workbench_output_from_config(
+    *dfs: _Frame,
+    config: dict[str, Any] | str | PathLike[str],
+    base_dir: str | Path | None = None,
+    ports: Sequence[str | None] | None = None,
+) -> WorkbenchOutputTables:
+    """Fill a Workbench Output's tables from its incoming frames, through its mapping.
+
+    The single code path for the executor's ``_build_workbench_output`` and a saved
+    file's ``@pipeline.workbench_output`` node. *dfs* are the incoming frames in edge
+    order and *ports* the port each arrives on, aligned: a port names the table its
+    frame fills (specs/extensions). The result is the tables, which
+    :func:`~haute._workbench_output.as_response` turns into the response where the
+    pipeline answers a request.
+    """
+    from haute._workbench_output import (
+        WorkbenchOutputError,
+        fill_workbench_tables,
+        workbench_output_mapping,
+        workbench_output_tables,
+    )
+
+    cfg = _resolve_node_config(config, base_dir)
+    tables = workbench_output_tables(cfg)
+    mapping = workbench_output_mapping(cfg, tables)
+    labels = [table.label for table in tables]
+    if ports is None or len(ports) != len(dfs):
+        raise WorkbenchOutputError(
+            "A Workbench Output fills each table from the frame connected to its port, so it "
+            "runs only where its connections are known: in the editor, run() or score()."
+        )
+    frames: dict[str, pl.LazyFrame] = {}
+    for port, frame in zip(ports, dfs, strict=True):
+        if port not in labels:
+            reached = "on no table" if port is None else f"on {port!r}, which is none of its tables"
+            raise WorkbenchOutputError(
+                f"A connection reaches the Workbench Output {reached}. Connect it to one of "
+                f"its tables: {', '.join(labels)}."
+            )
+        if port in frames:
+            raise WorkbenchOutputError(
+                f"Two connections fill the Workbench Output's {port!r} table; a table takes one."
+            )
+        frames[port] = frame.lazy()
+    return fill_workbench_tables(frames, tables, mapping)

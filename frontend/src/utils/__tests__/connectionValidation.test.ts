@@ -232,3 +232,49 @@ describe("connection validation", () => {
       .toMatchObject({ ok: false })
   })
 })
+
+describe("a Workbench Output's tables", () => {
+  const workbenchOutput: SimpleNode = {
+    ...node("response", "response", NODE_TYPES.WORKBENCH_OUTPUT),
+    data: {
+      label: "response",
+      description: "",
+      nodeType: NODE_TYPES.WORKBENCH_OUTPUT,
+      config: {
+        tables: [
+          { path: "$[:]", label: "pricing_output", emit: true, columns: [] },
+          { path: "$[:].layers[:]", label: "layers", emit: true, columns: [] },
+        ],
+      },
+    },
+  }
+  const priced = node("priced", "priced")
+  const layered = node("layered", "layered")
+  const nodes = [workbenchOutput, priced, layered]
+  const filled: Edge[] = [{
+    id: "filled",
+    source: priced.id,
+    target: workbenchOutput.id,
+    sourceHandle: null,
+    targetHandle: "pricing_output",
+  }]
+  const connect = (source: string, targetHandle: string | null, edges: Edge[] = []) =>
+    validatePipelineConnection({ source, target: workbenchOutput.id, sourceHandle: null, targetHandle }, nodes, edges)
+  const refused = (message: string) => ({ ok: false, reason: { kind: "invalid-connection", message } })
+
+  it("takes a connection on a table's port", () => {
+    expect(connect(priced.id, "pricing_output")).toEqual({ ok: true })
+    expect(connect(layered.id, "layers", filled)).toEqual({ ok: true })
+  })
+
+  it("refuses a connection on no table, on a filled table, or from a node that fills another", () => {
+    expect(connect(priced.id, null)).toEqual(refused("Connect to one of response's tables"))
+    expect(connect(priced.id, "renamed")).toEqual(refused("Connect to one of response's tables"))
+    expect(connect(layered.id, "pricing_output", filled)).toEqual(
+      refused("pricing_output is already filled by priced"),
+    )
+    expect(connect(priced.id, "layers", filled)).toEqual(
+      refused("priced already fills pricing_output; a node fills one table"),
+    )
+  })
+})

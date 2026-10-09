@@ -4052,6 +4052,10 @@ _PROJECTION_RULE_COVERAGE_BY_NODE_TYPE: Mapping[NodeType, ProjectionRuleCoverage
             NodeType.BANDING: _coverage(NodeType.BANDING, _GENERIC_CONTRACT_RULE_NAME),
             NodeType.RATING_STEP: _coverage(NodeType.RATING_STEP, _GENERIC_CONTRACT_RULE_NAME),
             NodeType.OUTPUT: _coverage(NodeType.OUTPUT, _GENERIC_CONTRACT_RULE_NAME),
+            NodeType.WORKBENCH_OUTPUT: _coverage(
+                NodeType.WORKBENCH_OUTPUT,
+                _GENERIC_CONTRACT_RULE_NAME,
+            ),
             NodeType.EXPLORE: _coverage(NodeType.EXPLORE, _GENERIC_CONTRACT_RULE_NAME),
             NodeType.MODELLING: _coverage(NodeType.MODELLING, _GENERIC_CONTRACT_RULE_NAME),
             NodeType.SCENARIO_EXPANDER: _coverage(

@@ -493,16 +493,28 @@ def _resolve_output_rows(
     return {**config, "outputMapping": resolved}
 
 
+#: The node types whose tables are the installed workbench's: the assistant reads them
+#: and wires to their tables, but never authors one.
+_WORKBENCH_NODE_TYPES = {
+    NodeType.WORKBENCH_INPUT: ("Workbench Input", "Wire nodes to its frames instead."),
+    NodeType.WORKBENCH_OUTPUT: ("Workbench Output", "Wire nodes to its tables instead."),
+}
+
+
 def _refuse_workbench_input(graph: PipelineGraph, node_id: str, operation: str) -> None:
-    """Refuse *operation* on a Workbench Input: its tables are the installed extension's."""
+    """Refuse *operation* on a Workbench Input or Output: its tables are the extension's."""
     index = _node_index(graph, node_id)
-    if index is not None and graph.nodes[index].data.nodeType is NodeType.WORKBENCH_INPUT:
+    if index is None:
+        return
+    workbench = _WORKBENCH_NODE_TYPES.get(graph.nodes[index].data.nodeType)
+    if workbench is not None:
+        name, wire = workbench
         _invalid(
-            f"Cannot {operation} {node_id!r}: it is a Workbench Input, whose tables are "
+            f"Cannot {operation} {node_id!r}: it is a {name}, whose tables are "
             "the installed workbench's",
             where={"node": node_id},
             fix="Leave it as it is: the analyst edits it in the editor and its tables in "
-            "the workbench. Wire nodes to its frames instead.",
+            f"the workbench. {wire}",
         )
 
 
@@ -518,12 +530,13 @@ def _apply_add_node(
             "assistant operations cannot create submodel boundaries",
             fix="Add ordinary nodes instead; submodels are created by the analyst.",
         )
-    if op.node_type is NodeType.WORKBENCH_INPUT:
+    if op.node_type in _WORKBENCH_NODE_TYPES:
+        name, _wire = _WORKBENCH_NODE_TYPES[op.node_type]
         _invalid(
-            f"Cannot add node type {op.node_type.value!r}: a Workbench Input's tables are "
+            f"Cannot add node type {op.node_type.value!r}: a {name}'s tables are "
             "the installed workbench's",
-            fix="The analyst adds a Workbench Input from the palette; wire nodes to the "
-            "frames of the one the pipeline has.",
+            fix=f"The analyst adds a {name} from the palette; wire nodes to the "
+            "tables of the one the pipeline has.",
         )
     _validate_config(op.node_type, op.config, operation="add_node")
 

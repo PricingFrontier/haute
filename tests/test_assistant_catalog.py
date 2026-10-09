@@ -643,7 +643,14 @@ class TestRegistryFacts:
         }
         assert no_output == {node_type.value for node_type in SINK_ONLY_NODE_TYPES}
         assert _editor_set("SINK_ONLY_TYPES") == no_output
-        assert no_output == {"output", "dataOutput", "explore", "modelling", "optimiser"}
+        assert no_output == {
+            "output",
+            "workbenchOutput",
+            "dataOutput",
+            "explore",
+            "modelling",
+            "optimiser",
+        }
 
     def test_single_input_types_are_the_palette_max_one_types(self) -> None:
         single = {

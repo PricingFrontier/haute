@@ -65,12 +65,14 @@ entry_points = ["http", "browser", "file"]
 [[workflows]]
 id = "W05"
 title = "Structured request to response"
-components = ["json-shredding"]
+components = ["json-shredding", "extensions"]
 documents = [
   "specs/json-shredding/high-level.md",
   "specs/json-shredding/low-level.md",
   "specs/server-api/high-level.md",
   "specs/server-api/low-level.md",
+  "specs/extensions/high-level.md",
+  "specs/extensions/low-level.md",
 ]
 entry_points = ["http", "browser", "scoring"]
 
@@ -243,6 +245,10 @@ workflows = ["W07"]
 
 [[node_types]]
 id = "output"
+workflows = ["W05", "W13"]
+
+[[node_types]]
+id = "workbenchOutput"
 workflows = ["W05", "W13"]
 
 [[node_types]]

@@ -1,14 +1,19 @@
 /**
  * The copy rules for a Workbench Input, whose tables and sample quote an installed
- * extension supplies (specs/extensions): when its copy needs updating, what the palette's
- * Workbench Input starts with, and which extension supplies them.
+ * extension supplies, and a Workbench Output, whose response tables it supplies
+ * (specs/extensions): when a copy needs updating, what each starts with from the palette,
+ * and which extension supplies them.
  */
 import { describe, expect, it } from "vitest"
 import type { ExtensionInfo } from "../../api/types"
 import {
   paletteWorkbenchInputConfig,
+  paletteWorkbenchOutputConfig,
   quoteTablesPatch,
   quoteTablesSupplier,
+  responseTablesPatch,
+  responseTablesSupplier,
+  workbenchOutputTableLabels,
   type QuoteTables,
 } from "../extensionQuoteTables"
 
@@ -22,9 +27,24 @@ const table = {
   ],
 }
 const sample = { policy_details: { state: "NY" } }
-const fetched: QuoteTables = { extension: "obverse", tables: [table], sample, fetch: 3 }
+const responseTable = {
+  path: "$[:].layers[:]",
+  label: "layers",
+  emit: true,
+  row_id_column: "layer",
+  columns: [
+    { name: "layer", path: "$[:].layers[:].layer", type: "int", status: "Confirmed", selected: true, levels: null },
+  ],
+}
+const fetched: QuoteTables = {
+  extension: "obverse",
+  tables: [table],
+  sample,
+  responseTables: [responseTable],
+  fetch: 3,
+}
 
-const extension = (name: string, quoteTables: boolean): ExtensionInfo => ({
+const extension = (name: string, quoteTables: boolean, responseTables = false): ExtensionInfo => ({
   name,
   label: name,
   api_base: `/api/extensions/${name}`,
@@ -32,6 +52,7 @@ const extension = (name: string, quoteTables: boolean): ExtensionInfo => ({
   ready: true,
   detail: null,
   quote_tables: quoteTables,
+  response_tables: responseTables,
 })
 
 describe("quoteTablesPatch", () => {
@@ -75,5 +96,47 @@ describe("quoteTablesSupplier", () => {
     expect(quoteTablesSupplier([extension("forms", false), extension("obverse", true)])?.name).toBe("obverse")
     expect(quoteTablesSupplier([extension("forms", false)])).toBeNull()
     expect(quoteTablesSupplier([])).toBeNull()
+  })
+})
+
+describe("the response's tables", () => {
+  it("updates a Workbench Output's copy whose tables differ, and leaves a matching one alone", () => {
+    expect(responseTablesPatch({ tables: [] }, fetched)).toEqual({ tables: [responseTable] })
+    const reordered = Object.fromEntries(Object.entries(responseTable).reverse())
+    expect(responseTablesPatch({ tables: [reordered] }, fetched)).toBeNull()
+    expect(responseTablesPatch({ tables: [] }, null)).toBeNull()
+    expect(responseTablesPatch({}, fetched)?.tables[0]).not.toBe(responseTable)
+  })
+
+  it("drops the mapping's entries for tables and columns the new tables lack", () => {
+    const mapping = { layers: { layer: "number", premium: null }, gone: { x: "y" } }
+    const renamed = { ...responseTable, columns: [{ ...responseTable.columns[0], name: "number" }] }
+
+    expect(responseTablesPatch({ tables: [responseTable], mapping }, fetched)).toEqual({
+      tables: [responseTable],
+      mapping: { layers: { layer: "number" } },
+    })
+    expect(responseTablesPatch({ tables: [], mapping }, { ...fetched, responseTables: [renamed] })).toEqual({
+      tables: [renamed],
+      mapping: {},
+    })
+    expect(responseTablesPatch({ tables: [responseTable], mapping: { layers: { layer: "number" } } }, fetched))
+      .toBeNull()
+  })
+
+  it("starts a Workbench Output with the newest response tables fetched, or none until they are", () => {
+    expect(paletteWorkbenchOutputConfig({ tables: [] }, fetched)).toEqual({ tables: [responseTable] })
+    expect(paletteWorkbenchOutputConfig({ tables: [] }, null)).toEqual({ tables: [] })
+  })
+
+  it("is supplied by the tables' supplier when it supplies them too", () => {
+    expect(responseTablesSupplier([extension("obverse", true, true)])?.name).toBe("obverse")
+    expect(responseTablesSupplier([extension("obverse", true)])).toBeNull()
+    expect(responseTablesSupplier([])).toBeNull()
+  })
+
+  it("makes each table's label a port, in order", () => {
+    expect(workbenchOutputTableLabels({ tables: [responseTable, table] })).toEqual(["layers", "policy_details"])
+    expect(workbenchOutputTableLabels({})).toEqual([])
   })
 })

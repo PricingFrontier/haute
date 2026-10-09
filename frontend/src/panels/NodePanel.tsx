@@ -83,6 +83,7 @@ type NodePanelProps = {
 const NO_COLUMNS_TAB = new Set<string>([
   ...REQUEST_INPUT_TYPES,
   NODE_TYPES.OUTPUT,
+  NODE_TYPES.WORKBENCH_OUTPUT,
   NODE_TYPES.SUBMODEL,
   NODE_TYPES.SUBMODEL_PORT,
   NODE_TYPES.MODELLING,
@@ -581,6 +582,7 @@ function inputSourceForEdge(
     edgeId: edge.id,
     ...(frameUnresolved ? { frameUnresolved: true } : {}),
     ...(columns ? { columns } : {}),
+    ...(typeof edge.targetHandle === "string" ? { targetHandle: edge.targetHandle } : {}),
   }
 }
 
@@ -597,6 +599,7 @@ function upstreamInputSourceSignature(
         edge.source,
         source.sourceLabel,
         edge.sourceHandle === undefined ? "<undefined>" : edge.sourceHandle,
+        edge.targetHandle ?? null,
         source.name,
         source.frameUnresolved === true,
         columnsSignature(source.columns),

@@ -3,6 +3,7 @@
   "workbenchInput": {"tables": []},
   "liveSwitch": {"input_scenario_map": {}},
   "output": {"outputMapping": [], "outputFormat": ""},
+  "workbenchOutput": {"tables": []},
   "dataInput": {"inputType": "file", "format": "parquet", "mode": "scan", "path": "", "arguments": {}, "steps": []},
   "dataOutput": {"outputType": "file", "format": "parquet", "mode": "sink", "path": "", "arguments": {}},
   "explore": {"steps": []},

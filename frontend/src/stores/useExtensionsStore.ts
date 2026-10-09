@@ -2,8 +2,8 @@
  * Zustand store for installed extensions (specs/extensions): the list
  * GET /api/extensions returns, which view is showing (the pipeline editor or
  * an extension's), the toolbar element the active extension renders its
- * controls into, the showing extension's save, and the Quote Input's tables
- * from the extension that supplies them.
+ * controls into, the showing extension's save, and the Quote Input's tables,
+ * with the response's, from the extension that supplies them.
  */
 import { create } from "zustand"
 import { apiErrorMessage } from "../api/errors"
@@ -95,7 +95,13 @@ const useExtensionsStore = create<ExtensionsState>()((set, get) => ({
       (response) => {
         if (fetch === latestQuoteTablesFetch) {
           set({
-            quoteTables: { extension: response.extension, tables: response.tables, sample: response.sample, fetch },
+            quoteTables: {
+              extension: response.extension,
+              tables: response.tables,
+              sample: response.sample,
+              responseTables: response.response_tables,
+              fetch,
+            },
           })
         }
       },
