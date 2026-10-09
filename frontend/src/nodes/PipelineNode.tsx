@@ -2,7 +2,7 @@ import { memo, useEffect, useMemo, type CSSProperties } from "react"
 import { Handle, Position, useStore, useUpdateNodeInternals, type InternalNode, type NodeProps, type ReactFlowState } from "@xyflow/react"
 import { AlertTriangle, Link2, Radio } from "lucide-react"
 import PolarsIcon from "../components/PolarsIcon"
-import { NODE_TYPES, NODE_TYPE_META, SOURCE_ONLY_TYPES, SINK_ONLY_TYPES, PILL_TYPES, nodeTypeIcons, nodeTypeColors, nodeTypeLabels, type NodeTypeValue } from "../utils/nodeTypes"
+import { NODE_TYPES, NODE_TYPE_META, SOURCE_ONLY_TYPES, SINK_ONLY_TYPES, PILL_TYPES, isRequestInputType, nodeTypeIcons, nodeTypeColors, nodeTypeLabels, type NodeTypeValue } from "../utils/nodeTypes"
 import { formatValueCompact } from "../utils/formatValue"
 import useSettingsStore from "../stores/useSettingsStore"
 import { STATUS_COLORS } from "../theme/colors"
@@ -156,7 +156,7 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   const Icon = nodeTypeIcons[nodeType] || PolarsIcon
   const accent = nodeTypeColors[nodeType] || nodeTypeColors[NODE_TYPES.POLARS]
   const typeLabel = nodeTypeLabels[nodeType] || "NODE"
-  const isDeployInput = nodeType === NODE_TYPES.API_INPUT
+  const isDeployInput = isRequestInputType(nodeType)
   const isLiveSwitch = nodeType === NODE_TYPES.LIVE_SWITCH
   const isInstance = !!(nodeData.config?.instanceOf)
   const isSourceOnly = SOURCE_ONLY_TYPES.has(nodeType)

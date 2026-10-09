@@ -1,6 +1,6 @@
 import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
 import { isSubmodelDefinition, isSubmodelInstanceConfig } from "../types/node"
-import { NODE_TYPES } from "./nodeTypes"
+import { NODE_TYPES, isRequestInputType } from "./nodeTypes"
 import { SUBMODEL_INPUT_HANDLE } from "./flowHandles"
 import {
   edgeInputName,
@@ -52,8 +52,8 @@ function actualEdge(
   const sourceNode = nodesById.get(connection.source as string)
   const targetNode = nodesById.get(connection.target as string)
   if (
-    (targetNode?.data.nodeType === NODE_TYPES.API_INPUT
-      && sourceNode?.data.nodeType !== NODE_TYPES.API_INPUT)
+    (isRequestInputType(targetNode?.data.nodeType)
+      && !isRequestInputType(sourceNode?.data.nodeType))
     || (sourceNode?.data.nodeType === NODE_TYPES.SUBMODEL
       && (connection.sourceHandle?.startsWith("in__")
         || connection.sourceHandle === SUBMODEL_INPUT_HANDLE))
@@ -132,9 +132,9 @@ export function validatePipelineConnection(
     return { ok: false, reason: { kind: "invalid-connection", message: "Connection node is missing" } }
   }
 
-  if (sourceNode.data.nodeType === NODE_TYPES.API_INPUT
+  if (isRequestInputType(sourceNode.data.nodeType)
     && (candidate.sourceHandle === null || candidate.sourceHandle === undefined)) {
-    return { ok: false, reason: { kind: "invalid-connection", message: "apiInput connections require a frame handle" } }
+    return { ok: false, reason: { kind: "invalid-connection", message: `${sourceNode.data.nodeType} connections require a frame handle` } }
   }
 
   let candidateName: string

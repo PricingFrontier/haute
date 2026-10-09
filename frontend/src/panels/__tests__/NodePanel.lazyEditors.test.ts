@@ -44,6 +44,7 @@ describe("NodePanel lazy editor loading", () => {
       "./editors/OutputEditor",
       "./editors/ExternalFileEditor",
       "./editors/ApiInputEditor",
+      "./editors/WorkbenchInputEditor",
       "./editors/LiveSwitchEditor",
       "./editors/DataOutputEditor",
       "./editors/ScenarioExpanderEditor",

@@ -13,7 +13,7 @@ from haute._config_io import config_path_for_node, has_config_folder
 from haute._executable_names import ROOT_MODULE
 from haute._graph_utils import _sanitize_func_name, executable_input_name
 from haute._support_code_names import UtilityReader, name_violations
-from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
+from haute._types import REQUEST_INPUT_NODE_TYPES, GraphNode, NodeData, NodeType, PipelineGraph
 
 
 @dataclass(frozen=True)
@@ -84,7 +84,7 @@ def resolve_editor_identity(
         config_reference = config_path_for_node(kind, function_name).as_posix()
     else:
         config_reference = None
-    special = {NodeType.API_INPUT, NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}
+    special = REQUEST_INPUT_NODE_TYPES | {NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}
     default_input_name = (
         None
         if kind in special

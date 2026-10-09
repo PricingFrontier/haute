@@ -58,9 +58,10 @@ In scope:
   editor: the toolbar's stylesheet, the React components the toolbar is built
   from (the brand, a two-row column, a labelled toolbar button, Undo/Redo,
   Zoom In/Zoom Out and Save/Commit), the palette's shell (its column, its
-  header with the minimiser, and the strip that reveals it again, with their
-  stylesheet), the native dropdowns' colours, and a copy of the colour tokens
-  an extension needs. Haute's
+  header with the minimiser, the strip that reveals it again, and its items, with
+  their stylesheet), the frame of a right-hand panel (resized from its left edge,
+  with a header and Close), the native dropdowns' colours, and a copy of the
+  colour tokens an extension needs. Haute's
   `Toolbar` and node palette render these components, so an extension that
   builds its toolbar and palette from them gets the same controls. The kit imports
   nothing else from the editor, and `frontend/src/haute-ui/package.json` lets

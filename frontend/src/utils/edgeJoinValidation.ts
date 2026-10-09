@@ -1,5 +1,5 @@
 import { EDGE_JOIN_BASE_HANDLE, EDGE_JOIN_JOIN_HANDLE, edgeJoinCanonicalTargetHandle } from "./edgeJoinRoles"
-import { NODE_TYPE_META, NODE_TYPES } from "./nodeTypes"
+import { NODE_TYPE_META, NODE_TYPES, isRequestInputType } from "./nodeTypes"
 import { apiInputFrameColumns } from "./apiInputPorts"
 
 export type EdgeJoinColumnInfo = {
@@ -262,7 +262,7 @@ function getColumns(
   edge: EdgeJoinValidationEdge | undefined,
   node: EdgeJoinValidationNode | undefined,
 ): EdgeJoinColumnInfo[] {
-  if (edge && node?.data?.nodeType === NODE_TYPES.API_INPUT && Array.isArray(node.data.config?.tables)) {
+  if (edge && node?.data && isRequestInputType(node.data.nodeType) && Array.isArray(node.data.config?.tables)) {
     return apiInputFrameColumns(node.data.config, edge.sourceHandle)
   }
   return node?.data?._columns ?? []
@@ -280,7 +280,7 @@ function columnsAreCurrent(
   node: EdgeJoinValidationNode | undefined,
   fence: EdgeJoinColumnsFence | undefined,
 ): boolean {
-  if (edge && node?.data?.nodeType === NODE_TYPES.API_INPUT && Array.isArray(node.data.config?.tables)) {
+  if (edge && node?.data && isRequestInputType(node.data.nodeType) && Array.isArray(node.data.config?.tables)) {
     return true
   }
   if (!fence || !node?.data) return false

@@ -2,6 +2,7 @@ import type { Edge, Node } from "@xyflow/react"
 
 import type { LoadedPipeline } from "../api/client"
 import type { GlobalConstant } from "../utils/globalConstants"
+import { isRequestInputType } from "../utils/nodeTypes"
 
 import type {
   PipelineDiagnostic,
@@ -78,7 +79,7 @@ function recoveryNode(node: Node, index: number): RecoveryNode {
   const defaultInputName =
     explicitDefaultInputName === null || typeof explicitDefaultInputName === "string"
       ? explicitDefaultInputName
-      : nodeType === "apiInput" || nodeType === "submodel" || nodeType === "submodelPort"
+      : isRequestInputType(nodeType) || nodeType === "submodel" || nodeType === "submodelPort"
         ? null
         : functionName
   return {

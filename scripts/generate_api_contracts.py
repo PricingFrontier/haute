@@ -88,6 +88,7 @@ from haute.schemas import (
     PipelineSettingsResponse,
     PolarsFreeCodeColumnsResponse,
     PolarsStepsRenderResponse,
+    QuoteTablesResponse,
     RatingLevelsResponse,
     SaveModelResponse,
     SchemaListResponse,
@@ -189,7 +190,7 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         RatingLevelsResponse,
     ),
     "io": (IoCapabilitiesResponse,),
-    "extensions": (ExtensionsResponse,),
+    "extensions": (ExtensionsResponse, QuoteTablesResponse),
     "session": (
         SessionStatusResponse,
         BrowseFilesResponse,

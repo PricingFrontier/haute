@@ -31,6 +31,7 @@ from haute._types import (
     ScenarioExpanderConfig,
     SubmodelConfig,
     TransformConfig,
+    WorkbenchInputConfig,
 )
 from haute.errors import ConfigError
 
@@ -42,6 +43,7 @@ from haute.errors import ConfigError
 
 _TYPED_DICT_BY_NODE_TYPE: dict[NodeType, type] = {
     NodeType.API_INPUT: ApiInputConfig,
+    NodeType.WORKBENCH_INPUT: WorkbenchInputConfig,
     NodeType.POLARS: TransformConfig,
     NodeType.EDGE_JOIN: EdgeJoinConfig,
     NodeType.MODEL_SCORE: ModelScoreConfig,

@@ -18,6 +18,7 @@ const TOKENS_CSS = read("tokens.css")
 const STYLESHEETS = {
   "toolbar.css": read("toolbar.css"),
   "palette.css": read("palette.css"),
+  "side-panel.css": read("side-panel.css"),
   "dropdowns.css": read("dropdowns.css"),
 }
 
@@ -71,6 +72,9 @@ describe("haute-ui's stylesheets", () => {
     ["toolbar.css", ".toolbar-fill", "flex", "1 1 0%"],
     ["palette.css", ".palette", "width", "180px"],
     ["palette.css", ".palette-reveal", "width", "40px"],
+    ["palette.css", ".palette-item-icon", "width", "24px"],
+    ["side-panel.css", ".panel-drag-handle", "width", "4px"],
+    ["side-panel.css", ".side-panel-header", "padding", "10px 12px"],
   ] as const)("%s: %s keeps %s: %s", (file, selector, property, value) => {
     expect(declarations(ruleBody(STYLESHEETS[file], selector)).get(property)).toBe(value)
   })

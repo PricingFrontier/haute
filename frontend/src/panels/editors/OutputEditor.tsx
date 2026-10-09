@@ -21,7 +21,7 @@ import {
   dropMappingHeader,
 } from "./outputPathTools"
 import { parsePath } from "./jsonpath"
-import { NODE_TYPES } from "../../utils/nodeTypes"
+import { isRequestInputType } from "../../utils/nodeTypes"
 import { apiInputFrameColumns, authoritativeSourceHandles, edgeInputName } from "../../utils/apiInputPorts"
 
 // ─── Preview chunk size ───────────────────────────────────────────
@@ -74,7 +74,7 @@ function framePortId(
     throw new Error(`Cannot derive output frame name for edge ${edge.id}: source node ${edge.source} is missing`)
   }
   if (
-    sourceNode.data.nodeType === NODE_TYPES.API_INPUT
+    isRequestInputType(sourceNode.data.nodeType)
     && typeof edge.sourceHandle === "string"
     && edge.sourceHandle.length > 0
   ) {
@@ -89,7 +89,8 @@ function framePortId(
 }
 
 function frameIsUnresolved(edge: SimpleEdge, sourceNode: SimpleNode | undefined): boolean {
-  return sourceNode?.data.nodeType === NODE_TYPES.API_INPUT
+  return sourceNode !== undefined
+    && isRequestInputType(sourceNode.data.nodeType)
     && (edge.sourceHandle === null
       || edge.sourceHandle === undefined
       || !authoritativeSourceHandles(sourceNode).includes(edge.sourceHandle))

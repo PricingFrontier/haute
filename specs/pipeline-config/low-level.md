@@ -92,7 +92,7 @@
   `_UNIVERSAL_KEYS` (`instanceOf`, `inputMapping`, `selected_columns`, `column_renames`,
   `categorical_levels`, `contract` — keys any node type may legitimately carry).
 - **`NODE_TYPE_TO_FOLDER` / `FOLDER_TO_NODE_TYPE`** (`_config_io.py`) — the bidirectional
-  map between a `NodeType` and its `config/<folder>/` sidecar directory name. 15 of the 19
+  map between a `NodeType` and its `config/<folder>/` sidecar directory name. 16 of the 20
   node types store external config (all except `edgeJoin`, `explore`, `submodel`, and
   `submodelPort`); `polars` is the one optional folder (`_OPTIONAL_SIDECAR_TYPES`):
   `has_config_folder` stays false for it, `has_optional_config_folder` is true, and
@@ -101,6 +101,7 @@
   | Node type | Sidecar folder |
   |---|---|
   | `apiInput` | `config/quote_input/` |
+  | `workbenchInput` | `config/workbench_input/` |
   | `dataInput` | `config/data_input/` |
   | `dataOutput` | `config/data_output/` |
   | `liveSwitch` | `config/source_switch/` |

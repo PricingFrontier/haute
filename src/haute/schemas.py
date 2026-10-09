@@ -55,11 +55,11 @@ from haute._pipeline_settings import (
     MAX_STREAMING_CHUNK_SIZE,
     MAX_TIME_LIMIT_MINUTES,
 )
+from haute._types import REQUEST_INPUT_NODE_TYPES, NodeType
 from haute._types import GlobalConstant as GlobalConstant  # noqa: F401
 from haute._types import GraphEdge as GraphEdge  # noqa: F401
 from haute._types import GraphNode as GraphNode  # noqa: F401
 from haute._types import NodeData as GraphNodeData  # noqa: F401
-from haute._types import NodeType
 from haute._types import PipelineGraph as Graph  # noqa: F401
 
 
@@ -160,10 +160,23 @@ class ExtensionInfo(BaseModel):
     # Whether the browser module exists now; ``detail`` says what to do when it doesn't.
     ready: bool
     detail: str | None
+    # Whether it supplies the Quote Input's tables (``GET /api/quote-tables``).
+    quote_tables: bool
 
 
 class ExtensionsResponse(BaseModel):
     extensions: list[ExtensionInfo]
+
+
+class QuoteTablesResponse(BaseModel):
+    """The Quote Input's tables, in its v2 shape, from the extension that supplies them.
+
+    ``sample`` is the extension's sample quote, as a request holds it: ``{}`` for none.
+    """
+
+    extension: str
+    tables: list[dict[str, Any]]
+    sample: dict[str, Any] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -926,13 +939,16 @@ class EditorIdentityRequestNode(BaseModel):
             for handle in self.source_handles:
                 if not handle or not handle.isascii() or not handle.isidentifier():
                     raise ValueError("submodelPort source handles must be ASCII identifiers.")
-        if self.node_type == NodeType.API_INPUT and any(
+        if self.node_type in REQUEST_INPUT_NODE_TYPES and any(
             not handle.isascii() or not handle.isidentifier() or keyword.iskeyword(handle)
             for handle in self.source_handles
         ):
-            raise ValueError("apiInput source handles must be non-keyword ASCII identifiers.")
+            raise ValueError(
+                f"{self.node_type.value} source handles must be non-keyword ASCII identifiers."
+            )
         if (
-            self.node_type not in {NodeType.API_INPUT, NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}
+            self.node_type
+            not in REQUEST_INPUT_NODE_TYPES | {NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}
             and self.source_handles
         ):
             raise ValueError("source_handles are not valid for this node type.")
@@ -1662,7 +1678,8 @@ class InputCacheSourceRequest(_StrictInputCacheModel):
 
     A structured API Input (JSON, JSONL, NDJSON, XML with a v2 ``tables``
     schema) is one snapshot per emitting table; its requests act on every
-    table of the node together.
+    table of the node together. ``node_type`` says how the source is read, so a
+    Workbench Input's tables, read as a Quote Input's, are sent as ``apiInput``.
     """
 
     schema_version: Literal[1] = 1

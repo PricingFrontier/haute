@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from haute._api_input_schema import validate_v2_schema
 from haute._config_io import (
     FOLDER_TO_NODE_TYPE,
     NODE_TYPE_TO_FOLDER,
@@ -233,6 +234,43 @@ class TestSaveAndLoad:
         }
         rel = _write_node_config_sidecar(NodeType.API_INPUT, "quotes", config, tmp_path)
         assert load_node_config(rel, base_dir=tmp_path) == config
+
+    def test_workbench_input_tables_survive_its_config_file(self, tmp_path):
+        config = {
+            "sample": {"policy_details": {"state": "NY"}},
+            "tables": [
+                {
+                    "path": "$[:]",
+                    "label": "policy_details",
+                    "emit": True,
+                    "row_id_column": None,
+                    "columns": [
+                        {
+                            "name": "state",
+                            "path": "$[:].policy_details.state",
+                            "type": "str",
+                            "status": "Confirmed",
+                            "selected": True,
+                            "levels": None,
+                        }
+                    ],
+                }
+            ],
+        }
+        rel = _write_node_config_sidecar(NodeType.WORKBENCH_INPUT, "quote", config, tmp_path)
+        assert rel.as_posix() == "config/workbench_input/quote.json"
+        loaded = load_node_config(rel, base_dir=tmp_path)
+        assert loaded == config
+        validate_v2_schema(loaded)
+
+    def test_a_workbench_input_config_with_a_path_is_refused(self, tmp_path):
+        """A Workbench Input reads no file, so its config declares no ``path``."""
+        from haute.errors import ConfigError
+
+        config = {"path": "tests/quotes/example.json", "tables": []}
+        with pytest.raises(ConfigError, match="'path'"):
+            _write_node_config_sidecar(NodeType.WORKBENCH_INPUT, "quote", config, tmp_path)
+        assert not (tmp_path / "config" / "workbench_input" / "quote.json").exists()
 
     def test_code_key_excluded_from_json(self, tmp_path):
         config = {"path": "model.pkl", "fileType": "pickle", "code": "df = obj.predict(df)"}

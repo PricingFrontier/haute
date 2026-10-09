@@ -15,6 +15,7 @@ Every step in a Haute pipeline is a node. You connect nodes on the canvas to def
 | I want to... | Use this node |
 |---|---|
 | Bring in quote data for live pricing | [Quote Input](quote-input.md) |
+| Price quotes keyed in through a workbench, such as Obverse's | [Workbench Input](workbench-input.md) |
 | Load a parquet or CSV file, a database, lakehouse or Databricks table | [Data Input](data-input.md) |
 | Store fixed parameters (tax rate, loadings) | [Constant](constant.md), or a [global constant](constant.md#global-constants) every node can read |
 | Join, filter, or calculate new columns | [Transform](transform.md) |
@@ -36,7 +37,7 @@ Every step in a Haute pipeline is a node. You connect nodes on the canvas to def
 
 ## Working with any node
 
-- **Adding and connecting nodes.** Drag a node from the **NODES** palette on the left onto the canvas, then drag a connection from one node to the next. A connection carries the upstream node's data, under the upstream node's name; a connection from a Quote Input table carries it under the table's label, and one from a submodel output under the output's port name.
+- **Adding and connecting nodes.** Drag a node from the **NODES** palette on the left onto the canvas, then drag a connection from one node to the next. A connection carries the upstream node's data, under the upstream node's name; a connection from a Quote Input or Workbench Input table carries it under the table's label, and one from a submodel output under the output's port name.
 - **The node panel.** Click a node to open its panel on the right. Most nodes have tabs along its top:
     - **CONFIG** holds the node's own settings, described on its page. On a Transform node this tab is called **TRANSFORM**, because the node's settings are its steps.
     - **TRANSFORM**, on Data Input, Load File, Expander, Rating Step and Model Scoring nodes, adds optional steps that run on the node's result, built the same way as a Transform node's (see [Building the node from steps](transform.md#building-the-node-from-steps)).

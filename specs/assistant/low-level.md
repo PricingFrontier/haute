@@ -96,7 +96,7 @@ orphaned halves).
   at import. The Polars `usage` ends with `_catalog.INPUT_NAMING_RULE`, the
   input-naming rule of `haute._graph_utils.executable_input_name` in words (an
   input is named after its incoming edge: the upstream node's name, except that
-  an edge from a Quote Input frame, which `add_edge`'s `source_handle` selects,
+  an edge from a Quote Input or Workbench Input frame, which `add_edge`'s `source_handle` selects,
   is named by that frame, and an edge from a submodel output by its port); the
   system prompt, the authoring guide's "Names and wiring" and the `input names`
   field of the Polars, Quote Response and Source Switch cards state it verbatim,

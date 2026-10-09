@@ -295,6 +295,8 @@ export default function useNodeDataCache({
 
   const clearDelegatedData = useCallback(
     async (target: NodeDataPointResponse) => {
+      // A point that reads directly has nothing cached to clear.
+      if (target.reads_directly) return
       const producer = producerNode(allNodes, target)
       const config = (producer?.data.config ?? null) as Record<string, unknown> | null
       if (!config) return

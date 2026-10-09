@@ -10,6 +10,7 @@ const obverse = {
   entry_url: "/extensions/obverse/obverse-embed.js",
   ready: true,
   detail: null,
+  quote_tables: false,
 }
 
 describe("ViewSwitcher", () => {

@@ -665,7 +665,7 @@ step builder shows as the card's title. A hook that needs no post-processing kee
 `steps: []`. The system prompt, the Polars descriptor, the authoring guide and the node
 cards that name inputs (Polars, Quote Response, Source Switch) state one input-naming
 rule in the same words: an input is named after its incoming edge, the upstream node's
-name, except that an edge from a Quote Input frame, which `add_edge`'s `source_handle`
+name, except that an edge from a Quote Input or Workbench Input frame, which `add_edge`'s `source_handle`
 selects, is named by that frame, and an edge from a submodel output by its port.
 Existing structured steps keep their ids and order, and code-mode nodes
 keep code editing: code on a code-mode Transform starts from a named input (each input
@@ -1029,8 +1029,11 @@ online and ratebook Apply Optimisation, and Data Input, Data Output, Constant, E
 and Explore configurations. A field meaning also carries a material choice its node
 needs: the Rating Step card says its factor values, relativities and missing-factor
 value come from the analyst, are never invented, and are asked for with `NEEDS_INPUT:`
-unless the analyst delegated them. A card for Submodel or Port states that the assistant
-cannot author it, in the words of the operation layer's refusal. Cards are library
+unless the analyst delegated them. A card for Submodel, Port or Workbench Input states that
+the assistant cannot author it, in the words of the operation layer's refusal. A Workbench
+Input's tables are the installed workbench's, so the operations refuse to add one or to
+update, rename, delete or edit the steps of one, and connect nodes to its frames, or remove
+those connections, as for a Quote Input's. Cards are library
 content, never project data. A card file also carries a synthetic fixture (tiny rows,
 files, surrounding operations) that is test evidence and never reaches the model: CI
 writes each configuration into a fresh project with that fixture, dry-runs and applies

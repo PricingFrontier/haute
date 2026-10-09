@@ -14,6 +14,7 @@ import { NODE_TYPES } from "./nodeTypes"
 export const nodeTypes = {
   unavailablePipelineNode: UnavailablePipelineNode,
   [NODE_TYPES.API_INPUT]: PipelineNode,
+  [NODE_TYPES.WORKBENCH_INPUT]: PipelineNode,
   [NODE_TYPES.DATA_INPUT]: PipelineNode,
   [NODE_TYPES.DATA_OUTPUT]: PipelineNode,
   [NODE_TYPES.POLARS]: PipelineNode,

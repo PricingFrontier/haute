@@ -10,6 +10,7 @@
     "./toolbar.css": "./toolbar.css",
     "./palette.css": "./palette.css",
     "./dropdowns.css": "./dropdowns.css",
+    "./side-panel.css": "./side-panel.css",
     "./tokens.css": "./tokens.css"
   },
   "peerDependencies": {

@@ -2965,3 +2965,37 @@ class TestChangeHeadline:
 
         headline = change_headline("x" * 150)
         assert headline == "x" * (CHANGE_HEADLINE_LIMIT - 1) + "…"
+
+
+# ---------------------------------------------------------------------------
+# A Workbench Input is read-only to the assistant (specs/extensions)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "op",
+    [
+        {"op": "update_node", "node": "workbench", "config": {"tables": []}},
+        {"op": "edit_steps", "node": "workbench", "edits": [{"remove": "start"}]},
+        {"op": "rename_node", "node": "workbench", "new_name": "renamed"},
+        {"op": "delete_node", "node": "workbench"},
+    ],
+    ids=lambda op: op["op"],
+)
+def test_the_assistant_reads_and_wires_but_never_authors_a_workbench_input(op):
+    graph = _graph([_node("workbench", "workbenchInput"), _node("sink", code="df = quotes")])
+
+    with pytest.raises(OpValidationError, match="Cannot .* 'workbench': it is a Workbench Input"):
+        _apply(graph, [op])
+    with pytest.raises(OpValidationError, match="Cannot add node type 'workbenchInput'"):
+        _apply(
+            graph,
+            [{"op": "add_node", "node_type": "workbenchInput", "name": "another", "config": {}}],
+        )
+
+    edge = {"source": "workbench", "target": "sink", "source_handle": "quotes"}
+    wired = _apply(graph, [{"op": "add_edge", **edge}])
+    assert [(e.source, e.sourceHandle, e.target) for e in wired.edges] == [
+        ("workbench", "quotes", "sink")
+    ]
+    assert _apply(wired, [{"op": "delete_edge", **edge}]).edges == []

@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from "react"
 import { X, Link2, AlertTriangle, RefreshCw, Lock } from "lucide-react"
 import { fetchExplorePivotMembers } from "../api/client"
-import { NODE_TYPES, NODE_TYPE_META } from "../utils/nodeTypes"
+import { NODE_TYPES, NODE_TYPE_META, REQUEST_INPUT_TYPES, isRequestInputType } from "../utils/nodeTypes"
 import type { NodeTypeValue } from "../utils/nodeTypes"
 import { authoritativeSourceHandles, edgeInputName } from "../utils/apiInputPorts"
 import {
@@ -66,6 +66,8 @@ type NodePanelProps = {
   readOnly?: boolean
   /** True when the current pipeline document is not executable/mutable. */
   documentReadOnly?: boolean
+  /** True while a submodel is open, so the node shown is inside one. */
+  insideSubmodel?: boolean
   /** Node-scoped save for a `scoped_editable` node while the document stays fenced. */
   scopedSave?: () => Promise<{ ok: boolean; error?: string }>
   /** Opens an explicitly confirmed document-level recovery action. */
@@ -76,9 +78,10 @@ type NodePanelProps = {
 // Output already has its own field selection; submodels/ports are placeholders;
 // modelling, optimiser and explore nodes are sink-only (no outputs).
 //
-// API input column selection lives in `tables[].columns[]` in its Schema panel.
+// A request input's column selection lives in `tables[].columns[]`, edited in the
+// Quote Input's Schema panel and in the workbench for a Workbench Input.
 const NO_COLUMNS_TAB = new Set<string>([
-  NODE_TYPES.API_INPUT,
+  ...REQUEST_INPUT_TYPES,
   NODE_TYPES.OUTPUT,
   NODE_TYPES.SUBMODEL,
   NODE_TYPES.SUBMODEL_PORT,
@@ -565,7 +568,7 @@ function inputSourceForEdge(
   const sourceLabel = sourceNode.data.label || edge.source
   const name = edgeInputName(edge, sourceNode, submodels)
   const frameUnresolved =
-    sourceNode.data.nodeType === NODE_TYPES.API_INPUT
+    isRequestInputType(sourceNode.data.nodeType)
     && (edge.sourceHandle === null
       || edge.sourceHandle === undefined
       || !authoritativeSourceHandles(sourceNode).includes(edge.sourceHandle))
@@ -1358,6 +1361,7 @@ function NodePanelContent({
   selectedPreviewLoading = false,
   readOnly = false,
   documentReadOnly = false,
+  insideSubmodel = false,
   scopedSave,
   onRemoveUnavailableNode,
 }: ActiveNodePanelProps) {
@@ -1647,6 +1651,7 @@ function NodePanelContent({
       exploreConfigHash={exploreConfigHash}
       reservedApiInputFrameLabels={reservedApiInputFrameLabelSet}
       accentColor={accentColor}
+      insideSubmodel={insideSubmodel}
     />
   )
 

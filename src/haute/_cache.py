@@ -725,6 +725,9 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
             node_config=("tables",),
             runtime_files=("path",),
         ),
+        NodeType.WORKBENCH_INPUT: _classify_config_fields(
+            node_config=("tables", "sample"),
+        ),
         NodeType.DATA_INPUT: _classify_config_fields(
             node_config=("arguments", "records"),
             user_code=("code", "steps"),

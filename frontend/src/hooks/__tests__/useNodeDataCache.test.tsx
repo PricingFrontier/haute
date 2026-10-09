@@ -656,6 +656,41 @@ describe("useNodeDataCache", () => {
     })
   })
 
+  it("clears nothing through the input-cache route for a point that reads directly", async () => {
+    const workbenchNodes = [
+      ...nodes,
+      {
+        id: "workbench",
+        data: {
+          label: "workbench",
+          nodeType: "workbenchInput",
+          config: { tables: [{ name: "orders" }] },
+        },
+      },
+    ] as never as Parameters<typeof useNodeDataCache>[0]["allNodes"]
+    const direct = point({
+      point: { producer_node_id: "workbench", port_label: "orders" },
+      slot_key: "workbench|orders|live",
+      kind: "api_input_table",
+      generation: null,
+      reads_directly: true,
+    })
+    mockGetPoint.mockResolvedValue(direct)
+    mockClear.mockResolvedValue({ status: "delegated", point: direct })
+    const { result } = renderHook(() =>
+      useNodeDataCache({ node: nodeById("banding"), allNodes: workbenchNodes, edges, preamble: "" }),
+    )
+    await waitFor(() => expect(result.current.point).not.toBeNull())
+
+    await act(async () => {
+      await result.current.clear()
+    })
+
+    expect(mockClear).toHaveBeenCalledTimes(1)
+    expect(mockClearInputCache).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts).toEqual([])
+  })
+
   it("cancels the running build and re-asks for the point", async () => {
     mockGetPoint.mockResolvedValue(point({ state: "missing", generation: null, data_version: null }))
     mockRun.mockResolvedValue({

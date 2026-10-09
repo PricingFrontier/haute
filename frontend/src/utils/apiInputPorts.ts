@@ -42,7 +42,7 @@ import {
   type SubmodelDefinition,
   type SubmodelPortData,
 } from "../types/node"
-import { NODE_TYPES } from "./nodeTypes"
+import { NODE_TYPES, isRequestInputType } from "./nodeTypes"
 
 type ConfigLike = Record<string, unknown> | undefined | null
 
@@ -358,7 +358,7 @@ export function edgeInputName(
 ): string {
   const edgeInput = edge.data?._inputName
   if (typeof edgeInput === "string" && edgeInput.length > 0) return edgeInput
-  if (sourceNode.data.nodeType === NODE_TYPES.API_INPUT) {
+  if (isRequestInputType(sourceNode.data.nodeType)) {
     return sourceHandleInputName(edge, sourceNode)
   }
   if (sourceNode.data.nodeType === NODE_TYPES.SUBMODEL_PORT) {
@@ -790,6 +790,11 @@ export type ApplyApiInputConfigChangeResult<E extends SimpleEdge> = {
  * single↔multi transitions). `App.onUpdateNode` applies the result in
  * the same state update that commits the config, so a rename is one
  * atomic, undoable operation — never a destroy-and-reconnect.
+ *
+ * With `followNames`, for a Workbench Input, whose tables the installed
+ * extension may reorder or replace wholesale (specs/extensions), a position
+ * says nothing about which table is which: connections follow names only,
+ * and a renamed table's are pruned rather than rebound.
  */
 export function applyApiInputConfigChange<E extends SimpleEdge>({
   nodeId,
@@ -797,20 +802,24 @@ export function applyApiInputConfigChange<E extends SimpleEdge>({
   nextConfig,
   edges,
   reservedLabels,
+  followNames = false,
 }: {
   nodeId: string
   prevConfig: ConfigLike
   nextConfig: ConfigLike
   edges: E[]
   reservedLabels: ReadonlySet<string>
+  followNames?: boolean
 }): ApplyApiInputConfigChangeResult<E> {
-  const migration = migrateApiInputEdges({
-    nodeId,
-    prevConfig,
-    nextConfig,
-    edges,
-    reservedLabels,
-  })
+  const migration = followNames
+    ? { edges, rebound: [] }
+    : migrateApiInputEdges({
+      nodeId,
+      prevConfig,
+      nextConfig,
+      edges,
+      reservedLabels,
+    })
   const { edges: pruned, removed } = reconcileApiInputEdges({
     nodeId,
     config: nextConfig,

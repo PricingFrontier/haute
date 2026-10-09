@@ -100,6 +100,7 @@ from haute._trace_enrichment import (
 from haute._trace_enrichment import enrich_steps as _enrich_steps
 from haute._trace_lineage import ColumnRead, JoinInputs, ValueLineage, trace_value_lineage
 from haute._trace_waterfall import build_waterfall_from_steps
+from haute._types import REQUEST_INPUT_NODE_TYPES
 from haute.errors import BoundedMemoryUnsupportedError, TraceCorrelationUnsupportedError
 from haute.executor import (
     PREVIEW_CACHE_MAX_BYTES,
@@ -1377,11 +1378,11 @@ def _execute_trace_core(
     target_row = cached_rows.get(target_node_id) or {}
     output_value = target_row.get(column) if column else target_row
 
-    # ---------- Row identity from apiInput node ----------
+    # ---------- Row identity from the request input ----------
     row_id_column: str | None = None
     row_id_value: Any = None
     for n in nodes:
-        if n.data.nodeType == NodeType.API_INPUT and n.data.config.get("row_id_column"):
+        if n.data.nodeType in REQUEST_INPUT_NODE_TYPES and n.data.config.get("row_id_column"):
             row_id_column = n.data.config["row_id_column"]
             row_id_value = target_row.get(row_id_column)
             break

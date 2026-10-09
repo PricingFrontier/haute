@@ -8,7 +8,13 @@ an entry point loads (Obverse's is a module) declares:
 - ``create_router(project_dir)``: a FastAPI router, mounted at ``/api/extensions/<name>``;
 - ``assets_dir``: a directory served at ``/extensions/<name>/``;
 - ``entry``: the browser module in ``assets_dir``, whose ``mount`` function renders the
-  view into the editor's page (``frontend/src/extensions/loadExtensionModule.ts``).
+  view into the editor's page (``frontend/src/extensions/loadExtensionModule.ts``);
+- optionally ``quote_tables(project_dir)``: the Quote Input's tables, in its v2 shape, as
+  the extension's files define them now. At most one installed extension may supply them;
+  ``GET /api/quote-tables`` serves them, checked against the Quote Input's schema rules;
+- optionally, beside ``quote_tables``, ``quote_sample(project_dir)``: one quote as a request
+  holds it, as the extension's files define it now, which ``GET /api/quote-tables`` serves
+  as ``sample`` and a Workbench Input previews on.
 
 ``haute.server`` mounts every installed extension when it is imported, before its catch-all
 routes, which would otherwise answer the extension's ``GET`` requests.
@@ -16,19 +22,24 @@ routes, which would otherwise answer the extension's ``GET`` requests.
 
 from __future__ import annotations
 
+import functools
 import importlib.util
 import mimetypes
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from importlib.metadata import EntryPoint, entry_points
 from pathlib import Path
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from fastapi import APIRouter, FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse, JSONResponse
 
-from haute.schemas import ExtensionInfo, ExtensionsResponse
+from haute._api_input_schema import ApiInputSchemaError, validate_v2_schema
+from haute._logging import get_logger
+from haute.routes.json_cache import api_input_schema_error_response
+from haute.schemas import ExtensionInfo, ExtensionsResponse, QuoteTablesResponse
 
 EXTENSIONS_GROUP = "haute.extensions"
 # The editor's own view in the switcher.
@@ -38,6 +49,8 @@ _NAME = re.compile(r"[a-z][a-z0-9-]*\Z")
 _MISSING = object()
 
 _T = TypeVar("_T")
+
+logger = get_logger(component="server.extensions")
 
 
 class ExtensionError(RuntimeError):
@@ -53,6 +66,10 @@ class Extension:
     router: APIRouter
     assets_dir: Path
     entry: str
+    # ``quote_tables`` bound to the project directory, when the extension supplies them.
+    quote_tables: Callable[[], object] | None = None
+    # ``quote_sample`` bound to the project directory, when it also supplies a sample quote.
+    quote_sample: Callable[[], object] | None = None
 
     @property
     def api_base(self) -> str:
@@ -77,7 +94,15 @@ def discover_extensions(project_dir: Path) -> list[Extension]:
             f"Haute extension {name!r} is declared by more than one installed package: "
             f"{declared_by}. Uninstall one of them."
         )
-    return [_load(entry_point, project_dir) for entry_point in found]
+    extensions = [_load(entry_point, project_dir) for entry_point in found]
+    suppliers = [extension for extension in extensions if extension.quote_tables is not None]
+    if len(suppliers) > 1:
+        named = ", ".join(repr(extension.name) for extension in suppliers)
+        raise ExtensionError(
+            f"Haute extensions {named} each supply the Quote Input's tables; a project can "
+            "take them from one. Uninstall all but one of them."
+        )
+    return extensions
 
 
 def _load(entry_point: EntryPoint, project_dir: Path) -> Extension:
@@ -110,7 +135,29 @@ def _load(entry_point: EntryPoint, project_dir: Path) -> Extension:
         raise ExtensionError(
             f"{where}: create_router returned {type(router).__name__}, not a FastAPI APIRouter."
         )
-    return Extension(entry_point.name, label, router, assets_dir, entry)
+    supplied = _bound(declared, "quote_tables", project_dir, where)
+    sample = _bound(declared, "quote_sample", project_dir, where)
+    if sample is not None and supplied is None:
+        raise ExtensionError(
+            f"{where} defines quote_sample without quote_tables: a sample quote is read "
+            "through the tables, so define both."
+        )
+    return Extension(entry_point.name, label, router, assets_dir, entry, supplied, sample)
+
+
+def _bound(
+    declared: object, name: str, project_dir: Path, where: str
+) -> Callable[[], object] | None:
+    """The optional function *name* bound to the project directory, or ``None``."""
+    function = getattr(declared, name, None)
+    if function is None:
+        return None
+    if not callable(function):
+        raise ExtensionError(
+            f"{where}: {name} must be a function of the project directory, "
+            f"not a {type(function).__name__}."
+        )
+    return functools.partial(function, project_dir)
 
 
 def _attribute(declared: object, name: str, kind: type[_T], where: str) -> _T:
@@ -133,13 +180,66 @@ def mount_extensions(app: FastAPI, extensions: Sequence[Extension]) -> None:
         app.include_router(_assets_router(extension))
 
     listing = APIRouter(prefix="/api", tags=["extensions"])
+    supplier = next((extension for extension in extensions if extension.quote_tables), None)
 
     @listing.get("/extensions", response_model=ExtensionsResponse)
     async def list_extensions() -> ExtensionsResponse:
         """The installed extensions, and whether each one's browser module is built."""
         return ExtensionsResponse(extensions=[_info(extension) for extension in extensions])
 
+    @listing.get("/quote-tables", response_model=QuoteTablesResponse)
+    async def quote_tables() -> QuoteTablesResponse | JSONResponse:
+        """The Quote Input's tables from the extension that supplies them, as they are now."""
+        if supplier is None or supplier.quote_tables is None:
+            raise HTTPException(404, "No installed extension supplies the Quote Input's tables.")
+        return await _supplied_tables(supplier.name, supplier.quote_tables, supplier.quote_sample)
+
     app.include_router(listing)
+
+
+async def _supplied_tables(
+    name: str, quote_tables: Callable[[], object], quote_sample: Callable[[], object] | None
+) -> QuoteTablesResponse | JSONResponse:
+    try:
+        # The extension reads its own files, so keep it off the event loop.
+        tables = await run_in_threadpool(quote_tables)
+    except Exception as exc:
+        logger.exception("extension_quote_tables_failed", extension=name)
+        raise HTTPException(
+            500, f"Extension {name!r} could not supply the Quote Input's tables: {exc}"
+        ) from exc
+    if not isinstance(tables, list):
+        raise HTTPException(
+            500,
+            f"Extension {name!r} supplied the Quote Input's tables as a "
+            f"{type(tables).__name__}, not a list.",
+        )
+    try:
+        validate_v2_schema({"tables": tables})
+    except ApiInputSchemaError as exc:
+        return api_input_schema_error_response(exc)
+    rows: list[dict[str, Any]] = tables
+    # Not checked against the tables here: a sample that doesn't fit fails the previews
+    # that read it, and never stops the tables updating.
+    sample = None if quote_sample is None else await _supplied_sample(name, quote_sample)
+    return QuoteTablesResponse(extension=name, tables=rows, sample=sample or {})
+
+
+async def _supplied_sample(name: str, quote_sample: Callable[[], object]) -> dict[str, Any] | None:
+    try:
+        sample = await run_in_threadpool(quote_sample)
+    except Exception as exc:
+        logger.exception("extension_quote_sample_failed", extension=name)
+        raise HTTPException(
+            500, f"Extension {name!r} could not supply its sample quote: {exc}"
+        ) from exc
+    if sample is not None and not isinstance(sample, dict):
+        raise HTTPException(
+            500,
+            f"Extension {name!r} supplied its sample quote as a {type(sample).__name__}, "
+            "not an object.",
+        )
+    return sample
 
 
 def _assets_router(extension: Extension) -> APIRouter:
@@ -175,6 +275,7 @@ def _info(extension: Extension) -> ExtensionInfo:
         detail=None
         if ready
         else f"{entry_file} does not exist. Build {extension.label}'s front end, then reload.",
+        quote_tables=extension.quote_tables is not None,
     )
 
 

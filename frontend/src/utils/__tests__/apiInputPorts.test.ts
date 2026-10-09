@@ -819,6 +819,62 @@ describe("applyApiInputConfigChange", () => {
   })
 })
 
+describe("connections follow table names", () => {
+  // An extension's tables (specs/extensions) may be reordered or replaced wholesale, so a
+  // Workbench Input (`followNames`) never rebinds a connection by position.
+  const atRoot = (label: string) => ({ ...table(label, true), path: "$[:]" })
+  const tablesOf = (...labels: string[]) => ({ tables: labels.map(atRoot) })
+  const policy = edgeFrom("api_1", "policy", "e_policy")
+  const account = edgeFrom("api_1", "account", "e_account")
+
+  it("keeps a connection while its table's name remains and removes the rest, never rebinding", () => {
+    for (const next of [tablesOf("account", "building"), tablesOf("building", "account")]) {
+      const result = applyApiInputConfigChange({
+        nodeId: "api_1",
+        prevConfig: tablesOf("policy", "account"),
+        nextConfig: next,
+        edges: [policy, account],
+        followNames: true,
+      })
+      expect(result.rebound).toEqual([])
+      expect(result.edges).toEqual([account])
+      expect(result.removed.map((removal) => removal.edge)).toEqual([policy])
+    }
+  })
+
+  it("keeps every connection when the tables are only reordered", () => {
+    const edges = [policy, account]
+    const result = applyApiInputConfigChange({
+      nodeId: "api_1",
+      prevConfig: tablesOf("policy", "account"),
+      nextConfig: tablesOf("account", "policy"),
+      edges,
+      followNames: true,
+    })
+    expect(result).toEqual({ edges, rebound: [], removed: [] })
+  })
+
+  it("removes a renamed table's connections, where a Quote Input's rebind", () => {
+    const workbenchRename = applyApiInputConfigChange({
+      nodeId: "api_1",
+      prevConfig: tablesOf("policy"),
+      nextConfig: tablesOf("policy_details"),
+      edges: [policy],
+      followNames: true,
+    })
+    expect(workbenchRename.rebound).toEqual([])
+    expect(workbenchRename.edges).toEqual([])
+
+    const quoteRename = applyApiInputConfigChange({
+      nodeId: "api_1",
+      prevConfig: tablesOf("policy"),
+      nextConfig: tablesOf("policy_details"),
+      edges: [policy],
+    })
+    expect(quoteRename.rebound.map((rebinding) => rebinding.to)).toEqual(["policy_details"])
+  })
+})
+
 describe("canonical submodel boundary resolution", () => {
   it("uses immutable public port ids for canonical drilled Input names", () => {
     const boundarySource: SimpleNode = {

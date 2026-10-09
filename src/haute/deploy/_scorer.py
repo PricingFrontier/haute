@@ -35,6 +35,7 @@ from haute._node_builder import NodeBuildHooks, NodeFnResult, node_fn_name, wrap
 from haute._polars_dtypes import contract_dtype_name
 from haute._polars_utils import streaming_collect
 from haute._types import (
+    REQUEST_INPUT_NODE_TYPES,
     GraphNode,
     NodeType,
     PipelineGraph,
@@ -49,9 +50,8 @@ from haute.executor import _build_node_fn
 if TYPE_CHECKING:
     from haute.modelling._feature_contract import FeatureContract
 
-_RUNTIME_PATH_NODE_TYPES = frozenset(
+_RUNTIME_PATH_NODE_TYPES = REQUEST_INPUT_NODE_TYPES | frozenset(
     {
-        NodeType.API_INPUT,
         NodeType.DATA_INPUT,
         NodeType.EXTERNAL_FILE,
     }
@@ -678,7 +678,7 @@ def _score_graph_lazy(
         if edge.source not in relevant_node_ids or edge.target not in relevant_node_ids:
             continue
         source_node = node_by_id.get(edge.source)
-        if source_node is not None and source_node.data.nodeType == NodeType.API_INPUT:
+        if source_node is not None and source_node.data.nodeType in REQUEST_INPUT_NODE_TYPES:
             edge_input_name(edge, source_node)
     for node in graph.nodes:
         if node.id in relevant_node_ids:
@@ -691,7 +691,11 @@ def _score_graph_lazy(
     runtime_source_frames_by_node = {
         node.id: input_df
         for node in graph.nodes
-        if node.id in input_set and node.data.nodeType in {NodeType.API_INPUT, NodeType.DATA_INPUT}
+        if node.id in input_set
+        and (
+            node.data.nodeType in REQUEST_INPUT_NODE_TYPES
+            or node.data.nodeType == NodeType.DATA_INPUT
+        )
     }
     model_score_temp_paths: list[str] = []
     retained_lazy_frames: list[pl.LazyFrame] = []
@@ -710,8 +714,8 @@ def _score_graph_lazy(
         # code boxes see beside their own, exactly as the editor builders give them.
         _preamble_names: dict[str, Any] = dict(build_kwargs.get("preamble_ns") or {})
 
-        # Intercept: apiInput source → inject live DataFrame directly
-        if node_type == NodeType.API_INPUT and nid in input_set:
+        # Intercept: the request input → inject live DataFrame directly
+        if node_type in REQUEST_INPUT_NODE_TYPES and nid in input_set:
 
             def inject_input() -> _Frame:
                 return input_lf

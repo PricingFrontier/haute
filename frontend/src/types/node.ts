@@ -5,6 +5,7 @@ import type { Edge, Node } from "@xyflow/react"
 /** Persisted node-type vocabulary shared by runtime guards and canvas metadata. */
 export const PIPELINE_NODE_TYPES = {
   API_INPUT: "apiInput",
+  WORKBENCH_INPUT: "workbenchInput",
   DATA_INPUT: "dataInput",
   DATA_OUTPUT: "dataOutput",
   POLARS: "polars",

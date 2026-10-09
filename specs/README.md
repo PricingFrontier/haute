@@ -212,13 +212,14 @@ Specs are organised by owning subsystem, not one-per-node-type. Two blanket rule
 every node type: its generated-code template (`_gen_*`) is specced in
 [codegen](codegen/high-level.md), and its config-editor UI in
 [frontend-node-editors](frontend-node-editors/high-level.md). The table below covers all
-19 node types and gives the components owning each node's core behaviour beyond those two.
+20 node types and gives the components owning each node's core behaviour beyond those two.
 The canonical set uses `dataInput` for all supported tabular sources and `dataOutput` for
 tabular persistence; the removed `dataSource` and `dataSink` types have no compatibility path.
 
 | Node type | Core behaviour specced in |
 |---|---|
 | `apiInput` | [json-shredding](json-shredding/high-level.md) (v2 input codec and JSON/JSONL/XML→frames shredding); [caching](caching/high-level.md) owns the structured-input cache HTTP route |
+| `workbenchInput` | [extensions](extensions/high-level.md) (where its tables and sample come from, how the editor keeps them current, and the rows it gives without a request); a request read as `apiInput` reads one ([json-shredding](json-shredding/high-level.md)) |
 | `dataInput` | [io-layer](io-layer/high-level.md) (file, database, lakehouse, Databricks, inline, cache lifecycle, chunking, and optional Polars transform); [databricks-io](databricks-io/high-level.md) for Databricks browsing |
 | `dataOutput` | [io-layer](io-layer/high-level.md) (registry-backed writers and explicit write action) |
 | `polars` | [execution-engine](execution-engine/high-level.md) (execution), [sandbox-security](sandbox-security/high-level.md) (user-code validation), [expression-parsing](expression-parsing/high-level.md) (trace formulae) |

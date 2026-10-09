@@ -41,6 +41,7 @@ from haute._standalone_nodes import (
 from haute._submodel_paths import is_pipeline_dir
 from haute._types import (
     GLOBAL_CONSTANTS_FILE,
+    REQUEST_INPUT_NODE_TYPES,
     GraphEdge,
     NodeType,
     SubmodelEndpoint,
@@ -91,13 +92,13 @@ class Node:
     def is_deploy_input(self) -> bool:
         """Whether this node is the live API input seeded by :meth:`Pipeline.score`.
 
-        True when the node was registered with the ``@registry.api_input``
-        decorator (so ``config['_node_type'] == NodeType.API_INPUT``) or was
-        explicitly flagged with ``api_input=True``.  The decorator alone is
+        True when the node was registered as a request input, with the
+        ``@pipeline.api_input`` or ``@pipeline.workbench_input`` decorator, or
+        was explicitly flagged with ``api_input=True``.  The decorator alone is
         sufficient — a user must not have to *also* pass ``api_input=True``
         for the node to be recognised as the deploy seed.
         """
-        if self.config.get("_node_type") == NodeType.API_INPUT:
+        if self.config.get("_node_type") in REQUEST_INPUT_NODE_TYPES:
             return True
         return bool(self.config.get("api_input"))
 
@@ -398,6 +399,11 @@ class NodeRegistry:
     def api_input(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Decorator alias for API-input nodes."""
         return self._register_node(fn, _node_type=NodeType.API_INPUT, **config)
+
+    def workbench_input(self, fn: Callable | None = None, **config: Any) -> Callable:
+        """Decorator alias for Workbench Input nodes: a request input whose tables
+        are copied from the installed extension that supplies them."""
+        return self._register_node(fn, _node_type=NodeType.WORKBENCH_INPUT, **config)
 
     def data_input(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Decorator alias for data-input nodes (native-polars-width inputs)."""
@@ -884,7 +890,8 @@ class Pipeline(NodeRegistry):
         """Run the pipeline on an input DataFrame, seeding the live input.
 
         Sources marked as the live API input — via the ``@pipeline.api_input``
-        decorator or an explicit ``api_input=True`` — are seeded with *df*;
+        or ``@pipeline.workbench_input`` decorator or an explicit
+        ``api_input=True`` — are seeded with *df*;
         every other source runs its own load logic (e.g. static rating
         tables).
 
@@ -892,7 +899,7 @@ class Pipeline(NodeRegistry):
         exactly one (unambiguous).  With multiple unmarked sources the seed
         target cannot be inferred, so we raise rather than silently seed every
         source with the same frame — mark the live input with
-        ``@pipeline.api_input``.
+        ``@pipeline.api_input`` or ``@pipeline.workbench_input``.
         """
         from haute._model_scorer import _scenario_ctx
 
@@ -910,7 +917,8 @@ class Pipeline(NodeRegistry):
             if len(deploy_inputs) > 1:
                 raise ExecutionError(
                     "score() found multiple live input sources. Mark exactly "
-                    "one source with @pipeline.api_input or api_input=True.",
+                    "one source with @pipeline.api_input, @pipeline.workbench_input "
+                    "or api_input=True.",
                     sources=[n.name for n in deploy_inputs],
                 )
             if not deploy_inputs and len(sources) > 1:
@@ -918,7 +926,7 @@ class Pipeline(NodeRegistry):
                     "score() cannot infer which source receives the input "
                     "DataFrame: no source is marked as the live input and there "
                     "is more than one. Mark exactly one source with "
-                    "@pipeline.api_input.",
+                    "@pipeline.api_input or @pipeline.workbench_input.",
                     sources=[n.name for n in sources],
                 )
 

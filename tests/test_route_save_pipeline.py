@@ -171,7 +171,7 @@ class TestValidateSingletons:
         with pytest.raises(HTTPException) as exc_info:
             SavePipelineService._validate_singletons(graph)
         assert exc_info.value.status_code == 400
-        assert "API Input" in exc_info.value.detail
+        assert "Quote Input or Workbench Input" in exc_info.value.detail
         assert "found 2" in exc_info.value.detail
 
     def test_api_input_in_root_and_submodel_raises_400(self, tmp_path: Path) -> None:
@@ -183,7 +183,7 @@ class TestValidateSingletons:
         with pytest.raises(HTTPException) as exc_info:
             SavePipelineService(tmp_path).validate_graph(graph, source_file="main.py")
         assert exc_info.value.status_code == 400
-        assert "API Input" in exc_info.value.detail
+        assert "Quote Input or Workbench Input" in exc_info.value.detail
         assert "found 2" in exc_info.value.detail
 
     def test_api_input_in_repeated_submodel_raises_400(self, tmp_path: Path) -> None:
@@ -207,7 +207,7 @@ class TestValidateSingletons:
         with pytest.raises(HTTPException) as exc_info:
             SavePipelineService(tmp_path).validate_graph(graph, source_file="main.py")
         assert exc_info.value.status_code == 400
-        assert "API Input" in exc_info.value.detail
+        assert "Quote Input or Workbench Input" in exc_info.value.detail
         assert "found 2" in exc_info.value.detail
 
     def test_duplicate_output_raises_400(self) -> None:
@@ -1552,7 +1552,7 @@ class TestSaveEndpointIntegration:
             },
         )
         assert resp.status_code == 400
-        assert "API Input" in resp.json()["detail"]
+        assert "Quote Input or Workbench Input" in resp.json()["detail"]
 
     def test_save_quote_input_table_labelled_like_a_node_returns_400(
         self, client: TestClient, tmp_path: Path

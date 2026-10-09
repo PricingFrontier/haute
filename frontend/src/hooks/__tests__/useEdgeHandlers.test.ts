@@ -1814,7 +1814,7 @@ describe("useEdgeHandlers", () => {
     expect(params.setNodes).not.toHaveBeenCalled()
     expect(useToastStore.getState().toasts.at(-1)).toMatchObject({
       type: "info",
-      text: "Only one Quote Input node is allowed per pipeline",
+      text: "Only one Quote Input or Workbench Input node is allowed per pipeline",
     })
   })
 
@@ -1830,7 +1830,7 @@ describe("useEdgeHandlers", () => {
     expect(params.resolveGraphIdentities).not.toHaveBeenCalled()
     expect(params.setNodes).not.toHaveBeenCalled()
     expect(useToastStore.getState().toasts.at(-1)?.text).toBe(
-      "Only one Quote Input node is allowed per pipeline",
+      "Only one Quote Input or Workbench Input node is allowed per pipeline",
     )
   })
 

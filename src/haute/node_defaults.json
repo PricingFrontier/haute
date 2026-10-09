@@ -1,5 +1,6 @@
 {
   "apiInput": {"path": ""},
+  "workbenchInput": {"tables": []},
   "liveSwitch": {"input_scenario_map": {}},
   "output": {"outputMapping": [], "outputFormat": ""},
   "dataInput": {"inputType": "file", "format": "parquet", "mode": "scan", "path": "", "arguments": {}, "steps": []},

@@ -870,7 +870,22 @@ export interface ExtensionInfo {
   entry_url: string;
   label: string;
   name: string;
+  quote_tables: boolean;
   ready: boolean;
+}
+/**
+ * The Quote Input's tables, in its v2 shape, from the extension that supplies them.
+ *
+ * ``sample`` is the extension's sample quote, as a request holds it: ``{}`` for none.
+ */
+export interface QuoteTablesResponse {
+  extension: string;
+  sample: {
+    [k: string]: unknown;
+  };
+  tables: {
+    [k: string]: unknown;
+  }[];
 }
 /**
  * Whole-dataset statistics for one factor, or why there are none.

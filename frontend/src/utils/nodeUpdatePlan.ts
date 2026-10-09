@@ -8,7 +8,7 @@ import {
   incomingEdgeInputNames,
 } from "./apiInputPorts"
 import { attachEditorEdgeIdentities } from "./editorIdentities"
-import { NODE_TYPES } from "./nodeTypes"
+import { NODE_TYPES, isRequestInputType } from "./nodeTypes"
 import { renameStepInputs, steppedSurfaceAllowsInputReferences } from "./polarsStepInputs"
 import { isPlainObject } from "../types/guards"
 
@@ -101,7 +101,7 @@ function reconcileSourceEdges({
   refreshSourceIdentity,
   reservedApiInputFrameLabels,
 }: Omit<PrepareNodeUpdateInput, "readOnly"> & { previousNode: Node }): EdgeReconciliation | NodeUpdatePlanFailure {
-  if (data.nodeType === NODE_TYPES.API_INPUT) {
+  if (isRequestInputType(data.nodeType)) {
     const config = (data.config ?? {}) as Record<string, unknown>
     const previousConfig = ((previousNode.data as Record<string, unknown>).config ?? {}) as Record<string, unknown>
     const result = applyApiInputConfigChange({
@@ -110,6 +110,7 @@ function reconcileSourceEdges({
       nextConfig: config,
       edges: graph.edges,
       reservedLabels: reservedApiInputFrameLabels,
+      followNames: data.nodeType === NODE_TYPES.WORKBENCH_INPUT,
     })
     if (!refreshSourceIdentity) {
       return { ok: true, edges: result.edges, rebound: result.rebound, removed: result.removed }

@@ -147,6 +147,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/ExploreRelationshipsResponse"},
         },
     },
+    "/api/extensions": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/ExtensionsResponse"},
+        },
+    },
     "/api/files": {
         "GET": {
             "request_ref": None,
@@ -772,6 +778,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
                 "type": "array",
                 "items": {"$ref": "#/components/schemas/PipelineSummary"},
             },
+        },
+    },
+    "/api/quote-tables": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/QuoteTablesResponse"},
         },
     },
     "/api/rating/levels": {

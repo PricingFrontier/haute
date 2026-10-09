@@ -28,7 +28,7 @@ import { validateConfigRefs, formatConfigRefWarnings } from "../utils/validateCo
 import { findFirstInvalidEdgeJoin, formatEdgeJoinValidationIssue } from "../utils/edgeJoinValidation"
 import { effectiveNodeType, nodeData } from "../types/node"
 import type { NodeStatus, PipelineEdge } from "../types/node"
-import { NODE_TYPES } from "../utils/nodeTypes"
+import { NODE_TYPES, isRequestInputType } from "../utils/nodeTypes"
 import {
   adaptPipelineEditorDocument,
   parsePipelineEditorDocument,
@@ -127,7 +127,7 @@ function nodeLabel(node: Node): string {
 
 function previewPortLabel(node: Node): string | undefined {
   const data = nodeData(node)
-  if (data.nodeType !== NODE_TYPES.API_INPUT) return undefined
+  if (!isRequestInputType(data.nodeType)) return undefined
   return authoritativeSourceHandles({
     id: node.id,
     data,

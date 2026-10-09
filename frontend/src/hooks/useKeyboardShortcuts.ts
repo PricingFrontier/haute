@@ -4,7 +4,7 @@ import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import { isProtectedSubmodelNodeData, nodeData } from "../types/node"
-import { isSingletonType, type NodeTypeValue } from "../utils/nodeTypes"
+import { isSingletonType, singletonTypesOccupiedBy, type NodeTypeValue } from "../utils/nodeTypes"
 import { requestSubmodelCreation } from "../utils/submodelCreation"
 import type { SharedNodeDeletionResult } from "./useSubmodelBoundaryEditing"
 
@@ -161,14 +161,13 @@ export default function useKeyboardShortcuts({
         // the immediate graph too in case it changed before React re-rendered.
         const occupiedSingletonTypes = new Set<string>(existingSingletonTypes)
         for (const n of capturedGraph.nodes) {
-          const nt = nodeData(n).nodeType
-          if (isSingletonType(nt)) occupiedSingletonTypes.add(nt!)
+          for (const occupied of singletonTypesOccupiedBy(nodeData(n).nodeType)) occupiedSingletonTypes.add(occupied)
         }
         const pasteable = copiedNodes.filter((n) => {
           const nt = nodeData(n).nodeType
           if (!isSingletonType(nt)) return true
           if (occupiedSingletonTypes.has(nt!)) return false
-          occupiedSingletonTypes.add(nt!)
+          for (const occupied of singletonTypesOccupiedBy(nt)) occupiedSingletonTypes.add(occupied)
           return true
         })
         if (pasteable.length === 0) return

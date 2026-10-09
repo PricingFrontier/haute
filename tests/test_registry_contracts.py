@@ -698,6 +698,7 @@ def test_every_node_type_declares_recompute_cost() -> None:
     registry.ensure_registry_ready()
     expected_costs: dict[NodeType, registry.RecomputeCost] = {
         NodeType.API_INPUT: "source",
+        NodeType.WORKBENCH_INPUT: "source",
         NodeType.DATA_INPUT: "source",
         NodeType.CONSTANT: "source",
         NodeType.POLARS: "code",

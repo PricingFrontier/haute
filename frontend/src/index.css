@@ -1,8 +1,9 @@
 @import "tailwindcss";
-/* The toolbar's, the palette's and native dropdowns' styles, shared with extensions
-   (haute-ui, specs/frontend-shared). */
+/* The toolbar's, the palette's, the right-hand panels' and native dropdowns' styles,
+   shared with extensions (haute-ui, specs/frontend-shared). */
 @import "./haute-ui/toolbar.css";
 @import "./haute-ui/palette.css";
+@import "./haute-ui/side-panel.css";
 @import "./haute-ui/dropdowns.css";
 
 :root {
@@ -742,22 +743,9 @@ html, body, #root {
 /* ────────────────────────────────────────────────────────────────
    Inspector-panel hover / focus classes
    Replaces inline `e.currentTarget.style.*` mutations in
-   NodePanel / TracePanel / PanelShell with CSS-driven state.
+   NodePanel / TracePanel with CSS-driven state. The right-hand
+   panels' drag handle is haute-ui's (side-panel.css).
    ──────────────────────────────────────────────────────────────── */
-
-/* PanelShell drag handle — the element keeps an inline
-   `style={{ background: 'var(--chrome-border)' }}` for its rest
-   colour (pinned by PanelShell tests).  `!important` is required
-   here so the hover rule wins over the inline declaration.  The
-   `.dragging` modifier keeps the accent colour visible while the
-   user is actively resizing, even when the pointer wanders off the
-   handle. */
-.panel-drag-handle:hover {
-  background: var(--accent) !important;
-}
-.panel-drag-handle.dragging {
-  background: var(--accent) !important;
-}
 
 /* NodePanel label input — :focus-visible ring replaces the
    onFocus/onBlur inline borderColor + boxShadow writes. */

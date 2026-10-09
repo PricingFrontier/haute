@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { cleanup, fireEvent, render, screen } from "@testing-library/react"
-import { PaletteHeader, PaletteRevealStrip } from ".."
+import { Table2 } from "lucide-react"
+import { PaletteHeader, PaletteItem, PaletteRevealStrip } from ".."
 
 describe("haute-ui palette shell", () => {
   afterEach(cleanup)
@@ -23,5 +24,21 @@ describe("haute-ui palette shell", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Show node palette" }))
     expect(onReveal).toHaveBeenCalledOnce()
+  })
+
+  it("shows an item's name and its icon on a tint of its colour, passing the host's props through", () => {
+    const onClick = vi.fn()
+    const { rerender } = render(<PaletteItem icon={Table2} label="Table input" color="#E69F00" title="A grid" onClick={onClick} />)
+
+    const item = screen.getByTitle("A grid")
+    expect(item).toHaveTextContent("Table input")
+    expect((item.firstElementChild as HTMLElement).style.background).toBe("rgba(230, 159, 0, 0.094)")
+    expect(item).not.toHaveAttribute("aria-disabled")
+    fireEvent.click(item)
+    expect(onClick).toHaveBeenCalledOnce()
+
+    rerender(<PaletteItem icon={Table2} label="Table input" color="#E69F00" title="A grid" disabled />)
+    expect(item).toHaveAttribute("aria-disabled", "true")
+    expect(item).toHaveClass("palette-item-disabled")
   })
 })

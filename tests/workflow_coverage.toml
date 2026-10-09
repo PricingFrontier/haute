@@ -210,6 +210,10 @@ id = "apiInput"
 workflows = ["W05", "W13"]
 
 [[node_types]]
+id = "workbenchInput"
+workflows = ["W05", "W13"]
+
+[[node_types]]
 id = "dataInput"
 workflows = ["W04", "W06"]
 

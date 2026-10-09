@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import shutil
 import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -69,6 +70,9 @@ class BatchScoreRequest:
     output_fields: list[str] | None
     input_path: str
     result_path: str
+    # The bundle's schema dry run sends its sample's schema, so a sample whose values
+    # are all null (a Workbench Input's) keeps its types; a served request sends none.
+    input_schema: dict[str, pl.DataType] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,7 +191,7 @@ def score_batch_scoring_request(
 
     execution_context.checkpoint(label="before_deploy_batch_dataframe")
     rows = json.loads(Path(request.input_path).read_text(encoding="utf-8"))
-    input_df = pl.DataFrame(rows)
+    input_df = pl.DataFrame(rows, schema=request.input_schema)
     execution_context.checkpoint(label="after_deploy_batch_dataframe")
 
     plan = score_graph_lazy(
@@ -287,8 +291,13 @@ def prepare_batch_scoring(
     artifact_paths: dict[str, str],
     output_fields: list[str] | None,
     operation: str = "deploy_quote",
+    input_schema: Mapping[str, pl.DataType] | None = None,
 ) -> BatchScorePlan:
-    """Admit the parent batch context and stage the child's inputs on disk."""
+    """Admit the parent batch context and stage the child's inputs on disk.
+
+    *input_schema*, when given, types the rows the child reads: the bundle's
+    schema dry run passes its sample's, which JSON alone would lose for nulls.
+    """
     from haute.deploy._scorer import admit_deploy_execution
 
     # The batch path is one fixed execution path: it always admits the served
@@ -313,6 +322,7 @@ def prepare_batch_scoring(
                 output_fields=list(output_fields) if output_fields else None,
                 input_path=str(input_path),
                 result_path=str(Path(temp_dir) / "result.parquet"),
+                input_schema=dict(input_schema) if input_schema is not None else None,
             )
             worker_config = worker_config_for_memory_policy(
                 memory_limit_bytes=budget.memory_limit_bytes,

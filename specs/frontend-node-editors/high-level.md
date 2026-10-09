@@ -47,6 +47,15 @@ backend API modules own validation and persistence.
   output frame blocks present the same names — there is no separate display identity anywhere.
 - Editors retain incomplete persisted rows when they can be repaired (notably API schema and
   output mappings); fresh inference data may be normalised separately from persisted data.
+- The Workbench Input's panel shows the tables an installed extension supplies read-only: each
+  table's label, one row or many per quote, its columns and their types, and whatever the
+  editor finds wrong with the label as a port; a button that opens the extension's view to
+  edit them; and a note on what previews run on: the workbench's sample values, or one row of
+  nulls per table until it supplies any. With no installed extension supplying tables it says
+  they are the last copy and nothing updates them, and while a submodel is open that the
+  editor updates them only at the pipeline's top level. While an extension supplies tables,
+  the palette offers the Workbench Input in the Quote Input's place. Where the tables come from
+  and when they change is the [extensions specification](../extensions/high-level.md).
 - API Input preview browsing advertises and filters JSON, JSONL, NDJSON, and XML. Selecting any
   of those structured formats fetches its schema preview, and all four expose the cache/infer
   action. Directory rows remain navigable when the server reports a null size; only numeric file

@@ -57,6 +57,8 @@ export default function ExtensionView({ extension, onSave, isInsideSubmodel, rea
           switcherSlot: SWITCHER_SLOT,
           palette: { open, setOpen },
         })
+        // The toolbar's Save now saves this view's work, if the module can.
+        useExtensionsStore.getState().setViewSave(module.save ?? null)
         setState({ status: "mounted" })
       })
       .catch((error: unknown) => {
@@ -64,6 +66,7 @@ export default function ExtensionView({ extension, onSave, isInsideSubmodel, rea
       })
     return () => {
       left = true
+      useExtensionsStore.getState().setViewSave(null)
       handle?.unmount()
     }
   }, [extension, toolbarSlot])

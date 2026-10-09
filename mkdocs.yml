@@ -111,6 +111,7 @@ nav:
       - building-models/nodes/index.md
       - Inputs:
         - Quote Input: building-models/nodes/quote-input.md
+        - Workbench Input: building-models/nodes/workbench-input.md
         - Data Input: building-models/nodes/data-input.md
         - Constant: building-models/nodes/constant.md
       - Transforms:

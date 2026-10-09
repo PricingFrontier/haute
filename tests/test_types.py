@@ -39,6 +39,7 @@ from haute._types import (
 class TestNodeType:
     EXPECTED_MEMBERS = {
         "API_INPUT": "apiInput",
+        "WORKBENCH_INPUT": "workbenchInput",
         "DATA_INPUT": "dataInput",
         "DATA_OUTPUT": "dataOutput",
         "POLARS": "polars",

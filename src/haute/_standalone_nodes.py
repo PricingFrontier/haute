@@ -29,7 +29,7 @@ from typing import Any, Literal
 import polars as pl
 
 from haute._registry import MODELLING_NODE_SEMANTICS, NodeInputPolicy
-from haute._types import NodeType
+from haute._types import REQUEST_INPUT_NODE_TYPES, NodeType
 from haute.errors import ConfigError, ExecutionError
 
 __all__ = [
@@ -59,8 +59,8 @@ CODE_NODE_TYPES: frozenset[NodeType] = frozenset(
 )
 
 #: Configured node types that are sources whatever their function's signature.
-SOURCE_NODE_TYPES: frozenset[NodeType] = frozenset(
-    {NodeType.API_INPUT, NodeType.DATA_INPUT, NodeType.CONSTANT}
+SOURCE_NODE_TYPES: frozenset[NodeType] = REQUEST_INPUT_NODE_TYPES | frozenset(
+    {NodeType.DATA_INPUT, NodeType.CONSTANT}
 )
 
 #: Configured node types whose standalone work returns one of their inputs.
@@ -252,7 +252,11 @@ def _run_configured_work(
 
     path = _sidecar(config, node_type, name)
     base_dir = pipeline_directory(fn, name, pipeline_dir)
-    if node_type == NodeType.API_INPUT:
+    if node_type is NodeType.WORKBENCH_INPUT:
+        from haute._node_apply import resolve_workbench_input_from_config
+
+        return resolve_workbench_input_from_config(path, base_dir=base_dir)
+    if node_type in REQUEST_INPUT_NODE_TYPES:
         from haute._node_apply import resolve_api_input_from_config
 
         return resolve_api_input_from_config(path, base_dir=base_dir)

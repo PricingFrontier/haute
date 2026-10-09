@@ -55,6 +55,7 @@ from haute._rating import (
     normalise_rating_key,
 )
 from haute._rating_step_config import normalise_rating_tables
+from haute._types import REQUEST_INPUT_NODE_TYPES
 
 if TYPE_CHECKING:
     from haute._types import GraphEdge, GraphNode
@@ -896,7 +897,7 @@ def detect_row_lineage_type(
       - "passthrough" : rows unchanged (with_columns, rename, etc.)
     """
     try:
-        if node_type in ("dataInput", "apiInput", "constant"):
+        if node_type in REQUEST_INPUT_NODE_TYPES or node_type in ("dataInput", "constant"):
             return "created"
         if node_type == "liveSwitch":
             return "selected"

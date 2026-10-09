@@ -9,6 +9,7 @@
  */
 
 import type { GlobalConstant } from "../utils/globalConstants"
+import { REQUEST_INPUT_TYPES, isRequestInputType } from "../utils/nodeTypes"
 import type {
   ApplyOptimiserRequest,
   ApplyOptimiserResponse,
@@ -653,8 +654,8 @@ export async function loadPipeline(options: ApiClientOptions = {}): Promise<Load
   return { document, documentFingerprint }
 }
 
-const EDITOR_NODE_TYPES_WITHOUT_DEFAULT_INPUT = new Set([
-  "apiInput",
+const EDITOR_NODE_TYPES_WITHOUT_DEFAULT_INPUT = new Set<string>([
+  ...REQUEST_INPUT_TYPES,
   "submodel",
   "submodelPort",
 ])
@@ -699,7 +700,7 @@ export async function resolveEditorNodeIdentities(
       )
     }
     if (
-      requestNode.node_type === "apiInput"
+      isRequestInputType(requestNode.node_type)
       && requestNode.source_handles.some(
         (handle) => identity.source_handle_input_names[handle] !== handle,
       )

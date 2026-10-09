@@ -31,6 +31,7 @@ Most node types carry up to four names: the **wire value** used in config and AP
 | Wire value | Config folder | Badge | UI label |
 |---|---|---|---|
 | `apiInput` | `quote_input/` | QUOTE IN | Quote Input |
+| `workbenchInput` | `workbench_input/` | WORKBENCH IN | Workbench Input |
 | `dataSource` | `data_source/` | SOURCE | Data Source |
 | `polars` | — | POLARS | Polars |
 | `modelScore` | `model_scoring/` | SCORING | Model Scoring |

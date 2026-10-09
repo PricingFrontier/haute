@@ -23,6 +23,17 @@ describe("loadExtensionModule", () => {
 
     await expect(loadExtensionModule(url)).rejects.toThrow(`${url} does not export a mount function`)
   })
+
+  it("accepts a module that also exports save, and rejects a save that isn't a function", async () => {
+    const mount = "export function mount() { return { unmount() {} } }"
+    const module = await loadExtensionModule(moduleUrl(`${mount}
+export async function save() { return true }`))
+    expect(await module.save?.()).toBe(true)
+
+    const url = moduleUrl(`${mount}
+export const save = true`)
+    await expect(loadExtensionModule(url)).rejects.toThrow(`${url} exports a save that is not a function`)
+  })
 })
 
 describe("mountExtension", () => {

@@ -48,6 +48,7 @@ from haute._topo import topo_sort_ids
 from haute._types import (
     GLOBAL_CONSTANTS_FILE,
     GLOBAL_CONSTANTS_NAME,
+    REQUEST_INPUT_NODE_TYPES,
     GraphEdge,
     GraphNode,
     NodeType,
@@ -442,12 +443,12 @@ def _edge_input_name_for_codegen(
 
     ``edge_input_name`` is the single source of truth shared with execution.
     Codegen adds the parser-facing error context for the one malformed graph
-    state that the editor cannot create: an apiInput edge without a frame
-    handle.
+    state that the editor cannot create: a request input's edge without a
+    frame handle.
     """
-    if source_node.data.nodeType == NodeType.API_INPUT and not edge.sourceHandle:
+    if source_node.data.nodeType in REQUEST_INPUT_NODE_TYPES and not edge.sourceHandle:
         raise ParseError(
-            "apiInput edge has no source_port/sourceHandle.",
+            f"{source_node.data.nodeType.value} edge has no source_port/sourceHandle.",
             edge_id=edge.id,
             source_node=source_node.id,
             source_node_label=source_node.data.label,

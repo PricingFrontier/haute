@@ -19,7 +19,7 @@ import {
   type SubmodelDefinition,
 } from "../types/node"
 import { apiInputFrameLabels } from "./apiInputPorts"
-import { NODE_TYPES } from "./nodeTypes"
+import { NODE_TYPES, isRequestInputType } from "./nodeTypes"
 
 type SubmodelRegistry = Record<string, unknown>
 
@@ -78,7 +78,7 @@ function requestNode(
   }
   let sourceHandles: string[] = []
   let alias: string | undefined
-  if (nodeType === NODE_TYPES.API_INPUT) {
+  if (isRequestInputType(nodeType)) {
     sourceHandles = apiInputFrameLabels(
       node.data.config as Record<string, unknown> | undefined,
       reservedApiInputFrameLabels,
@@ -188,7 +188,7 @@ export function applyEditorIdentityResponse(
 function edgeInputIdentity(edge: Edge, sourceNode: Node): string {
   const nodeType = requireNodeType(sourceNode)
   if (
-    nodeType === NODE_TYPES.API_INPUT
+    isRequestInputType(nodeType)
     || nodeType === NODE_TYPES.SUBMODEL
     || nodeType === NODE_TYPES.SUBMODEL_PORT
   ) {

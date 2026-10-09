@@ -1,4 +1,4 @@
-import type { HTMLAttributes } from "react"
+import type { ElementType, HTMLAttributes, ReactNode } from "react"
 import { PanelLeftClose, PanelLeftOpen } from "lucide-react"
 
 /** The left palette's column, on the chrome. Its items scroll within it. */
@@ -16,6 +16,36 @@ export function PaletteHeader({ title, onCollapse }: { title: string; onCollapse
           <PanelLeftClose size={14} />
         </button>
       )}
+    </div>
+  )
+}
+
+/** The palette's items, below its header. */
+export function PaletteItems({ children }: { children: ReactNode }) {
+  return <div className="palette-items">{children}</div>
+}
+
+export interface PaletteItemProps extends Omit<HTMLAttributes<HTMLDivElement>, "className" | "children"> {
+  /** An icon component taking `size` and `style`, drawn on a tint of `color`. */
+  icon: ElementType
+  label: string
+  /** The item's colour, such as its node group's, as a six-digit hex. */
+  color: string
+  /** Faded, with a not-allowed cursor; the host stops it being dragged or used. */
+  disabled?: boolean
+}
+
+/**
+ * An item in the palette: its icon on a tint of its colour, then its name. The host
+ * says how it is used, by making it draggable or giving it a click handler.
+ */
+export function PaletteItem({ icon: Icon, label, color, disabled = false, ...props }: PaletteItemProps) {
+  return (
+    <div {...props} aria-disabled={disabled || undefined} className={disabled ? "palette-item palette-item-disabled" : "palette-item"}>
+      <div className="palette-item-icon" style={{ background: `${color}18` }}>
+        <Icon size={13} style={{ color }} />
+      </div>
+      <span className="palette-item-label">{label}</span>
     </div>
   )
 }

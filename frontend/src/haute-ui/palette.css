@@ -46,6 +46,50 @@
   color: var(--text-secondary);
 }
 
+/* The items: each an icon on a tint of its colour (inline), then its name. */
+.palette-items {
+  flex: 1 1 0%;
+  padding: 0 8px;
+}
+.palette-items > :not(:last-child) {
+  margin-bottom: 2px;
+}
+.palette-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: grab;
+  transition: color 150ms cubic-bezier(0.4, 0, 0.2, 1), background-color 150ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.palette-item:active {
+  cursor: grabbing;
+}
+.palette-item:hover {
+  background: var(--chrome-hover);
+}
+/* After :hover and :active, which it outranks by coming later. */
+.palette-item.palette-item-disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  background: transparent;
+}
+.palette-item-icon {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+}
+.palette-item-label {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 500;
+}
+
 /* A collapsed palette: a strip whose button shows it again. */
 .palette-reveal {
   display: flex;

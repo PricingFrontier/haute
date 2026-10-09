@@ -195,6 +195,23 @@ def resolve_api_input_from_config(
     )
 
 
+def resolve_workbench_input_from_config(
+    config_or_path: Mapping[str, Any] | str | PathLike[str],
+    *,
+    base_dir: str | Path | None = None,
+    port_columns: Mapping[str, frozenset[str] | set[str] | None] | None = None,
+) -> dict[str, _Frame]:
+    """Load a Workbench Input's frames from its inline config or JSON sidecar.
+
+    It reads no file: each emitting table is its sample's rows, or one row of nulls
+    with its declared dtypes when the sample gives it none (specs/extensions).
+    """
+    from haute._json_shred._cache import workbench_table_frames
+
+    config = _resolve_node_config(config_or_path, base_dir)
+    return dict(workbench_table_frames(config, port_columns=port_columns))
+
+
 def load_external_object_from_config(
     config_or_path: Mapping[str, Any] | str | PathLike[str],
     *,

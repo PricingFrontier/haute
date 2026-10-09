@@ -251,7 +251,7 @@ describe("PanelShell drag-handle hover", () => {
         <span>content</span>
       </PanelShell>,
     )
-    const handle = container.querySelector(".cursor-col-resize") as HTMLElement
+    const handle = container.querySelector('[data-testid="panel-resize-handle"]') as HTMLElement
     expect(handle).toBeTruthy()
   })
 
@@ -261,7 +261,7 @@ describe("PanelShell drag-handle hover", () => {
         <span>content</span>
       </PanelShell>,
     )
-    const handle = container.querySelector(".cursor-col-resize") as HTMLElement
+    const handle = container.querySelector('[data-testid="panel-resize-handle"]') as HTMLElement
     expect(() => {
       fireEvent.mouseEnter(handle)
       fireEvent.mouseLeave(handle)
@@ -284,7 +284,7 @@ describe("PanelShell drag-handle hover", () => {
         <span>content</span>
       </PanelShell>,
     )
-    const handle = container.querySelector(".cursor-col-resize") as HTMLElement
+    const handle = container.querySelector('[data-testid="panel-resize-handle"]') as HTMLElement
     fireEvent.mouseDown(handle, { clientX: 400 })
     fireEvent.mouseMove(window, { clientX: 300 }) // delta = 100
     fireEvent.mouseLeave(handle)                  // pointer wanders off
@@ -299,7 +299,7 @@ describe("PanelShell drag-handle hover", () => {
   it("handle's hover visual state is expressed via className or CSS, not an inline listener that rewrites .style", () => {
     // Post-migration the handle should either have a class that encodes
     // its hover (e.g. `hover:bg-[var(--accent)]` or a custom class) OR
-    // rely on a CSS rule targeting `.cursor-col-resize:hover`.  This
+    // rely on a CSS rule targeting `.panel-drag-handle:hover`.  This
     // pin asserts the handle is NOT left without any visible hover
     // affordance — i.e. it has at least one className that goes beyond
     // cursor+layout utilities.
@@ -308,8 +308,8 @@ describe("PanelShell drag-handle hover", () => {
         <span>content</span>
       </PanelShell>,
     )
-    const handle = container.querySelector(".cursor-col-resize") as HTMLElement
-    // The classlist must be non-empty (cursor-col-resize itself counts).
+    const handle = container.querySelector('[data-testid="panel-resize-handle"]') as HTMLElement
+    // The classlist must be non-empty (panel-drag-handle itself counts).
     expect(handle.className.length).toBeGreaterThan(0)
     // An inline onMouseEnter listener that rewrites .style would set
     // background on the element before any event fires — verify the

@@ -58,6 +58,30 @@ describe("useGraphCommitController pending commits", () => {
     expect(resolver).toHaveBeenCalledOnce()
   })
 
+  it("refuses an API-input update whose isCurrent turns false while its identity resolves", async () => {
+    // The extension's tables were fetched for one document; a newer one was adopted
+    // (the same file and revision, so the document identity is unchanged) and its
+    // own fetch failed. Releasing the old resolution must change nothing.
+    const node = makeNode("api", "apiInput")
+    const resolution = deferred<Node[]>()
+    const options = controllerOptions(node, () => resolution.promise)
+    const { result } = renderHook(() => useGraphCommitController(options))
+    let current = true
+
+    act(() => {
+      expect(result.current.onUpdateNode("api", { ...node.data }, { isCurrent: () => current })).toEqual({ ok: true })
+    })
+    const waiting = result.current.waitForPendingCommits()
+    current = false
+    await act(async () => {
+      resolution.resolve([node])
+      await expect(waiting).resolves.toMatchObject({ ok: false })
+    })
+
+    expect(options.commitGraph).not.toHaveBeenCalled()
+    expect(options.setSelectedNode).not.toHaveBeenCalled()
+  })
+
   it("registers API-input updates synchronously and waits for their commit", async () => {
     const node = makeNode("api", "apiInput")
     const resolution = deferred<Node[]>()

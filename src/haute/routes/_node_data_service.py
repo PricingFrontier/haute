@@ -884,7 +884,11 @@ class NodeDataService:
                 return NodeDataRunResponse(
                     status="completed",
                     cached=True,
-                    message="This Data Input reads Parquet directly; there is nothing to cache.",
+                    message=(
+                        "A Workbench Input's tables are read directly; there is nothing to cache."
+                        if resolution.kind == "api_input_table"
+                        else "This Data Input reads Parquet directly; there is nothing to cache."
+                    ),
                     point=point,
                 )
             return NodeDataRunResponse(

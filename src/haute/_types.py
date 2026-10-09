@@ -56,6 +56,7 @@ class NodeType(StrEnum):
     """
 
     API_INPUT = "apiInput"
+    WORKBENCH_INPUT = "workbenchInput"
     DATA_INPUT = "dataInput"
     DATA_OUTPUT = "dataOutput"
     POLARS = "polars"
@@ -80,6 +81,7 @@ DECORATOR_TO_NODE_TYPE: dict[str, NodeType] = {
     "data_input": NodeType.DATA_INPUT,
     "data_output": NodeType.DATA_OUTPUT,
     "api_input": NodeType.API_INPUT,
+    "workbench_input": NodeType.WORKBENCH_INPUT,
     "polars": NodeType.POLARS,
     "edge_join": NodeType.EDGE_JOIN,
     "model_score": NodeType.MODEL_SCORE,
@@ -114,6 +116,17 @@ SINK_ONLY_NODE_TYPES: frozenset[NodeType] = frozenset(
     }
 )
 
+#: The request inputs: the node types that read the quote request. The Quote
+#: Input's tables are built in its panel and the Workbench Input's are copied
+#: from the installed extension that supplies them (specs/extensions), but every
+#: context reads a request through either exactly alike, so code that means "the
+#: request input" tests membership here rather than naming one type, which
+#: ``tests/test_request_inputs.py`` enforces. The editor's ``REQUEST_INPUT_TYPES``
+#: (``frontend/src/utils/nodeTypes.ts``) is held equal to this set by test.
+REQUEST_INPUT_NODE_TYPES: frozenset[NodeType] = frozenset(
+    {NodeType.API_INPUT, NodeType.WORKBENCH_INPUT}
+)
+
 
 # ---------------------------------------------------------------------------
 # Typed config shapes (documentation + IDE autocomplete, no runtime change)
@@ -130,6 +143,20 @@ class ApiInputConfig(TypedDict, total=False):
     path: str
     contract: str
     tables: list[dict[str, Any]]
+
+
+class WorkbenchInputConfig(TypedDict, total=False):
+    """Config for workbenchInput nodes.
+
+    ``tables`` and ``sample`` are the copies of the installed extension's tables
+    and sample quote that the editor keeps current (specs/extensions). A request is
+    read through the tables exactly as through a Quote Input's; with no request,
+    as in a preview, the sample is read through them, and a table it gives no rows
+    is one row of nulls, typed as declared. A Workbench Input reads no file.
+    """
+
+    tables: list[dict[str, Any]]
+    sample: dict[str, Any]
 
 
 class _DataInputCommon(TypedDict, total=False):

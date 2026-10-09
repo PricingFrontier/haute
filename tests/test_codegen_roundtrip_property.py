@@ -166,6 +166,7 @@ def _capstone_root_graph(
     """
     left = "ui:left-source:7"
     api = "ui/api-input:8"
+    workbench = "ui/workbench-input:8"
     join = "ui edge join 9"
     transform = "ui-transform-c5"
     score = "ui-score"
@@ -230,6 +231,32 @@ def _capstone_root_graph(
                 }
             ),
             description="API " + description,
+        ),
+        # Read as the Quote Input is; unconnected, since a round trip never runs it.
+        _node(
+            workbench,
+            "Workbench Input {Brace}",
+            NodeType.WORKBENCH_INPUT,
+            _opaque(
+                {
+                    "tables": [
+                        {
+                            "path": "$[:]",
+                            "label": "keyed",
+                            "emit": True,
+                            "columns": [
+                                {
+                                    "name": "state",
+                                    "path": "$[:].keyed.state",
+                                    "type": "str",
+                                    "selected": True,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ),
+            description="workbench " + description,
         ),
         _node(
             const,

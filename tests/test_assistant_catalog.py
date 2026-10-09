@@ -18,6 +18,7 @@ import pytest
 
 from haute._config_io import NODE_TYPE_TO_FOLDER
 from haute._config_validation import VALID_KEYS
+from haute._graph_shape import SINGLETON_NODE_GROUPS
 from haute._types import NODE_TYPE_TO_DECORATOR, NodeType
 from haute.assistant import _catalog
 from haute.assistant._catalog import (
@@ -26,7 +27,6 @@ from haute.assistant._catalog import (
     compact_manifest,
     validate_manifest_complete,
 )
-from haute.routes._save_pipeline import _SINGLETON_NODE_TYPES
 
 
 class TestNodeDescriptors:
@@ -74,7 +74,9 @@ class TestNodeDescriptors:
             assert fields == set(VALID_KEYS.get(node_type, ())), node_type
 
     def test_singleton_flags_agree_with_the_save_service(self):
-        singleton_types = {node_type for node_type, _label in _SINGLETON_NODE_TYPES}
+        singleton_types = {
+            node_type for group, _label in SINGLETON_NODE_GROUPS for node_type in group
+        }
         for node_type in NodeType:
             descriptor = self._nodes()[node_type.value]
             assert descriptor.singleton == (node_type in singleton_types), node_type

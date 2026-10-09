@@ -69,6 +69,7 @@ import useGraphStore from "./stores/useGraphStore"
 import useGitStore from "./stores/useGitStore"
 import useToastStore from "./stores/useToastStore"
 import useExtensionsStore, { PIPELINE_VIEW } from "./stores/useExtensionsStore"
+import useExtensionQuoteTables from "./hooks/useExtensionQuoteTables"
 import ViewSwitcher from "./extensions/ViewSwitcher"
 import useNodeResultsStore from "./stores/useNodeResultsStore"
 import { refreshNodeDataCache } from "./hooks/useNodeDataCache"
@@ -674,6 +675,7 @@ function NodePropertiesPanel({
           onSwapEdgeJoinInputs={onSwapEdgeJoinInputs}
           readOnly={editingReadOnly}
           documentReadOnly={documentEditingReadOnly}
+          insideSubmodel={isInsideSubmodel}
           scopedSave={scopedSave}
           onRefreshPreview={onRefreshPreview}
           dimmed={!selectedNode && !!activePanelNodeId}
@@ -1231,6 +1233,14 @@ function FlowEditor() {
     addToast,
   })
 
+  // A Quote Input that takes its tables from an extension keeps its copy of them
+  // current; the Quote Input is at the top level, so only that level is updated.
+  const { nodeCreated } = useExtensionQuoteTables({
+    graphRef,
+    onUpdateNode,
+    editable: !editingReadOnly && viewStack.length === 1,
+  })
+
   const {
     handlePanelUpdateNode,
     handleScopedSave,
@@ -1259,8 +1269,10 @@ function FlowEditor() {
   }, [saveWithPendingCommits])
 
   // Save-gate: resolve Git readiness before deciding whether to save now or
-  // queue the action behind branch/divergence setup.
+  // queue the action behind branch/divergence setup. In an extension's view
+  // that saves its own work, Save saves that instead, to disk only (specs/extensions).
   const requestSave = useCallback(async () => {
+    if (useExtensionsStore.getState().saveView()) return
     const st = useGitStore.getState().status ?? (await useGitStore.getState().loadStatus())
     if (st === null || st.state === "no-repository" || st.state === "git-unavailable" || st.state === "ready") {
       void saveWithPendingCommits()
@@ -1512,6 +1524,7 @@ function FlowEditor() {
     validateConnection,
     commitBoundaryConnection,
     deleteBoundaryEdge,
+    onNodeCreated: nodeCreated,
   })
 
   // Leaving the pipeline view closes the canvas's floating menus, which render

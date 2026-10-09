@@ -19,6 +19,15 @@ Two smaller shared utilities back these: a single path-grammar core used to addr
 locations inside a JSON document from both the input and output sides, and a
 JSON-safe value encoder used whenever pipeline data crosses an HTTP boundary.
 
+Two node types read a request through this shredding, the request inputs: the Quote Input,
+whose tables are built in its panel, and the Workbench Input, whose tables an installed
+extension supplies ([extensions](../extensions/high-level.md)). Everything this specification
+says of how a Quote Input's `tables` read a request holds for a Workbench Input with the same
+`tables`. A Workbench Input reads no file, so nothing here about a source file or its table
+snapshots applies to it: with no request it shreds the workbench's sample quote through its
+tables in memory, as one request, and a table the sample gives no rows is one row of nulls,
+typed as declared.
+
 ## Scope
 
 In scope:
@@ -312,12 +321,17 @@ strict build and raises a specific, column-named error instead.
 
 - Owns the v2 apiInput type/path boundary; the shred, table snapshots, executor,
   and editor consume that one validation contract.
-- The eager executor and generated/deploy code consume the same runtime loader:
+- The eager executor and generated code consume the same runtime loader:
   canvas execution reads the published table snapshots, generated standalone code
   shreds in-process — see [execution-engine](../execution-engine/high-level.md)
-  and [codegen](../codegen/high-level.md).
+  and [codegen](../codegen/high-level.md). Deployed scoring does not: it hands the
+  request to every Quote Input port as one frame ([deploy](../deploy/high-level.md)).
+
+> NOTE: A deployed multi-table Quote Input therefore gives each port the whole request
+> rather than its table ([BUG-31](../roadmap/bugs.md#bug-31--a-deployed-quote-input-splits-a-request-into-its-tables)).
+
 - Demand-scoped execution is an optional argument to that shared loader, not a
-  second executor-only codec. Generated/deploy code that does not pass a demand
+  second executor-only codec. Generated code that does not pass a demand
   continues to validate and return every emitting frame.
 - The execution engine's projection planner consumes the same edge-join
   demand-narrowing rule as runtime join construction —

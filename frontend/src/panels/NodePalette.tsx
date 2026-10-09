@@ -1,12 +1,24 @@
 import type { DragEvent } from "react"
-import { PaletteColumn, PaletteHeader } from "../haute-ui"
-import { NODE_TYPE_META, PALETTE_TYPES, SINGLETON_TYPES } from "../utils/nodeTypes"
+import { PaletteColumn, PaletteHeader, PaletteItem, PaletteItems } from "../haute-ui"
+import useExtensionsStore from "../stores/useExtensionsStore"
+import { paletteWorkbenchInputConfig, quoteTablesSupplier } from "../utils/extensionQuoteTables"
+import {
+  NODE_TYPE_META,
+  NODE_TYPES,
+  PALETTE_TYPES,
+  SINGLETON_TYPES,
+  isRequestInputType,
+} from "../utils/nodeTypes"
 import type { NodeTypeValue } from "../utils/nodeTypes"
 
 function onDragStart(event: DragEvent, type: NodeTypeValue) {
   const meta = NODE_TYPE_META[type]
+  // A Workbench Input starts with the newest tables the extension supplied.
+  const config = type === NODE_TYPES.WORKBENCH_INPUT
+    ? paletteWorkbenchInputConfig(meta.defaultConfig, useExtensionsStore.getState().quoteTables)
+    : meta.defaultConfig
   event.dataTransfer.setData("application/reactflow-type", type)
-  event.dataTransfer.setData("application/reactflow-config", JSON.stringify(meta.defaultConfig))
+  event.dataTransfer.setData("application/reactflow-config", JSON.stringify(config))
   event.dataTransfer.effectAllowed = "move"
 }
 
@@ -17,32 +29,36 @@ export default function NodePalette({
   onCollapse?: () => void
   existingSingletonTypes?: ReadonlySet<NodeTypeValue>
 }) {
+  // While an installed extension supplies the quote's tables, the Workbench Input
+  // takes the Quote Input's place (specs/extensions).
+  const workbench = useExtensionsStore((state) => quoteTablesSupplier(state.extensions) !== null)
+  const types = PALETTE_TYPES.map((type) =>
+    workbench && type === NODE_TYPES.API_INPUT ? NODE_TYPES.WORKBENCH_INPUT : type)
   return (
     <PaletteColumn>
       <PaletteHeader title="Nodes" onCollapse={onCollapse} />
 
-      <div className="px-2 space-y-0.5 flex-1">
-        {PALETTE_TYPES.map((type) => {
+      <PaletteItems>
+        {types.map((type) => {
           const meta = NODE_TYPE_META[type]
-          const Icon = meta.icon
           const disabled = SINGLETON_TYPES.has(type) && existingSingletonTypes.has(type)
           return (
-            <div
+            <PaletteItem
               key={type}
               data-testid={`node-palette-item-${type}`}
+              icon={meta.icon}
+              label={meta.name}
+              color={meta.color}
+              disabled={disabled}
               draggable={!disabled}
               onDragStart={(e) => { if (!disabled) onDragStart(e, type) }}
-              className={`flex items-center gap-2.5 px-2.5 py-2 rounded-lg transition-colors ${disabled ? "opacity-35 cursor-not-allowed" : "cursor-grab active:cursor-grabbing hover:bg-[var(--chrome-hover)]"}`}
-              title={disabled ? `Only one ${meta.name} allowed per pipeline` : meta.description}
-            >
-              <div className="w-6 h-6 rounded-md flex items-center justify-center shrink-0" style={{ background: `${meta.color}18` }}>
-                <Icon size={13} style={{ color: meta.color }} />
-              </div>
-              <span className="text-[13px] font-medium" style={{ color: "var(--text-primary)" }}>{meta.name}</span>
-            </div>
+              title={disabled
+                ? `Only one ${isRequestInputType(type) ? "Quote Input or Workbench Input" : meta.name} allowed per pipeline`
+                : meta.description}
+            />
           )
         })}
-      </div>
+      </PaletteItems>
     </PaletteColumn>
   )
 }

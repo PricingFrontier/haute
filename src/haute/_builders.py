@@ -56,6 +56,7 @@ from haute._node_apply import (
     expand_scenarios_from_config,
     load_external_object_from_config,
     resolve_api_input_from_config,
+    resolve_workbench_input_from_config,
     scenario_step_count,
     select_live_switch_input,
 )
@@ -528,9 +529,22 @@ def _config_with_resolved_data_path(config: Mapping[str, Any]) -> Mapping[str, A
     return {**config, "path": resolved}
 
 
+@_register(NodeType.WORKBENCH_INPUT, recompute_cost="source", opaque=True)
 @_register(NodeType.API_INPUT, recompute_cost="source", opaque=True)
 def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
+    if ctx.node.data.nodeType is NodeType.WORKBENCH_INPUT:
+        # A Workbench Input reads no file: its tables are one row of nulls each,
+        # typed as declared, until the workbench supplies values.
+        def workbench_source_fn(
+            _port_columns: Mapping[str, frozenset[str] | None] | None = (
+                ctx.required_output_columns_by_port
+            ),
+            _config: dict[str, Any] = config,
+        ) -> dict[str, _Frame]:
+            return resolve_workbench_input_from_config(_config, port_columns=_port_columns)
+
+        return ctx.func_name, workbench_source_fn, True
 
     def api_source_fn(
         _profile: str | None = ctx.execution_profile,

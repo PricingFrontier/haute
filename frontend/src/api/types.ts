@@ -519,6 +519,7 @@ export type {
 export type {
   ExtensionInfo,
   ExtensionsResponse,
+  QuoteTablesResponse,
 } from "../generated/api-contracts.generated"
 
 // ---------------------------------------------------------------------------

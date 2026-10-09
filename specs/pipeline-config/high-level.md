@@ -37,12 +37,12 @@ save/load/discovery to the GUI are [server-api](../server-api/high-level.md).
 ## Behaviour
 
 **Decorator API.** `Pipeline`/`Submodel` (both `NodeRegistry` subclasses) expose one
-decorator per authorable node type — `api_input`, `polars`, `banding`, `rating_step`,
+decorator per authorable node type — `api_input`, `workbench_input`, `polars`, `banding`, `rating_step`,
 `model_score`, `output`, `edge_join`, `live_switch`, `optimiser`, `optimiser_apply`,
 `scenario_expander`, `modelling`, `constant`, `data_input`, `data_output`,
 `explore`, `external_file`, `instance` — each a thin wrapper that tags the function with its
-`NodeType` and delegates to a shared registration path. Configured API Input, Data Input
-and Constant nodes are sources whatever their signature; any other function with zero
+`NodeType` and delegates to a shared registration path. Configured request inputs (Quote
+and Workbench Inputs), Data Input and Constant nodes are sources whatever their signature; any other function with zero
 positional parameters is treated as a source node; duplicate function names are rejected the
 moment a second decorator tries to register them. `connect(source, target, source_port=, target_port=)` declares an
 edge and is chainable; both endpoints must already be registered nodes, and port names, if
@@ -141,7 +141,7 @@ decorator and then its hook, if it has one — and resolve which node's output t
 `@pipeline.output` node wins if there is exactly one; otherwise the single node with no
 outgoing edge is used; anything more ambiguous than that raises, naming every candidate.
 `score(df)` additionally seeds a live input DataFrame into whichever source is marked as the
-deploy input (`@pipeline.api_input`, or `api_input=True`) — or, when nothing is marked and
+deploy input (`@pipeline.api_input` or `@pipeline.workbench_input`, or `api_input=True`) — or, when nothing is marked and
 there is exactly one source, into that source — leaving every other source to run its own
 load logic. Seeding is port-aware, with a complete seed-shape × port-count matrix: a **bare
 DataFrame** is accepted for zero named connected ports (a source-only pipeline, or an

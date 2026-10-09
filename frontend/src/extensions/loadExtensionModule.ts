@@ -33,6 +33,11 @@ export interface ExtensionHandle {
 
 export interface ExtensionModule {
   mount: (options: ExtensionMountOptions) => ExtensionHandle
+  /**
+   * The toolbar's Save while the view shows: write the view's unsaved work to the
+   * project, resolving whether it saved. Without it, Save saves the pipeline.
+   */
+  save?: () => Promise<boolean>
 }
 
 const hasFunction = (value: unknown, name: string): boolean =>
@@ -43,6 +48,9 @@ export async function loadExtensionModule(url: string): Promise<ExtensionModule>
   // The extension serves its own module, so it is never part of the editor's bundle.
   const module: unknown = await import(/* @vite-ignore */ url)
   if (!hasFunction(module, "mount")) throw new Error(`${url} does not export a mount function`)
+  if ((module as Record<string, unknown>).save !== undefined && !hasFunction(module, "save")) {
+    throw new Error(`${url} exports a save that is not a function`)
+  }
   return module as ExtensionModule
 }
 

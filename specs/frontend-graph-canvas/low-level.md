@@ -70,7 +70,7 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/utils/connectionValidation.ts` | `isPipelineConnectionValid` — the graph-level `isValidConnection` React Flow validator, including ordinary executable input-name uniqueness, generic-submodel-input name lookup/allocation policy, strict public-port validation and one-binding-per-input enforcement, and null-API-handle rejection in every gesture direction. |
 | `frontend/src/utils/flowElements.ts` | `appNode`/`appEdge`/`nodeLabel`/`edgeId`/`deselectNodes`/`selectOnlyNode` — node/edge factories and id/selection helpers. |
 | `frontend/src/utils/flowHandles.ts` | Owns the interaction-only `SUBMODEL_INPUT_HANDLE` and `DEFAULT_TARGET_HANDLE` sentinels; `normalizeDefaultTargetHandle` collapses React Flow's synthetic ordinary target id to `null`. |
-| `frontend/src/utils/nodeTypes.ts` | Canvas metadata derived from shared `types/node.ts::PIPELINE_NODE_TYPES`: `NODE_TYPE_META` and lookups (`SOURCE_ONLY_TYPES`, `SINK_ONLY_TYPES`, `SINGLETON_TYPES`, `PALETTE_TYPES`, `nodeTypeIcons`/`nodeTypeColors`/`nodeTypeLabels`, `PILL_TYPES`). The `polars` type is named Transform (badge `TRANSFORM`) wherever the editor names a type, including a new node's generated label; its type id, decorator and config directory stay `polars`. |
+| `frontend/src/utils/nodeTypes.ts` | Canvas metadata derived from shared `types/node.ts::PIPELINE_NODE_TYPES`: `NODE_TYPE_META` and lookups (`SOURCE_ONLY_TYPES`, `SINK_ONLY_TYPES`, `SINGLETON_TYPES`, `PALETTE_TYPES`, `nodeTypeIcons`/`nodeTypeColors`/`nodeTypeLabels`, `PILL_TYPES`), the request inputs (`REQUEST_INPUT_TYPES`, `isRequestInputType`) and their shared singleton slot (`singletonTypesOccupiedBy`, `singletonLimitMessage`). The `polars` type is named Transform (badge `TRANSFORM`) wherever the editor names a type, including a new node's generated label; its type id, decorator and config directory stay `polars`. |
 | `frontend/src/utils/apiInputPorts.ts` | Mirrors backend API-input frame identity and resolves authoritative executable names across ordinary nodes and public submodel labels while retaining public-port ids as boundary handles; also owns label validation, conservative rename updates, and orphan-handle pruning. |
 | `frontend/src/utils/edgeJoinRoles.ts` | Defines edge-join base/join handle roles and maps the rendered bottom join handle onto the canonical join role. |
 | `frontend/src/utils/edgeJoinGraph.ts` | Pure edge-join candidate validation and insertion/rewrite helpers; candidate feedback and release-time insertion share the same validator. A coded downstream transform gains an `inputMapping` binding for the join's name; a stepped downstream transform has its step input references rewritten to the join's name instead and never gains one. |
@@ -656,8 +656,10 @@ reconciliation rather than dropping them or committing a second mutation.
     `application/reactflow-type` and `application/reactflow-config` payloads;
     a config JSON parse failure or a non-object payload toasts an error and
     creates nothing. On success, builds the node via `appNode`, selects it
-    exclusively (`selectOnlyNode`), and sets it as the panel's selected
-    node.
+    exclusively (`selectOnlyNode`), sets it as the panel's selected node, and
+    reports it to `onNodeCreated`, through which a Quote Input made while an
+    extension's tables were being fetched still gets them
+    ([extensions](../extensions/low-level.md)).
 15. **Pipeline load (`usePipelineAPI`, mount effect).** Calls `loadPipeline`
     with a cold-start retry policy (`INITIAL_PIPELINE_RETRY_POLICY`, 6
     retries at 250ms base delay); the response is validated through
@@ -1182,7 +1184,8 @@ array-only payload or omitted-edge compatibility branch is supported.
   Singleton occupancy is document-wide, not limited to the graph currently
   visible on the canvas: root nodes and every embedded submodel definition are
   considered together. The palette disables an occupied `SINGLETON_TYPES`
-  entry (`apiInput` or `output`), while the drop handler repeats
+  entry (`apiInput`, `workbenchInput` or `output`; the two request inputs
+  occupy one slot, so either disables both), while the drop handler repeats
   the check at commit time so stale or synthetic drag data cannot bypass it.
   Duplicating a singleton remains a silent no-op and paste filters occupied
   singleton types against the same document-wide set. Generic duplication of

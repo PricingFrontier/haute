@@ -387,6 +387,7 @@ def _register_codegen(node_type: NodeType) -> Callable[[CodegenBuilder], Codegen
 # ---------------------------------------------------------------------------
 
 
+@_register_codegen(NodeType.WORKBENCH_INPUT)
 @_register_codegen(NodeType.API_INPUT)
 def _gen_api_input(node: GraphNode, source_names: list[str]) -> NodeSource:
     return _config_backed(node, source_names)

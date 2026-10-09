@@ -53,11 +53,20 @@ from haute._logging import get_logger
 from haute._polars_operations import materialisation_factor_basis_points
 from haute._polars_selectors import preamble_selector_aliases
 from haute._polars_utils import read_parquet_metadata
-from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
+from haute._types import (
+    REQUEST_INPUT_NODE_TYPES,
+    GraphEdge,
+    GraphNode,
+    NodeType,
+    PipelineGraph,
+)
 from haute.errors import ConfigError
 from haute.projection import ProjectionEdgeKey
 
 logger = get_logger(component="ram_estimate")
+
+#: Sources whose size the estimate reads from their metadata.
+_SIZED_SOURCE_TYPES = REQUEST_INPUT_NODE_TYPES | frozenset({NodeType.DATA_INPUT})
 
 __all__ = [
     "MaterialisationEstimate",
@@ -438,11 +447,15 @@ class _EstimateGraphIndex:
         node: GraphNode,
         port: str,
     ) -> _DetailedSourceMetadata | None:
-        """Metadata for one emitted table of a JSON API-input cache."""
+        """Metadata for one emitted table of a JSON API-input cache or a Workbench Input."""
 
         key = (node.id, port)
         if key not in self.port_metadata:
-            self.port_metadata[key] = _json_api_input_port_metadata(node, port)
+            self.port_metadata[key] = (
+                _workbench_input_port_metadata(node, port)
+                if node.data.nodeType is NodeType.WORKBENCH_INPUT
+                else _json_api_input_port_metadata(node, port)
+            )
         return self.port_metadata[key]
 
     def parent_ports(self, child_id: str) -> tuple[tuple[str, str | None], ...]:
@@ -664,6 +677,30 @@ def _data_input_parquet_artifact(
     return generation.metadata.row_count, generation.data_paths
 
 
+def _workbench_input_port_metadata(node: GraphNode, port: str) -> _DetailedSourceMetadata | None:
+    """Return the metadata of one table of a Workbench Input: its sample's rows.
+
+    A Workbench Input reads no file, so its table is sized from the frame it
+    yields: its sample's rows, or a single row of nulls. Tables that fail leave
+    the size unknown; a sample that does not fit them raises, so a preview says
+    what to correct rather than that a size is unknown.
+    """
+    from haute._json_shred._cache import workbench_table_frames, workbench_table_labels
+
+    config = dict(node.data.config)
+    try:
+        labels = workbench_table_labels(config)
+    except (ApiInputSchemaError, RuntimeError, TypeError, ValueError) as exc:
+        logger.warning(
+            "workbench_input_port_metadata_failed", node_id=node.id, port=port, error=str(exc)
+        )
+        return None
+    if port not in labels:
+        return None
+    frame = workbench_table_frames(config, port_columns={port: None})[port]
+    return _detailed_dataframe_metadata(frame.collect(), node.id)
+
+
 def _json_api_input_port_metadata(node: GraphNode, port: str) -> _DetailedSourceMetadata | None:
     """Return the published snapshot metadata of one emitted table of a JSON API input.
 
@@ -722,7 +759,7 @@ def _detailed_source_metadata_for_node(node: GraphNode) -> _DetailedSourceMetada
     try:
         path = config.get("path", "")
 
-        if node_type == NodeType.API_INPUT:
+        if node_type in REQUEST_INPUT_NODE_TYPES:
             if not path:
                 return None
             if isinstance(path, str) and is_json_api_input_path(path):
@@ -773,10 +810,10 @@ def _detailed_ancestor_source_metadata(
         node = index.node_map.get(nid)
         if node is None:
             continue
-        if node.data.nodeType not in (NodeType.API_INPUT, NodeType.DATA_INPUT):
+        if node.data.nodeType not in _SIZED_SOURCE_TYPES:
             continue
         node_metadata = [index.source_metadata(node)]
-        if node_metadata[0] is None and node.data.nodeType == NodeType.API_INPUT:
+        if node_metadata[0] is None and node.data.nodeType in REQUEST_INPUT_NODE_TYPES:
             # A multi-frame JSON API input has no whole-node summary. Size it
             # from exactly the tables that feed this target, not from every
             # table it could emit.
@@ -1034,9 +1071,9 @@ def _resolve_row_cardinality_from_index(
         return _ResolvedRowCardinality.unavailable(target_node_id, "node_missing")
     node_type = node.data.nodeType
 
-    if node_type in {NodeType.API_INPUT, NodeType.DATA_INPUT}:
+    if node_type in _SIZED_SOURCE_TYPES:
         metadata = index.source_metadata(node)
-        if metadata is None and node_type is NodeType.API_INPUT and port is not None:
+        if metadata is None and node_type in REQUEST_INPUT_NODE_TYPES and port is not None:
             metadata = index.api_input_port_metadata(node, port)
         if metadata is None:
             return _ResolvedRowCardinality.unavailable(
@@ -1677,9 +1714,9 @@ def _resolve_target_columns_from_index(
                     return _filter_resolved_columns(parent_columns, selected_columns)
             return _resolved_from_columns(selected_columns)
 
-        if node.data.nodeType in (NodeType.API_INPUT, NodeType.DATA_INPUT):
+        if node.data.nodeType in _SIZED_SOURCE_TYPES:
             meta = index.source_metadata(node)
-            if meta is None and node.data.nodeType == NodeType.API_INPUT and port is not None:
+            if meta is None and node.data.nodeType in REQUEST_INPUT_NODE_TYPES and port is not None:
                 meta = index.api_input_port_metadata(node, port)
             if meta is not None:
                 return _resolved_from_source_metadata(meta)

@@ -34,6 +34,7 @@ const obverse = {
   entry_url: "/extensions/obverse/obverse-embed.js",
   ready: true,
   detail: null,
+  quote_tables: false,
 }
 
 const load = vi.mocked(loadExtensionModule)
@@ -145,6 +146,18 @@ describe("ExtensionView", () => {
     rendered.unmount()
 
     expect(unmount).toHaveBeenCalledOnce()
+  })
+
+  it("gives the toolbar's Save the module's save while the view is mounted", async () => {
+    const { module, mount } = extensionModule()
+    const save = vi.fn(() => Promise.resolve(true))
+    load.mockResolvedValue({ ...module, save })
+    const rendered = render(view())
+    await waitFor(() => expect(mount).toHaveBeenCalledOnce())
+
+    expect(useExtensionsStore.getState().viewSave).toBe(save)
+    rendered.unmount()
+    expect(useExtensionsStore.getState().viewSave).toBeNull()
   })
 
   it("never mounts an extension whose module arrives after its view closed", async () => {

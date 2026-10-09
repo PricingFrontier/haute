@@ -47,6 +47,7 @@ from haute._types import (
     MODELLING_CONFIG_KEYS,
     OPTIMISER_APPLY_CONFIG_KEYS,
     OPTIMISER_CONFIG_KEYS,
+    REQUEST_INPUT_NODE_TYPES,
     SCENARIO_EXPANDER_CONFIG_KEYS,
     NodeType,
 )
@@ -89,8 +90,10 @@ def _build_node_config(
     """Build the config dict for a node given its type and decorator kwargs."""
     reject_removed_config_keys(node_type, decorator_kwargs)
     config: dict[str, Any] = {}
-    if node_type == NodeType.API_INPUT:
-        config["path"] = decorator_kwargs.get("path", "")
+    if node_type in REQUEST_INPUT_NODE_TYPES:
+        # A Workbench Input reads no file; a Quote Input's previews read `path`.
+        if node_type is not NodeType.WORKBENCH_INPUT:
+            config["path"] = decorator_kwargs.get("path", "")
         # `tables[]` is the schema mapping, typically loaded from the sidecar
         # by ``_resolve_node_config``; `row_id_column` belongs to each table.
         if isinstance(decorator_kwargs.get("tables"), list):

@@ -63,8 +63,10 @@
 - **`BatchScoreRequest`** (`_batch_scoring.py`, frozen dataclass) — the only evidence that
   crosses the spawn boundary: `graph`, `input_node_ids`, `output_node_id`,
   `artifact_paths`, `output_fields`, `input_path` (parent-written JSON rows),
-  `result_path` (child-written parquet). The child derives its operation label from
-  the budget, so the request carries no `operation` field.
+  `result_path` (child-written parquet), and `input_schema`, the types the child reads
+  those rows with: the bundle's schema dry run sends its sample's, and a served request
+  none. The child derives its operation label from the budget, so the request carries no
+  `operation` field.
 - **`BatchScoreOutcome`** (`_batch_scoring.py`, frozen dataclass) — the child's picklable
   return: `row_count`, `execution_metrics` (the child context's payload), and on failure
   `failure_kind` (`contract` | `bounded` | `memory` | `cancelled` | `error`), `detail`,
@@ -112,7 +114,9 @@
 1. Re-validate base-image pinning (config may have been mutated after `__post_init__` via
    `.override()` or env overrides).
 2. Load `.env` (idempotent).
-3. `parse_pipeline_file(config.pipeline_file)` → `full_graph`; error if empty.
+3. `parse_pipeline_file(config.pipeline_file)` → `full_graph`; error if empty;
+   `validate_singleton_groups(flatten_graph(full_graph))` refuses a second request input or
+   output, as save does.
 4. `find_output_node(full_graph)` — exactly one node with `nodeType="output"` or
    `config.output=True`, else `ValueError`.
 5. `prune_for_deploy(full_graph, output_node_id)` → `pruned_graph`, kept ids, removed ids.
@@ -122,10 +126,10 @@
    (`haute._graph_utils.edge_input_name`), never per source node, so two frames from
    one apiInput mapped `quotes=live, drivers=batch` keep exactly the `quotes` edge —
    then `ancestors()` walks backward from the output node over the filtered edge set.
-6. `find_deploy_input_nodes(pruned_graph)` — nodes with `nodeType="apiInput"`. If none,
-   accept a single `dataInput` source as the live-input form.
-   Zero/multiple sources, or a sole `constant`/other unsupported source, fail with a
-   correction that names the node/type and asks for an API Input.
+6. `find_deploy_input_nodes(pruned_graph)` — the request inputs, nodes whose type is in
+   `REQUEST_INPUT_NODE_TYPES`. If none, accept a single `dataInput` source as the live-input
+   form. Zero/multiple sources, or a sole `constant`/other unsupported source, fail with a
+   correction that names the node/type and asks for a Quote Input or a Workbench Input.
 7. `collect_artifacts(pruned_graph, deploy_inputs, pipeline_dir, project_root=...)` →
    `artifacts` dict, an `ArtifactKeys` whose `add(node_id, key, path)` refuses, with a
    `DeployError` naming both nodes and files before anything is uploaded, a `<node>__<filename>`
@@ -179,7 +183,9 @@
    manifest provenance.
 8. `infer_input_schema()` (call `collect_schema()` on the first input node's source;
    lazy readers avoid row collection, while the existing plain-JSON reader may parse
-   eagerly).
+   eagerly). A Workbench Input has no source: its schema is `request_record_schema` of its
+   tables, and `_read_sample_row` gives one record of nulls in it
+   ([extensions](../extensions/low-level.md)).
    Then `infer_deploy_execution_policy()` plans the served `DEPLOY_BATCH` strategy once,
    over the same one-row sample (`_read_sample_row`) and the same bundled-contract graph
    preparation `_scorer._score_graph_lazy` performs, under a short-lived
@@ -207,9 +213,12 @@
    (`GroupByExecutionUnsupportedError(reason_code="materialisation_estimate_unavailable")`)
    falls back to `_capped_worker_output_schema`: the same one-row dry-run re-run inside
    the *served* batch worker — `prepare_batch_scoring(...,
-   operation="deploy_bundle_schema")` + `run_isolated_worker(score_batch_worker, ...)` +
+   operation="deploy_bundle_schema", input_schema=sample.schema)` +
+   `run_isolated_worker(score_batch_worker, ...)` +
    `accept_batch_outcome`, then `pl.read_parquet_schema()` over the parquet the worker
-   wrote, with `plan.cleanup(primary_error=...)` on every path. The group-by therefore
+   wrote, with `plan.cleanup(primary_error=...)` on every path. The sample's rows reach the
+   worker as JSON, where a null has no type; `input_schema`, carried on
+   `BatchScoreRequest`, types the frame the worker builds from them. The group-by therefore
    runs once under its full hard-capped envelope, exactly the policy the manifest records,
    and the schema is read from what the worker actually produced. The one-row sample
    bounds only the request-derived side of the graph — a group-by over a bundled static
@@ -453,7 +462,7 @@ pair. Deploy never uses the general `DATABRICKS_HOST`/`DATABRICKS_TOKEN` pair.
 2. Build a `NodeBuildHooks(before_build=_intercept)` wrapper around the shared
    `_build_node_fn` builder. `_intercept` returns a replacement `(func_name, fn,
    returns_frame)` tuple — or `None` to fall through to the base builder — for these node
-   categories: `apiInput` in the live input set (inject the live `DataFrame` directly);
+   categories: a request input in the live input set (inject the live `DataFrame` directly);
    `dataInput` in the live input set (passes the injected raw frame through `apply_source_scan`
    with the execution profile, required columns, materialized code, and preamble context,
    without opening the provider, then normal executor column post-processing applies);

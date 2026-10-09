@@ -847,7 +847,8 @@ def test_a_missing_source_without_published_tables_is_refused(
         _prepare(_config(data), store, root)
 
     assert raised.value.reason_code == "build_failed"
-    assert "API Input" in raised.value.remediation
+    # The request input's remediation, which names its tables, not a Data Input's snapshot.
+    assert "input's tables" in raised.value.remediation
 
 
 def test_a_corrupt_table_is_reported_not_rebuilt(project: tuple[Path, SourceCacheStore]) -> None:
@@ -1264,3 +1265,83 @@ def test_a_dead_worker_is_a_failure_unless_every_table_was_published(
             worker_config=None,
             spawn=_Spawn(run=False, failure=RuntimeError("worker lost")),
         )
+
+
+def test_one_row_and_many_row_tables_shred_from_one_request(tmp_path: Path) -> None:
+    """Obverse's shape: one-row tables are objects in each quote, many-row tables arrays."""
+
+    def columns(table: str, *named: tuple[str, str], many: bool = False) -> list[dict[str, Any]]:
+        level = f"$[:].{table}[:]" if many else f"$[:].{table}"
+        return [
+            {
+                "name": name,
+                "path": f"{level}.{name}",
+                "type": kind,
+                "status": "Confirmed",
+                "selected": True,
+                "levels": None,
+            }
+            for name, kind in named
+        ]
+
+    config = {
+        "path": "request.json",
+        "contract": "opaque",
+        "tables": [
+            {
+                "path": "$[:]",
+                "label": "policy_details",
+                "emit": True,
+                "row_id_column": None,
+                "columns": columns("policy_details", ("state", "str"), ("inception_date", "date")),
+            },
+            {
+                "path": "$[:]",
+                "label": "cover",
+                "emit": True,
+                "row_id_column": None,
+                "columns": columns("cover", ("limit", "int")),
+            },
+            {
+                "path": "$[:].equipment[:]",
+                "label": "equipment",
+                "emit": True,
+                "row_id_column": "item_id",
+                "columns": columns("equipment", ("item_id", "str"), ("value", "float"), many=True),
+            },
+        ],
+    }
+    request = tmp_path / "request.json"
+    request.write_text(
+        json.dumps(
+            [
+                {
+                    "policy_details": {"state": "NY", "inception_date": "2026-11-01"},
+                    "cover": {"limit": 1000000},
+                    "equipment": [
+                        {"item_id": "EQ-1", "value": 120000},
+                        {"item_id": "EQ-2", "value": 80000},
+                    ],
+                },
+                {
+                    "policy_details": {"state": "TX"},
+                    "cover": {"limit": 500000},
+                    "equipment": [{"item_id": "EQ-9", "value": 40000}],
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    frames = {
+        label: frame.collect() for label, frame in load_v2_api_source(str(request), config).items()
+    }
+
+    assert list(frames) == ["policy_details", "cover", "equipment"]
+    assert frames["policy_details"].schema == pl.Schema(
+        {"state": pl.String, "inception_date": pl.Date}
+    )
+    assert frames["policy_details"]["state"].to_list() == ["NY", "TX"]
+    assert frames["cover"].to_dict(as_series=False) == {"limit": [1000000, 500000]}
+    assert frames["equipment"].schema == pl.Schema({"item_id": pl.String, "value": pl.Float64})
+    assert frames["equipment"]["item_id"].to_list() == ["EQ-1", "EQ-2", "EQ-9"]

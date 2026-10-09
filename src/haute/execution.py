@@ -51,6 +51,7 @@ from haute._ram_estimate import (
     estimate_materialisation_boundaries,
 )
 from haute._types import (
+    REQUEST_INPUT_NODE_TYPES,
     GraphEdge,
     GraphNode,
     NodeType,
@@ -1145,7 +1146,7 @@ def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict
     """
     node_type = node.data.nodeType
     config = node.data.config
-    if node_type == NodeType.API_INPUT:
+    if node_type in REQUEST_INPUT_NODE_TYPES:
         raw_path = config.get("path")
         if isinstance(raw_path, str) and raw_path:
             path = _runtime_path_from_graph_config(graph, raw_path)

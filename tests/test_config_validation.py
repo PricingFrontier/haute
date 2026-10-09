@@ -56,6 +56,7 @@ class TestValidKeysRegistry:
         """Every node type with a TypedDict should have an entry."""
         expected = {
             NodeType.API_INPUT,
+            NodeType.WORKBENCH_INPUT,
             NodeType.DATA_INPUT,
             NodeType.DATA_INPUT,
             NodeType.DATA_OUTPUT,

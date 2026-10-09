@@ -59,6 +59,7 @@ from haute._submodel_recovery import submodel_registration_evidence
 from haute._types import (
     GLOBAL_CONSTANTS_FILE,
     NODE_TYPE_TO_DECORATOR,
+    REQUEST_INPUT_NODE_TYPES,
     GlobalConstant,
     GraphNode,
     NodeType,
@@ -941,7 +942,9 @@ def _build_recovery_graph(
         if candidate.node_type is not None:
             try:
                 source_handles = handles_by_source.get(candidate.recovery_id, [])
-                if candidate.node_type == NodeType.API_INPUT and isinstance(candidate.config, dict):
+                if candidate.node_type in REQUEST_INPUT_NODE_TYPES and isinstance(
+                    candidate.config, dict
+                ):
                     source_handles = list(recoverable_api_input_source_handles(candidate.config))
                 elif candidate.node_type == NodeType.SUBMODEL:
                     source_handles = [
@@ -1084,7 +1087,7 @@ def _canonical_snapshot(
                 handles.append(edge.sourceHandle)
 
     def source_handles_for(node: GraphNode) -> list[str]:
-        if node.data.nodeType == NodeType.API_INPUT:
+        if node.data.nodeType in REQUEST_INPUT_NODE_TYPES:
             return list(recoverable_api_input_source_handles(node.data.config))
         if node.data.nodeType == NodeType.SUBMODEL:
             definition_id = node.data.config.get("definitionId")

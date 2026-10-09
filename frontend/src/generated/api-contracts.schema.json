@@ -5162,6 +5162,10 @@
           "title": "Name",
           "type": "string"
         },
+        "quote_tables": {
+          "title": "Quote Tables",
+          "type": "boolean"
+        },
         "ready": {
           "title": "Ready",
           "type": "boolean"
@@ -5173,7 +5177,8 @@
         "api_base",
         "entry_url",
         "ready",
-        "detail"
+        "detail",
+        "quote_tables"
       ],
       "title": "ExtensionInfo",
       "type": "object"
@@ -11556,6 +11561,35 @@
       "title": "PolarsStepsRenderResponse",
       "type": "object"
     },
+    "QuoteTablesResponse": {
+      "description": "The Quote Input's tables, in its v2 shape, from the extension that supplies them.\n\n``sample`` is the extension's sample quote, as a request holds it: ``{}`` for none.",
+      "properties": {
+        "extension": {
+          "title": "Extension",
+          "type": "string"
+        },
+        "sample": {
+          "additionalProperties": true,
+          "title": "Sample",
+          "type": "object"
+        },
+        "tables": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Tables",
+          "type": "array"
+        }
+      },
+      "required": [
+        "extension",
+        "tables",
+        "sample"
+      ],
+      "title": "QuoteTablesResponse",
+      "type": "object"
+    },
     "RatingLevelColumn": {
       "description": "What one column offers as rating levels.\n\n`distinct_count` counts the levels that could be chosen — neither missing\nnor blank — so it is the number `values` would hold without the cap.",
       "properties": {
@@ -13915,6 +13949,9 @@
     "PolarsStepsRenderResponse": {
       "$ref": "#/$defs/PolarsStepsRenderResponse"
     },
+    "QuoteTablesResponse": {
+      "$ref": "#/$defs/QuoteTablesResponse"
+    },
     "RatingLevelsResponse": {
       "$ref": "#/$defs/RatingLevelsResponse"
     },
@@ -14021,6 +14058,7 @@
     "RatingLevelsResponse",
     "IoCapabilitiesResponse",
     "ExtensionsResponse",
+    "QuoteTablesResponse",
     "SessionStatusResponse",
     "BrowseFilesResponse",
     "ModelFileInspectionResponse",
@@ -14063,7 +14101,8 @@
       "NodeDataProfileResponse"
     ],
     "extensions": [
-      "ExtensionsResponse"
+      "ExtensionsResponse",
+      "QuoteTablesResponse"
     ],
     "factors": [
       "BandingStatsResponse",

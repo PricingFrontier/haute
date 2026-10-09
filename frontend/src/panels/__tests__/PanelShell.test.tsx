@@ -68,16 +68,16 @@ describe("PanelShell", () => {
     expect(shell.style.opacity).toBe("0.5")
   })
 
-  it("has a visible drag handle with col-resize cursor", () => {
+  it("has a drag handle on its left edge", () => {
     const { container } = render(<PanelShell><span>content</span></PanelShell>)
-    const handle = container.querySelector(".cursor-col-resize") as HTMLElement
-    expect(handle).toBeTruthy()
+    const handle = screen.getByTestId("panel-resize-handle")
+    expect(container.firstElementChild?.firstElementChild).toBe(handle)
   })
 
   it("drag handle updates panel width via mouse events", () => {
     useUIStore.setState({ nodePanelWidth: 500 })
-    const { container } = render(<PanelShell><span>content</span></PanelShell>)
-    const handle = container.querySelector(".cursor-col-resize") as HTMLElement
+    render(<PanelShell><span>content</span></PanelShell>)
+    const handle = screen.getByTestId("panel-resize-handle")
 
     fireEvent.mouseDown(handle, { clientX: 400 })
     fireEvent.mouseMove(window, { clientX: 300 }) // delta = 100 → 500 + 100 = 600
@@ -88,8 +88,8 @@ describe("PanelShell", () => {
 
   it("clamps width to minimum of 320", () => {
     useUIStore.setState({ nodePanelWidth: 400 })
-    const { container } = render(<PanelShell><span>content</span></PanelShell>)
-    const handle = container.querySelector(".cursor-col-resize") as HTMLElement
+    render(<PanelShell><span>content</span></PanelShell>)
+    const handle = screen.getByTestId("panel-resize-handle")
 
     fireEvent.mouseDown(handle, { clientX: 400 })
     fireEvent.mouseMove(window, { clientX: 700 }) // delta = -300 → 400 - 300 = 100 → clamped to 320
@@ -100,8 +100,8 @@ describe("PanelShell", () => {
 
   it("clamps width to 75% of available space", () => {
     useUIStore.setState({ nodePanelWidth: 800 })
-    const { container } = render(<PanelShell><span>content</span></PanelShell>)
-    const handle = container.querySelector(".cursor-col-resize") as HTMLElement
+    render(<PanelShell><span>content</span></PanelShell>)
+    const handle = screen.getByTestId("panel-resize-handle")
 
     fireEvent.mouseDown(handle, { clientX: 400 })
     fireEvent.mouseMove(window, { clientX: -1000 }) // delta = 1400 → 800 + 1400 = 2200 → clamped
@@ -111,9 +111,9 @@ describe("PanelShell", () => {
     expect(useUIStore.getState().nodePanelWidth).toBe(1305)
   })
 
-  it("has slide-in animation class", () => {
+  it("is haute-ui's side panel, which slides in", () => {
     const { container } = render(<PanelShell><span>content</span></PanelShell>)
     const shell = container.firstElementChild as HTMLElement
-    expect(shell.classList.contains("animate-slide-in")).toBe(true)
+    expect(shell.classList.contains("side-panel")).toBe(true)
   })
 })

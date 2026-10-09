@@ -313,7 +313,8 @@ candidate, with the error toast.
   closing only on success.
 - **Node CRUD.** Deleting an ordinary node removes it and every edge touching
   it as one atomic undo step. Duplicating offsets the copy's position and is a
-  no-op for singleton node types (Quote Input and Quote Response). Generic Duplicate is unavailable for reusable-submodel occurrences,
+  no-op for singleton node types (the request inputs, Quote Input and Workbench Input,
+  which share one slot, and Quote Response). Generic Duplicate is unavailable for reusable-submodel occurrences,
   and the handler directs callers to Create Instance. The palette, duplicate,
   paste, instance, and context-menu paths consume the same singleton metadata,
   matching the backend save invariant. Create Instance also refuses a Source

@@ -50,6 +50,49 @@ def create_router(project_dir):
 """
 
 
+# An extension that supplies the Quote Input's tables: ``{body}`` is quote_tables's body.
+_SUPPLIER = """
+from pathlib import Path
+
+from fastapi import APIRouter
+
+label = "Workbench"
+assets_dir = Path("unbuilt")
+entry = "workbench.js"
+asked_for = []
+
+
+def create_router(project_dir):
+    return APIRouter()
+
+
+def quote_tables(project_dir):
+    asked_for.append(project_dir)
+    {body}
+"""
+
+_TABLE = {
+    "path": "$[:]",
+    "label": "policy_details",
+    "emit": True,
+    "row_id_column": None,
+    "columns": [
+        {
+            "name": "state",
+            "path": "$[:].policy_details.state",
+            "type": "str",
+            "status": "Confirmed",
+            "selected": True,
+            "levels": ["CA", "NY"],
+        }
+    ],
+}
+
+
+def _supplier(body: str) -> str:
+    return _SUPPLIER.format(body=body)
+
+
 @pytest.fixture()
 def write_extension(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Write an importable extension package and return its module name."""
@@ -166,6 +209,7 @@ def test_listing_reports_whether_the_browser_module_is_built(
         "entry_url": "/extensions/forms/forms-embed.js",
         "ready": True,
         "detail": None,
+        "quote_tables": False,
     }
 
 
@@ -260,3 +304,118 @@ def test_package_dirs_are_found_without_importing_the_extension(
 
     assert [d.resolve() for d in dirs] == [(tmp_path / "site" / module).resolve()]
     assert module not in sys.modules
+
+
+def test_quote_tables_come_from_the_extension_that_supplies_them(
+    tmp_path: Path, write_extension, installed
+) -> None:
+    plain, supplier = write_extension(), write_extension(_supplier(f"return [{_TABLE!r}]"))
+    installed(("forms", plain), ("workbench", supplier))
+    client = TestClient(_app_like_haute_server(tmp_path))
+
+    listing = client.get("/api/extensions").json()["extensions"]
+    served = client.get("/api/quote-tables")
+
+    assert {e["name"]: e["quote_tables"] for e in listing} == {"forms": False, "workbench": True}
+    assert served.json() == {"extension": "workbench", "tables": [_TABLE], "sample": {}}
+    assert sys.modules[supplier].asked_for == [tmp_path]
+
+    installed(("forms", plain))
+    without = TestClient(_app_like_haute_server(tmp_path))
+    assert [e["quote_tables"] for e in without.get("/api/extensions").json()["extensions"]] == [
+        False
+    ]
+    assert without.get("/api/quote-tables").status_code == 404
+
+
+@pytest.mark.parametrize(
+    ("body", "status", "says"),
+    [
+        ("raise RuntimeError('form.json is unreadable')", 500, "form.json is unreadable"),
+        ("return {}", 500, "dict"),
+        (f"return [{{**{_TABLE!r}, 'label': 'class'}}]", 422, "'class'"),
+    ],
+)
+def test_quote_tables_fail_loudly(
+    tmp_path: Path, write_extension, installed, body: str, status: int, says: str
+) -> None:
+    installed(("workbench", write_extension(_supplier(body))))
+    response = TestClient(_app_like_haute_server(tmp_path)).get("/api/quote-tables")
+
+    assert response.status_code == status
+    assert says in response.json()["detail"]
+    if status == 500:
+        assert "'workbench'" in response.json()["detail"]
+    else:
+        assert response.json()["type"] == "ApiInputSchemaError"
+
+    installed(
+        ("one", write_extension(_supplier("return []"))),
+        ("two", write_extension(_supplier("return []"))),
+    )
+    with pytest.raises(ExtensionError, match="'one'.*'two'"):
+        discover_extensions(tmp_path)
+    not_a_function = write_extension(
+        _supplier("return []") + "\nquote_tables = ['not', 'a', 'function']\n"
+    )
+    installed(("workbench", not_a_function))
+    with pytest.raises(ExtensionError, match="quote_tables"):
+        discover_extensions(tmp_path)
+
+
+def _sampler(sample_body: str) -> str:
+    """A supplier of one table that also supplies a sample quote: ``sample_body`` is its body."""
+    return _supplier(f"return [{_TABLE!r}]") + (
+        f"\n\ndef quote_sample(project_dir):\n    {sample_body}\n"
+    )
+
+
+def test_the_supplier_serves_its_sample_beside_its_tables(
+    tmp_path: Path, write_extension, installed
+) -> None:
+    sample = {"policy_details": {"state": "NY"}}
+    installed(("workbench", write_extension(_sampler(f"return {sample!r}"))))
+
+    served = TestClient(_app_like_haute_server(tmp_path)).get("/api/quote-tables")
+
+    assert served.json() == {"extension": "workbench", "tables": [_TABLE], "sample": sample}
+
+    installed(("workbench", write_extension(_sampler("return None"))))
+    none = TestClient(_app_like_haute_server(tmp_path)).get("/api/quote-tables")
+    assert none.json()["sample"] == {}
+
+
+@pytest.mark.parametrize(
+    ("body", "says"),
+    [
+        ("raise RuntimeError('form.json is unreadable')", "form.json is unreadable"),
+        ("return ['not', 'a', 'quote']", "not an object"),
+    ],
+)
+def test_a_failing_or_misshapen_sample_answers_500_naming_the_extension(
+    tmp_path: Path, write_extension, installed, body: str, says: str
+) -> None:
+    installed(("workbench", write_extension(_sampler(body))))
+
+    response = TestClient(_app_like_haute_server(tmp_path)).get("/api/quote-tables")
+
+    assert response.status_code == 500
+    assert says in response.json()["detail"]
+    assert "'workbench'" in response.json()["detail"]
+
+
+def test_quote_sample_needs_quote_tables_and_must_be_a_function(
+    tmp_path: Path, write_extension, installed
+) -> None:
+    without_tables = write_extension(
+        textwrap.dedent(_EXTENSION.format(assets=str(tmp_path / "assets")))
+        + "\n\ndef quote_sample(project_dir):\n    return {}\n"
+    )
+    installed(("forms", without_tables))
+    with pytest.raises(ExtensionError, match="quote_sample without quote_tables"):
+        discover_extensions(tmp_path)
+
+    not_a_function = write_extension(_sampler("return {}") + "\nquote_sample = {'a': 1}\n")
+    installed(("workbench", not_a_function))
+    with pytest.raises(ExtensionError, match="quote_sample must be a function"):
+        discover_extensions(tmp_path)

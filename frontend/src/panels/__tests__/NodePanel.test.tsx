@@ -118,6 +118,9 @@ vi.mock("../LazyNodeEditors", async () => {
   OutputEditor: () => <div data-testid="OutputEditor" />,
   ExternalFileEditor: () => <div data-testid="ExternalFileEditor" />,
   ApiInputEditor: () => <div data-testid="ApiInputEditor" />,
+  WorkbenchInputEditor: ({ insideSubmodel }: { insideSubmodel?: boolean }) => (
+    <div data-testid="WorkbenchInputEditor" data-inside-submodel={String(insideSubmodel)} />
+  ),
   LiveSwitchEditor: () => <div data-testid="LiveSwitchEditor" />,
   DataInputEditor: (props: Record<string, unknown>) => {
     dataInputEditorProps.push(props)
@@ -172,7 +175,7 @@ function makeNode(overrides: Partial<SimpleNode> = {}): SimpleNode {
     ...overrides,
   }
   const data = { ...candidate.data }
-  if (data.nodeType === "apiInput") {
+  if (data.nodeType === "apiInput" || data.nodeType === "workbenchInput") {
     const handles = apiInputFrameLabels(data.config, new Set())
     data._defaultInputName = null
     data._sourceHandleInputNames = Object.fromEntries(handles.map((handle) => [handle, handle]))
@@ -851,6 +854,19 @@ describe("NodePanel", () => {
   it("renders ApiInputEditor for apiInput nodes", () => {
     renderPanel({ node: makeNode({ data: { label: "API", description: "", nodeType: "apiInput", config: {} } }) })
     expect(screen.getByTestId("ApiInputEditor")).toBeInTheDocument()
+    expect(screen.queryByTestId("WorkbenchInputEditor")).not.toBeInTheDocument()
+  })
+
+  it("renders WorkbenchInputEditor for workbenchInput nodes, told whether a submodel is open", () => {
+    const node = makeNode({ data: { label: "Quote", description: "", nodeType: "workbenchInput", config: {} } })
+    const { unmount } = renderPanel({ node })
+    expect(screen.getByTestId("WorkbenchInputEditor")).toHaveAttribute("data-inside-submodel", "false")
+    expect(screen.queryByTestId("ApiInputEditor")).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /^columns$/i })).not.toBeInTheDocument()
+    unmount()
+
+    renderPanel({ node, insideSubmodel: true })
+    expect(screen.getByTestId("WorkbenchInputEditor")).toHaveAttribute("data-inside-submodel", "true")
   })
 
   it("renders DataInputEditor for dataInput nodes", () => {
@@ -2900,8 +2916,8 @@ describe("NodePanel", () => {
       useUIStore.setState({ nodePanelWidth: 400 })
       const { container } = renderPanel()
       const panel = container.firstElementChild as HTMLElement
-      // The drag handle is the first child div with cursor-col-resize class
-      const dragHandle = panel.querySelector(".cursor-col-resize") as HTMLElement
+      // The drag handle is the first child div, test id panel-resize-handle
+      const dragHandle = panel.querySelector('[data-testid="panel-resize-handle"]') as HTMLElement
       expect(dragHandle).toBeTruthy()
 
       // Start drag at x=500
@@ -2919,7 +2935,7 @@ describe("NodePanel", () => {
       useUIStore.setState({ nodePanelWidth: 400 })
       const { container } = renderPanel()
       const panel = container.firstElementChild as HTMLElement
-      const dragHandle = panel.querySelector(".cursor-col-resize") as HTMLElement
+      const dragHandle = panel.querySelector('[data-testid="panel-resize-handle"]') as HTMLElement
 
       // Start drag at x=500, move right by 200 → delta = -200 → width = 400 - 200 = 200 → clamped to 320
       fireEvent.mouseDown(dragHandle, { clientX: 500 })
@@ -2933,7 +2949,7 @@ describe("NodePanel", () => {
       useUIStore.setState({ nodePanelWidth: 900 })
       const { container } = renderPanel()
       const panel = container.firstElementChild as HTMLElement
-      const dragHandle = panel.querySelector(".cursor-col-resize") as HTMLElement
+      const dragHandle = panel.querySelector('[data-testid="panel-resize-handle"]') as HTMLElement
 
       // Start drag at x=500, move left by 1000 → delta = 1000 → 900 + 1000 = 1900 → clamped to max
       fireEvent.mouseDown(dragHandle, { clientX: 500 })

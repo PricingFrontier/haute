@@ -62,6 +62,7 @@ from haute._polars_steps import (
 )
 from haute._sandbox import _bound_names
 from haute._types import (
+    REQUEST_INPUT_NODE_TYPES,
     GraphEdge,
     GraphNode,
     NodeData,
@@ -492,6 +493,19 @@ def _resolve_output_rows(
     return {**config, "outputMapping": resolved}
 
 
+def _refuse_workbench_input(graph: PipelineGraph, node_id: str, operation: str) -> None:
+    """Refuse *operation* on a Workbench Input: its tables are the installed extension's."""
+    index = _node_index(graph, node_id)
+    if index is not None and graph.nodes[index].data.nodeType is NodeType.WORKBENCH_INPUT:
+        _invalid(
+            f"Cannot {operation} {node_id!r}: it is a Workbench Input, whose tables are "
+            "the installed workbench's",
+            where={"node": node_id},
+            fix="Leave it as it is: the analyst edits it in the editor and its tables in "
+            "the workbench. Wire nodes to its frames instead.",
+        )
+
+
 def _apply_add_node(
     graph: PipelineGraph,
     op: AddNodeOp,
@@ -503,6 +517,13 @@ def _apply_add_node(
             f"Cannot add node type {op.node_type.value!r}: "
             "assistant operations cannot create submodel boundaries",
             fix="Add ordinary nodes instead; submodels are created by the analyst.",
+        )
+    if op.node_type is NodeType.WORKBENCH_INPUT:
+        _invalid(
+            f"Cannot add node type {op.node_type.value!r}: a Workbench Input's tables are "
+            "the installed workbench's",
+            fix="The analyst adds a Workbench Input from the palette; wire nodes to the "
+            "frames of the one the pipeline has.",
         )
     _validate_config(op.node_type, op.config, operation="add_node")
 
@@ -726,6 +747,7 @@ def _apply_update_node(
     """
 
     node_id = _resolve_node_id(op.node, graph, refs, nested_ids, role="update target")
+    _refuse_workbench_input(graph, node_id, "update")
     index = _node_index(graph, node_id)
     assert index is not None  # _resolve_node_id already checked this
     node = graph.nodes[index]
@@ -775,6 +797,7 @@ def _apply_edit_steps(
     """
 
     node_id = _resolve_node_id(op.node, graph, refs, nested_ids, role="edit_steps target")
+    _refuse_workbench_input(graph, node_id, "edit the steps of")
     index = _node_index(graph, node_id)
     assert index is not None  # _resolve_node_id already checked this
     node = graph.nodes[index]
@@ -855,7 +878,7 @@ def _apply_edit_steps(
 
 
 #: Source types whose outgoing input names come from a handle, not the node's label.
-_HANDLE_NAMED_SOURCES = frozenset({NodeType.API_INPUT, NodeType.SUBMODEL, NodeType.SUBMODEL_PORT})
+_HANDLE_NAMED_SOURCES = REQUEST_INPUT_NODE_TYPES | {NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}
 #: Config fields that hold one incoming edge's input name.
 _INPUT_NAME_FIELDS = ("data_input", "banding_source", "analysis_input", "ratebook_input")
 #: The consumer config fields a rename rewrites when they name the renamed input:
@@ -1061,6 +1084,7 @@ def _apply_rename_node(
     """Apply one rename; return the node's old and new ids and its consumer changes."""
 
     old_id = _resolve_node_id(op.node, graph, refs, nested_ids, role="rename target")
+    _refuse_workbench_input(graph, old_id, "rename")
     index = _node_index(graph, old_id)
     assert index is not None
     new_id = _sanitize_func_name(op.new_name)
@@ -1113,6 +1137,7 @@ def _apply_delete_node(
     """Apply one delete and return the deleted node's id."""
 
     node_id = _resolve_node_id(op.node, graph, refs, nested_ids, role="delete target")
+    _refuse_workbench_input(graph, node_id, "delete")
     index = _node_index(graph, node_id)
     assert index is not None
     del graph.nodes[index]
