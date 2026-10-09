@@ -1,7 +1,8 @@
 /**
  * The project's workbench (specs/workbench): whether it is enabled in haute.toml
- * (GET /api/workbench), its tables, sample and response tables as its form defines
- * them now (GET /api/workbench/tables), and the form itself with the file's revision
+ * (GET /api/workbench), its tables, sample and response tables as its saved form defines
+ * them now (GET /api/workbench/tables) or as an unsaved form would (POST
+ * /api/workbench/tables), and the form itself with the file's revision
  * (GET /api/workbench/form), saved against that revision (PUT /api/workbench/form).
  */
 
@@ -23,6 +24,20 @@ export async function fetchWorkbenchStatus(): Promise<WorkbenchStatusResponse> {
 
 export async function fetchWorkbenchTables(): Promise<WorkbenchTablesResponse> {
   const data = await request<unknown>("/api/workbench/tables")
+  return expectGeneratedContract(
+    "WorkbenchTablesResponse",
+    (await workbenchValidators()).validateWorkbenchTablesResponse,
+    data,
+  )
+}
+
+/** The tables, sample and response tables of a form as the view holds it, saved or not. */
+export async function fetchWorkbenchFormTables(form: FormSpec): Promise<WorkbenchTablesResponse> {
+  const data = await request<unknown>("/api/workbench/tables", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ form }),
+  })
   return expectGeneratedContract(
     "WorkbenchTablesResponse",
     (await workbenchValidators()).validateWorkbenchTablesResponse,

@@ -1,10 +1,15 @@
 import { Suspense, lazy, useEffect } from "react"
+import type { GraphPayload } from "../api/types"
 import { ErrorBoundary } from "../components/ErrorBoundary"
+import useSettingsStore from "../stores/useSettingsStore"
 import useUIStore from "../stores/useUIStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
+import useWorkbenchPricingStore from "../stores/useWorkbenchPricingStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
+import { pricingBasis } from "../utils/workbenchForm"
 import PageTabs from "./PageTabs"
+import { priceSample } from "./priceSample"
 import PropertiesPanel from "./PropertiesPanel"
 import SchemaEditor from "./SchemaEditor"
 import SheetCanvas from "./SheetCanvas"
@@ -22,6 +27,8 @@ interface WorkbenchViewProps {
   /** The Assistant panel's props, as the node properties panel gives them. */
   isInsideSubmodel: boolean
   readOnly: boolean
+  /** The pipeline as the editor holds it now, the whole document, for pricing the sample on it. */
+  resolveGraph: () => GraphPayload
 }
 
 const BANNER_STYLE = {
@@ -37,14 +44,19 @@ const BANNER_STYLE = {
  * selected component's properties panel on the right) or the schema editor, on the form
  * the store reads when the view first shows. A save refused because the file changed on
  * disk is reported in a banner with the way out, a reload. The toolbar's Git and Assistant
- * panels open beside the view, in the properties panel's place.
+ * panels open beside the view, in the properties panel's place. While the view shows, the
+ * sample is priced on the pipeline whenever the schema or the sample changes once typing
+ * pauses, and when the sheets show, as the pipeline may have changed meanwhile.
  */
-export default function WorkbenchView({ onSave, isInsideSubmodel, readOnly }: WorkbenchViewProps) {
+export default function WorkbenchView({ onSave, isInsideSubmodel, readOnly, resolveGraph }: WorkbenchViewProps) {
   const status = useWorkbenchFormStore((s) => s.status)
   const loadError = useWorkbenchFormStore((s) => s.loadError)
   const stale = useWorkbenchFormStore((s) => s.stale)
   const reload = useWorkbenchFormStore((s) => s.reload)
+  const basis = useWorkbenchFormStore((s) => (s.form === null ? null : pricingBasis(s.form)))
   const section = useWorkbenchViewStore((s) => s.section)
+  const setPricer = useWorkbenchPricingStore((s) => s.setPricer)
+  const schedule = useWorkbenchPricingStore((s) => s.schedule)
   const formPath = useWorkbenchStore((s) => s.formPath) ?? "forms/form.json"
   const gitOpen = useUIStore((s) => s.gitOpen)
   const setGitOpen = useUIStore((s) => s.setGitOpen)
@@ -54,6 +66,14 @@ export default function WorkbenchView({ onSave, isInsideSubmodel, readOnly }: Wo
     void useWorkbenchFormStore.getState().load()
   }, [])
   useWorkbenchShortcuts()
+  // The pricer prices on the document and the source as they are when it is called.
+  useEffect(() => {
+    setPricer((workbench) => priceSample(resolveGraph(), workbench, useSettingsStore.getState().activeSource))
+    return () => setPricer(null)
+  }, [resolveGraph, setPricer])
+  useEffect(() => {
+    if (section === "sheets" && basis !== null) schedule()
+  }, [basis, section, schedule])
 
   return (
     <div className="absolute inset-0 flex" data-testid="workbench-view" style={{ background: "var(--bg-base)" }}>

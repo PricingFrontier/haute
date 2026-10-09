@@ -861,6 +861,10 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "request_ref": None,
             "success_schema": {"$ref": "#/components/schemas/WorkbenchTablesResponse"},
         },
+        "POST": {
+            "request_ref": "#/components/schemas/WorkbenchFormTablesRequest",
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchTablesResponse"},
+        },
     },
 }
 

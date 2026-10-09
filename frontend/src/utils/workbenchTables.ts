@@ -47,6 +47,11 @@ export function quoteTablesPatch(
 /** A Workbench Output's mapping: by table label, each column's frame column, or null for none. */
 export type WorkbenchOutputMapping = Record<string, Record<string, string | null>>
 
+/** The sample priced on the pipeline: each of the Workbench Output's tables' rows, by the table's label. */
+export interface PricedSample {
+  tables: Record<string, Record<string, unknown>[]>
+}
+
 /** The config's mapping, without its entries for tables and columns *tables* lack. */
 function mappingFor(mapping: unknown, tables: readonly Record<string, unknown>[]): WorkbenchOutputMapping {
   const kept: WorkbenchOutputMapping = {}

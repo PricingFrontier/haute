@@ -1525,6 +1525,13 @@ function FlowEditor() {
     onNodeCreated: nodeCreated,
   })
 
+  // The workbench prices its sample on the document as it is then: the whole pipeline,
+  // even while a submodel is open.
+  const resolveWorkbenchGraph = useCallback(
+    () => resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef),
+    [],
+  )
+
   // Leaving the pipeline view closes the canvas's floating menus, which render
   // outside the hidden pipeline region.
   useEffect(() => useWorkbenchStore.subscribe((state, previous) => {
@@ -2033,6 +2040,7 @@ function FlowEditor() {
               onSave={saveWithPendingCommits}
               isInsideSubmodel={viewStack.length > 1}
               readOnly={documentReadOnly}
+              resolveGraph={resolveWorkbenchGraph}
             />
           </Suspense>
         </ErrorBoundary>

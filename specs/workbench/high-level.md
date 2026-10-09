@@ -17,14 +17,12 @@ type of its own beside the Quote Response, whose input ports are those tables.
 This component owns the switch, the form file with its reading, its saving and its
 revision, the routes that serve the form and its tables to the editor, the
 `haute init --workbench` scaffold, the Workbench view in which the form is edited inside
-Haute (its host beside the pipeline editor, its toolbar and shortcuts, its schema editor
-and its sheets), and the two workbench node types: where their tables come from, how the
+Haute (its host beside the pipeline editor, its toolbar and shortcuts, its schema editor,
+its sheets, and the sample typed into them and priced live), and the two workbench node
+types: where their tables come from, how the
 editor keeps them current, what a Workbench Input gives without a request and how a
-Workbench Output's frames fill the response. The sample typed while building, Preview and
-the form's place on the save ledger are planned
-([the workbench roadmap](../roadmap/workbench.md)); until they land, a sample is typed into
-the form outside Haute, by Obverse's standalone builder, which writes the same file, or by
-hand.
+Workbench Output's frames fill the response. Preview and the form's place on the save
+ledger are planned ([the workbench roadmap](../roadmap/workbench.md)).
 
 ## Scope
 
@@ -37,14 +35,16 @@ In scope:
 - The workbench's tables as Haute takes them: the schema's input tables in the Quote
   Input's v2 shape, the sample quote as a request holds it, and the output tables in the
   same shape.
-- `GET /api/workbench`, the status the editor reads, and `GET /api/workbench/tables`, the
-  tables, sample and response tables as the form defines them now.
+- `GET /api/workbench`, the status the editor reads, `GET /api/workbench/tables`, the
+  tables, sample and response tables as the saved form defines them now, and
+  `POST /api/workbench/tables`, the same of a form the view holds, saved or not.
 - `GET /api/workbench/form`, the form with its file's revision, and
   `PUT /api/workbench/form`, which writes the form unless the file changed since it was read.
 - The Workbench view: how it is shown beside the pipeline editor and what the pipeline
   editor does meanwhile, its toolbar and keyboard shortcuts, its schema editor, its sheets
   (the canvas, the Table and the Collection, their palette and properties panel, and the
-  sheet tabs), and how the form is read into it and saved from it.
+  sheet tabs), the sample typed into the components and priced live on the pipeline, and
+  how the form is read into it and saved from it.
 - The Workbench Input, the node type that holds a copy of the tables and sample, which the
   editor keeps current and shows, and previews on.
 - The Workbench Output, the node type that holds a copy of the output tables, which the
@@ -52,8 +52,8 @@ In scope:
 
 Out of scope:
 
-- The sample typed while building and priced live, Preview, and the form on the save
-  ledger. Each is a package of the [workbench roadmap](../roadmap/workbench.md).
+- Preview, and the form on the save ledger. Each is a package of the
+  [workbench roadmap](../roadmap/workbench.md).
 - The toolbar's pipeline controls ([frontend-shared](../frontend-shared/high-level.md)) and
   the canvas, palette and keyboard shortcuts
   ([frontend-graph-canvas](../frontend-graph-canvas/high-level.md)).
@@ -109,6 +109,9 @@ Out of scope:
   ([json-shredding](../json-shredding/high-level.md)) and a breach answers the structured 422
   that Infer Tables answers; the sample is served unchecked, since a sample that does not fit
   fails the previews that read it and never stops the tables updating.
+  `POST /api/workbench/tables` answers the same for a form sent in the request, saved or
+  not, checked the same way and 404 while the workbench is not enabled alike; it writes
+  nothing.
 - **The form, served and saved.** `GET /api/workbench/form` answers the form as its file
   holds it now and the file's `revision`, the content hash of its bytes: `null` while the
   file does not exist, when the form is the blank one. `PUT /api/workbench/form` takes the
@@ -200,6 +203,35 @@ Out of scope:
   to the right, selected), and the arrow keys nudge it by a grid step, or a pixel with
   Shift, a burst of nudges within 800ms being one undo step. None of that from a text
   field or a select, whose own keys pick an option.
+- **The sample.** Typing into a component's input columns while building types the form's
+  sample. A Collection's boxes hold its one-row tables' one row; a Table's grid holds its
+  many-row tables' rows, row by row, with Add row and a delete on each row adding and
+  deleting a row in every input table the grid shows at once, so their cells stay side by
+  side; a one-row table's column in a grid shows that table's one value on every row, and a
+  grid shows at least its rows. Each cell is the control its column calls for: a tick box
+  for True/false, a dropdown of the allowed values, a date picker, else a text field, a
+  number's right-aligned. A text field commits on blur or Enter, a dropdown, a tick box and
+  a date on change, each commit one undo step. Values are held as typed, text or a tick, by
+  table id and column id; the server types them by their columns when the tables are made.
+  Pressing a cell types there and selects its component rather than moving it. The sample
+  is part of the form: saved with it, undone like any edit, and dropped with a column or
+  table removed from the schema.
+- **Priced live.** While the view shows, the sample is priced on the pipeline open in the
+  editor whenever the schema or the sample changes, once typing pauses for 300ms, and when
+  the sheets show, as the pipeline may have changed meanwhile; laying the sheet out
+  differently prices nothing. A pricing asks `POST /api/workbench/tables` for the tables
+  and sample Haute takes from the form as it stands, then previews the Workbench Output a
+  table at a time through the preview route on the document as the editor holds it, the
+  whole pipeline even while a submodel is open, with the active source: the document's
+  top-level Workbench Input and Workbench Output take the form's tables and sample for that
+  request alone, as a fetch gives them, a workbench node inside a submodel keeps its copy,
+  and the document itself is untouched. One pricing runs at a time; asked again meanwhile,
+  it prices once more when it finishes, on the form as it is then. A Collection's output
+  column shows its table's value in the answer, formatted as the data preview formats a
+  value, dimmed while a newer answer is on its way, and a dash before the first answer, for
+  a column nothing filled, and after pricing fails, when the toolbar says why ("Pricing
+  failed: …") until a pricing succeeds. A Table's output columns stay shaded: matching rows
+  by key is Preview's.
 - **Saved.** A successful save adopts the file's new revision and fetches the tables
   again, so the Workbench Input's and Workbench Output's copies follow the schema and the
   pipeline has changes to save, as after any fetch. A save refused as stale keeps the edits
@@ -424,6 +456,13 @@ Out of scope:
 - **One reorder.** The step editor's cards and a component's fields are dragged into
   order through one hook, a row dropped on another put there, rather than a second drag
   model with markers of its own.
+- **A pause in typing.** The sample is priced 300ms after the last change rather than on
+  each commit: the pause is the sign that a value is complete, a heuristic about the typist,
+  not a rule about what an edit is, and undo never depends on it.
+- **The form as it stands.** Pricing asks the server for the tables of the unsaved form
+  rather than reading the saved file, so a Collection shows the pipeline's answer for what
+  is on the sheet now, as a rater's cell would; the pipeline's own Workbench Input still
+  follows the saved form, so a save is still what changes the pipeline.
 - **The view's state is the view's.** Which sheet and section show, the selection, the
   zoom and the panel's width are neither saved with the form nor undone with it: they
   live in a store of their own, read against the form, so a sheet or a component that
@@ -517,8 +556,9 @@ Out of scope:
 - [frontend-node-editors](../frontend-node-editors/high-level.md): the palette's Workbench
   Input and Workbench Output and their panels.
 - [frontend-graph-canvas](../frontend-graph-canvas/high-level.md): the editor shell hosts
-  the view, hiding and fencing the pipeline editor while it shows, and its keyboard
-  shortcuts register nothing then; a palette drop reports the node it creates, the commit
+  the view, hiding and fencing the pipeline editor while it shows, hands it the whole
+  document as it holds it for pricing the sample, and its keyboard shortcuts register
+  nothing then; a palette drop reports the node it creates, the commit
   controller checks an update's `isCurrent`, the request inputs share one singleton slot
   and the response nodes another, and a Workbench Output's connections land on its
   tables' ports.
@@ -559,6 +599,13 @@ Out of scope:
   be removed, and the view never offers to. A layout value outside its range (a Table's
   rows 1 to 50, a Collection's columns 1 to 12) is refused at the field, which says the
   range. A component dropped outside the sheet's viewport is not added.
+- `POST /api/workbench/tables` answers 404 while the workbench is not enabled, the
+  structured 422 for tables the Quote Input's rules refuse and FastAPI's 422 for a body
+  that is not a form; it writes nothing. A pricing that fails for any reason, a pipeline
+  without a Workbench Output, a table nothing is connected to, a sample that does not fit
+  its tables or the preview route's failure, shows as the toolbar's reason and empties the
+  output columns, never as a toast; an answer that arrives after the view has left is
+  dropped.
 - The schema editor refuses nothing: a problem is shown beside its table, and a save
   writes the form as it is. The tables route then answers the structured 422 for a table
   the Quote Input's rules refuse, which the tables fetch shows as one toast, so the

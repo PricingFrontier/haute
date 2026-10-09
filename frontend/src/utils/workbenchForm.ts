@@ -288,6 +288,50 @@ export const toggleField = (spec: FormSpec, widgetId: string, field: FieldRef): 
     else widget.fields.push(field)
   })
 
+// ─── The sample ──────────────────────────────────────────────────────────
+
+/** A value typed into the sample: text, or a tick. The server types it by its column. */
+export type SampleValue = string | boolean
+/** A row of the sample, keyed by column id. */
+export type SampleRow = Record<string, SampleValue>
+
+/** `rows` with one cell set, padded with empty rows up to it. */
+export function withCell(rows: readonly SampleRow[], row: number, columnId: string, value: SampleValue): SampleRow[] {
+  const next = [...rows, ...Array.from({ length: Math.max(0, row + 1 - rows.length) }, (): SampleRow => ({}))]
+  next[row] = { ...next[row], [columnId]: value }
+  return next
+}
+
+/** The sample with one cell of a table's row set, empty rows added up to it. */
+export const withSampleCell = (spec: FormSpec, tableId: string, row: number, columnId: string, value: SampleValue): FormSpec =>
+  edit(spec, (draft) => {
+    draft.sample[tableId] = withCell(draft.sample[tableId] ?? [], row, columnId, value)
+  })
+
+/**
+ * The sample with several tables' rows replaced, as one edit: a grid adds and deletes a row
+ * in every table it shows at once.
+ */
+export const withSampleRows = (spec: FormSpec, rowsByTable: Record<string, SampleRow[]>): FormSpec =>
+  edit(spec, (draft) => {
+    for (const [tableId, rows] of Object.entries(rowsByTable)) draft.sample[tableId] = rows
+  })
+
+const bases = new WeakMap<FormSpec, string>()
+
+/**
+ * What pricing the sample depends on, the schema and the sample, as one string to compare:
+ * a sheet laid out differently prices the same.
+ */
+export function pricingBasis(spec: FormSpec): string {
+  let basis = bases.get(spec)
+  if (basis === undefined) {
+    basis = JSON.stringify([spec.schema, spec.sample])
+    bases.set(spec, basis)
+  }
+  return basis
+}
+
 /** What stops a component showing what it should, by the component it is about. */
 export interface WidgetProblem {
   widgetId: string

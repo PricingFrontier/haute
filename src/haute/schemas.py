@@ -195,6 +195,12 @@ class WorkbenchFormSaveRequest(BaseModel):
     base_revision: str | None = None
 
 
+class WorkbenchFormTablesRequest(BaseModel):
+    """A form as the view holds it, saved or not, whose tables and sample are asked for."""
+
+    form: FormSpec
+
+
 # ---------------------------------------------------------------------------
 # Assistant HTTP request/response models
 # ---------------------------------------------------------------------------

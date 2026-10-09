@@ -8,6 +8,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import useUIStore from "../../stores/useUIStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
+import useWorkbenchPricingStore from "../../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import WorkbenchView from "../WorkbenchView"
 
@@ -25,9 +26,10 @@ vi.mock("../../panels/GitPanel", () => ({ default: () => <div data-testid="git-p
 vi.mock("../../panels/assistant/AssistantPanel", () => ({ default: () => <div data-testid="assistant-panel" /> }))
 
 const onSave = vi.fn(async () => true)
+const resolveGraph = vi.fn(() => ({ nodes: [], edges: [] }))
 
 function renderView() {
-  return render(<WorkbenchView onSave={onSave} isInsideSubmodel={false} readOnly={false} />)
+  return render(<WorkbenchView onSave={onSave} isInsideSubmodel={false} readOnly={false} resolveGraph={resolveGraph} />)
 }
 
 const key = (target: EventTarget, init: KeyboardEventInit) =>
@@ -36,8 +38,11 @@ const key = (target: EventTarget, init: KeyboardEventInit) =>
 describe("WorkbenchView", () => {
   const actions = { load: vi.fn(async () => {}), reload: vi.fn(async () => {}), save: vi.fn(async () => true), undo: vi.fn(), redo: vi.fn() }
 
+  const pricing = { setPricer: vi.fn(), schedule: vi.fn() }
+
   beforeEach(() => {
-    useWorkbenchFormStore.setState({ status: "ready", loadError: null, stale: false, ...actions })
+    useWorkbenchFormStore.setState({ status: "ready", loadError: null, stale: false, form: null, ...actions })
+    useWorkbenchPricingStore.setState({ ...pricing, error: null, price: null })
     useWorkbenchViewStore.setState({ section: "sheets", selectedId: null })
     useWorkbenchStore.setState({ enabled: true, activeView: "workbench", formPath: "forms/form.json" })
     useUIStore.setState({ gitOpen: false, assistantOpen: false, paletteOpen: true })
@@ -83,7 +88,7 @@ describe("WorkbenchView", () => {
     act(() => {
       useWorkbenchFormStore.setState({ status: "failed", loadError: "forms/form.json is not JSON: bad" })
     })
-    rerender(<WorkbenchView onSave={onSave} isInsideSubmodel={false} readOnly={false} />)
+    rerender(<WorkbenchView onSave={onSave} isInsideSubmodel={false} readOnly={false} resolveGraph={resolveGraph} />)
     expect(screen.getByRole("alert")).toHaveTextContent("Could not read the workbench: forms/form.json is not JSON: bad")
     fireEvent.click(screen.getByRole("button", { name: "Try again" }))
     expect(actions.reload).toHaveBeenCalledTimes(1)
@@ -139,6 +144,40 @@ describe("WorkbenchView", () => {
     key(dialog, { key: "s", ctrlKey: true })
     expect(actions.undo).toHaveBeenCalledTimes(1)
     expect(actions.save).not.toHaveBeenCalled()
+  })
+
+  it("gives the pricing store a pricer while it shows, and prices the sample when its basis changes on the sheets", () => {
+    const form = {
+      version: 1 as const,
+      name: "motor",
+      schema: { tables: [] },
+      pages: [{ id: "p", title: "Sheet 1", widgets: [] }],
+      sample: {},
+    }
+    useWorkbenchFormStore.setState({ form })
+    const { unmount } = renderView()
+
+    expect(pricing.setPricer).toHaveBeenCalledTimes(1)
+    expect(pricing.setPricer.mock.calls[0][0]).toEqual(expect.any(Function))
+    expect(pricing.schedule).toHaveBeenCalledTimes(1)
+
+    // The same basis prices nothing again; a typed sample does; the schema section does not.
+    act(() => {
+      useWorkbenchFormStore.setState({ form: { ...form, pages: [{ ...form.pages[0], title: "Renamed" }] } })
+    })
+    expect(pricing.schedule).toHaveBeenCalledTimes(1)
+    act(() => {
+      useWorkbenchFormStore.setState({ form: { ...form, sample: { t: [{ c: "1" }] } } })
+    })
+    expect(pricing.schedule).toHaveBeenCalledTimes(2)
+    act(() => {
+      useWorkbenchViewStore.getState().showSection("schema")
+      useWorkbenchFormStore.setState({ form: { ...form, sample: { t: [{ c: "2" }] } } })
+    })
+    expect(pricing.schedule).toHaveBeenCalledTimes(2)
+
+    unmount()
+    expect(pricing.setPricer).toHaveBeenLastCalledWith(null)
   })
 
   it("opens the Git and Assistant panels beside the view, in the properties panel's place", async () => {

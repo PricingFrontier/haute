@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 import type { FormSpec } from "../../api/types"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import useWorkbenchPricingStore from "../../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import WorkbenchToolbar from "../WorkbenchToolbar"
 
@@ -28,6 +29,7 @@ describe("WorkbenchToolbar", () => {
   beforeEach(() => {
     useWorkbenchFormStore.setState({ status: "ready", saving: false, undoStack: [], redoStack: [], ...actions })
     useWorkbenchViewStore.setState({ section: "sheets", zoom: 1 })
+    useWorkbenchPricingStore.setState({ error: null })
   })
 
   afterEach(() => {
@@ -86,6 +88,17 @@ describe("WorkbenchToolbar", () => {
     rerender(<WorkbenchToolbar />)
     expect(screen.getByTestId("toolbar-save")).toBeDisabled()
     expect(screen.getByTestId("toolbar-assistant")).toBeEnabled()
+  })
+
+  it("says why pricing the sample last failed", () => {
+    const { rerender } = render(<WorkbenchToolbar />)
+    expect(screen.queryByTestId("workbench-pricing-error")).not.toBeInTheDocument()
+
+    useWorkbenchPricingStore.setState({ error: "Connect a frame to the Workbench Output's 'pricing_output' table." })
+    rerender(<WorkbenchToolbar />)
+    const note = screen.getByTestId("workbench-pricing-error")
+    expect(note).toHaveTextContent("Pricing failed: Connect a frame to the Workbench Output's 'pricing_output' table.")
+    expect(note).toHaveAttribute("title", "Connect a frame to the Workbench Output's 'pricing_output' table.")
   })
 
   it("undoes and redoes the form's history", () => {

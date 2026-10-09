@@ -86,3 +86,20 @@ of the other kind — gets a dashed frame that names the problem.
 Sheets have tabs along the top: **+** adds one, double-click renames one, and the cross on
 the showing tab deletes it (asking first when components are on it; the schema and the
 sample stay).
+
+## The sample
+
+Type a sample quote straight into the components while building: a Collection's boxes
+hold its tables' one row, and a Table's grid holds its tables' rows, with **Add row** and a
+delete on each row (they add and delete the row in every input table the grid shows, so
+the cells stay side by side). Each cell is the control its column calls for: a tick box, a
+dropdown of the allowed values, a date picker, or a text field. The sample is part of what
+**Save** writes, undone like any other edit, and it is what the
+[Workbench Input](nodes/workbench-input.md)'s previews run on once saved.
+
+The sample is also **priced live**: whenever the schema or the sample changes and typing
+pauses, Haute prices it on the pipeline open in the editor, as it stands, saved or not, and
+a Collection's output columns show what the pipeline gave them, dimmed while a newer
+answer is on its way. When pricing fails — no Workbench Output on the pipeline, a table
+with nothing connected, a value that does not fit its column — the toolbar says why. A
+Table's output columns stay shaded for now.

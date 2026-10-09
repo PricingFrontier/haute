@@ -5,6 +5,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { FormSpec } from "../../api/types"
+import { withSampleCell, withSampleRows } from "../../utils/workbenchForm"
 import { MAX_HISTORY } from "../useGraphStore"
 import useToastStore from "../useToastStore"
 import useWorkbenchFormStore from "../useWorkbenchFormStore"
@@ -149,6 +150,23 @@ describe("useWorkbenchFormStore", () => {
     store().undo()
     expect(store()).toMatchObject({ form: blank, dirty: false })
     expect(store().redoStack.map((form) => form.name)).toEqual(["ab"])
+  })
+
+  it("keeps the sample typed while building as part of the form: unsaved until saved, undone like any edit", async () => {
+    server({ form: blank, revision: "rev-0" })
+    const store = useWorkbenchFormStore.getState
+    await store().load()
+
+    store().change((form) => withSampleCell(form, "t1", 1, "c1", "100"))
+    expect(store().form?.sample).toEqual({ t1: [{}, { c1: "100" }] })
+    expect(store().dirty).toBe(true)
+
+    store().change((form) => withSampleRows(form, { t1: [{ c1: "A" }, { c1: "B" }], t2: [{ c2: "1" }, { c2: "2" }] }))
+    store().undo()
+    expect(store().form?.sample).toEqual({ t1: [{}, { c1: "100" }] })
+    store().undo()
+    expect(store().form?.sample).toEqual({})
+    expect(store().dirty).toBe(false)
   })
 
   it("keeps the newest MAX_HISTORY edits", async () => {

@@ -228,9 +228,11 @@ def test_the_form_routes_answer_404_while_the_workbench_is_not_enabled(project: 
 
     served = client().get("/api/workbench/form")
     saved = client().put("/api/workbench/form", json={"form": form(), "base_revision": None})
+    tables = client().post("/api/workbench/tables", json={"form": form()})
 
     assert (served.status_code, served.json()["detail"]) == (404, message)
     assert (saved.status_code, saved.json()["detail"]) == (404, message)
+    assert (tables.status_code, tables.json()["detail"]) == (404, message)
     assert not (project / "forms").exists()
 
 
@@ -267,6 +269,42 @@ def test_a_table_the_quote_input_s_rules_refuse_answers_the_structured_422(proje
 
     assert response.status_code == 422
     assert "class" in response.json()["detail"]
+
+
+def test_the_tables_of_an_unsaved_form_are_served_without_writing_it(project: Path) -> None:
+    enable(project)
+    write_form(project, form(POLICY))
+    before = (project / "forms" / "form.json").read_bytes()
+    unsaved = form({**POLICY, "name": "policy"}, PRICING, sample={"t1": [{"c_state": "CA"}]})
+
+    posted = client().post("/api/workbench/tables", json={"form": unsaved})
+
+    assert posted.status_code == 200, posted.text
+    body = posted.json()
+    assert [t["label"] for t in body["tables"]] == ["policy"]
+    assert body["sample"] == {"policy": {"state": "CA"}}
+    assert [t["label"] for t in body["response_tables"]] == ["pricing_output"]
+    # The file is as it was, and the saved form is what the GET still serves.
+    assert (project / "forms" / "form.json").read_bytes() == before
+    assert [t["label"] for t in client().get("/api/workbench/tables").json()["tables"]] == [
+        "policy_details"
+    ]
+
+
+def test_an_unsaved_form_the_quote_input_s_rules_refuse_answers_the_structured_422(
+    project: Path,
+) -> None:
+    enable(project)
+
+    refused = client().post(
+        "/api/workbench/tables", json={"form": form({**POLICY, "name": "class"})}
+    )
+    misshapen = client().post("/api/workbench/tables", json={"form": {**form(), "pages": []}})
+
+    assert refused.status_code == 422
+    assert "class" in refused.json()["detail"]
+    assert misshapen.status_code == 422
+    assert not (project / "forms").exists()
 
 
 def test_haute_server_answers_the_status_ahead_of_its_404_guard_behind_the_session(

@@ -112,7 +112,10 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // properties panel and the component palette, all in the lazy view chunk, now
 // 12.6 KiB, with the view store's own chunk) bring it to 1,621.4 KiB; 1,623 KiB
 // restores about 1.6 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1623
+// The sample typed into the components and priced live (the cells, the pricing
+// store and priceSample, all lazy) bring it to 1,623.9 KiB; 1,626 KiB restores
+// about 2 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1626
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

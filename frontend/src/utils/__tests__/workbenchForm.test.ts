@@ -21,6 +21,7 @@ import {
   findWidget,
   moveField,
   moveSchemaColumn,
+  pricingBasis,
   readableName,
   removePage,
   removeSchemaColumn,
@@ -38,6 +39,9 @@ import {
   updateWidget,
   widgetName,
   widgetProblems,
+  withCell,
+  withSampleCell,
+  withSampleRows,
 } from "../workbenchForm"
 
 const blank = (): FormSpec => ({
@@ -310,6 +314,31 @@ describe("what the sheets show", () => {
 
     spec = moveField(spec, "w_grid", 1, 0)
     expect(fields(spec, "w_grid")).toEqual(["equipment.value", "equipment.item"])
+  })
+
+  it("sets a sample cell, adding empty rows up to it, and replaces several tables' rows as one edit", () => {
+    let spec = withSampleCell(sheet(), "equipment", 3, "equipment.item", "C")
+    expect(spec.sample.equipment).toEqual([{ "equipment.item": "A", "equipment.value": "100" }, { "equipment.item": "B" }, {}, { "equipment.item": "C" }])
+    spec = withSampleCell(spec, "policy", 0, "policy.year", true)
+    expect(spec.sample.policy).toEqual([{ "policy.state": "NY", "policy.year": true }])
+    expect(withCell([], 0, "c", "x")).toEqual([{ c: "x" }])
+
+    spec = withSampleRows(spec, { equipment: [{ "equipment.item": "B" }], premiums: [{ "premiums.item": "B" }] })
+    expect(spec.sample.equipment).toEqual([{ "equipment.item": "B" }])
+    expect(spec.sample.premiums).toEqual([{ "premiums.item": "B" }])
+    expect(spec.sample.policy).toEqual([{ "policy.state": "NY", "policy.year": true }])
+  })
+
+  it("prices on the schema and the sample alone: laying the sheet out differently changes nothing", () => {
+    const spec = sheet()
+    const moved = updateWidget(spec, "w_grid", { x: 100, rows: 7 })
+    const typed = withSampleCell(spec, "policy", 0, "policy.state", "CA")
+    const retyped = updateSchemaColumn(spec, "policy", "policy.state", { type: "int" })
+
+    expect(pricingBasis(moved)).toBe(pricingBasis(spec))
+    expect(pricingBasis(typed)).not.toBe(pricingBasis(spec))
+    expect(pricingBasis(retyped)).not.toBe(pricingBasis(spec))
+    expect(pricingBasis(spec)).toBe(pricingBasis(spec))
   })
 
   it("names a component by its kind and title, and says what stops it showing what it should", () => {
