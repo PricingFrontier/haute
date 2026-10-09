@@ -17,13 +17,13 @@ type of its own beside the Quote Response, whose input ports are those tables.
 This component owns the switch, the form file with its reading, its saving and its
 revision, the routes that serve the form and its tables to the editor, the
 `haute init --workbench` scaffold, the Workbench view in which the form is edited inside
-Haute (its host beside the pipeline editor, its toolbar and shortcuts, and so far its
-schema editor), and the two workbench node types: where their tables come from, how the
+Haute (its host beside the pipeline editor, its toolbar and shortcuts, its schema editor
+and its sheets), and the two workbench node types: where their tables come from, how the
 editor keeps them current, what a Workbench Input gives without a request and how a
-Workbench Output's frames fill the response. The view's sheets, the sample typed while
-building, Preview and the form's place on the save ledger are planned
-([the workbench roadmap](../roadmap/workbench.md)); until they land, a form's sheets are
-laid out outside Haute, by Obverse's standalone builder, which writes the same file, or by
+Workbench Output's frames fill the response. The sample typed while building, Preview and
+the form's place on the save ledger are planned
+([the workbench roadmap](../roadmap/workbench.md)); until they land, a sample is typed into
+the form outside Haute, by Obverse's standalone builder, which writes the same file, or by
 hand.
 
 ## Scope
@@ -42,8 +42,9 @@ In scope:
 - `GET /api/workbench/form`, the form with its file's revision, and
   `PUT /api/workbench/form`, which writes the form unless the file changed since it was read.
 - The Workbench view: how it is shown beside the pipeline editor and what the pipeline
-  editor does meanwhile, its toolbar and keyboard shortcuts, its schema editor, and how
-  the form is read into it and saved from it.
+  editor does meanwhile, its toolbar and keyboard shortcuts, its schema editor, its sheets
+  (the canvas, the Table and the Collection, their palette and properties panel, and the
+  sheet tabs), and how the form is read into it and saved from it.
 - The Workbench Input, the node type that holds a copy of the tables and sample, which the
   editor keeps current and shows, and previews on.
 - The Workbench Output, the node type that holds a copy of the output tables, which the
@@ -51,9 +52,8 @@ In scope:
 
 Out of scope:
 
-- The view's sheets, the sample typed while building and priced live, Preview, and the
-  form on the save ledger. Each is a package of the
-  [workbench roadmap](../roadmap/workbench.md).
+- The sample typed while building and priced live, Preview, and the form on the save
+  ledger. Each is a package of the [workbench roadmap](../roadmap/workbench.md).
 - The toolbar's pipeline controls ([frontend-shared](../frontend-shared/high-level.md)) and
   the canvas, palette and keyboard shortcuts
   ([frontend-graph-canvas](../frontend-graph-canvas/high-level.md)).
@@ -120,16 +120,19 @@ Out of scope:
   one has appeared. Both routes answer 404 while the workbench is not enabled.
 - **The view.** While the workbench is enabled, a view switcher at the bottom of the left
   palette offers "Pricing", the pipeline editor, and "Workbench". The Workbench view
-  covers the area below the toolbar: its own left column, with the view's sections (so far
-  Schema) and the switcher back, and the schema editor. Meanwhile the pipeline editor stays
+  covers the area below the toolbar: its own left column, the component palette with the
+  switcher back, and the section the toolbar chooses, Sheets or Schema. Meanwhile the
+  pipeline editor stays
   mounted (live sync, the document and its undo history go on) but invisible and inert, its
   keyboard shortcuts, Ctrl/Cmd+Enter and React Flow's delete and pan keys off and its
   floating menus closed, so a key pressed in the view never edits the hidden pipeline. The
   toolbar keeps the brand and the project's controls (Assistant, Help, the branch and Save)
-  and shows the view's own, the form's Undo and Redo. Save and Ctrl/Cmd+S save the form,
+  and shows the view's own: Sheets over Schema, the form's Undo and Redo, and Zoom In over
+  Zoom Out while the sheets show. Save and Ctrl/Cmd+S save the form,
   with a focused field's edit included; the view has no Commit until the form is on the
   save ledger, and the Git panel's own Commit still records the pipeline. The Git and
-  Assistant panels open beside the view. The Workbench Input's and Workbench Output's
+  Assistant panels open beside the view, in the properties panel's place. The Workbench
+  Input's and Workbench Output's
   panels offer "Edit in Workbench", which shows the view. The view reads the form when it
   first shows and keeps it, with its unsaved edits and history, across a trip to the
   pipeline editor; a form that cannot be read is reported in the view, with what is wrong
@@ -151,6 +154,52 @@ Out of scope:
   document's reserved labels, unique whatever its case), a column's name is an identifier
   unique in its table, a many-row table needs a key, and an input column's range must not
   be inverted and its allowed values must be of its type.
+- **The sheets.** A sheet is a canvas on an 8px snap grid that fills its viewport across
+  at the zoom and, like a spreadsheet, has no right or bottom edge: it widens and
+  lengthens to hold what is on it. Its tabs run along the top: the sheet showing is
+  marked, a plus adds a sheet named in turn, double-click renames one, and the showing
+  sheet's cross deletes it, asking first when components are on it, while another sheet
+  remains; the schema and the sample are untouched. A component is drawn where the form
+  places it: a Table as a grid of its rows with a column per field it shows, the index
+  column numbering the rows; a Collection as boxes with their labels above, its columns
+  across. Each field shows its label (its column's, or the name made readable), a star for
+  a required input, a hint at its type (a dropdown's chevron, a date's calendar, a
+  number's 0), an output column shaded, and "Missing column" when its column is gone.
+  Dragging a component moves it; selected, it has eight handles that resize it, no
+  smaller than its kind's minimum. Positions snap to the grid, pointer movement is
+  divided by the zoom, and a move or a resize is one undo step, a click that does not
+  move recording nothing. Pressing the empty sheet deselects. A component with a problem
+  (no fields, a column no longer in the schema, a table of the other kind, tables whose
+  rows do not line up) gets a dashed frame in the warning colour naming the problem. The
+  zoom runs from 25% to 200% in steps of 10%; what is on the sheet is fitted to the
+  viewport, never past 100%, when the sheets first show and on Ctrl/Cmd+1.
+- **The palette.** The view's left column is Haute's palette shell with a Table and a
+  Collection, in the entry colour, and the switcher under them. A component is dragged
+  out of it onto the sheet: a chip follows the pointer until the sheet shows a ghost where
+  the component would land; released there, it is added, 720 wide (a Table 200 high with
+  3 rows, a Collection 120 high with 3 columns across), showing nothing yet, and selected.
+  A click adds nothing. The palette shares the node palette's open state, so collapsing it
+  in either view collapses both; collapsed, it is the reveal strip with the compact
+  switcher under it.
+- **The properties panel.** Selecting a component opens its panel on the right, Haute's
+  side panel resized from its left edge, where the Git and Assistant panels open while
+  they are closed: the component's kind and its title; its layout, a Table's rows (1 to
+  50) or a Collection's columns across (1 to 12), a value outside the range refused at the
+  field; the order of the fields it shows, moved by dragging or Alt+Up and Alt+Down, each
+  with a cross that stops showing it; and its fields, ticked from the schema tables of its
+  kind, many-row tables for a Table and one-row tables for a Collection, each table
+  collapsible with its role and how many of its columns show, each column with its type's
+  icon, its name and its label. Fields are held by table and column id, in the order
+  ticked, so a rename keeps them. A grid holds one kind of row, so once a Table shows a
+  field, tables whose rows do not line up with it (keyed by other columns, or keyless) are
+  greyed out with their unticked columns disabled; an input table and an output table
+  keyed alike line up. With no table of the component's kind in the schema, the panel
+  says so and offers the schema.
+- **The sheet's keyboard.** While the sheets show and a component is selected: Escape
+  deselects it, Delete or Backspace removes it, Ctrl/Cmd+D duplicates it (16px below and
+  to the right, selected), and the arrow keys nudge it by a grid step, or a pixel with
+  Shift, a burst of nudges within 800ms being one undo step. None of that from a text
+  field or a select, whose own keys pick an option.
 - **Saved.** A successful save adopts the file's new revision and fetches the tables
   again, so the Workbench Input's and Workbench Output's copies follow the schema and the
   pipeline has changes to save, as after any fetch. A save refused as stale keeps the edits
@@ -369,6 +418,16 @@ Out of scope:
 - **Commit on blur.** The schema editor's fields commit as Haute's editors commit, once
   per edit, so an undo step is an edit rather than a keystroke and no timer decides where
   one edit ends and the next begins.
+- **A gesture is one step.** A drag records the form when the pointer first moves and
+  replaces it on each move without history, as the graph store's raw setters do for the
+  canvas, so undo reverses the whole drag; a burst of nudges is grouped the same way.
+- **One reorder.** The step editor's cards and a component's fields are dragged into
+  order through one hook, a row dropped on another put there, rather than a second drag
+  model with markers of its own.
+- **The view's state is the view's.** Which sheet and section show, the selection, the
+  zoom and the panel's width are neither saved with the form nor undone with it: they
+  live in a store of their own, read against the form, so a sheet or a component that
+  disappears from the form is simply no longer the one showing or selected.
 - **Canonical only.** The form has one shape. A field is always written, so a file never says
   one thing by presence and another by absence, and an unknown field is refused by name rather
   than carried or dropped; nothing migrates an older spelling, as the repository's
@@ -444,9 +503,12 @@ Out of scope:
   middleware gate the workbench routes.
 - [frontend-shared](../frontend-shared/high-level.md): the API client validates the three
   workbench responses with the generated contract; the workbench's toolbar is built from
-  the kit's brand and Undo/Redo and the project's controls the pipeline toolbar ends with,
-  and the schema editor's fields are the shared form primitives (the committed and
-  validated text fields, the checkbox and the icon select).
+  the kit's brand, Undo/Redo and Zoom In/Zoom Out and the project's controls the pipeline
+  toolbar ends with; its palette is the kit's palette shell, whose reveal strip takes a
+  label; its properties panel is the kit's side panel; the schema editor's and the panel's
+  fields are the shared form primitives (the committed and validated text fields, the
+  checkbox and the icon select); and the fields' order uses the list-reorder hook the step
+  editor's cards use.
 - [engineering-quality](../engineering-quality/high-level.md): the generated contract bundle
   carries the `workbench` response group.
 - [json-shredding](../json-shredding/high-level.md): the v2 tables the form defines, checked by
@@ -493,6 +555,10 @@ Out of scope:
   nothing; and FastAPI's 422 for a body that is not a form, as any typed body answers. The
   view reports a stale refusal in a toast and a banner, keeping the edits until Reload, and
   any other failed save in one error toast naming the cause.
+- A sheet's components are deleted with it, after a confirmation; the last sheet cannot
+  be removed, and the view never offers to. A layout value outside its range (a Table's
+  rows 1 to 50, a Collection's columns 1 to 12) is refused at the field, which says the
+  range. A component dropped outside the sheet's viewport is not added.
 - The schema editor refuses nothing: a problem is shown beside its table, and a save
   writes the form as it is. The tables route then answers the structured 422 for a table
   the Quote Input's rules refuse, which the tables fetch shows as one toast, so the

@@ -26,6 +26,15 @@ export function isTypingTarget(target: EventTarget | null): boolean {
 }
 
 /**
+ * The keystroke edits a control's value: typing, or a select, whose arrows and Delete pick
+ * and clear an option. Document-wide keys (save, undo) still act from a select; keys that
+ * act on a selection (delete, nudge) do not.
+ */
+export function isFormControl(target: EventTarget | null): boolean {
+  return isTypingTarget(target) || element(target)?.tagName === "SELECT"
+}
+
+/**
  * Run `save` with a focused field's edit included. Editor fields commit on blur, so a
  * focused field is blurred first and the save runs once React has rendered that commit;
  * otherwise the value being typed would be left out of the save.

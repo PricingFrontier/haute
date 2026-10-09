@@ -50,10 +50,10 @@ export function PaletteItem({ icon: Icon, label, color, disabled = false, ...pro
   )
 }
 
-/** What a collapsed palette leaves: a strip whose button shows the palette again. */
-export function PaletteRevealStrip({ onReveal }: { onReveal: () => void }) {
+/** What a collapsed palette leaves: a strip whose button, named by `label`, shows the palette again. */
+export function PaletteRevealStrip({ onReveal, label = "Show node palette" }: { onReveal: () => void; label?: string }) {
   return (
-    <button type="button" onClick={onReveal} aria-label="Show node palette" title="Show node palette" className="palette-reveal">
+    <button type="button" onClick={onReveal} aria-label={label} title={label} className="palette-reveal">
       <PanelLeftOpen size={16} />
     </button>
   )

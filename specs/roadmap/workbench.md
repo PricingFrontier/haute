@@ -3,41 +3,23 @@
 ## Scope
 
 The workbench inside Haute: the form file and its tables, the Workbench Input and Workbench
-Output, and the Workbench view with its schema editor. Current behaviour is specified in
+Output, and the Workbench view with its schema editor and its sheets. Current behaviour is
+specified in
 [the workbench specification](../workbench/high-level.md), and the save ledger and
 milestones in [the git integration specification](../git-integration/high-level.md). The
 packages below bring the rest of the form's editing into Haute one slice at a time, each
-useful on its own; until they land, a form's sheets are laid out outside Haute, by
-Obverse's standalone builder, which writes the same `forms/form.json`.
+useful on its own; until they land, a form's sample is typed outside Haute, by Obverse's
+standalone builder, which writes the same `forms/form.json`, or by hand.
 
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| WB-03 | Planned | P3 | Sheets: Tables and Collections laid out on a canvas, with their properties panel. |
 | WB-04 | Planned | P3 | The sample typed while building, saved with the form and priced live on the pipeline. |
 | WB-05 | Planned | P2 | The form on the save ledger: saved, committed and reread on a branch switch like the pipeline. |
 | WB-06 | Planned | P3 | Preview: an underwriter's quote keyed into the sheets and priced on the pipeline. |
 
 ## Planned improvements
-
-### WB-03 — Sheets, Tables and Collections
-**Why:** The schema says what the quote is and is defined in the Workbench view; the sheets
-say how an underwriter keys it in, and they are still laid out outside Haute.
-
-**Plan:** The view's Sheets: a canvas on a snap grid that fills its width and grows to hold
-what is on it, sheet tabs, a palette of Table and Collection in Haute's palette shell, drag
-to place, move and resize, undo and redo, zoom, and the properties panel in Haute's side panel
-(title, layout, the fields shown ticked from the schema's tables, their order), ported from
-Obverse's `Canvas`, `PropertiesPanel`, `PageTabs`, `geometry`, `interactions` and `reorder`,
-with the builder's stores split by concern and its API calls through `api/client.ts`.
-
-**Acceptance:** A Table showing a many-row table's columns and a Collection showing a one-row
-table's, placed, resized and saved, read back in the same positions after a reload.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_workbench_form.py::FormSpec`.
 
 ### WB-04 — The sample, typed while building and priced live
 **Why:** The Workbench Input's previews run on the sample typed into the form's Tables and
@@ -56,7 +38,7 @@ next answer arrives, with the reason in the toolbar when pricing fails.
 once the form is saved, and the Collection's output column shows the pipeline's value for
 the sample as it stands, saved or not.
 
-**Dependencies:** `WB-03`.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/_workbench_tables.py::sample_quote`;
 `src/haute/_workbench_output.py::workbench_response`.

@@ -108,7 +108,11 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // form's operations, 6.4 KiB; the form store; the workbench toolbar; and the
 // workbench validators, grown by the form's schema) bring the complete
 // production bundle to 1,613.9 KiB; 1,616 KiB restores about 2 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1616
+// The workbench's sheets (the canvas, the components' pictures, the sheet tabs, the
+// properties panel and the component palette, all in the lazy view chunk, now
+// 12.6 KiB, with the view store's own chunk) bring it to 1,621.4 KiB; 1,623 KiB
+// restores about 1.6 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1623
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

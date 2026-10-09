@@ -42,6 +42,13 @@ interface WorkbenchFormState {
   reload: () => Promise<void>
   /** An edit that undo reverses: `update` returns the next form, or the same one for no edit. */
   change: (update: (form: FormSpec) => FormSpec) => void
+  /**
+   * Record the form for undo before a run of `setFormRaw` updates, a drag's first move:
+   * the whole gesture is then one undo step.
+   */
+  pushSnapshot: () => void
+  /** Replace the form without recording history, for each step of a gesture. */
+  setFormRaw: (form: FormSpec) => void
   undo: () => void
   redo: () => void
   /**
@@ -110,6 +117,14 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
         dirty: serialise(next) !== savedForm,
       })
     },
+    pushSnapshot: () => {
+      const { form, undoStack } = get()
+      if (form === null) throw new Error("The workbench's form is not loaded")
+      set({ undoStack: appendHistoryEntry(undoStack, form), redoStack: [] })
+    },
+    setFormRaw: (form) => {
+      set({ form, dirty: serialise(form) !== get().savedForm })
+    },
     undo: () => {
       const { form, undoStack, redoStack, savedForm } = get()
       const previous = undoStack.at(-1)
@@ -137,6 +152,7 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
         const { form, revision, status } = get()
         if (form === null || status !== "ready") return false
         const { addToast } = useToastStore.getState()
+        const path = useWorkbenchStore.getState().formPath ?? "forms/form.json"
         set({ saving: true })
         try {
           const saved = await saveWorkbenchForm(form, revision)
@@ -148,7 +164,7 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
             dirty: serialise(get().form ?? saved.form) !== savedForm,
             stale: false,
           })
-          addToast("success", `Saved → ${useWorkbenchStore.getState().formPath ?? "the form"}`)
+          addToast("success", `Saved → ${path}`)
           // The schema may have changed: the Workbench Input's and Workbench Output's
           // copies follow through the same fetch that keeps them current.
           useWorkbenchStore.getState().refreshTables()
@@ -156,9 +172,9 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
         } catch (error: unknown) {
           if (isStaleRevision(error)) {
             set({ stale: true })
-            addToast("error", "Save rejected: the form changed on disk. Reload the workbench first.")
+            addToast("error", `Save rejected: ${path} changed on disk. Reload the workbench first.`)
           } else {
-            addToast("error", `Could not save the workbench's form: ${apiErrorMessage(error)}`)
+            addToast("error", `Could not save ${path}: ${apiErrorMessage(error)}`)
           }
           return false
         } finally {

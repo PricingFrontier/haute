@@ -135,6 +135,22 @@ describe("useWorkbenchFormStore", () => {
     expect(store().undoStack.map((form) => form.name)).toEqual(["motor", "home"])
   })
 
+  it("records a gesture as one undo step: a snapshot, then raw updates without history", async () => {
+    server({ form: blank, revision: "rev-0" })
+    const store = useWorkbenchFormStore.getState
+    await store().load()
+
+    store().pushSnapshot()
+    store().setFormRaw({ ...blank, name: "a" })
+    store().setFormRaw({ ...blank, name: "ab" })
+
+    expect(store()).toMatchObject({ form: named("ab"), dirty: true })
+    expect(store().undoStack.map((form) => form.name)).toEqual(["motor"])
+    store().undo()
+    expect(store()).toMatchObject({ form: blank, dirty: false })
+    expect(store().redoStack.map((form) => form.name)).toEqual(["ab"])
+  })
+
   it("keeps the newest MAX_HISTORY edits", async () => {
     server({ form: blank, revision: "rev-0" })
     const store = useWorkbenchFormStore.getState
@@ -200,7 +216,7 @@ describe("useWorkbenchFormStore", () => {
     await expect(store().save()).resolves.toBe(false)
 
     expect(store()).toMatchObject({ stale: true, dirty: true, revision: "rev-0", form: named("home") })
-    expect(toasts()).toEqual([["error", "Save rejected: the form changed on disk. Reload the workbench first."]])
+    expect(toasts()).toEqual([["error", "Save rejected: forms/form.json changed on disk. Reload the workbench first."]])
     expect(useWorkbenchStore.getState().refreshTables).not.toHaveBeenCalled()
 
     vi.mocked(fetch).mockResolvedValue(json({ form: named("renamed on disk"), revision: "rev-9" }))
@@ -224,7 +240,7 @@ describe("useWorkbenchFormStore", () => {
     await expect(store().save()).resolves.toBe(false)
 
     expect(store().stale).toBe(false)
-    expect(toasts()).toEqual([["error", "Could not save the workbench's form: [workbench].enabled must be true or false"]])
+    expect(toasts()).toEqual([["error", "Could not save forms/form.json: [workbench].enabled must be true or false"]])
   })
 
   it("saves nothing before the form is read", async () => {

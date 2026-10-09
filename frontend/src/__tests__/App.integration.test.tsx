@@ -2948,7 +2948,8 @@ describe("App integration - the workbench view (specs/workbench)", () => {
     expect(pipeline).toHaveAttribute("inert")
     expect(await screen.findByRole("toolbar", { name: "Workbench toolbar" }, { timeout: 10_000 })).toBeInTheDocument()
     expect(screen.queryByRole("toolbar", { name: "Pipeline toolbar" })).toBeNull()
-    expect(await within(view).findByTestId("schema-editor", {}, { timeout: 10_000 })).toBeInTheDocument()
+    expect(await within(view).findByTestId("sheet-viewport", {}, { timeout: 10_000 })).toBeInTheDocument()
+    expect(within(view).getByRole("tablist", { name: "Sheets" })).toBeInTheDocument()
 
     // Ctrl+S saves the form, not the hidden pipeline, and the save fetches the tables again,
     // the fetch that brings the Workbench Input's and Workbench Output's copies up to date.

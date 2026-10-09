@@ -6,22 +6,38 @@
 import { describe, expect, it } from "vitest"
 import type { FormSpec, SchemaColumn, SchemaTable } from "../../api/types"
 import {
+  addPage,
   addSchemaColumn,
   addSchemaTable,
+  addWidget,
   createIndexColumn,
+  createPage,
   createSchemaColumn,
   createSchemaTable,
+  createWidget,
+  duplicateWidget,
   fieldColumn,
   fieldUses,
+  findWidget,
+  moveField,
   moveSchemaColumn,
   readableName,
+  removePage,
   removeSchemaColumn,
   removeSchemaTable,
+  removeWidget,
+  renamePage,
+  rowsShown,
   schemaProblems,
   setSchemaTableRows,
+  tableGrain,
+  toggleField,
   uniqueName,
   updateSchemaColumn,
   updateSchemaTable,
+  updateWidget,
+  widgetName,
+  widgetProblems,
 } from "../workbenchForm"
 
 const blank = (): FormSpec => ({
@@ -244,5 +260,88 @@ describe("what the sheets show", () => {
     updateSchemaColumn(before, "policy", "policy.state", { name: "region" })
 
     expect(JSON.stringify(before)).toBe(snapshot)
+  })
+
+  it("names new sheets uniquely, renames them, and keeps the last one", () => {
+    let spec = blank()
+    const second = createPage(spec)
+    expect(second.title).toBe("Sheet 2")
+    spec = addPage(spec, second)
+    spec = renamePage(spec, second.id, "Equipment")
+    expect(spec.pages.map((page) => page.title)).toEqual(["Sheet 1", "Equipment"])
+    expect(createPage(spec).title).toBe("Sheet 3")
+
+    spec = removePage(spec, "p")
+    expect(spec.pages.map((page) => page.id)).toEqual([second.id])
+    expect(() => removePage(spec, second.id)).toThrow("The last sheet cannot be removed")
+  })
+
+  it("adds, updates, duplicates and removes components, each kind with its own layout setting", () => {
+    let spec = blank()
+    const grid = createWidget("tableInput", { x: 0, y: 0, w: 720, h: 200 })
+    const boxes = createWidget("collection", { x: 0, y: 240, w: 720, h: 120 })
+    expect(grid).toMatchObject({ type: "tableInput", title: "", fields: [], rows: 3 })
+    expect(boxes).toMatchObject({ type: "collection", title: "", fields: [], columns: 3 })
+    expect(grid).not.toHaveProperty("columns")
+
+    spec = addWidget(addWidget(spec, "p", grid), "p", boxes)
+    spec = updateWidget(spec, grid.id, { title: "Equipment", rows: 5, x: 16 })
+    expect(findWidget(spec, grid.id)).toMatchObject({ index: 0, widget: { title: "Equipment", rows: 5, x: 16 } })
+    expect(() => updateWidget(spec, grid.id, { columns: 2 })).toThrow("Only a Collection has columns")
+    expect(() => updateWidget(spec, boxes.id, { rows: 2 })).toThrow("Only a Table has rows")
+    expect(() => updateWidget(spec, "missing", { title: "x" })).toThrow("No sheet has a component missing")
+
+    const copied = duplicateWidget(spec, grid.id)
+    const copy = findWidget(copied.spec, copied.id)
+    expect(copy).toMatchObject({ index: 1, widget: { type: "tableInput", title: "Equipment", rows: 5, x: 32, y: 16 } })
+    expect(copied.id).not.toBe(grid.id)
+
+    spec = removeWidget(copied.spec, grid.id)
+    expect(spec.pages[0].widgets.map((widget) => widget.id)).toEqual([copied.id, boxes.id])
+    expect(findWidget(spec, grid.id)).toBeNull()
+  })
+
+  it("shows a column in a component, stops showing it, and moves fields in order", () => {
+    let spec = sheet()
+    spec = toggleField(spec, "w_boxes", { table: "policy", column: "policy.state" })
+    expect(fields(spec, "w_boxes")).toEqual([])
+    spec = toggleField(spec, "w_boxes", { table: "policy", column: "policy.state" })
+    expect(fields(spec, "w_boxes")).toEqual(["policy.state"])
+
+    spec = moveField(spec, "w_grid", 1, 0)
+    expect(fields(spec, "w_grid")).toEqual(["equipment.value", "equipment.item"])
+  })
+
+  it("names a component by its kind and title, and says what stops it showing what it should", () => {
+    let spec = sheet()
+    expect(widgetProblems(spec)).toEqual([])
+    expect(widgetName(spec.pages[0].widgets[0])).toBe('Collection "Policy"')
+    expect(widgetName({ ...spec.pages[0].widgets[1], title: "" })).toBe("A Table")
+    expect([rowsShown({ type: "collection" }), rowsShown({ type: "tableInput" })]).toEqual(["one", "many"])
+    expect(spec.schema.tables.map(tableGrain)).toEqual(["one", "many:item"])
+
+    const empty = updateWidget(spec, "w_boxes", { fields: [] })
+    expect(widgetProblems(empty).map((p) => p.message)).toEqual(['Collection "Policy" shows no fields'])
+
+    const dangling = updateWidget(spec, "w_grid", { fields: [{ table: "gone", column: "gone.x" }] })
+    expect(widgetProblems(dangling).map((p) => p.message)).toEqual([
+      'Table "Equipment" shows a column that is no longer in the schema',
+    ])
+
+    // A table switched between one row and many after its columns were chosen.
+    expect(widgetProblems(setSchemaTableRows(spec, "policy", "many")).map((p) => p.message)).toEqual([
+      'Collection "Policy" shows a many-row table; a Table shows those',
+    ])
+    expect(widgetProblems(setSchemaTableRows(spec, "equipment", "one")).map((p) => p.message)).toEqual([
+      'Table "Equipment" shows a one-row table; a Collection shows those',
+    ])
+
+    // Two many-row tables line up only by their keys' names.
+    spec = addSchemaTable(spec, table("premiums", "premiums", { role: "output", rows: "many", columns: [column("premiums.item", "item", { key: true }), column("premiums.premium", "premium", { type: "float" })] }))
+    spec = toggleField(spec, "w_grid", { table: "premiums", column: "premiums.premium" })
+    expect(widgetProblems(spec)).toEqual([])
+    expect(widgetProblems(updateSchemaColumn(spec, "premiums", "premiums.item", { key: false })).map((p) => p.message)).toEqual([
+      'Table "Equipment" shows tables whose rows do not line up',
+    ])
   })
 })

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { hasModifier, inModalDialog, isTextField, isTypingTarget, saveCommittingField } from "../keyboardTargets"
+import { hasModifier, inModalDialog, isFormControl, isTextField, isTypingTarget, saveCommittingField } from "../keyboardTargets"
 
 function element(html: string): HTMLElement {
   document.body.innerHTML = html
@@ -33,6 +33,14 @@ describe("keyboardTargets", () => {
     expect(isTypingTarget(element("<input data-target />"))).toBe(true)
     expect(isTypingTarget(element("<button data-target />"))).toBe(false)
     expect(isTypingTarget(window)).toBe(false)
+    // A select is not typed into, so document-wide keys act from it, but its own keys pick
+    // an option: keys that act on a selection leave it alone.
+    const select = element("<select data-target><option>a</option></select>")
+    expect(isTypingTarget(select)).toBe(false)
+    expect(isTextField(select)).toBe(false)
+    expect(isFormControl(select)).toBe(true)
+    expect(isFormControl(element("<textarea data-target></textarea>"))).toBe(true)
+    expect(isFormControl(element("<button data-target />"))).toBe(false)
   })
 
   it("saves at once from anywhere but a text field, which it blurs first and saves after", () => {

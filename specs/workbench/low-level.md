@@ -15,14 +15,24 @@
 | `frontend/src/hooks/useWorkbenchTables.ts` | The hook the editor shell (`frontend/src/App.tsx`) calls to keep those copies current: a fetch when the workbench is enabled and on each `executionGeneration`, recorded against the generation; eligible tables applied once per Workbench Input and Workbench Output for each fetch, by `WORKBENCH_COPY_PATCHES`, through `onUpdateNode`, with an `isCurrent` that checks the generation, while the document is editable and its top level shows; `nodeCreated` for a node a palette drop created. |
 | `frontend/src/panels/editors/WorkbenchInputEditor.tsx` | The Workbench Input's panel, which `frontend/src/panels/NodeConfigEditor.tsx` renders for a Workbench Input: the tables read-only with each label's `apiInputLabelIssue`, a note on what previews run on, chosen by whether the config's sample is a non-empty object, a note while the workbench is not enabled, and one while a submodel is open (`insideSubmodel`, passed down from `frontend/src/panels/NodePanel.tsx`). It exports `WorkbenchTable`, one table read-only, and `WorkbenchTablesHeader`, the section's title, its "Edit in Workbench" button while the workbench is enabled (`showView`) and its notes, which the Workbench Output's panel shares, and `WORKBENCH_DISABLED_NOTE`, the note's one wording. |
 | `frontend/src/panels/editors/WorkbenchOutputEditor.tsx` | The Workbench Output's panel, which `frontend/src/panels/NodeConfigEditor.tsx` renders for a Workbench Output: under `WorkbenchTablesHeader`, each table with its label's `apiInputLabelIssue`, the node connected to its port (from the `targetHandle` of the panel's input sources) or "Not connected", and a row per column with a select of the connected frame's columns (the input source's `columns`) that fills it, chosen by `mappedSource`, through `onUpdate` with the new `mapping`. |
-| `frontend/src/stores/useWorkbenchFormStore.ts` | `useWorkbenchFormStore`, the form while the view edits it: `form` and `revision` as read (`load`, once; `reload`, again, dropping edits and history) through `fetchWorkbenchForm`, with `status` and `loadError`; `change` (an edit that undo reverses, on the graph store's `appendHistoryEntry` and its history cap), `undo`, `redo`, `undoStack`, `redoStack`, `savedForm` and `dirty`; `save`, which runs saves one after another, each writing the form as it stands through `saveWorkbenchForm` with the revision, adopts the new revision, toasts "Saved → <form>" and fetches the tables again through `useWorkbenchStore.refreshTables`; `stale`, set by a save refused as `stale_document_revision` (one error toast, the edits kept) and cleared by a reload; and `saving`. |
-| `frontend/src/utils/workbenchForm.ts` | Pure operations on the form, each returning a new form: `newId`, `uniqueName`, `readableName` and `allWidgets`; `createSchemaTable`, `createSchemaColumn` and `createIndexColumn` (`row_number`, an Integer, `index`); `addSchemaTable`, `updateSchemaTable`, `removeSchemaTable` (its columns taken out of the widgets that show them, its rows out of the sample), `setSchemaTableRows` (keys cleared for one row), `addSchemaColumn` (at an index), `moveSchemaColumn`, `updateSchemaColumn` and `removeSchemaColumn` (taken out of the widgets and the sample); `fieldUses` and `fieldColumn`; and `schemaProblems`, what would stop the schema being the pipeline's tables, each a `SchemaProblem` naming its table: a table's name through `apiInputLabelIssue` with the document's reserved labels, a column's name an identifier unique in its table, a many-row table's key, and an input column's range and allowed values. `Widget` and `ColumnType` are derived from the generated form types. |
+| `frontend/src/stores/useWorkbenchFormStore.ts` | `useWorkbenchFormStore`, the form while the view edits it: `form` and `revision` as read (`load`, once; `reload`, again, dropping edits and history) through `fetchWorkbenchForm`, with `status` and `loadError`; `change` (an edit that undo reverses, on the graph store's `appendHistoryEntry` and its history cap), `undo`, `redo`, `undoStack`, `redoStack`, `savedForm` and `dirty`; `save`, which runs saves one after another, each writing the form as it stands through `saveWorkbenchForm` with the revision, adopts the new revision, toasts "Saved → <form>" and fetches the tables again through `useWorkbenchStore.refreshTables`; `stale`, set by a save refused as `stale_document_revision` (one error toast, the edits kept) and cleared by a reload; `saving`; and the gesture setters `pushSnapshot` (the form recorded for undo, the redo stack cleared) and `setFormRaw` (the form replaced without history, `dirty` recomputed), so a drag is one undo step. |
+| `frontend/src/stores/useWorkbenchViewStore.ts` | `useWorkbenchViewStore`, the view's own state, neither saved nor undone: `section` (`sheets` or `schema`), `pageId` (null until chosen; `activePage` reads the form's first), `selectedId`, `zoom` (25% to 200%, `ZOOM_STEP` 10%), `creating` (a component being dragged out of the palette, with the pointer), `panelWidth`, and the `sheet` and `viewport` elements; `showSection`, `showPage` (the sheets section, nothing selected), `select`, `setZoom`, `zoomBy`, `fitZoom` (the viewport's width less the padding over the sheet's reach, through `sheetGeometry.fitZoom`), `setCreating`, `setPanelWidth`, `setSheet` and `setViewport`. |
+| `frontend/src/utils/sheetGeometry.ts` | Placing components on a sheet, in unzoomed pixels: `GRID` (8), `snap`, `moveRect` (snapped, kept off the top and left edges), `resizeRect` (by a `Handle`, the opposite edges kept, no smaller than a minimum), `placeAt`, `nextFreeSpot`, `contains`, `contentRight`, `sheetWidth` (the viewport's at the zoom, or wider to hold the components plus `SHEET_EDGE`), `sheetHeight` (at least `MIN_SHEET_HEIGHT`, with room below the lowest component), `fitZoom` (in steps of 5%, never past 100%), `SHEET_PADDING` and `HANDLES`. |
+| `frontend/src/utils/workbenchForm.ts` | Pure operations on the form, each returning a new form: `newId`, `uniqueName`, `readableName` and `allWidgets`; the sheets, `createPage` (named in turn), `addPage`, `renamePage` and `removePage` (never the last); the components, `findWidget`, `createWidget` (720 wide, a Table 200 high with 3 rows or a Collection 120 high with 3 columns, no fields), `addWidget`, `updateWidget` (a `WidgetPatch`, `rows` refused on a Collection and `columns` on a Table), `removeWidget` and `duplicateWidget` (16px below and to the right, a new id); what they show, `rowsShown`, `tableGrain`, `toggleField`, `moveField` and `shownFields` (each field with its column, or null); `widgetName` and `widgetProblems`, what stops a component showing what it should (no fields, a column gone, a table of the other kind, tables whose rows do not line up), each a `WidgetProblem` naming its component; `createSchemaTable`, `createSchemaColumn` and `createIndexColumn` (`row_number`, an Integer, `index`); `addSchemaTable`, `updateSchemaTable`, `removeSchemaTable` (its columns taken out of the widgets that show them, its rows out of the sample), `setSchemaTableRows` (keys cleared for one row), `addSchemaColumn` (at an index), `moveSchemaColumn`, `updateSchemaColumn` and `removeSchemaColumn` (taken out of the widgets and the sample); `fieldUses` and `fieldColumn`; and `schemaProblems`, what would stop the schema being the pipeline's tables, each a `SchemaProblem` naming its table: a table's name through `apiInputLabelIssue` with the document's reserved labels, a column's name an identifier unique in its table, a many-row table's key, and an input column's range and allowed values. `Widget` and `ColumnType` are derived from the generated form types. |
+| `frontend/src/workbench/widgetKinds.ts` | `WIDGET_KINDS`, each kind of component's label, icon, hint, starting size and minimum; `PALETTE_KINDS`, what the palette offers; `COMPONENT_COLOR`, the entry colour. |
+| `frontend/src/workbench/sheetInteractions.ts` | The pointer interactions on a sheet: `dropAt` (where a palette item released at a pointer position lands, through the view store's sheet and viewport, null off the viewport), `startCreate` (a palette item dragged onto the sheet, `creating` following the pointer, the component added and selected on release; a click adds nothing) and `startTransform` (a component moved, or resized by a handle: selected on press, the form snapshotted on the first move and replaced on each move through `setFormRaw`), each tracking the pointer on the window until it is released. |
+| `frontend/src/workbench/SheetCanvas.tsx` | `SheetCanvas`, the showing sheet in its scrolling viewport: the viewport measured by a `ResizeObserver` and registered with the view store along with the sheet, the sheet sized by `sheetWidth` and `sheetHeight` and scaled by the zoom, a `SheetWidget` per component with its `shownFields` and its first problem, `DropGhost` where a component being dragged in would land, the sheet fitted on first show, and a press on the empty sheet deselecting. |
+| `frontend/src/workbench/SheetWidget.tsx` | `SheetWidget`, one component on the sheet: its `WidgetBody`, inert, in a frame that selects and drags it (`startTransform`), the frame accented when selected, dashed in the warning colour naming a problem, and eight `ResizeHandle`s once selected. |
+| `frontend/src/workbench/WidgetBody.tsx` | `WidgetBody`, the picture of a component while building: its title, "Choose its fields from the schema in the panel on the right" with none, else `FieldBoxes` (a Collection's fields as labelled boxes, its columns across) or `FieldGrid` (a Table's fields as the columns of a grid of its rows, the index column numbering them); each label from its column, a star for a required input, a type hint in the cell, an output shaded, a gone column "Missing column". |
+| `frontend/src/workbench/PageTabs.tsx` | `PageTabs`, the sheets' tabs: one per sheet (`showPage`), the showing one marked; a plus adding a sheet (`createPage`, `addPage`); a double-click renaming one in a `CommittedTextField` (a blank name kept out); the showing sheet's cross deleting it (`removePage`) after `window.confirm` when components are on it, while another sheet remains. |
+| `frontend/src/workbench/PropertiesPanel.tsx` | `PropertiesPanel`, the selected component's panel on the kit's `SidePanel` (its width in the view store): its kind, Title (`CommittedTextField`), Layout (rows or columns in a `ValidatedTextField` holding the range), Order (`FieldOrder`, rows through `useListReorder` and Alt+Up/Alt+Down, each with a cross through `toggleField`) and Fields (`TableFields` per schema table of the component's kind, collapsible, a checkbox per column through `toggleField`, greyed with its unticked columns disabled when `tableGrain` does not match the fields already chosen), or a pointer to the schema when there is no table of the kind. |
+| `frontend/src/workbench/WorkbenchPalette.tsx` | `WorkbenchPalette`, the view's left column in the kit's palette shell: a `PaletteItem` per `PALETTE_KINDS` entry starting `startCreate` on press, and the switcher under them; sharing `useUIStore.paletteOpen`, collapsed to the reveal strip (labelled "Show component palette") with the compact switcher. |
 | `frontend/src/workbench/ViewSwitcher.tsx` | `ViewSwitcher`, the Pricing and Workbench buttons at the bottom of the left palette while the workbench is enabled (nothing otherwise), pressing `activeView` and calling `showView`; `compact` is the column of icon buttons beside the collapsed node palette. |
-| `frontend/src/workbench/WorkbenchView.tsx` | `WorkbenchView`, the view over the area below the toolbar while it is active: its left column (`PaletteColumn` with the view's sections, Schema so far, and the switcher), the form read on first show (`load`), "Loading the form…", a read failure with Try again (`reload`), the stale banner with Reload, `SchemaEditor` once the form is read, `useWorkbenchShortcuts`, and the lazy Git and Assistant panels as asides. |
-| `frontend/src/workbench/WorkbenchToolbar.tsx` | `WorkbenchToolbar`, the toolbar while the view shows: `ToolbarBrand`, `UndoRedo` on the form store's history, and `ProjectControls` with Save calling the form store's `save` (disabled while the form loads or saves) and no Commit. |
+| `frontend/src/workbench/WorkbenchView.tsx` | `WorkbenchView`, the view over the area below the toolbar while it is active: `WorkbenchPalette`, then the form read on first show (`load`), "Loading the workbench…", a read failure with Try again (`reload`), the stale banner with Reload, and once the form is read the section the view store names, `PageTabs` over `SheetCanvas` or `SchemaEditor`; `useWorkbenchShortcuts`; the lazy Git and Assistant panels as asides, else `PropertiesPanel` beside the sheets; and `DragChip`, which follows the pointer while a component is dragged out of the palette until the sheet's ghost takes over. |
+| `frontend/src/workbench/WorkbenchToolbar.tsx` | `WorkbenchToolbar`, the toolbar while the view shows: `ToolbarBrand`, a `ToolbarColumn` of Sheets over Schema (`showSection`), `UndoRedo` on the form store's history, `ZoomInOut` (`zoomBy`) while the sheets show, and `ProjectControls` with Save calling the form store's `save` (disabled while the form loads or saves) and no Commit. |
 | `frontend/src/workbench/SchemaEditor.tsx` | `SchemaEditor`, the Schema section: a block per table (its name in a `CommittedTextField`, role and rows selects, the column count with the table's problems, Delete with a confirmation when a sheet shows its columns, collapsible) with a row per column (the type marker, an `IconSelect` of `COLUMN_TYPE_OPTIONS`, or the fixed Integer of the index; the name, committing on blur or Enter, Enter adding the next column and Alt+Up and Alt+Down moving it; the rules summary; the key toggle in a many-row table; Label and rules opening `ColumnDetails`: the label and, for an input column, Required, a Min to Max range in `ValidatedTextField`s that refuse a non-number, and Allowed values; Remove with a confirmation when a sheet shows it), Add column and, for a many-row table, the index checkbox; then Add table. A new table's or column's name takes the focus and is selected. Problems come from `schemaProblems` with the document's `reserved_api_input_frame_labels`. |
 | `frontend/src/workbench/columnTypes.ts` | `COLUMN_TYPES`, each column type's label, icon (the step editor's for the kind) and colour (`getDtypeColor` of its dtype), `COLUMN_TYPE_OPTIONS` for the marker, and `isNumeric`. |
-| `frontend/src/workbench/useWorkbenchShortcuts.ts` | `useWorkbenchShortcuts`, the view's window-level shortcuts through `hooks/keyboardTargets.ts`: Ctrl/Cmd+S saves (a focused field blurred first), Ctrl/Cmd+Z undoes and Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y redoes outside a text field; keys in a modal dialog are left to it. |
+| `frontend/src/workbench/useWorkbenchShortcuts.ts` | `useWorkbenchShortcuts`, the view's window-level shortcuts through `hooks/keyboardTargets.ts`: Ctrl/Cmd+S saves (a focused field blurred first), Ctrl/Cmd+Z undoes and Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y redoes outside a text field; while the sheets show and outside a control (`isFormControl`), Ctrl/Cmd+1 fits the sheet and, with a component selected, Escape deselects, Delete or Backspace removes, Ctrl/Cmd+D duplicates (`duplicateWidget`, the copy selected) and the arrows nudge by `GRID` or, with Shift, a pixel, a burst within 800ms one undo step through `pushSnapshot` and `setFormRaw`; keys in a modal dialog are left to it. |
 
 `src/haute/schemas.py` defines `WorkbenchStatusResponse`, `WorkbenchTablesResponse`,
 `WorkbenchFormResponse` and `WorkbenchFormSaveRequest`; `scripts/generate_api_contracts.py`
@@ -43,7 +53,10 @@ column with `ViewSwitcher` while the workbench is enabled;
 and `frontend/src/hooks/keyboardTargets.ts` holds the keystroke rules both shortcut hooks
 share. `frontend/src/components/ProjectControls.tsx` and
 `frontend/src/components/form/IconSelect.tsx` ([frontend-shared](../frontend-shared/low-level.md))
-are the toolbar's right-hand group and the icon-over-select control the view reuses, and
+are the toolbar's right-hand group and the icon-over-select control the view reuses;
+`frontend/src/hooks/useListReorder.ts` (frontend-shared) is the drag-reorder hook the fields'
+order shares with the step editor's cards; `frontend/src/haute-ui/PaletteShell.tsx`'s reveal
+strip takes the label the component palette gives it; and
 `frontend/src/stores/useGraphStore.ts` exports `appendHistoryEntry`, the one history rule.
 
 The Workbench Input reaches across Haute. `src/haute/_types.py` declares
@@ -157,6 +170,15 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   `status` (`idle`, `loading`, `ready` or `failed`), `loadError`, `savedForm` (the form as
   read or last saved, serialised), `dirty`, `undoStack`, `redoStack`, `stale` and `saving`.
 - **`SchemaProblem`** (`frontend/src/utils/workbenchForm.ts`): `tableId` and `message`.
+  **`WidgetProblem`**: `widgetId` and `message`. **`WidgetPatch`**: a partial `Rect` with
+  `title`, `fields`, `rows` (a Table's) or `columns` (a Collection's). **`ShownField`**:
+  `key` and `found`, the field's table and column or null.
+- **`Rect`** and **`Handle`** (`frontend/src/utils/sheetGeometry.ts`): `x`, `y`, `w`, `h` in
+  unzoomed pixels; one of the eight handles, `n`, `s`, `e`, `w` and their corners.
+- **View store state** (`frontend/src/stores/useWorkbenchViewStore.ts`): `section`, `pageId`,
+  `selectedId`, `zoom`, `creating` (`type`, `clientX`, `clientY`, or null), `panelWidth`,
+  `sheet` and `viewport`. **`WIDGET_KINDS`** (`frontend/src/workbench/widgetKinds.ts`): per
+  kind, `label`, `icon`, `hint`, `size` and `min`.
 - **`NodeUpdateOptions`** (`frontend/src/hooks/useGraphCommitController.ts`): `isCurrent`, which
   returning false makes an update count as superseded, and `onSettled`, called once with the
   update's final result: at once for an ordinary node, after identity resolution for a request
@@ -381,6 +403,26 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
     the Workbench Input and Workbench Output through `useWorkbenchTables`. A 409 whose
     detail starts with `stale_document_revision` sets `stale` and toasts; `reload` reads the
     form again and clears it.
+20. **The sheets, shown.** With the view's `section` at `sheets`, `WorkbenchView` renders
+    `PageTabs` over `SheetCanvas`, which registers its viewport and sheet with the view
+    store, measures the viewport, fits the zoom once, and draws `activePage(form, pageId)`'s
+    components, each `SheetWidget` with its `shownFields` and the first of its
+    `widgetProblems`. The toolbar's Sheets and Schema call `showSection`, which clears the
+    selection; `showPage` from a tab shows that sheet.
+21. **A component added.** `startCreate` on a palette item tracks the pointer, publishing
+    `creating` on each move: `DragChip` follows it while `dropAt` finds no place, and
+    `DropGhost` draws the place once it does. Released on the sheet, the item becomes
+    `createWidget(type, rect)` added to the active page through `change` and selected;
+    released elsewhere, or without moving, nothing is added.
+22. **Moved and resized.** `startTransform` on a frame or a handle selects the component
+    and tracks the pointer: the first move calls `pushSnapshot`, and each move replaces the
+    form through `setFormRaw` with `moveRect` or `resizeRect` of the original rect by the
+    pointer's travel divided by the zoom, so the gesture is one undo step. The keyboard's
+    nudges do the same, one snapshot per burst.
+23. **Properties.** `PropertiesPanel` finds the selected component in the form and edits it
+    through `change` with `updateWidget`, `moveField` and `toggleField`; the fields offered
+    are the schema tables whose `rows` match `rowsShown(widget)`, each usable when its
+    `tableGrain` matches the grain of the first field already shown.
 
 ## Edge cases and invariants
 
@@ -441,6 +483,15 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   revision the previous save gave, so two quick saves never race on the file.
 - The pipeline's document, its live sync and its history go on while the view shows; only
   its keyboard and React Flow's document-level keys are fenced.
+- Fields are held by table and column id, never by name, so renaming a column keeps it
+  on the sheet; a column or table removed from the schema is dropped from the fields that
+  showed it, and a field whose column is gone otherwise is shown as missing and reported.
+- The view store is read against the form: a `pageId` the form no longer has reads as the
+  first sheet, and a `selectedId` the form no longer has as no selection.
+- A press that does not move records nothing; the tracker's listeners are removed on
+  release, pointer cancel included.
+- The last sheet cannot be removed: `removePage` refuses it and the tabs offer no cross
+  for it.
 
 ## Error handling
 
@@ -467,6 +518,9 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
 - `fetchWorkbenchForm` and `saveWorkbenchForm` throw `ApiError` or a contract error like
   any typed request; the form store shows a read failure in the view (`loadError`) and a
   save failure as one error toast, telling a stale refusal by the detail's code.
+- The pure operations fail loud on a caller's mistake: `removePage` on the last sheet,
+  `updateWidget` giving a Collection `rows` or a Table `columns`, and any operation naming
+  a sheet or a component the form does not have, each throw an `Error` naming it.
 - An update superseded through `isCurrent` resolves `{ok: false}` with the commit
   controller's message, which it toasts, and changes nothing.
 - `validate_singleton_groups` raises `ValueError` naming the group and how many it found;
@@ -571,6 +625,24 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   `frontend/src/workbench/__tests__/WorkbenchToolbar.test.tsx` its controls;
   `frontend/src/workbench/__tests__/ViewSwitcher.test.tsx` the switcher; and the two
   editors' tests the "Edit in Workbench" button.
+- The sheets: `frontend/src/utils/__tests__/sheetGeometry.test.ts` covers the grid, moves
+  kept on the sheet, resizes from each handle, the next free spot, the sheet's size and
+  the fit; `frontend/src/utils/__tests__/workbenchForm.test.ts` also the sheets (named in
+  turn, renamed, the last kept), the components (created with their kind's layout, updated
+  with the kind guards, duplicated, removed), the fields (toggled, moved) and
+  `widgetProblems`; `frontend/src/hooks/__tests__/useListReorder.test.tsx` the shared
+  drag-reorder hook; `frontend/src/workbench/__tests__/SheetCanvas.test.tsx` (on the
+  fixtures in `frontend/src/workbench/__tests__/fixtures.ts`) the components drawn where
+  the form places them, the problem frame, selection, a drag moving one snapped and
+  divided by the zoom as one undo step, a resize by a handle at its minimum, a component
+  dragged out of the palette and dropped (the chip, the ghost, a click adding nothing), and
+  the fit; `frontend/src/workbench/__tests__/PageTabs.test.tsx` the tabs, adding, renaming
+  and deleting with the confirmation; `frontend/src/workbench/__tests__/PropertiesPanel.test.tsx`
+  the title and layout, the fields ticked, a table greyed out, the order and the pointer to
+  the schema; `frontend/src/workbench/__tests__/useWorkbenchShortcuts.test.tsx` the sheet's
+  keys, their guards and the nudge burst; and
+  `frontend/src/workbench/__tests__/WorkbenchPalette.test.tsx` the palette and its collapse
+  with the node palette's.
 - The quote's tables: `tests/test_api_input_table_snapshots.py` shreds a two-quote request
   through tables in the workbench's shape into one frame per table; `tests/test_config_io.py`
   writes a Workbench Input's config file, its sample included, to `config/workbench_input/`

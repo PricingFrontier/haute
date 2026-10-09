@@ -1,6 +1,7 @@
 import { AlertTriangle, Code } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 
+import useListReorder from "../../../hooks/useListReorder"
 import { NODE_GROUP_COLORS } from "../../../theme/colors"
 import type { StepStart } from "../../../utils/polarsStepInputs"
 import { InputSourcesBar, INPUT_STYLE } from "../_shared"
@@ -10,7 +11,7 @@ import { createStep, kindLabel, stepDisplayLabel, stepProblem, variablesBefore }
 import { columnChange, columnNames, columnsAtEachStep, unknownColumnsOf, type ColumnSource } from "./derivedColumns"
 import { StepForm } from "./forms"
 import GeneratedCodePanel from "./GeneratedCodePanel"
-import StepCard, { type StepBadge, type StepDrag } from "./StepCard"
+import StepCard, { type StepBadge } from "./StepCard"
 import { STEP_ICONS } from "./stepIcons"
 import { schemaFor } from "./stepSchema"
 import { summaryParts, unfinishedPart } from "./summary"
@@ -245,8 +246,6 @@ export default function PolarsStepsEditor({
   }
 
   // Drag a card by its header and drop it on another card to put it there.
-  const [dragIndex, setDragIndex] = useState<number | null>(null)
-  const [dropIndex, setDropIndex] = useState<number | null>(null)
   const reorder = (from: number, to: number) => {
     if (from === to || from < firstMovable || to < firstMovable || from >= steps.length || to >= steps.length) return
     const next = [...steps]
@@ -261,31 +260,7 @@ export default function PolarsStepsEditor({
       return current
     })
   }
-  const dragFor = (index: number): StepDrag => ({
-    onStart: (event) => {
-      event.dataTransfer?.setData("text/plain", String(index))
-      if (event.dataTransfer) event.dataTransfer.effectAllowed = "move"
-      setDragIndex(index)
-    },
-    onOver: (event) => {
-      if (dragIndex === null) return
-      event.preventDefault()
-      if (event.dataTransfer) event.dataTransfer.dropEffect = "move"
-      if (dropIndex !== index) setDropIndex(index)
-    },
-    onDrop: (event) => {
-      event.preventDefault()
-      if (dragIndex !== null) reorder(dragIndex, index)
-      setDragIndex(null)
-      setDropIndex(null)
-    },
-    onEnd: () => {
-      setDragIndex(null)
-      setDropIndex(null)
-    },
-    target: dropIndex === index && dragIndex !== null && dragIndex !== index,
-    dragging: dragIndex === index,
-  })
+  const dragFor = useListReorder(reorder)
 
   const switchAllowed =
     steps.length === 0 || (rendered.status === "ok" && rendered.revisionRendered === rendered.revision)

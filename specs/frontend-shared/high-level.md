@@ -391,9 +391,11 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   chrome this component provides.
 - [workbench](../workbench/high-level.md): the API client validates the workbench's
   status, tables and form with the generated contract; the workbench's toolbar is built
-  from `haute-ui` and `ProjectControls`, and its schema editor from the shared form
-  primitives; Obverse's standalone builder builds its toolbar from `haute-ui`, so its
-  controls match the editor's.
+  from `haute-ui` and `ProjectControls`, its palette and properties panel from the kit's
+  palette shell and side panel, its schema editor and panel from the shared form
+  primitives, and its field order from the list-reorder hook the step editor's cards use;
+  Obverse's standalone builder builds its toolbar from `haute-ui`, so its controls match
+  the editor's.
 - Talks to [server-api](../server-api/high-level.md) exclusively through the
   typed functions in `api/client.ts` — no other module in the frontend is
   expected to call `fetch()` directly against `/api/*`; split endpoint

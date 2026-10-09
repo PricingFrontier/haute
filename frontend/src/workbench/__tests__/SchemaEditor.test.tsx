@@ -191,7 +191,7 @@ describe("SchemaEditor", () => {
     expect(columnNames("policy_details")).toEqual(["state"])
 
     fireEvent.click(screen.getByRole("button", { name: "Remove column state" }))
-    expect(screen.getByRole("alert")).toHaveTextContent("Shown in 1 widget; removing it takes it out of that too.")
+    expect(screen.getByRole("alert")).toHaveTextContent("Shown in 1 component; removing it takes it out of that too.")
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
     expect(columnNames("policy_details")).toEqual(["state"])
     fireEvent.click(screen.getByRole("button", { name: "Remove column state" }))

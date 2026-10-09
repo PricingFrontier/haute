@@ -64,7 +64,7 @@ function rulesSummary(column: SchemaColumn): string {
   return parts.join(" · ")
 }
 
-const widgets = (n: number) => `${n} ${n === 1 ? "widget" : "widgets"}`
+const components = (n: number) => `${n} ${n === 1 ? "component" : "components"}`
 
 /** A new table or column gets a placeholder name; selecting it lets typing replace it. */
 const selectAll = (e: FocusEvent<HTMLInputElement>) => e.target.select()
@@ -230,7 +230,7 @@ function TableBlock({ form, table, added, setAdded, details, setDetails, collaps
       </div>
       {confirming && (
         <ConfirmBar
-          message={`Its columns are shown in ${widgets(uses)}; deleting it takes them out of ${uses === 1 ? "it" : "them"} too.`}
+          message={`Its columns are shown in ${components(uses)}; deleting it takes them out of ${uses === 1 ? "it" : "them"} too.`}
           action="Delete"
           onConfirm={() => {
             setConfirming(false)
@@ -372,7 +372,7 @@ function ColumnRow({ form, table, column, index, fresh, open, onToggleDetails, o
       </div>
       {confirming && (
         <ConfirmBar
-          message={`Shown in ${widgets(uses)}; removing it takes it out of ${uses === 1 ? "that" : "them"} too.`}
+          message={`Shown in ${components(uses)}; removing it takes it out of ${uses === 1 ? "that" : "them"} too.`}
           action="Remove"
           onConfirm={() => {
             setConfirming(false)
@@ -488,7 +488,7 @@ function IndexControl({ form, table, onAdded }: { form: FormSpec; table: SchemaT
       />
       {confirming && (
         <ConfirmBar
-          message={`The index is shown in ${widgets(uses)}; removing it takes it out of ${uses === 1 ? "that" : "them"} too.`}
+          message={`The index is shown in ${components(uses)}; removing it takes it out of ${uses === 1 ? "that" : "them"} too.`}
           action="Remove"
           onConfirm={() => {
             setConfirming(false)

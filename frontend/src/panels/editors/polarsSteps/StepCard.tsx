@@ -1,6 +1,7 @@
 import { AlertTriangle, ChevronRight, GripVertical, MoveDown, MoveUp, Trash2, type LucideIcon } from "lucide-react"
-import { useId, type DragEvent, type KeyboardEvent, type ReactNode } from "react"
+import { useId, type KeyboardEvent, type ReactNode } from "react"
 
+import type { RowDrag } from "../../../hooks/useListReorder"
 import { NODE_GROUP_COLORS } from "../../../theme/colors"
 import { partsText, type SummaryPart } from "./summary"
 
@@ -14,19 +15,11 @@ export type StepBadge = { tone: "danger" | "warning"; text: string }
  * on hover or focus; and, aligned under the label, the collapsed summary with
  * the change the step makes to the columns, then any note (a column that is
  * not in the data, what an unfinished step needs, a failed run). A card with
- * a `drag` handler can be picked up by its header (a grip marks it) and
- * dropped on another card; Alt+Up and Alt+Down on the header move it.
+ * a `drag` handler (the shared list-reorder hook's) can be picked up by its
+ * header (a grip marks it) and dropped on another card; Alt+Up and Alt+Down
+ * on the header move it.
  */
-export type StepDrag = {
-  onStart: (event: DragEvent<HTMLElement>) => void
-  onOver: (event: DragEvent<HTMLElement>) => void
-  onDrop: (event: DragEvent<HTMLElement>) => void
-  onEnd: () => void
-  /** Another card is being held over this one. */
-  target: boolean
-  /** This card is the one being dragged. */
-  dragging: boolean
-}
+export type StepDrag = RowDrag
 
 /** Width of the chevron, number and icon ahead of the label, so the summary lines up with it. */
 const LEAD = "w-[46px]"
