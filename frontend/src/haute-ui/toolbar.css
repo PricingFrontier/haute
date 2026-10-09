@@ -1,7 +1,7 @@
-/* haute-ui: the toolbar's styles, shared by Haute's editor and its extensions
-   (specs/frontend-shared). Plain CSS rather than Tailwind utilities, so the rules
-   apply in any consumer, a shadow root included. Colours come only from tokens
-   that tokens.css provides (pinned by __tests__/tokens.test.ts). */
+/* haute-ui: the toolbar's styles, shared by the pipeline editor's toolbar and the
+   workbench's (specs/frontend-shared). Plain CSS rather than Tailwind utilities, read
+   as one unit. Colours come only from index.css's tokens (pinned by
+   __tests__/tokens.test.ts). */
 
 /* The bar. */
 .toolbar {

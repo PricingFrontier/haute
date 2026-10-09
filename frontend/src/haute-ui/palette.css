@@ -1,6 +1,6 @@
-/* haute-ui: the left palette's shell, shared by Haute's node palette and its
-   extensions' palettes (specs/frontend-shared). Plain CSS like toolbar.css, and
-   colours only from tokens that tokens.css provides. */
+/* haute-ui: the left palette's shell, shared by Haute's node palette and the
+   workbench's component palette (specs/frontend-shared). Plain CSS like toolbar.css,
+   and colours only from index.css's tokens. */
 
 /* The column: as wide as the toolbar's brand column needs, on the chrome. */
 .palette {

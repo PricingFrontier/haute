@@ -1,8 +1,7 @@
 /**
- * haute-ui's stylesheets (specs/frontend-shared). tokens.css copies index.css's
- * values for extensions, so a drifted copy would make an extension look unlike the
- * editor; the kit's stylesheets may use only tokens that copy provides, since an
- * extension has no others; and they keep the layout the toolbar and palette rely on.
+ * haute-ui's stylesheets (specs/frontend-shared): plain CSS the pipeline editor and the
+ * workbench's view both render. They may use only the tokens index.css declares and no
+ * colour literal, and they keep the layout the toolbar, palette and side panel rely on.
  */
 import { readFileSync } from "node:fs"
 import path from "node:path"
@@ -14,7 +13,6 @@ const read = (file: string) =>
   readFileSync(path.resolve(KIT, file), "utf8").replace(/\/\*[\s\S]*?\*\//g, "")
 
 const INDEX_CSS = read("../index.css")
-const TOKENS_CSS = read("tokens.css")
 const STYLESHEETS = {
   "toolbar.css": read("toolbar.css"),
   "palette.css": read("palette.css"),
@@ -39,26 +37,16 @@ function declarations(body: string): Map<string, string> {
   return found
 }
 
-const source = declarations(ruleBody(INDEX_CSS, ":root"))
-const copy = declarations(ruleBody(TOKENS_CSS, ":root, :host"))
-
-describe("haute-ui tokens.css", () => {
-  it("copies index.css's value for every token", () => {
-    expect(copy.size).toBeGreaterThan(0)
-    const drifted = [...copy]
-      .filter(([name, value]) => source.get(name) !== value)
-      .map(([name, value]) => `${name}: ${value} (index.css: ${source.get(name) ?? "not declared"})`)
-    expect(drifted).toEqual([])
-  })
-
-  it("provides every token the kit's stylesheets use", () => {
-    const css = [TOKENS_CSS, ...Object.values(STYLESHEETS)].join("\n")
-    const used = new Set([...css.matchAll(/var\(\s*(--[\w-]+)/g)].map((m) => m[1]))
-    expect([...used].filter((name) => !copy.has(name))).toEqual([])
-  })
-})
+const tokens = declarations(ruleBody(INDEX_CSS, ":root"))
 
 describe("haute-ui's stylesheets", () => {
+  it("use only tokens index.css declares", () => {
+    expect(tokens.size).toBeGreaterThan(0)
+    const css = Object.values(STYLESHEETS).join("\n")
+    const used = new Set([...css.matchAll(/var\(\s*(--[\w-]+)/g)].map((m) => m[1]))
+    expect([...used].filter((name) => !tokens.has(name))).toEqual([])
+  })
+
   it.each(Object.entries(STYLESHEETS))("%s takes colours only from tokens", (_file, css) => {
     expect(css).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(/i)
   })

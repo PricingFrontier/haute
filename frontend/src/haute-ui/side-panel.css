@@ -1,5 +1,4 @@
-/* A panel on the right of the editor (SidePanel.tsx). Plain CSS, so it applies in any
-   consumer, a shadow root included. */
+/* A panel on the right of the editor (SidePanel.tsx). Plain CSS like toolbar.css. */
 .side-panel {
   height: 100%;
   flex-shrink: 0;

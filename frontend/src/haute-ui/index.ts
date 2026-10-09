@@ -1,12 +1,10 @@
 /**
- * haute-ui: the toolbar kit Haute's editor shares with its extensions
- * (specs/frontend-shared). The editor imports this directory by path; an
- * extension installs it as the `haute-ui` package and renders the same controls.
+ * haute-ui: the chrome kit the pipeline editor and the workbench's view are built from
+ * (specs/frontend-shared): the toolbar's controls, the palette's shell and the side
+ * panel's frame, so the two toolbars and palettes match by construction.
  *
- * The styles are not imported here. A consumer imports `haute-ui/toolbar.css`,
- * `haute-ui/palette.css`, `haute-ui/side-panel.css` and `haute-ui/dropdowns.css`,
- * and `haute-ui/tokens.css` unless it declares Haute's tokens itself, into
- * whichever document or shadow root renders the controls.
+ * The styles are not imported here: index.css imports `toolbar.css`, `palette.css`,
+ * `side-panel.css` and `dropdowns.css` from this directory.
  */
 export { PaletteColumn, PaletteHeader, PaletteItem, PaletteItems, PaletteRevealStrip } from "./PaletteShell"
 export type { PaletteItemProps } from "./PaletteShell"

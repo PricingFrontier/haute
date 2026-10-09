@@ -98,16 +98,6 @@ export default defineConfig([
     files: ['src/api/errors.ts'],
     rules: restrictedSyntax(POLLING_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS),
   },
-  // Extensions install haute-ui as a package of its own (specs/frontend-shared), so
-  // it can import nothing from the rest of the editor.
-  {
-    files: ['src/haute-ui/*.{ts,tsx}'],
-    rules: {
-      'no-restricted-imports': ['error', {
-        patterns: [{ group: ['../*'], message: 'haute-ui is installed by extensions on its own: import nothing from the rest of the editor.' }],
-      }],
-    },
-  },
   {
     files: ['src/utils/formatBytes.ts', 'src/utils/formatValue.ts'],
     rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, GUARD_SELECTORS),
