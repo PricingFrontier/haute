@@ -527,6 +527,7 @@ export type {
   SchemaTable,
   TableInputWidget,
   WorkbenchFormResponse,
+  WorkbenchFormSaveResponse,
   WorkbenchStatusResponse,
   WorkbenchTablesResponse,
 } from "../generated/api-contracts.generated"

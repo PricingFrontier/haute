@@ -6,7 +6,8 @@ working directory on every request, off the event loop, so an edit to either rea
 next request. A bad table or form answers 409 with what to fix
 (``haute.routes._error_handlers``) while the pipeline editor goes on working. A save quotes
 the revision the form was read at and is refused, writing nothing, when the file has
-changed since.
+changed since; a save that lands is captured on the clone's save ledger as the pipeline's
+saves are, and answers what the capture gave.
 """
 
 from __future__ import annotations
@@ -22,11 +23,12 @@ from haute._logging import get_logger
 from haute._workbench_config import WorkbenchConfig, read_workbench_config
 from haute._workbench_form import FormSpec, form_file_revision, read_form_document, write_form
 from haute._workbench_tables import workbench_tables
-from haute.routes._save_pipeline import StaleDocumentRevisionError
+from haute.routes._save_pipeline import StaleDocumentRevisionError, capture_save_in_ledger
 from haute.routes.json_cache import api_input_schema_error_response
 from haute.schemas import (
     WorkbenchFormResponse,
     WorkbenchFormSaveRequest,
+    WorkbenchFormSaveResponse,
     WorkbenchFormTablesRequest,
     WorkbenchStatusResponse,
     WorkbenchTablesResponse,
@@ -70,8 +72,10 @@ def _saved_tables_response(config: WorkbenchConfig) -> WorkbenchTablesResponse |
     return _tables_response(read_form_document(config).spec)
 
 
-def _save_form(config: WorkbenchConfig, body: WorkbenchFormSaveRequest) -> str:
-    """Write the form unless the file changed since the view read it; return its revision."""
+def _save_form(
+    config: WorkbenchConfig, body: WorkbenchFormSaveRequest
+) -> WorkbenchFormSaveResponse:
+    """Write the form unless the file changed since the view read it, and capture the write."""
     current = form_file_revision(config)
     if current != body.base_revision:
         raise StaleDocumentRevisionError(
@@ -80,7 +84,20 @@ def _save_form(config: WorkbenchConfig, body: WorkbenchFormSaveRequest) -> str:
             message="The workbench's form changed on disk after the workbench read it. "
             "Reload the workbench before saving.",
         )
-    return write_form(config.form_path, body.form)
+    revision = write_form(config.form_path, body.form)
+    # The written file is one save on the ledger, as the pipeline's written files are, so a
+    # milestone's sweep takes it from then on: a file this save created included. The path
+    # resolves inside the project (the config checked it), which is where the ledger is.
+    warnings: list[str] = []
+    form_path = config.form_path.resolve().relative_to(config.project_root.resolve()).as_posix()
+    git_sha, identity_required = capture_save_in_ledger(config.project_root, [form_path], warnings)
+    return WorkbenchFormSaveResponse(
+        form=body.form,
+        revision=revision,
+        warnings=warnings,
+        git_sha=git_sha,
+        identity_required=identity_required,
+    )
 
 
 @router.get("", response_model=WorkbenchStatusResponse)
@@ -116,12 +133,12 @@ async def get_workbench_form() -> WorkbenchFormResponse:
     return WorkbenchFormResponse(form=document.spec, revision=document.revision)
 
 
-@router.put("/form", response_model=WorkbenchFormResponse)
-async def put_workbench_form(body: WorkbenchFormSaveRequest) -> WorkbenchFormResponse:
-    """Write the form, unless its file changed since the view read it."""
+@router.put("/form", response_model=WorkbenchFormSaveResponse)
+async def put_workbench_form(body: WorkbenchFormSaveRequest) -> WorkbenchFormSaveResponse:
+    """Write the form, unless its file changed since the view read it, and capture the write."""
     config = await _enabled_config()
     try:
-        revision = await run_in_threadpool(_save_form, config, body)
+        return await run_in_threadpool(_save_form, config, body)
     except StaleDocumentRevisionError as exc:
         # The view's form is behind the disk; nothing was written. The detail leads with
         # the same stable code the pipeline save answers, so the client matches one.
@@ -131,4 +148,3 @@ async def put_workbench_form(body: WorkbenchFormSaveRequest) -> WorkbenchFormRes
             provided_revision=exc.provided_revision,
         )
         raise HTTPException(status_code=409, detail=f"{exc.code}: {exc}") from None
-    return WorkbenchFormResponse(form=body.form, revision=revision)

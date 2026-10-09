@@ -14085,6 +14085,59 @@
       "title": "WorkbenchFormResponse",
       "type": "object"
     },
+    "WorkbenchFormSaveResponse": {
+      "description": "The form as written, with its new revision and the save's version capture.\n\nThe capture fields mean what they mean on the pipeline save's response: ``git_sha`` is\nthe ledger commit the save produced when the clone has a working branch, else null;\n``warnings`` are non-fatal, a capture that failed among them; ``identity_required`` is\ntrue only when the capture was skipped because git has no commit identity.",
+      "properties": {
+        "form": {
+          "$ref": "#/$defs/FormSpec"
+        },
+        "git_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Git Sha"
+        },
+        "identity_required": {
+          "default": false,
+          "title": "Identity Required",
+          "type": "boolean"
+        },
+        "revision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Revision"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "form",
+        "revision",
+        "warnings",
+        "git_sha",
+        "identity_required"
+      ],
+      "title": "WorkbenchFormSaveResponse",
+      "type": "object"
+    },
     "WorkbenchStatusResponse": {
       "description": "Whether the project's workbench is enabled (``[workbench]`` in ``haute.toml``).",
       "properties": {
@@ -14378,6 +14431,9 @@
     "WorkbenchFormResponse": {
       "$ref": "#/$defs/WorkbenchFormResponse"
     },
+    "WorkbenchFormSaveResponse": {
+      "$ref": "#/$defs/WorkbenchFormSaveResponse"
+    },
     "WorkbenchStatusResponse": {
       "$ref": "#/$defs/WorkbenchStatusResponse"
     },
@@ -14453,6 +14509,7 @@
     "WorkbenchStatusResponse",
     "WorkbenchTablesResponse",
     "WorkbenchFormResponse",
+    "WorkbenchFormSaveResponse",
     "SessionStatusResponse",
     "BrowseFilesResponse",
     "ModelFileInspectionResponse",
@@ -14578,7 +14635,8 @@
     "workbench": [
       "WorkbenchStatusResponse",
       "WorkbenchTablesResponse",
-      "WorkbenchFormResponse"
+      "WorkbenchFormResponse",
+      "WorkbenchFormSaveResponse"
     ]
   }
 }

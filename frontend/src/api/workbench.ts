@@ -3,12 +3,19 @@
  * (GET /api/workbench), its tables, sample and response tables as its saved form defines
  * them now (GET /api/workbench/tables) or as an unsaved form would (POST
  * /api/workbench/tables), and the form itself with the file's revision
- * (GET /api/workbench/form), saved against that revision (PUT /api/workbench/form).
+ * (GET /api/workbench/form), saved against that revision and captured on the save ledger
+ * (PUT /api/workbench/form).
  */
 
 import { expectGeneratedContract } from "../types/generatedContractValidation"
 import { request } from "./client"
-import type { FormSpec, WorkbenchFormResponse, WorkbenchStatusResponse, WorkbenchTablesResponse } from "./types"
+import type {
+  FormSpec,
+  WorkbenchFormResponse,
+  WorkbenchFormSaveResponse,
+  WorkbenchStatusResponse,
+  WorkbenchTablesResponse,
+} from "./types"
 
 // Loads with the first response, so it never reaches the initial bundle.
 const workbenchValidators = () => import("../generated/api-contracts.workbench.validators.mjs")
@@ -57,9 +64,10 @@ export async function fetchWorkbenchForm(): Promise<WorkbenchFormResponse> {
 /**
  * Write the form, quoting the revision it was read at (null for a form never saved). A
  * file that changed since answers 409 with a `stale_document_revision` detail and is
- * left as it is.
+ * left as it is. A save that lands answers the form with its new revision and what its
+ * capture on the save ledger gave, as the pipeline's save does.
  */
-export async function saveWorkbenchForm(form: FormSpec, baseRevision: string | null): Promise<WorkbenchFormResponse> {
+export async function saveWorkbenchForm(form: FormSpec, baseRevision: string | null): Promise<WorkbenchFormSaveResponse> {
   const data = await request<unknown>("/api/workbench/form", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -69,8 +77,8 @@ export async function saveWorkbenchForm(form: FormSpec, baseRevision: string | n
     retry: { maxRetries: 0 },
   })
   return expectGeneratedContract(
-    "WorkbenchFormResponse",
-    (await workbenchValidators()).validateWorkbenchFormResponse,
+    "WorkbenchFormSaveResponse",
+    (await workbenchValidators()).validateWorkbenchFormSaveResponse,
     data,
   )
 }

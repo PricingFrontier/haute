@@ -243,6 +243,66 @@ def _rollback_artifacts(touched: list[_TouchedFile]) -> list[Path]:
     return failed
 
 
+def capture_save_in_ledger(
+    root: Path, rel_paths: list[str], warnings: list[str], message: str | None = None
+) -> tuple[str | None, bool]:
+    """Commit a save's files to the clone's ledger branch, when configured.
+
+    *rel_paths* are the files the save wrote or removed, relative to *root* in
+    POSIX form: the commit's pathspec. The pipeline save captures its files
+    through it, and the workbench's form save its file.
+
+    Returns ``(sha, identity_required)``.  ``identity_required`` is True
+    only when the capture was skipped because git has no commit identity
+    — a restored hosted container starts that way, and without a
+    structural signal the UI can never prompt for one, so the user's work
+    would silently never be version-captured.
+
+    Additive by design: with no working branch recorded (or no git repo)
+    saves behave exactly as before, and a failed capture degrades to a
+    warning appended to *warnings* — the on-disk save has already
+    succeeded, and the next successful capture sweeps the orphaned delta up
+    because the ledger commit is computed from working-tree state, not from
+    this call's bookkeeping.
+    """
+    from haute._git_state import read_working_branch
+
+    working = read_working_branch(root)
+    if working is None or not rel_paths:
+        return None, False
+
+    from haute import _git
+
+    # Same source of truth as the working-branch response's `identity_set`.
+    # Checked BEFORE committing so a missing identity costs no failing
+    # subprocess and yields a specific, actionable message instead of the
+    # generic git-error fallback.
+    name, email = _git.get_identity(root)
+    if name is None or email is None:
+        warnings.append(
+            "Changes saved, but version capture needs a git identity. "
+            "Set your name and email to keep version history."
+        )
+        return None, True
+
+    try:
+        sha = _git.commit_save(rel_paths, working, cwd=root, message=message)
+        if sha is not None:
+            # Publish to durable storage when bound; no-op otherwise.
+            from haute import _project_storage
+
+            _project_storage.enqueue_push()
+        return sha, False
+    except _git.GitDomainError as exc:
+        # Hand-authored messages (incl. guardrails) are safe verbatim.
+        warnings.append(f"Changes saved; version capture failed: {exc}")
+    except _git.GitError:
+        # Raw git stderr may leak paths/remotes — full detail is already
+        # in the structured log from _run_git.
+        warnings.append("Changes saved; version capture failed (git error — see server log).")
+    return None, False
+
+
 class SavePipelineService:
     """Orchestrates every side-effect of saving a pipeline graph.
 
@@ -491,66 +551,14 @@ class SavePipelineService:
         warnings: list[str],
         message: str | None,
     ) -> tuple[str | None, bool]:
-        """Commit this save to the clone's ledger branch, when configured.
-
-        Returns ``(sha, identity_required)``.  ``identity_required`` is True
-        only when the capture was skipped because git has no commit identity
-        — a restored hosted container starts that way, and without a
-        structural signal the UI can never prompt for one, so the user's work
-        would silently never be version-captured.
-
-        Additive by design: with no working branch recorded (or no git repo)
-        saves behave exactly as before, and a failed capture degrades to a
-        warning — the on-disk save has already succeeded, and the next
-        successful capture sweeps the orphaned delta up because the ledger
-        commit is computed from working-tree state, not from this call's
-        bookkeeping.
-        """
-        from haute._git_state import read_working_branch
-
-        working = read_working_branch(self._root)
-        if working is None:
-            return None, False
-
+        """Capture the files this save wrote or removed: `capture_save_in_ledger` on them."""
         rel_paths: list[str] = []
         for path in [t.target for t in touched] + removed:
             try:
                 rel_paths.append(path.relative_to(self._root).as_posix())
             except ValueError:
                 continue  # outside the project root — not this repo's concern
-        if not rel_paths:
-            return None, False
-
-        from haute import _git
-
-        # Same source of truth as the working-branch response's `identity_set`.
-        # Checked BEFORE committing so a missing identity costs no failing
-        # subprocess and yields a specific, actionable message instead of the
-        # generic git-error fallback.
-        name, email = _git.get_identity(self._root)
-        if name is None or email is None:
-            warnings.append(
-                "Changes saved, but version capture needs a git identity. "
-                "Set your name and email to keep version history."
-            )
-            return None, True
-
-        try:
-            sha = _git.commit_save(rel_paths, working, cwd=self._root, message=message)
-            if sha is not None:
-                # Publish to durable storage when bound; no-op otherwise.
-                from haute import _project_storage
-
-                _project_storage.enqueue_push()
-            return sha, False
-        except _git.GitDomainError as exc:
-            # Hand-authored messages (incl. guardrails) are safe verbatim.
-            warnings.append(f"Changes saved; version capture failed: {exc}")
-        except _git.GitError:
-            # Raw git stderr may leak paths/remotes — full detail is already
-            # in the structured log from _run_git.
-            warnings.append("Changes saved; version capture failed (git error — see server log).")
-        return None, False
+        return capture_save_in_ledger(self._root, rel_paths, warnings, message)
 
     def save_graph_transactionally(
         self,

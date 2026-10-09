@@ -2,14 +2,20 @@
  * Zustand store for the workbench's form while its view edits it (specs/workbench): the
  * form as read from GET /api/workbench/form with the file's revision, its undo and redo
  * history on the graph store's history rule, whether it has unsaved edits, and its saving
- * through PUT /api/workbench/form against that revision. The form is read once and kept
- * across view switches, so unsaved edits and history survive a trip to the pipeline editor.
+ * through PUT /api/workbench/form against that revision, each save reported as the
+ * pipeline's saves are (the ledger commit, the warnings, the identity prompt). The form is
+ * read once and kept across view switches, so unsaved edits and history survive a trip to
+ * the pipeline editor, and read again whenever the pipeline's document is adopted anew (a
+ * branch switched by hand, a change on disk), so the view never shows another branch's
+ * form.
  */
 import { create } from "zustand"
 import { ApiError } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
 import type { FormSpec } from "../api/types"
 import { fetchWorkbenchForm, saveWorkbenchForm } from "../api/workbench"
+import { reportSaveCapture } from "./saveCapture"
+import useDocumentStatusStore from "./useDocumentStatusStore"
 import { appendHistoryEntry } from "./useGraphStore"
 import useToastStore from "./useToastStore"
 import useWorkbenchStore from "./useWorkbenchStore"
@@ -33,13 +39,24 @@ interface WorkbenchFormState {
   dirty: boolean
   undoStack: FormSpec[]
   redoStack: FormSpec[]
-  /** The last save was refused because the file changed on disk; cleared by a reload. */
+  /**
+   * The file changed on disk since the form was read: a save was refused for it, or a sync
+   * found it while the form had unsaved edits. Cleared by a reload.
+   */
   stale: boolean
   saving: boolean
+  /** The last save was written but not captured on the ledger for want of a git identity. */
+  uncaptured: boolean
   /** Read the form, unless it has been. */
   load: () => Promise<void>
   /** Read the form again, dropping edits and history. */
   reload: () => Promise<void>
+  /**
+   * Read the file again after the pipeline's document was adopted anew. A file at the same
+   * revision changes nothing; a changed one is adopted, history dropped, while the form has
+   * no unsaved edits, and otherwise marks the form stale until a reload.
+   */
+  sync: () => Promise<void>
   /** An edit that undo reverses: `update` returns the next form, or the same one for no edit. */
   change: (update: (form: FormSpec) => FormSpec) => void
   /**
@@ -57,6 +74,12 @@ interface WorkbenchFormState {
    * changed on disk since it was read is never overwritten.
    */
   save: () => Promise<boolean>
+  /**
+   * The git flows' save, before a milestone, a move or an identity retry: `save` when the
+   * form holds unsaved edits or a save the ledger did not capture, else true without a
+   * request.
+   */
+  flush: () => Promise<boolean>
 }
 
 const serialise = (form: FormSpec): string => JSON.stringify(form)
@@ -67,8 +90,14 @@ const isStaleRevision = (error: unknown): boolean =>
   && typeof error.detail === "string"
   && error.detail.startsWith("stale_document_revision")
 
-/** Saves run one after another, each writing the form as it is when its turn comes. */
-let saves: Promise<boolean> = Promise.resolve(true)
+/** Saves and syncs take turns, each acting on the form as it is when its turn comes. */
+let turns: Promise<unknown> = Promise.resolve()
+
+const takeTurn = <T>(act: () => Promise<T>): Promise<T> => {
+  const turn = turns.then(act)
+  turns = turn.catch(() => undefined)
+  return turn
+}
 
 const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
   const read = async (): Promise<void> => {
@@ -101,10 +130,36 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
     redoStack: [],
     stale: false,
     saving: false,
+    uncaptured: false,
     load: async () => {
       if (get().status === "idle") await read()
     },
     reload: read,
+    sync: () =>
+      takeTurn(async () => {
+        if (get().status !== "ready") return
+        const path = useWorkbenchStore.getState().formPath ?? "forms/form.json"
+        try {
+          const { form, revision } = await fetchWorkbenchForm()
+          if (revision === get().revision) return
+          if (get().dirty) {
+            // The banner says the file changed on disk, and its Reload reads it.
+            set({ stale: true })
+            return
+          }
+          set({
+            form,
+            revision,
+            savedForm: serialise(form),
+            dirty: false,
+            undoStack: [],
+            redoStack: [],
+            stale: false,
+          })
+        } catch (error: unknown) {
+          useToastStore.getState().addToast("error", `Could not read ${path} again: ${apiErrorMessage(error)}`)
+        }
+      }),
     change: (update) => {
       const { form, undoStack, savedForm } = get()
       if (form === null) throw new Error("The workbench's form is not loaded")
@@ -147,8 +202,8 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
         dirty: serialise(next) !== savedForm,
       })
     },
-    save: () => {
-      saves = saves.then(async () => {
+    save: () =>
+      takeTurn(async () => {
         const { form, revision, status } = get()
         if (form === null || status !== "ready") return false
         const { addToast } = useToastStore.getState()
@@ -163,8 +218,10 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
             savedForm,
             dirty: serialise(get().form ?? saved.form) !== savedForm,
             stale: false,
+            uncaptured: saved.identity_required,
           })
           addToast("success", `Saved → ${path}`)
+          reportSaveCapture(saved)
           // The schema may have changed: the Workbench Input's and Workbench Output's
           // copies follow through the same fetch that keeps them current.
           useWorkbenchStore.getState().refreshTables()
@@ -180,10 +237,18 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
         } finally {
           set({ saving: false })
         }
-      })
-      return saves
+      }),
+    flush: () => {
+      const { status, dirty, uncaptured } = get()
+      return status === "ready" && (dirty || uncaptured) ? get().save() : Promise.resolve(true)
     },
   }
+})
+
+// The form follows the pipeline's document: each adoption of one (`executionGeneration`),
+// as a branch switched by hand or a change on disk brings, reads the file again.
+useDocumentStatusStore.subscribe((state, previous) => {
+  if (state.executionGeneration !== previous.executionGeneration) void useWorkbenchFormStore.getState().sync()
 })
 
 export default useWorkbenchFormStore

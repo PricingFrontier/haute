@@ -1,10 +1,12 @@
 """The workbench routes (specs/workbench): the status the editor reads, the tables as the
 form defines them now, and the form itself with its revision, read from the working
-directory on each request, and saved only against the revision it was read at."""
+directory on each request, saved only against the revision it was read at, and each save
+captured on the clone's save ledger as the pipeline's saves are."""
 
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +14,9 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from haute import _git
+from haute._git_state import write_working_branch
+from haute._git_transactions import commit_milestone
 from haute._workbench_form import FormSpec, blank_form, render_form
 from haute.routes._error_handlers import install_exception_handlers
 from haute.routes.workbench import router
@@ -69,6 +74,29 @@ def client() -> TestClient:
     install_exception_handlers(app)
     app.include_router(router)
     return TestClient(app)
+
+
+WORKING = "pricing-dev"
+LEDGER = f"{WORKING}-save"
+
+
+def git(project: Path, *args: str) -> str:
+    done = subprocess.run(["git", *args], cwd=project, capture_output=True, text=True, check=True)
+    return done.stdout.strip()
+
+
+def init_repo(project: Path) -> None:
+    """A repository with a working branch and its ledger, as the editor's git flows leave one."""
+    git(project, "init", "-b", "main")
+    git(project, "config", "user.name", "Test Actuary")
+    git(project, "config", "user.email", "test@example.com")
+    git(project, "add", "haute.toml")
+    git(project, "commit", "-m", "initial")
+    _git.set_working_branch(WORKING, project, create=True, cwd=project)
+
+
+def capture(response: dict[str, Any]) -> dict[str, Any]:
+    return {key: response[key] for key in ("git_sha", "warnings", "identity_required")}
 
 
 def test_a_project_without_the_table_has_no_workbench(project: Path) -> None:
@@ -208,6 +236,98 @@ def test_the_first_save_creates_the_form_unless_one_has_appeared(project: Path) 
     again = client().put("/api/workbench/form", json={"form": blank["form"], "base_revision": None})
     assert again.status_code == 409
     assert again.json()["detail"].startswith("stale_document_revision")
+
+
+def test_a_save_is_one_commit_on_the_ledger_which_commit_sweeps_from_then_on(
+    project: Path,
+) -> None:
+    enable(project)
+    init_repo(project)
+    blank = client().get("/api/workbench/form").json()
+
+    # The first save creates the file: a new file, captured all the same.
+    created = client().put(
+        "/api/workbench/form", json={"form": blank["form"], "base_revision": None}
+    )
+
+    assert created.status_code == 200, created.text
+    body = created.json()
+    assert body["warnings"] == []
+    assert body["identity_required"] is False
+    assert body["git_sha"] == git(project, "rev-parse", LEDGER)
+    assert git(project, "show", "--name-only", "--format=", body["git_sha"]).splitlines() == [
+        "forms/form.json"
+    ]
+
+    # The same form saved again changes nothing on disk, so there is no commit to make.
+    again = client().put(
+        "/api/workbench/form", json={"form": blank["form"], "base_revision": body["revision"]}
+    )
+    assert again.status_code == 200, again.text
+    assert again.json()["git_sha"] is None
+    assert git(project, "rev-parse", LEDGER) == body["git_sha"]
+
+    # A milestone folds the save into the working branch. The file is tracked from then on,
+    # so an edit made to it by hand is swept into the next milestone.
+    commit_milestone("Form laid out", project, cwd=project)
+    assert git(project, "diff", "--name-only", "main", WORKING).splitlines() == ["forms/form.json"]
+    first = git(project, "rev-parse", WORKING)
+    write_form(project, form(POLICY))
+    commit_milestone("Policy table", project, cwd=project)
+    assert git(project, "diff", "--name-only", first, WORKING).splitlines() == ["forms/form.json"]
+
+
+def test_a_save_without_a_working_branch_is_written_and_captured_nowhere(project: Path) -> None:
+    enable(project)
+    git(project, "init", "-b", "main")
+
+    saved = client().put("/api/workbench/form", json={"form": form(POLICY), "base_revision": None})
+
+    assert saved.status_code == 200, saved.text
+    assert capture(saved.json()) == {"git_sha": None, "warnings": [], "identity_required": False}
+    assert (project / "forms" / "form.json").is_file()
+    assert git(project, "status", "--porcelain", "--", "forms/form.json").startswith("??")
+
+
+def test_a_save_the_ledger_cannot_capture_is_written_and_says_why(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    enable(project)
+    init_repo(project)
+    tip = git(project, "rev-parse", LEDGER)
+
+    # A working branch the guardrails refuse: the save lands, the capture fails with its
+    # reason, as any failure of the capture does.
+    write_working_branch(project, "broken-save")
+    failed = client().put("/api/workbench/form", json={"form": form(POLICY), "base_revision": None})
+
+    assert failed.status_code == 200, failed.text
+    assert failed.json()["git_sha"] is None
+    assert failed.json()["identity_required"] is False
+    assert len(failed.json()["warnings"]) == 1
+    assert failed.json()["warnings"][0].startswith("Changes saved; version capture failed: ")
+    assert (project / "forms" / "form.json").is_file()
+
+    # No commit identity (a restored hosted container): the save lands, and the response
+    # says the capture waits on one, so the editor can ask.
+    write_working_branch(project, WORKING)
+    monkeypatch.setattr(_git, "get_identity", lambda cwd=None: (None, None))
+    uncaptured = client().put(
+        "/api/workbench/form",
+        json={"form": form(POLICY, PRICING), "base_revision": failed.json()["revision"]},
+    )
+
+    assert uncaptured.status_code == 200, uncaptured.text
+    assert capture(uncaptured.json()) == {
+        "git_sha": None,
+        "warnings": [
+            "Changes saved, but version capture needs a git identity. "
+            "Set your name and email to keep version history."
+        ],
+        "identity_required": True,
+    }
+    assert git(project, "rev-parse", LEDGER) == tip
+    assert client().get("/api/workbench/form").json()["revision"] == uncaptured.json()["revision"]
 
 
 def test_a_body_that_is_not_a_form_is_refused_and_nothing_is_written(project: Path) -> None:

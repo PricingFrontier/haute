@@ -195,6 +195,20 @@ class WorkbenchFormSaveRequest(BaseModel):
     base_revision: str | None = None
 
 
+class WorkbenchFormSaveResponse(WorkbenchFormResponse):
+    """The form as written, with its new revision and the save's version capture.
+
+    The capture fields mean what they mean on the pipeline save's response: ``git_sha`` is
+    the ledger commit the save produced when the clone has a working branch, else null;
+    ``warnings`` are non-fatal, a capture that failed among them; ``identity_required`` is
+    true only when the capture was skipped because git has no commit identity.
+    """
+
+    warnings: list[str] = Field(default_factory=list)
+    git_sha: str | None = None
+    identity_required: bool = False
+
+
 class WorkbenchFormTablesRequest(BaseModel):
     """A form as the view holds it, saved or not, whose tables and sample are asked for."""
 

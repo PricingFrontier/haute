@@ -853,7 +853,7 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
         },
         "PUT": {
             "request_ref": "#/components/schemas/WorkbenchFormSaveRequest",
-            "success_schema": {"$ref": "#/components/schemas/WorkbenchFormResponse"},
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchFormSaveResponse"},
         },
     },
     "/api/workbench/tables": {

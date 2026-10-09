@@ -1261,12 +1261,25 @@ function FlowEditor() {
     return handleSave()
   }, [addToast, handleSave, waitForPendingCommits])
 
+  // The git flows' save, before a milestone, a move, a branch switch or an
+  // identity retry: the pipeline through the graph-commit fence, then the
+  // workbench's form when it holds unsaved edits or a save the ledger did not
+  // capture. The form store is a lazy chunk, imported here only while the
+  // workbench is enabled and never on start.
+  const saveProject = useCallback(async (): Promise<boolean> => {
+    const pipelineSaved = await saveWithPendingCommits()
+    if (!useWorkbenchStore.getState().enabled) return pipelineSaved
+    const { default: formStore } = await import("./stores/useWorkbenchFormStore")
+    const formSaved = await formStore.getState().flush()
+    return pipelineSaved && formSaved
+  }, [saveWithPendingCommits])
+
   // Flush the editor through the graph-commit fence before opening the
   // milestone modal, so Commit can never capture an older ledger snapshot.
   const flushSaveThenMilestone = useCallback(async () => {
-    const ok = await saveWithPendingCommits()
+    const ok = await saveProject()
     if (ok) useGitStore.getState().openModal("milestone")
-  }, [saveWithPendingCommits])
+  }, [saveProject])
 
   // Save-gate: resolve Git readiness before deciding whether to save now or
   // queue the action behind branch/divergence setup.
@@ -1321,7 +1334,7 @@ function FlowEditor() {
       const target = useGitStore.getState().moveTarget
       if (!target) return
       try {
-        if (saveFirst && !await saveWithPendingCommits()) {
+        if (saveFirst && !await saveProject()) {
           addToast("error", "Save failed - staying on the current version.")
           useGitStore.getState().closeMove()
           return
@@ -1791,7 +1804,7 @@ function FlowEditor() {
       ) : (
         <ErrorBoundary name="WorkbenchToolbar">
           <Suspense fallback={<header role="toolbar" aria-label="Workbench toolbar" className="toolbar" />}>
-            <WorkbenchToolbar />
+            <WorkbenchToolbar onCommit={requestCommit} />
           </Suspense>
         </ErrorBoundary>
       )}
@@ -1846,7 +1859,7 @@ function FlowEditor() {
                     onClose={() => setComparisonInspectState(null)}
                   />
                 ) : (
-                  <GitPanel onClose={exitComparison} onSave={saveWithPendingCommits} />
+                  <GitPanel onClose={exitComparison} onSave={saveProject} />
                 )}
               </Suspense>
             </ErrorBoundary>
@@ -1999,7 +2012,7 @@ function FlowEditor() {
           onCloseGit={() => setGitOpen(false)}
           onCloseUtility={() => setUtilityOpen(false)}
           onCloseConstants={() => setConstantsOpen(false)}
-          onSave={saveWithPendingCommits}
+          onSave={saveProject}
           preamble={preamble}
           onImportAdded={handleImportAdded}
           onPreambleChange={handlePreambleChange}
@@ -2037,7 +2050,7 @@ function FlowEditor() {
         <ErrorBoundary name="WorkbenchView">
           <Suspense fallback={null}>
             <WorkbenchView
-              onSave={saveWithPendingCommits}
+              onSave={saveProject}
               isInsideSubmodel={viewStack.length > 1}
               readOnly={documentReadOnly}
               resolveGraph={resolveWorkbenchGraph}
@@ -2057,7 +2070,7 @@ function FlowEditor() {
         onCreateInstance={handleCreateInstance}
         onDissolveSubmodel={handleDissolveSubmodel}
         onGitModalConfirmed={handleGitModalConfirmed}
-        onSave={saveWithPendingCommits}
+        onSave={saveProject}
         onMoveConfirmed={handleMoveConfirmed}
         onCreateSubmodel={handleCreateSubmodel}
         onRenameNode={onRenameNode}

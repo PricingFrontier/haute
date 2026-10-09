@@ -2965,4 +2965,26 @@ describe("App integration - the workbench view (specs/workbench)", () => {
     expect(screen.queryByTestId("workbench-view")).toBeNull()
     expect(await screen.findByRole("toolbar", { name: "Pipeline toolbar" })).toBeInTheDocument()
   })
+
+  it("Commit in the workbench's toolbar saves the form's edits and the pipeline, then opens the milestone modal", async () => {
+    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "forms/form.json" })
+    render(<App />)
+    await waitForAppReady()
+    const switcher = await within(screen.getByTestId("pipeline-view")).findByRole("group", { name: "Views" })
+    fireEvent.click(within(switcher).getByRole("button", { name: "Workbench" }))
+    const view = await screen.findByTestId("workbench-view", {}, { timeout: 10_000 })
+    await within(view).findByTestId("sheet-viewport", {}, { timeout: 10_000 })
+    act(() => {
+      useWorkbenchFormStore.getState().change((form) => ({ ...form, name: "renamed" }))
+    })
+
+    fireEvent.click(await screen.findByTestId("toolbar-save-commit", {}, { timeout: 10_000 }))
+
+    // The form's edits and the pipeline reach the ledger before the milestone is asked for.
+    await waitFor(() => expect(screen.getByTestId("milestone-commit-modal")).toBeInTheDocument())
+    expect(workbenchApi.saveWorkbenchForm).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(workbenchApi.saveWorkbenchForm).mock.calls[0][0]).toMatchObject({ name: "renamed" })
+    expect(api.savePipeline).toHaveBeenCalled()
+    expect(useWorkbenchFormStore.getState().dirty).toBe(false)
+  })
 })

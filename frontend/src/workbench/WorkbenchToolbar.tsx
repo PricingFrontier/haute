@@ -7,14 +7,19 @@ import useWorkbenchViewStore, { ZOOM_STEP } from "../stores/useWorkbenchViewStor
 
 declare const __APP_VERSION__: string
 
+interface WorkbenchToolbarProps {
+  /** Commit: the host's milestone flow, which saves the form's unsaved edits first. */
+  onCommit: () => void
+}
+
 /**
  * The toolbar while the workbench's view shows (specs/workbench): the brand, the view's
  * sections (Sheets over Schema), the form's Undo and Redo, Zoom In over Zoom Out while the
  * sheets show, why pricing the sample last failed, and the project's controls, whose Save
- * saves the form. There is no Commit until the form is on the save ledger; the Git panel's
- * own Commit records the pipeline.
+ * saves the form and whose Commit records a milestone through the host, the form and the
+ * pipeline saved first.
  */
-export default function WorkbenchToolbar() {
+export default function WorkbenchToolbar({ onCommit }: WorkbenchToolbarProps) {
   const ready = useWorkbenchFormStore((s) => s.status === "ready")
   const canUndo = useWorkbenchFormStore((s) => s.undoStack.length > 0)
   const canRedo = useWorkbenchFormStore((s) => s.redoStack.length > 0)
@@ -52,7 +57,7 @@ export default function WorkbenchToolbar() {
           </span>
         )}
       </div>
-      <ProjectControls onSave={() => { void save() }} saveDisabled={!ready || saving} />
+      <ProjectControls onSave={() => { void save() }} onCommit={onCommit} saveDisabled={!ready || saving} />
     </header>
   )
 }

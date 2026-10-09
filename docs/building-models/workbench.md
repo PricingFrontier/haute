@@ -29,10 +29,14 @@ toolbar keeps Haute's project controls (Assistant, Help, the branch and **Save**
 the Workbench's own: **Sheets** over **Schema**, **Undo** over **Redo**, and **Zoom In**
 over **Zoom Out** on the sheets.
 
-**Save** and Ctrl+S write `forms/form.json`. There is no **Commit** in the Workbench yet:
-the Git panel's own Commit still records the pipeline. A save is refused when the file
-changed on disk since the Workbench read it (a branch switch, or an edit by hand); the
-banner's **Reload** reads it again, dropping your unsaved edits.
+**Save** and Ctrl+S write `forms/form.json`, and each save is recorded on your branch's
+save ledger like a save of the pipeline, so it shows in the Git panel's history. **Commit**
+records a milestone of the whole project: the pipeline, and the Workbench's unsaved edits,
+are saved first. A save is refused when the file changed on disk since the Workbench read
+it (an edit by hand, or a branch switched outside Haute); the banner's **Reload** reads it
+again, dropping your unsaved edits. When the pipeline is read again from disk and the file
+changed too, the Workbench follows it, unless you have unsaved edits, when the banner
+appears instead.
 
 Both workbench nodes' panels have **Edit in Workbench**, which opens the view.
 

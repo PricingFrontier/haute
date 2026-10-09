@@ -8,14 +8,14 @@
 | `src/haute/_workbench_form.py` | The form file's canonical shape, its reading and its revision: the pydantic models `FormSpec`, `FormSchema`, `SchemaTable`, `SchemaColumn`, `Page`, `TableInputWidget`, `CollectionWidget` and `FieldRef` (every field written, unknown fields refused), `WorkbenchFormError`, `FormDocument` (a form with its file's revision), `blank_form` (one blank sheet, named after the project), `render_form` (the file's text), `form_revision` (a file's revision: the content hash of its bytes), `write_form` (an atomic write, answering the written file's revision), `form_file_revision` (the file's revision as it is now, None when the file does not exist) and `read_form_document` (the file's bytes read once, hashed and checked, the blank form with no revision when the file does not exist, naming the file and what is wrong otherwise). |
 | `src/haute/_workbench_tables.py` | The form's tables as Haute takes them: `input_tables` (the schema's input tables in the Quote Input's v2 shape, in schema order), `output_tables` (its output tables in the same shape), `sample_quote` (the sample typed while building as one request holds it, each value as its column's type holds it) and `workbench_tables`, which gathers the three as a `WorkbenchTables`. |
 | `src/haute/_workbench_output.py` | The Workbench Output's tables and response: `WorkbenchOutputError`, `workbench_output_tables` (its tables read from its config: checked with `validate_v2_schema`, each one-row or many-row by its path, each column at its table's level), `workbench_output_mapping` (its mapping read from its config, checked against the tables), `WorkbenchOutputTables` (its result: its tables' frames by label, carrying the tables they fill), `fill_workbench_tables` (the tables filled from the frames by port through the mapping, each column checked against and cast to its declared type, a one-row table checked for its one row when it is read), `workbench_response` (the response built from the tables by the Quote Response's assembler) and `as_response` (a response node's result as the frame a request is answered with). |
-| `src/haute/routes/workbench.py` | `router`, the workbench routes under `/api/workbench`: `workbench_status` (`GET /api/workbench`), `get_workbench_tables` (`GET /api/workbench/tables`) and `post_workbench_tables` (`POST /api/workbench/tables`, the same of a form in the request), both through `_tables_response` (the tables and the response tables checked with `validate_v2_schema`), `get_workbench_form` (`GET /api/workbench/form`, the form with its revision) and `put_workbench_form` (`PUT /api/workbench/form`, writing the form through `_save_form`, which raises `StaleDocumentRevisionError` when the file's revision is not the base revision quoted, answered as the pipeline save answers it); each reads `haute.toml` through `_enabled_config` (404 while the workbench is not enabled), and all but the status the form, from the working directory on every request, off the event loop. |
-| `frontend/src/api/workbench.ts` | `fetchWorkbenchStatus`: `GET /api/workbench` through the shared request machinery, validated by the generated `workbench` contract, whose validators load with the first response. `fetchWorkbenchTables`: `GET /api/workbench/tables`, validated by the same group's `WorkbenchTablesResponse`. `fetchWorkbenchFormTables`: `POST /api/workbench/tables` with a form, validated by `WorkbenchTablesResponse`. `fetchWorkbenchForm`: `GET /api/workbench/form`, validated by `WorkbenchFormResponse`. `saveWorkbenchForm`: `PUT /api/workbench/form` with the form and its `base_revision`, in one attempt (a retry of a save that landed but lost its answer would read as stale), validated the same way. |
+| `src/haute/routes/workbench.py` | `router`, the workbench routes under `/api/workbench`: `workbench_status` (`GET /api/workbench`), `get_workbench_tables` (`GET /api/workbench/tables`) and `post_workbench_tables` (`POST /api/workbench/tables`, the same of a form in the request), both through `_tables_response` (the tables and the response tables checked with `validate_v2_schema`), `get_workbench_form` (`GET /api/workbench/form`, the form with its revision) and `put_workbench_form` (`PUT /api/workbench/form`, through `_save_form`, which raises `StaleDocumentRevisionError` when the file's revision is not the base revision quoted, answered as the pipeline save answers it, else writes the form and captures the written file on the save ledger through the pipeline save's capture, answering the form, its revision and the capture's commit, warnings and identity flag); each reads `haute.toml` through `_enabled_config` (404 while the workbench is not enabled), and all but the status the form, from the working directory on every request, off the event loop. |
+| `frontend/src/api/workbench.ts` | `fetchWorkbenchStatus`: `GET /api/workbench` through the shared request machinery, validated by the generated `workbench` contract, whose validators load with the first response. `fetchWorkbenchTables`: `GET /api/workbench/tables`, validated by the same group's `WorkbenchTablesResponse`. `fetchWorkbenchFormTables`: `POST /api/workbench/tables` with a form, validated by `WorkbenchTablesResponse`. `fetchWorkbenchForm`: `GET /api/workbench/form`, validated by `WorkbenchFormResponse`. `saveWorkbenchForm`: `PUT /api/workbench/form` with the form and its `base_revision`, in one attempt (a retry of a save that landed but lost its answer would read as stale), validated by `WorkbenchFormSaveResponse`: the form at its new revision with the save's capture. |
 | `frontend/src/stores/useWorkbenchStore.ts` | `useWorkbenchStore`: `enabled`, whether the project's workbench is, and `formPath`, where its form is as `haute.toml` names it; `load`, which fetches the status, leaves the store untouched while the workbench is not enabled (so the editor never re-renders for it) and reports a failure as one error toast; `activeView`, which view shows (`EditorView`: `pipeline` or `workbench`), and `showView`, which refuses the workbench's view while the workbench is not enabled; `tables`, the workbench's tables, sample and response tables from the newest fetch that succeeded; and `refreshTables`, which numbers its fetches so that only the newest publishes them or toasts its failure. |
 | `frontend/src/utils/workbenchTables.ts` | The copy rules for a Workbench Input and a Workbench Output: `WorkbenchTables`, `PricedSample` (the sample priced: each output table's rows by its label), `quoteTablesPatch` (the update a Workbench Input's copy needs, `{tables, sample}`, both compared as JSON with object keys sorted and a missing sample read as `{}`, or null), `responseTablesPatch` (the update a Workbench Output's copy needs, `{tables}` compared the same way and `mapping` without the entries of tables and columns the new tables lack, or null), `paletteWorkbenchInputConfig` and `paletteWorkbenchOutputConfig` (what the palette's Workbench Input and Workbench Output start with: the newest tables, and sample, fetched), `workbenchOutputTableLabels` (a Workbench Output's ports, its tables' labels in order), and `WORKBENCH_COPY_PATCHES` (the update rule for each workbench node type, `quoteTablesPatch` for a Workbench Input and `responseTablesPatch` for a Workbench Output). |
 | `frontend/src/hooks/useWorkbenchTables.ts` | The hook the editor shell (`frontend/src/App.tsx`) calls to keep those copies current: a fetch when the workbench is enabled and on each `executionGeneration`, recorded against the generation; eligible tables applied once per Workbench Input and Workbench Output for each fetch, by `WORKBENCH_COPY_PATCHES`, through `onUpdateNode`, with an `isCurrent` that checks the generation, while the document is editable and its top level shows; `nodeCreated` for a node a palette drop created. |
 | `frontend/src/panels/editors/WorkbenchInputEditor.tsx` | The Workbench Input's panel, which `frontend/src/panels/NodeConfigEditor.tsx` renders for a Workbench Input: the tables read-only with each label's `apiInputLabelIssue`, a note on what previews run on, chosen by whether the config's sample is a non-empty object, a note while the workbench is not enabled, and one while a submodel is open (`insideSubmodel`, passed down from `frontend/src/panels/NodePanel.tsx`). It exports `WorkbenchTable`, one table read-only, and `WorkbenchTablesHeader`, the section's title, its "Edit in Workbench" button while the workbench is enabled (`showView`) and its notes, which the Workbench Output's panel shares, and `WORKBENCH_DISABLED_NOTE`, the note's one wording. |
 | `frontend/src/panels/editors/WorkbenchOutputEditor.tsx` | The Workbench Output's panel, which `frontend/src/panels/NodeConfigEditor.tsx` renders for a Workbench Output: under `WorkbenchTablesHeader`, each table with its label's `apiInputLabelIssue`, the node connected to its port (from the `targetHandle` of the panel's input sources) or "Not connected", and a row per column with a select of the connected frame's columns (the input source's `columns`) that fills it, chosen by `mappedSource`, through `onUpdate` with the new `mapping`. |
-| `frontend/src/stores/useWorkbenchFormStore.ts` | `useWorkbenchFormStore`, the form while the view edits it: `form` and `revision` as read (`load`, once; `reload`, again, dropping edits and history) through `fetchWorkbenchForm`, with `status` and `loadError`; `change` (an edit that undo reverses, on the graph store's `appendHistoryEntry` and its history cap), `undo`, `redo`, `undoStack`, `redoStack`, `savedForm` and `dirty`; `save`, which runs saves one after another, each writing the form as it stands through `saveWorkbenchForm` with the revision, adopts the new revision, toasts "Saved → <form>" and fetches the tables again through `useWorkbenchStore.refreshTables`; `stale`, set by a save refused as `stale_document_revision` (one error toast, the edits kept) and cleared by a reload; `saving`; and the gesture setters `pushSnapshot` (the form recorded for undo, the redo stack cleared) and `setFormRaw` (the form replaced without history, `dirty` recomputed), so a drag is one undo step. |
+| `frontend/src/stores/useWorkbenchFormStore.ts` | `useWorkbenchFormStore`, the form while the view edits it: `form` and `revision` as read (`load`, once; `reload`, again, dropping edits and history) through `fetchWorkbenchForm`, with `status` and `loadError`; `change` (an edit that undo reverses, on the graph store's `appendHistoryEntry` and its history cap), `undo`, `redo`, `undoStack`, `redoStack`, `savedForm` and `dirty`; `save`, which takes its turn after the saves and syncs before it, writes the form as it stands through `saveWorkbenchForm` with the revision, adopts the new revision, toasts "Saved → <form>", reports the capture through `reportSaveCapture` (`uncaptured` set while the capture waited on a git identity) and fetches the tables again through `useWorkbenchStore.refreshTables`; `flush`, the git flows' save: `save` while the form holds unsaved edits or an uncaptured save, else true without a request; `sync`, run after each adoption of the pipeline's document (`executionGeneration`, subscribed at module load) and after any save in flight: the file read again through `fetchWorkbenchForm`, nothing at the same revision, a changed file adopted with history dropped while the form is as saved, else `stale` set, and a failed read one error toast; `stale`, set by a save refused as `stale_document_revision` (one error toast, the edits kept) or by a sync that found the file changed under unsaved edits, and cleared by a reload; `saving`; and the gesture setters `pushSnapshot` (the form recorded for undo, the redo stack cleared) and `setFormRaw` (the form replaced without history, `dirty` recomputed), so a drag is one undo step. |
 | `frontend/src/stores/useWorkbenchViewStore.ts` | `useWorkbenchViewStore`, the view's own state, neither saved nor undone: `section` (`sheets` or `schema`), `pageId` (null until chosen; `activePage` reads the form's first), `selectedId`, `zoom` (25% to 200%, `ZOOM_STEP` 10%), `creating` (a component being dragged out of the palette, with the pointer), `panelWidth`, and the `sheet` and `viewport` elements; `showSection`, `showPage` (the sheets section, nothing selected), `select`, `setZoom`, `zoomBy`, `fitZoom` (the viewport's width less the padding over the sheet's reach, through `sheetGeometry.fitZoom`), `setCreating`, `setPanelWidth`, `setSheet` and `setViewport`. |
 | `frontend/src/stores/useWorkbenchPricingStore.ts` | `useWorkbenchPricingStore`, the sample priced live: `pricer` (the view host's `Pricer`, null while the view is away), `price` (a `SamplePrice`: the tables and the basis priced for), `error` (why the last pricing failed, until one succeeds) and `pricing`; `setPricer` (null also drops a scheduled pricing), `schedule` (`PRICING_DELAY_MS` after the last call) and `priceNow`, which runs one pricing at a time and once more for a request made meanwhile: the form's tables through `fetchWorkbenchFormTables`, then the pricer, an answer after the pricer changed dropped. |
 | `frontend/src/workbench/priceSample.ts` | `priceSample(graph, workbench, source)`: the document's top-level nodes patched through `WORKBENCH_COPY_PATCHES` with the form's tables, sample and response tables, the Workbench Output found (none: an error naming what to add), and each of its `workbenchOutputTableLabels` previewed through `previewNode` with `portLabel`, a failure rejecting with the server's reason or the preview's error; the document itself untouched. |
@@ -31,7 +31,7 @@
 | `frontend/src/workbench/WorkbenchPalette.tsx` | `WorkbenchPalette`, the view's left column in the kit's palette shell: a `PaletteItem` per `PALETTE_KINDS` entry starting `startCreate` on press, and the switcher under them; sharing `useUIStore.paletteOpen`, collapsed to the reveal strip (labelled "Show component palette") with the compact switcher. |
 | `frontend/src/workbench/ViewSwitcher.tsx` | `ViewSwitcher`, the Pricing and Workbench buttons at the bottom of the left palette while the workbench is enabled (nothing otherwise), pressing `activeView` and calling `showView`; `compact` is the column of icon buttons beside the collapsed node palette. |
 | `frontend/src/workbench/WorkbenchView.tsx` | `WorkbenchView`, the view over the area below the toolbar while it is active: given `resolveGraph` by the host, it sets the pricing store's pricer (`priceSample` on the resolved document with the settings store's active source) while mounted and schedules a pricing when the form's `pricingBasis` changes while the sheets show; `WorkbenchPalette`, then the form read on first show (`load`), "Loading the workbench…", a read failure with Try again (`reload`), the stale banner with Reload, and once the form is read the section the view store names, `PageTabs` over `SheetCanvas` or `SchemaEditor`; `useWorkbenchShortcuts`; the lazy Git and Assistant panels as asides, else `PropertiesPanel` beside the sheets; and `DragChip`, which follows the pointer while a component is dragged out of the palette until the sheet's ghost takes over. |
-| `frontend/src/workbench/WorkbenchToolbar.tsx` | `WorkbenchToolbar`, the toolbar while the view shows: `ToolbarBrand`, a `ToolbarColumn` of Sheets over Schema (`showSection`), `UndoRedo` on the form store's history, `ZoomInOut` (`zoomBy`) while the sheets show, the pricing store's `error` as "Pricing failed: …", and `ProjectControls` with Save calling the form store's `save` (disabled while the form loads or saves) and no Commit. |
+| `frontend/src/workbench/WorkbenchToolbar.tsx` | `WorkbenchToolbar`, the toolbar while the view shows: `ToolbarBrand`, a `ToolbarColumn` of Sheets over Schema (`showSection`), `UndoRedo` on the form store's history, `ZoomInOut` (`zoomBy`) while the sheets show, the pricing store's `error` as "Pricing failed: …", and `ProjectControls` with Save calling the form store's `save` and Commit the host's `onCommit`, both disabled while the form loads or saves. |
 | `frontend/src/workbench/SchemaEditor.tsx` | `SchemaEditor`, the Schema section: a block per table (its name in a `CommittedTextField`, role and rows selects, the column count with the table's problems, Delete with a confirmation when a sheet shows its columns, collapsible) with a row per column (the type marker, an `IconSelect` of `COLUMN_TYPE_OPTIONS`, or the fixed Integer of the index; the name, committing on blur or Enter, Enter adding the next column and Alt+Up and Alt+Down moving it; the rules summary; the key toggle in a many-row table; Label and rules opening `ColumnDetails`: the label and, for an input column, Required, a Min to Max range in `ValidatedTextField`s that refuse a non-number, and Allowed values; Remove with a confirmation when a sheet shows it), Add column and, for a many-row table, the index checkbox; then Add table. A new table's or column's name takes the focus and is selected. Problems come from `schemaProblems` with the document's `reserved_api_input_frame_labels`. |
 | `frontend/src/workbench/columnTypes.ts` | `COLUMN_TYPES`, each column type's label, icon (the step editor's for the kind) and colour (`getDtypeColor` of its dtype), `COLUMN_TYPE_OPTIONS` for the marker, and `isNumeric`. |
 | `frontend/src/workbench/useWorkbenchShortcuts.ts` | `useWorkbenchShortcuts`, the view's window-level shortcuts through `hooks/keyboardTargets.ts`: Ctrl/Cmd+S saves (a focused field blurred first), Ctrl/Cmd+Z undoes and Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y redoes outside a text field; while the sheets show and outside a control (`isFormControl`), Ctrl/Cmd+1 fits the sheet and, with a component selected, Escape deselects, Delete or Backspace removes, Ctrl/Cmd+D duplicates (`duplicateWidget`, the copy selected) and the arrows nudge by `GRID` or, with Shift, a pixel, a burst within 800ms one undo step through `pushSnapshot` and `setFormRaw`; keys in a modal dialog are left to it. |
@@ -169,9 +169,13 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   **`WorkbenchFormResponse`** (`src/haute/schemas.py`): `form` (a `FormSpec`) and
   `revision` (the file's content hash, `null` while the form has never been saved).
   **`WorkbenchFormSaveRequest`**: `form` and `base_revision` (`null` for a first save).
+  **`WorkbenchFormSaveResponse`**: the response with the save's `warnings`, `git_sha` and
+  `identity_required`, as `SavePipelineResponse` has them.
 - **Form store state** (`frontend/src/stores/useWorkbenchFormStore.ts`): `form`, `revision`,
   `status` (`idle`, `loading`, `ready` or `failed`), `loadError`, `savedForm` (the form as
-  read or last saved, serialised), `dirty`, `undoStack`, `redoStack`, `stale` and `saving`.
+  read or last saved, serialised), `dirty`, `undoStack`, `redoStack`, `stale`, `saving` and
+  `uncaptured` (the last save was written but not captured on the ledger for want of a git
+  identity).
 - **`SampleValue`** and **`SampleRow`** (`frontend/src/utils/workbenchForm.ts`): text or a
   tick, and a row of them keyed by column id. **`Pricer`** and **`SamplePrice`**
   (`frontend/src/stores/useWorkbenchPricingStore.ts`): a function of a
@@ -401,15 +405,21 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
     (`appendHistoryEntry`), clears `redoStack` and recomputes `dirty` against `savedForm`;
     `undo` and `redo` move forms between the stacks. Problems are recomputed from the form
     on each render with the document's reserved labels.
-19. **Saved.** `save` queues behind the last save and, when its turn comes, PUTs the form
+19. **Saved.** `save` takes its turn after the saves and syncs before it and PUTs the form
     with `revision` as `base_revision`. `_save_form` reads `form_file_revision` and refuses
     with `StaleDocumentRevisionError` when it is not `base_revision`; else `write_form`
-    writes the canonical text and answers the new revision, which the store adopts, setting
-    `savedForm`, recomputing `dirty` (edits made meanwhile stay unsaved), toasting the save
-    and calling `refreshTables`, whose fetch is newer than the generation's and so reaches
-    the Workbench Input and Workbench Output through `useWorkbenchTables`. A 409 whose
-    detail starts with `stale_document_revision` sets `stale` and toasts; `reload` reads the
-    form again and clears it.
+    writes the canonical text and `capture_save_in_ledger` (`haute.routes._save_pipeline`,
+    the pipeline save's capture, given the file's path relative to the project) commits
+    the file on the ledger when the clone has a working branch, and the response answers
+    the new revision with the capture's `git_sha`, `warnings` and `identity_required`. The
+    store adopts the revision, setting `savedForm`, recomputing `dirty` (edits made
+    meanwhile stay unsaved) and `uncaptured` (from `identity_required`), toasts the save,
+    reports the capture through `reportSaveCapture` (the commit on the branch indicator,
+    the history nonce, each warning toasted, the identity prompt unless dismissed) and
+    calls `refreshTables`, whose fetch is newer than the generation's and so reaches the
+    Workbench Input and Workbench Output through `useWorkbenchTables`. A 409 whose detail
+    starts with `stale_document_revision` sets `stale` and toasts; `reload` reads the form
+    again and clears it.
 20. **The sheets, shown.** With the view's `section` at `sheets`, `WorkbenchView` renders
     `PageTabs` over `SheetCanvas`, which registers its viewport and sheet with the view
     store, measures the viewport, fits the zoom once, and draws `activePage(form, pageId)`'s
@@ -445,6 +455,16 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
 26. **Shown.** `FieldBoxes` reads the pricing store's `price` and shows
     `price.tables[table.name][0][column.name]` for an output column, dimmed when
     `price.basis` is not the form's basis; `WorkbenchToolbar` shows `error`.
+27. **Committed.** Commit in `WorkbenchToolbar` calls the host's `requestCommit`
+    (`App.tsx`): the git readiness gate, then `saveProject`, which saves the pipeline
+    through `saveWithPendingCommits` and, while the workbench is enabled, the form through
+    the form store's `flush` (the store imported lazily, so a project that never showed
+    the view saves nothing), and then the milestone modal; a move's Save first, the Git
+    panel's save before a switch and the identity prompt's retry call `saveProject` too.
+28. **Synced.** The form store subscribes to `executionGeneration` at module load and runs
+    `sync` on each advance, after any save in flight: `fetchWorkbenchForm`, then nothing at
+    the same revision, the form adopted (history dropped) while `dirty` is false, else
+    `stale` set; a failed read is one error toast and leaves the form as it is.
 
 ## Edge cases and invariants
 
@@ -502,7 +522,19 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
 - The form is read once per store life, so unsaved edits and history survive switching
   views; a reload is explicit (the stale banner's Reload, or Try again after a failed read).
 - A save queues behind the one running and writes the form as it stands then, quoting the
-  revision the previous save gave, so two quick saves never race on the file.
+  revision the previous save gave, so two quick saves never race on the file; a sync
+  queues the same way, so it never reads the file from before a save in flight and takes
+  it for another branch's.
+- A form save on the ledger is the pipeline save's capture: no working branch, no capture;
+  a failed capture is a warning on a 200, the file written; the file is tracked from its
+  first captured save, so a milestone's sweep takes a hand edit to it.
+- Commit saves the form only while it holds unsaved edits or an uncaptured save: a
+  milestone from the pipeline editor, the form as saved, makes no form request and no
+  form toast. A form save refused as stale refuses the milestone, as a refused pipeline
+  save does.
+- A sync adopts a changed file only while the form is as saved, and drops the history, since
+  an undo would bring the other branch's form back; with unsaved edits it marks the form
+  stale, and the save that would overwrite the file is refused as before.
 - The pipeline's document, its live sync and its history go on while the view shows; only
   its keyboard and React Flow's document-level keys are fenced.
 - Fields are held by table and column id, never by name, so renaming a column keeps it
@@ -543,6 +575,10 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   message of its own; `put_workbench_form` answers it as the pipeline save does, 409 with
   `"<code>: <message>"`, logged as a warning with both revisions. A body that is not a
   form is FastAPI's 422.
+- `capture_save_in_ledger` degrades a failed capture to a warning and a missing identity
+  to `identity_required`, as for the pipeline save, and `put_workbench_form` answers 200
+  with them; nothing in the capture fails the save. `sync` reports a read that failed in
+  one error toast and leaves the form as it is.
 - `fetchWorkbenchForm` and `saveWorkbenchForm` throw `ApiError` or a contract error like
   any typed request; the form store shows a read failure in the view (`loadError`) and a
   save failure as one error toast, telling a stale refusal by the detail's code.
@@ -609,8 +645,12 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   revision, a save against the revision adopting the new one and reaching the tables, a
   stale save refused with the pipeline's code and the file untouched, a first save creating
   the file unless one appeared, a body that is not a form refused without a write, the form
-  routes' 404 while disabled, and the real `haute.server` app answering `GET /api/workbench`
-  ahead of its 404 guard and only with the session cookie.
+  routes' 404 while disabled, a save as one commit on the ledger (its SHA, the new file
+  alone in it, no second commit for the same form, the milestone folding it in and sweeping
+  an edit made by hand), a save without a working branch captured nowhere, a capture that
+  failed or waits on an identity reported on a 200 with the file written, and the real
+  `haute.server` app answering `GET /api/workbench` ahead of its 404 guard and only with
+  the session cookie.
 - `tests/test_cli_init.py` covers `haute init --workbench` writing the table and
   `forms/form.json` and reporting both, a plain `haute init` writing neither, and `--force
   --workbench`; `tests/test_scaffold.py` covers `haute_toml`'s table only when asked, parsed,
@@ -636,7 +676,8 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   `frontend/src/__tests__/App.backgroundJobsIsolation.test.tsx` stub the status as not enabled;
   the first enables it for the host's case: the switcher at the bottom of the palette, the
   pipeline editor hidden and inert while the view shows, the toolbars swapped, Ctrl/Cmd+S
-  saving the form and not the pipeline, and the way back.
+  saving the form and not the pipeline, the way back, and Commit in the workbench's toolbar
+  saving the form's edits and the pipeline before the milestone modal opens.
   `frontend/src/__tests__/App.workbenchLazy.test.ts` guards that the view, its toolbar, the
   schema editor, the form store and the form's operations are loaded lazily.
 - The view: `frontend/src/stores/__tests__/useWorkbenchFormStore.test.ts` covers reading
@@ -644,7 +685,11 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   and redo and `dirty`, the `MAX_HISTORY` cap, a save against the revision (the PUT's body,
   the new revision, the toast, the tables fetched again, the next save quoting it), edits
   during a save staying unsaved, a stale refusal keeping the edits until a reload, any
-  other failure's toast, and no save before the form is read;
+  other failure's toast, no save before the form is read, the capture reported (the ledger
+  commit, each warning, the identity prompt and the flush that saves again), `flush`
+  saving only unsaved edits or an uncaptured save and refused with a refused save, and
+  `sync` (the same revision, a changed file adopted while clean, stale while dirty, no
+  request before the form is read, its turn after a save in flight, a failed read's toast);
   `frontend/src/utils/__tests__/workbenchForm.test.ts` the pure operations and
   `schemaProblems`; `frontend/src/workbench/__tests__/SchemaEditor.test.tsx` the editor
   (tables and types listed, a table added with its name focused, a rename committing as one
@@ -653,7 +698,8 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   confirmations, the index, problems, collapsing);
   `frontend/src/workbench/__tests__/WorkbenchView.test.tsx` the view's states, the stale
   banner, the shortcuts and the panels beside it;
-  `frontend/src/workbench/__tests__/WorkbenchToolbar.test.tsx` its controls;
+  `frontend/src/workbench/__tests__/WorkbenchToolbar.test.tsx` its controls, Commit
+  through the host;
   `frontend/src/workbench/__tests__/ViewSwitcher.test.tsx` the switcher; and the two
   editors' tests the "Edit in Workbench" button.
 - The sheets: `frontend/src/utils/__tests__/sheetGeometry.test.ts` covers the grid, moves

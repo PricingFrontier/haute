@@ -10,6 +10,7 @@
 | `frontend/src/panels/gitgraph/layout.ts` | Pure layout: `computeGitGraphLayout` turns a `GitGraphResponse` + the panel's row list into a `RailModel` (lanes, dots, curves, magnifiers, spawn stubs); `computeRailRuns` consolidates per-row cells into whole-length vertical line segments. No DOM, no fetch. |
 | `frontend/src/panels/gitgraph/GraphCell.tsx` | Rendering: `GraphRailCell` (per-row SVG cell), `GraphRailOverlay` (the measured whole-box overlay of consolidated runs), `GraphRailHeader` (top departing-branch chip strip), `Magnifier`. Pure presentation over `frontend/src/panels/gitgraph/layout.ts` types. |
 | `frontend/src/stores/useGitStore.ts` | Zustand store: working-branch readiness + retry error, shared branch-list state/action, modal routing (`GitModalMode`), peek/comparison/move targets, and the refresh-triggering nonces (`historyNonce`, `commitNonce`, `branchesExpandNonce`). |
+| `frontend/src/stores/saveCapture.ts` | `reportSaveCapture`: what a save answered about its version capture, reported the same way for the pipeline's save and the workbench's form save — the ledger commit onto the status for the branch indicator through `setLastSaveSha` (left as it is when the answer has no commit field), `notifyHistoryChanged` so an open panel refetches, each warning in a toast of its own, and the identity modal opened on `identity_required` unless it was dismissed this session (`isIdentityPromptDismissed`) or is already open. |
 | `frontend/src/stores/gitBranchLoader.ts` | Lazily loaded branch-list request coordinator. It publishes results into `useGitStore` while delegating the in-flight/queued-refresh bookkeeping to `singleFlight.ts`, keeping branch-only client code out of the initial editor bundle. |
 | `frontend/src/stores/singleFlight.ts` | Shared resettable single-flight utility: request joining, the trailing-refresh queue (exactly one follow-up per active request, generation-anchored), and the stalled-request watchdog. Consumed by `useGitStore.ts` (working-branch status) and `gitBranchLoader.ts` (branch list). Test seam: both stores' `reset…ForTests` exports delegate to its `reset()`. |
 | `frontend/src/components/BranchIndicator.tsx` | Toolbar entry point: explicit repository/readiness/error labels with Retry, plus a ready branch-name button that opens the panel on the current branch. Truncated errors use the shared `Tooltip` to expose the full diagnostic on error hover or Retry focus; its function child places `aria-describedby` on Retry. |
@@ -371,6 +372,9 @@ Tests live alongside the source: `frontend/src/panels/__tests__/`,
 `frontend/src/stores/__tests__/useGitStore.test.ts`. All are Vitest + React Testing
 Library component/unit tests (no e2e for this surface).
 
+- **`frontend/src/stores/__tests__/saveCapture.test.ts`** — the save-capture report: the
+  indicator's SHA (and left as it is without the field), the history nonce, each warning's
+  toast, and the identity prompt opened once per session and not over itself.
 - **`frontend/src/panels/__tests__/GitPanel.test.tsx`** — the primary behavioural suite: rendering, milestone
   expand/collapse, pending-save display, both refresh nonces, right-click menus
   (fork/view/move) in every row context (milestone / pending save / expanded save),

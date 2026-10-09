@@ -2489,3 +2489,18 @@ export interface SchemaColumn {
   required: boolean;
   type: 'int' | 'float' | 'str' | 'bool' | 'date';
 }
+/**
+ * The form as written, with its new revision and the save's version capture.
+ *
+ * The capture fields mean what they mean on the pipeline save's response: ``git_sha`` is
+ * the ledger commit the save produced when the clone has a working branch, else null;
+ * ``warnings`` are non-fatal, a capture that failed among them; ``identity_required`` is
+ * true only when the capture was skipped because git has no commit identity.
+ */
+export interface WorkbenchFormSaveResponse {
+  form: FormSpec;
+  git_sha: string | null;
+  identity_required: boolean;
+  revision: string | null;
+  warnings: string[];
+}

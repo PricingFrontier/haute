@@ -21,8 +21,8 @@ Haute (its host beside the pipeline editor, its toolbar and shortcuts, its schem
 its sheets, and the sample typed into them and priced live), and the two workbench node
 types: where their tables come from, how the
 editor keeps them current, what a Workbench Input gives without a request and how a
-Workbench Output's frames fill the response. Preview and the form's place on the save
-ledger are planned ([the workbench roadmap](../roadmap/workbench.md)).
+Workbench Output's frames fill the response. Preview is planned
+([the workbench roadmap](../roadmap/workbench.md)).
 
 ## Scope
 
@@ -52,8 +52,7 @@ In scope:
 
 Out of scope:
 
-- Preview, and the form on the save ledger. Each is a package of the
-  [workbench roadmap](../roadmap/workbench.md).
+- Preview, a package of the [workbench roadmap](../roadmap/workbench.md).
 - The toolbar's pipeline controls ([frontend-shared](../frontend-shared/high-level.md)) and
   the canvas, palette and keyboard shortcuts
   ([frontend-graph-canvas](../frontend-graph-canvas/high-level.md)).
@@ -116,11 +115,18 @@ Out of scope:
   holds it now and the file's `revision`, the content hash of its bytes: `null` while the
   file does not exist, when the form is the blank one. `PUT /api/workbench/form` takes the
   whole form and the `base_revision` it was read at, writes the file (every field, in its
-  canonical spelling) and answers the form with its new revision. A file whose revision is
-  no longer `base_revision`, edited by hand or by a branch switch, is left as it is and the
-  save is refused with 409 and a `stale_document_revision` detail, as the pipeline's save
-  refuses a stale document; a first save (`base_revision` `null`) creates the file unless
-  one has appeared. Both routes answer 404 while the workbench is not enabled.
+  canonical spelling) and answers the form with its new revision. The written file is one
+  save on the clone's save ledger, captured as the pipeline's save captures the files it
+  wrote and through the same capture: no working branch, no capture; a missing git
+  identity leaves the file uncaptured and is reported for the editor to ask for; a capture
+  that fails is a warning. The response says what the capture gave (`git_sha`, `warnings`
+  and `identity_required`, as the pipeline save's response has them), and from its first
+  captured save on the file is tracked, so a milestone's sweep takes an edit made to it by
+  hand. A file whose revision is no longer `base_revision`, edited by hand or by a branch
+  switch, is left as it is and the save is refused with 409 and a `stale_document_revision`
+  detail, as the pipeline's save refuses a stale document; a first save (`base_revision`
+  `null`) creates the file unless one has appeared. Both routes answer 404 while the
+  workbench is not enabled.
 - **The view.** While the workbench is enabled, a view switcher at the bottom of the left
   palette offers "Pricing", the pipeline editor, and "Workbench". The Workbench view
   covers the area below the toolbar: its own left column, the component palette with the
@@ -129,17 +135,26 @@ Out of scope:
   mounted (live sync, the document and its undo history go on) but invisible and inert, its
   keyboard shortcuts, Ctrl/Cmd+Enter and React Flow's delete and pan keys off and its
   floating menus closed, so a key pressed in the view never edits the hidden pipeline. The
-  toolbar keeps the brand and the project's controls (Assistant, Help, the branch and Save)
-  and shows the view's own: Sheets over Schema, the form's Undo and Redo, and Zoom In over
-  Zoom Out while the sheets show. Save and Ctrl/Cmd+S save the form,
-  with a focused field's edit included; the view has no Commit until the form is on the
-  save ledger, and the Git panel's own Commit still records the pipeline. The Git and
-  Assistant panels open beside the view, in the properties panel's place. The Workbench
-  Input's and Workbench Output's
+  toolbar keeps the brand and the project's controls (Assistant, Help, the branch, Save and
+  Commit) and shows the view's own: Sheets over Schema, the form's Undo and Redo, and Zoom
+  In over Zoom Out while the sheets show. Save and Ctrl/Cmd+S save the form, with a
+  focused field's edit included, and the save is reported as the pipeline's is: the ledger
+  commit on the branch indicator, each warning in a toast of its own, and the git-identity
+  prompt when the capture waits on one, once per session. Commit runs the project's
+  milestone flow, the same from either toolbar: the pipeline is saved, the form too when
+  it holds unsaved edits or a save the ledger did not capture, and then the milestone is
+  asked for; the identity prompt's retry, a move's Save first and the Git panel's save
+  before a switch save the project the same way. The Git and Assistant panels open beside
+  the view, in the properties panel's place. The Workbench Input's and Workbench Output's
   panels offer "Edit in Workbench", which shows the view. The view reads the form when it
   first shows and keeps it, with its unsaved edits and history, across a trip to the
-  pipeline editor; a form that cannot be read is reported in the view, with what is wrong
-  and a way to try again.
+  pipeline editor, and reads the file again whenever the pipeline editor adopts its
+  document anew, as a branch switched by hand or a change on disk brings: a file at the
+  same revision changes nothing; a changed one replaces the form, its history dropped,
+  while the form is as saved, and otherwise the view says the file changed on disk and
+  offers Reload. A move or a switch from the Git panel reloads the page, and the view
+  reads the form anew when it next shows. A form that cannot be read is reported in the
+  view, with what is wrong and a way to try again.
 - **The schema editor.** The form's tables, each with its name, its role (Input, sent to
   the pricing engine, or Output, returned by it), its rows (One row per quote, or Many
   rows) and its columns; each column with its type, drawn as the step editor's marker for
@@ -444,6 +459,13 @@ Out of scope:
   code, so the editor matches one refusal. The bytes are hashed rather than the parsed
   form, so a hand edit that changes only whitespace still counts as a change: the view
   read other bytes, and a save over them must say so.
+- **One more file on the ledger.** The form is captured through the pipeline save's own
+  capture rather than a capture of its own, so one place decides what a save on the ledger
+  means: no working branch, a missing identity, a failed capture. Commit's sweep takes
+  only tracked files, and the form is tracked from its first captured save, so a hand edit
+  reaches the milestone without the view's help. Commit saves the form only when there is
+  something to save, unsaved edits or an uncaptured save, so a milestone from the pipeline
+  editor costs the form no request and no toast while it is as saved.
 - **The blank form is a form.** A project whose workbench was enabled by hand has no file
   yet, and the view is where its first form is made, so an absent file reads as the blank
   form with no revision rather than as an error, and the first save creates it.
@@ -537,7 +559,9 @@ Out of scope:
   takes a Workbench Input's request schema and sample record from its tables, and a deployed
   pipeline answers with a Workbench Output's response as with a Quote Response's.
 - [git-integration](../git-integration/high-level.md): an unborn repository's seed commit
-  takes `forms/` with the pipeline's files.
+  takes `forms/` with the pipeline's files; a form save is one save on the clone's ledger
+  through the pipeline save's capture, reported in the editor through the shared
+  save-capture report, and a milestone's sweep takes the tracked form.
 - [sandbox-security](../sandbox-security/high-level.md): the local Host, Origin and session
   middleware gate the workbench routes.
 - [frontend-shared](../frontend-shared/high-level.md): the API client validates the three
@@ -594,7 +618,11 @@ Out of scope:
   `base_revision` quoted (a file that appeared since a first save included), writing
   nothing; and FastAPI's 422 for a body that is not a form, as any typed body answers. The
   view reports a stale refusal in a toast and a banner, keeping the edits until Reload, and
-  any other failed save in one error toast naming the cause.
+  any other failed save in one error toast naming the cause. A save that lands but whose
+  capture failed or was skipped answers 200 with the warning, as the pipeline's save does;
+  the view toasts it, and asks for a git identity once per session when the capture waits
+  on one. A file that could not be read again after the pipeline's document was adopted
+  leaves the form as it is, said in one error toast.
 - A sheet's components are deleted with it, after a confirmation; the last sheet cannot
   be removed, and the view never offers to. A layout value outside its range (a Table's
   rows 1 to 50, a Collection's columns 1 to 12) is refused at the field, which says the

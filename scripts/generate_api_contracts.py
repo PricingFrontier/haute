@@ -101,6 +101,7 @@ from haute.schemas import (
     UtilityWriteResponse,
     WarehouseListResponse,
     WorkbenchFormResponse,
+    WorkbenchFormSaveResponse,
     WorkbenchStatusResponse,
     WorkbenchTablesResponse,
 )
@@ -191,7 +192,12 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         RatingLevelsResponse,
     ),
     "io": (IoCapabilitiesResponse,),
-    "workbench": (WorkbenchStatusResponse, WorkbenchTablesResponse, WorkbenchFormResponse),
+    "workbench": (
+        WorkbenchStatusResponse,
+        WorkbenchTablesResponse,
+        WorkbenchFormResponse,
+        WorkbenchFormSaveResponse,
+    ),
     "session": (
         SessionStatusResponse,
         BrowseFilesResponse,
