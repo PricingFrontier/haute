@@ -54,6 +54,7 @@ from haute.execution import ExecutionProfile, execute_lazy_graph
 from haute.parser import parse_pipeline_file
 from haute.routes._save_pipeline import SavePipelineService
 from haute.routes.node_data import node_data_service
+from tests._source_files import source_files
 from tests.conftest import build_test_api_input_snapshots, make_output_config
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -296,7 +297,7 @@ def test_the_checker_reports_every_other_form(path: str, source: str, lines: lis
 def test_request_input_checks_use_the_shared_set() -> None:
     reports = [
         report
-        for module in sorted(SRC.rglob("*.py"))
+        for module in source_files(SRC)
         for report in request_input_reports(
             module.read_text(encoding="utf-8"), module.relative_to(SRC).as_posix()
         )
