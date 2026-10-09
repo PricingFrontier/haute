@@ -2950,10 +2950,13 @@ describe("App integration - the workbench view (specs/workbench)", () => {
     expect(screen.queryByRole("toolbar", { name: "Pipeline toolbar" })).toBeNull()
     expect(await within(view).findByTestId("schema-editor", {}, { timeout: 10_000 })).toBeInTheDocument()
 
-    // Ctrl+S saves the form, not the hidden pipeline.
+    // Ctrl+S saves the form, not the hidden pipeline, and the save fetches the tables again,
+    // the fetch that brings the Workbench Input's and Workbench Output's copies up to date.
+    const tableFetches = vi.mocked(workbenchApi.fetchWorkbenchTables).mock.calls.length
     fireEvent.keyDown(window, { key: "s", ctrlKey: true })
     await waitFor(() => expect(workbenchApi.saveWorkbenchForm).toHaveBeenCalledTimes(1))
     expect(api.savePipeline).not.toHaveBeenCalled()
+    await waitFor(() => expect(workbenchApi.fetchWorkbenchTables).toHaveBeenCalledTimes(tableFetches + 1))
 
     fireEvent.click(within(view).getByRole("button", { name: "Pricing" }))
 
