@@ -1,7 +1,7 @@
 """The Workbench Output: the response's tables, filled from the frames connected to them.
 
-A Workbench Output's ``tables`` are a copy of the response's tables that an installed
-extension supplies (specs/extensions), in the Quote Input's v2 shape. Each table is a port:
+A Workbench Output's ``tables`` are a copy of the response's tables the project's
+workbench supplies (specs/workbench), in the Quote Input's v2 shape. Each table is a port:
 the frame connected to it fills it, each column from the frame's column the ``mapping`` picks
 or, without a pick, the frame's column of the same name, given its declared type. A one-row
 table (path ``$[:]``) holds the quote's one row and a many-row table (one ``[:]`` below the

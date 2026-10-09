@@ -121,7 +121,7 @@ SINK_ONLY_NODE_TYPES: frozenset[NodeType] = frozenset(
 
 #: The request inputs: the node types that read the quote request. The Quote
 #: Input's tables are built in its panel and the Workbench Input's are copied
-#: from the installed extension that supplies them (specs/extensions), but every
+#: from the project's workbench (specs/workbench), but every
 #: context reads a request through either exactly alike, so code that means "the
 #: request input" tests membership here rather than naming one type, which
 #: ``tests/test_request_inputs.py`` enforces. The editor's ``REQUEST_INPUT_TYPES``
@@ -132,7 +132,7 @@ REQUEST_INPUT_NODE_TYPES: frozenset[NodeType] = frozenset(
 
 #: The response nodes: the node types whose result is the pipeline's response. The
 #: Quote Response maps columns to paths in its panel and the Workbench Output fills
-#: the tables the installed extension supplies (specs/extensions), but run(),
+#: the tables the project's workbench supplies (specs/workbench), but run(),
 #: score() and deploy answer with either alike, and a pipeline holds one. The
 #: editor's ``RESPONSE_TYPES`` (``frontend/src/utils/nodeTypes.ts``) is the twin.
 RESPONSE_NODE_TYPES: frozenset[NodeType] = frozenset({NodeType.OUTPUT, NodeType.WORKBENCH_OUTPUT})
@@ -158,8 +158,8 @@ class ApiInputConfig(TypedDict, total=False):
 class WorkbenchInputConfig(TypedDict, total=False):
     """Config for workbenchInput nodes.
 
-    ``tables`` and ``sample`` are the copies of the installed extension's tables
-    and sample quote that the editor keeps current (specs/extensions). A request is
+    ``tables`` and ``sample`` are the copies of the workbench's tables and sample
+    quote that the editor keeps current (specs/workbench). A request is
     read through the tables exactly as through a Quote Input's; with no request,
     as in a preview, the sample is read through them, and a table it gives no rows
     is one row of nulls, typed as declared. A Workbench Input reads no file.
@@ -172,8 +172,8 @@ class WorkbenchInputConfig(TypedDict, total=False):
 class WorkbenchOutputConfig(TypedDict, total=False):
     """Config for workbenchOutput nodes.
 
-    ``tables`` is the copy of the response's tables the installed extension
-    supplies, which the editor keeps current (specs/extensions). Each is filled
+    ``tables`` is the copy of the response's tables the project's workbench
+    supplies, which the editor keeps current (specs/workbench). Each is filled
     from the frame connected to the port its label names: each column from the
     frame column ``mapping`` picks (by table label, then column name; ``None`` for
     none), or else from the frame's column of the same name.

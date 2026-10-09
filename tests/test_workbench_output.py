@@ -1,7 +1,7 @@
 """The Workbench Output: the response's tables, filled from the frames connected to them.
 
-Its tables are a copy of the response's tables an installed extension supplies
-(specs/extensions). Each is a port: the frame connected to it fills it, each column from
+Its tables are a copy of the response's tables the project's workbench supplies
+(specs/workbench). Each is a port: the frame connected to it fills it, each column from
 the frame column its mapping picks or else the same-named one, given its declared type. The
 node's result is its tables; where the pipeline answers a request they become the response
 for one quote, built by the Quote Response's assembler.
@@ -69,7 +69,7 @@ def _column(table: str, name: str, kind: str, *, many: bool = False) -> dict[str
 
 
 def _table(label: str, *columns: tuple[str, str], many: bool = False) -> dict[str, Any]:
-    """A table in the shape Obverse's Workbench supplies."""
+    """A table in the shape the workbench supplies."""
     return {
         "path": f"$[:].{label}[:]" if many else "$[:]",
         "label": label,

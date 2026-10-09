@@ -1,5 +1,5 @@
-import useExtensionsStore from "../../stores/useExtensionsStore"
-import { responseTablesSupplier, type WorkbenchOutputMapping } from "../../utils/extensionQuoteTables"
+import useWorkbenchStore from "../../stores/useWorkbenchStore"
+import type { WorkbenchOutputMapping } from "../../utils/workbenchTables"
 import type { InputSource, OnUpdateConfig } from "./_shared"
 import { readV2, type ApiInputTableV2 } from "./apiInputSchema"
 import { WorkbenchTablesHeader, tableLabelIssue } from "./WorkbenchInputEditor"
@@ -45,28 +45,26 @@ function readMapping(value: unknown): WorkbenchOutputMapping {
 }
 
 /**
- * The Workbench Output's panel (specs/extensions): the response's tables the installed
- * extension supplies, each with the node connected to its port, and for each column the
+ * The Workbench Output's panel (specs/workbench): the response's tables the project's
+ * workbench supplies, each with the node connected to its port, and for each column the
  * connected frame's column that fills it: the same-named one unless picked otherwise. The
- * tables are read-only (the editor keeps them current, `useExtensionQuoteTables`); the
+ * tables are read-only (the editor keeps them current, `useWorkbenchTables`); the
  * mapping is the node's own.
  */
 export default function WorkbenchOutputEditor({
   config,
   onUpdate,
-  accentColor,
   inputSources,
   insideSubmodel = false,
 }: {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
-  accentColor: string
   /** The node's inputs, each with the table port its edge lands on. */
   inputSources: readonly InputSource[]
   /** A submodel is open: the editor updates the tables only at the pipeline's top level. */
   insideSubmodel?: boolean
 }) {
-  const supplier = useExtensionsStore((state) => responseTablesSupplier(state.extensions))
+  const enabled = useWorkbenchStore((state) => state.enabled)
   const tables = readV2(config).tables
   const mapping = readMapping(config.mapping)
 
@@ -79,8 +77,7 @@ export default function WorkbenchOutputEditor({
 
       <section data-testid="workbench-output-tables" className="space-y-1.5">
         <WorkbenchTablesHeader
-          supplier={supplier}
-          accentColor={accentColor}
+          enabled={enabled}
           insideSubmodel={insideSubmodel}
           empty={tables.length === 0}
         />

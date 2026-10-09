@@ -36,7 +36,7 @@ import {
 } from "../types/pipelineDocument"
 import { type ColumnFingerprintInput } from "../utils/columnFingerprint"
 import { authoritativeSourceHandles } from "../utils/apiInputPorts"
-import { workbenchOutputTableLabels } from "../utils/extensionQuoteTables"
+import { workbenchOutputTableLabels } from "../utils/workbenchTables"
 import {
   runtimeNodeIdForVisibleNode,
   type DrilledOccurrenceIdentity,

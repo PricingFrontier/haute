@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
 import { act, render, screen, fireEvent, cleanup } from "@testing-library/react"
 import NodePalette from "../NodePalette"
-import useExtensionsStore from "../../stores/useExtensionsStore"
+import useWorkbenchStore from "../../stores/useWorkbenchStore"
 import { NODE_TYPES } from "../../utils/nodeTypes"
 
 describe("NodePalette", () => {
@@ -105,56 +105,57 @@ describe("NodePalette", () => {
     expect(setData).not.toHaveBeenCalled()
   })
 
-  describe("while an installed extension supplies the quote's tables", () => {
-    const supplier = {
-      name: "obverse",
-      label: "Workbench",
-      api_base: "/api/extensions/obverse",
-      entry_url: "/extensions/obverse/obverse-embed.js",
-      ready: true,
-      detail: null,
-      quote_tables: true,
-      response_tables: false,
-    }
+  describe("while the project's workbench is enabled", () => {
     const tables = [{ path: "$[:]", label: "policy_details", emit: true, row_id_column: null, columns: [] }]
-    const dragConfig = (name: string) => {
+    const responseTables = [{ path: "$[:]", label: "pricing_output", emit: true, row_id_column: null, columns: [] }]
+    const dragConfig = (name: string, type: string) => {
       const setData = vi.fn()
       fireEvent.dragStart(screen.getByText(name).closest("[draggable]")!, {
         dataTransfer: { setData, effectAllowed: "" },
       })
-      expect(setData).toHaveBeenCalledWith("application/reactflow-type", NODE_TYPES.WORKBENCH_INPUT)
+      expect(setData).toHaveBeenCalledWith("application/reactflow-type", type)
       const [, json] = setData.mock.calls.find(([format]) => format === "application/reactflow-config")!
       return JSON.parse(json)
     }
-    afterEach(() => useExtensionsStore.setState({ extensions: [], quoteTables: null }))
+    afterEach(() => useWorkbenchStore.setState({ enabled: false, tables: null }))
 
-    it("shows the Workbench Input in the Quote Input's place, and the Quote Input otherwise", () => {
+    it("shows the Workbench Input and Workbench Output in the Quote Input's and Quote Response's places, and those otherwise", () => {
       render(<NodePalette />)
       expect(screen.getByText("Quote Input")).toBeInTheDocument()
+      expect(screen.getByText("Quote Response")).toBeInTheDocument()
       expect(screen.queryByText("Workbench Input")).not.toBeInTheDocument()
+      expect(screen.queryByText("Workbench Output")).not.toBeInTheDocument()
 
-      act(() => useExtensionsStore.setState({ extensions: [supplier] }))
+      act(() => useWorkbenchStore.setState({ enabled: true }))
       expect(screen.getByText("Workbench Input")).toBeInTheDocument()
+      expect(screen.getByText("Workbench Output")).toBeInTheDocument()
       expect(screen.queryByText("Quote Input")).not.toBeInTheDocument()
+      expect(screen.queryByText("Quote Response")).not.toBeInTheDocument()
       const items = [...document.querySelectorAll("[data-testid^='node-palette-item-']")]
       expect(items[0]).toHaveAttribute("data-testid", `node-palette-item-${NODE_TYPES.WORKBENCH_INPUT}`)
     })
 
     it("drags a Workbench Input with the newest tables and sample fetched, or none until they are", () => {
-      useExtensionsStore.setState({ extensions: [supplier], quoteTables: null })
+      useWorkbenchStore.setState({ enabled: true, tables: null })
       render(<NodePalette />)
-      expect(dragConfig("Workbench Input")).toEqual({ tables: [], sample: {} })
+      expect(dragConfig("Workbench Input", NODE_TYPES.WORKBENCH_INPUT)).toEqual({ tables: [], sample: {} })
 
       const sample = { policy_details: { state: "NY" } }
-      act(() =>
-        useExtensionsStore.setState({
-          quoteTables: { extension: "obverse", tables, sample, responseTables: [], fetch: 1 },
-        }))
-      expect(dragConfig("Workbench Input")).toEqual({ tables, sample })
+      act(() => useWorkbenchStore.setState({ tables: { tables, sample, responseTables: [], fetch: 1 } }))
+      expect(dragConfig("Workbench Input", NODE_TYPES.WORKBENCH_INPUT)).toEqual({ tables, sample })
+    })
+
+    it("drags a Workbench Output with the newest response tables fetched, or none until they are", () => {
+      useWorkbenchStore.setState({ enabled: true, tables: null })
+      render(<NodePalette />)
+      expect(dragConfig("Workbench Output", NODE_TYPES.WORKBENCH_OUTPUT)).toEqual({ tables: [] })
+
+      act(() => useWorkbenchStore.setState({ tables: { tables: [], sample: {}, responseTables, fetch: 1 } }))
+      expect(dragConfig("Workbench Output", NODE_TYPES.WORKBENCH_OUTPUT)).toEqual({ tables: responseTables })
     })
 
     it("greys out the Workbench Input while the pipeline has either request input", () => {
-      useExtensionsStore.setState({ extensions: [supplier] })
+      useWorkbenchStore.setState({ enabled: true })
       for (const present of [NODE_TYPES.API_INPUT, NODE_TYPES.WORKBENCH_INPUT]) {
         const { unmount } = render(
           <NodePalette existingSingletonTypes={new Set([present, NODE_TYPES.WORKBENCH_INPUT])} />,
@@ -165,45 +166,9 @@ describe("NodePalette", () => {
         unmount()
       }
     })
-  })
-
-  describe("while the supplier supplies the response's tables too", () => {
-    const supplier = {
-      name: "obverse",
-      label: "Workbench",
-      api_base: "/api/extensions/obverse",
-      entry_url: "/extensions/obverse/obverse-embed.js",
-      ready: true,
-      detail: null,
-      quote_tables: true,
-      response_tables: true,
-    }
-    const responseTables = [{ path: "$[:]", label: "pricing_output", emit: true, row_id_column: null, columns: [] }]
-    afterEach(() => useExtensionsStore.setState({ extensions: [], quoteTables: null }))
-
-    it("shows the Workbench Output in the Quote Response's place, and drags it with the newest tables", () => {
-      useExtensionsStore.setState({ extensions: [{ ...supplier, response_tables: false }] })
-      render(<NodePalette />)
-      expect(screen.getByText("Quote Response")).toBeInTheDocument()
-      expect(screen.queryByText("Workbench Output")).not.toBeInTheDocument()
-
-      act(() =>
-        useExtensionsStore.setState({
-          extensions: [supplier],
-          quoteTables: { extension: "obverse", tables: [], sample: {}, responseTables, fetch: 1 },
-        }))
-      expect(screen.queryByText("Quote Response")).not.toBeInTheDocument()
-      const setData = vi.fn()
-      fireEvent.dragStart(screen.getByText("Workbench Output").closest("[draggable]")!, {
-        dataTransfer: { setData, effectAllowed: "" },
-      })
-      expect(setData).toHaveBeenCalledWith("application/reactflow-type", NODE_TYPES.WORKBENCH_OUTPUT)
-      const [, json] = setData.mock.calls.find(([format]) => format === "application/reactflow-config")!
-      expect(JSON.parse(json)).toEqual({ tables: responseTables })
-    })
 
     it("greys out the Workbench Output while the pipeline has either response node", () => {
-      useExtensionsStore.setState({ extensions: [supplier] })
+      useWorkbenchStore.setState({ enabled: true })
       for (const present of [NODE_TYPES.OUTPUT, NODE_TYPES.WORKBENCH_OUTPUT]) {
         const { unmount } = render(
           <NodePalette existingSingletonTypes={new Set([present, NODE_TYPES.WORKBENCH_OUTPUT])} />,

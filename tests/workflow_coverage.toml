@@ -65,14 +65,14 @@ entry_points = ["http", "browser", "file"]
 [[workflows]]
 id = "W05"
 title = "Structured request to response"
-components = ["json-shredding", "extensions"]
+components = ["json-shredding", "workbench"]
 documents = [
   "specs/json-shredding/high-level.md",
   "specs/json-shredding/low-level.md",
   "specs/server-api/high-level.md",
   "specs/server-api/low-level.md",
-  "specs/extensions/high-level.md",
-  "specs/extensions/low-level.md",
+  "specs/workbench/high-level.md",
+  "specs/workbench/low-level.md",
 ]
 entry_points = ["http", "browser", "scoring"]
 

@@ -513,13 +513,12 @@ export type {
 } from "../generated/api-contracts.generated"
 
 // ---------------------------------------------------------------------------
-// Installed extensions (GET /api/extensions)
+// The workbench (GET /api/workbench, GET /api/workbench/tables)
 // ---------------------------------------------------------------------------
 
 export type {
-  ExtensionInfo,
-  ExtensionsResponse,
-  QuoteTablesResponse,
+  WorkbenchStatusResponse,
+  WorkbenchTablesResponse,
 } from "../generated/api-contracts.generated"
 
 // ---------------------------------------------------------------------------

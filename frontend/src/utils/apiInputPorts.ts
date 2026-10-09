@@ -791,8 +791,8 @@ export type ApplyApiInputConfigChangeResult<E extends SimpleEdge> = {
  * the same state update that commits the config, so a rename is one
  * atomic, undoable operation — never a destroy-and-reconnect.
  *
- * With `followNames`, for a Workbench Input, whose tables the installed
- * extension may reorder or replace wholesale (specs/extensions), a position
+ * With `followNames`, for a Workbench Input, whose tables the workbench
+ * may reorder or replace wholesale (specs/workbench), a position
  * says nothing about which table is which: connections follow names only,
  * and a renamed table's are pruned rather than rebound.
  */

@@ -194,8 +194,9 @@ chooses among them; the single-pipeline binding policy remains authoritative.
 
 `haute init` scaffolds a new project: `haute.toml`,
 `.env.example`, CI workflow YAML for one of several CI providers, a valid blank pipeline and
-starter parse test, and deploy-target-specific credentials and TOML sections for one of several
-supported deploy targets. The blank pipeline declares its `Pipeline` object but no nodes. Init
+starter parse test, deploy-target-specific credentials and TOML sections for one of several
+supported deploy targets, and with `--workbench` the `[workbench]` table and a blank
+`forms/form.json` ([workbench](../workbench/high-level.md)). The blank pipeline declares its `Pipeline` object but no nodes. Init
 removes a root `main.py`, creates no `prompts/` directory, and creates no node sidecars.
 
 **CI/CD generation.** `haute init --ci` supports three providers today — GitHub Actions,

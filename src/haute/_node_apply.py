@@ -207,7 +207,7 @@ def resolve_workbench_input_from_config(
     """Load a Workbench Input's frames from its inline config or JSON sidecar.
 
     It reads no file: each emitting table is its sample's rows, or one row of nulls
-    with its declared dtypes when the sample gives it none (specs/extensions).
+    with its declared dtypes when the sample gives it none (specs/workbench).
     """
     from haute._json_shred._cache import workbench_table_frames
 
@@ -580,7 +580,7 @@ def assemble_workbench_output_from_config(
     The single code path for the executor's ``_build_workbench_output`` and a saved
     file's ``@pipeline.workbench_output`` node. *dfs* are the incoming frames in edge
     order and *ports* the port each arrives on, aligned: a port names the table its
-    frame fills (specs/extensions). The result is the tables, which
+    frame fills (specs/workbench). The result is the tables, which
     :func:`~haute._workbench_output.as_response` turns into the response where the
     pipeline answers a request.
     """

@@ -186,7 +186,7 @@
    lazy readers avoid row collection, while the existing plain-JSON reader may parse
    eagerly). A Workbench Input has no source: its schema is `request_record_schema` of its
    tables, and `_read_sample_row` gives one record of nulls in it
-   ([extensions](../extensions/low-level.md)).
+   ([workbench](../workbench/low-level.md)).
    Then `infer_deploy_execution_policy()` plans the served `DEPLOY_BATCH` strategy once,
    over the same one-row sample (`_read_sample_row`) and the same bundled-contract graph
    preparation `_scorer._score_graph_lazy` performs, under a short-lived

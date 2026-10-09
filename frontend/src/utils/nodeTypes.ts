@@ -70,7 +70,7 @@ export const NODE_TYPE_META: Record<NodeTypeValue, {
 /**
  * The request inputs: the node types that read the quote request. The Quote
  * Input's tables are built in its panel and the Workbench Input's copied from
- * the installed extension that supplies them (specs/extensions); everything
+ * the project's workbench (specs/workbench); everything
  * else treats them alike, so code that means "the request input" asks
  * `isRequestInputType` rather than naming one type. Held equal to the
  * backend's `REQUEST_INPUT_NODE_TYPES` by `tests/test_request_inputs.py`.
@@ -85,7 +85,7 @@ export function isRequestInputType(nodeType: unknown): boolean {
 /**
  * The response nodes: the node types whose result is the pipeline's response. The
  * Quote Response maps columns to paths in its panel and the Workbench Output fills
- * the tables the installed extension supplies (specs/extensions); a pipeline holds
+ * the tables the project's workbench supplies (specs/workbench); a pipeline holds
  * one of either. The backend's `RESPONSE_NODE_TYPES` is the twin.
  */
 export const RESPONSE_TYPES = new Set<NodeTypeValue>([NODE_TYPES.OUTPUT, NODE_TYPES.WORKBENCH_OUTPUT])
@@ -191,8 +191,8 @@ export const SINK_ONLY_TYPES = new Set<string>([
 /**
  * Node types shown in the palette, in display order. Submodel/port are excluded
  * (created via dialog). The palette shows the Workbench Input in the Quote
- * Input's place while an installed extension supplies the tables, and the
- * Workbench Output in the Quote Response's while it supplies the response's.
+ * Input's place while the project's workbench is enabled, and the Workbench
+ * Output in the Quote Response's.
  */
 export const PALETTE_TYPES: NodeTypeValue[] = [
   NODE_TYPES.API_INPUT, NODE_TYPES.LIVE_SWITCH, NODE_TYPES.OUTPUT,

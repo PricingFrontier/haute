@@ -147,12 +147,6 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/ExploreRelationshipsResponse"},
         },
     },
-    "/api/extensions": {
-        "GET": {
-            "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/ExtensionsResponse"},
-        },
-    },
     "/api/files": {
         "GET": {
             "request_ref": None,
@@ -780,12 +774,6 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             },
         },
     },
-    "/api/quote-tables": {
-        "GET": {
-            "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/QuoteTablesResponse"},
-        },
-    },
     "/api/rating/levels": {
         "POST": {
             "request_ref": "#/components/schemas/RatingLevelsRequest",
@@ -850,6 +838,18 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
         "PUT": {
             "request_ref": "#/components/schemas/UtilityWriteRequest",
             "success_schema": {"$ref": "#/components/schemas/UtilityWriteResponse"},
+        },
+    },
+    "/api/workbench": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchStatusResponse"},
+        },
+    },
+    "/api/workbench/tables": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchTablesResponse"},
         },
     },
 }

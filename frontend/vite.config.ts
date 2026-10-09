@@ -47,11 +47,6 @@ export default defineConfig({
         ws: true,
         changeOrigin: false,
       },
-      // Installed extensions' browser modules (specs/extensions).
-      "/extensions": {
-        target: backendUrl.origin,
-        changeOrigin: false,
-      },
     },
   },
   build: {

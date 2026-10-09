@@ -8,7 +8,6 @@ import BranchIndicator from "./BranchIndicator"
 import useSettingsStore from "../stores/useSettingsStore"
 import useUIStore from "../stores/useUIStore"
 import useGraphStore from "../stores/useGraphStore"
-import useExtensionsStore, { PIPELINE_VIEW } from "../stores/useExtensionsStore"
 import { constantsWithSourceValue, withoutSource } from "../utils/globalConstants"
 import useClickOutside from "../hooks/useClickOutside"
 import { formatBytes } from "../utils/formatBytes"
@@ -160,17 +159,11 @@ export default function Toolbar({
     [memory],
   )
 
-  // While an extension's view shows, the toolbar is the brand, a space for that
-  // extension's own controls, and the project's controls (specs/extensions).
-  const activeView = useExtensionsStore((s) => s.activeView)
-  const extensionLabel = useExtensionsStore((s) => s.extensions.find((e) => e.name === s.activeView)?.label)
-  const setToolbarSlot = useExtensionsStore((s) => s.setToolbarSlot)
-
   // The brand column is as wide as the node palette, less the bar's padding, so the
   // Source label starts over the palette's edge (haute-ui/toolbar.css).
   const brand = <ToolbarBrand name="haute" version={__APP_VERSION__} />
 
-  // The project's controls, in the pipeline toolbar and an extension's alike.
+  // The project's controls.
   // 10px is the toolbar's one spacing value: between adjacent buttons and
   // between sections alike.  Only a label and the field it names sit
   // closer (4px), so they still read as one control.
@@ -292,21 +285,8 @@ export default function Toolbar({
     </div>
   )
 
-  if (activeView !== PIPELINE_VIEW) {
-    // Keyed so React never reuses these elements for the pipeline toolbar or another
-    // extension's: the extension attaches a shadow root to the slot, which would hide
-    // whatever React later rendered into it.
-    return (
-      <header key={`extension:${activeView}`} role="toolbar" aria-label={`${extensionLabel ?? activeView} toolbar`} className="toolbar">
-        {brand}
-        <div ref={setToolbarSlot} data-testid="toolbar-extension-slot" className="flex-1 min-w-0 self-stretch mr-2.5" />
-        {projectControls}
-      </header>
-    )
-  }
-
   return (
-    <header key="pipeline" role="toolbar" aria-label="Pipeline toolbar" className="toolbar flex-wrap gap-y-2 [&>div]:shrink-0">
+    <header role="toolbar" aria-label="Pipeline toolbar" className="toolbar flex-wrap gap-y-2 [&>div]:shrink-0">
       {brand}
       {/* Source and Pipeline column — the Source selector sits on the top row, in
           line with Timing and Undo, and the Pipeline control underneath it.

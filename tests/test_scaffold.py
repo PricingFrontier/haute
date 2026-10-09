@@ -20,6 +20,7 @@ from haute._scaffold import (
     gitlab_ci_yml,
     haute_toml,
     pre_commit_hook,
+    starter_form,
     starter_pipeline,
     starter_test,
     starter_test_quote,
@@ -104,6 +105,14 @@ class TestHauteToml:
 
         with pytest.raises(ValueError, match="Unknown target"):
             haute_toml("motor", "unknown", "github")
+
+    def test_workbench_table_only_when_asked(self) -> None:
+        """The [workbench] table switches the project's workbench on (specs/workbench)."""
+        assert "[workbench]" not in haute_toml("motor", "databricks", "github")
+
+        doc = tomllib.loads(haute_toml("motor", "databricks", "github", workbench=True))
+        assert doc["workbench"] == {"enabled": True, "form": "forms/form.json"}
+        assert doc["project"]["name"] == "motor"
 
 
 class TestEnvExample:
@@ -854,6 +863,18 @@ class TestStarterFiles:
         parsed = json.loads(result)
         assert isinstance(parsed, list)
         assert len(parsed) == 1
+
+    def test_starter_form_is_a_blank_workbench_form(self) -> None:
+        import json
+
+        from haute._workbench_form import FormSpec
+
+        text = starter_form("motor")
+        spec = FormSpec.model_validate(json.loads(text))
+        assert spec.name == "motor"
+        assert spec.data_schema.tables == []
+        assert [page.title for page in spec.pages] == ["Sheet 1"]
+        assert text.endswith("\n")
 
 
 class TestPreCommitHook:

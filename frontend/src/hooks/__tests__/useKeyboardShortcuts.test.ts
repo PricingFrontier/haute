@@ -32,7 +32,6 @@ function resolvedIdentityGraph(
 
 function makeParams(overrides: Partial<Parameters<typeof useKeyboardShortcuts>[0]> = {}) {
   return {
-    enabled: true,
     handleSave: vi.fn(),
     setNodes: vi.fn(),
     setEdges: vi.fn(),
@@ -895,47 +894,5 @@ describe("useKeyboardShortcuts", () => {
     expect(params.setNodes).not.toHaveBeenCalled()
     expect(params.setEdges).not.toHaveBeenCalled()
     expect(params.setSelectedNode).toHaveBeenCalledWith(null)
-  })
-})
-
-describe("useKeyboardShortcuts while an extension's view shows", () => {
-  beforeEach(() => {
-    useUIStore.setState({ shortcutsOpen: false, submodelDialog: null, nodeSearchOpen: false })
-  })
-
-  afterEach(() => {
-    cleanup()
-    vi.clearAllMocks()
-  })
-
-  it("does nothing, so keys pressed in the extension never edit the hidden canvas", () => {
-    const params = makeParams({ enabled: false })
-    params.graphRef.current.nodes = [
-      { id: "n1", position: { x: 0, y: 0 }, data: { label: "A" }, selected: true } as Node,
-    ]
-    renderHook(() => useKeyboardShortcuts(params))
-
-    fireKey("s", { ctrlKey: true })
-    fireKey("z", { ctrlKey: true })
-    fireKey("Delete")
-    fireKey("Backspace")
-    fireKey("k", { ctrlKey: true })
-
-    expect(params.handleSave).not.toHaveBeenCalled()
-    expect(params.undo).not.toHaveBeenCalled()
-    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
-    expect(useUIStore.getState().nodeSearchOpen).toBe(false)
-  })
-
-  it("acts again once the pipeline view is back", () => {
-    const params = makeParams({ enabled: false })
-    const { rerender } = renderHook((enabled: boolean) => useKeyboardShortcuts({ ...params, enabled }), {
-      initialProps: false,
-    })
-    rerender(true)
-
-    fireKey("s", { ctrlKey: true })
-
-    expect(params.handleSave).toHaveBeenCalledOnce()
   })
 })

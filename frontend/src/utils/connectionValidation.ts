@@ -2,7 +2,7 @@ import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
 import { isSubmodelDefinition, isSubmodelInstanceConfig } from "../types/node"
 import { NODE_TYPES, isRequestInputType } from "./nodeTypes"
 import { SUBMODEL_INPUT_HANDLE } from "./flowHandles"
-import { workbenchOutputTableLabels } from "./extensionQuoteTables"
+import { workbenchOutputTableLabels } from "./workbenchTables"
 import {
   edgeInputName,
   incomingEdgeInputNames,
@@ -92,7 +92,7 @@ function targetEndpointIsSource(connection: ConnectionLike): boolean {
 /**
  * Why a connection cannot fill a table of the Workbench Output *target*, or null when it
  * can: it lands on one of its tables' ports, a table takes one connection, and a node
- * fills one table (specs/extensions).
+ * fills one table (specs/workbench).
  */
 function workbenchOutputConnectionFailure(
   candidate: { source: string; targetHandle: string | null | undefined },

@@ -1,11 +1,11 @@
 # Workbench Output
 
-When your quotes are keyed in through a workbench, such as Obverse's Workbench, the workbench's schema also defines what a priced quote fills in: its output tables. The Workbench Output is the pipeline's response for those quotes. Its tables are the workbench's output tables, copied into the pipeline and kept up to date as you change the schema, and each one is an input you connect a frame to. When the pipeline runs, each table is filled from its frame, and those tables are what fills the workbench's output tables.
+When your quotes are keyed in through the project's workbench, its schema also defines what a priced quote fills in: its output tables. The Workbench Output is the pipeline's response for those quotes. Its tables are the workbench's output tables, copied into the pipeline and kept up to date as you change the schema, and each one is an input you connect a frame to. When the pipeline runs, each table is filled from its frame, and those tables are what fills the workbench's output tables.
 
 !!! info "When to use"
-    While a workbench that defines output tables is installed, the palette offers the Workbench Output in place of the [Quote Response](output.md). Use it as the response for live pricing of keyed-in quotes. Without a workbench, use the Quote Response and map its columns yourself.
+    While the project's workbench is enabled, the palette offers the Workbench Output in place of the [Quote Response](output.md). Use it as the response for live pricing of keyed-in quotes. Without a workbench, use the Quote Response and map its columns yourself.
 
-A Workbench Output has no outputs. Each table of the workbench's schema is a separate input, named by the table's name: drag a connection from the node whose frame fills the table onto that input. A table takes one connection, and a node fills one table; to fill two tables from the same data, give each its own node. A pipeline has only one Quote Response or Workbench Output: once it has either, the palette entry is greyed out with "Only one Quote Response or Workbench Output allowed per pipeline". Installing or removing the workbench changes only what the palette offers; to swap a Quote Response for a Workbench Output, delete it and drag in the other.
+A Workbench Output has no outputs. Each table of the workbench's schema is a separate input, named by the table's name: drag a connection from the node whose frame fills the table onto that input. A table takes one connection, and a node fills one table; to fill two tables from the same data, give each its own node. A pipeline has only one Quote Response or Workbench Output: once it has either, the palette entry is greyed out with "Only one Quote Response or Workbench Output allowed per pipeline". Enabling or disabling the workbench changes only what the palette offers; to swap a Quote Response for a Workbench Output, delete it and drag in the other.
 
 ## Filling the tables
 
@@ -15,7 +15,7 @@ A table with one row per quote takes exactly one row from its frame; a table wit
 
 Click the node to preview its tables, filled for the workbench's sample quote: each table is a dataframe, with the table picker at the top of the preview choosing which one shows when there are several. To trace a value back through the pipeline, click it in the preview of the node connected to its table.
 
-The workbench shows them too. While you build there, the output columns in its Collections show the values the pipeline, as it stands in the editor, gives the sample on the sheet, updated as you type. The node's own preview runs on the sample as you last saved it.
+Showing the pipeline's values in the workbench's Collections as the sample is typed is planned; the node's own preview runs on the sample as saved in the form.
 
 ## The response
 
@@ -51,9 +51,9 @@ The panel lists the workbench's output tables. You can't change the tables here,
 
 Changing a pick is an edit to the pipeline, saved and undone like any other.
 
-**Edit in Workbench** (named after your workbench) opens the workbench, where you change the tables. When you save the schema there and come back to the pipeline, the node's tables and inputs follow, and the pipeline has changes to save, as after any edit. Connections follow table names: a connection to a table that keeps its name stays, and one to a table that was renamed or removed is removed, with a message. Changes you haven't saved in the workbench don't reach the pipeline.
+The tables are the workbench's schema, edited in its form, `forms/form.json` (the Workbench view that edits it inside Haute is on the roadmap). When the form is saved and the editor next fetches the tables, the node's tables and inputs follow, and the pipeline has changes to save, as after any edit. Connections follow table names: a connection to a table that keeps its name stays, and one to a table that was renamed or removed is removed, with a message. Changes not yet saved in the form don't reach the pipeline.
 
-When no installed workbench supplies tables, the section says "No installed extension supplies these tables, so they are the last copy and nothing updates them." The pipeline still runs, tests and deploys from that copy. Inside a submodel the section says "The editor updates these tables only at the pipeline's top level."
+While the workbench is not enabled, the section says "The workbench is not enabled in haute.toml, so these tables are the last copy and nothing updates them." The pipeline still runs, tests and deploys from that copy. Inside a submodel the section says "The editor updates these tables only at the pipeline's top level."
 
 ??? note "In the pipeline file"
     The node's settings are stored in a JSON sidecar, `config/workbench_output/<node name>.json`, which the node's decorator in the pipeline's `.py` file names: `@pipeline.workbench_output(config="config/workbench_output/<node name>.json")`. Each connection names the table it fills: `pipeline.connect("priced", "response", target_port="pricing_output")`.
@@ -63,7 +63,7 @@ When no installed workbench supplies tables, the section says "No installed exte
     | The tables | `tables`: the workbench's output tables, in the same format as a Quote Input's |
     | Your picks | `mapping`: by table name, then column name, the frame column that fills it, or `null` for none. A column without an entry is filled by name, so a new node has no `mapping` |
 
-    For example, `"mapping": {"pricing_output": {"model_premium": "premium"}}` fills `pricing_output`'s `model_premium` from the frame's `premium` column. When the workbench drops a table or column, the editor drops its entries from `mapping` as it updates the tables. The pipeline fills the tables from `tables` and `mapping` alone, so it runs, tests and deploys without the workbench installed.
+    For example, `"mapping": {"pricing_output": {"model_premium": "premium"}}` fills `pricing_output`'s `model_premium` from the frame's `premium` column. When the workbench drops a table or column, the editor drops its entries from `mapping` as it updates the tables. The pipeline fills the tables from `tables` and `mapping` alone, so it runs, tests and deploys without the workbench enabled.
 
 **See also:**
 

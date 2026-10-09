@@ -415,12 +415,12 @@ class NodeRegistry:
 
     def workbench_input(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Decorator alias for Workbench Input nodes: a request input whose tables
-        are copied from the installed extension that supplies them."""
+        are copied from the project's workbench (specs/workbench)."""
         return self._register_node(fn, _node_type=NodeType.WORKBENCH_INPUT, **config)
 
     def workbench_output(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Decorator alias for Workbench Output nodes: a response node filling the tables
-        the installed extension supplies, each from the frame connected to its port."""
+        the project's workbench supplies, each from the frame connected to its port."""
         return self._register_node(fn, _node_type=NodeType.WORKBENCH_OUTPUT, **config)
 
     def data_input(self, fn: Callable | None = None, **config: Any) -> Callable:

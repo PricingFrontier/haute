@@ -1,5 +1,5 @@
 /**
- * The request inputs (specs/extensions): the Quote Input and the Workbench Input read
+ * The request inputs (specs/workbench): the Quote Input and the Workbench Input read
  * the quote request alike, so editor code that means "the request input" asks
  * `isRequestInputType` rather than naming the Quote Input. The guard reports each line
  * naming the Quote Input outside the forms its file may hold.

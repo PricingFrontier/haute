@@ -154,7 +154,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "caching",
     "engineering-quality",
     "explore-eda",
-    "extensions",
     "frontend-shared",
     "model-scoring",
     "modelling",
@@ -166,6 +165,7 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "server-api",
     "submodels",
     "t-boost",
+    "workbench",
 )
 _ROADMAP_SUPPORTING_REPORTS: tuple[str, ...] = (
     "codebase-review-2026-09-23.md",

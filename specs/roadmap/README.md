@@ -23,7 +23,6 @@ or maintenance issue; `P3` opportunistic work.
 | [Caching](caching.md) | Planning and housekeeping cost, the shapes that cannot carry a write recipe, chunked-write bounds, cache identity | `CACHE-S17` |
 | [Engineering quality](engineering-quality.md) | Model-training test cost, order- and load-sensitive tests, compatibility shard balance, dead code, test organisation | `ENGQ-CI03` |
 | [Explore and EDA](explore-eda.md) | Advanced pivot and PivotChart parity | — |
-| [Extensions](extensions.md) | Files an extension writes, saved and committed like the pipeline's (deferred) | — |
 | [Frontend shared](frontend-shared.md) | Results store | `FSH-R03` |
 | [Model scoring](model-scoring.md) | Models trained outside Haute | `MSC-06` |
 | [Modelling](modelling.md) | Adaptive low-memory fitting: exact chunked GLM, a low-memory boosted-tree mode (both awaiting a decision) | `MOD-M01` |
@@ -35,6 +34,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Server API](server-api.md) | Domain errors, generated browser contract | `API-R02` |
 | [Submodels](submodels.md) | Submodels registered by import, one reuse mechanism | `SUB-R02` |
 | [t-boost](t-boost.md) | What rating-table models make possible: cell-level holdout A/E, unfolding into rating steps, model comparison with premium attribution, measured analyst adjustments (all awaiting a decision) | `TBOOST-02` |
+| [Workbench](workbench.md) | The Workbench view inside Haute: the schema editor, sheets, the sample priced live, the form on the save ledger, Preview | `WB-02` |
 
 ## Delivery plan — 24 September 2026
 

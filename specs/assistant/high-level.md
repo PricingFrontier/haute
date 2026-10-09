@@ -1031,7 +1031,7 @@ needs: the Rating Step card says its factor values, relativities and missing-fac
 value come from the analyst, are never invented, and are asked for with `NEEDS_INPUT:`
 unless the analyst delegated them. A card for Submodel, Port, Workbench Input or Workbench
 Output states that the assistant cannot author it, in the words of the operation layer's
-refusal. A Workbench Input's tables are the installed workbench's, so the operations refuse to
+refusal. A Workbench Input's tables are the workbench's, so the operations refuse to
 add one or to update, rename, delete or edit the steps of one, and connect nodes to its frames,
 or remove those connections, as for a Quote Input's. A Workbench Output's tables are the
 workbench's too: the operations refuse to add, update, rename or delete one, and connect a node

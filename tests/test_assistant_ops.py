@@ -2968,7 +2968,7 @@ class TestChangeHeadline:
 
 
 # ---------------------------------------------------------------------------
-# A Workbench Input is read-only to the assistant (specs/extensions)
+# A Workbench Input is read-only to the assistant (specs/workbench)
 # ---------------------------------------------------------------------------
 
 
@@ -3002,7 +3002,7 @@ def test_the_assistant_reads_and_wires_but_never_authors_a_workbench_input(op):
 
 
 # ---------------------------------------------------------------------------
-# A Workbench Output is read-only to the assistant too (specs/extensions)
+# A Workbench Output is read-only to the assistant too (specs/workbench)
 # ---------------------------------------------------------------------------
 
 

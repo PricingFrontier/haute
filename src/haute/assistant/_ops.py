@@ -493,7 +493,7 @@ def _resolve_output_rows(
     return {**config, "outputMapping": resolved}
 
 
-#: The node types whose tables are the installed workbench's: the assistant reads them
+#: The node types whose tables are the workbench's: the assistant reads them
 #: and wires to their tables, but never authors one.
 _WORKBENCH_NODE_TYPES = {
     NodeType.WORKBENCH_INPUT: ("Workbench Input", "Wire nodes to its frames instead."),
@@ -502,7 +502,7 @@ _WORKBENCH_NODE_TYPES = {
 
 
 def _refuse_workbench_input(graph: PipelineGraph, node_id: str, operation: str) -> None:
-    """Refuse *operation* on a Workbench Input or Output: its tables are the extension's."""
+    """Refuse *operation* on a Workbench Input or Output: its tables are the workbench's."""
     index = _node_index(graph, node_id)
     if index is None:
         return
@@ -510,8 +510,7 @@ def _refuse_workbench_input(graph: PipelineGraph, node_id: str, operation: str) 
     if workbench is not None:
         name, wire = workbench
         _invalid(
-            f"Cannot {operation} {node_id!r}: it is a {name}, whose tables are "
-            "the installed workbench's",
+            f"Cannot {operation} {node_id!r}: it is a {name}, whose tables are the workbench's",
             where={"node": node_id},
             fix="Leave it as it is: the analyst edits it in the editor and its tables in "
             f"the workbench. {wire}",
@@ -533,8 +532,7 @@ def _apply_add_node(
     if op.node_type in _WORKBENCH_NODE_TYPES:
         name, _wire = _WORKBENCH_NODE_TYPES[op.node_type]
         _invalid(
-            f"Cannot add node type {op.node_type.value!r}: a {name}'s tables are "
-            "the installed workbench's",
+            f"Cannot add node type {op.node_type.value!r}: a {name}'s tables are the workbench's",
             fix=f"The analyst adds a {name} from the palette; wire nodes to the "
             "tables of the one the pipeline has.",
         )

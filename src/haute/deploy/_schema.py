@@ -74,7 +74,7 @@ def infer_input_schema(graph: PipelineGraph, input_node_id: str) -> dict[str, st
         Dict of column_name → polars dtype string (e.g. ``{"Area": "String"}``).
 
     A Workbench Input reads no file: its request's schema is derived from its
-    tables instead (specs/extensions).
+    tables instead (specs/workbench).
 
     Raises:
         ValueError: If the input node has no path or the file can't be read, or a
@@ -156,7 +156,7 @@ def _read_sample_row(graph: PipelineGraph, input_node_ids: list[str]) -> pl.Data
     """Read the one-row sample both the schema dry-run and policy planning use.
 
     A Workbench Input reads no file, so its sample is one request record of
-    nulls in the schema its tables give (specs/extensions).
+    nulls in the schema its tables give (specs/workbench).
     """
     if not input_node_ids:
         raise ValueError("No API input nodes found in the graph")

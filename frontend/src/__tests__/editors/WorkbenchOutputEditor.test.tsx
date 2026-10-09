@@ -1,14 +1,14 @@
 /**
- * The Workbench Output's panel (specs/extensions): the response's tables the installed
- * extension supplies, each with the node connected to its port and the frame column that
- * fills each of its columns, a way to the extension's view, and notes when nothing updates
- * the tables.
+ * The Workbench Output's panel (specs/workbench): the response's tables the project's
+ * workbench supplies, each with the node connected to its port and the frame column that
+ * fills each of its columns, and notes when nothing updates the tables.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import WorkbenchOutputEditor from "../../panels/editors/WorkbenchOutputEditor"
+import { WORKBENCH_DISABLED_NOTE } from "../../panels/editors/WorkbenchInputEditor"
 import type { InputSource } from "../../panels/editors/_shared"
-import useExtensionsStore, { PIPELINE_VIEW } from "../../stores/useExtensionsStore"
+import useWorkbenchStore from "../../stores/useWorkbenchStore"
 
 const column = (table: string, name: string, type: string, many = false) => ({
   name,
@@ -27,16 +27,6 @@ const config: Record<string, unknown> = {
     { path: "$[:]", label: "two words", emit: true, row_id_column: null, columns: [] },
   ],
 }
-const workbench = {
-  name: "obverse",
-  label: "Workbench",
-  api_base: "/api/extensions/obverse",
-  entry_url: "/extensions/obverse/obverse-embed.js",
-  ready: true,
-  detail: null,
-  quote_tables: true,
-  response_tables: true,
-}
 const priced: InputSource = {
   sourceNodeId: "priced",
   name: "priced",
@@ -54,7 +44,6 @@ function renderEditor(
     <WorkbenchOutputEditor
       config={props.mapping === undefined ? config : { ...config, mapping: props.mapping }}
       onUpdate={onUpdate}
-      accentColor="#D55E00"
       inputSources={props.inputSources ?? [priced]}
       insideSubmodel={props.insideSubmodel}
     />,
@@ -66,11 +55,11 @@ const mapped = (table: string, name: string) =>
 
 describe("WorkbenchOutputEditor", () => {
   beforeEach(() => {
-    useExtensionsStore.setState({ extensions: [workbench], activeView: PIPELINE_VIEW })
+    useWorkbenchStore.setState({ enabled: true })
   })
   afterEach(() => {
     cleanup()
-    useExtensionsStore.setState({ extensions: [], activeView: PIPELINE_VIEW })
+    useWorkbenchStore.setState({ enabled: false })
   })
 
   it("shows each table read-only with the node connected to its port", () => {
@@ -127,22 +116,12 @@ describe("WorkbenchOutputEditor", () => {
     expect(within(screen.getByTestId("workbench-table-layers")).queryByRole("alert")).not.toBeInTheDocument()
   })
 
-  it("opens the extension's view to edit the tables", () => {
+  it("says the tables are the last copy while the workbench is not enabled", () => {
+    useWorkbenchStore.setState({ enabled: false })
     renderEditor()
 
-    fireEvent.click(screen.getByRole("button", { name: "Edit in Workbench" }))
-
-    expect(useExtensionsStore.getState().activeView).toBe("obverse")
-  })
-
-  it("says the tables are the last copy when no installed extension supplies them", () => {
-    useExtensionsStore.setState({ extensions: [{ ...workbench, response_tables: false }] })
-    renderEditor()
-
-    expect(screen.getByRole("note")).toHaveTextContent(
-      "No installed extension supplies these tables, so they are the last copy and nothing updates them.",
-    )
-    expect(screen.queryByRole("button", { name: /Edit in/ })).not.toBeInTheDocument()
+    expect(screen.getByRole("note")).toHaveTextContent(WORKBENCH_DISABLED_NOTE)
+    expect(within(screen.getByTestId("workbench-output-tables")).getByText("Tables")).toBeInTheDocument()
   })
 
   it("says the editor updates the tables only at the top level while a submodel is open", () => {

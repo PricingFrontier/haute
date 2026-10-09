@@ -753,3 +753,63 @@ class TestInitForceReinit:
         assert not (tmp_path / "azure-pipelines.yml").exists()
         assert not (tmp_path / ".gitlab-ci.yml").exists()
         assert not (tmp_path / ".github").exists()
+
+
+class TestInitWorkbench:
+    """``haute init --workbench`` switches the project's workbench on (specs/workbench)."""
+
+    def test_writes_the_table_and_a_blank_form_and_reports_both(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import json
+
+        project_dir = tmp_path / "motor"
+        project_dir.mkdir()
+        monkeypatch.chdir(project_dir)
+        result = runner.invoke(cli, ["init", "--workbench"], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+
+        with open(project_dir / "haute.toml", "rb") as fh:
+            doc = tomllib.load(fh)
+        assert doc["workbench"] == {"enabled": True, "form": "forms/form.json"}
+        form = json.loads((project_dir / "forms" / "form.json").read_text(encoding="utf-8"))
+        assert form == {
+            "version": 1,
+            "name": "motor",
+            "schema": {"tables": []},
+            "pages": [{"id": "page_1", "title": "Sheet 1", "widgets": []}],
+            "sample": {},
+        }
+        assert "forms/form.json" in result.output
+        assert "workbench config" in result.output
+
+    def test_a_plain_init_writes_neither(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(cli, ["init"], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+
+        with open(tmp_path / "haute.toml", "rb") as fh:
+            assert "workbench" not in tomllib.load(fh)
+        assert not (tmp_path / "forms").exists()
+        assert "forms/form.json" not in result.output
+
+    def test_force_reinit_keeps_the_table_only_when_asked_again(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        runner.invoke(cli, ["init", "--workbench"], catch_exceptions=False)
+        (tmp_path / "forms" / "form.json").write_text("edited", encoding="utf-8")
+
+        # haute.toml is rewritten wholesale, so the table goes unless --workbench is repeated;
+        # the form folder is left as data/ is.
+        runner.invoke(cli, ["init", "--force"], catch_exceptions=False)
+        with open(tmp_path / "haute.toml", "rb") as fh:
+            assert "workbench" not in tomllib.load(fh)
+        assert (tmp_path / "forms" / "form.json").read_text(encoding="utf-8") == "edited"
+
+        runner.invoke(cli, ["init", "--force", "--workbench"], catch_exceptions=False)
+        with open(tmp_path / "haute.toml", "rb") as fh:
+            assert tomllib.load(fh)["workbench"]["enabled"] is True
+        assert (tmp_path / "forms" / "form.json").read_text(encoding="utf-8") != "edited"

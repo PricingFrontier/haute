@@ -1,21 +1,17 @@
 /**
- * The copy rules for a Workbench Input, whose tables and sample quote an installed
- * extension supplies, and a Workbench Output, whose response tables it supplies
- * (specs/extensions): when a copy needs updating, what each starts with from the palette,
- * and which extension supplies them.
+ * The copy rules for a Workbench Input, whose tables and sample quote the project's
+ * workbench supplies, and a Workbench Output, whose response tables it supplies
+ * (specs/workbench): when a copy needs updating, and what each starts with from the palette.
  */
 import { describe, expect, it } from "vitest"
-import type { ExtensionInfo } from "../../api/types"
 import {
   paletteWorkbenchInputConfig,
   paletteWorkbenchOutputConfig,
   quoteTablesPatch,
-  quoteTablesSupplier,
   responseTablesPatch,
-  responseTablesSupplier,
   workbenchOutputTableLabels,
-  type QuoteTables,
-} from "../extensionQuoteTables"
+  type WorkbenchTables,
+} from "../workbenchTables"
 
 const table = {
   path: "$[:]",
@@ -36,27 +32,15 @@ const responseTable = {
     { name: "layer", path: "$[:].layers[:].layer", type: "int", status: "Confirmed", selected: true, levels: null },
   ],
 }
-const fetched: QuoteTables = {
-  extension: "obverse",
+const fetched: WorkbenchTables = {
   tables: [table],
   sample,
   responseTables: [responseTable],
   fetch: 3,
 }
 
-const extension = (name: string, quoteTables: boolean, responseTables = false): ExtensionInfo => ({
-  name,
-  label: name,
-  api_base: `/api/extensions/${name}`,
-  entry_url: `/extensions/${name}/${name}.js`,
-  ready: true,
-  detail: null,
-  quote_tables: quoteTables,
-  response_tables: responseTables,
-})
-
 describe("quoteTablesPatch", () => {
-  it("updates a copy whose tables or sample differ from the extension's, with both", () => {
+  it("updates a copy whose tables or sample differ from the workbench's, with both", () => {
     expect(quoteTablesPatch({ tables: [], sample }, fetched)).toEqual({ tables: [table], sample })
     expect(quoteTablesPatch({}, fetched)).toEqual({ tables: [table], sample })
     expect(quoteTablesPatch({ tables: [table], sample: {} }, fetched)).toEqual({ tables: [table], sample })
@@ -91,14 +75,6 @@ describe("paletteWorkbenchInputConfig", () => {
   })
 })
 
-describe("quoteTablesSupplier", () => {
-  it("is the listed extension that supplies the tables, if one does", () => {
-    expect(quoteTablesSupplier([extension("forms", false), extension("obverse", true)])?.name).toBe("obverse")
-    expect(quoteTablesSupplier([extension("forms", false)])).toBeNull()
-    expect(quoteTablesSupplier([])).toBeNull()
-  })
-})
-
 describe("the response's tables", () => {
   it("updates a Workbench Output's copy whose tables differ, and leaves a matching one alone", () => {
     expect(responseTablesPatch({ tables: [] }, fetched)).toEqual({ tables: [responseTable] })
@@ -127,12 +103,6 @@ describe("the response's tables", () => {
   it("starts a Workbench Output with the newest response tables fetched, or none until they are", () => {
     expect(paletteWorkbenchOutputConfig({ tables: [] }, fetched)).toEqual({ tables: [responseTable] })
     expect(paletteWorkbenchOutputConfig({ tables: [] }, null)).toEqual({ tables: [] })
-  })
-
-  it("is supplied by the tables' supplier when it supplies them too", () => {
-    expect(responseTablesSupplier([extension("obverse", true, true)])?.name).toBe("obverse")
-    expect(responseTablesSupplier([extension("obverse", true)])).toBeNull()
-    expect(responseTablesSupplier([])).toBeNull()
   })
 
   it("makes each table's label a port, in order", () => {

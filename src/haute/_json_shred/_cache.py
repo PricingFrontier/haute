@@ -260,7 +260,7 @@ def workbench_table_frames(
 ) -> dict[str, pl.LazyFrame]:
     """A Workbench Input's frames without a request: its sample's rows, typed as declared.
 
-    A Workbench Input reads no file (specs/extensions). Its ``sample``, the copy of the
+    A Workbench Input reads no file (specs/workbench). Its ``sample``, the copy of the
     quote the workbench supplies, is read as one request is read through its tables: whole,
     every emitting table and selected column whatever *port_columns* asks for, and only
     then cut to it, so every reader finds the same misfit. A table the sample gives no

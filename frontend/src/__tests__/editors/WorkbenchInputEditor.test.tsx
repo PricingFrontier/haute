@@ -1,12 +1,12 @@
 /**
- * The Workbench Input's panel (specs/extensions): the tables the installed extension
- * supplies, read-only, with each label's problem as a port, a way to the extension's
- * view, what previews run on, and notes when nothing updates the tables.
+ * The Workbench Input's panel (specs/workbench): the workbench's tables, read-only, with
+ * each label's problem as a port, what previews run on, and notes when nothing updates
+ * the tables.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
-import WorkbenchInputEditor from "../../panels/editors/WorkbenchInputEditor"
-import useExtensionsStore, { PIPELINE_VIEW } from "../../stores/useExtensionsStore"
+import { cleanup, render, screen, within } from "@testing-library/react"
+import WorkbenchInputEditor, { WORKBENCH_DISABLED_NOTE } from "../../panels/editors/WorkbenchInputEditor"
+import useWorkbenchStore from "../../stores/useWorkbenchStore"
 
 const RESERVED = new Set(["class", "pl", "pipeline"])
 
@@ -27,17 +27,6 @@ const config = {
     { path: "$[:]", label: "pl", emit: true, row_id_column: null, columns: [column("pl", "x", "int")] },
   ],
 }
-const workbench = {
-  name: "obverse",
-  label: "Workbench",
-  api_base: "/api/extensions/obverse",
-  entry_url: "/extensions/obverse/obverse-embed.js",
-  ready: true,
-  detail: null,
-  quote_tables: true,
-  response_tables: false,
-}
-
 function renderEditor(props: { insideSubmodel?: boolean; sample?: Record<string, unknown> } = {}) {
   return render(
     <WorkbenchInputEditor
@@ -51,18 +40,18 @@ function renderEditor(props: { insideSubmodel?: boolean; sample?: Record<string,
 
 describe("WorkbenchInputEditor", () => {
   beforeEach(() => {
-    useExtensionsStore.setState({ extensions: [workbench], activeView: PIPELINE_VIEW })
+    useWorkbenchStore.setState({ enabled: true })
   })
   afterEach(() => {
     cleanup()
-    useExtensionsStore.setState({ extensions: [], activeView: PIPELINE_VIEW })
+    useWorkbenchStore.setState({ enabled: false })
   })
 
-  it("shows the extension's tables read-only, with nothing to edit them", () => {
+  it("shows the workbench's tables read-only, with nothing to edit them", () => {
     renderEditor()
 
     const tables = screen.getByTestId("workbench-input-tables")
-    expect(within(tables).getByText("Tables from Workbench")).toBeInTheDocument()
+    expect(within(tables).getByText("Tables from the workbench")).toBeInTheDocument()
     const policy = within(tables).getByTestId("workbench-table-policy_details")
     expect(within(policy).getByText("one per quote")).toBeInTheDocument()
     expect(within(policy).getByText("state")).toBeInTheDocument()
@@ -100,22 +89,12 @@ describe("WorkbenchInputEditor", () => {
     expect(within(screen.getByTestId("workbench-table-policy_details")).queryByRole("alert")).not.toBeInTheDocument()
   })
 
-  it("opens the extension's view to edit the tables", () => {
+  it("says the tables are the last copy while the workbench is not enabled", () => {
+    useWorkbenchStore.setState({ enabled: false })
     renderEditor()
 
-    fireEvent.click(screen.getByRole("button", { name: "Edit in Workbench" }))
-
-    expect(useExtensionsStore.getState().activeView).toBe("obverse")
-  })
-
-  it("says the tables are the last copy when no installed extension supplies them", () => {
-    useExtensionsStore.setState({ extensions: [{ ...workbench, quote_tables: false }] })
-    renderEditor()
-
-    expect(screen.getByRole("note")).toHaveTextContent(
-      "No installed extension supplies these tables, so they are the last copy and nothing updates them.",
-    )
-    expect(screen.queryByRole("button", { name: /Edit in/ })).not.toBeInTheDocument()
+    expect(screen.getByRole("note")).toHaveTextContent(WORKBENCH_DISABLED_NOTE)
+    expect(within(screen.getByTestId("workbench-input-tables")).getByText("Tables")).toBeInTheDocument()
     expect(screen.getByTestId("workbench-table-policy_details")).toBeInTheDocument()
   })
 

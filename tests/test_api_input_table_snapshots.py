@@ -1268,7 +1268,7 @@ def test_a_dead_worker_is_a_failure_unless_every_table_was_published(
 
 
 def test_one_row_and_many_row_tables_shred_from_one_request(tmp_path: Path) -> None:
-    """Obverse's shape: one-row tables are objects in each quote, many-row tables arrays."""
+    """The workbench's shape: one-row tables are objects in each quote, many-row tables arrays."""
 
     def columns(table: str, *named: tuple[str, str], many: bool = False) -> list[dict[str, Any]]:
         level = f"$[:].{table}[:]" if many else f"$[:].{table}"

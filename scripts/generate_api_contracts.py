@@ -34,7 +34,6 @@ from haute.schemas import (
     ExplorePivotMembersResponse,
     ExplorePivotRunResponse,
     ExplorePivotStatusResponse,
-    ExtensionsResponse,
     GitArchiveResponse,
     GitBindStorageResponse,
     GitBranchAwayResponse,
@@ -88,7 +87,6 @@ from haute.schemas import (
     PipelineSettingsResponse,
     PolarsFreeCodeColumnsResponse,
     PolarsStepsRenderResponse,
-    QuoteTablesResponse,
     RatingLevelsResponse,
     SaveModelResponse,
     SchemaListResponse,
@@ -102,6 +100,8 @@ from haute.schemas import (
     UtilityReadResponse,
     UtilityWriteResponse,
     WarehouseListResponse,
+    WorkbenchStatusResponse,
+    WorkbenchTablesResponse,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -190,7 +190,7 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         RatingLevelsResponse,
     ),
     "io": (IoCapabilitiesResponse,),
-    "extensions": (ExtensionsResponse, QuoteTablesResponse),
+    "workbench": (WorkbenchStatusResponse, WorkbenchTablesResponse),
     "session": (
         SessionStatusResponse,
         BrowseFilesResponse,

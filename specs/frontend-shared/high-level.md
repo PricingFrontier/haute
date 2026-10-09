@@ -53,19 +53,20 @@ In scope:
   (structure/status/model/chart/syntax) for code that needs a token as a
   JS value, plus the literal `NODE_GROUP_COLORS` palette — it is a
   consumer-facing view of the token layer, not the layer itself.
-- `haute-ui` (`frontend/src/haute-ui/`), the kit Haute shares with its
-  [extensions](../extensions/high-level.md) so their views look like the
+- `haute-ui` (`frontend/src/haute-ui/`), the kit Haute shares with Obverse's standalone
+  form builder, which edits the workbench's form until the builder lands in Haute
+  ([workbench roadmap](../roadmap/workbench.md)), so its views look like the
   editor: the toolbar's stylesheet, the React components the toolbar is built
   from (the brand, a two-row column, a labelled toolbar button, Undo/Redo,
   Zoom In/Zoom Out and Save/Commit), the palette's shell (its column, its
   header with the minimiser, the strip that reveals it again, and its items, with
   their stylesheet), the frame of a right-hand panel (resized from its left edge,
   with a header and Close), the native dropdowns' colours, and a copy of the
-  colour tokens an extension needs. Haute's
-  `Toolbar` and node palette render these components, so an extension that
-  builds its toolbar and palette from them gets the same controls. The kit imports
+  colour tokens the builder needs. Haute's
+  `Toolbar` and node palette render these components, so a builder that
+  renders its toolbar and palette from them gets the same controls. The kit imports
   nothing else from the editor, and `frontend/src/haute-ui/package.json` lets
-  an extension install the directory as the `haute-ui` package.
+  the builder install the directory as the `haute-ui` package.
 - Chrome widgets and app-shell surfaces: `ErrorBoundary`, `Toast`,
   `ModalShell`, `Tooltip`, `ContextMenu`, `KeyboardShortcuts`, `Toolbar`,
   `GlobalConstantsPanel`, `BackgroundJobPolling`, `NodeSearch`, `BreadcrumbBar`.
@@ -244,10 +245,7 @@ equal-width Save and Commit buttons. The Pipeline control reports the pipeline's
 the calculation mode while the server is reachable, and "Offline" once live sync has lost
 the server. The toolbar carries no unsaved-changes indicator. Its frame, brand, Undo/Redo
 and Zoom In/Zoom Out columns and Save/Commit pair are `haute-ui` components, the same ones
-an extension's toolbar is built from. While an installed
-[extension](../extensions/high-level.md)'s view shows, the toolbar keeps the brand column and
-the project controls (Assistant, Help, the working branch, Save and Commit) and gives the
-width between them to a slot the extension renders its own controls into.
+Obverse's standalone builder's toolbar is built from.
 `NodeSearch` is the Ctrl+K command palette, windowed to
 render only visible rows for large graphs; the application loads its module
 only when the palette is opened, so this user-triggered surface is not part
@@ -347,13 +345,13 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   `PIVOT_CONDITIONAL_FORMAT_COLORS` palettes, which are fixed branding or
   visualisation semantics rather than theme roles. The semantic-colour
   tokenization test rejects fixed colour literals everywhere else.
-- **One toolbar kit, shared as source.** An extension's view runs its own React
-  inside shadow roots, so the editor cannot render controls into it at run time;
+- **One toolbar kit, shared as source.** Obverse's standalone builder runs its own
+  React in its own page, so the editor cannot lend it components at run time;
   what the two can share is source code. `haute-ui` is a directory of the editor
-  that is also an npm package: Haute imports it by path, an extension installs it,
+  that is also an npm package: Haute imports it by path, the builder installs it,
   and both render the same components. Its stylesheet is plain CSS rather than
   Tailwind utilities, because a utility exists only when the consumer's own
-  Tailwind build saw it used, and an extension's stylesheet is not Haute's. Its
+  Tailwind build saw it used, and the builder's stylesheet is not Haute's. Its
   tokens are a copy of `index.css`'s values, not their source, so the tokenization
   gate still reads one file; `frontend/src/haute-ui/__tests__/tokens.test.ts`
   fails when the copy drifts.
@@ -388,8 +386,9 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   through `api/client.ts`, read/write `useNodeResultsStore` /
   `useSettingsStore` / `useToastStore` / `useUIStore`, and render inside the
   chrome this component provides.
-- [extensions](../extensions/high-level.md): an extension builds its toolbar
-  from `haute-ui`, so its controls match the editor's.
+- [workbench](../workbench/high-level.md): the API client validates the workbench's
+  status and tables with the generated contract, and Obverse's standalone builder
+  builds its toolbar from `haute-ui`, so its controls match the editor's.
 - Talks to [server-api](../server-api/high-level.md) exclusively through the
   typed functions in `api/client.ts` — no other module in the frontend is
   expected to call `fetch()` directly against `/api/*`; split endpoint

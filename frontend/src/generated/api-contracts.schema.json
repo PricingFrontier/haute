@@ -5132,78 +5132,6 @@
       "title": "ExplorePivotValueIdentity",
       "type": "object"
     },
-    "ExtensionInfo": {
-      "description": "An installed extension, as the view switcher lists it (see ``haute._extensions``).",
-      "properties": {
-        "api_base": {
-          "title": "Api Base",
-          "type": "string"
-        },
-        "detail": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Detail"
-        },
-        "entry_url": {
-          "title": "Entry Url",
-          "type": "string"
-        },
-        "label": {
-          "title": "Label",
-          "type": "string"
-        },
-        "name": {
-          "title": "Name",
-          "type": "string"
-        },
-        "quote_tables": {
-          "title": "Quote Tables",
-          "type": "boolean"
-        },
-        "ready": {
-          "title": "Ready",
-          "type": "boolean"
-        },
-        "response_tables": {
-          "title": "Response Tables",
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "name",
-        "label",
-        "api_base",
-        "entry_url",
-        "ready",
-        "detail",
-        "quote_tables",
-        "response_tables"
-      ],
-      "title": "ExtensionInfo",
-      "type": "object"
-    },
-    "ExtensionsResponse": {
-      "properties": {
-        "extensions": {
-          "items": {
-            "$ref": "#/$defs/ExtensionInfo"
-          },
-          "title": "Extensions",
-          "type": "array"
-        }
-      },
-      "required": [
-        "extensions"
-      ],
-      "title": "ExtensionsResponse",
-      "type": "object"
-    },
     "FileItem": {
       "properties": {
         "name": {
@@ -11566,44 +11494,6 @@
       "title": "PolarsStepsRenderResponse",
       "type": "object"
     },
-    "QuoteTablesResponse": {
-      "description": "The Quote Input's tables, in its v2 shape, from the extension that supplies them.\n\n``sample`` is the extension's sample quote, as a request holds it: ``{}`` for none.\n``response_tables`` are the tables a priced quote fills in, in the same shape, which a\nWorkbench Output fills: ``[]`` for none.",
-      "properties": {
-        "extension": {
-          "title": "Extension",
-          "type": "string"
-        },
-        "response_tables": {
-          "items": {
-            "additionalProperties": true,
-            "type": "object"
-          },
-          "title": "Response Tables",
-          "type": "array"
-        },
-        "sample": {
-          "additionalProperties": true,
-          "title": "Sample",
-          "type": "object"
-        },
-        "tables": {
-          "items": {
-            "additionalProperties": true,
-            "type": "object"
-          },
-          "title": "Tables",
-          "type": "array"
-        }
-      },
-      "required": [
-        "extension",
-        "tables",
-        "sample",
-        "response_tables"
-      ],
-      "title": "QuoteTablesResponse",
-      "type": "object"
-    },
     "RatingLevelColumn": {
       "description": "What one column offers as rating levels.\n\n`distinct_count` counts the levels that could be chosen — neither missing\nnor blank — so it is the number `values` would hold without the cap.",
       "properties": {
@@ -13768,6 +13658,66 @@
       ],
       "title": "WarehouseListResponse",
       "type": "object"
+    },
+    "WorkbenchStatusResponse": {
+      "description": "Whether the project's workbench is enabled (``[workbench]`` in ``haute.toml``).",
+      "properties": {
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "form": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Form"
+        }
+      },
+      "required": [
+        "enabled",
+        "form"
+      ],
+      "title": "WorkbenchStatusResponse",
+      "type": "object"
+    },
+    "WorkbenchTablesResponse": {
+      "description": "The workbench's tables, in the Quote Input's v2 shape, as its form defines them now.\n\n``tables`` are the Workbench Input's; ``sample`` is the sample quote typed while\nbuilding, as a request holds it: ``{}`` for none; ``response_tables`` are the tables a\npriced quote fills in, in the same shape, which a Workbench Output fills: ``[]`` for none.",
+      "properties": {
+        "response_tables": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Response Tables",
+          "type": "array"
+        },
+        "sample": {
+          "additionalProperties": true,
+          "title": "Sample",
+          "type": "object"
+        },
+        "tables": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Tables",
+          "type": "array"
+        }
+      },
+      "required": [
+        "tables",
+        "sample",
+        "response_tables"
+      ],
+      "title": "WorkbenchTablesResponse",
+      "type": "object"
     }
   },
   "$id": "https://haute.dev/schemas/api-contracts.v1.json",
@@ -13800,9 +13750,6 @@
     },
     "ExplorePivotStatusResponse": {
       "$ref": "#/$defs/ExplorePivotStatusResponse"
-    },
-    "ExtensionsResponse": {
-      "$ref": "#/$defs/ExtensionsResponse"
     },
     "GitArchiveResponse": {
       "$ref": "#/$defs/GitArchiveResponse"
@@ -13963,9 +13910,6 @@
     "PolarsStepsRenderResponse": {
       "$ref": "#/$defs/PolarsStepsRenderResponse"
     },
-    "QuoteTablesResponse": {
-      "$ref": "#/$defs/QuoteTablesResponse"
-    },
     "RatingLevelsResponse": {
       "$ref": "#/$defs/RatingLevelsResponse"
     },
@@ -14004,6 +13948,12 @@
     },
     "WarehouseListResponse": {
       "$ref": "#/$defs/WarehouseListResponse"
+    },
+    "WorkbenchStatusResponse": {
+      "$ref": "#/$defs/WorkbenchStatusResponse"
+    },
+    "WorkbenchTablesResponse": {
+      "$ref": "#/$defs/WorkbenchTablesResponse"
     },
     "execution_strategy_diagnostic": {
       "$ref": "#/$defs/ExecutionStrategyDiagnosticPayload"
@@ -14071,8 +14021,8 @@
     "BandingStatsResponse",
     "RatingLevelsResponse",
     "IoCapabilitiesResponse",
-    "ExtensionsResponse",
-    "QuoteTablesResponse",
+    "WorkbenchStatusResponse",
+    "WorkbenchTablesResponse",
     "SessionStatusResponse",
     "BrowseFilesResponse",
     "ModelFileInspectionResponse",
@@ -14113,10 +14063,6 @@
       "ExplorePivotStatusResponse",
       "ExplorePivotMembersResponse",
       "NodeDataProfileResponse"
-    ],
-    "extensions": [
-      "ExtensionsResponse",
-      "QuoteTablesResponse"
     ],
     "factors": [
       "BandingStatsResponse",
@@ -14198,6 +14144,10 @@
       "UtilityReadResponse",
       "UtilityWriteResponse",
       "UtilityDeleteResponse"
+    ],
+    "workbench": [
+      "WorkbenchStatusResponse",
+      "WorkbenchTablesResponse"
     ]
   }
 }

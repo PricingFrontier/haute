@@ -3,56 +3,56 @@ import type { Edge, Node } from "@xyflow/react"
 
 import type { OnUpdateConfigResult } from "../panels/editors/_shared"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
-import useExtensionsStore from "../stores/useExtensionsStore"
-import { WORKBENCH_COPY_PATCHES, quoteTablesSupplier } from "../utils/extensionQuoteTables"
+import useWorkbenchStore from "../stores/useWorkbenchStore"
+import { WORKBENCH_COPY_PATCHES } from "../utils/workbenchTables"
 import type { GraphCommitController } from "./useGraphCommitController"
 
-export type UseExtensionQuoteTablesOptions = {
+export type UseWorkbenchTablesOptions = {
   graphRef: MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
   onUpdateNode: GraphCommitController["onUpdateNode"]
-  /** The document can change and its top level, where the Workbench Input is, shows. */
+  /** The document can change and its top level, where the workbench nodes are, shows. */
   editable: boolean
 }
 
 /**
- * Keeps each Workbench Input up to date with the tables the installed extension
- * supplies, and each Workbench Output with the response's tables (specs/extensions).
- * The tables are fetched when the supplier is listed and whenever a document is adopted
- * (`executionGeneration`), and applied only to the document they were fetched for: once
- * per node for each fetch, while the document is editable and its top level shows. A
- * graph edit, an undo or a redo never runs it; a node created from the palette is
- * reported through `nodeCreated`, so one made while its tables were being fetched still
- * gets them.
+ * Keeps each Workbench Input up to date with the tables and sample the project's
+ * workbench supplies, and each Workbench Output with the response's tables
+ * (specs/workbench). The tables are fetched when the workbench is enabled and whenever a
+ * document is adopted (`executionGeneration`), and applied only to the document they were
+ * fetched for: once per node for each fetch, while the document is editable and its top
+ * level shows. A graph edit, an undo or a redo never runs it; a node created from the
+ * palette is reported through `nodeCreated`, so one made while its tables were being
+ * fetched still gets them.
  */
-export default function useExtensionQuoteTables({
+export default function useWorkbenchTables({
   graphRef,
   onUpdateNode,
   editable,
-}: UseExtensionQuoteTablesOptions): { nodeCreated: (nodeId: string) => void } {
-  const supplier = useExtensionsStore((state) => quoteTablesSupplier(state.extensions)?.name ?? null)
-  const quoteTables = useExtensionsStore((state) => state.quoteTables)
+}: UseWorkbenchTablesOptions): { nodeCreated: (nodeId: string) => void } {
+  const enabled = useWorkbenchStore((state) => state.enabled)
+  const workbench = useWorkbenchStore((state) => state.tables)
   const generation = useDocumentStatusStore((state) => state.executionGeneration)
   // The fetch started when this generation's document was adopted: tables from an
   // earlier fetch were read for an earlier document.
   const adoptionFetch = useRef<{ generation: number; fetch: number } | null>(null)
-  // The fetch whose tables each Workbench Input has been given in this generation.
+  // The fetch whose tables each workbench node has been given in this generation.
   const given = useRef({ generation, fetches: new Map<string, number>() })
   const created = useRef<string[]>([])
   const [creations, setCreations] = useState(0)
 
   useEffect(() => {
-    if (supplier === null) return
-    const fetch = useExtensionsStore.getState().refreshQuoteTables()
+    if (!enabled) return
+    const fetch = useWorkbenchStore.getState().refreshTables()
     if (fetch !== null) adoptionFetch.current = { generation, fetch }
-  }, [supplier, generation])
+  }, [enabled, generation])
 
   const apply = useCallback((only: ReadonlySet<string> | null) => {
     const adoption = adoptionFetch.current
-    if (!editable || quoteTables === null || adoption === null) return
-    if (adoption.generation !== generation || quoteTables.fetch < adoption.fetch) return
+    if (!editable || workbench === null || adoption === null) return
+    if (adoption.generation !== generation || workbench.fetch < adoption.fetch) return
     if (given.current.generation !== generation) given.current = { generation, fetches: new Map() }
     const isCurrent = () => useDocumentStatusStore.getState().executionGeneration === generation
-    const { fetch } = quoteTables
+    const { fetch } = workbench
     const fetches = given.current.fetches
     for (const node of graphRef.current.nodes) {
       const patchFor = WORKBENCH_COPY_PATCHES[String(node.data.nodeType)]
@@ -60,7 +60,7 @@ export default function useExtensionQuoteTables({
       const config = (node.data.config ?? {}) as Record<string, unknown>
       if (fetches.get(node.id) === fetch) continue
       fetches.set(node.id, fetch)
-      const patch = patchFor(config, quoteTables)
+      const patch = patchFor(config, workbench)
       if (patch === null) continue
       // An update that does not commit, such as one a submodel opened while its identity
       // was resolving, is forgotten, so the next pass (the top level showing again, or the
@@ -70,7 +70,7 @@ export default function useExtensionQuoteTables({
       }
       onUpdateNode(node.id, { ...node.data, config: { ...config, ...patch } }, { isCurrent, onSettled })
     }
-  }, [editable, generation, graphRef, onUpdateNode, quoteTables])
+  }, [editable, generation, graphRef, onUpdateNode, workbench])
 
   useEffect(() => {
     apply(null)

@@ -59,7 +59,7 @@ describe("useGraphCommitController pending commits", () => {
   })
 
   it("refuses an API-input update whose isCurrent turns false while its identity resolves", async () => {
-    // The extension's tables were fetched for one document; a newer one was adopted
+    // The workbench's tables were fetched for one document; a newer one was adopted
     // (the same file and revision, so the document identity is unchanged) and its
     // own fetch failed. Releasing the old resolution must change nothing.
     const node = makeNode("api", "apiInput")

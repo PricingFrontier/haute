@@ -820,7 +820,7 @@ describe("applyApiInputConfigChange", () => {
 })
 
 describe("connections follow table names", () => {
-  // An extension's tables (specs/extensions) may be reordered or replaced wholesale, so a
+  // The workbench's tables (specs/workbench) may be reordered or replaced wholesale, so a
   // Workbench Input (`followNames`) never rebinds a connection by position.
   const atRoot = (label: string) => ({ ...table(label, true), path: "$[:]" })
   const tablesOf = (...labels: string[]) => ({ tables: labels.map(atRoot) })

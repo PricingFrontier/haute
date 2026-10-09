@@ -30,6 +30,8 @@ class InitConfig:
     target: str
     ci: str
     force: bool = False
+    # Enable the project's workbench: the [workbench] table and a blank forms/form.json.
+    workbench: bool = False
 
 
 _DEV_DEPS_BLOCK = """
@@ -480,6 +482,7 @@ def handle_init(config: InitConfig) -> None:
         gitlab_ci_yml,
         haute_toml,
         pre_commit_hook,
+        starter_form,
         starter_pipeline,
         starter_test,
         starter_test_quote,
@@ -543,11 +546,17 @@ def handle_init(config: InitConfig) -> None:
     for sub in ("config", "data", "outputs"):
         (rating_dir / sub).mkdir(exist_ok=True)
 
-    # -- haute.toml - project + deploy + safety + CI config --------------------
+    # -- haute.toml - project + deploy + safety + CI (+ workbench) config -------
     (project_dir / "haute.toml").write_text(
-        haute_toml(name, target, ci),
+        haute_toml(name, target, ci, workbench=config.workbench),
         encoding="utf-8",
     )
+
+    # -- forms/form.json - the workbench's blank form --------------------------
+    if config.workbench:
+        forms_dir = project_dir / "forms"
+        forms_dir.mkdir(exist_ok=True)
+        (forms_dir / "form.json").write_text(starter_form(name), encoding="utf-8")
 
     # -- .env.example - target-specific credentials ----------------------------
     (project_dir / ".env.example").write_text(env_example(target), encoding="utf-8")
@@ -637,7 +646,11 @@ def handle_init(config: InitConfig) -> None:
     # -- Summary ---------------------------------------------------------------
     click.echo(f"Initialised Haute project '{name}' ({target} + {ci})\n")
     click.echo("  pyproject.toml        - haute added as dependency")
-    click.echo("  haute.toml            - project, deploy, safety & CI config")
+    if config.workbench:
+        click.echo("  haute.toml            - project, deploy, safety, CI & workbench config")
+        click.echo("  forms/form.json       - the workbench's blank form")
+    else:
+        click.echo("  haute.toml            - project, deploy, safety & CI config")
     click.echo(f"  .env.example         - {target} credentials template")
     click.echo("  rating/main.py       - starter pipeline")
     click.echo("  rating/utility/      - project-level utility functions")
@@ -680,24 +693,34 @@ def handle_init(config: InitConfig) -> None:
     help="CI/CD provider (default: github).",
 )
 @click.option(
+    "--workbench",
+    is_flag=True,
+    help=(
+        "Enable the project's workbench: add the [workbench] table to haute.toml and a "
+        "blank forms/form.json."
+    ),
+)
+@click.option(
     "--force",
     "-f",
     is_flag=True,
     help="Overwrite existing scaffold files (haute.toml, starter pipeline, etc.).",
 )
-def init(target: str, ci: str, force: bool) -> None:
+def init(target: str, ci: str, workbench: bool, force: bool) -> None:
     """Scaffold a Haute pricing project in the current directory.
 
     Generates haute.toml, CI/CD workflows, credentials template, and a
     starter pipeline - all configured for the chosen deploy target and
-    CI provider.
+    CI provider. With --workbench, the project's workbench is enabled in
+    haute.toml and its blank form written to forms/form.json.
 
     \b
     Examples:
       haute init                                  # databricks + github
       haute init --target container --ci none      # container, no CI
       haute init --target aws-ecs --ci github     # AWS ECS (build and push only)
+      haute init --workbench                      # with the workbench enabled
       haute init --force                          # overwrite existing scaffold
     """
-    config = InitConfig(target=target, ci=ci, force=force)
+    config = InitConfig(target=target, ci=ci, force=force, workbench=workbench)
     handle_init(config)

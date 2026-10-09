@@ -150,35 +150,23 @@ class SessionStatusResponse(BaseModel):
     ok: bool = True
 
 
-class ExtensionInfo(BaseModel):
-    """An installed extension, as the view switcher lists it (see ``haute._extensions``)."""
+class WorkbenchStatusResponse(BaseModel):
+    """Whether the project's workbench is enabled (``[workbench]`` in ``haute.toml``)."""
 
-    name: str
-    label: str
-    api_base: str
-    entry_url: str
-    # Whether the browser module exists now; ``detail`` says what to do when it doesn't.
-    ready: bool
-    detail: str | None
-    # Whether it supplies the Quote Input's tables (``GET /api/quote-tables``).
-    quote_tables: bool
-    # Whether it also supplies the response's tables, which a Workbench Output fills.
-    response_tables: bool
+    enabled: bool
+    # The form's path as haute.toml names it, relative to the project root; null while
+    # the workbench is not enabled.
+    form: str | None = None
 
 
-class ExtensionsResponse(BaseModel):
-    extensions: list[ExtensionInfo]
+class WorkbenchTablesResponse(BaseModel):
+    """The workbench's tables, in the Quote Input's v2 shape, as its form defines them now.
 
-
-class QuoteTablesResponse(BaseModel):
-    """The Quote Input's tables, in its v2 shape, from the extension that supplies them.
-
-    ``sample`` is the extension's sample quote, as a request holds it: ``{}`` for none.
-    ``response_tables`` are the tables a priced quote fills in, in the same shape, which a
-    Workbench Output fills: ``[]`` for none.
+    ``tables`` are the Workbench Input's; ``sample`` is the sample quote typed while
+    building, as a request holds it: ``{}`` for none; ``response_tables`` are the tables a
+    priced quote fills in, in the same shape, which a Workbench Output fills: ``[]`` for none.
     """
 
-    extension: str
     tables: list[dict[str, Any]]
     sample: dict[str, Any] = Field(default_factory=dict)
     response_tables: list[dict[str, Any]] = Field(default_factory=list)

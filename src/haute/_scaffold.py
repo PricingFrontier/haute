@@ -8,6 +8,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from haute._workbench_config import DEFAULT_FORM_PATH
+from haute._workbench_form import blank_form, render_form
+
 # ── Per-target configuration ─────────────────────────────────────────
 #
 # Central registry of every deploy target ``haute init`` offers.  Each entry carries:
@@ -233,8 +236,12 @@ def _build_only_notice(target: str) -> str:
 # ── haute.toml ────────────────────────────────────────────────────────
 
 
-def haute_toml(name: str, target: str, ci: str) -> str:
-    """Generate ``haute.toml`` with only the relevant target section."""
+def haute_toml(name: str, target: str, ci: str, workbench: bool = False) -> str:
+    """Generate ``haute.toml`` with only the relevant target section.
+
+    With *workbench* the ``[workbench]`` table switches the project's workbench on
+    (specs/workbench); without it the project has no workbench.
+    """
     min_approvers = 2
 
     sections = [
@@ -266,6 +273,14 @@ provider = "{ci}"
 endpoint_suffix = "-staging"
 """,
     ]
+    if workbench:
+        sections.append(
+            f"""\
+[workbench]
+enabled = true
+form = "{DEFAULT_FORM_PATH}"
+"""
+        )
     return "\n".join(sections)
 
 
@@ -1141,3 +1156,8 @@ def starter_test_quote() -> str:
   }
 ]
 """
+
+
+def starter_form(name: str) -> str:
+    """Generate the workbench's blank ``forms/form.json`` for ``haute init --workbench``."""
+    return render_form(blank_form(name))

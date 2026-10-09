@@ -1,27 +1,17 @@
 /**
- * Keeping a Workbench Input's copy of an extension's tables up to date
- * (specs/extensions): which fetches apply, to which document and node, when, and
+ * Keeping a Workbench Input's and a Workbench Output's copies of the workbench's tables up
+ * to date (specs/workbench): which fetches apply, to which document and node, when, and
  * what never runs it.
  */
 import { act, cleanup, renderHook } from "@testing-library/react"
 import type { Edge, Node } from "@xyflow/react"
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest"
 
-import useExtensionQuoteTables from "../useExtensionQuoteTables"
+import useWorkbenchTables from "../useWorkbenchTables"
 import useGraphCommitController, { type GraphCommitController } from "../useGraphCommitController"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
-import useExtensionsStore, { PIPELINE_VIEW } from "../../stores/useExtensionsStore"
+import useWorkbenchStore from "../../stores/useWorkbenchStore"
 
-const workbench = {
-  name: "obverse",
-  label: "Workbench",
-  api_base: "/api/extensions/obverse",
-  entry_url: "/extensions/obverse/obverse-embed.js",
-  ready: true,
-  detail: null,
-  quote_tables: true,
-  response_tables: true,
-}
 const tables = (label: string) => [{ path: "$[:]", label, emit: true, row_id_column: null, columns: [] }]
 
 function requestInput(nodeType: "workbenchInput" | "apiInput", config: Record<string, unknown>, id: string): Node {
@@ -30,7 +20,7 @@ function requestInput(nodeType: "workbenchInput" | "apiInput", config: Record<st
 const workbenchInput = (config: Record<string, unknown>, id = "workbench") => requestInput("workbenchInput", config, id)
 const quoteInput = (config: Record<string, unknown>, id = "quote") => requestInput("apiInput", config, id)
 
-describe("useExtensionQuoteTables", () => {
+describe("useWorkbenchTables", () => {
   let fetches: number
   let onUpdateNode: Mock<GraphCommitController["onUpdateNode"]>
   /** The config each update sent, by node. */
@@ -41,12 +31,12 @@ describe("useExtensionQuoteTables", () => {
   /** Publishes tables, and a sample, as the store does when a fetch settles. */
   const publish = (fetch: number, label: string, sample: Record<string, unknown> = {}) =>
     act(() =>
-      useExtensionsStore.setState({
-        quoteTables: { extension: "obverse", tables: tables(label), sample, responseTables: [], fetch },
+      useWorkbenchStore.setState({
+        tables: { tables: tables(label), sample, responseTables: [], fetch },
       }))
   const adopt = (generation: number) => act(() => useDocumentStatusStore.setState({ executionGeneration: generation }))
   const render = (editable = true) =>
-    renderHook(({ editable: canEdit }) => useExtensionQuoteTables({ graphRef, onUpdateNode, editable: canEdit }), {
+    renderHook(({ editable: canEdit }) => useWorkbenchTables({ graphRef, onUpdateNode, editable: canEdit }), {
       initialProps: { editable },
     })
 
@@ -55,11 +45,10 @@ describe("useExtensionQuoteTables", () => {
     onUpdateNode = vi.fn<GraphCommitController["onUpdateNode"]>(() => ({ ok: true }))
     graphRef = { current: { nodes: [workbenchInput({ tables: [] })], edges: [] } }
     useDocumentStatusStore.setState({ executionGeneration: 1 })
-    useExtensionsStore.setState({
-      extensions: [workbench],
-      activeView: PIPELINE_VIEW,
-      quoteTables: null,
-      refreshQuoteTables: vi.fn(() => ++fetches),
+    useWorkbenchStore.setState({
+      enabled: true,
+      tables: null,
+      refreshTables: vi.fn(() => ++fetches),
     })
   })
 
@@ -68,12 +57,12 @@ describe("useExtensionQuoteTables", () => {
     vi.restoreAllMocks()
   })
 
-  it("fetches when a supplier is listed and on each document adoption", () => {
-    useExtensionsStore.setState({ extensions: [] })
+  it("fetches when the workbench is enabled and on each document adoption", () => {
+    useWorkbenchStore.setState({ enabled: false })
     render()
-    expect(useExtensionsStore.getState().refreshQuoteTables).not.toHaveBeenCalled()
+    expect(useWorkbenchStore.getState().refreshTables).not.toHaveBeenCalled()
 
-    act(() => useExtensionsStore.setState({ extensions: [workbench] }))
+    act(() => useWorkbenchStore.setState({ enabled: true }))
     expect(fetches).toBe(1)
     adopt(2)
     expect(fetches).toBe(2)
@@ -90,7 +79,7 @@ describe("useExtensionQuoteTables", () => {
     expect(data.config).toEqual({ tables: tables("policy_details"), sample: {} })
     expect(isCurrent?.()).toBe(true)
 
-    act(() => useExtensionsStore.setState({ extensions: [{ ...workbench }] }))
+    act(() => useWorkbenchStore.setState({ enabled: true }))
     expect(onUpdateNode).toHaveBeenCalledOnce()
 
     adopt(2)
@@ -175,7 +164,7 @@ describe("useExtensionQuoteTables", () => {
         setSelectedNode: vi.fn(),
         addToast: vi.fn(),
       })
-      useExtensionQuoteTables({ graphRef, onUpdateNode: controller.onUpdateNode, editable })
+      useWorkbenchTables({ graphRef, onUpdateNode: controller.onUpdateNode, editable })
       return controller
     }, { initialProps: { editable: true } })
 
@@ -216,9 +205,8 @@ describe("useExtensionQuoteTables", () => {
     ]
     render()
     act(() =>
-      useExtensionsStore.setState({
-        quoteTables: {
-          extension: "obverse",
+      useWorkbenchStore.setState({
+        tables: {
           tables: tables("policy_details"),
           sample: {},
           responseTables: tables("pricing_output"),
@@ -236,9 +224,8 @@ describe("useExtensionQuoteTables", () => {
     graphRef.current.nodes = [output("workbenchOutput", "response", { tables: tables("pricing_output") })]
     adopt(2)
     act(() =>
-      useExtensionsStore.setState({
-        quoteTables: {
-          extension: "obverse",
+      useWorkbenchStore.setState({
+        tables: {
           tables: [],
           sample: {},
           responseTables: tables("pricing_output"),

@@ -44,10 +44,9 @@ Out of scope (owned by neighbouring components, linked where they exist):
 - Trace overlay computation — the canvas only renders the resulting visual
   state.
 - Background job polling.
-- Installed extensions' views and the switcher between them and the pipeline editor —
-  [extensions](../extensions/high-level.md). The editor shell renders the switcher under
-  the palette and, while an extension's view shows, keeps the canvas mounted but hidden and
-  inert with every canvas keyboard shortcut off.
+- The workbench's tables and the Workbench Input and Workbench Output node types —
+  [workbench](../workbench/high-level.md). The editor shell keeps their copies current
+  through `useWorkbenchTables`.
 - Backend submodel occurrence, public-port, and endpoint behavior —
   [submodels](../submodels/high-level.md). This component owns only browser
   navigation and endpoint consumption.

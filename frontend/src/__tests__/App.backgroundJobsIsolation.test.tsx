@@ -156,9 +156,9 @@ vi.mock("../components/NodeSearch", () => ({ default: () => <div data-testid="no
 vi.mock("../components/ErrorBoundary", () => ({
   ErrorBoundary: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
-// The editor lists installed extensions on start (specs/extensions); none here.
-vi.mock("../api/extensions", () => ({
-  fetchExtensions: vi.fn(() => Promise.resolve({ extensions: [] })),
+// The editor reads the workbench's status on start (specs/workbench); not enabled here.
+vi.mock("../api/workbench", () => ({
+  fetchWorkbenchStatus: vi.fn(() => Promise.resolve({ enabled: false, form: null })),
 }))
 
 vi.mock("../api/client", () => ({

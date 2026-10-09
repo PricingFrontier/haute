@@ -13,6 +13,7 @@ from typing import Any
 from haute._graph_shape import validate_singleton_groups
 from haute._io import read_user_text
 from haute._logging import get_logger
+from haute._workbench_config import WORKBENCH_TOML_KEYS
 from haute.assistant._config import ASSISTANT_EGRESS_TOML_KEYS, ASSISTANT_TOML_KEYS
 from haute.deploy._project_modules import ProjectModules, resolve_project_modules
 from haute.deploy._pruner import (
@@ -192,6 +193,9 @@ _VALID_TOML_SCHEMA: dict[str, set[str] | dict[str, set[str]]] = {
         "_self": set(ASSISTANT_TOML_KEYS - {"egress"}),
         "egress": set(ASSISTANT_EGRESS_TOML_KEYS),
     },
+    # Owned by the workbench (haute._workbench_config); listed so whole-file
+    # validation accepts a project whose workbench is enabled.
+    "workbench": set(WORKBENCH_TOML_KEYS),
 }
 
 

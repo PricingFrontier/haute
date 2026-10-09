@@ -16,7 +16,6 @@ import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
 import useUIStore from "../../stores/useUIStore"
 import useGitStore from "../../stores/useGitStore"
-import useExtensionsStore, { PIPELINE_VIEW } from "../../stores/useExtensionsStore"
 
 function makeProps(overrides: Partial<Parameters<typeof Toolbar>[0]> = {}) {
   return {
@@ -70,76 +69,6 @@ describe("Toolbar", () => {
     expect(heading.parentElement).toHaveClass("toolbar-brand-mark")
     // Heading precedes version in document order (brand on top, version underneath)
     expect(heading.compareDocumentPosition(version) & 4).toBeTruthy()
-  })
-
-  it("gives an extension's view the brand, a slot for its own controls and the project's controls", () => {
-    useExtensionsStore.setState({
-      extensions: [{
-        name: "obverse",
-        label: "Obverse",
-        api_base: "/api/extensions/obverse",
-        entry_url: "/extensions/obverse/obverse-embed.js",
-        ready: true,
-        detail: null,
-        quote_tables: false,
-        response_tables: false,
-      }],
-      activeView: "obverse",
-      toolbarSlot: null,
-    })
-    try {
-      const props = makeProps()
-      const { unmount } = render(<Toolbar {...props} />)
-      const toolbar = screen.getByRole("toolbar", { name: "Obverse toolbar" })
-
-      expect(within(toolbar).getByTestId("toolbar-brand")).toBeInTheDocument()
-      expect(useExtensionsStore.getState().toolbarSlot).toBe(within(toolbar).getByTestId("toolbar-extension-slot"))
-      for (const projectControl of ["toolbar-assistant", "toolbar-help", "toolbar-save", "toolbar-save-commit"]) {
-        expect(within(toolbar).getByTestId(projectControl)).toBeInTheDocument()
-      }
-      for (const pipelineControl of ["source-selector", "toolbar-undo", "toolbar-zoom-in", "toolbar-centre", "toolbar-constants"]) {
-        expect(screen.queryByTestId(pipelineControl)).toBeNull()
-      }
-      // Save and Commit act on the pipeline project, as in the pipeline view.
-      fireEvent.click(within(toolbar).getByTestId("toolbar-save"))
-      fireEvent.click(within(toolbar).getByTestId("toolbar-save-commit"))
-      expect(props.onSave).toHaveBeenCalledOnce()
-      expect(props.onSaveCommit).toHaveBeenCalledOnce()
-      unmount()
-      expect(useExtensionsStore.getState().toolbarSlot).toBeNull()
-    } finally {
-      useExtensionsStore.setState({ extensions: [], activeView: PIPELINE_VIEW, toolbarSlot: null })
-    }
-  })
-
-  it("never reuses the extension's slot, which carries the extension's shadow root, for pipeline controls", () => {
-    useExtensionsStore.setState({
-      extensions: [{
-        name: "obverse",
-        label: "Obverse",
-        api_base: "/api/extensions/obverse",
-        entry_url: "/extensions/obverse/obverse-embed.js",
-        ready: true,
-        detail: null,
-        quote_tables: false,
-        response_tables: false,
-      }],
-      activeView: "obverse",
-      toolbarSlot: null,
-    })
-    try {
-      render(<Toolbar {...makeProps()} />)
-      screen.getByTestId("toolbar-extension-slot").attachShadow({ mode: "open" })
-
-      act(() => useExtensionsStore.getState().showView(PIPELINE_VIEW))
-
-      const toolbar = screen.getByRole("toolbar", { name: "Pipeline toolbar" })
-      const shadowed = [toolbar, ...toolbar.querySelectorAll("*")].filter((element) => element.shadowRoot !== null)
-      expect(shadowed).toEqual([])
-      expect(screen.getByTestId("toolbar-source-pipeline")).toBeVisible()
-    } finally {
-      useExtensionsStore.setState({ extensions: [], activeView: PIPELINE_VIEW, toolbarSlot: null })
-    }
   })
 
   it("renders no MLflow control", () => {

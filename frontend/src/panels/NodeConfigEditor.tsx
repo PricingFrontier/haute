@@ -166,7 +166,6 @@ export function NodeConfigEditor({
         <WorkbenchOutputEditor
           config={config}
           onUpdate={onUpdateConfig}
-          accentColor={accentColor}
           inputSources={inputSources}
           insideSubmodel={insideSubmodel}
         />

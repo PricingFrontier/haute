@@ -89,7 +89,7 @@ A request input, a Quote Input (`apiInput`) or a Workbench Input (`workbenchInpu
 preferred live request source, and a pipeline with more than one, counting those inside its
 submodels, is refused before anything is pruned. A Workbench Input reads no sample file: its
 request schema comes from its tables, and the dry run reads one request record of nulls in
-that schema ([extensions](../extensions/high-level.md)). For a graph with no request input,
+that schema ([workbench](../workbench/high-level.md)). For a graph with no request input,
 exactly one source may be promoted only when it is a `dataInput`, whose configured data
 provides schema/sample information before live requests replace it. A `constant` or any
 other source type is never promoted accidentally; deployment fails with a correction that
@@ -97,7 +97,7 @@ names the node and asks for a Quote Input or a Workbench Input.
 
 The response node, a Quote Response (`output`) or a Workbench Output (`workbenchOutput`), is
 the declared output node: deploy prunes to it, dry-runs its schema and serves its response
-document, alike for either ([extensions](../extensions/high-level.md)).
+document, alike for either ([workbench](../workbench/high-level.md)).
 
 **Validation.** Before anything ships, `validate_deploy()` checks structural invariants
 (output/input nodes present in the pruned graph, input nodes are true sources, artefacts

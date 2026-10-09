@@ -7,7 +7,7 @@
 | `src/haute/__main__.py` | Package-module entry point; imports and invokes the canonical `haute.cli:cli` group for `python -m haute`. |
 | `src/haute/cli/__init__.py` | Builds the Click command group (`cli`), registers all ten subcommands, exposes `--version`. |
 | `src/haute/cli/_helpers.py` | Cross-command utilities: `resolve_model_name`, `_open_browser`, `_node_env`, `_npm`, `_find_frontend_dir`, the `TransportInfo`/`resolve_transport` transport-dispatch helper, and the shared `ENDPOINT_SUFFIX_HELP` string. |
-| `src/haute/cli/_init_cmd.py` | `haute init` — project scaffolding: `InitConfig`, `handle_init`, TOML-aware `pyproject.toml` dependency injection, CI-provider file generation/pruning. |
+| `src/haute/cli/_init_cmd.py` | `haute init` — project scaffolding: `InitConfig`, `handle_init`, TOML-aware `pyproject.toml` dependency injection, CI-provider file generation/pruning, and the `--workbench` table and form ([workbench](../workbench/low-level.md)). |
 | `src/haute/cli/_run.py` | `haute run` — `RunConfig`, `handle_run`, parses + executes a pipeline and prints per-node results. |
 | `src/haute/cli/_lint.py` | `haute lint` — `LintConfig`, `handle_lint`, structural validation without execution. |
 | `src/haute/cli/_train.py` | `haute train` — `TrainConfig`, `handle_train`, loads a training script as a module, runs its `job`, prints a live progress bar. |
@@ -23,7 +23,7 @@
 Every command uses a plain mutable `@dataclass` as a configuration value bag consumed by a
 `handle_*` function.
 
-- `InitConfig(target, ci, force=False)` — `_init_cmd.py`.
+- `InitConfig(target, ci, force=False, workbench=False)` — `_init_cmd.py`.
 - `RunConfig(pipeline_file: Path)` — `_run.py`.
 - `LintConfig(pipeline_file: Path)` — `_lint.py`.
 - `TrainConfig(training_script: Path)` — `_train.py`.
@@ -62,7 +62,7 @@ without validating required positional arguments.
 | Command | Arguments and options | Exit and failure contract |
 |---|---|---|
 | `haute` | `--version`; `--help`. | Both print and exit 0. Unknown commands/options are Click usage errors (exit 2). |
-| `haute init` | `--target` choice: `databricks` (default), `container`, `azure-container-apps`, `aws-ecs`, `gcp-run`; `--ci` choice: `github` (default), `gitlab`, `azure-devops`, `none`; `-f`/`--force`. The `--target` help labels `azure-container-apps`, `aws-ecs` and `gcp-run` build and push only; the planned `sagemaker` and `azure-ml` targets are not offered. | Success 0. Existing `haute.toml` without `--force` exits 1. Invalid choices exit 2 before the handler. File/TOML/scaffold write errors are not converted into a fallback. |
+| `haute init` | `--target` choice: `databricks` (default), `container`, `azure-container-apps`, `aws-ecs`, `gcp-run`; `--ci` choice: `github` (default), `gitlab`, `azure-devops`, `none`; `-f`/`--force`; `--workbench`. The `--target` help labels `azure-container-apps`, `aws-ecs` and `gcp-run` build and push only; the planned `sagemaker` and `azure-ml` targets are not offered. | Success 0. Existing `haute.toml` without `--force` exits 1. Invalid choices exit 2 before the handler. File/TOML/scaffold write errors are not converted into a fallback. |
 | `haute run [PIPELINE_FILE]` | Optional path; absent input uses `resolve_pipeline_file` project/discovery rules. | Missing/ambiguous file, parse failure, empty graph, executor failure, or any node result with non-`ok` status exits 1; success exits 0 after the optional final preview. |
 | `haute lint [PIPELINE_FILE]` | Optional path resolved exactly as `run`. | Missing/ambiguous file, parse failure, empty graph, or any collected structural issue exits 1; a clean graph exits 0. |
 | `haute train TRAINING_SCRIPT` | Required positional path. | Omission is a Click exit-2 usage error. Missing/unsafe/unloadable script, missing `job`, script exception, or `job.run` failure exits 1; successful training exits 0. |
@@ -79,7 +79,8 @@ without validating required positional arguments.
 project name from `pyproject.toml` (creating/patching it via `_ensure_haute_dependency`, which does
 a structural TOML edit rather than string templating so existing content survives), creates the
 `rating/` package tree (including `rating/utility/__init__.py` and
-`rating/utility/features.py`) and empty config/data/outputs placeholders (no `rating/models/`: saved model files go to the project-root `models/` folder the modelling Export pane writes), writes `haute.toml` via `haute._scaffold.haute_toml`,
+`rating/utility/features.py`) and empty config/data/outputs placeholders (no `rating/models/`: saved model files go to the project-root `models/` folder the modelling Export pane writes), writes `haute.toml` via `haute._scaffold.haute_toml` (with the `[workbench]` table when
+`--workbench` is given, and then `forms/form.json` via `haute._scaffold.starter_form`),
 writes `.env.example`, writes starter tests, writes CI workflow files for the chosen provider
 (pruning a *different* provider's stale files first on `--force`), installs a pre-commit hook into
 `.githooks/` and — if inside a git repo — `.git/hooks/`, and appends `.gitignore` guard entries via
@@ -130,9 +131,7 @@ mode rather than serving source through an unrelated generated bundle.
     once both are accepting connections
     (`_open_browser_after_servers_ready` → `_wait_for_servers_then_open_browser` → `_wait_for_tcp_ready`),
     then runs `uvicorn.run(...,
-    reload=True, reload_dirs=[haute package dir, *extension package dirs])`, the extension
-    directories coming from `haute._extensions.extension_package_dirs()` so an edit to an installed
-    [extension](../extensions/low-level.md) reloads the server too. The Vite subprocess is
+    reload=True, reload_dirs=[haute package dir])`. The Vite subprocess is
     terminated in a `finally` block on every uvicorn exit path.
   - **Prod mode** (`_run_prod_mode`): checks `static_build_ready(STATIC_DIR)`, fails loudly with a
     build-hint message (`_missing_static_message`, which distinguishes a source checkout — "run npm
@@ -304,7 +303,7 @@ Key files and what they cover:
   failing loudly on non-404 errors.
 - `test_cli_init.py` — full scaffold structure, project naming, every `--target`/`--ci` combination,
   the printed summary, `_ensure_haute_dependency` behaviour and its TOML-safety edge cases, and
-  `--force` re-init (including stale CI-file pruning).
+  `--force` re-init (including stale CI-file pruning), and `--workbench`.
 - `test_cli_no_shadow.py` — regression guard that `haute.cli` imports as a package and is not
   shadowed by a same-named module.
 - `test_cli_serve.py` / `test_cli_train.py` — additional `serve`/`train` scenarios beyond what

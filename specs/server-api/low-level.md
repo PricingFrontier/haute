@@ -360,11 +360,9 @@ character ASCII token matching `[A-Za-z0-9][A-Za-z0-9._:-]*`; otherwise it gener
 ID and logs only the bounded rejection reason and input length.
 
 **Route registration order matters.** The feature routers (`pipeline_router` through
-`git_router`, plus the assistant router owned by [assistant](../assistant/low-level.md)) are
-included first; then `haute._extensions.mount_extensions()` mounts each installed extension's
-router under `/api/extensions/<name>` and its assets under `/extensions/<name>/`, and registers
-`GET /api/extensions` ([extensions](../extensions/low-level.md)), so extension `GET` routes
-precede every catch-all; then two catch-all Starlette `Route`s (not typed `APIRoute`s — they carry no response
+`git_router`, plus the assistant router owned by [assistant](../assistant/low-level.md) and
+the workbench router owned by [workbench](../workbench/low-level.md)) are
+included first; then two catch-all Starlette `Route`s (not typed `APIRoute`s — they carry no response
 model by design) match any unhandled `/api/{rest:path}` or `/ws/{rest:path}` `GET` and return
 a clean JSON 404 — registered *before* the SPA catch-all so an unmatched API/WS path never
 falls through to `index.html` (which would otherwise return `200 text/html` and break the

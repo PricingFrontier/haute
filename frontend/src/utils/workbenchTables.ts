@@ -1,34 +1,20 @@
 /**
  * A Workbench Input takes its tables, and the sample quote its previews run on, from the
- * installed extension that supplies them, such as Obverse's Workbench (specs/extensions),
- * and a Workbench Output takes the response's tables from it. Their configs hold a copy,
- * so the pipeline runs without the extension; these rules say when a copy needs updating
- * and what each starts with from the palette. `useExtensionQuoteTables` applies them, and
- * `priceSample` gives them to the one request it prices the sample with.
+ * project's workbench (specs/workbench), and a Workbench Output takes the response's
+ * tables from it. Their configs hold a copy, so the pipeline runs without the form; these
+ * rules say when a copy needs updating and what each starts with from the palette.
+ * `useWorkbenchTables` applies them.
  */
-import type { ExtensionInfo } from "../api/types"
 import { NODE_TYPES } from "./nodeTypes"
 
-/** The supplier's tables and sample quote from one fetch, numbered so that only the newest counts. */
-export interface QuoteTables {
-  extension: string
+/** The workbench's tables and sample quote from one fetch, numbered so that only the newest counts. */
+export interface WorkbenchTables {
   tables: readonly Record<string, unknown>[]
   /** One quote as a request holds it: `{}` for none. */
   sample: Readonly<Record<string, unknown>>
   /** The tables a priced quote fills in, which a Workbench Output fills: `[]` for none. */
   responseTables: readonly Record<string, unknown>[]
   fetch: number
-}
-
-/** The installed extension that supplies the Quote Input's tables; the server allows one. */
-export function quoteTablesSupplier(extensions: readonly ExtensionInfo[]): ExtensionInfo | null {
-  return extensions.find((extension) => extension.quote_tables) ?? null
-}
-
-/** The supplier, when it supplies the response's tables too. */
-export function responseTablesSupplier(extensions: readonly ExtensionInfo[]): ExtensionInfo | null {
-  const supplier = quoteTablesSupplier(extensions)
-  return supplier?.response_tables ? supplier : null
 }
 
 /** JSON with every object's keys sorted, so the order of keys never reads as a change. */
@@ -46,16 +32,16 @@ function canonicalJson(value: unknown): string {
  */
 export function quoteTablesPatch(
   config: Record<string, unknown>,
-  quoteTables: Pick<QuoteTables, "tables" | "sample"> | null,
+  workbench: Pick<WorkbenchTables, "tables" | "sample"> | null,
 ): { tables: Record<string, unknown>[]; sample: Record<string, unknown> } | null {
-  if (quoteTables === null) return null
+  if (workbench === null) return null
   if (
-    canonicalJson(config.tables) === canonicalJson(quoteTables.tables) &&
-    canonicalJson(config.sample ?? {}) === canonicalJson(quoteTables.sample)
+    canonicalJson(config.tables) === canonicalJson(workbench.tables) &&
+    canonicalJson(config.sample ?? {}) === canonicalJson(workbench.sample)
   ) {
     return null
   }
-  return { tables: structuredClone([...quoteTables.tables]), sample: structuredClone({ ...quoteTables.sample }) }
+  return { tables: structuredClone([...workbench.tables]), sample: structuredClone({ ...workbench.sample }) }
 }
 
 /** A Workbench Output's mapping: by table label, each column's frame column, or null for none. */
@@ -87,14 +73,14 @@ function mappingFor(mapping: unknown, tables: readonly Record<string, unknown>[]
  */
 export function responseTablesPatch(
   config: Record<string, unknown>,
-  quoteTables: Pick<QuoteTables, "responseTables"> | null,
+  workbench: Pick<WorkbenchTables, "responseTables"> | null,
 ): { tables: Record<string, unknown>[]; mapping?: WorkbenchOutputMapping } | null {
-  if (quoteTables === null) return null
-  const mapping = mappingFor(config.mapping, quoteTables.responseTables)
+  if (workbench === null) return null
+  const mapping = mappingFor(config.mapping, workbench.responseTables)
   const mappingChanged = canonicalJson(config.mapping ?? {}) !== canonicalJson(mapping)
-  if (canonicalJson(config.tables) === canonicalJson(quoteTables.responseTables) && !mappingChanged) return null
+  if (canonicalJson(config.tables) === canonicalJson(workbench.responseTables) && !mappingChanged) return null
   return {
-    tables: structuredClone([...quoteTables.responseTables]),
+    tables: structuredClone([...workbench.responseTables]),
     ...(mappingChanged ? { mapping } : {}),
   }
 }
@@ -108,23 +94,23 @@ export const WORKBENCH_COPY_PATCHES: Readonly<Record<string, typeof quoteTablesP
 /** The config a Workbench Input dragged from the palette starts with: the newest tables and sample fetched. */
 export function paletteWorkbenchInputConfig(
   defaultConfig: Record<string, unknown>,
-  quoteTables: QuoteTables | null,
+  workbench: WorkbenchTables | null,
 ): Record<string, unknown> {
   return {
     ...defaultConfig,
-    tables: quoteTables === null ? [] : structuredClone([...quoteTables.tables]),
-    sample: quoteTables === null ? {} : structuredClone({ ...quoteTables.sample }),
+    tables: workbench === null ? [] : structuredClone([...workbench.tables]),
+    sample: workbench === null ? {} : structuredClone({ ...workbench.sample }),
   }
 }
 
 /** The config a Workbench Output dragged from the palette starts with: the newest response tables fetched. */
 export function paletteWorkbenchOutputConfig(
   defaultConfig: Record<string, unknown>,
-  quoteTables: QuoteTables | null,
+  workbench: WorkbenchTables | null,
 ): Record<string, unknown> {
   return {
     ...defaultConfig,
-    tables: quoteTables === null ? [] : structuredClone([...quoteTables.responseTables]),
+    tables: workbench === null ? [] : structuredClone([...workbench.responseTables]),
   }
 }
 

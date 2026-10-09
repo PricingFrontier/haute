@@ -559,32 +559,6 @@ class TestServe:
         # The finally block should have called terminate on the vite process
         mock_proc.terminate.assert_called()
 
-    def test_dev_mode_reloads_on_edits_to_installed_extensions(
-        self,
-        runner: CliRunner,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """The reloader watches each installed extension's package as well as haute's."""
-        monkeypatch.chdir(tmp_path)
-        fe = tmp_path / "frontend"
-        fe.mkdir()
-        (fe / "package.json").write_text("{}")
-        (fe / "node_modules").mkdir()
-        extension_dir = tmp_path / "site" / "forms_extension"
-
-        with (
-            patch("haute.cli._serve._find_frontend_dir", return_value=fe),
-            patch("subprocess.Popen", return_value=MagicMock()),
-            patch("uvicorn.run") as mock_uvicorn,
-            patch("signal.signal"),
-            patch("haute._extensions.extension_package_dirs", return_value=[extension_dir]),
-        ):
-            runner.invoke(cli, ["serve", "--no-browser"])
-
-        reload_dirs = mock_uvicorn.call_args.kwargs["reload_dirs"]
-        assert reload_dirs == [serve_mod._haute_package_dir(), str(extension_dir)]
-
     def test_find_frontend_dir_found(
         self,
         tmp_path: Path,

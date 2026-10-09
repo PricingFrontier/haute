@@ -44,9 +44,9 @@ import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 // the real module via `typeof import(...)` for fidelity.
 // ═══════════════════════════════════════════════════════════════════════════
 
-// The editor lists installed extensions on start (specs/extensions); none here.
-vi.mock("../api/extensions", () => ({
-  fetchExtensions: vi.fn(() => Promise.resolve({ extensions: [] })),
+// The editor reads the workbench's status on start (specs/workbench); not enabled here.
+vi.mock("../api/workbench", () => ({
+  fetchWorkbenchStatus: vi.fn(() => Promise.resolve({ enabled: false, form: null })),
 }))
 
 vi.mock("../api/client", async () => {

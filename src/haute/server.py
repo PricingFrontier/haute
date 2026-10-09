@@ -36,7 +36,6 @@ from haute._cpu_performance import configure_process_high_qos
 from haute._dedicated_workers import open_dedicated_workers, shutdown_dedicated_workers
 from haute._event_bus import default_bus
 from haute._execution_context import configure_execution_telemetry
-from haute._extensions import discover_extensions, mount_extensions
 from haute._interactive_workers import (
     shutdown_interactive_worker_pool,
     start_interactive_worker_pool,
@@ -101,6 +100,7 @@ from haute.routes.pipeline import router as pipeline_router
 from haute.routes.rating import router as rating_router
 from haute.routes.submodel import router as submodel_router
 from haute.routes.utility import router as utility_router
+from haute.routes.workbench import router as workbench_router
 from haute.schemas import SessionStatusResponse
 
 # Windows registry often maps .js to text/plain, causing browsers to reject
@@ -633,10 +633,7 @@ app.include_router(optimiser_router)
 app.include_router(mlflow_router)
 app.include_router(utility_router)
 app.include_router(git_router)
-
-# Installed extensions (Obverse, ...) add a view beside the pipeline editor. They are
-# mounted here, before the catch-alls below, so their GET routes are reached.
-mount_extensions(app, discover_extensions(Path.cwd()))
+app.include_router(workbench_router)
 
 
 # ---------------------------------------------------------------------------

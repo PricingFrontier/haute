@@ -858,41 +858,6 @@ export interface ExploreDataQualityIssue {
   label: string;
   severity: 'warning' | 'danger';
 }
-export interface ExtensionsResponse {
-  extensions: ExtensionInfo[];
-}
-/**
- * An installed extension, as the view switcher lists it (see ``haute._extensions``).
- */
-export interface ExtensionInfo {
-  api_base: string;
-  detail: string | null;
-  entry_url: string;
-  label: string;
-  name: string;
-  quote_tables: boolean;
-  ready: boolean;
-  response_tables: boolean;
-}
-/**
- * The Quote Input's tables, in its v2 shape, from the extension that supplies them.
- *
- * ``sample`` is the extension's sample quote, as a request holds it: ``{}`` for none.
- * ``response_tables`` are the tables a priced quote fills in, in the same shape, which a
- * Workbench Output fills: ``[]`` for none.
- */
-export interface QuoteTablesResponse {
-  extension: string;
-  response_tables: {
-    [k: string]: unknown;
-  }[];
-  sample: {
-    [k: string]: unknown;
-  };
-  tables: {
-    [k: string]: unknown;
-  }[];
-}
 /**
  * Whole-dataset statistics for one factor, or why there are none.
  */
@@ -2403,4 +2368,29 @@ export interface UtilityWriteResponse {
 export interface UtilityDeleteResponse {
   module: string;
   status: string;
+}
+/**
+ * Whether the project's workbench is enabled (``[workbench]`` in ``haute.toml``).
+ */
+export interface WorkbenchStatusResponse {
+  enabled: boolean;
+  form: string | null;
+}
+/**
+ * The workbench's tables, in the Quote Input's v2 shape, as its form defines them now.
+ *
+ * ``tables`` are the Workbench Input's; ``sample`` is the sample quote typed while
+ * building, as a request holds it: ``{}`` for none; ``response_tables`` are the tables a
+ * priced quote fills in, in the same shape, which a Workbench Output fills: ``[]`` for none.
+ */
+export interface WorkbenchTablesResponse {
+  response_tables: {
+    [k: string]: unknown;
+  }[];
+  sample: {
+    [k: string]: unknown;
+  };
+  tables: {
+    [k: string]: unknown;
+  }[];
 }

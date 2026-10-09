@@ -1,20 +1,17 @@
 import { Radio } from "lucide-react"
-import useExtensionsStore from "../../stores/useExtensionsStore"
-import type { ExtensionInfo } from "../../api/types"
+import useWorkbenchStore from "../../stores/useWorkbenchStore"
 import { apiInputLabelIssue, apiInputLabelIssueMessage } from "../../utils/apiInputPorts"
 import { withAlpha } from "../../utils/color"
-import { quoteTablesSupplier } from "../../utils/extensionQuoteTables"
 import { readV2, type ApiInputTableV2 } from "./apiInputSchema"
 
 const SECTION_LABEL = "text-[11px] font-bold uppercase tracking-[0.08em]"
 
 /**
- * The Workbench Input's panel (specs/extensions): the tables the installed
- * extension supplies, read-only, with whatever stops a table's label being a
- * port and a way to the extension's view to edit them. It reads no file: previews
- * run on the extension's sample quote, a table it gives no rows being one row of
- * nulls. The editor keeps the copies current (`useExtensionQuoteTables`); nothing
- * here edits them.
+ * The Workbench Input's panel (specs/workbench): the tables the project's workbench
+ * supplies, read-only, with whatever stops a table's label being a port. It reads no
+ * file: previews run on the workbench's sample quote, a table it gives no rows being
+ * one row of nulls. The editor keeps the copies current (`useWorkbenchTables`);
+ * nothing here edits them.
  */
 export default function WorkbenchInputEditor({
   config,
@@ -28,7 +25,7 @@ export default function WorkbenchInputEditor({
   /** A submodel is open: the editor updates the tables only at the pipeline's top level. */
   insideSubmodel?: boolean
 }) {
-  const supplier = useExtensionsStore((state) => quoteTablesSupplier(state.extensions))
+  const enabled = useWorkbenchStore((state) => state.enabled)
   const tables = readV2(config).tables
   const sample = config.sample
   const hasSample =
@@ -56,8 +53,7 @@ export default function WorkbenchInputEditor({
 
       <section data-testid="workbench-input-tables" className="space-y-1.5">
         <WorkbenchTablesHeader
-          supplier={supplier}
-          accentColor={accentColor}
+          enabled={enabled}
           insideSubmodel={insideSubmodel}
           empty={tables.length === 0}
         />
@@ -89,41 +85,31 @@ export function tableLabelIssue(
   )
 }
 
+/** The note both workbench panels show while the project's workbench is not enabled. */
+export const WORKBENCH_DISABLED_NOTE =
+  "The workbench is not enabled in haute.toml, so these tables are the last copy and nothing updates them."
+
 /**
- * The title of a workbench node's tables, its way to the extension's view to edit them,
- * and its notes: no installed extension supplies them, or a submodel is open.
+ * The title of a workbench node's tables and its notes: the workbench is not enabled, or
+ * a submodel is open.
  */
 export function WorkbenchTablesHeader({
-  supplier,
-  accentColor,
+  enabled,
   insideSubmodel,
   empty,
 }: {
-  supplier: ExtensionInfo | null
-  accentColor: string
+  enabled: boolean
   insideSubmodel: boolean
   empty: boolean
 }) {
   return (
     <>
-      <div className="flex items-center justify-between">
-        <h3 className={SECTION_LABEL} style={{ color: "var(--text-muted)" }}>
-          {supplier ? `Tables from ${supplier.label}` : "Tables"}
-        </h3>
-        {supplier && (
-          <button
-            type="button"
-            onClick={() => useExtensionsStore.getState().showView(supplier.name)}
-            className="text-[11px] font-semibold px-2 py-0.5 rounded transition-colors hover:bg-[var(--bg-hover)]"
-            style={{ color: accentColor }}
-          >
-            Edit in {supplier.label}
-          </button>
-        )}
-      </div>
-      {!supplier && (
+      <h3 className={SECTION_LABEL} style={{ color: "var(--text-muted)" }}>
+        {enabled ? "Tables from the workbench" : "Tables"}
+      </h3>
+      {!enabled && (
         <p role="note" className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-          No installed extension supplies these tables, so they are the last copy and nothing updates them.
+          {WORKBENCH_DISABLED_NOTE}
         </p>
       )}
       {insideSubmodel && (

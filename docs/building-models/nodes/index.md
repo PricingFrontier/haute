@@ -15,7 +15,7 @@ Every step in a Haute pipeline is a node. You connect nodes on the canvas to def
 | I want to... | Use this node |
 |---|---|
 | Bring in quote data for live pricing | [Quote Input](quote-input.md) |
-| Price quotes keyed in through a workbench, such as Obverse's | [Workbench Input](workbench-input.md) |
+| Price quotes keyed in through the project's workbench | [Workbench Input](workbench-input.md) |
 | Load a parquet or CSV file, a database, lakehouse or Databricks table | [Data Input](data-input.md) |
 | Store fixed parameters (tax rate, loadings) | [Constant](constant.md), or a [global constant](constant.md#global-constants) every node can read |
 | Join, filter, or calculate new columns | [Transform](transform.md) |
@@ -28,7 +28,7 @@ Every step in a Haute pipeline is a node. You connect nodes on the canvas to def
 | Apply saved optimisation results | [Apply Optimisation](optimiser-apply.md) |
 | Switch between live and batch data | [Source Switch](source-switch.md) |
 | Choose which columns to return from the API | [Quote Response](output.md) |
-| Fill the output tables a workbench, such as Obverse's, defines | [Workbench Output](workbench-output.md) |
+| Fill the output tables the project's workbench defines | [Workbench Output](workbench-output.md) |
 | Profile a dataset, build pivot tables and charts | [Explore](explore.md) |
 | Save results to a file or table | [Data Output](data-output.md) |
 | Group nodes into a reusable block | [Submodel](submodel.md) |

@@ -627,7 +627,7 @@ def request_record_schema(v2_config: Mapping[str, Any]) -> pl.Schema:
     ``$value`` leaf makes its array a ``pl.List`` of that type, and a table whose
     selected columns all sit at an ancestor level keeps its own array, of an empty
     ``pl.Struct``. Deploy reads a Workbench Input's request schema here, as it
-    reads a Quote Input's from its sample file (specs/extensions). Two paths that
+    reads a Quote Input's from its sample file (specs/workbench). Two paths that
     disagree about a field raise :class:`ApiInputSchemaError`.
     """
     validate_v2_schema(dict(v2_config))

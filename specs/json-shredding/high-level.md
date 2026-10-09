@@ -20,8 +20,8 @@ locations inside a JSON document from both the input and output sides, and a
 JSON-safe value encoder used whenever pipeline data crosses an HTTP boundary.
 
 Two node types read a request through this shredding, the request inputs: the Quote Input,
-whose tables are built in its panel, and the Workbench Input, whose tables an installed
-extension supplies ([extensions](../extensions/high-level.md)). Everything this specification
+whose tables are built in its panel, and the Workbench Input, whose tables the project's
+workbench supplies ([workbench](../workbench/high-level.md)). Everything this specification
 says of how a Quote Input's `tables` read a request holds for a Workbench Input with the same
 `tables`. A Workbench Input reads no file, so nothing here about a source file or its table
 snapshots applies to it: with no request it shreds the workbench's sample quote through its

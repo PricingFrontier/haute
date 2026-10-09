@@ -1,7 +1,7 @@
 """Request inputs: the Quote Input and the Workbench Input read a quote request alike.
 
-A Workbench Input's tables come from the installed extension that supplies them
-(specs/extensions, EXT-02), but every context reads a request through either type
+A Workbench Input's tables come from the project's workbench (specs/workbench), but
+every context reads a request through either type
 exactly alike. Code that means "the request input" asks ``REQUEST_INPUT_NODE_TYPES``
 rather than naming one type, which the checker here enforces, and a pipeline holds
 at most one request input of either type.
@@ -116,7 +116,7 @@ def _everything(node: ast.AST | None) -> set[int]:
 
 
 def _allowed(tree: ast.Module, path: str) -> set[int]:
-    """The references *path* may hold, each matched by its syntax (specs/extensions)."""
+    """The references *path* may hold, each matched by its syntax (specs/workbench)."""
     allowed: set[int] = set()
     if path == "_types.py":
         node_type = _named(tree.body, ast.ClassDef, "NodeType")
@@ -303,7 +303,7 @@ def test_request_input_checks_use_the_shared_set() -> None:
     ]
     assert reports == [], (
         "These name the Quote Input alone. Where the code means the request input, "
-        "test membership of REQUEST_INPUT_NODE_TYPES (specs/extensions):\n"
+        "test membership of REQUEST_INPUT_NODE_TYPES (specs/workbench):\n"
         + "\n".join(f"src/haute/{r.path}:{r.line}" for r in reports)
     )
 
@@ -341,7 +341,7 @@ def _column(table: str, name: str, kind: str, *, many: bool = False) -> dict[str
     }
 
 
-# A one-row and a many-row table, in the shape Obverse's Workbench supplies.
+# A one-row and a many-row table, in the shape the workbench supplies.
 _TABLES: list[dict[str, Any]] = [
     {
         "path": "$[:]",
@@ -677,7 +677,7 @@ def test_the_node_data_routes_read_a_workbench_table_directly(project: Path, cli
 
 
 # ---------------------------------------------------------------------------
-# The workbench's sample quote (specs/extensions)
+# The workbench's sample quote (specs/workbench)
 # ---------------------------------------------------------------------------
 
 

@@ -20,7 +20,7 @@
 | `frontend/index.html` | Vite HTML entry document for the browser bundle. |
 | `frontend/public/favicon.svg` | Public favicon copied through the Vite build. |
 | `frontend/public/vite.svg` | Checked-in Vite public asset copied through the Vite build. |
-| `frontend/vite.config.ts` | Reads the package version from `pyproject.toml`, defines `__APP_VERSION__`, and configures React/Tailwind plugins, a strict `127.0.0.1:5173` development listener, API/WebSocket proxies plus an `/extensions` proxy for installed [extensions](../extensions/low-level.md)' browser modules, chunking, a Rollup manifest, and output to `src/haute/static/`. |
+| `frontend/vite.config.ts` | Reads the package version from `pyproject.toml`, defines `__APP_VERSION__`, and configures React/Tailwind plugins, a strict `127.0.0.1:5173` development listener, API/WebSocket proxies, chunking, a Rollup manifest, and output to `src/haute/static/`. |
 | `docs/overrides/home.html` | Supplies the public documentation landing-page override and is a documentation-build input. |
 | `docs/stylesheets/extra.css` | Supplies public documentation styling and is a documentation-build input. |
 | `docs/CI_MIRROR.md`, `docs/COMMIT_STANDARDS.md`, `docs/PERFORMANCE_CHECKS.md`, `docs/ENGINEERING_QUALITY_AUDIT_2026_08.md`, `docs/ENGINEERING_QUALITY_AUDIT_2026_08_COVERAGE.toml` | Internal engineering procedures and dated audit records: retained in the repository but excluded from public-site output. |

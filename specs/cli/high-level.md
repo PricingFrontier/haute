@@ -40,9 +40,11 @@ Out of scope, owned elsewhere:
   interpreter but block generated console-launcher executables. It maintains no separate command
   registry or parser: Click receives the arguments and preserves the command and exit-code
   contracts, while identifying the chosen invocation form in usage text.
-- `haute init [--target ...] [--ci ...] [--force]` scaffolds a new project in the current directory:
-  `haute.toml`, a blank `rating/` pipeline package, `.env.example`, test-quote fixtures, CI/CD
-  workflow files for the chosen provider, a git pre-commit hook, and `.gitignore` guard entries.
+- `haute init [--target ...] [--ci ...] [--workbench] [--force]` scaffolds a new project in the
+  current directory: `haute.toml`, a blank `rating/` pipeline package, `.env.example`, test-quote
+  fixtures, CI/CD workflow files for the chosen provider, a git pre-commit hook, and `.gitignore`
+  guard entries; with `--workbench`, the `[workbench]` table in `haute.toml` and a blank
+  `forms/form.json` ([workbench](../workbench/high-level.md)).
   Refuses to run if `haute.toml` already exists unless `--force` is given. A root `main.py` is
   always deleted: `uv init` recreates that placeholder every time it runs, and a Haute project's
   real entry point is `rating/main.py`, so the root file is a tooling artifact — never user
@@ -64,9 +66,7 @@ Out of scope, owned elsewhere:
   or the frontend beside the imported editable Haute source checkout. The working-directory
   frontend has priority. Wheel installs and source checkouts without frontend dependencies use
   production mode with the pre-built static bundle. It binds to `localhost` by default so the
-  browser session works with a bare `haute serve`. Installed
-  [extensions](../extensions/high-level.md) add their views to the same UI, and dev mode's
-  autoreload also watches their packages.
+  browser session works with a bare `haute serve`.
 - `haute deploy [pipeline_file] [--model-name] [--dry-run] [--endpoint-suffix]` validates a pipeline,
   scores its test quotes, and deploys it to the configured target. Non-dry-run deploys are blocked
   outside a recognised CI environment.

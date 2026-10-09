@@ -131,7 +131,7 @@ _USAGE_NOTES: dict[NodeType, str] = {
         "frame; it has no output edge."
     ),
     NodeType.WORKBENCH_OUTPUT: (
-        "Read-only to you: the pipeline's response, the tables the installed workbench "
+        "Read-only to you: the pipeline's response, the tables the workbench "
         "defines, each filled from the frame connected to its port, column by column "
         "through its mapping. Wire one upstream node to each table; never add, change, "
         "rename or delete it."
