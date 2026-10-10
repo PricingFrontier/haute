@@ -2369,3 +2369,149 @@ export interface UtilityDeleteResponse {
   module: string;
   status: string;
 }
+/**
+ * Whether the project's workbench is enabled (``[workbench]`` in ``haute.toml``).
+ */
+export interface WorkbenchStatusResponse {
+  enabled: boolean;
+  form: string | null;
+}
+/**
+ * The workbench's tables, as the pipeline holds them, as its form defines them now.
+ *
+ * ``tables`` are the Workbench Input's; ``sample`` is the sample quote typed while
+ * building, as a request holds it: ``{}`` for none; ``response_tables`` are the tables a
+ * priced quote fills in, in the same shape, which a Workbench Output fills: ``[]`` for none.
+ */
+export interface WorkbenchTablesResponse {
+  response_tables: WorkbenchTable[];
+  sample: {
+    [k: string]: unknown;
+  };
+  tables: WorkbenchTable[];
+}
+/**
+ * A table: a port of the node, one row per quote or many, and its columns.
+ */
+export interface WorkbenchTable {
+  columns: WorkbenchColumn[];
+  name: string;
+  rows: 'one' | 'many';
+}
+/**
+ * A column of a table: its name in the frame and its type.
+ */
+export interface WorkbenchColumn {
+  name: string;
+  type: 'int' | 'float' | 'str' | 'bool' | 'date';
+}
+/**
+ * The workbench's form as its file holds it now, with the file's revision.
+ *
+ * ``revision`` is the file's content hash, which a save quotes as its ``base_revision``;
+ * null while the form has never been saved, when ``form`` is the blank form.
+ */
+export interface WorkbenchFormResponse {
+  form: FormSpec;
+  revision: string | null;
+}
+/**
+ * The form: what the workbench edits and ``forms/form.json`` stores.
+ */
+export interface FormSpec {
+  name: string;
+  /**
+   * @minItems 1
+   */
+  pages: Page[];
+  sample: {
+    [k: string]: {
+      [k: string]: string | boolean;
+    }[];
+  };
+  schema: FormSchema;
+  version: 1;
+}
+/**
+ * A sheet: its widgets, each placed freely on the canvas.
+ */
+export interface Page {
+  id: string;
+  title: string;
+  widgets: (TableInputWidget | CollectionWidget)[];
+}
+/**
+ * A Table: a grid of at least ``rows`` rows showing columns of many-row schema tables.
+ */
+export interface TableInputWidget {
+  fields: FieldRef[];
+  h: number;
+  id: string;
+  rows: number;
+  title: string;
+  type: 'tableInput';
+  w: number;
+  x: number;
+  y: number;
+}
+/**
+ * A schema column a widget shows, by table and column id, so a rename keeps it.
+ */
+export interface FieldRef {
+  column: string;
+  table: string;
+}
+/**
+ * A Collection: boxes showing columns of one-row schema tables, ``columns`` across.
+ */
+export interface CollectionWidget {
+  columns: number;
+  fields: FieldRef[];
+  h: number;
+  id: string;
+  title: string;
+  type: 'collection';
+  w: number;
+  x: number;
+  y: number;
+}
+/**
+ * The data the sheets work with: tables of named, typed columns.
+ */
+export interface FormSchema {
+  tables: SchemaTable[];
+}
+export interface SchemaTable {
+  columns: SchemaColumn[];
+  id: string;
+  name: string;
+  role: 'input' | 'output';
+  rows: 'one' | 'many';
+}
+export interface SchemaColumn {
+  id: string;
+  index: boolean;
+  key: boolean;
+  label: string;
+  max: number | null;
+  min: number | null;
+  name: string;
+  options: string[];
+  required: boolean;
+  type: 'int' | 'float' | 'str' | 'bool' | 'date';
+}
+/**
+ * The form as written, with its new revision and the save's version capture.
+ *
+ * The capture fields mean what they mean on the pipeline save's response: ``git_sha`` is
+ * the ledger commit the save produced when the clone has a working branch, else null;
+ * ``warnings`` are non-fatal, a capture that failed among them; ``identity_required`` is
+ * true only when the capture was skipped because git has no commit identity.
+ */
+export interface WorkbenchFormSaveResponse {
+  form: FormSpec;
+  git_sha: string | null;
+  identity_required: boolean;
+  revision: string | null;
+  warnings: string[];
+}

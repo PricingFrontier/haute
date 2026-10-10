@@ -62,6 +62,7 @@ from haute._polars_steps import (
 )
 from haute._sandbox import _bound_names
 from haute._types import (
+    REQUEST_INPUT_NODE_TYPES,
     GraphEdge,
     GraphNode,
     NodeData,
@@ -492,6 +493,30 @@ def _resolve_output_rows(
     return {**config, "outputMapping": resolved}
 
 
+#: The node types whose tables are the workbench's: the assistant reads them
+#: and wires to their tables, but never authors one.
+_WORKBENCH_NODE_TYPES = {
+    NodeType.WORKBENCH_INPUT: ("Workbench Input", "Wire nodes to its frames instead."),
+    NodeType.WORKBENCH_OUTPUT: ("Workbench Output", "Wire nodes to its tables instead."),
+}
+
+
+def _refuse_workbench_input(graph: PipelineGraph, node_id: str, operation: str) -> None:
+    """Refuse *operation* on a Workbench Input or Output: its tables are the workbench's."""
+    index = _node_index(graph, node_id)
+    if index is None:
+        return
+    workbench = _WORKBENCH_NODE_TYPES.get(graph.nodes[index].data.nodeType)
+    if workbench is not None:
+        name, wire = workbench
+        _invalid(
+            f"Cannot {operation} {node_id!r}: it is a {name}, whose tables are the workbench's",
+            where={"node": node_id},
+            fix="Leave it as it is: the analyst edits it in the editor and its tables in "
+            f"the workbench. {wire}",
+        )
+
+
 def _apply_add_node(
     graph: PipelineGraph,
     op: AddNodeOp,
@@ -503,6 +528,13 @@ def _apply_add_node(
             f"Cannot add node type {op.node_type.value!r}: "
             "assistant operations cannot create submodel boundaries",
             fix="Add ordinary nodes instead; submodels are created by the analyst.",
+        )
+    if op.node_type in _WORKBENCH_NODE_TYPES:
+        name, _wire = _WORKBENCH_NODE_TYPES[op.node_type]
+        _invalid(
+            f"Cannot add node type {op.node_type.value!r}: a {name}'s tables are the workbench's",
+            fix=f"The analyst adds a {name} from the palette; wire nodes to the "
+            "tables of the one the pipeline has.",
         )
     _validate_config(op.node_type, op.config, operation="add_node")
 
@@ -726,6 +758,7 @@ def _apply_update_node(
     """
 
     node_id = _resolve_node_id(op.node, graph, refs, nested_ids, role="update target")
+    _refuse_workbench_input(graph, node_id, "update")
     index = _node_index(graph, node_id)
     assert index is not None  # _resolve_node_id already checked this
     node = graph.nodes[index]
@@ -775,6 +808,7 @@ def _apply_edit_steps(
     """
 
     node_id = _resolve_node_id(op.node, graph, refs, nested_ids, role="edit_steps target")
+    _refuse_workbench_input(graph, node_id, "edit the steps of")
     index = _node_index(graph, node_id)
     assert index is not None  # _resolve_node_id already checked this
     node = graph.nodes[index]
@@ -855,7 +889,7 @@ def _apply_edit_steps(
 
 
 #: Source types whose outgoing input names come from a handle, not the node's label.
-_HANDLE_NAMED_SOURCES = frozenset({NodeType.API_INPUT, NodeType.SUBMODEL, NodeType.SUBMODEL_PORT})
+_HANDLE_NAMED_SOURCES = REQUEST_INPUT_NODE_TYPES | {NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}
 #: Config fields that hold one incoming edge's input name.
 _INPUT_NAME_FIELDS = ("data_input", "banding_source", "analysis_input", "ratebook_input")
 #: The consumer config fields a rename rewrites when they name the renamed input:
@@ -1061,6 +1095,7 @@ def _apply_rename_node(
     """Apply one rename; return the node's old and new ids and its consumer changes."""
 
     old_id = _resolve_node_id(op.node, graph, refs, nested_ids, role="rename target")
+    _refuse_workbench_input(graph, old_id, "rename")
     index = _node_index(graph, old_id)
     assert index is not None
     new_id = _sanitize_func_name(op.new_name)
@@ -1113,6 +1148,7 @@ def _apply_delete_node(
     """Apply one delete and return the deleted node's id."""
 
     node_id = _resolve_node_id(op.node, graph, refs, nested_ids, role="delete target")
+    _refuse_workbench_input(graph, node_id, "delete")
     index = _node_index(graph, node_id)
     assert index is not None
     del graph.nodes[index]

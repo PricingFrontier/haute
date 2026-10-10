@@ -1222,7 +1222,7 @@ class TestOutputResolution:
             return df
 
         p.connect("src", "out_a").connect("src", "out_b")
-        with pytest.raises(ExecutionError, match="multiple @pipeline.output"):
+        with pytest.raises(ExecutionError, match="multiple response nodes"):
             p.run(source="batch")
 
     def test_score_returns_declared_output(self):

@@ -8,6 +8,7 @@ import {
   NODE_TYPES,
   SINK_ONLY_TYPES,
   SOURCE_ONLY_TYPES,
+  isRequestInputType,
 } from "./nodeTypes"
 import {
   EDGE_JOIN_BASE_HANDLE,
@@ -89,7 +90,7 @@ function liveHandles(
 ): Set<string | null> {
   const type = nodeType(node)
 
-  if (type === NODE_TYPES.API_INPUT) {
+  if (isRequestInputType(type)) {
     if (direction === "target") return new Set()
     return new Set(authoritativeSourceHandles(node))
   }

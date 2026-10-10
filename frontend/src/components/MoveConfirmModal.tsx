@@ -1,8 +1,8 @@
 import { useState } from "react"
 import { RotateCcw } from "lucide-react"
 
+import useProjectDirty from "../hooks/useProjectDirty"
 import useGitStore from "../stores/useGitStore"
-import useGraphStore from "../stores/useGraphStore"
 import ModalShell from "./ModalShell"
 
 interface MoveConfirmModalProps {
@@ -14,14 +14,15 @@ interface MoveConfirmModalProps {
 
 /**
  * Pre-move prompt (P6 §3.4 / §3.9). Moving is a real checkout that replaces the
- * working canvas, so unsaved in-memory edits — which never reached disk, so the
- * engine's dirty-tree floor can't see them — would be lost silently. When the
- * editor is dirty we force the choice: save them onto the current branch first,
- * or discard them. On a clean canvas it's a simple confirm.
+ * working canvas and the workbench's form, so unsaved in-memory edits — which never
+ * reached disk, so the engine's dirty-tree floor can't see them — would be lost
+ * silently. When the project has unsaved edits, in the canvas or the form, we force the
+ * choice: save them onto the current branch first, or discard them. On a clean project
+ * it's a simple confirm.
  */
 export default function MoveConfirmModal({ onConfirm, onClose }: MoveConfirmModalProps) {
   const target = useGitStore((s) => s.moveTarget)
-  const dirty = useGraphStore((s) => s.dirty)
+  const dirty = useProjectDirty()
   const [busy, setBusy] = useState(false)
 
   if (!target) return null

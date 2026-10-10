@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 import functools
-import keyword
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
 from haute._config_io import config_path_for_node, has_config_folder
 from haute._executable_names import ROOT_MODULE
-from haute._graph_utils import _sanitize_func_name, executable_input_name
+from haute._graph_utils import _sanitize_func_name, executable_input_name, is_frame_label
 from haute._support_code_names import UtilityReader, name_violations
-from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
+from haute._types import REQUEST_INPUT_NODE_TYPES, GraphNode, NodeData, NodeType, PipelineGraph
+from haute._workbench_tables import COLUMN_DTYPES
 
 
 @dataclass(frozen=True)
@@ -24,9 +23,6 @@ class ResolvedEditorIdentity:
     config_reference: str | None
     default_input_name: str | None
     source_handle_input_names: dict[str, str]
-
-
-_ASCII_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def recoverable_api_input_source_handles(config: Mapping[str, Any]) -> tuple[str, ...]:
@@ -50,11 +46,7 @@ def recoverable_api_input_source_handles(config: Mapping[str, Any]) -> tuple[str
             continue
         assert isinstance(table, dict)  # guaranteed by table_is_emitting
         label = table.get("label")
-        if (
-            not isinstance(label, str)
-            or _ASCII_IDENTIFIER.fullmatch(label) is None
-            or keyword.iskeyword(label)
-        ):
+        if not isinstance(label, str) or not is_frame_label(label):
             continue
         folded = label.casefold()
         if folded in seen:
@@ -62,6 +54,52 @@ def recoverable_api_input_source_handles(config: Mapping[str, Any]) -> tuple[str
         seen.add(folded)
         handles.append(label)
     return tuple(handles)
+
+
+def recoverable_workbench_source_handles(config: Mapping[str, Any]) -> tuple[str, ...]:
+    """A Workbench Input's bindable handles while its config may still need repair.
+
+    Read as the editor reads a copy (`readWorkbenchTables`, then `workbenchInputFrameLabels`):
+    each table with a name, `one` or `many` rows and a column of a known type is a frame,
+    named by the table, when its name can be a handle; a name counts once, whatever its case.
+    Nothing is refused here: a config the analyst may still fix must render.
+    """
+    tables = config.get("tables")
+    if not isinstance(tables, list):
+        return ()
+    handles: list[str] = []
+    seen: set[str] = set()
+    for table in tables:
+        if not isinstance(table, dict) or table.get("rows") not in ("one", "many"):
+            continue
+        columns = table.get("columns")
+        if not isinstance(columns, list) or not any(_is_workbench_column(c) for c in columns):
+            continue
+        name = table.get("name")
+        if not isinstance(name, str) or not is_frame_label(name):
+            continue
+        folded = name.casefold()
+        if folded in seen:
+            continue
+        seen.add(folded)
+        handles.append(name)
+    return tuple(handles)
+
+
+def _is_workbench_column(value: object) -> bool:
+    if not isinstance(value, dict) or not isinstance(value.get("name"), str):
+        return False
+    kind = value.get("type")
+    return isinstance(kind, str) and kind in COLUMN_DTYPES
+
+
+def recoverable_request_input_source_handles(
+    node_type: NodeType, config: Mapping[str, Any]
+) -> tuple[str, ...]:
+    """A request input's bindable handles, by its type: the one derivation for either."""
+    if node_type is NodeType.WORKBENCH_INPUT:
+        return recoverable_workbench_source_handles(config)
+    return recoverable_api_input_source_handles(config)
 
 
 def resolve_editor_identity(
@@ -84,7 +122,7 @@ def resolve_editor_identity(
         config_reference = config_path_for_node(kind, function_name).as_posix()
     else:
         config_reference = None
-    special = {NodeType.API_INPUT, NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}
+    special = REQUEST_INPUT_NODE_TYPES | {NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}
     default_input_name = (
         None
         if kind in special

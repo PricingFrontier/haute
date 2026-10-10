@@ -39,6 +39,7 @@ from haute._global_constants import (
     node_step_constant_problems,
     preamble_binds_global_constants,
 )
+from haute._graph_shape import validate_singleton_groups
 from haute._logging import get_logger
 from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._sandbox import contained_path
@@ -47,7 +48,12 @@ from haute._submodel_paths import (
     SubmodelPathOutsideProjectError,
     resolve_submodel_reference,
 )
-from haute._types import GLOBAL_CONSTANTS_FILE, GLOBAL_CONSTANTS_NAME, SINK_ONLY_NODE_TYPES
+from haute._types import (
+    GLOBAL_CONSTANTS_FILE,
+    GLOBAL_CONSTANTS_NAME,
+    REQUEST_INPUT_NODE_TYPES,
+    SINK_ONLY_NODE_TYPES,
+)
 from haute.errors import ConfigError, ParseError, PathOutsideProjectError
 from haute.graph_utils import (
     GraphEdge,
@@ -92,12 +98,6 @@ class StaleDocumentRevisionError(Exception):
             "Reload it before saving."
         )
 
-
-# Singleton node types: at most one of each is allowed per pipeline.
-_SINGLETON_NODE_TYPES: list[tuple[NodeType, str]] = [
-    (NodeType.API_INPUT, "API Input"),
-    (NodeType.OUTPUT, "Output"),
-]
 
 # Allowlist for codegen output paths.
 # Module files must live directly under ``modules/`` (no nested escapes).
@@ -241,6 +241,66 @@ def _rollback_artifacts(touched: list[_TouchedFile]) -> list[Path]:
                 error=str(exc),
             )
     return failed
+
+
+def capture_save_in_ledger(
+    root: Path, rel_paths: list[str], warnings: list[str], message: str | None = None
+) -> tuple[str | None, bool]:
+    """Commit a save's files to the clone's ledger branch, when configured.
+
+    *rel_paths* are the files the save wrote or removed, relative to *root* in
+    POSIX form: the commit's pathspec. The pipeline save captures its files
+    through it, and the workbench's form save its file.
+
+    Returns ``(sha, identity_required)``.  ``identity_required`` is True
+    only when the capture was skipped because git has no commit identity
+    — a restored hosted container starts that way, and without a
+    structural signal the UI can never prompt for one, so the user's work
+    would silently never be version-captured.
+
+    Additive by design: with no working branch recorded (or no git repo)
+    saves behave exactly as before, and a failed capture degrades to a
+    warning appended to *warnings* — the on-disk save has already
+    succeeded, and the next successful capture sweeps the orphaned delta up
+    because the ledger commit is computed from working-tree state, not from
+    this call's bookkeeping.
+    """
+    from haute._git_state import read_working_branch
+
+    working = read_working_branch(root)
+    if working is None or not rel_paths:
+        return None, False
+
+    from haute import _git
+
+    # Same source of truth as the working-branch response's `identity_set`.
+    # Checked BEFORE committing so a missing identity costs no failing
+    # subprocess and yields a specific, actionable message instead of the
+    # generic git-error fallback.
+    name, email = _git.get_identity(root)
+    if name is None or email is None:
+        warnings.append(
+            "Changes saved, but version capture needs a git identity. "
+            "Set your name and email to keep version history."
+        )
+        return None, True
+
+    try:
+        sha = _git.commit_save(rel_paths, working, cwd=root, message=message)
+        if sha is not None:
+            # Publish to durable storage when bound; no-op otherwise.
+            from haute import _project_storage
+
+            _project_storage.enqueue_push()
+        return sha, False
+    except _git.GitDomainError as exc:
+        # Hand-authored messages (incl. guardrails) are safe verbatim.
+        warnings.append(f"Changes saved; version capture failed: {exc}")
+    except _git.GitError:
+        # Raw git stderr may leak paths/remotes — full detail is already
+        # in the structured log from _run_git.
+        warnings.append("Changes saved; version capture failed (git error — see server log).")
+    return None, False
 
 
 class SavePipelineService:
@@ -491,66 +551,14 @@ class SavePipelineService:
         warnings: list[str],
         message: str | None,
     ) -> tuple[str | None, bool]:
-        """Commit this save to the clone's ledger branch, when configured.
-
-        Returns ``(sha, identity_required)``.  ``identity_required`` is True
-        only when the capture was skipped because git has no commit identity
-        — a restored hosted container starts that way, and without a
-        structural signal the UI can never prompt for one, so the user's work
-        would silently never be version-captured.
-
-        Additive by design: with no working branch recorded (or no git repo)
-        saves behave exactly as before, and a failed capture degrades to a
-        warning — the on-disk save has already succeeded, and the next
-        successful capture sweeps the orphaned delta up because the ledger
-        commit is computed from working-tree state, not from this call's
-        bookkeeping.
-        """
-        from haute._git_state import read_working_branch
-
-        working = read_working_branch(self._root)
-        if working is None:
-            return None, False
-
+        """Capture the files this save wrote or removed: `capture_save_in_ledger` on them."""
         rel_paths: list[str] = []
         for path in [t.target for t in touched] + removed:
             try:
                 rel_paths.append(path.relative_to(self._root).as_posix())
             except ValueError:
                 continue  # outside the project root — not this repo's concern
-        if not rel_paths:
-            return None, False
-
-        from haute import _git
-
-        # Same source of truth as the working-branch response's `identity_set`.
-        # Checked BEFORE committing so a missing identity costs no failing
-        # subprocess and yields a specific, actionable message instead of the
-        # generic git-error fallback.
-        name, email = _git.get_identity(self._root)
-        if name is None or email is None:
-            warnings.append(
-                "Changes saved, but version capture needs a git identity. "
-                "Set your name and email to keep version history."
-            )
-            return None, True
-
-        try:
-            sha = _git.commit_save(rel_paths, working, cwd=self._root, message=message)
-            if sha is not None:
-                # Publish to durable storage when bound; no-op otherwise.
-                from haute import _project_storage
-
-                _project_storage.enqueue_push()
-            return sha, False
-        except _git.GitDomainError as exc:
-            # Hand-authored messages (incl. guardrails) are safe verbatim.
-            warnings.append(f"Changes saved; version capture failed: {exc}")
-        except _git.GitError:
-            # Raw git stderr may leak paths/remotes — full detail is already
-            # in the structured log from _run_git.
-            warnings.append("Changes saved; version capture failed (git error — see server log).")
-        return None, False
+        return capture_save_in_ledger(self._root, rel_paths, warnings, message)
 
     def save_graph_transactionally(
         self,
@@ -825,14 +833,11 @@ class SavePipelineService:
 
     @staticmethod
     def _validate_singletons(graph: PipelineGraph) -> None:
-        """Ensure singleton node types appear at most once in an executable graph."""
-        for singleton_type, label in _SINGLETON_NODE_TYPES:
-            count = sum(1 for n in graph.nodes if n.data.nodeType == singleton_type)
-            if count > 1:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Only one {label} node is allowed per pipeline (found {count}).",
-                )
+        """Ensure each singleton group appears at most once in an executable graph."""
+        try:
+            validate_singleton_groups(graph)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
 
     @staticmethod
     def _validate_no_source_switch_instances(graph: PipelineGraph) -> None:
@@ -1095,14 +1100,21 @@ class SavePipelineService:
         }
         for scoped_graph in scoped:
             for node in scoped_graph.nodes:
-                if node.data.nodeType != NodeType.API_INPUT:
+                if node.data.nodeType not in REQUEST_INPUT_NODE_TYPES:
                     continue
                 tables = node.data.config.get("tables")
                 if not isinstance(tables, list):
                     continue
                 own_name = _sanitize_func_name(node.data.label)
+                # A Workbench Input's tables carry their port as `name`, a Quote Input's
+                # as `label`.
+                kind, key = (
+                    ("Workbench Input", "name")
+                    if node.data.nodeType is NodeType.WORKBENCH_INPUT
+                    else ("Quote Input", "label")
+                )
                 for table in tables:
-                    label = table.get("label") if isinstance(table, dict) else None
+                    label = table.get(key) if isinstance(table, dict) else None
                     if not isinstance(label, str) or label == own_name:
                         continue
                     clashing = labels_by_name.get(label)
@@ -1111,7 +1123,7 @@ class SavePipelineService:
                     raise HTTPException(
                         status_code=400,
                         detail=(
-                            f"Quote Input {node.data.label!r} has a table {label!r} named "
+                            f"{kind} {node.data.label!r} has a table {label!r} named "
                             f"like the node {clashing!r}. A step or parameter reading "
                             f"{label!r} would read both, so the pipeline could not be "
                             "reloaded. Rename the table or the node. Nothing was saved."
@@ -1598,7 +1610,7 @@ class SavePipelineService:
         a navigational aid pointing the user at the next step.
         """
         for node in graph.nodes:
-            if node.data.nodeType != NodeType.API_INPUT:
+            if node.data.nodeType not in REQUEST_INPUT_NODE_TYPES:
                 continue
             cfg = node.data.config
             path = cfg.get("path", "") or ""

@@ -66,7 +66,9 @@ Out of scope:
     `_file_lock.py`, and the rest of the API-input snapshot package
     (`_json_shred/_snapshots.py`, `_writer.py`, `_shred.py`, `_records.py`,
     `_runtime_storage.py`, `_inference.py`, `_inference_filter.py`,
-    `_json_shred/_cache.py`).
+    `_json_shred/_cache.py`);
+  - the workbench's tables: `_workbench_tables.py`, `_workbench_input.py` and
+    `_workbench_output.py`, which type a quote's tables and build its response.
 
   `[tool.haute.changed_coverage].paths` and `[tool.haute.critical_coverage]` in
   `pyproject.toml` list exactly this set, and the mutation targets are

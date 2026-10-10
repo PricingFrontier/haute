@@ -1,0 +1,11 @@
+/* Native dropdowns in the editor's colours: the select, and the option list the browser
+   draws for it, which is otherwise white. Unlayered, so it wins over utility classes. */
+select {
+  background-color: var(--bg-input);
+  color: var(--text-primary);
+}
+
+option {
+  background-color: var(--bg-elevated);
+  color: var(--text-primary);
+}

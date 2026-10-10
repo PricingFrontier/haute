@@ -17,6 +17,9 @@ from haute._cache import (
 )
 from haute._hashing import content_hash_bytes
 from haute._logging import get_logger
+from haute._types import REQUEST_INPUT_NODE_TYPES
+from haute._workbench_input import null_quote, workbench_input_tables
+from haute._workbench_tables import WorkbenchTable, WorkbenchTablesError, quote_schema
 from haute._worker_isolation import IsolatedWorkerError, run_isolated_worker
 from haute.errors import ConfigError
 from haute.execution import dataframe_graph_input_fingerprint
@@ -55,7 +58,7 @@ def _read_input_source(graph: PipelineGraph, node: GraphNode, resolved_path: str
             store=SourceCacheStore(_get_project_root()),
             base_dir=base_dir,
         )
-    if node.data.nodeType == NodeType.API_INPUT and not is_json_api_input_path(resolved_path):
+    if node.data.nodeType in REQUEST_INPUT_NODE_TYPES and not is_json_api_input_path(resolved_path):
         return read_data_source({**config, "path": resolved_path})
     return read_source(resolved_path)
 
@@ -72,11 +75,17 @@ def infer_input_schema(graph: PipelineGraph, input_node_id: str) -> dict[str, st
     Returns:
         Dict of column_name → polars dtype string (e.g. ``{"Area": "String"}``).
 
+    A Workbench Input reads no file: its request's schema is derived from its
+    tables instead (specs/workbench).
+
     Raises:
-        ValueError: If the input node has no path or the file can't be read.
+        ValueError: If the input node has no path or the file can't be read, or a
+            Workbench Input's tables give no schema.
     """
     node = _find_node(graph, input_node_id)
     config = node.data.config
+    if node.data.nodeType is NodeType.WORKBENCH_INPUT:
+        return {col: str(dtype) for col, dtype in quote_schema(_workbench_tables(node)).items()}
     path = config.get("path", "")
 
     if not path and node.data.nodeType != NodeType.DATA_INPUT:
@@ -128,11 +137,28 @@ def deploy_schema_cache_fingerprint(
     return f"deploy-schema:v{inputs.contract.version}:{content_hash_bytes(inputs.canonical_bytes)}"
 
 
+def _workbench_tables(node: GraphNode) -> tuple[WorkbenchTable, ...]:
+    """A Workbench Input's tables, which give its request's schema: it reads no file."""
+    try:
+        return workbench_input_tables(node.data.config)
+    except WorkbenchTablesError as exc:
+        raise ValueError(
+            f"Cannot derive the request schema of Workbench Input '{node.id}': {exc}"
+        ) from exc
+
+
 def _read_sample_row(graph: PipelineGraph, input_node_ids: list[str]) -> pl.DataFrame:
-    """Read the one-row sample both the schema dry-run and policy planning use."""
+    """Read the one-row sample both the schema dry-run and policy planning use.
+
+    A Workbench Input reads no file, so its sample is one quote with nothing filled in,
+    one row of nulls per table, in the schema its tables give (specs/workbench).
+    """
     if not input_node_ids:
         raise ValueError("No API input nodes found in the graph")
     node = _find_node(graph, input_node_ids[0])
+    if node.data.nodeType is NodeType.WORKBENCH_INPUT:
+        tables = _workbench_tables(node)
+        return pl.DataFrame([null_quote(tables)], schema=quote_schema(tables))
     config = node.data.config
     path = config.get("path", "")
 
@@ -336,6 +362,8 @@ def _capped_worker_output_schema(
         artifact_paths=artifact_paths or {},
         output_fields=None,
         operation="deploy_bundle_schema",
+        # The rows travel as JSON; the schema keeps their types, nulls included.
+        input_schema=sample.schema,
     )
     primary_error: BaseException | None = None
     try:

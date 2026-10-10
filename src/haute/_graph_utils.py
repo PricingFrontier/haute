@@ -15,6 +15,11 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from haute._types import GraphEdge, GraphNode, PipelineGraph
 
+#: The request inputs' node types as plain values: ``haute._types`` imports this
+#: module, so its ``REQUEST_INPUT_NODE_TYPES`` cannot be imported here. Held
+#: equal to it by ``tests/test_request_inputs.py``.
+REQUEST_INPUT_KINDS: frozenset[str] = frozenset({"apiInput", "workbenchInput"})
+
 
 def build_parents_of(
     edges: list[GraphEdge],
@@ -109,6 +114,18 @@ def _edge_id(
     return f"e_{source}_{target}_{digest}"
 
 
+def is_frame_label(label: str) -> bool:
+    """Whether *label* can name a frame a request input emits.
+
+    The one rule for a Quote Input's table labels, a Workbench Input's and Workbench
+    Output's table names and the editor's source handles: an ASCII Python identifier
+    that is not a keyword, so a step can read the frame by name.
+    """
+    import keyword
+
+    return label.isascii() and label.isidentifier() and not keyword.iskeyword(label)
+
+
 def _sanitize_func_name(label: str) -> str:
     """Convert a human label to a valid Python function name (preserves casing).
 
@@ -179,8 +196,8 @@ def edge_input_name(
     an output port and are not input names.
     """
     node_type = str(source_node.data.nodeType)
-    if node_type == "apiInput" and edge.sourceHandle is None:
-        raise ValueError(f"apiInput edge {edge.id!r} has no sourceHandle/frame label")
+    if node_type in REQUEST_INPUT_KINDS and edge.sourceHandle is None:
+        raise ValueError(f"{node_type} edge {edge.id!r} has no sourceHandle/frame label")
     del submodels  # the port name needs no definition lookup
     return executable_input_name(
         node_type=source_node.data.nodeType,
@@ -281,9 +298,9 @@ def executable_input_name(
     same frames the canvas does.
     """
     kind = str(node_type)
-    if kind == "apiInput":
+    if kind in REQUEST_INPUT_KINDS:
         if source_handle is None:
-            raise ValueError("API input handles are required for executable identities.")
+            raise ValueError("Request input handles are required for executable identities.")
         return source_handle
     if kind == "submodel":
         prefix = "out__"

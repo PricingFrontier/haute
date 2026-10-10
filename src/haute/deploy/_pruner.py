@@ -7,6 +7,7 @@ from typing import Any
 
 from haute._graph_utils import edge_input_name
 from haute._logging import get_logger
+from haute._types import REQUEST_INPUT_NODE_TYPES, RESPONSE_NODE_TYPES
 from haute.graph_utils import (
     GraphEdge,
     GraphNode,
@@ -123,7 +124,8 @@ def prune_for_deploy(
 def find_output_node(graph: PipelineGraph) -> str:
     """Find the single output node in a graph.
 
-    Looks for nodes with ``nodeType="output"`` or ``config.output=True``.
+    Looks for a response node (a Quote Response or Workbench Output, see
+    ``RESPONSE_NODE_TYPES``) or a node with ``config.output=True``.
 
     Raises:
         ValueError: If zero or multiple output nodes are found.
@@ -133,7 +135,7 @@ def find_output_node(graph: PipelineGraph) -> str:
     for n in graph.nodes:
         if n.id in seen:
             continue
-        if n.data.nodeType == NodeType.OUTPUT or n.data.config.get("output"):
+        if n.data.nodeType in RESPONSE_NODE_TYPES or n.data.config.get("output"):
             candidates.append(n.id)
             seen.add(n.id)
 
@@ -148,18 +150,19 @@ def find_output_node(graph: PipelineGraph) -> str:
 
 
 def find_deploy_input_nodes(graph: PipelineGraph) -> list[str]:
-    """Find apiInput nodes in a graph.
+    """Find the request inputs (Quote and Workbench Inputs) in a graph.
 
     Returns:
         List of node IDs (may be empty if none are marked).
     """
-    return [n.id for n in graph.nodes if n.data.nodeType == NodeType.API_INPUT]
+    return [n.id for n in graph.nodes if n.data.nodeType in REQUEST_INPUT_NODE_TYPES]
 
 
 def find_source_nodes(graph: PipelineGraph) -> list[str]:
-    """Find all source nodes in a graph (dataInput, apiInput, constant)."""
+    """Find all source nodes in a graph (dataInput, the request inputs, constant)."""
     return [
         n.id
         for n in graph.nodes
-        if n.data.nodeType in (NodeType.DATA_INPUT, NodeType.API_INPUT, NodeType.CONSTANT)
+        if n.data.nodeType in REQUEST_INPUT_NODE_TYPES
+        or n.data.nodeType in (NodeType.DATA_INPUT, NodeType.CONSTANT)
     ]

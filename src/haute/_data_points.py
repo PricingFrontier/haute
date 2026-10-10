@@ -7,7 +7,9 @@ independent of which consumer asks for it. Each point has one kind:
   execution of that single source node over direct Parquet or its published
   input snapshot, so selections and renames apply exactly as in a run.
 - ``api_input_table``: one port of a structured ``apiInput``, served from that
-  table's input snapshot without ever shredding the raw source.
+  table's input snapshot without ever shredding the raw source; or one port of a
+  ``workbenchInput``, which reads no file, computed directly (its one row of
+  nulls), with no input snapshot and so nothing to build or clear.
 - ``node_output``: any other producer, including a Data Input with post-load
   code, read from its node-output snapshot.
 
@@ -42,7 +44,13 @@ from haute._source_cache import (
     SourceCacheIdentity,
     SourceCacheStatus,
 )
-from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
+from haute._types import (
+    REQUEST_INPUT_NODE_TYPES,
+    GraphEdge,
+    GraphNode,
+    NodeType,
+    PipelineGraph,
+)
 
 PointKind = Literal["data_input", "api_input_table", "node_output"]
 PointState = Literal["current", "stale", "partial", "missing", "building", "corrupt"]
@@ -136,7 +144,7 @@ def _single_input_point(graph: PipelineGraph, node: GraphNode) -> DataPoint:
         )
     edge = edges[0]
     producer = _node(graph, edge.source)
-    if producer.data.nodeType == NodeType.API_INPUT and edge.sourceHandle is not None:
+    if producer.data.nodeType in REQUEST_INPUT_NODE_TYPES and edge.sourceHandle is not None:
         return DataPoint(edge.source, edge.sourceHandle)
     return DataPoint(edge.source, None)
 
@@ -211,7 +219,7 @@ def consumer_point(graph: PipelineGraph, consumer_node_id: str) -> ConsumerPoint
 def point_kind(graph: PipelineGraph, point: DataPoint) -> PointKind:
     node = _node(_effective_graph(graph), point.producer_node_id)
     node_type = node.data.nodeType
-    if node_type == NodeType.API_INPUT and point.port_label is not None:
+    if node_type in REQUEST_INPUT_NODE_TYPES and point.port_label is not None:
         return "api_input_table"
     if point.port_label is not None:
         raise NodeDataPointInvalidError(
@@ -290,12 +298,23 @@ class DataPointResolver:
         """The emitting table labels of a structured API Input, in schema order.
 
         Empty for any other node, and for an API Input whose schema the node
-        builder would reject: it has no tables to hold.
+        builder would reject: it has no tables to hold. A Workbench Input's come
+        from its tables, never its sample; one with no tables raises
+        :class:`NodeDataPointInvalidError` saying so.
         """
+        node = _node(self.graph, node_id)
+        if node.data.nodeType is NodeType.WORKBENCH_INPUT:
+            from haute._workbench_input import workbench_table_labels
+            from haute._workbench_tables import WorkbenchTablesError
+
+            try:
+                return workbench_table_labels(node.data.config)
+            except WorkbenchTablesError as exc:
+                raise NodeDataPointInvalidError(str(exc)) from exc
         return tuple(table.label for table in self._api_input_tables(node_id))
 
     def api_input_table_digests(self, node_id: str) -> tuple[str, ...]:
-        """The distinct input-snapshot identities of those tables."""
+        """The distinct input-snapshot identities of those tables (none for a Workbench Input)."""
         return tuple(
             dict.fromkeys(table.identity.digest for table in self._api_input_tables(node_id))
         )
@@ -309,7 +328,7 @@ class DataPointResolver:
         config = node.data.config
         path = config.get("path")
         if (
-            node.data.nodeType != NodeType.API_INPUT
+            node.data.nodeType not in REQUEST_INPUT_NODE_TYPES
             or not isinstance(path, str)
             or not path
             or not is_json_api_input_path(path)
@@ -389,6 +408,8 @@ class DataPointResolver:
         from haute._node_apply import _anchored_required_path
 
         node = _node(self.graph, point.producer_node_id)
+        if node.data.nodeType is NodeType.WORKBENCH_INPUT:
+            return self._resolve_workbench_table(point, demand, node)
         config = dict(node.data.config)
         tables = config.get("tables")
         labels = (
@@ -415,6 +436,38 @@ class DataPointResolver:
         )
         return self._input_snapshot_resolution(
             point, demand, kind="api_input_table", identity=identity, status=status
+        )
+
+    def _resolve_workbench_table(
+        self, point: DataPoint, demand: NodeSnapshotColumns, node: GraphNode
+    ) -> PointResolution:
+        """A Workbench Input's table: computed from its tables and sample, so current at once.
+
+        It reads no file and has no input snapshot (no input identity), so there is
+        nothing to build or clear; leasing it computes the table's frame. Resolving it
+        reads the tables alone, never the sample.
+        """
+        from haute._workbench_input import workbench_table_labels
+
+        config = dict(node.data.config)
+        if point.port_label not in workbench_table_labels(config):
+            raise NodeDataPointInvalidError(
+                f"Workbench Input {node.data.label!r} does not emit table {point.port_label!r}."
+            )
+        return PointResolution(
+            point=point,
+            kind="api_input_table",
+            state="current",
+            demand=demand,
+            data_version=_version(
+                "api_input_table",
+                {
+                    "workbench_tables": config.get("tables"),
+                    "workbench_sample": config.get("sample") or {},
+                    "lineage": _lineage_fingerprint(self.graph, node.id, self._memo),
+                },
+            ),
+            build_key=None,
         )
 
     def _input_snapshot_resolution(
@@ -510,15 +563,35 @@ class DataPointResolver:
         """Lease the data a current resolution names.
 
         A node output, a snapshot-backed Data Input and an API-input table always
-        read exactly the resolved generation. With ``exact`` — a spawned worker
-        reading the resolution its parent leased — a direct Parquet file that has
-        moved on since resolution raises :class:`PointDataChangedError` instead
-        of being read under a new version.
+        read exactly the resolved generation; a Workbench Input's table, which has
+        none, is computed. With ``exact`` — a spawned worker reading the resolution
+        its parent leased — a direct Parquet file that has moved on since
+        resolution raises :class:`PointDataChangedError` instead of being read
+        under a new version.
         """
         point, demand = resolution.point, resolution.demand
         if resolution.state != "current":
             raise CacheRequiredError(resolution)
         assert resolution.data_version is not None
+        producer = _node(self.graph, point.producer_node_id)
+        if (
+            resolution.kind == "api_input_table"
+            and producer.data.nodeType is NodeType.WORKBENCH_INPUT
+        ):
+            from haute._workbench_input import workbench_table_frames
+
+            assert point.port_label is not None
+            frames = workbench_table_frames(
+                dict(producer.data.config), port_columns={point.port_label: None}
+            )
+            yield LeasedPointFrame(
+                kind=resolution.kind,
+                data_version=resolution.data_version,
+                columns=demand,
+                scan=_project(frames[point.port_label], demand),
+                resolution=resolution,
+            )
+            return
         if resolution.kind in ("node_output", "api_input_table"):
             # Both are exactly their generation: an API-input table has no
             # post-load code, so its data is the table the build wrote.

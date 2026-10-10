@@ -1,0 +1,5 @@
+{
+  "node_type": "workbenchOutput",
+  "authorable": false,
+  "note": "Not authorable by the assistant: a Workbench Output's tables are the workbench's, which the editor copies and keeps current, so assistant operations cannot add, update, rename or delete one, nor change its mapping; the analyst adds it from the palette, edits its tables in the workbench and its mapping in its panel. Read it as the pipeline's response node and wire one upstream node to each of its tables with add_edge's target_handle set to the table's name; each table column is filled from the frame's column of the same name unless the node's mapping picks another."
+}

@@ -112,7 +112,7 @@ describe("Phase 2D-3 shell merge - panel surface preserved", () => {
   })
 
   it("drag-to-resize handle persists new width to the UI store", () => {
-    // PanelShell exposes a `cursor-col-resize` handle at the left edge.
+    // PanelShell exposes a resize handle (`panel-resize-handle`) at the left edge.
     // Dragging it left grows the panel; the final width is saved to
     // useUIStore.nodePanelWidth on mouseup.  After the merge, whether the
     // handle lives in a ResizablePanel wrapper or a dedicated hook, this
@@ -124,7 +124,7 @@ describe("Phase 2D-3 shell merge - panel surface preserved", () => {
         <span>content</span>
       </PanelShell>,
     )
-    const handle = container.querySelector(".cursor-col-resize") as HTMLElement
+    const handle = container.querySelector('[data-testid="panel-resize-handle"]') as HTMLElement
     expect(handle).toBeTruthy()
 
     fireEvent.mouseDown(handle, { clientX: 400 })
@@ -253,9 +253,9 @@ describe("Phase 2D-3 shell merge - consumer regression guards", () => {
   it("GlobalConstantsPanel's outer wrapper still exposes a resize handle", () => {
     // Whether the wrapper is still called PanelShell or has been renamed to
     // ResizablePanel, the rendered DOM must include a drag handle with the
-    // cursor-col-resize class so users can resize the panel.
+    // `panel-resize-handle` test id so users can resize the panel.
     const { container } = render(<GlobalConstantsPanel onClose={vi.fn()} />)
-    const handle = container.querySelector(".cursor-col-resize")
+    const handle = container.querySelector('[data-testid="panel-resize-handle"]')
     expect(handle).toBeTruthy()
   })
 })

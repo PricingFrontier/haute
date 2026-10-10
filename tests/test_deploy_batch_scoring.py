@@ -53,7 +53,7 @@ from haute.deploy._pruner import find_output_node, prune_for_deploy
 from haute.deploy._schema import infer_deploy_execution_policy, infer_output_schema
 from haute.deploy._utils import build_manifest
 from haute.errors import BoundedMemoryUnsupportedError, DeployError, PreambleError
-from haute.graph_utils import PipelineGraph
+from haute.graph_utils import NodeType, PipelineGraph
 from haute.parser import parse_pipeline_file
 from tests._deploy_helpers import make_resolved_deploy
 from tests.conftest import make_edge, make_graph
@@ -1178,6 +1178,60 @@ class TestOutputSchemaConservativeFallback:
         admission = outcomes[0].execution_metrics["admission"]
         assert admission["profile"] == "deploy_batch"
         assert admission["operation"] == "deploy_bundle_schema"
+
+    @pytest.mark.parametrize("rows", ["one", "many"])
+    def test_a_workbench_inputs_null_sample_keeps_its_types_in_the_capped_worker(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        rows: str,
+    ) -> None:
+        """A Workbench Input reads no file: its sample is a record of typed nulls.
+
+        The rows reach the worker as JSON, where a null has no type; the Workbench Input
+        reads them there through its tables, so the float column is a float and the sum
+        over it a float, not a null column, for a one-row and a many-row table alike.
+        """
+        table = {
+            "name": "quotes",
+            "rows": rows,
+            "columns": [{"name": "segment", "type": "str"}, {"name": "premium", "type": "float"}],
+        }
+        conservative = _conservative_graph()
+        graph = conservative.model_copy(
+            update={
+                "nodes": [
+                    node.model_copy(
+                        update={
+                            "data": node.data.model_copy(
+                                update={
+                                    "nodeType": NodeType.WORKBENCH_INPUT,
+                                    "config": {"tables": [table]},
+                                }
+                            )
+                        }
+                    )
+                    if node.id == "quotes"
+                    else node
+                    for node in conservative.nodes
+                ]
+            }
+        )
+        _force_schema_cache_miss(tmp_path, monkeypatch)
+        monkeypatch.chdir(tmp_path)
+        spawns: list[str] = []
+        real_runner = _schema.run_isolated_worker
+
+        def recording_runner(function, *args, config):
+            spawns.append(config.process_name)
+            return real_runner(function, *args, config=config)
+
+        monkeypatch.setattr(_schema, "run_isolated_worker", recording_runner)
+
+        schema = infer_output_schema(graph, "out", ["quotes"])
+
+        assert spawns == [DEPLOY_BATCH_PROCESS_NAME]
+        assert schema == {"total": "Float64"}
 
     def test_provable_graph_never_spawns_a_worker(
         self,

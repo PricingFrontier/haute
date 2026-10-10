@@ -55,7 +55,7 @@ Allowlist
 A handful of builders are *genuinely* opaque and should register
 ``OPAQUE_CONTRACT`` rather than a concrete set of columns:
 
-- ``API_INPUT`` / ``DATA_INPUT`` — output schema is determined by the
+- ``API_INPUT``, ``WORKBENCH_INPUT`` / ``DATA_INPUT`` — output schema is determined by the
   file on disk; we cannot know the columns without touching I/O.
 - ``POLARS`` / ``EXTERNAL_FILE`` — user code can do arbitrary column
   manipulation; the only way to know the contract is to execute.
@@ -91,6 +91,8 @@ from haute._types import NodeType
 ALLOWED_OPAQUE_NODE_TYPES: frozenset[NodeType] = frozenset(
     {
         NodeType.API_INPUT,  # output schema determined by file
+        NodeType.WORKBENCH_INPUT,  # read as API_INPUT is
+        NodeType.WORKBENCH_OUTPUT,  # reads its frames whole, so it names a missing column
         NodeType.DATA_INPUT,  # output schema determined by the configured source
         NodeType.POLARS,  # arbitrary user code
         NodeType.EXTERNAL_FILE,  # arbitrary user code

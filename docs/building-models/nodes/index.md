@@ -15,6 +15,7 @@ Every step in a Haute pipeline is a node. You connect nodes on the canvas to def
 | I want to... | Use this node |
 |---|---|
 | Bring in quote data for live pricing | [Quote Input](quote-input.md) |
+| Price quotes keyed in through the project's workbench | [Workbench Input](workbench-input.md) |
 | Load a parquet or CSV file, a database, lakehouse or Databricks table | [Data Input](data-input.md) |
 | Store fixed parameters (tax rate, loadings) | [Constant](constant.md), or a [global constant](constant.md#global-constants) every node can read |
 | Join, filter, or calculate new columns | [Transform](transform.md) |
@@ -27,6 +28,7 @@ Every step in a Haute pipeline is a node. You connect nodes on the canvas to def
 | Apply saved optimisation results | [Apply Optimisation](optimiser-apply.md) |
 | Switch between live and batch data | [Source Switch](source-switch.md) |
 | Choose which columns to return from the API | [Quote Response](output.md) |
+| Fill the output tables the project's workbench defines | [Workbench Output](workbench-output.md) |
 | Profile a dataset, build pivot tables and charts | [Explore](explore.md) |
 | Save results to a file or table | [Data Output](data-output.md) |
 | Group nodes into a reusable block | [Submodel](submodel.md) |
@@ -36,11 +38,11 @@ Every step in a Haute pipeline is a node. You connect nodes on the canvas to def
 
 ## Working with any node
 
-- **Adding and connecting nodes.** Drag a node from the **NODES** palette on the left onto the canvas, then drag a connection from one node to the next. A connection carries the upstream node's data, under the upstream node's name; a connection from a Quote Input table carries it under the table's label, and one from a submodel output under the output's port name.
+- **Adding and connecting nodes.** Drag a node from the **NODES** palette on the left onto the canvas, then drag a connection from one node to the next. A connection carries the upstream node's data, under the upstream node's name; a connection from a Quote Input or Workbench Input table carries it under the table's label, and one from a submodel output under the output's port name.
 - **The node panel.** Click a node to open its panel on the right. Most nodes have tabs along its top:
     - **CONFIG** holds the node's own settings, described on its page. On a Transform node this tab is called **TRANSFORM**, because the node's settings are its steps.
     - **TRANSFORM**, on Data Input, Load File, Expander, Rating Step and Model Scoring nodes, adds optional steps that run on the node's result, built the same way as a Transform node's (see [Building the node from steps](transform.md#building-the-node-from-steps)).
-    - **COLUMNS** lists the node's **OUTPUT COLUMNS**: untick a column to stop the node passing it on. **Filter columns...** finds a column by name, and **All** and **None** tick or clear every box. The list appears once the node has been previewed. Quote Input, Quote Response, Model Training, Optimisation, Explore and Submodel nodes have no Columns tab.
+    - **COLUMNS** lists the node's **OUTPUT COLUMNS**: untick a column to stop the node passing it on. **Filter columns...** finds a column by name, and **All** and **None** tick or clear every box. The list appears once the node has been previewed. Quote Input, Quote Response, Workbench Input, Workbench Output, Model Training, Optimisation, Explore and Submodel nodes have no Columns tab.
 
     Model Training, Optimisation and Explore nodes split their settings into panes instead, described on their pages.
 - **The preview.** Under the canvas, the preview shows the selected node's output. With **Calculation** set to **Automatic** in Pipeline settings (the button beside **Pipeline:** in the toolbar, which reads **Calculating** or **Manual**), clicking a node calculates its preview; set to **Manual**, a node shows its last result until you click **Refresh** (Ctrl+Enter). **Preview rows** in Pipeline settings sets how many rows a preview shows (0 means no limit), and **Search columns...** narrows the columns shown. Click a cell to trace how its value was calculated (see [Price tracing](../../getting-started/polars.md#price-tracing)).
@@ -89,6 +91,7 @@ Below is a simple motor pricing pipeline that takes in quote data, enriches it, 
 Nodes that bring data into your pipeline. They have no upstream connections.
 
 - **[Quote Input](quote-input.md)**  - entry point for live pricing; reads a preview file during development
+- **[Workbench Input](workbench-input.md)**  - entry point for quotes keyed in through the project's workbench; runs on the workbench's sample while you build
 - **[Data Input](data-input.md)**  - reads files (parquet, CSV and more), lakehouse, database or Databricks tables, or inline records
 - **[Constant](constant.md)**  - stores fixed values like expense loadings or tax rates
 
@@ -115,6 +118,7 @@ Nodes that bring data into your pipeline. They have no upstream connections.
 ## Pipeline outputs
 
 - **[Quote Response](output.md)**  - chooses which columns to return in the API response
+- **[Workbench Output](workbench-output.md)**  - fills the output tables a workbench defines, one frame per table
 - **[Data Output](data-output.md)**  - saves results to a file, lakehouse or database table
 
 ## Analysis

@@ -5,7 +5,7 @@ Your pipeline will receive live API requests in production. During development, 
 !!! info "When to use"
     Use this as the entry point for live pricing. During development, it reads a preview file so you can build and test your pipeline. In production, it receives live API requests instead. Use [Data Input](data-input.md) for loading historical data or reference tables.
 
-A Quote Input has no inputs. It maps each request into one or more tables, and each table you emit is a separate output, named by the table's label; connect each output to the node that uses it. A pipeline has only one Quote Input: once it has one, the palette entry is greyed out with "Only one Quote Input allowed per pipeline".
+A Quote Input has no inputs. It maps each request into one or more tables, and each table you emit is a separate output, named by the table's label; connect each output to the node that uses it. A pipeline has only one Quote Input or [Workbench Input](workbench-input.md): once it has either, the palette entry is greyed out with "Only one Quote Input or Workbench Input allowed per pipeline". While the project's workbench is enabled, the palette offers the Workbench Input in its place.
 
 The panel has no tabs: you choose the columns inside the tables, so there is no **COLUMNS** tab. A banner at the top reads "This node receives live API requests at deploy time".
 

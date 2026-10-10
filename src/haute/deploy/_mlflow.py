@@ -18,10 +18,10 @@ from haute._mlflow_utils import (
     search_versions,
     set_tracking_uri_preserving_env,
 )
-from haute._polars_dtypes import rendered_dtype_mlflow_type_name
+from haute._polars_dtypes import parse_rendered_dtype, rendered_dtype_mlflow_type_name
 from haute.deploy._config import ResolvedDeploy
 from haute.deploy._utils import build_manifest, model_source_line
-from haute.errors import DeployError
+from haute.errors import DeployError, SchemaMismatchError
 
 logger = get_logger(component="deploy.mlflow")
 
@@ -269,22 +269,51 @@ def _pyfunc_model_arguments(resolved: ResolvedDeploy, manifest_path: Path) -> di
 
 
 def _build_signature(resolved: ResolvedDeploy) -> object:
-    """Build an MLflow ModelSignature from resolved schemas."""
+    """Build an MLflow ModelSignature from resolved schemas.
+
+    A flat column is its MLflow type. A workbench pipeline's request and response hold
+    their tables as nested columns (specs/workbench): a one-row table is a struct and a
+    many-row table a list of structs. The signature says what a table is, a ``Map`` of
+    anything or an ``Array`` of them, not which columns it has: a quote may carry columns
+    the tables do not name, which the Workbench Input leaves unread, and MLflow's ``Object``
+    would refuse them before the pipeline saw the quote. The table's columns are in the
+    manifest's input schema, and the reader holds the request to them, refusing a misfit
+    naming the spot, as it does for the container's ``/quote``. A table's column is not
+    required, as a quote need not hold every table.
+    """
+    import polars as pl
     from mlflow.models import ModelSignature
     from mlflow.types import ColSpec, DataType, Schema
+    from mlflow.types.schema import AnyType, Array, Map
+
+    def unsupported(col_name: str, dtype_str: str) -> DeployError:
+        return DeployError(
+            f"Cannot build an MLflow signature for column {col_name!r}: "
+            f"unsupported Polars dtype {dtype_str!r}.",
+            column=col_name,
+            dtype=dtype_str,
+        )
+
+    def mlflow_type(dtype: Any, *, col_name: str, dtype_str: str) -> Any:
+        if isinstance(dtype, pl.Struct):
+            return Map(AnyType())
+        if isinstance(dtype, pl.List):
+            return Array(mlflow_type(dtype.inner, col_name=col_name, dtype_str=dtype_str))
+        name = rendered_dtype_mlflow_type_name(str(dtype))
+        if name is None:
+            raise unsupported(col_name, dtype_str)
+        return DataType[name]
 
     def _to_colspecs(schema: dict[str, str]) -> list[ColSpec]:
         specs = []
         for col_name, dtype_str in schema.items():
-            mlflow_type = rendered_dtype_mlflow_type_name(dtype_str)
-            if mlflow_type is None:
-                raise DeployError(
-                    f"Cannot build an MLflow signature for column {col_name!r}: "
-                    f"unsupported Polars dtype {dtype_str!r}.",
-                    column=col_name,
-                    dtype=dtype_str,
-                )
-            specs.append(ColSpec(type=DataType[mlflow_type], name=col_name))
+            try:
+                dtype = parse_rendered_dtype(dtype_str, column=col_name)
+            except SchemaMismatchError as exc:
+                raise unsupported(col_name, dtype_str) from exc
+            kind = mlflow_type(dtype, col_name=col_name, dtype_str=dtype_str)
+            table = isinstance(dtype, pl.Struct | pl.List)
+            specs.append(ColSpec(type=kind, name=col_name, required=not table))
         return specs
 
     input_schema = Schema(_to_colspecs(resolved.input_schema))  # type: ignore[arg-type]

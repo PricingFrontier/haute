@@ -279,9 +279,16 @@ class TestGenerateAppSource:
 
     def test_imports_score_graph(self) -> None:
         source = _generate_app_source("m", 8080)
-        assert (
-            "from haute.deploy._scorer import admit_deploy_execution, score_graph, score_graph_lazy"
-        ) in source
+        # The names the app binds from the scorer, however the import is laid out.
+        scorer_import = source[source.index("from haute.deploy._scorer import") :].split(")", 1)[0]
+        for name in (
+            "QuoteRequest",
+            "admit_deploy_execution",
+            "reads_one_quote_per_request",
+            "score_graph",
+            "score_graph_lazy",
+        ):
+            assert name in scorer_import
         assert "from fastapi.responses import JSONResponse, StreamingResponse" in source
         assert "bounded_collect_batches" in source
         assert "from haute._execution_context import" in source

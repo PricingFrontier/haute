@@ -17,7 +17,7 @@ from haute._io import read_user_text
 from haute._logging import get_logger
 from haute._types import GLOBAL_CONSTANTS_FILE, NodeType, PipelineGraph
 from haute.deploy._config import ResolvedDeploy
-from haute.deploy._scorer import score_graph
+from haute.deploy._scorer import QuoteRequest, reads_one_quote_per_request, score_graph
 
 logger = get_logger(component="deploy.validators")
 
@@ -173,11 +173,57 @@ def _numeric_comparison(actual: Any, expected: Any, tolerance_pct: float) -> _Nu
 
 
 def _expected_value_matches(actual: Any, expected: Any, tolerance_pct: float) -> bool:
+    """Whether one value matches: a number within the tolerance, a boolean a boolean."""
     if _is_numeric(actual) and _is_numeric(expected):
         return _numeric_comparison(actual, expected, tolerance_pct).matched
     if isinstance(actual, bool) or isinstance(expected, bool):
         return isinstance(actual, bool) and isinstance(expected, bool) and actual is expected
     return bool(actual == expected)
+
+
+class _Mismatch(NamedTuple):
+    """Where an output value first differs from what was expected, and the two leaves."""
+
+    #: Into the value: ``.premium`` in an object, ``[1]`` in a list, chained; empty at the top.
+    path: str
+    actual: Any
+    expected: Any
+
+
+#: What a missing key shows as in a mismatch.
+_MISSING = "<missing>"
+
+
+def _first_mismatch(actual: Any, expected: Any, tolerance_pct: float) -> _Mismatch | None:
+    """Where *actual* first differs from *expected*, or None when it matches throughout.
+
+    A Workbench Output's response nests its tables, so the comparison walks into them: an
+    object matches when it holds every expected key with a matching value (what it holds
+    besides is not checked, as a row's other columns are not), a list when it is as long
+    and each item matches, and a leaf by :func:`_expected_value_matches`, so a number deep
+    in a table is held to the tolerance and a boolean to a boolean.
+    """
+    if isinstance(expected, dict):
+        if not isinstance(actual, dict):
+            return _Mismatch("", actual, expected)
+        for key, value in expected.items():
+            if key not in actual:
+                return _Mismatch(f".{key}", _MISSING, value)
+            found = _first_mismatch(actual[key], value, tolerance_pct)
+            if found is not None:
+                return _Mismatch(f".{key}{found.path}", found.actual, found.expected)
+        return None
+    if isinstance(expected, list):
+        if not isinstance(actual, list) or len(actual) != len(expected):
+            return _Mismatch("", actual, expected)
+        for index, (item, wanted) in enumerate(zip(actual, expected, strict=True)):
+            found = _first_mismatch(item, wanted, tolerance_pct)
+            if found is not None:
+                return _Mismatch(f"[{index}]{found.path}", found.actual, found.expected)
+        return None
+    if _expected_value_matches(actual, expected, tolerance_pct):
+        return None
+    return _Mismatch("", actual, expected)
 
 
 def _format_expected_mismatch(
@@ -204,11 +250,46 @@ def _format_expected_mismatch(
     return f"row {row_index} column {column!r} mismatch: expected={expected!r} actual={actual!r}"
 
 
+def _case_errors(
+    *,
+    row_index: int,
+    case: _TestQuoteCase,
+    row: dict[str, Any],
+    columns: list[str],
+    missing_columns: set[str],
+) -> list[str]:
+    """What *row*, the output for *case* (row *row_index* of its file), gets wrong."""
+    assert case.expected is not None
+    errors: list[str] = []
+    for column, expected_value in case.expected.items():
+        if column not in columns:
+            if column not in missing_columns:
+                errors.append(
+                    f"missing expected output column {column!r}; available columns {columns!r}"
+                )
+                missing_columns.add(column)
+            continue
+        mismatch = _first_mismatch(row[column], expected_value, case.tolerance_pct)
+        if mismatch is None:
+            continue
+        errors.append(
+            _format_expected_mismatch(
+                row_index=row_index,
+                column=column + mismatch.path,
+                actual=mismatch.actual,
+                expected=mismatch.expected,
+                tolerance_pct=case.tolerance_pct,
+            )
+        )
+    return errors
+
+
 def _validate_expected_outputs(
     *,
     cases: list[_TestQuoteCase],
     output: pl.DataFrame,
 ) -> None:
+    """Check *output*, one request's rows for every case, row by row against the cases."""
     expected_cases = [(i, case) for i, case in enumerate(cases) if case.expected is not None]
     if not expected_cases:
         return
@@ -219,40 +300,53 @@ def _validate_expected_outputs(
             f"{len(cases)} expected row(s), {output.height} output row(s)."
         )
 
-    output_columns = set(output.columns)
     output_rows = output.to_dicts()
     errors: list[str] = []
     missing_columns: set[str] = set()
-
     for row_index, case in expected_cases:
-        assert case.expected is not None
-        for column, expected_value in case.expected.items():
-            if column not in output_columns:
-                if column not in missing_columns:
-                    errors.append(
-                        f"missing expected output column {column!r}; "
-                        f"available columns {output.columns!r}"
-                    )
-                    missing_columns.add(column)
-                continue
-
-            actual_value = output_rows[row_index][column]
-            if _expected_value_matches(
-                actual_value,
-                expected_value,
-                case.tolerance_pct,
-            ):
-                continue
-            errors.append(
-                _format_expected_mismatch(
-                    row_index=row_index,
-                    column=column,
-                    actual=actual_value,
-                    expected=expected_value,
-                    tolerance_pct=case.tolerance_pct,
-                )
+        errors.extend(
+            _case_errors(
+                row_index=row_index,
+                case=case,
+                row=output_rows[row_index],
+                columns=output.columns,
+                missing_columns=missing_columns,
             )
+        )
 
+    if errors:
+        raise ValueError("expected-output validation failed: " + "; ".join(errors))
+
+
+def _validate_expected_outputs_per_case(
+    *,
+    cases: list[_TestQuoteCase],
+    outputs: list[pl.DataFrame],
+) -> None:
+    """Check each case against its own request's output, numbered as in its file.
+
+    A request answers one quote with one row, so a case's output holding other than one
+    row is wrong on its own, never made up for by another case's.
+    """
+    errors: list[str] = []
+    missing_columns: set[str] = set()
+    for row_index, (case, output) in enumerate(zip(cases, outputs, strict=True)):
+        if case.expected is None:
+            continue
+        if output.height != 1:
+            errors.append(
+                f"row {row_index}: expected one output row, {output.height} output row(s)."
+            )
+            continue
+        errors.extend(
+            _case_errors(
+                row_index=row_index,
+                case=case,
+                row=output.to_dicts()[0],
+                columns=output.columns,
+                missing_columns=missing_columns,
+            )
+        )
     if errors:
         raise ValueError("expected-output validation failed: " + "; ".join(errors))
 
@@ -413,13 +507,20 @@ def validate_deploy(resolved: ResolvedDeploy) -> list[TestQuoteResult]:
     elif tq_dir is not None:
         # Pre-check each quote against the declared input schema; a
         # silently missing column won't be caught by a passthrough graph
-        # and would deploy an API that accepts garbage quotes.
+        # and would deploy an API that accepts garbage quotes. A Workbench
+        # Input's quote need not hold every table (a many-row table it leaves
+        # out has no rows, a one-row one its row of nulls), and its reader
+        # refuses a quote that does not fit, naming the spot, when it is
+        # scored below, so its cases are not held to the columns here.
         required_cols = set(resolved.input_schema or {})
+        reads_quotes = _reads_one_quote_per_request(resolved)
         for jf in sorted(tq_dir.glob("*.json")):
             try:
                 cleaned = load_test_quote_file(jf)
             except Exception as exc:
                 test_quote_errors.append(f"test quote {jf.name!r} failed: could not parse ({exc})")
+                continue
+            if reads_quotes:
                 continue
             for row in cleaned:
                 missing = sorted(required_cols - set(row))
@@ -457,13 +558,21 @@ def validate_deploy(resolved: ResolvedDeploy) -> list[TestQuoteResult]:
     return quote_results
 
 
+def _reads_one_quote_per_request(resolved: ResolvedDeploy) -> bool:
+    """Whether the request input reads one quote per request: a Workbench Input does."""
+    return reads_one_quote_per_request(resolved.pruned_graph, resolved.input_node_ids)
+
+
 def score_test_quotes(
     resolved: ResolvedDeploy,
     test_quotes_dir: Path | None = None,
 ) -> list[TestQuoteResult]:
     """Score every JSON file in the test_quotes directory.
 
-    Each JSON file should contain a list of dicts (quote objects).
+    Each JSON file should contain a list of dicts (quote objects). A Quote Input's cases
+    are scored as one request; a Workbench Input reads one quote per request, so its
+    cases are scored one request each, each case's expected output compared with its own
+    request's one row.
 
     Args:
         resolved: Fully resolved deployment config.
@@ -485,29 +594,37 @@ def score_test_quotes(
         return []
 
     results: list[TestQuoteResult] = []
+    one_quote_per_request = _reads_one_quote_per_request(resolved)
+
+    def score(input_df: pl.DataFrame | QuoteRequest) -> pl.DataFrame:
+        return score_graph(
+            graph=resolved.pruned_graph,
+            input_df=input_df,
+            input_node_ids=resolved.input_node_ids,
+            output_node_id=resolved.output_node_id,
+            artifact_paths={name: str(path) for name, path in resolved.artifacts.items()},
+            output_fields=resolved.config.output_fields,
+        )
 
     for jf in json_files:
         t0 = time.perf_counter()
         try:
             cases = _load_test_quote_cases(jf)
-            cleaned = [case.input for case in cases]
-            input_df = pl.DataFrame(cleaned)
-
-            output = score_graph(
-                graph=resolved.pruned_graph,
-                input_df=input_df,
-                input_node_ids=resolved.input_node_ids,
-                output_node_id=resolved.output_node_id,
-                artifact_paths={name: str(path) for name, path in resolved.artifacts.items()},
-                output_fields=resolved.config.output_fields,
-            )
-            _validate_expected_outputs(cases=cases, output=output)
+            if one_quote_per_request:
+                # Each case as its request was sent: the Workbench Input types it.
+                outputs = [score(QuoteRequest((case.input,))) for case in cases]
+                _validate_expected_outputs_per_case(cases=cases, outputs=outputs)
+                rows = sum(output.height for output in outputs)
+            else:
+                output = score(pl.DataFrame([case.input for case in cases]))
+                _validate_expected_outputs(cases=cases, output=output)
+                rows = output.height
 
             elapsed = (time.perf_counter() - t0) * 1000
             results.append(
                 {
                     "file": jf.name,
-                    "rows": len(output),
+                    "rows": rows,
                     "status": "ok",
                     "time_ms": round(elapsed, 1),
                     "error": "",

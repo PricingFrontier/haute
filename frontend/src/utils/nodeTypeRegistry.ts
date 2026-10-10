@@ -14,6 +14,7 @@ import { NODE_TYPES } from "./nodeTypes"
 export const nodeTypes = {
   unavailablePipelineNode: UnavailablePipelineNode,
   [NODE_TYPES.API_INPUT]: PipelineNode,
+  [NODE_TYPES.WORKBENCH_INPUT]: PipelineNode,
   [NODE_TYPES.DATA_INPUT]: PipelineNode,
   [NODE_TYPES.DATA_OUTPUT]: PipelineNode,
   [NODE_TYPES.POLARS]: PipelineNode,
@@ -22,6 +23,7 @@ export const nodeTypes = {
   [NODE_TYPES.RATING_STEP]: PipelineNode,
   [NODE_TYPES.BANDING]: PipelineNode,
   [NODE_TYPES.OUTPUT]: PipelineNode,
+  [NODE_TYPES.WORKBENCH_OUTPUT]: PipelineNode,
   [NODE_TYPES.EXPLORE]: PipelineNode,
   [NODE_TYPES.EXTERNAL_FILE]: PipelineNode,
   [NODE_TYPES.LIVE_SWITCH]: PipelineNode,

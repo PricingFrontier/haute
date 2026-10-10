@@ -82,6 +82,20 @@ def _data_input(path: str, **extra: object) -> dict:
     }
 
 
+# A workbench's tables: one the Workbench Input reads and one the Workbench Output fills.
+_WORKBENCH_INPUT = {
+    "tables": [{"name": "keyed", "rows": "one", "columns": [{"name": "state", "type": "str"}]}]
+}
+_WORKBENCH_OUTPUT = {
+    "tables": [
+        {
+            "name": "pricing_output",
+            "rows": "one",
+            "columns": [{"name": "premium", "type": "float"}],
+        }
+    ]
+}
+
 _API_INPUT = {
     "path": "inputs/quote.json",
     "tables": [
@@ -358,6 +372,9 @@ def _corpus_graph() -> PipelineGraph:
         ),
         _node("explore-h", "Explore Enriched Lookup", NodeType.EXPLORE, {"code": _EXPLORE_CODE}),
         _node("out", "Quote Response", NodeType.OUTPUT, _OUTPUT),
+        # A source consumed never, and a response node filling its table from one frame.
+        _node("keyed", "Keyed Quote", NodeType.WORKBENCH_INPUT, _WORKBENCH_INPUT),
+        _node("filled", "Workbench Response", NodeType.WORKBENCH_OUTPUT, _WORKBENCH_OUTPUT),
         _node("sink", "Results File", NodeType.DATA_OUTPUT, _DATA_OUTPUT),
         _node(
             "inst",
@@ -398,6 +415,7 @@ def _corpus_graph() -> PipelineGraph:
         _edge("apply", "explore-d"),
         _edge("ext-h", "explore-h"),
         _edge("apply", "out"),
+        _edge("apply", "filled", target_handle="pricing_output"),
         _edge("apply", "sink"),
         _edge("occ", "sink", source_handle="out__rated"),
         _edge("join", "inst"),

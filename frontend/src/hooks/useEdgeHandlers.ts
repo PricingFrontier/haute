@@ -20,8 +20,11 @@ import { effectiveNodeType, isSubmodelInstanceConfig, nodeData } from "../types/
 import {
   NODE_TYPES,
   NODE_TYPE_META,
+  isRequestInputType,
   isSingletonType,
+  singletonLimitMessage,
   singletonTypesInSubmodelDefinition,
+  singletonTypesOccupiedBy,
   type NodeTypeValue,
 } from "../utils/nodeTypes"
 import {
@@ -70,7 +73,7 @@ function wouldExceedMaxInputs(
 
 function previewOptionsForClick(node: Node): FetchPreviewOptions | null {
   const nodeType = effectiveNodeType(node)
-  if (nodeType === NODE_TYPES.API_INPUT) {
+  if (isRequestInputType(nodeType)) {
     const config = nodeData(node).config
     const path = config?.path
     const isJsonInput =
@@ -145,6 +148,8 @@ type UseEdgeHandlersParams = {
   validateConnection?: (connection: Connection) => ConnectionValidationResult
   commitBoundaryConnection?: (connection: Connection) => boolean
   deleteBoundaryEdge?: (edgeId: string) => boolean
+  /** A node a palette drop created, once it is on the canvas. */
+  onNodeCreated?: (nodeId: string) => void
 }
 
 const edgeJoinFailureMessages: Record<EdgeJoinFailureReason, string> = {
@@ -183,6 +188,7 @@ export default function useEdgeHandlers({
   validateConnection,
   commitBoundaryConnection,
   deleteBoundaryEdge,
+  onNodeCreated,
 }: UseEdgeHandlersParams) {
   const addToast = useToastStore((s) => s.addToast)
   const activeEdgeJoinSourceRef = useRef<{
@@ -495,10 +501,11 @@ export default function useEdgeHandlers({
       !isSingletonType(type)
       || !(
         existingSingletonTypes.has(type as NodeTypeValue)
-        || graphRef.current.nodes.some((node) => nodeData(node).nodeType === type)
+        || graphRef.current.nodes.some((node) =>
+          singletonTypesOccupiedBy(nodeData(node).nodeType).includes(type as NodeTypeValue))
       )
     ) return false
-    addToast("info", `Only one ${NODE_TYPE_META[type as NodeTypeValue].name} node is allowed per pipeline`)
+    addToast("info", singletonLimitMessage(type as NodeTypeValue))
     return true
   }, [addToast, existingSingletonTypes, graphRef])
 
@@ -706,9 +713,10 @@ export default function useEdgeHandlers({
         setNodes((nds) => selectOnlyNode([...nds, resolvedNode], resolvedNode.id))
         setSelectedNode(resolvedNode)
         setLastSelectedId?.(resolvedNode.id)
+        onNodeCreated?.(resolvedNode.id)
       })
     },
-    [screenToFlowPosition, nodeIdCounterRef, setNodes, setSelectedNode, setLastSelectedId, addToast, refuseOccupiedSingleton, createNodeAfterIdentity],
+    [screenToFlowPosition, nodeIdCounterRef, setNodes, setSelectedNode, setLastSelectedId, addToast, refuseOccupiedSingleton, createNodeAfterIdentity, onNodeCreated],
   )
 
   return {

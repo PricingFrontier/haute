@@ -67,7 +67,13 @@ from haute._source_cache import (
     SourceCacheIdentity,
     new_staging_token,
 )
-from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
+from haute._types import (
+    REQUEST_INPUT_NODE_TYPES,
+    GraphEdge,
+    GraphNode,
+    NodeType,
+    PipelineGraph,
+)
 
 if TYPE_CHECKING:
     from haute._execute_lazy import PreparedExecution
@@ -451,12 +457,16 @@ class _Resolver:
     def is_node_output(self, node_id: str) -> bool:
         """Whether *node_id*'s output is a node-output snapshot point.
 
-        An API input is never one, even read without a port: its tables are
-        input snapshots, and a multi-port bundle is not one frame.
+        A request input is never one, even read without a port: a Quote Input's
+        tables are input snapshots, a Workbench Input's are computed, and a
+        multi-port bundle is not one frame. A Workbench Output's tables are such a
+        bundle too.
         """
+        if self.node_map[node_id].data.nodeType is NodeType.WORKBENCH_OUTPUT:
+            return False
         kind = self._kinds.get(node_id)
         if kind is None:
-            if self.node_map[node_id].data.nodeType == NodeType.API_INPUT:
+            if self.node_map[node_id].data.nodeType in REQUEST_INPUT_NODE_TYPES:
                 kind = "api_input"
             else:
                 kind = point_kind(self.points.graph, DataPoint(node_id, None))
@@ -602,9 +612,9 @@ class _Resolver:
         if node_id in self.recompute:
             facts = self.recompute[node_id]
             return facts.cost == "cheap", facts.slice_transparent
-        if node_type in (NodeType.DATA_INPUT, NodeType.CONSTANT):
+        if node_type in (NodeType.DATA_INPUT, NodeType.CONSTANT, NodeType.WORKBENCH_INPUT):
             return True, True
-        if node_type == NodeType.API_INPUT:
+        if node_type in REQUEST_INPUT_NODE_TYPES:
             cfg = self.effective_node_map[node_id].data.config
             path = cfg.get("path") if isinstance(cfg, dict) else None
             if isinstance(path, str) and is_json_api_input_path(path):
@@ -1463,10 +1473,11 @@ def preview_lineage_admitted(graph: PipelineGraph, target_node_id: str, *, sourc
         )
     )
     node_map = prepared.graph_plan.node_map
+    # A Workbench Input reads no file: its tables are a quote's rows, so always bounded.
     return all(
         _flat_file_api_input_is_bounded(node_map[node_id].data.config)
         for node_id in prepared.graph_plan.order
-        if node_map[node_id].data.nodeType == NodeType.API_INPUT
+        if node_map[node_id].data.nodeType == NodeType.API_INPUT  # the Quote Input alone
     )
 
 

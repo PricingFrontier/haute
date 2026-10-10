@@ -48,9 +48,11 @@ from haute._ram_estimate import (
     MaterialisationEstimate,
     MaterialisationEstimateBasis,
     MaterialisationEstimateState,
+    RuntimeSourceFrames,
     estimate_materialisation_boundaries,
 )
 from haute._types import (
+    REQUEST_INPUT_NODE_TYPES,
     GraphEdge,
     GraphNode,
     NodeType,
@@ -190,7 +192,7 @@ def plan_execution_strategy(
     materialisation_estimate: MaterialisationEstimate | None | object = (
         _AUTO_MATERIALISATION_ESTIMATE
     ),
-    runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
+    runtime_source_frames_by_node: RuntimeSourceFrames | None = None,
     materialising_node_ids: Iterable[str] | None = None,
     estimation_graph: PipelineGraph | None = None,
 ) -> ExecutionStrategyResult:
@@ -303,7 +305,7 @@ def _estimate_materialising_boundaries(
     *,
     source: str,
     projection_plan: ProjectionPlan | None = None,
-    runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
+    runtime_source_frames_by_node: RuntimeSourceFrames | None = None,
 ) -> MaterialisationEstimate:
     """Return the conservative peak across every declared materialisation boundary."""
     peak_bytes = 0
@@ -1145,7 +1147,7 @@ def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict
     """
     node_type = node.data.nodeType
     config = node.data.config
-    if node_type == NodeType.API_INPUT:
+    if node_type in REQUEST_INPUT_NODE_TYPES:
         raw_path = config.get("path")
         if isinstance(raw_path, str) and raw_path:
             path = _runtime_path_from_graph_config(graph, raw_path)
@@ -1338,7 +1340,7 @@ def execute_lazy_graph(
     execution_context: ExecutionContext | None = None,
     source_by_node: Mapping[str, str] | None = None,
     schema_only: bool = False,
-    runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
+    runtime_source_frames_by_node: RuntimeSourceFrames | None = None,
     prepare_inputs: bool = True,
     snapshot_plan: SeedPlan | None = None,
     join_recipes: dict[str, JoinRecipe] | None = None,

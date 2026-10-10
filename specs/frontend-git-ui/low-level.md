@@ -10,14 +10,16 @@
 | `frontend/src/panels/gitgraph/layout.ts` | Pure layout: `computeGitGraphLayout` turns a `GitGraphResponse` + the panel's row list into a `RailModel` (lanes, dots, curves, magnifiers, spawn stubs); `computeRailRuns` consolidates per-row cells into whole-length vertical line segments. No DOM, no fetch. |
 | `frontend/src/panels/gitgraph/GraphCell.tsx` | Rendering: `GraphRailCell` (per-row SVG cell), `GraphRailOverlay` (the measured whole-box overlay of consolidated runs), `GraphRailHeader` (top departing-branch chip strip), `Magnifier`. Pure presentation over `frontend/src/panels/gitgraph/layout.ts` types. |
 | `frontend/src/stores/useGitStore.ts` | Zustand store: working-branch readiness + retry error, shared branch-list state/action, modal routing (`GitModalMode`), peek/comparison/move targets, and the refresh-triggering nonces (`historyNonce`, `commitNonce`, `branchesExpandNonce`). |
+| `frontend/src/stores/saveCapture.ts` | `reportSaveCapture`: what a save answered about its version capture, reported the same way for the pipeline's save and the workbench's form save — the ledger commit onto the status for the branch indicator through `setLastSaveSha` (left as it is when the answer has no commit field), `notifyHistoryChanged` so an open panel refetches, each warning in a toast of its own, and the identity modal opened on `identity_required` unless it was dismissed this session (`isIdentityPromptDismissed`) or is already open. |
 | `frontend/src/stores/gitBranchLoader.ts` | Lazily loaded branch-list request coordinator. It publishes results into `useGitStore` while delegating the in-flight/queued-refresh bookkeeping to `singleFlight.ts`, keeping branch-only client code out of the initial editor bundle. |
 | `frontend/src/stores/singleFlight.ts` | Shared resettable single-flight utility: request joining, the trailing-refresh queue (exactly one follow-up per active request, generation-anchored), and the stalled-request watchdog. Consumed by `useGitStore.ts` (working-branch status) and `gitBranchLoader.ts` (branch list). Test seam: both stores' `reset…ForTests` exports delegate to its `reset()`. |
 | `frontend/src/components/BranchIndicator.tsx` | Toolbar entry point: explicit repository/readiness/error labels with Retry, plus a ready branch-name button that opens the panel on the current branch. Truncated errors use the shared `Tooltip` to expose the full diagnostic on error hover or Retry focus; its function child places `aria-describedby` on Retry. |
 | `frontend/src/components/BranchManager.tsx` | Branch list/create/switch/archive/delete/restore, embedded in the Git panel; owns its own confirm dialogs and row context menu. |
+| `frontend/src/hooks/useProjectDirty.ts` | `useProjectDirty`: whether the project holds unsaved edits, the canvas's (`useGraphStore`) or the workbench's form's (`useWorkbenchStore`'s `formDirty`, mirrored by the form store, a lazy chunk); what every navigation guard asks about. `discardFormEdits`: after a switch chosen over the form's unsaved edits has succeeded, the form read again (the form store imported then), so the destination's form shows; nothing while the form is as saved. |
 | `frontend/src/components/GitNavigationConfirm.tsx` | Shared clean/dirty navigation confirmation used by branch-manager and graph-lane switches plus Create & Move; dirty mode offers Cancel, Discard, and Save first. |
 | `frontend/src/components/CommitBreadcrumb.tsx` | `CommitBreadcrumb` (version-relative label for a comparison canvas) and `ComparisonDelta` (historic↔current commit-count chip). |
 | `frontend/src/components/MilestoneCommitModal.tsx` | Commit modal: required message (500-character maximum with visible validation) + version label form, and the 409 fork-warning override flow. |
-| `frontend/src/components/MoveConfirmModal.tsx` | Pre-move save/discard/confirm prompt: reads `useGitStore.moveTarget` for the target label and `useGraphStore.dirty` to decide single-confirm vs. save-or-discard, and locks buttons plus Escape/backdrop close (`busy`) once clicked while the caller performs the actual move. |
+| `frontend/src/components/MoveConfirmModal.tsx` | Pre-move save/discard/confirm prompt: reads `useGitStore.moveTarget` for the target label and `useProjectDirty` (the canvas's or the workbench's form's unsaved edits) to decide single-confirm vs. save-or-discard, and locks buttons plus Escape/backdrop close (`busy`) once clicked while the caller performs the actual move. |
 | `frontend/src/components/WorkingBranchModal.tsx` | Startup / save-gate branch-selection modal, with an inline git-identity sub-form. |
 | `frontend/src/components/RemotePushControl.tsx` | Remote dropdown, ahead/behind + ledger-divergence display, explicit push (including empty-remote default-bootstrap tooltip/toast and the pending-save integrity confirm), catch-up, the non-fast-forward `PushRejectedModal`, `AheadBehind`/`LedgerStatus`/`RejectedLeg` sub-components. |
 | `frontend/src/components/DivergenceModal.tsx` | Recorded-branch-vs-HEAD divergence recovery modal (go home / stay here / open branch manager). |
@@ -182,11 +184,14 @@ stringified geometry key short-circuits `setRowGeom` when nothing actually moved
 move})`; on `res.switched` it does a full `window.location.reload()` (a move relocates the
 working tree, so the client can't safely reconcile in place) — a parallel (non-move)
 create instead just calls `refresh()`. Before any switch or move-mode create,
-`GitNavigationConfirm` reads the graph's dirty state: clean navigation gets the ordinary
+`GitNavigationConfirm` is shown on the project's dirty state, the canvas's or the
+workbench's form's (`useProjectDirty`): clean navigation gets the ordinary
 confirmation, while dirty navigation requires an explicit discard or a successful
 caller-supplied `onSave()` result before mutation. `GitPanel.performSwitch` and
-`BranchManager.switchNow` both call `setWorkingBranch(branch, false)` and `recordSwitch`
-(pushing a `useGraphStore` VC undo entry) on success, while retaining local busy state.
+`BranchManager.switchNow` both call `setWorkingBranch(branch, false)`, then
+`discardFormEdits` (the workbench's form read again when its unsaved edits were the ones
+discarded) and `recordSwitch` (pushing a `useGraphStore` VC undo entry) on success, while
+retaining local busy state.
 `BranchManager.run()` is the
 shared wrapper for its own five mutations (create, switch, archive, delete, restore): on
 success, unless `opts.reloadOnDone` is set or `opts.reloadWhen(result)` returns true, it
@@ -212,7 +217,7 @@ server-side.
 `useGitStore.requestMove({sha, label})`, which `App.tsx` surfaces as `MoveConfirmModal`. The
 modal itself performs no API call: clicking any of its buttons sets a local `busy` flag
 (blocking double-submission) and calls the caller-supplied `onConfirm(saveFirst)` —
-`saveFirst` is `true` only for the dirty-canvas "Save & move" button, `false` for a
+`saveFirst` is `true` only for the dirty-project "Save & move" button, `false` for a
 clean-canvas confirm or an explicit "Discard & move". `App.tsx`'s `handleMoveConfirmed` owns
 the actual sequencing: optionally flushing unsaved edits via `handleSave()`, then calling the
 `moveToVersion` API and reloading the page on success (a move replaces the whole working tree,
@@ -291,7 +296,8 @@ or a failed push.
 - **`BranchManager`'s archive-vs-delete asymmetry.** Archive on the *current* branch with
   uncommitted tracked project changes redirects to a "commit a milestone first" prompt
   instead of proceeding. Before either current-branch archive or confirmed delete reaches
-  its API call/reload, `guardNavigation` separately protects dirty in-memory canvas edits
+  its API call/reload, `guardNavigation` separately protects unsaved in-memory edits, the
+  canvas's or the workbench's form's,
   with Cancel/Discard/Save-first. Delete remains enabled because its own dialog names
   branch-history loss (`deleteLoss()`), but that confirmation never bypasses the canvas
   guard.
@@ -371,12 +377,16 @@ Tests live alongside the source: `frontend/src/panels/__tests__/`,
 `frontend/src/stores/__tests__/useGitStore.test.ts`. All are Vitest + React Testing
 Library component/unit tests (no e2e for this surface).
 
+- **`frontend/src/stores/__tests__/saveCapture.test.ts`** — the save-capture report: the
+  indicator's SHA (and left as it is without the field), the history nonce, each warning's
+  toast, and the identity prompt opened once per session and not over itself.
 - **`frontend/src/panels/__tests__/GitPanel.test.tsx`** — the primary behavioural suite: rendering, milestone
   expand/collapse, pending-save display, both refresh nonces, right-click menus
   (fork/view/move) in every row context (milestone / pending save / expanded save),
   peeking's effect on menu contents, the fork-creation dialog, the graph rail's dots/
   stubs/chips/magnifier, lane and dot context menus, in-app branch switching from the
-  lane menu (including the dirty-canvas guard), and the peek in-flight mislabel guard.
+  lane menu (including the dirty-canvas guard, and the workbench's form's edits dropped
+  once a lane switch chosen over them succeeds), and the peek in-flight mislabel guard.
 - **`frontend/src/panels/__tests__/GitPanel.gaps.test.tsx`** — targeted gap-fill: fork-with-switch page reload, fork
   failure toast, fork-with-move submission, the view affordance opening a comparison,
   peeking's menu contents (a second angle on the same invariant as the main suite).
@@ -418,7 +428,9 @@ Library component/unit tests (no e2e for this surface).
   peek-without-switch, create (with and without move, including the move confirm step),
   switch confirmation (including persisted "don't ask again") and its in-app (no-reload)
   behaviour plus the VC undo entry, dirty-navigation Cancel/Discard/Save-first behavior
-  for switch and Create & Move (including the skipped-confirmation preference), archive
+  for switch and Create & Move (including the skipped-confirmation preference, the guard
+  on the workbench's form's unsaved edits, and those edits dropped once a switch chosen
+  over them succeeds and kept when it fails), archive
   (direct and the dirty-current redirect), delete with confirm, restore, the
   uncommitted/unsaved indicator display, the persistent error banner, and the full row
   context-menu surface (open, per-state item visibility, each action's routing, backdrop
@@ -436,7 +448,8 @@ Library component/unit tests (no e2e for this surface).
   `ComparisonDelta`'s singular/plural count text.
 - **`frontend/src/components/__tests__/MoveConfirmModal.test.tsx`** — target-label rendering, clean-canvas
   single-confirm calling `onConfirm(false)`, dirty-canvas save/discard button pair calling
-  `onConfirm(true)`/`onConfirm(false)` respectively with the warning message shown, Cancel
+  `onConfirm(true)`/`onConfirm(false)` respectively with the warning message shown, the
+  same pair for unsaved edits in the workbench's form alone, Cancel
   calling `onClose` without confirming, busy Escape/backdrop dismissal refusal, and
   rendering nothing when `moveTarget` is `null`.
 - **`frontend/src/__tests__/App.integration.test.tsx`** — the parent-owned move transaction rejects a

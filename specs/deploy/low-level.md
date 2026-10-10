@@ -10,12 +10,12 @@
 | `src/haute/deploy/_bundler.py` | Artefact discovery and collection (`collect_artifacts`): external files, file-backed optimiser artefacts, supported MLflow-sourced local models + feature contracts (each model-score node's stored mlflow_destination key, absent = the local folder, is resolved once through `resolve_backend` and that backend drives both the registry lookup and the download), and retained Data Inputs; path resolution plus canonical provider/schema validation and a bounded one-row readability probe. MLflow-sourced optimiser applies are deliberately not bundled. |
 | `src/haute/deploy/_schema.py` | Input schema inference (read source file schema), output schema inference (dry-run scoring with the bundled artefacts) with a graph-and-artefact-fingerprint-keyed on-disk cache, and bundle-time, target-aware batch strategy planning (`infer_deploy_execution_policy`) over the shared one-row sample (`_read_sample_row`), with a hard-capped-worker dry-run fallback (`_capped_worker_output_schema`) for an unprovable group-by. |
 | `src/haute/deploy/_batch_scoring.py` | Multi-row `/quote` scoring in a hard-capped spawn worker: the picklable `BatchScoreRequest`/`BatchScoreOutcome` pair, the child entrypoint `score_batch_worker`, and the parent supervisor helpers `prepare_batch_scoring` / `accept_batch_outcome` / `deploy_batch_timeout_seconds`. |
-| `src/haute/deploy/_scorer.py` | Runtime scoring engine (`score_graph`, `score_graph_lazy`) shared by every deploy target; `NodeBuildHooks` interception for live-input injection and artefact-path remapping; stat-gated model/contract caches; execution admission. |
+| `src/haute/deploy/_scorer.py` | Runtime scoring engine (`score_graph`, `score_graph_lazy`, taking a frame or a Workbench Input's `QuoteRequest`, the quotes as their records; `reads_one_quote_per_request`) shared by every deploy target; `NodeBuildHooks` interception for live-input injection and artefact-path remapping; stat-gated model/contract caches; execution admission. |
 | `src/haute/deploy/_project_modules.py` | Project-module resolution for the bundle (`resolve_project_modules`): the project-local `utility` package the preamble resolves, which deploy ships, and every other project-local static import, which validation refuses. |
-| `src/haute/deploy/_validators.py` | Pre-deploy validation (`validate_deploy`): structural checks + exactly one test-quote scoring pass, returning successful per-file results to its caller; golden test-quote parsing and expected-output tolerance comparison; `score_test_quotes`. |
+| `src/haute/deploy/_validators.py` | Pre-deploy validation (`validate_deploy`): structural checks + exactly one test-quote scoring pass, returning successful per-file results to its caller; golden test-quote parsing and expected-output tolerance comparison, walked into a Workbench Output's tables (`_first_mismatch`); `score_test_quotes`. |
 | `src/haute/deploy/_utils.py` | Shared helpers: `get_user`, `get_haute_version`, `build_manifest` (the canonical deploy-manifest schema). |
-| `src/haute/deploy/_mlflow.py` | Databricks target: `deploy_to_mlflow`, `get_deploy_status`, MLflow signature building (each rendered dtype is mapped by `_polars_dtypes.rendered_dtype_mlflow_type_name`), conda-env building, Databricks Model Serving endpoint create/update, connectivity pre-check, and the MLflow destination check (`_resolve_mlflow_databricks`) that binds its logging and registry calls. |
-| `src/haute/deploy/_model_code.py` | MLflow models-from-code entry point: `HauteModel` (`mlflow.pyfunc.PythonModel` subclass) wrapping `score_graph`. |
+| `src/haute/deploy/_mlflow.py` | Databricks target: `deploy_to_mlflow`, `get_deploy_status`, MLflow signature building (each rendered dtype parsed by `_polars_dtypes.parse_rendered_dtype` and mapped by `rendered_dtype_mlflow_type_name`; a struct a `Map` of `AnyType` and a list an `Array` of its inner type, a table's column not required, since the Workbench Input's reader holds the request to the table's columns and leaves others unread where MLflow's typed object would refuse them), conda-env building, Databricks Model Serving endpoint create/update, connectivity pre-check, and the MLflow destination check (`_resolve_mlflow_databricks`) that binds its logging and registry calls. |
+| `src/haute/deploy/_model_code.py` | MLflow models-from-code entry point: `HauteModel` (`mlflow.pyfunc.PythonModel` subclass) wrapping `score_graph`; `_request` hands a Workbench Input its quotes as the records MLflow passed (`QuoteRequest`, numpy's values made plain by `_plain`), never a frame inferred from them, and any other request input the frame. |
 | `src/haute/deploy/_container.py` | Container build/push orchestration, build-directory preparation (`prepare_build_directory`), generated FastAPI `/health` and `/quote` runtime, stable JSON/NDJSON response handling, pinned Dockerfile generation, Docker subprocess calls, and the platform service-update stub. |
 | `scripts/container_smoke.py` | Standalone CLI script to verify the container deployment pipeline for an example (copy bundle, resolve deploy config, prepare build directory, and optionally execute a live uvicorn process smoke check). |
 | `src/haute/deploy/_impact.py` | Impact analysis: batched endpoint scoring (Databricks SDK or HTTP `/quote`), quote-envelope normalisation, percent-change statistics, categorical segment breakdown, terminal/Markdown report formatting. |
@@ -63,8 +63,10 @@
 - **`BatchScoreRequest`** (`_batch_scoring.py`, frozen dataclass) — the only evidence that
   crosses the spawn boundary: `graph`, `input_node_ids`, `output_node_id`,
   `artifact_paths`, `output_fields`, `input_path` (parent-written JSON rows),
-  `result_path` (child-written parquet). The child derives its operation label from
-  the budget, so the request carries no `operation` field.
+  `result_path` (child-written parquet), and `input_schema`, the types the child reads
+  those rows with: the bundle's schema dry run sends its sample's, and a served request
+  none. The child derives its operation label from the budget, so the request carries no
+  `operation` field.
 - **`BatchScoreOutcome`** (`_batch_scoring.py`, frozen dataclass) — the child's picklable
   return: `row_count`, `execution_metrics` (the child context's payload), and on failure
   `failure_kind` (`contract` | `bounded` | `memory` | `cancelled` | `error`), `detail`,
@@ -112,9 +114,12 @@
 1. Re-validate base-image pinning (config may have been mutated after `__post_init__` via
    `.override()` or env overrides).
 2. Load `.env` (idempotent).
-3. `parse_pipeline_file(config.pipeline_file)` → `full_graph`; error if empty.
-4. `find_output_node(full_graph)` — exactly one node with `nodeType="output"` or
-   `config.output=True`, else `ValueError`.
+3. `parse_pipeline_file(config.pipeline_file)` → `full_graph`; error if empty;
+   `validate_singleton_groups(flatten_graph(full_graph))` refuses a second request input or
+   response node, as save does.
+4. `find_output_node(full_graph)` — exactly one response node (`nodeType` `"output"` or
+   `"workbenchOutput"`, `RESPONSE_NODE_TYPES`) or node with `config.output=True`, else
+   `ValueError`.
 5. `prune_for_deploy(full_graph, output_node_id)` → `pruned_graph`, kept ids, removed ids.
    Internally: `_live_only_edges()` first drops every non-live input edge into each
    `liveSwitch` node — selection is **per edge**, matching `input_scenario_map`'s
@@ -122,10 +127,10 @@
    (`haute._graph_utils.edge_input_name`), never per source node, so two frames from
    one apiInput mapped `quotes=live, drivers=batch` keep exactly the `quotes` edge —
    then `ancestors()` walks backward from the output node over the filtered edge set.
-6. `find_deploy_input_nodes(pruned_graph)` — nodes with `nodeType="apiInput"`. If none,
-   accept a single `dataInput` source as the live-input form.
-   Zero/multiple sources, or a sole `constant`/other unsupported source, fail with a
-   correction that names the node/type and asks for an API Input.
+6. `find_deploy_input_nodes(pruned_graph)` — the request inputs, nodes whose type is in
+   `REQUEST_INPUT_NODE_TYPES`. If none, accept a single `dataInput` source as the live-input
+   form. Zero/multiple sources, or a sole `constant`/other unsupported source, fail with a
+   correction that names the node/type and asks for a Quote Input or a Workbench Input.
 7. `collect_artifacts(pruned_graph, deploy_inputs, pipeline_dir, project_root=...)` →
    `artifacts` dict, an `ArtifactKeys` whose `add(node_id, key, path)` refuses, with a
    `DeployError` naming both nodes and files before anything is uploaded, a `<node>__<filename>`
@@ -179,7 +184,10 @@
    manifest provenance.
 8. `infer_input_schema()` (call `collect_schema()` on the first input node's source;
    lazy readers avoid row collection, while the existing plain-JSON reader may parse
-   eagerly).
+   eagerly). A Workbench Input has no source: its schema is `quote_schema` of its
+   tables (`haute._workbench_tables`), and `_read_sample_row` gives `null_quote` of them,
+   one quote with nothing filled in, one row of nulls per table
+   ([workbench](../workbench/low-level.md)).
    Then `infer_deploy_execution_policy()` plans the served `DEPLOY_BATCH` strategy once,
    over the same one-row sample (`_read_sample_row`) and the same bundled-contract graph
    preparation `_scorer._score_graph_lazy` performs, under a short-lived
@@ -207,9 +215,13 @@
    (`GroupByExecutionUnsupportedError(reason_code="materialisation_estimate_unavailable")`)
    falls back to `_capped_worker_output_schema`: the same one-row dry-run re-run inside
    the *served* batch worker — `prepare_batch_scoring(...,
-   operation="deploy_bundle_schema")` + `run_isolated_worker(score_batch_worker, ...)` +
+   operation="deploy_bundle_schema", input_schema=sample.schema)` +
+   `run_isolated_worker(score_batch_worker, ...)` +
    `accept_batch_outcome`, then `pl.read_parquet_schema()` over the parquet the worker
-   wrote, with `plan.cleanup(primary_error=...)` on every path. The group-by therefore
+   wrote, with `plan.cleanup(primary_error=...)` on every path. The sample's rows reach the
+   worker as JSON, where a null has no type; `input_schema`, carried on
+   `BatchScoreRequest`, types the frame the worker builds from them, and a Workbench
+   Input's rows reach it as a `QuoteRequest`, typed by the input itself. The group-by therefore
    runs once under its full hard-capped envelope, exactly the policy the manifest records,
    and the schema is read from what the worker actually produced. The one-row sample
    bounds only the request-derived side of the graph — a group-by over a bundled static
@@ -252,11 +264,16 @@ undefined constant, or any constant while the constants file failed to load
 branch needs no `live` value), adds every `project_modules` import message (a project-local
 import the bundle does not carry), rechecks the projected output-field invariant, then — if
 `config.test_quotes_dir` is configured — requires an existing directory containing at
-least one `*.json` file and pre-checks every quote's rows
+least one `*.json` file and, for a Quote Input, pre-checks every quote's rows
 against the required input-schema columns (catching a missing column before scoring even
-starts, since a passthrough graph wouldn't otherwise surface it), then calls
+starts, since a passthrough graph wouldn't otherwise surface it; a Workbench Input's quotes
+may leave a table out, and its reader refuses a quote that does not fit when it is scored),
+then calls
 `score_test_quotes()` with `config.output_fields` to score the same projection served at
-runtime and collect per-file errors. All
+runtime and collect per-file errors (a Quote Input's cases as one request, a Workbench
+Input's one request each, since it reads one quote per request, each case's expected output
+compared with its own request's one row and reported by its row in the file;
+[workbench](../workbench/low-level.md)). All
 structural + test-quote errors are combined into one `DeployError` if any exist.
 On success, `validate_deploy()` returns that exact per-file result list so a
 presentation caller can render timings/status without executing the scorer again.
@@ -404,7 +421,9 @@ read their registered version back from the registry. It checks Databricks conne
 `MlflowClient` bound to the Databricks tracking URI and its Unity Catalog registry URI,
 builds the manifest, writes it under `<pipeline_dir>/.haute_build/`, builds an MLflow
 `ModelSignature` from the resolved schemas (`Categorical` and parameterised `Enum` map to
-MLflow string; genuinely unrepresentable Polars types fail loudly), and selects or creates
+MLflow string; a workbench pipeline's struct and list columns to a `Map` of `AnyType` and an
+`Array` of them; genuinely unrepresentable Polars types, a `Decimal` among them, fail
+loudly), and selects or creates
 the experiment (suffix-isolated for staging) on that client through
 `ensure_experiment`, so a new experiment's missing Databricks workspace folder is created
 first (see [modelling](../modelling/low-level.md)). The client creates the
@@ -453,7 +472,7 @@ pair. Deploy never uses the general `DATABRICKS_HOST`/`DATABRICKS_TOKEN` pair.
 2. Build a `NodeBuildHooks(before_build=_intercept)` wrapper around the shared
    `_build_node_fn` builder. `_intercept` returns a replacement `(func_name, fn,
    returns_frame)` tuple — or `None` to fall through to the base builder — for these node
-   categories: `apiInput` in the live input set (inject the live `DataFrame` directly);
+   categories: a request input in the live input set (inject the live `DataFrame` directly);
    `dataInput` in the live input set (passes the injected raw frame through `apply_source_scan`
    with the execution profile, required columns, materialized code, and preamble context,
    without opening the provider, then normal executor column post-processing applies);

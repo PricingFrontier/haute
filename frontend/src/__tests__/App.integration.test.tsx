@@ -44,6 +44,18 @@ import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 // the real module via `typeof import(...)` for fidelity.
 // ═══════════════════════════════════════════════════════════════════════════
 
+// The editor reads the workbench's status on start (specs/workbench): not enabled unless
+// a test says so, and then its tables and its form are blank.
+vi.mock("../api/workbench", () => ({
+  fetchWorkbenchStatus: vi.fn(() => Promise.resolve({ enabled: false, form: null })),
+  fetchWorkbenchTables: vi.fn(() => Promise.resolve({ tables: [], sample: {}, response_tables: [] })),
+  fetchWorkbenchForm: vi.fn(() => Promise.resolve({
+    form: { version: 1, name: "motor", schema: { tables: [] }, pages: [{ id: "page_1", title: "Sheet 1", widgets: [] }], sample: {} },
+    revision: "form-rev-0",
+  })),
+  saveWorkbenchForm: vi.fn((form: unknown) => Promise.resolve({ form, revision: "form-rev-1" })),
+}))
+
 vi.mock("../api/client", async () => {
   const actual = await vi.importActual<typeof import("../api/client")>("../api/client")
   const { makeLoadedPipeline } = await import("../testSupport/pipelineDocumentFixture")
@@ -269,6 +281,10 @@ import useToastStore from "../stores/useToastStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import * as api from "../api/client"
+import * as workbenchApi from "../api/workbench"
+import type { WorkbenchTablesResponse } from "../api/types"
+import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
+import useWorkbenchStore from "../stores/useWorkbenchStore"
 import { makeGitWorkingBranch, makeTrainResult } from "../test-utils/factories"
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2903,5 +2919,318 @@ describe("App integration - a Model Training node's results panel", () => {
     // The node's ordinary preview frame is shown instead.
     await waitFor(() => expect(screen.getAllByText("Claims Model").length).toBeGreaterThan(1))
     expect(screen.queryByText(RESULTS_GONE)).toBeNull()
+  })
+})
+
+describe("App integration - the workbench view (specs/workbench)", () => {
+  afterEach(() => {
+    useWorkbenchStore.setState({ enabled: false, formPath: null, activeView: "pipeline", tables: null, formDirty: false })
+    useWorkbenchFormStore.setState({ form: null, revision: null, status: "idle", undoStack: [], redoStack: [], dirty: false, stale: false, uncaptured: false })
+    vi.mocked(workbenchApi.saveWorkbenchForm).mockClear()
+    vi.mocked(workbenchApi.fetchWorkbenchTables).mockReset().mockImplementation(() => Promise.resolve({ tables: [], sample: {}, response_tables: [] }))
+  })
+
+  /** A pipeline whose Workbench Input starts with no tables. */
+  const withWorkbenchInput = () => {
+    const input = makeNode("wb_in", "Workbench Input", "workbenchInput")
+    input.data.config = { tables: [], sample: {} }
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({ nodes: [input], edges: [], preamble: "", preserved_blocks: [], source_revision: "revision-test" }))
+  }
+  const policyTables = [{ name: "policy", rows: "one" as const, columns: [] }]
+  /** The Workbench Input's tables in the pipeline the save sent. */
+  const savedInputTables = () => {
+    const graph = vi.mocked(api.savePipeline).mock.calls[0][0].graph
+    return (graph.nodes.find((node) => node.id === "wb_in")?.data.config as { tables?: unknown } | undefined)?.tables
+  }
+
+  it("shows the workbench over the hidden, inert pipeline editor with its own toolbar and shortcuts, and switches back", async () => {
+    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "forms/form.json" })
+    render(<App />)
+    await waitForAppReady()
+
+    // The switcher appears at the bottom of the node palette once the status says the
+    // workbench is enabled; the pipeline editor shows until it is used.
+    const pipeline = screen.getByTestId("pipeline-view")
+    const switcher = await within(pipeline).findByRole("group", { name: "Views" })
+    expect(pipeline).not.toHaveClass("invisible")
+    expect(pipeline).not.toHaveAttribute("inert")
+    expect(screen.getByRole("toolbar", { name: "Pipeline toolbar" })).toBeInTheDocument()
+
+    fireEvent.click(within(switcher).getByRole("button", { name: "Workbench" }))
+
+    const view = await screen.findByTestId("workbench-view", {}, { timeout: 10_000 })
+    expect(pipeline).toHaveClass("invisible")
+    expect(pipeline).toHaveAttribute("inert")
+    expect(await screen.findByRole("toolbar", { name: "Workbench toolbar" }, { timeout: 10_000 })).toBeInTheDocument()
+    expect(screen.queryByRole("toolbar", { name: "Pipeline toolbar" })).toBeNull()
+    expect(await within(view).findByTestId("sheet-viewport", {}, { timeout: 10_000 })).toBeInTheDocument()
+    expect(within(view).getByRole("tablist", { name: "Sheets" })).toBeInTheDocument()
+
+    // Ctrl+S saves the project, as Save does from either toolbar: the form's unsaved edits
+    // first, then the tables fetched again, the fetch that brings the Workbench Input's and
+    // Workbench Output's copies up to date, then the pipeline.
+    act(() => {
+      useWorkbenchFormStore.getState().change((form) => ({ ...form, name: "renamed" }))
+    })
+    const tableFetches = vi.mocked(workbenchApi.fetchWorkbenchTables).mock.calls.length
+    fireEvent.keyDown(window, { key: "s", ctrlKey: true })
+    await waitFor(() => expect(workbenchApi.saveWorkbenchForm).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(api.savePipeline).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(workbenchApi.fetchWorkbenchTables).mock.calls.length).toBeGreaterThan(tableFetches)
+    expect(vi.mocked(workbenchApi.saveWorkbenchForm).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(api.savePipeline).mock.invocationCallOrder[0])
+
+    fireEvent.click(within(view).getByRole("button", { name: "Pricing" }))
+
+    expect(pipeline).not.toHaveClass("invisible")
+    expect(screen.queryByTestId("workbench-view")).toBeNull()
+    expect(await screen.findByRole("toolbar", { name: "Pipeline toolbar" })).toBeInTheDocument()
+  })
+
+  it("Commit in the workbench's toolbar saves the form's edits, brings the Workbench Input's tables up to date, then saves the pipeline and opens the milestone modal", async () => {
+    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "forms/form.json" })
+    withWorkbenchInput()
+    render(<App />)
+    await waitForAppReady()
+    const switcher = await within(screen.getByTestId("pipeline-view")).findByRole("group", { name: "Views" })
+    fireEvent.click(within(switcher).getByRole("button", { name: "Workbench" }))
+    const view = await screen.findByTestId("workbench-view", {}, { timeout: 10_000 })
+    await within(view).findByTestId("sheet-viewport", {}, { timeout: 10_000 })
+    act(() => {
+      useWorkbenchFormStore.getState().change((form) => ({ ...form, name: "renamed" }))
+    })
+    // The tables the saved form now defines come back only when the test lets them.
+    let answerTables: (value: WorkbenchTablesResponse) => void = () => {}
+    vi.mocked(workbenchApi.fetchWorkbenchTables).mockImplementation(
+      () => new Promise<WorkbenchTablesResponse>((resolve) => {
+        answerTables = resolve
+      }),
+    )
+
+    fireEvent.click(await screen.findByTestId("toolbar-save-commit", {}, { timeout: 10_000 }))
+
+    // The form's edits reach the ledger first; the pipeline waits for its tables.
+    await waitFor(() => expect(workbenchApi.saveWorkbenchForm).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(workbenchApi.saveWorkbenchForm).mock.calls[0][0]).toMatchObject({ name: "renamed" })
+    await waitFor(() => expect(workbenchApi.fetchWorkbenchTables).toHaveBeenCalled())
+    expect(api.savePipeline).not.toHaveBeenCalled()
+    expect(screen.queryByTestId("milestone-commit-modal")).toBeNull()
+
+    act(() => {
+      answerTables({ tables: policyTables, sample: {}, response_tables: [] })
+    })
+
+    // Then the pipeline is saved with the Workbench Input carrying those tables, and the
+    // milestone asked for.
+    await waitFor(() => expect(screen.getByTestId("milestone-commit-modal")).toBeInTheDocument())
+    expect(api.savePipeline).toHaveBeenCalledTimes(1)
+    expect(savedInputTables()).toEqual(policyTables)
+    expect(useWorkbenchFormStore.getState().dirty).toBe(false)
+  })
+
+  it("Commit is refused, saving no pipeline, when the workbench's tables cannot be fetched after the form's save", async () => {
+    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "forms/form.json" })
+    withWorkbenchInput()
+    render(<App />)
+    await waitForAppReady()
+    const switcher = await within(screen.getByTestId("pipeline-view")).findByRole("group", { name: "Views" })
+    fireEvent.click(within(switcher).getByRole("button", { name: "Workbench" }))
+    const view = await screen.findByTestId("workbench-view", {}, { timeout: 10_000 })
+    await within(view).findByTestId("sheet-viewport", {}, { timeout: 10_000 })
+    act(() => {
+      useWorkbenchFormStore.getState().change((form) => ({ ...form, name: "renamed" }))
+    })
+    vi.mocked(workbenchApi.fetchWorkbenchTables).mockRejectedValue(new Error("the server is away"))
+
+    fireEvent.click(await screen.findByTestId("toolbar-save-commit", {}, { timeout: 10_000 }))
+
+    await waitFor(() => expect(workbenchApi.saveWorkbenchForm).toHaveBeenCalledTimes(1))
+    expect(
+      await screen.findByText("The pipeline was not saved: its workbench nodes could not be brought up to date with the workbench's tables."),
+    ).toBeInTheDocument()
+    expect(api.savePipeline).not.toHaveBeenCalled()
+    expect(screen.queryByTestId("milestone-commit-modal")).toBeNull()
+  })
+
+  it("Save in the pipeline toolbar saves the form's unsaved edits first, brings the Workbench Input's tables up to date, then saves the pipeline, as Commit does", async () => {
+    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "forms/form.json" })
+    withWorkbenchInput()
+    render(<App />)
+    await waitForAppReady()
+    const pipeline = screen.getByTestId("pipeline-view")
+    const switcher = await within(pipeline).findByRole("group", { name: "Views" })
+    fireEvent.click(within(switcher).getByRole("button", { name: "Workbench" }))
+    const view = await screen.findByTestId("workbench-view", {}, { timeout: 10_000 })
+    await within(view).findByTestId("sheet-viewport", {}, { timeout: 10_000 })
+    // An edit to the form, left unsaved on the way back to the pipeline editor; the tables
+    // the saved form then defines.
+    act(() => {
+      useWorkbenchFormStore.getState().change((form) => ({ ...form, name: "renamed" }))
+    })
+    vi.mocked(workbenchApi.fetchWorkbenchTables).mockResolvedValue({ tables: policyTables, sample: {}, response_tables: [] })
+    fireEvent.click(within(view).getByRole("button", { name: "Pricing" }))
+    await screen.findByRole("toolbar", { name: "Pipeline toolbar" })
+
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }))
+
+    // The form's edits reach the ledger first, then the tables are fetched for the nodes'
+    // copies, then the pipeline is saved; the chain pays a lazy import and an identity
+    // resolution, so the last wait is explicit.
+    await waitFor(() => expect(workbenchApi.saveWorkbenchForm).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(workbenchApi.saveWorkbenchForm).mock.calls[0][0]).toMatchObject({ name: "renamed" })
+    await waitFor(() => expect(workbenchApi.fetchWorkbenchTables).toHaveBeenCalled())
+    await waitFor(() => expect(api.savePipeline).toHaveBeenCalledTimes(1), { timeout: 10_000 })
+    expect(vi.mocked(workbenchApi.saveWorkbenchForm).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(api.savePipeline).mock.invocationCallOrder[0])
+    expect(savedInputTables()).toEqual(policyTables)
+    expect(useWorkbenchFormStore.getState().dirty).toBe(false)
+  })
+
+  it("Save is refused before the form is saved while the pipeline document cannot be saved, so the form is never saved ahead of the pipeline", async () => {
+    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "forms/form.json" })
+    const input = makeNode("wb_in", "Workbench Input", "workbenchInput")
+    input.data.config = { tables: [], sample: {} }
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
+      nodes: [input],
+      edges: [],
+      preamble: "",
+      preserved_blocks: [],
+      source_revision: "revision-test",
+      capabilities: { can_save: false },
+    }))
+    render(<App />)
+    await waitForAppReady()
+    const switcher = await within(screen.getByTestId("pipeline-view")).findByRole("group", { name: "Views" })
+    fireEvent.click(within(switcher).getByRole("button", { name: "Workbench" }))
+    const view = await screen.findByTestId("workbench-view", {}, { timeout: 10_000 })
+    await within(view).findByTestId("sheet-viewport", {}, { timeout: 10_000 })
+    act(() => {
+      useWorkbenchFormStore.getState().change((form) => ({ ...form, name: "renamed" }))
+    })
+
+    fireEvent.click(await screen.findByTestId("toolbar-save", {}, { timeout: 10_000 }))
+
+    expect(
+      await screen.findByText("This pipeline is read-only until its load diagnostics are resolved.", {}, { timeout: 10_000 }),
+    ).toBeInTheDocument()
+    expect(workbenchApi.saveWorkbenchForm).not.toHaveBeenCalled()
+    expect(api.savePipeline).not.toHaveBeenCalled()
+    expect(useWorkbenchFormStore.getState().dirty).toBe(true)
+  })
+
+  it("two Saves pressed while the first waits on a node's identity are saved in turn, the pipeline by both and no update superseded", async () => {
+    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "forms/form.json" })
+    withWorkbenchInput()
+    render(<App />)
+    await waitForAppReady()
+    const switcher = await within(screen.getByTestId("pipeline-view")).findByRole("group", { name: "Views" })
+    fireEvent.click(within(switcher).getByRole("button", { name: "Workbench" }))
+    const view = await screen.findByTestId("workbench-view", {}, { timeout: 10_000 })
+    await within(view).findByTestId("sheet-viewport", {}, { timeout: 10_000 })
+    act(() => {
+      useWorkbenchFormStore.getState().change((form) => ({ ...form, name: "renamed" }))
+    })
+    vi.mocked(workbenchApi.fetchWorkbenchTables).mockResolvedValue({ tables: policyTables, sample: {}, response_tables: [] })
+    // The Workbench Input's update with the fetched tables waits on its identity until
+    // the test lets it through; the second Save is pressed meanwhile.
+    const identities = vi.mocked(api.resolveEditorNodeIdentities)
+    const resolveIdentities = identities.getMockImplementation()
+    if (resolveIdentities === undefined) throw new Error("the identity resolver has no implementation")
+    let release: () => void = () => {}
+    identities.mockImplementationOnce(
+      (payload) => new Promise((resolve) => { release = () => resolve(resolveIdentities(payload)) }),
+    )
+    const save = await screen.findByTestId("toolbar-save", {}, { timeout: 10_000 })
+
+    fireEvent.click(save)
+    await waitFor(() => expect(workbenchApi.saveWorkbenchForm).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(identities).toHaveBeenCalled())
+    const fetchesByFirst = vi.mocked(workbenchApi.fetchWorkbenchTables).mock.calls.length
+    fireEvent.click(save)
+    // The second Save's continuations run while the first still waits on the identity:
+    // it takes its turn behind the first, so it fetches nothing yet. Run at once, it
+    // would fetch now, and that fetch would supersede the first save's update.
+    await act(() => new Promise<void>((resolve) => { setTimeout(resolve, 100) }))
+    expect(vi.mocked(workbenchApi.fetchWorkbenchTables).mock.calls.length).toBe(fetchesByFirst)
+    expect(api.savePipeline).not.toHaveBeenCalled()
+
+    await act(async () => { release() })
+
+    // The first save's pipeline, then the second's, each with the Workbench Input carrying
+    // the tables; neither refused for an update the other superseded.
+    await waitFor(() => expect(api.savePipeline).toHaveBeenCalledTimes(2), { timeout: 10_000 })
+    expect(savedInputTables()).toEqual(policyTables)
+    const secondGraph = vi.mocked(api.savePipeline).mock.calls[1][0].graph
+    expect((secondGraph.nodes.find((node) => node.id === "wb_in")?.data.config as { tables?: unknown } | undefined)?.tables).toEqual(policyTables)
+    expect(useToastStore.getState().toasts.map((toast) => toast.text).join("\n")).not.toContain("Node update was not applied")
+    expect(workbenchApi.saveWorkbenchForm).toHaveBeenCalledTimes(1)
+  })
+
+  it("Ctrl+S during the assistant's turn is refused before the form is saved, as Save is disabled then", async () => {
+    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "forms/form.json" })
+    withWorkbenchInput()
+    render(<App />)
+    await waitForAppReady()
+    const switcher = await within(screen.getByTestId("pipeline-view")).findByRole("group", { name: "Views" })
+    fireEvent.click(within(switcher).getByRole("button", { name: "Workbench" }))
+    const view = await screen.findByTestId("workbench-view", {}, { timeout: 10_000 })
+    await within(view).findByTestId("sheet-viewport", {}, { timeout: 10_000 })
+    act(() => {
+      useWorkbenchFormStore.getState().change((form) => ({ ...form, name: "renamed" }))
+    })
+    act(() => { useUIStore.getState().startAssistantTurn(vi.fn()) })
+    try {
+      expect(await screen.findByTestId("toolbar-save", {}, { timeout: 10_000 })).toBeDisabled()
+
+      fireEvent.keyDown(window, { key: "s", ctrlKey: true })
+
+      expect(
+        await screen.findByText("The assistant is working on the pipeline: wait for its turn to finish, then save.", {}, { timeout: 10_000 }),
+      ).toBeInTheDocument()
+      expect(workbenchApi.saveWorkbenchForm).not.toHaveBeenCalled()
+      expect(api.savePipeline).not.toHaveBeenCalled()
+      expect(useWorkbenchFormStore.getState().dirty).toBe(true)
+    } finally {
+      act(() => { useUIStore.getState().endAssistantTurn() })
+    }
+  })
+
+  it("an assistant turn that starts while a Save waits on the form's save refuses the rest of it, so the pipeline never carries copies behind the sheets", async () => {
+    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "forms/form.json" })
+    withWorkbenchInput()
+    render(<App />)
+    await waitForAppReady()
+    const switcher = await within(screen.getByTestId("pipeline-view")).findByRole("group", { name: "Views" })
+    fireEvent.click(within(switcher).getByRole("button", { name: "Workbench" }))
+    const view = await screen.findByTestId("workbench-view", {}, { timeout: 10_000 })
+    await within(view).findByTestId("sheet-viewport", {}, { timeout: 10_000 })
+    act(() => {
+      useWorkbenchFormStore.getState().change((form) => ({ ...form, name: "renamed" }))
+    })
+    vi.mocked(workbenchApi.fetchWorkbenchTables).mockResolvedValue({ tables: policyTables, sample: {}, response_tables: [] })
+    // The form's save answers only when the test lets it; the assistant's turn starts
+    // meanwhile.
+    let answerFormSave: () => void = () => {}
+    vi.mocked(workbenchApi.saveWorkbenchForm).mockImplementationOnce(
+      (form) => new Promise((resolve) => {
+        answerFormSave = () => resolve({ form, revision: "form-rev-1", warnings: [], git_sha: null, identity_required: false })
+      }),
+    )
+
+    fireEvent.click(await screen.findByTestId("toolbar-save", {}, { timeout: 10_000 }))
+    await waitFor(() => expect(workbenchApi.saveWorkbenchForm).toHaveBeenCalledTimes(1))
+    act(() => { useUIStore.getState().startAssistantTurn(vi.fn()) })
+    try {
+      await act(async () => { answerFormSave() })
+
+      expect(
+        await screen.findByText("The assistant is working on the pipeline: wait for its turn to finish, then save.", {}, { timeout: 10_000 }),
+      ).toBeInTheDocument()
+      expect(api.savePipeline).not.toHaveBeenCalled()
+      // The sheets were saved before the turn began; the pipeline waits for the next Save.
+      expect(useWorkbenchFormStore.getState().dirty).toBe(false)
+    } finally {
+      act(() => { useUIStore.getState().endAssistantTurn() })
+    }
   })
 })

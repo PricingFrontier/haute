@@ -42,6 +42,8 @@ export type InputSource = {
   frameUnresolved?: boolean
   /** The columns this input carries, as the last preview recorded them. */
   columns?: { name: string; dtype: string }[]
+  /** The port the edge lands on, when the target has named ports (a Workbench Output's tables). */
+  targetHandle?: string
 }
 
 // Shared by editor components; this intentional non-component export is the

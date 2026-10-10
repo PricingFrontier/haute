@@ -47,6 +47,18 @@ backend API modules own validation and persistence.
   output frame blocks present the same names — there is no separate display identity anywhere.
 - Editors retain incomplete persisted rows when they can be repaired (notably API schema and
   output mappings); fresh inference data may be normalised separately from persisted data.
+- The Workbench Input's panel shows the workbench's tables read-only: each table's name, one
+  row or many per quote, its columns and their types, and whatever the editor finds wrong
+  with the name as a port; and a note on what previews run on: the workbench's sample
+  values, or one row of nulls per table until it supplies any. While the project's workbench
+  is not enabled it says they are the last copy and nothing updates them, and while a
+  submodel is open that the editor updates them only at the pipeline's top level. While the
+  workbench is enabled, the palette offers the Workbench Input in the Quote Input's place.
+  Where the tables come from and when they change is the
+  [workbench specification](../workbench/high-level.md).
+- The Workbench Output's panel shows the workbench's output tables read-only in the same way,
+  each with the node connected to its port or "Not connected", and the same notes. While the
+  workbench is enabled, the palette offers the Workbench Output in the Quote Response's place.
 - API Input preview browsing advertises and filters JSON, JSONL, NDJSON, and XML. Selecting any
   of those structured formats fetches its schema preview, and all four expose the cache/infer
   action. Directory rows remain navigable when the server reports a null size; only numeric file

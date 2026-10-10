@@ -6,7 +6,7 @@ import dataclasses
 import functools
 import inspect
 import sys
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -41,12 +41,15 @@ from haute._standalone_nodes import (
 from haute._submodel_paths import is_pipeline_dir
 from haute._types import (
     GLOBAL_CONSTANTS_FILE,
+    REQUEST_INPUT_NODE_TYPES,
+    RESPONSE_NODE_TYPES,
     GraphEdge,
     NodeType,
     SubmodelEndpoint,
     SubmodelInputPort,
     SubmodelOutputPort,
 )
+from haute._workbench_output import as_response
 from haute.errors import ExecutionError
 from haute.graph_utils import topo_sort_ids
 
@@ -91,13 +94,13 @@ class Node:
     def is_deploy_input(self) -> bool:
         """Whether this node is the live API input seeded by :meth:`Pipeline.score`.
 
-        True when the node was registered with the ``@registry.api_input``
-        decorator (so ``config['_node_type'] == NodeType.API_INPUT``) or was
-        explicitly flagged with ``api_input=True``.  The decorator alone is
+        True when the node was registered as a request input, with the
+        ``@pipeline.api_input`` or ``@pipeline.workbench_input`` decorator, or
+        was explicitly flagged with ``api_input=True``.  The decorator alone is
         sufficient — a user must not have to *also* pass ``api_input=True``
         for the node to be recognised as the deploy seed.
         """
-        if self.config.get("_node_type") == NodeType.API_INPUT:
+        if self.config.get("_node_type") in REQUEST_INPUT_NODE_TYPES:
             return True
         return bool(self.config.get("api_input"))
 
@@ -132,7 +135,12 @@ class Node:
                 node=self.name,
             )
 
-    def _run_configured(self, fn: Callable, frames: tuple[pl.DataFrame, ...]) -> pl.DataFrame:
+    def _run_configured(
+        self,
+        fn: Callable,
+        frames: tuple[pl.DataFrame, ...],
+        target_ports: Sequence[str | None] | None = None,
+    ) -> pl.DataFrame:
         result: pl.DataFrame = run_configured_node(
             self.node_type,
             self.kind,
@@ -141,6 +149,7 @@ class Node:
             fn=fn,
             frames=frames,
             pipeline_dir=self.pipeline_dir,
+            target_ports=target_ports,
         )
         return result
 
@@ -151,8 +160,13 @@ class Node:
         self,
         dfs: tuple[pl.DataFrame, ...],
         constants: GlobalConstantsNamespace | None,
+        target_ports: Sequence[str | None] | None = None,
     ) -> pl.DataFrame:
-        """Run the node on *dfs*, its function reading *constants* when a run gives them."""
+        """Run the node on *dfs*, its function reading *constants* when a run gives them.
+
+        *target_ports* are the input ports *dfs* arrive on, aligned, when a run knows
+        them: a Workbench Output fills the table each port names.
+        """
         self._raise_if_unresolved_instance()
         fn = self.fn if constants is None else bind_function_view(self.fn, constants)
         if self.is_source:
@@ -186,7 +200,7 @@ class Node:
                 received=len(dfs),
             )
         if self.kind != "transform":
-            return self._run_configured(fn, dfs)
+            return self._run_configured(fn, dfs, target_ports)
         result = fn(*dfs)
         return result
 
@@ -398,6 +412,16 @@ class NodeRegistry:
     def api_input(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Decorator alias for API-input nodes."""
         return self._register_node(fn, _node_type=NodeType.API_INPUT, **config)
+
+    def workbench_input(self, fn: Callable | None = None, **config: Any) -> Callable:
+        """Decorator alias for Workbench Input nodes: a request input whose tables
+        are copied from the project's workbench (specs/workbench)."""
+        return self._register_node(fn, _node_type=NodeType.WORKBENCH_INPUT, **config)
+
+    def workbench_output(self, fn: Callable | None = None, **config: Any) -> Callable:
+        """Decorator alias for Workbench Output nodes: a response node filling the tables
+        the project's workbench supplies, each from the frame connected to its port."""
+        return self._register_node(fn, _node_type=NodeType.WORKBENCH_OUTPUT, **config)
 
     def data_input(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Decorator alias for data-input nodes (native-polars-width inputs)."""
@@ -636,21 +660,22 @@ class Pipeline(NodeRegistry):
         The returned frame is resolved *explicitly*, never as "whichever
         node happens to sort last in topological order":
 
-        1. If any node is declared ``@pipeline.output`` (``NodeType.OUTPUT``),
-           exactly one must be — return it, or raise naming them when several
-           are declared.
+        1. If any node is declared a response node, ``@pipeline.output`` or
+           ``@pipeline.workbench_output`` (``RESPONSE_NODE_TYPES``), exactly one
+           must be — return it, or raise naming them when several are declared.
         2. Otherwise fall back to the single terminal (leaf) node — one with
            no outbound edge.  When several leaves exist the result is
            ambiguous (a fan-out), so we raise naming them and instruct the
            user to mark one with ``@pipeline.output``.
         """
-        output_nodes = [n for n in order if n.config.get("_node_type") == NodeType.OUTPUT]
+        output_nodes = [n for n in order if n.config.get("_node_type") in RESPONSE_NODE_TYPES]
         if len(output_nodes) == 1:
             return output_nodes[0]
         if len(output_nodes) > 1:
             raise ExecutionError(
-                "Pipeline declares multiple @pipeline.output nodes; exactly one "
-                "is allowed so run()/score() return an unambiguous result.",
+                "Pipeline declares multiple response nodes (@pipeline.output or "
+                "@pipeline.workbench_output); exactly one is allowed so run()/score() "
+                "return an unambiguous result.",
                 outputs=[n.name for n in output_nodes],
             )
 
@@ -844,7 +869,8 @@ class Pipeline(NodeRegistry):
             )
             for edge in input_edges
         ]
-        outputs[n.name] = n._invoke(tuple(input_dfs), constants)
+        target_ports = [edge.target_port for edge in input_edges]
+        outputs[n.name] = n._invoke(tuple(input_dfs), constants, target_ports)
 
     def run(self, *, source: str | None = None) -> pl.DataFrame:
         """Execute the full pipeline under *source*, following edges for data flow.
@@ -876,7 +902,8 @@ class Pipeline(NodeRegistry):
                 else:
                     self._execute_transform(n, outputs, constants)
 
-            return _collect_standalone_output(outputs[self._resolve_output_node(order).name])
+            response = as_response(outputs[self._resolve_output_node(order).name])
+            return _collect_standalone_output(response)
         finally:
             _scenario_ctx.reset(_token)
 
@@ -884,7 +911,8 @@ class Pipeline(NodeRegistry):
         """Run the pipeline on an input DataFrame, seeding the live input.
 
         Sources marked as the live API input — via the ``@pipeline.api_input``
-        decorator or an explicit ``api_input=True`` — are seeded with *df*;
+        or ``@pipeline.workbench_input`` decorator or an explicit
+        ``api_input=True`` — are seeded with *df*;
         every other source runs its own load logic (e.g. static rating
         tables).
 
@@ -892,7 +920,7 @@ class Pipeline(NodeRegistry):
         exactly one (unambiguous).  With multiple unmarked sources the seed
         target cannot be inferred, so we raise rather than silently seed every
         source with the same frame — mark the live input with
-        ``@pipeline.api_input``.
+        ``@pipeline.api_input`` or ``@pipeline.workbench_input``.
         """
         from haute._model_scorer import _scenario_ctx
 
@@ -910,7 +938,8 @@ class Pipeline(NodeRegistry):
             if len(deploy_inputs) > 1:
                 raise ExecutionError(
                     "score() found multiple live input sources. Mark exactly "
-                    "one source with @pipeline.api_input or api_input=True.",
+                    "one source with @pipeline.api_input, @pipeline.workbench_input "
+                    "or api_input=True.",
                     sources=[n.name for n in deploy_inputs],
                 )
             if not deploy_inputs and len(sources) > 1:
@@ -918,7 +947,7 @@ class Pipeline(NodeRegistry):
                     "score() cannot infer which source receives the input "
                     "DataFrame: no source is marked as the live input and there "
                     "is more than one. Mark exactly one source with "
-                    "@pipeline.api_input.",
+                    "@pipeline.api_input or @pipeline.workbench_input.",
                     sources=[n.name for n in sources],
                 )
 
@@ -972,7 +1001,8 @@ class Pipeline(NodeRegistry):
                     continue
                 self._execute_transform(n, outputs, constants)
 
-            return _collect_standalone_output(outputs[self._resolve_output_node(order).name])
+            response = as_response(outputs[self._resolve_output_node(order).name])
+            return _collect_standalone_output(response)
         finally:
             _scenario_ctx.reset(_token)
 

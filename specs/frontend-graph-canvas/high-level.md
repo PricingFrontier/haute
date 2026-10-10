@@ -44,6 +44,9 @@ Out of scope (owned by neighbouring components, linked where they exist):
 - Trace overlay computation — the canvas only renders the resulting visual
   state.
 - Background job polling.
+- The workbench's tables and the Workbench Input and Workbench Output node types —
+  [workbench](../workbench/high-level.md). The editor shell keeps their copies current
+  through `useWorkbenchTables`.
 - Backend submodel occurrence, public-port, and endpoint behavior —
   [submodels](../submodels/high-level.md). This component owns only browser
   navigation and endpoint consumption.
@@ -309,7 +312,9 @@ candidate, with the error toast.
   closing only on success.
 - **Node CRUD.** Deleting an ordinary node removes it and every edge touching
   it as one atomic undo step. Duplicating offsets the copy's position and is a
-  no-op for singleton node types (Quote Input and Quote Response). Generic Duplicate is unavailable for reusable-submodel occurrences,
+  no-op for singleton node types (the request inputs, Quote Input and Workbench Input,
+  which share one slot, and the response nodes, Quote Response and Workbench Output, which
+  share another). Generic Duplicate is unavailable for reusable-submodel occurrences,
   and the handler directs callers to Create Instance. The palette, duplicate,
   paste, instance, and context-menu paths consume the same singleton metadata,
   matching the backend save invariant. Create Instance also refuses a Source

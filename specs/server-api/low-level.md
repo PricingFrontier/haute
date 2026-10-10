@@ -34,7 +34,7 @@
 | `src/haute/routes/_node_data_service.py` | `NodeDataService`: consumer point responses, delegation, explicit node-output build jobs in isolated workers, the data-profile job, supersession, cancellation, and clear. `points_for_graph` resolves every node of a graph against one resolver for the per-node cache report, returning each node's input-snapshot identity digest alongside its point. |
 | `src/haute/routes/_synchronous_analysis.py` | Request-time analyses of a leased point: admitted execution, memoisation by data version, and client-disconnect cancellation. |
 | `src/haute/routes/utility.py` | `/api/utility` CRUD (list/read/create/update/delete) for `utility/*.py` helper modules, with AST syntax validation on every write; create first refuses (`_validate_new_module_name`) a hard keyword or `is_windows_reserved_filename` stem (400) and a case-folded duplicate of an existing `utility/*.py` (409); create and update first run `_refuse_new_name_violations`, which parses each discovered pipeline mentioning `utility` with the current and the edited utility reader and refuses the support-code violations only the edit adds. |
-| `src/haute/routes/_save_pipeline.py` | `SavePipelineService` — the transactional save orchestrator: singleton/name-collision/load-error validation, codegen invocation, config-file + sidecar writes, stale-config cleanup, and rollback. Global constants: save takes the constants load state from the file on disk (`_adopt_disk_global_constants_state`), `validate_graph` refuses what would shadow the reserved name or read an undefined constant (`_validate_global_constants`), and the constants file is written with the node configs, retired with the stale ones, and left untouched while it fails to load. |
+| `src/haute/routes/_save_pipeline.py` | `SavePipelineService` — the transactional save orchestrator: singleton/name-collision/load-error validation, codegen invocation, config-file + sidecar writes, stale-config cleanup, and rollback. Global constants: save takes the constants load state from the file on disk (`_adopt_disk_global_constants_state`), `validate_graph` refuses what would shadow the reserved name or read an undefined constant (`_validate_global_constants`), and the constants file is written with the node configs, retired with the stale ones, and left untouched while it fails to load. `capture_save_in_ledger` commits a save's files on the clone's ledger — no working branch, no capture; a missing identity reported; a failure a warning — for the pipeline save and the workbench's form save alike. |
 | `src/haute/routes/_supersession.py` | `SupersessionCoordinator` / `_SupersessionState` — generation-counted "run latest, cancel/skip the rest" concurrency primitive used by preview, trace and the free-code column resolution. |
 | `src/haute/routes/output_assemble.py` | `POST /api/output-assemble/dry-run` — validates an unsaved `outputMapping`, swaps it into the target node's in-memory config, executes up to that node, returns the rendered document. |
 | `src/haute/routes/_contract_errors.py` | Shared public-contract-error adapter: validates the closed public error set, emits stable payloads, maps synchronous failures to HTTP 422, and supplies the matching contract-error fields for background jobs. Also owns `memory_limit_http_exception`, the one memory-limit → 507 mapping; a job-backed surface passes its operation noun so the detail also carries the curated message. |
@@ -360,7 +360,8 @@ character ASCII token matching `[A-Za-z0-9][A-Za-z0-9._:-]*`; otherwise it gener
 ID and logs only the bounded rejection reason and input length.
 
 **Route registration order matters.** The feature routers (`pipeline_router` through
-`git_router`, plus the assistant router owned by [assistant](../assistant/low-level.md)) are
+`git_router`, plus the assistant router owned by [assistant](../assistant/low-level.md) and
+the workbench router owned by [workbench](../workbench/low-level.md)) are
 included first; then two catch-all Starlette `Route`s (not typed `APIRoute`s — they carry no response
 model by design) match any unhandled `/api/{rest:path}` or `/ws/{rest:path}` `GET` and return
 a clean JSON 404 — registered *before* the SPA catch-all so an unmatched API/WS path never
@@ -420,8 +421,9 @@ crash. Every filesystem event batches into `pending_changes`; a 300ms debounce t
 **Pipeline save (`SavePipelineService.save`)**, run inside the process-wide `save_lock` (an
 `asyncio.Lock`, so it serialises against concurrent submodel create/dissolve as well as
 concurrent plain saves, but does not coordinate another worker process):
-1. Flatten submodel occurrences and validate singleton node types (at most one
-   `apiInput`/`output`; any number of `liveSwitch` nodes, each routed by the active source) across the resulting executable pipeline, then validate
+1. Flatten submodel occurrences and validate the singleton groups with
+   `validate_singleton_groups` (at most one request input, `apiInput` or `workbenchInput`, and
+   one response node, `output` or `workbenchOutput`; any number of `liveSwitch` nodes, each routed by the active source) across the resulting executable pipeline, then validate
    unique sanitized node names (per-graph, then cross-module against every embedded submodel
    graph), that no Quote Input table is labelled like another node's sanitized name, and
    that no node carries a `_load_error` marker. A submodel boundary cannot hide a
@@ -951,6 +953,7 @@ later write and cleanup checks still compare against the captured identities.
 | `ContractMismatchError` | trace, preview, output-assemble dry-run | 422 / embedded `NodeResult.error` / 422 | Message already names the node + symmetric column diff. |
 | `SchemaMismatchError` | preview | embedded `NodeResult.error` | Adapted identically to `ContractMismatchError`, so a propagated join-key dtype mismatch never becomes a generic 500. |
 | `ParseError` | preview | embedded `NodeResult.error` | Preview surfaces graph-shape issues per node. An unreadable document on the editor-document routes propagates to the request-ID backstop as a sanitized 500 (authored failures arrive as 200 degraded/source-only documents). |
+| `WorkbenchTablesError`, `WorkbenchInputError` | workbench tables; preview execution | 422 | A workbench node's tables the pipeline cannot take, or a Workbench Input with no port or a sample or request that does not fit its tables; the tables route and the preview worker (which maps a remote error by its exact class) answer the public payload. |
 | `ApiInputSchemaError` | json-cache; preview/write execution | 422 | JSON cache retains its `type` discriminator envelope; execution routes use the public-contract adapter (`api_input_schema_invalid`). |
 | `OutputMappingSchemaError` | output-assemble dry-run | 422 | Raised both by the schema-only pre-check and if execution surfaces it deeper (an unmapped port). |
 | `ExecutionAdmissionError`, `ExecutionMemoryLimitExceededError` | any synchronous route (application handler) | 507 | Payload is `exc.to_payload()`, nested under `detail`, through `memory_limit_http_exception`; training and the optimiser pass an operation noun that adds the curated `message`. |
@@ -973,6 +976,8 @@ use the same stable codes and named fields under terminal `contract_error` (or `
 | Exception | Stable code | Named fields |
 |---|---|---|
 | `ApiInputSchemaError` | `api_input_schema_invalid` | — |
+| `WorkbenchTablesError` | `workbench_tables_invalid` | — |
+| `WorkbenchInputError` | `workbench_input_invalid` | — |
 | `PreambleError` | `preamble_failed` | `source_line` |
 | `ContractResolutionError` | `contract_resolution_failed` | `node_id`, `node_type`, `failure_kind` |
 | `InputPreparationError` | `input_preparation_failed` | `node_id`, `identity_digest`, `build_class`, `reason_code`, `remediation` |

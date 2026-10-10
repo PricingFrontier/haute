@@ -27,6 +27,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+from haute._types import PipelineGraph
 from haute.errors import DeployError
 from tests._deploy_helpers import FIXTURE_DIR
 from tests._deploy_helpers import make_resolved_deploy as _make_resolved
@@ -210,7 +211,7 @@ class TestHauteModelPredict:
             lambda: 32 * 1024 * 1024,
         )
         model = HauteModel()
-        model._graph = {"nodes": [], "edges": []}
+        model._graph = PipelineGraph()
         model._input_node_ids = ["src"]
         model._output_node_id = "out"
         model._artifact_paths = {}
@@ -245,7 +246,7 @@ class TestHauteModelPredict:
         from haute.deploy._model_code import HauteModel
 
         model = HauteModel()
-        model._graph = {"nodes": [], "edges": []}
+        model._graph = PipelineGraph()
         model._input_node_ids = ["src"]
         model._output_node_id = "out"
         model._artifact_paths = {}
@@ -291,7 +292,7 @@ class TestHauteModelPredict:
             admission_release=lambda: released.append("released"),
         )
         model = HauteModel()
-        model._graph = {"nodes": [], "edges": []}
+        model._graph = PipelineGraph()
         model._input_node_ids = ["src"]
         model._output_node_id = "out"
         model._artifact_paths = {}
@@ -326,7 +327,7 @@ class TestHauteModelPredict:
             admission_release=lambda: timeline.append("released"),
         )
         model = HauteModel()
-        model._graph = {"nodes": [], "edges": []}
+        model._graph = PipelineGraph()
         model._input_node_ids = ["src"]
         model._output_node_id = "out"
         model._artifact_paths = {}
@@ -357,7 +358,7 @@ class TestHauteModelPredict:
         from haute.deploy._model_code import HauteModel
 
         model = HauteModel()
-        model._graph = {"nodes": [], "edges": []}
+        model._graph = PipelineGraph()
         model._input_node_ids = ["src"]
         model._output_node_id = "out"
         model._artifact_paths = {}
@@ -382,7 +383,7 @@ class TestHauteModelPredict:
         from haute.deploy._model_code import HauteModel
 
         model = HauteModel()
-        model._graph = {"nodes": [], "edges": []}
+        model._graph = PipelineGraph()
         model._input_node_ids = ["src"]
         model._output_node_id = "out"
         model._artifact_paths = {"model.pkl": "/served/model.pkl"}
@@ -4941,9 +4942,9 @@ class TestBuildSignature:
 
         assert self._input_type_map(sig)["category"] == DataType.string
 
-    @pytest.mark.parametrize("dtype", ["Decimal(12, 2)", "List(Int64)", "Struct({'x': Int64})"])
+    @pytest.mark.parametrize("dtype", ["Decimal(12, 2)", "List(Decimal(12, 2))", "Object"])
     def test_unknown_dtype_fails_loudly(self, dtype):
-        """Unsupported Polars dtypes must not be misdeclared as strings."""
+        """Unsupported Polars dtypes must not be misdeclared as strings, in a list too."""
         from haute.deploy._mlflow import _build_signature
         from haute.errors import DeployError
 
@@ -4956,6 +4957,169 @@ class TestBuildSignature:
             _build_signature(resolved)
 
         assert dtype in str(exc_info.value)
+
+    def test_a_workbench_pipelines_tables_are_maps_and_arrays_of_them(self):
+        """A one-row table is a map of anything and a many-row table an array of them, a
+        table left out of a request allowed; a flat column is as it was. The columns are the
+        reader's to hold the request to, not the signature's."""
+        from haute.deploy._mlflow import _build_signature
+
+        resolved = _make_resolved(
+            input_schema={
+                "policy": "Struct({'limit': Int64, 'start': Date})",
+                "items": "List(Struct({'item_id': String, 'value': Float64}))",
+                "when": "Date",
+            },
+            output_schema={
+                "pricing": "Struct({'premium': Float64, 'referral': String})",
+                "layers": "List(Struct({'layer': Int32, 'ok': Boolean}))",
+            },
+        )
+
+        sig = _build_signature(resolved)
+
+        table = {"type": "map", "values": {"type": "any"}}
+        assert [spec.to_dict() for spec in sig.inputs.inputs] == [
+            {**table, "name": "policy", "required": False},
+            {"type": "array", "items": table, "name": "items", "required": False},
+            {"type": "datetime", "name": "when", "required": True},
+        ]
+        assert [spec.to_dict() for spec in sig.outputs.inputs] == [
+            {**table, "name": "pricing", "required": False},
+            {"type": "array", "items": table, "name": "layers", "required": False},
+        ]
+
+    def test_a_request_mlflow_lets_through_is_one_the_workbench_input_reads(self):
+        """What MLflow's enforcement passes to ``predict`` is what the container's reader
+        takes: a column the tables do not name, of mixed types across rows even, a table
+        left out, an empty many-row table and a null one all reach the Workbench Input and
+        read as the records would; a misfit reaches it too, to be refused naming the spot,
+        as the container refuses it. The records are handed over as sent, numpy's values
+        made plain, never a frame inferred from them."""
+        import pandas as pd
+        from mlflow.models.utils import _enforce_schema
+        from polars.testing import assert_frame_equal
+
+        from haute._workbench_input import WorkbenchInputError, workbench_request_frames
+        from haute._workbench_tables import parse_workbench_tables, quote_schema
+        from haute.deploy._mlflow import _build_signature
+        from haute.deploy._model_code import _request
+        from haute.deploy._scorer import QuoteRequest
+
+        config = {
+            "tables": [
+                {
+                    "name": "policy",
+                    "rows": "one",
+                    "columns": [
+                        {"name": "limit", "type": "int"},
+                        {"name": "start", "type": "date"},
+                    ],
+                },
+                {
+                    "name": "items",
+                    "rows": "many",
+                    "columns": [
+                        {"name": "item_id", "type": "str"},
+                        {"name": "value", "type": "float"},
+                    ],
+                },
+            ]
+        }
+        tables = parse_workbench_tables(config["tables"], owner="Workbench Input")
+        resolved = _make_resolved(
+            input_schema={name: str(dtype) for name, dtype in quote_schema(tables).items()},
+            output_schema={"pricing": "Struct({'premium': Float64})"},
+        )
+        signature = _build_signature(resolved)
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "request",
+                        "data": {
+                            "label": "request",
+                            "nodeType": "workbenchInput",
+                            "config": config,
+                        },
+                    }
+                ],
+                "edges": [],
+            }
+        )
+
+        def served(quote: dict) -> dict:
+            # The pandas frame MLflow hands ``predict`` after enforcing the signature, taken
+            # as ``HauteModel.predict`` takes it: the records, for the reader.
+            enforced = _enforce_schema(pd.DataFrame([quote]), signature.inputs)
+            request = _request(graph, ["request"], enforced)
+            assert isinstance(request, QuoteRequest)
+            frames = workbench_request_frames(config, request.records)
+            return {name: frame.to_dicts() for name, frame in frames.items()}
+
+        quote = {
+            "policy": {"limit": 100, "start": "2026-01-02", "client_reference": "ABC"},
+            "items": [{"item_id": "Z", "value": 7.0, "note": None}],
+        }
+        assert served(quote) == {
+            "policy": [{"limit": 100, "start": __import__("datetime").date(2026, 1, 2)}],
+            "items": [{"item_id": "Z", "value": 7.0}],
+        }
+        for name, frame in workbench_request_frames(config, [quote]).items():
+            assert_frame_equal(pl.DataFrame(served(quote)[name], schema=frame.schema), frame)
+        assert served({"policy": {"limit": 100}}) == {
+            "policy": [{"limit": 100, "start": None}],
+            "items": [],
+        }
+        assert served({"policy": {"limit": 100}, "items": []})["items"] == []
+        assert served({"policy": None, "items": None}) == {
+            "policy": [{"limit": None, "start": None}],
+            "items": [],
+        }
+        with pytest.raises(WorkbenchInputError, match="policy.limit is 'lots', not 'int'"):
+            served({"policy": {"limit": "lots"}})
+        # An undeclared column of mixed types, which no frame could be inferred from, is
+        # left unread; a declared column of mixed types is refused at its row.
+        mixed = {
+            "policy": {"limit": 1},
+            "items": [{"value": 1.0, "note": "x"}, {"value": 2.0, "note": 42}],
+        }
+        assert served(mixed)["items"] == [
+            {"item_id": None, "value": 1.0},
+            {"item_id": None, "value": 2.0},
+        ]
+        with pytest.raises(WorkbenchInputError, match="items\\[1\\].value is 'x', not 'float'"):
+            served({"items": [{"value": 1.0}, {"value": "x"}]})
+        # A frame built by hand, numpy's values inside its tables, reads as JSON's would.
+        by_hand = pd.DataFrame(
+            {
+                "policy": [{"limit": np.int64(100), "start": "2026-01-02"}],
+                "items": [np.array([{"item_id": "Z", "value": np.float64(1.5)}], dtype=object)],
+            }
+        )
+        assert _request(graph, ["request"], by_hand) == QuoteRequest(
+            (
+                {
+                    "policy": {"limit": 100, "start": "2026-01-02"},
+                    "items": [{"item_id": "Z", "value": 1.5}],
+                },
+            )
+        )
+        # A Quote Input takes the frame, as before.
+        flat = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "quotes",
+                        "data": {"label": "quotes", "nodeType": "apiInput", "config": {}},
+                    }
+                ],
+                "edges": [],
+            }
+        )
+        assert _request(flat, ["quotes"], pd.DataFrame({"limit": [100]})).to_dicts() == [
+            {"limit": 100}
+        ]
 
     def test_all_numeric_types(self):
         """All supported numeric types should produce correct MLflow type mappings."""

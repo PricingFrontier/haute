@@ -68,13 +68,16 @@ import useUIStore from "./stores/useUIStore"
 import useGraphStore from "./stores/useGraphStore"
 import useGitStore from "./stores/useGitStore"
 import useToastStore from "./stores/useToastStore"
+import useWorkbenchStore from "./stores/useWorkbenchStore"
+import ViewSwitcher from "./workbench/ViewSwitcher"
+import useWorkbenchTables from "./hooks/useWorkbenchTables"
 import useNodeResultsStore from "./stores/useNodeResultsStore"
 import { refreshNodeDataCache } from "./hooks/useNodeDataCache"
 import { stopNodeWork, useNodeWorkRunning } from "./stores/useNodeWorkStore"
 import { PreviewRunContext, type PreviewRun } from "./panels/previewRunContext"
 import InputImportButton from "./components/InputImportButton"
 import AskAssistantButton from "./components/AskAssistantButton"
-import useDocumentStatusStore from "./stores/useDocumentStatusStore"
+import useDocumentStatusStore, { documentReadOnlyReason } from "./stores/useDocumentStatusStore"
 import { HAUTE_SESSION_EXPIRED_EVENT } from "./api/client"
 
 import {
@@ -100,7 +103,7 @@ import AssistantWorkingPill from "./components/AssistantWorkingPill"
 import { withNativeDeletePolicy } from "./utils/submodelDeletionPolicy"
 import { requestSubmodelCreation } from "./utils/submodelCreation"
 import { resolveEditorGraphIdentities } from "./utils/editorIdentities"
-import { PanelLeftOpen } from "lucide-react"
+import { PaletteRevealStrip } from "./haute-ui"
 
 // ---------------------------------------------------------------------------
 // Lazy-loaded version-control surfaces — code-split out of the initial bundle.
@@ -124,6 +127,9 @@ const AssistantPanel = lazy(() => import("./panels/assistant/AssistantPanel"))
 const ComparisonView = lazy(() => import("./components/ComparisonView"))
 const ComparisonInspector = lazy(() => import("./components/ComparisonInspector"))
 const NodeSearch = lazy(() => import("./components/NodeSearch"))
+// The workbench's view and its toolbar (specs/workbench), loaded when it is first shown.
+const WorkbenchView = lazy(() => import("./workbench/WorkbenchView"))
+const WorkbenchToolbar = lazy(() => import("./workbench/WorkbenchToolbar"))
 const ModellingPreview = lazy(() => import("./panels/ModellingPreview").then(
   ({ ModellingPreview }) => ({ default: ModellingPreview }),
 ))
@@ -670,6 +676,7 @@ function NodePropertiesPanel({
           onSwapEdgeJoinInputs={onSwapEdgeJoinInputs}
           readOnly={editingReadOnly}
           documentReadOnly={documentEditingReadOnly}
+          insideSubmodel={isInsideSubmodel}
           scopedSave={scopedSave}
           onRefreshPreview={onRefreshPreview}
           dimmed={!selectedNode && !!activePanelNodeId}
@@ -726,6 +733,14 @@ function FlowEditor() {
   // UI store (chrome / layout)
   const paletteOpen = useUIStore((s) => s.paletteOpen)
   const setPaletteOpen = useUIStore((s) => s.setPaletteOpen)
+  // The project's workbench (specs/workbench): whether it is enabled decides what the
+  // palette offers and whether the workbench nodes' copies are kept current. While its
+  // view shows, the pipeline editor stays mounted but hidden, inert and deaf to the keyboard.
+  const workbenchEnabled = useWorkbenchStore((s) => s.enabled)
+  const pipelineActive = useWorkbenchStore((s) => s.activeView === "pipeline")
+  useEffect(() => {
+    void useWorkbenchStore.getState().load()
+  }, [])
   const utilityOpen = useUIStore((s) => s.utilityOpen)
   const setUtilityOpen = useUIStore((s) => s.setUtilityOpen)
   const constantsOpen = useUIStore((s) => s.constantsOpen)
@@ -1218,6 +1233,14 @@ function FlowEditor() {
     addToast,
   })
 
+  // A Workbench Input and a Workbench Output keep their copies of the workbench's
+  // tables current; they are at the top level, so only that level is updated.
+  const { nodeCreated, bringUpToDate } = useWorkbenchTables({
+    graphRef,
+    onUpdateNode,
+    editable: !editingReadOnly && viewStack.length === 1,
+  })
+
   const {
     handlePanelUpdateNode,
     handleScopedSave,
@@ -1229,34 +1252,102 @@ function FlowEditor() {
     applyDocument: applyScopedSaveDocument,
   })
 
-  const saveWithPendingCommits = useCallback(async (): Promise<boolean> => {
+  // The project's save, as it runs: Save and Ctrl/Cmd+S in either toolbar, and
+  // the git flows before a milestone, a move, a branch switch or an identity
+  // retry. The workbench's form first, when it holds unsaved edits or a save the
+  // ledger did not capture, then the workbench nodes' copies brought up to date
+  // with it, then the pipeline through the graph-commit fence, so what is saved
+  // runs on the form that was saved; a pipeline whose copies could not be
+  // brought up to date is not saved. The form store is a lazy chunk, imported
+  // here only while the workbench is enabled and never on start.
+  const saveProjectNow = useCallback(async (): Promise<boolean> => {
+    // The fence that disables Save in both toolbars, and the pipeline save's own
+    // checks, read as they are now: before the form is saved, and again after each
+    // wait, since a submodel can open, the assistant's turn can start or the document
+    // can change while the save waits. A save asked for inside a submodel, during the
+    // assistant's turn or of a document that cannot be saved is refused by the
+    // pipeline's save anyway, or would carry copies that cannot be brought up to date;
+    // refused before the form is saved it never leaves the pipeline's copies behind
+    // the form on disk, and refused after, it saves no pipeline on a fence that closed
+    // meanwhile, rather than one behind the form just saved.
+    const refused = (): boolean => {
+      if (parentGraphRef.current) {
+        addToast("error", "Return to the main pipeline before saving.")
+        return true
+      }
+      if (useUIStore.getState().assistantTurn !== null) {
+        addToast("error", "The assistant is working on the pipeline: wait for its turn to finish, then save.")
+        return true
+      }
+      const documentStatus = useDocumentStatusStore.getState()
+      const capabilities = documentStatus.capabilities
+      if (capabilities?.can_mutate !== true || capabilities.can_save !== true || !documentStatus.graphSynchronized) {
+        addToast("error", documentReadOnlyReason())
+        return true
+      }
+      return false
+    }
+    if (refused()) return false
+    if (useWorkbenchStore.getState().enabled) {
+      const { default: formStore } = await import("./stores/useWorkbenchFormStore")
+      // A form save refused (stale, or failed) saves no pipeline: what is saved runs on
+      // the form that was saved, never on copies of a form the view does not show.
+      if (!(await formStore.getState().flush())) return false
+      if (refused()) return false
+      const brought = await bringUpToDate()
+      if (refused()) return false
+      if (!brought) {
+        addToast("error", "The pipeline was not saved: its workbench nodes could not be brought up to date with the workbench's tables.")
+        return false
+      }
+    }
+    // Through the graph-commit fence: an update of a node still resolving its identity,
+    // a workbench copy's among them, lands or fails before the pipeline is saved, and a
+    // failure saves nothing.
     const pending = await waitForPendingCommits()
     if (!pending.ok) {
       addToast("error", pending.error)
       return false
     }
+    if (refused()) return false
     return handleSave()
-  }, [addToast, handleSave, waitForPendingCommits])
+  }, [addToast, bringUpToDate, handleSave, waitForPendingCommits])
+  const saveProjectNowRef = useRef(saveProjectNow)
+  useEffect(() => { saveProjectNowRef.current = saveProjectNow }, [saveProjectNow])
+
+  // Project saves take turns, as the form store's saves do: a Save pressed while
+  // one runs waits for it and then saves the project as it stands by then. Two
+  // running at once would each fetch the tables, the second fetch superseding the
+  // first fetch's updates of the workbench nodes, and a save waits for every update
+  // of the nodes, a superseded one counting as a failure, so both would be refused
+  // and the pipeline saved by neither.
+  const projectSaveTurns = useRef<Promise<unknown>>(Promise.resolve())
+  const saveProject = useCallback((): Promise<boolean> => {
+    const turn = projectSaveTurns.current.then(() => saveProjectNowRef.current())
+    projectSaveTurns.current = turn.catch(() => undefined)
+    return turn
+  }, [])
 
   // Flush the editor through the graph-commit fence before opening the
   // milestone modal, so Commit can never capture an older ledger snapshot.
   const flushSaveThenMilestone = useCallback(async () => {
-    const ok = await saveWithPendingCommits()
+    const ok = await saveProject()
     if (ok) useGitStore.getState().openModal("milestone")
-  }, [saveWithPendingCommits])
+  }, [saveProject])
 
   // Save-gate: resolve Git readiness before deciding whether to save now or
-  // queue the action behind branch/divergence setup.
+  // queue the action behind branch/divergence setup. Save is the project's
+  // save, the same from either toolbar and from Ctrl/Cmd+S.
   const requestSave = useCallback(async () => {
     const st = useGitStore.getState().status ?? (await useGitStore.getState().loadStatus())
     if (st === null || st.state === "no-repository" || st.state === "git-unavailable" || st.state === "ready") {
-      void saveWithPendingCommits()
+      void saveProject()
       return
     }
     useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select", {
       pendingAction: "save",
     })
-  }, [saveWithPendingCommits])
+  }, [saveProject])
 
   // Commit uses the same readiness gate, but a ready repository first flushes
   // the fenced graph and only then opens the milestone modal.
@@ -1287,9 +1378,9 @@ function FlowEditor() {
   const handleGitModalConfirmed = useCallback(() => {
     const pending = useGitStore.getState().pendingAction
     useGitStore.getState().closeModal()
-    if (pending === "save") void saveWithPendingCommits()
+    if (pending === "save") void saveProject()
     else if (pending === "commit") void flushSaveThenMilestone()
-  }, [flushSaveThenMilestone, saveWithPendingCommits])
+  }, [flushSaveThenMilestone, saveProject])
 
   // Moving versions replaces the working tree. If requested, park the fenced
   // graph on the current branch first; a failed save keeps the user in place.
@@ -1298,7 +1389,7 @@ function FlowEditor() {
       const target = useGitStore.getState().moveTarget
       if (!target) return
       try {
-        if (saveFirst && !await saveWithPendingCommits()) {
+        if (saveFirst && !await saveProject()) {
           addToast("error", "Save failed - staying on the current version.")
           useGitStore.getState().closeMove()
           return
@@ -1313,10 +1404,11 @@ function FlowEditor() {
         useGitStore.getState().closeMove()
       }
     },
-    [addToast, saveWithPendingCommits],
+    [addToast, saveProject],
   )
 
   useKeyboardShortcuts({
+    enabled: pipelineActive,
     handleSave: requestSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
     graphRef, clipboard, nodeIdCounter,
     setSelectedNode, setPreviewData: (d: null) => setPreviewData(d),
@@ -1498,7 +1590,23 @@ function FlowEditor() {
     validateConnection,
     commitBoundaryConnection,
     deleteBoundaryEdge,
+    onNodeCreated: nodeCreated,
   })
+
+  // The workbench prices its sample on the document as it is then: the whole pipeline,
+  // even while a submodel is open.
+  const resolveWorkbenchGraph = useCallback(
+    () => resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef),
+    [],
+  )
+
+  // Leaving the pipeline view closes the canvas's floating menus, which render
+  // outside the hidden pipeline region.
+  useEffect(() => useWorkbenchStore.subscribe((state, previous) => {
+    if (previous.activeView !== "pipeline" || state.activeView === "pipeline") return
+    setContextMenu(null)
+    closeConnectionDropMenu()
+  }), [closeConnectionDropMenu])
 
   // A panel names a node on this canvas (a join its estimate depends on); a
   // missing one is a caller bug, not something to open silently.
@@ -1667,6 +1775,7 @@ function FlowEditor() {
   // Ctrl/Cmd+Enter presses the open panel's Refresh — the way to calculate
   // when clicking a node no longer does (manual calculation).
   useEffect(() => {
+    if (!pipelineActive) return
     const handler = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey) || e.key !== "Enter") return
       const el = e.target as HTMLElement | null
@@ -1677,7 +1786,7 @@ function FlowEditor() {
     }
     window.addEventListener("keydown", handler)
     return () => window.removeEventListener("keydown", handler)
-  }, [handlePanelPreviewRefresh])
+  }, [handlePanelPreviewRefresh, pipelineActive])
 
   // ---------------------------------------------------------------------------
   // Render
@@ -1720,33 +1829,50 @@ function FlowEditor() {
   )
   return (
     <div className="h-full w-full flex flex-col" style={{ background: 'var(--bg-base)' }}>
-      <Toolbar
-        nodeCount={nodes.length}
-        canUndo={canUndo}
-        canRedo={canRedo}
-        onUndo={undo}
-        onRedo={redo}
-        onZoomIn={() => zoomIn()}
-        onZoomOut={() => zoomOut()}
-        onOpenUtility={() => { setUtilityOpen(true); setSelectedNode(null); setLastSelectedId(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
-        onOpenConstants={() => { setConstantsOpen(true); setSelectedNode(null); setLastSelectedId(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
-        submodelAction={selectedSubmodelId === null ? "create" : "dissolve"}
-        canRunSubmodelAction={canRunSubmodelAction}
-        onSubmodelAction={handleToolbarSubmodelAction}
-        canCreateInstance={canCreateInstance}
-        onCreateInstance={handleToolbarCreateInstance}
-        onCentre={() => fitView({ padding: 0.15 })}
-        onAutoLayout={handleAutoLayout}
-        isAutoLayouting={isAutoLayouting}
-        onSave={requestSave}
-        onSaveCommit={requestCommit}
-        wsStatus={wsStatus}
-        timings={previewData?.timings}
-        memory={previewData?.memory}
-        editingDisabled={editingReadOnly}
-        sourceSelectionTrusted={documentSourceSelectionTrusted}
-      />
+      {pipelineActive ? (
+        <Toolbar
+          nodeCount={nodes.length}
+          canUndo={canUndo}
+          canRedo={canRedo}
+          onUndo={undo}
+          onRedo={redo}
+          onZoomIn={() => zoomIn()}
+          onZoomOut={() => zoomOut()}
+          onOpenUtility={() => { setUtilityOpen(true); setSelectedNode(null); setLastSelectedId(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
+          onOpenConstants={() => { setConstantsOpen(true); setSelectedNode(null); setLastSelectedId(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
+          submodelAction={selectedSubmodelId === null ? "create" : "dissolve"}
+          canRunSubmodelAction={canRunSubmodelAction}
+          onSubmodelAction={handleToolbarSubmodelAction}
+          canCreateInstance={canCreateInstance}
+          onCreateInstance={handleToolbarCreateInstance}
+          onCentre={() => fitView({ padding: 0.15 })}
+          onAutoLayout={handleAutoLayout}
+          isAutoLayouting={isAutoLayouting}
+          onSave={requestSave}
+          onSaveCommit={requestCommit}
+          wsStatus={wsStatus}
+          timings={previewData?.timings}
+          memory={previewData?.memory}
+          editingDisabled={editingReadOnly}
+          sourceSelectionTrusted={documentSourceSelectionTrusted}
+        />
+      ) : (
+        <ErrorBoundary name="WorkbenchToolbar">
+          <Suspense fallback={<header role="toolbar" aria-label="Workbench toolbar" className="toolbar" />}>
+            <WorkbenchToolbar onSave={requestSave} onCommit={requestCommit} editingDisabled={editingReadOnly} />
+          </Suspense>
+        </ErrorBoundary>
+      )}
 
+      {/* The pipeline editor. While the workbench's view shows it stays mounted (live
+          sync, the document, undo history) but invisible and inert, and the view covers
+          it (specs/workbench). */}
+      <div className="flex-1 min-h-0 relative flex flex-col">
+      <div
+        className={pipelineActive ? "flex-1 min-h-0 flex flex-col" : "flex-1 min-h-0 flex flex-col invisible"}
+        inert={pipelineActive ? undefined : true}
+        data-testid="pipeline-view"
+      >
       {loadError || documentSystemFailure ? (
         <PipelineLoadFailureView detail={loadError ?? documentSystemFailure ?? "Unknown failure"} />
       ) : documentLoadStatus === "source_only" ? (
@@ -1788,7 +1914,7 @@ function FlowEditor() {
                     onClose={() => setComparisonInspectState(null)}
                   />
                 ) : (
-                  <GitPanel onClose={exitComparison} onSave={saveWithPendingCommits} />
+                  <GitPanel onClose={exitComparison} onSave={saveProject} />
                 )}
               </Suspense>
             </ErrorBoundary>
@@ -1796,10 +1922,14 @@ function FlowEditor() {
         </div>
       ) : (
       <div className="flex-1 flex min-h-0">
+        {/* The palette column: the node palette, then the view switcher, which stays
+            usable while the palette is read-only (specs/workbench). */}
+        <div className="flex flex-col shrink-0 min-h-0">
         <nav
           aria-label="Node palette"
           aria-disabled={editingReadOnly}
           inert={editingReadOnly ? true : undefined}
+          className="flex-1 min-h-0"
           style={editingReadOnly ? { opacity: 0.45 } : undefined}
         >
           {paletteOpen ? (
@@ -1810,17 +1940,15 @@ function FlowEditor() {
               />
             </ErrorBoundary>
           ) : (
-            <button
-              onClick={() => setPaletteOpen(true)}
-              aria-label="Show node palette"
-              className="shrink-0 flex items-center justify-center w-10 h-full hover-chrome-solid"
-              style={{ borderRight: '1px solid var(--chrome-border)' }}
-              title="Show node palette"
-            >
-              <PanelLeftOpen size={16} style={{ color: 'var(--text-muted)' }} />
-            </button>
+            <PaletteRevealStrip onReveal={() => setPaletteOpen(true)} />
           )}
         </nav>
+        {workbenchEnabled && (
+          <div style={{ background: "var(--chrome)", borderRight: "1px solid var(--chrome-border)" }}>
+            <ViewSwitcher compact={!paletteOpen} />
+          </div>
+        )}
+        </div>
 
         <main className="flex-1 flex flex-col min-w-0">
           <PipelineRecoveryBanner onSelectElement={handleSelectRecoveryElement} />
@@ -1896,6 +2024,10 @@ function FlowEditor() {
                 selectNodesOnDrag
                 selectionMode={SelectionMode.Partial}
                 selectionKeyCode={null}
+                // React Flow listens on the document, so a hidden canvas would
+                // still delete its selection on Backspace from another view.
+                deleteKeyCode={pipelineActive ? undefined : null}
+                panActivationKeyCode={pipelineActive ? undefined : null}
                 minZoom={0.1}
                 proOptions={proOptions}
                 defaultEdgeOptions={defaultEdgeOptions}
@@ -1935,7 +2067,7 @@ function FlowEditor() {
           onCloseGit={() => setGitOpen(false)}
           onCloseUtility={() => setUtilityOpen(false)}
           onCloseConstants={() => setConstantsOpen(false)}
-          onSave={saveWithPendingCommits}
+          onSave={saveProject}
           preamble={preamble}
           onImportAdded={handleImportAdded}
           onPreambleChange={handlePreambleChange}
@@ -1968,6 +2100,21 @@ function FlowEditor() {
         />
       </div>
       )}
+      </div>
+      {!pipelineActive && (
+        <ErrorBoundary name="WorkbenchView">
+          <Suspense fallback={null}>
+            <WorkbenchView
+              onSave={saveProject}
+              onSaveShortcut={requestSave}
+              isInsideSubmodel={viewStack.length > 1}
+              readOnly={documentReadOnly}
+              resolveGraph={resolveWorkbenchGraph}
+            />
+          </Suspense>
+        </ErrorBoundary>
+      )}
+      </div>
 
       <FlowEditorOverlays
         editingReadOnly={editingReadOnly}
@@ -1979,7 +2126,7 @@ function FlowEditor() {
         onCreateInstance={handleCreateInstance}
         onDissolveSubmodel={handleDissolveSubmodel}
         onGitModalConfirmed={handleGitModalConfirmed}
-        onSave={saveWithPendingCommits}
+        onSave={saveProject}
         onMoveConfirmed={handleMoveConfirmed}
         onCreateSubmodel={handleCreateSubmodel}
         onRenameNode={onRenameNode}

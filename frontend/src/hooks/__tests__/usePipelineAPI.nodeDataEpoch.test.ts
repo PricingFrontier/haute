@@ -254,6 +254,29 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
     expect(mockPreview).not.toHaveBeenCalled()
   })
 
+  it("previews a Workbench Output's first table", async () => {
+    mockPreview.mockResolvedValue(envelope("response"))
+    const response = makeNode("response", "workbenchOutput", {
+      data: {
+        label: "response",
+        nodeType: "workbenchOutput",
+        config: {
+          tables: [
+            { name: "pricing_output", rows: "one", columns: [{ name: "premium", type: "float" }] },
+            { name: "layers", rows: "many", columns: [{ name: "layer", type: "int" }] },
+          ],
+        },
+      },
+    })
+    const { result } = await renderLoaded([response])
+
+    act(() => result.current.fetchPreview(response, { debounceMs: 0 }))
+
+    await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1), { timeout: STEP_TIMEOUT_MS })
+    expect(mockPreview.mock.calls[0][0]).toMatchObject({ nodeId: "response", portLabel: "pricing_output" })
+    await settle(result)
+  })
+
   it("fetches a displayed frame preview again for its frame once a snapshot is published", async () => {
     mockPreview.mockResolvedValue(envelope("A"))
     const A = makeNode("A")

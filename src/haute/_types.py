@@ -56,6 +56,8 @@ class NodeType(StrEnum):
     """
 
     API_INPUT = "apiInput"
+    WORKBENCH_INPUT = "workbenchInput"
+    WORKBENCH_OUTPUT = "workbenchOutput"
     DATA_INPUT = "dataInput"
     DATA_OUTPUT = "dataOutput"
     POLARS = "polars"
@@ -80,6 +82,8 @@ DECORATOR_TO_NODE_TYPE: dict[str, NodeType] = {
     "data_input": NodeType.DATA_INPUT,
     "data_output": NodeType.DATA_OUTPUT,
     "api_input": NodeType.API_INPUT,
+    "workbench_input": NodeType.WORKBENCH_INPUT,
+    "workbench_output": NodeType.WORKBENCH_OUTPUT,
     "polars": NodeType.POLARS,
     "edge_join": NodeType.EDGE_JOIN,
     "model_score": NodeType.MODEL_SCORE,
@@ -107,12 +111,31 @@ NODE_TYPE_TO_DECORATOR: dict[NodeType, str] = {
 SINK_ONLY_NODE_TYPES: frozenset[NodeType] = frozenset(
     {
         NodeType.OUTPUT,
+        NodeType.WORKBENCH_OUTPUT,
         NodeType.DATA_OUTPUT,
         NodeType.EXPLORE,
         NodeType.MODELLING,
         NodeType.OPTIMISER,
     }
 )
+
+#: The request inputs: the node types that read the quote request. The Quote
+#: Input's tables are built in its panel and the Workbench Input's are copied
+#: from the project's workbench (specs/workbench), but every
+#: context reads a request through either exactly alike, so code that means "the
+#: request input" tests membership here rather than naming one type, which
+#: ``tests/test_request_inputs.py`` enforces. The editor's ``REQUEST_INPUT_TYPES``
+#: (``frontend/src/utils/nodeTypes.ts``) is held equal to this set by test.
+REQUEST_INPUT_NODE_TYPES: frozenset[NodeType] = frozenset(
+    {NodeType.API_INPUT, NodeType.WORKBENCH_INPUT}
+)
+
+#: The response nodes: the node types whose result is the pipeline's response. The
+#: Quote Response maps columns to paths in its panel and the Workbench Output fills
+#: the tables the project's workbench supplies (specs/workbench), but run(),
+#: score() and deploy answer with either alike, and a pipeline holds one. The
+#: editor's ``RESPONSE_TYPES`` (``frontend/src/utils/nodeTypes.ts``) is the twin.
+RESPONSE_NODE_TYPES: frozenset[NodeType] = frozenset({NodeType.OUTPUT, NodeType.WORKBENCH_OUTPUT})
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +153,36 @@ class ApiInputConfig(TypedDict, total=False):
     path: str
     contract: str
     tables: list[dict[str, Any]]
+
+
+class WorkbenchInputConfig(TypedDict, total=False):
+    """Config for workbenchInput nodes.
+
+    ``tables`` and ``sample`` are the copies of the workbench's input tables and
+    sample quote that the editor keeps current (specs/workbench): each table its
+    name, one row per quote or many, and its typed columns, as
+    ``haute._workbench_tables`` holds them. A request, and with no request, as in a
+    preview, the sample, is read into one frame per table; a table the sample gives
+    no rows is one row of nulls, typed as declared. A Workbench Input reads no file.
+    """
+
+    tables: list[dict[str, Any]]
+    sample: dict[str, Any]
+
+
+class WorkbenchOutputConfig(TypedDict, total=False):
+    """Config for workbenchOutput nodes.
+
+    ``tables`` is the copy of the response's tables the project's workbench
+    supplies, which the editor keeps current (specs/workbench), in the Workbench
+    Input's shape. Each is filled from the frame connected to the port its name
+    names: each column from the frame column ``mapping`` picks (by table name, then
+    column name; ``None`` for none), or else from the frame's column of the same
+    name.
+    """
+
+    tables: list[dict[str, Any]]
+    mapping: dict[str, dict[str, str | None]]
 
 
 class _DataInputCommon(TypedDict, total=False):

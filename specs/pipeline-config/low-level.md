@@ -92,7 +92,7 @@
   `_UNIVERSAL_KEYS` (`instanceOf`, `inputMapping`, `selected_columns`, `column_renames`,
   `categorical_levels`, `contract` — keys any node type may legitimately carry).
 - **`NODE_TYPE_TO_FOLDER` / `FOLDER_TO_NODE_TYPE`** (`_config_io.py`) — the bidirectional
-  map between a `NodeType` and its `config/<folder>/` sidecar directory name. 15 of the 19
+  map between a `NodeType` and its `config/<folder>/` sidecar directory name. 17 of the 21
   node types store external config (all except `edgeJoin`, `explore`, `submodel`, and
   `submodelPort`); `polars` is the one optional folder (`_OPTIONAL_SIDECAR_TYPES`):
   `has_config_folder` stays false for it, `has_optional_config_folder` is true, and
@@ -101,6 +101,7 @@
   | Node type | Sidecar folder |
   |---|---|
   | `apiInput` | `config/quote_input/` |
+  | `workbenchInput` | `config/workbench_input/` |
   | `dataInput` | `config/data_input/` |
   | `dataOutput` | `config/data_output/` |
   | `liveSwitch` | `config/source_switch/` |
@@ -108,6 +109,7 @@
   | `banding` | `config/banding/` |
   | `ratingStep` | `config/rating_step/` |
   | `output` | `config/quote_response/` |
+  | `workbenchOutput` | `config/workbench_output/` |
   | `externalFile` | `config/load_file/` |
   | `modelling` | `config/model_training/` |
   | `optimiser` | `config/optimisation/` |
@@ -328,10 +330,13 @@ any root `main.py` before writing `rating/main.py`.
 `haute_toml()` assembles `[project]`/`[deploy]`/`[test_quotes]`/`[safety]`/`[safety.approval]`
 (`min_approvers` hardcoded to 2 in the template — solo users lower it by hand)/`[ci]`/
 `[ci.staging]` sections, splicing in `_target_section()`'s
-`[deploy.<target>]` block. `[server].host` and the optional closed `[assistant]` plus
-`[assistant.egress]` tables are part of the shared TOML schema consumed by
-`DeployConfig.from_toml`, even though neither is a deploy setting. The assistant key sets are
-owned by `haute.assistant._config` so deployment parsing and assistant readiness cannot drift.
+`[deploy.<target>]` block, and with `workbench` set appends the `[workbench]` table;
+`starter_form(name)` renders the blank form `haute init --workbench` writes to
+`forms/form.json` ([workbench](../workbench/low-level.md)). `[server].host`, the optional
+closed `[assistant]` plus `[assistant.egress]` tables and the optional `[workbench]` table are
+part of the shared TOML schema consumed by `DeployConfig.from_toml`, even though none is a
+deploy setting. The assistant key sets are owned by `haute.assistant._config` and the
+workbench's by `haute._workbench_config`, so deployment parsing and each reader cannot drift.
 `env_example()` and the three CI-YAML generators (`github_ci_yml`/`github_deploy_yml`/
 `github_deploy_prod_yml`, `gitlab_ci_yml`, `azure_devops_yml`) all pull the same `secrets`
 list out of `TARGETS` through provider-specific formatters (`_github_secrets_env`,

@@ -156,6 +156,11 @@ vi.mock("../components/NodeSearch", () => ({ default: () => <div data-testid="no
 vi.mock("../components/ErrorBoundary", () => ({
   ErrorBoundary: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
+// The editor reads the workbench's status on start (specs/workbench); not enabled here.
+vi.mock("../api/workbench", () => ({
+  fetchWorkbenchStatus: vi.fn(() => Promise.resolve({ enabled: false, form: null })),
+}))
+
 vi.mock("../api/client", () => ({
   HAUTE_SESSION_EXPIRED_EVENT: "haute:session-expired",
   HAUTE_SESSION_EXPIRED_REASON: "Missing or invalid Haute session token",

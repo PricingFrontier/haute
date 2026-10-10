@@ -617,6 +617,7 @@ const addGross: Step = {
 
 function mountCanvasShortcuts(nodes: Node[]) {
   const params = {
+    enabled: true,
     handleSave: vi.fn(),
     setNodes: vi.fn(),
     setEdges: vi.fn(),

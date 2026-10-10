@@ -1,0 +1,113 @@
+/* haute-ui: the left palette's shell, shared by Haute's node palette and the
+   workbench's component palette (specs/frontend-shared). Plain CSS like toolbar.css,
+   and colours only from index.css's tokens. */
+
+/* The column: as wide as the toolbar's brand column needs, on the chrome. */
+.palette {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  width: 180px;
+  height: 100%;
+  overflow-y: auto;
+  background: var(--chrome);
+  border-right: 1px solid var(--chrome-border);
+}
+
+/* The title, and the minimiser at its right. */
+.palette-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+}
+.palette-title {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  line-height: 1.5;
+  text-transform: uppercase;
+}
+.palette-collapse {
+  display: flex;
+  margin: 0;
+  padding: 2px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  transition: background 150ms, color 150ms;
+}
+.palette-collapse:hover {
+  background: var(--chrome-hover);
+  color: var(--text-secondary);
+}
+
+/* The items: each an icon on a tint of its colour (inline), then its name. */
+.palette-items {
+  flex: 1 1 0%;
+  padding: 0 8px;
+}
+.palette-items > :not(:last-child) {
+  margin-bottom: 2px;
+}
+.palette-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: grab;
+  transition: color 150ms cubic-bezier(0.4, 0, 0.2, 1), background-color 150ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.palette-item:active {
+  cursor: grabbing;
+}
+.palette-item:hover {
+  background: var(--chrome-hover);
+}
+/* After :hover and :active, which it outranks by coming later. */
+.palette-item.palette-item-disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  background: transparent;
+}
+.palette-item-icon {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+}
+.palette-item-label {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+/* A collapsed palette: a strip whose button shows it again. */
+.palette-reveal {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 40px;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-right: 1px solid var(--chrome-border);
+  background: var(--chrome);
+  color: var(--text-muted);
+  transition: background 150ms;
+}
+.palette-reveal:hover,
+.palette-reveal:focus-visible {
+  background: var(--chrome-hover);
+}

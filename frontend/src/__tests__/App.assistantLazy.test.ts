@@ -20,6 +20,7 @@ const LAZY_ASSISTANT_MODULES = /(?:panels\/assistant\/|stores\/useAssistantStore
 const EAGER_ASSISTANT_CHROME = [
   "App.tsx",
   "components/Toolbar.tsx",
+  "components/ProjectControls.tsx",
   "components/AssistantWorkingPill.tsx",
   "components/AskAssistantButton.tsx",
 ]

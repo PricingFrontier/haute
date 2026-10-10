@@ -42,7 +42,8 @@ import {
   type SubmodelDefinition,
   type SubmodelPortData,
 } from "../types/node"
-import { NODE_TYPES } from "./nodeTypes"
+import { NODE_TYPES, isRequestInputType } from "./nodeTypes"
+import { readWorkbenchTables, workbenchTablePorts } from "./workbenchTables"
 
 type ConfigLike = Record<string, unknown> | undefined | null
 
@@ -116,7 +117,8 @@ export function apiInputFrameColumns(
   })
 }
 
-const ASCII_IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+/** The shape of a frame label, and of a workbench column's name: an ASCII identifier. */
+export const ASCII_IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 
 function isValidFrameLabel(
   label: string | null,
@@ -145,10 +147,17 @@ function eligibleFrameLabels(
   emit: readonly Record<string, unknown>[],
   reservedLabels: ReadonlySet<string>,
 ): string[] {
+  return eligibleLabels(emit.map(rawLabel), reservedLabels)
+}
+
+/** The labels among *candidates* that can be handles, in order, as `eligibleFrameLabels` judges them. */
+function eligibleLabels(
+  candidates: readonly (string | null)[],
+  reservedLabels: ReadonlySet<string>,
+): string[] {
   const seen = new Set<string>()
   const labels: string[] = []
-  for (const t of emit) {
-    const label = rawLabel(t)
+  for (const label of candidates) {
     if (!isValidFrameLabel(label, reservedLabels)) continue
     const folded = label.toLowerCase()
     if (seen.has(folded)) continue
@@ -161,14 +170,49 @@ function eligibleFrameLabels(
 /**
  * Ordered list of every runtime-eligible apiInput frame label.
  *
- * This is the only frontend frame-label derivation. Every eligible frame uses
- * its label as its handle.
+ * This is the only frontend frame-label derivation for a Quote Input. Every eligible
+ * frame uses its label as its handle.
  */
 export function apiInputFrameLabels(
   config: ConfigLike,
   reservedLabels: ReadonlySet<string>,
 ): string[] {
   return eligibleFrameLabels(emitTables(config), reservedLabels)
+}
+
+/**
+ * A Workbench Input's frames: its tables with a column (`workbenchTablePorts`), each named
+ * by its table and judged a handle as a Quote Input's label is (specs/workbench).
+ */
+export function workbenchInputFrameLabels(
+  config: ConfigLike,
+  reservedLabels: ReadonlySet<string>,
+): string[] {
+  return eligibleLabels(workbenchTablePorts(config), reservedLabels)
+}
+
+/** The frames a request input of `nodeType` emits: the one derivation for either type. */
+export function requestInputFrameLabels(
+  nodeType: unknown,
+  config: ConfigLike,
+  reservedLabels: ReadonlySet<string>,
+): string[] {
+  return nodeType === NODE_TYPES.WORKBENCH_INPUT
+    ? workbenchInputFrameLabels(config, reservedLabels)
+    : apiInputFrameLabels(config, reservedLabels)
+}
+
+/** The columns of the frame `sourceHandle` names on a request input of `nodeType`. */
+export function requestInputFrameColumns(
+  nodeType: unknown,
+  config: ConfigLike,
+  sourceHandle: string | null | undefined,
+): ApiInputFrameColumn[] {
+  if (nodeType !== NODE_TYPES.WORKBENCH_INPUT) return apiInputFrameColumns(config, sourceHandle)
+  const table = readWorkbenchTables(config).find(
+    (candidate) => candidate.name === sourceHandle && candidate.columns.length > 0,
+  )
+  return table === undefined ? [] : table.columns.map((column) => ({ name: column.name, dtype: column.type }))
 }
 
 /** Ordered handles whose executable identities were supplied by the server. */
@@ -358,7 +402,7 @@ export function edgeInputName(
 ): string {
   const edgeInput = edge.data?._inputName
   if (typeof edgeInput === "string" && edgeInput.length > 0) return edgeInput
-  if (sourceNode.data.nodeType === NODE_TYPES.API_INPUT) {
+  if (isRequestInputType(sourceNode.data.nodeType)) {
     return sourceHandleInputName(edge, sourceNode)
   }
   if (sourceNode.data.nodeType === NODE_TYPES.SUBMODEL_PORT) {
@@ -564,14 +608,15 @@ export function apiInputLabelIssueMessage(issue: ApiInputLabelIssue | null): str
 // ─── Edge reconciliation ─────────────────────────────────────────────
 
 /**
- * The set of `sourceHandle` values an apiInput's outgoing edges may
- * legitimately carry, given its config.
+ * The set of `sourceHandle` values a request input's outgoing edges may
+ * legitimately carry, given its type and config.
  */
 export function validSourceHandleKeys(
+  nodeType: unknown,
   config: ConfigLike,
   reservedLabels: ReadonlySet<string>,
 ): Set<string> {
-  return new Set(apiInputFrameLabels(config, reservedLabels))
+  return new Set(requestInputFrameLabels(nodeType, config, reservedLabels))
 }
 
 export type ReconciledApiInputEdge = {
@@ -605,16 +650,18 @@ export type ReconcileApiInputEdgesResult<E extends SimpleEdge> = {
  */
 export function reconcileApiInputEdges<E extends SimpleEdge>({
   nodeId,
+  nodeType,
   config,
   edges,
   reservedLabels,
 }: {
   nodeId: string
+  nodeType: unknown
   config: ConfigLike
   edges: E[]
   reservedLabels: ReadonlySet<string>
 }): ReconcileApiInputEdgesResult<E> {
-  const validKeys = validSourceHandleKeys(config, reservedLabels)
+  const validKeys = validSourceHandleKeys(nodeType, config, reservedLabels)
   const removed: ReconciledApiInputEdge[] = []
   const kept: E[] = []
   for (const edge of edges) {
@@ -790,29 +837,42 @@ export type ApplyApiInputConfigChangeResult<E extends SimpleEdge> = {
  * single↔multi transitions). `App.onUpdateNode` applies the result in
  * the same state update that commits the config, so a rename is one
  * atomic, undoable operation — never a destroy-and-reconnect.
+ *
+ * For a Workbench Input, whose tables the workbench may reorder or replace
+ * wholesale (specs/workbench), a position says nothing about which table is
+ * which: connections follow names only, and a renamed table's are pruned
+ * rather than rebound.
  */
 export function applyApiInputConfigChange<E extends SimpleEdge>({
   nodeId,
+  nodeType,
   prevConfig,
   nextConfig,
   edges,
   reservedLabels,
 }: {
   nodeId: string
+  nodeType: unknown
   prevConfig: ConfigLike
   nextConfig: ConfigLike
   edges: E[]
   reservedLabels: ReadonlySet<string>
 }): ApplyApiInputConfigChangeResult<E> {
-  const migration = migrateApiInputEdges({
-    nodeId,
-    prevConfig,
-    nextConfig,
-    edges,
-    reservedLabels,
-  })
+  // The workbench's tables (specs/workbench) may be reordered or replaced wholesale, so a
+  // Workbench Input's connections follow their tables' names and are never rebound by
+  // position.
+  const migration = nodeType === NODE_TYPES.WORKBENCH_INPUT
+    ? { edges, rebound: [] }
+    : migrateApiInputEdges({
+      nodeId,
+      prevConfig,
+      nextConfig,
+      edges,
+      reservedLabels,
+    })
   const { edges: pruned, removed } = reconcileApiInputEdges({
     nodeId,
+    nodeType,
     config: nextConfig,
     edges: migration.edges,
     reservedLabels,

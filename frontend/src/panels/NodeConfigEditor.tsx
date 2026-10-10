@@ -24,6 +24,8 @@ import {
   SubmodelEditor,
   SubmodelPortEditor,
   TransformEditor,
+  WorkbenchInputEditor,
+  WorkbenchOutputEditor,
 } from "./LazyNodeEditors"
 import type { LoadPivotFilterMembers } from "./editors/ExplorePivotsConfig"
 import type { InputSource, OnReplaceConfig, OnUpdateConfig, OnUpdateConfigResult, SimpleNode } from "./editors"
@@ -79,6 +81,8 @@ export type NodeConfigEditorProps = {
   exploreConfigHash: string | null
   reservedApiInputFrameLabels: Set<string>
   accentColor: string
+  /** A submodel is open, so the node shown is inside one. */
+  insideSubmodel?: boolean
   /**
    * The comparison view's inert render: node types without a read-only editor
    * show their config, and nothing offers a config replacement.
@@ -128,6 +132,7 @@ export function NodeConfigEditor({
   exploreConfigHash,
   reservedApiInputFrameLabels,
   accentColor,
+  insideSubmodel = false,
   readOnly = false,
 }: NodeConfigEditorProps) {
   if (readOnly && NO_READ_ONLY_EDITOR.has(nodeType)) return <ReadOnlyConfigDump config={config} />
@@ -143,6 +148,27 @@ export function NodeConfigEditor({
           onUpdate={onUpdateConfig}
           accentColor={accentColor}
           reservedFrameLabels={reservedApiInputFrameLabels}
+        />
+      )
+
+    case NODE_TYPES.WORKBENCH_INPUT:
+      return (
+        <WorkbenchInputEditor
+          config={config}
+          accentColor={accentColor}
+          reservedFrameLabels={reservedApiInputFrameLabels}
+          insideSubmodel={insideSubmodel}
+        />
+      )
+
+    case NODE_TYPES.WORKBENCH_OUTPUT:
+      return (
+        <WorkbenchOutputEditor
+          config={config}
+          onUpdate={onUpdateConfig}
+          inputSources={inputSources}
+          reservedFrameLabels={reservedApiInputFrameLabels}
+          insideSubmodel={insideSubmodel}
         />
       )
 

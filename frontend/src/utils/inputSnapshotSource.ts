@@ -3,7 +3,7 @@ import type { Node } from "@xyflow/react"
 import { apiInputHasEmittingTable } from "./apiInputPorts"
 import { dataInputIsDirect } from "./dataInputMode"
 import { instanceOriginal } from "./instanceOriginal"
-import { NODE_TYPES } from "./nodeTypes"
+import { NODE_TYPES, isRequestInputType } from "./nodeTypes"
 
 /** The input-cache request body that names one node's snapshot. */
 export type SnapshotSource = {
@@ -34,7 +34,7 @@ export function inputSnapshotSource(node: Pick<Node, "data">): SnapshotSource | 
     return dataInputIsDirect(config) ? null : { schema_version: 1, config }
   }
   if (
-    nodeType === NODE_TYPES.API_INPUT &&
+    isRequestInputType(nodeType) &&
     Object.prototype.hasOwnProperty.call(config, "tables") &&
     typeof config.path === "string" &&
     STRUCTURED_PATH.test(config.path)

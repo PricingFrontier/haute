@@ -1,4 +1,10 @@
 @import "tailwindcss";
+/* The toolbar's, the palette's, the right-hand panels' and native dropdowns' styles,
+   shared by the pipeline editor and the workbench (haute-ui, specs/frontend-shared). */
+@import "./haute-ui/toolbar.css";
+@import "./haute-ui/palette.css";
+@import "./haute-ui/side-panel.css";
+@import "./haute-ui/dropdowns.css";
 
 :root {
   color-scheme: dark;
@@ -397,16 +403,6 @@
   --controls-shadow: rgba(0,0,0,.3);
 }
 
-/* Native dropdown styling — forces dark background on option popups */
-select {
-  background-color: var(--bg-input);
-  color: var(--text-primary);
-}
-option {
-  background-color: var(--bg-elevated);
-  color: var(--text-primary);
-}
-
 html, body, #root {
   margin: 0;
   padding: 0;
@@ -655,46 +651,6 @@ html, body, #root {
   color: var(--text-primary);
 }
 
-/* Toolbar action buttons — undo/redo, zoom, centre/layout, submodel/instance,
-   utility/imports/assistant.  These used to be bare labels on the chrome
-   (--text-secondary, ~5.5:1) that only grew a background on hover, so the bar
-   read as a row of words rather than a row of controls.
-   Three tiers deliberately remain distinct: Save stays a filled accent button
-   (primary), these are the recessive-but-visible default, and the numeric
-   fields keep their inset input styling. */
-.toolbar-btn {
-  background: var(--btn-surface);
-  border: 1px solid var(--btn-border);
-  color: var(--text-primary);
-  transition: background 150ms, border-color 150ms, color 150ms;
-}
-.toolbar-btn:hover:not(:disabled):not([aria-disabled="true"]),
-.toolbar-btn:focus-visible:not(:disabled):not([aria-disabled="true"]) {
-  background: var(--btn-surface-hover);
-  border-color: var(--btn-border-hover);
-}
-.toolbar-btn:active:not(:disabled):not([aria-disabled="true"]) {
-  background: var(--btn-surface-pressed);
-}
-/* Engaged toggle (Assistant): accent-tinted so "open" is legible at a glance
-   without relying on a hover the user isn't performing. */
-.toolbar-btn[aria-pressed="true"] {
-  background: var(--accent-soft);
-  border-color: var(--accent-ring);
-  color: var(--text-accent);
-}
-/* Unavailable.  Losing the raised surface is the signal — a flat control next
-   to raised ones reads as "not right now" without any colour knowledge. The
-   label stays readable so you can still tell what it is and why you might
-   want it; hover and press feedback are withheld, and the cursor says so. */
-.toolbar-btn:disabled,
-.toolbar-btn[aria-disabled="true"] {
-  background: transparent;
-  border-color: var(--border-subtle);
-  color: var(--text-disabled);
-  cursor: not-allowed;
-}
-
 /* Chrome toggle (e.g. collapsed-palette reveal button): rests on
    var(--chrome) rather than transparent, but still hovers to
    var(--chrome-hover).  Does NOT alter foreground color, since the
@@ -787,22 +743,9 @@ html, body, #root {
 /* ────────────────────────────────────────────────────────────────
    Inspector-panel hover / focus classes
    Replaces inline `e.currentTarget.style.*` mutations in
-   NodePanel / TracePanel / PanelShell with CSS-driven state.
+   NodePanel / TracePanel with CSS-driven state. The right-hand
+   panels' drag handle is haute-ui's (side-panel.css).
    ──────────────────────────────────────────────────────────────── */
-
-/* PanelShell drag handle — the element keeps an inline
-   `style={{ background: 'var(--chrome-border)' }}` for its rest
-   colour (pinned by PanelShell tests).  `!important` is required
-   here so the hover rule wins over the inline declaration.  The
-   `.dragging` modifier keeps the accent colour visible while the
-   user is actively resizing, even when the pointer wanders off the
-   handle. */
-.panel-drag-handle:hover {
-  background: var(--accent) !important;
-}
-.panel-drag-handle.dragging {
-  background: var(--accent) !important;
-}
 
 /* NodePanel label input — :focus-visible ring replaces the
    onFocus/onBlur inline borderColor + boxShadow writes. */

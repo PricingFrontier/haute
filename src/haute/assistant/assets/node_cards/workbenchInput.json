@@ -1,0 +1,5 @@
+{
+  "node_type": "workbenchInput",
+  "authorable": false,
+  "note": "Not authorable by the assistant: a Workbench Input's tables are the workbench's, which the editor copies and keeps current, so assistant operations cannot add, update, rename or delete one, nor edit its steps; the analyst adds it from the palette and edits its tables in the workbench. Read it as the pipeline's request input and wire downstream nodes to its frames, each selected by add_edge's source_handle, exactly as to a Quote Input's."
+}

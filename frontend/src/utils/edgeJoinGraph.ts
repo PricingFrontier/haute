@@ -1,7 +1,7 @@
 import type { Edge, Node, XYPosition } from "@xyflow/react"
 import { isSteppedTransformConfig, renameStepInputs } from "./polarsStepInputs"
 import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
-import { NODE_TYPES } from "./nodeTypes"
+import { NODE_TYPES, isRequestInputType } from "./nodeTypes"
 import { appEdge, appNode, selectOnlyNode } from "./flowElements"
 import { EDGE_JOIN_BASE_HANDLE, EDGE_JOIN_JOIN_HANDLE } from "./edgeJoinRoles"
 import { edgeInputName, UNRESOLVED_INPUT_NAME } from "./apiInputPorts"
@@ -77,7 +77,7 @@ function endpointsShareExecutableInput(
   if (!sourceNode) return true
   const nodeType = sourceNode.data.nodeType
   if (
-    nodeType === NODE_TYPES.API_INPUT
+    isRequestInputType(nodeType)
     || nodeType === NODE_TYPES.SUBMODEL
     || nodeType === NODE_TYPES.SUBMODEL_PORT
   ) {

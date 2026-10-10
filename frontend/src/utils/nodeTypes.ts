@@ -1,4 +1,4 @@
-import { Database, Brain, TableProperties, CircleDot, HardDriveDownload, FileArchive, Package, ArrowRight, Radio, ToggleLeft, SlidersHorizontal, FlaskConical, Target, Crosshair, Rows3, Hash, Search, GitMerge } from "lucide-react"
+import { Database, Brain, TableProperties, CircleDot, HardDriveDownload, FileArchive, Package, ArrowRight, Radio, ToggleLeft, SlidersHorizontal, FlaskConical, Target, Crosshair, Rows3, Hash, Search, GitMerge, ClipboardList, ClipboardCheck } from "lucide-react"
 import type { Node } from "@xyflow/react"
 import PolarsIcon from "../components/PolarsIcon"
 import { NODE_GROUP_COLORS } from "../theme/colors"
@@ -39,9 +39,11 @@ export const NODE_TYPE_META: Record<NodeTypeValue, {
   // Entry group (orange) — pipeline starts here
   // Palette: Okabe-Ito / Wong CVD-safe — each functional group gets a distinct hue
   [NODE_TYPES.API_INPUT]:          { icon: Radio,              color: NODE_GROUP_COLORS.entry, label: "QUOTE IN",       name: "Quote Input",          description: "Live API input for deployment (max 1)",                       defaultConfig: nodeDefaults[NODE_TYPES.API_INPUT], shape: "pill" },
+  [NODE_TYPES.WORKBENCH_INPUT]:    { icon: ClipboardList,      color: NODE_GROUP_COLORS.entry, label: "WORKBENCH IN",   name: "Workbench Input",      description: "Live API input with the workbench's tables (max 1)",          defaultConfig: nodeDefaults[NODE_TYPES.WORKBENCH_INPUT], shape: "pill" },
   [NODE_TYPES.LIVE_SWITCH]:        { icon: ToggleLeft,         color: NODE_GROUP_COLORS.entry, label: "SWITCH",         name: "Source Switch",        description: "Switch between live API and batch data",                      defaultConfig: nodeDefaults[NODE_TYPES.LIVE_SWITCH], shape: "pill" },
   // Exit (vermillion) — pipeline destination
   [NODE_TYPES.OUTPUT]:             { icon: CircleDot,          color: NODE_GROUP_COLORS.exit, label: "QUOTE OUT",      name: "Quote Response",       description: "Final price / prediction",                                    defaultConfig: nodeDefaults[NODE_TYPES.OUTPUT], shape: "pill" },
+  [NODE_TYPES.WORKBENCH_OUTPUT]:   { icon: ClipboardCheck,     color: NODE_GROUP_COLORS.exit, label: "WORKBENCH OUT",  name: "Workbench Output",     description: "Fills the workbench's output tables (max 1)",                 defaultConfig: nodeDefaults[NODE_TYPES.WORKBENCH_OUTPUT], shape: "pill" },
   // Data group (bluish green) — read/write external data
   [NODE_TYPES.DATA_INPUT]:         { icon: Database, color: NODE_GROUP_COLORS.data, label: "DATA IN", name: "Data Input", description: "Read a configured external dataset", defaultConfig: nodeDefaults[NODE_TYPES.DATA_INPUT] },
   [NODE_TYPES.DATA_OUTPUT]:        { icon: HardDriveDownload, color: NODE_GROUP_COLORS.data, label: "DATA OUT", name: "Data Output", description: "Write a configured external dataset", defaultConfig: nodeDefaults[NODE_TYPES.DATA_OUTPUT], maxInputs: 1 },
@@ -65,13 +67,63 @@ export const NODE_TYPE_META: Record<NodeTypeValue, {
   [NODE_TYPES.SUBMODEL_PORT]:      { icon: ArrowRight,         color: NODE_GROUP_COLORS.port, label: "PORT",           name: "Port",                 description: "Submodel input/output port",                                  defaultConfig: nodeDefaults[NODE_TYPES.SUBMODEL_PORT] },
 }
 
+/**
+ * The request inputs: the node types that read the quote request. The Quote
+ * Input's tables are built in its panel and the Workbench Input's copied from
+ * the project's workbench (specs/workbench); everything
+ * else treats them alike, so code that means "the request input" asks
+ * `isRequestInputType` rather than naming one type. Held equal to the
+ * backend's `REQUEST_INPUT_NODE_TYPES` by `tests/test_request_inputs.py`.
+ */
+export const REQUEST_INPUT_TYPES = new Set<NodeTypeValue>([NODE_TYPES.API_INPUT, NODE_TYPES.WORKBENCH_INPUT])
+
+/** Whether a node of this type reads the quote request. */
+export function isRequestInputType(nodeType: unknown): boolean {
+  return typeof nodeType === "string" && REQUEST_INPUT_TYPES.has(nodeType as NodeTypeValue)
+}
+
+/**
+ * The response nodes: the node types whose result is the pipeline's response. The
+ * Quote Response maps columns to paths in its panel and the Workbench Output fills
+ * the tables the project's workbench supplies (specs/workbench); a pipeline holds
+ * one of either. The backend's `RESPONSE_NODE_TYPES` is the twin.
+ */
+export const RESPONSE_TYPES = new Set<NodeTypeValue>([NODE_TYPES.OUTPUT, NODE_TYPES.WORKBENCH_OUTPUT])
+
+/** Whether a node of this type is the pipeline's response. */
+export function isResponseType(nodeType: unknown): boolean {
+  return typeof nodeType === "string" && RESPONSE_TYPES.has(nodeType as NodeTypeValue)
+}
+
 export const SINGLETON_TYPES = new Set<NodeTypeValue>([
-  NODE_TYPES.API_INPUT, NODE_TYPES.OUTPUT,
+  NODE_TYPES.API_INPUT, NODE_TYPES.WORKBENCH_INPUT, NODE_TYPES.OUTPUT, NODE_TYPES.WORKBENCH_OUTPUT,
 ])
 
 /** Whether a node type allows only one instance per pipeline. */
 export function isSingletonType(nodeType: string | undefined): boolean {
   return Boolean(nodeType && SINGLETON_TYPES.has(nodeType as NodeTypeValue))
+}
+
+/**
+ * The singleton types a node of this type occupies: a pipeline holds one
+ * request input and one response node, so either of a pair occupies both.
+ */
+export function singletonTypesOccupiedBy(nodeType: unknown): NodeTypeValue[] {
+  if (isRequestInputType(nodeType)) return [...REQUEST_INPUT_TYPES]
+  if (isResponseType(nodeType)) return [...RESPONSE_TYPES]
+  return typeof nodeType === "string" && isSingletonType(nodeType) ? [nodeType as NodeTypeValue] : []
+}
+
+/** What a singleton slot is called: a pair's two names, or the type's own. */
+export function singletonSlotName(nodeType: NodeTypeValue): string {
+  if (isRequestInputType(nodeType)) return "Quote Input or Workbench Input"
+  if (isResponseType(nodeType)) return "Quote Response or Workbench Output"
+  return NODE_TYPE_META[nodeType].name
+}
+
+/** Why a singleton of this type cannot be added: the pipeline already has one. */
+export function singletonLimitMessage(nodeType: NodeTypeValue): string {
+  return `Only one ${singletonSlotName(nodeType)} node is allowed per pipeline`
 }
 
 type NodeTypeCarrier = Pick<Node, "data">
@@ -84,8 +136,8 @@ function collectSingletonTypes(
 ): void {
   for (const node of nodes) {
     const nodeType = node.data.nodeType
-    if (typeof nodeType === "string" && isSingletonType(nodeType)) {
-      result.add(nodeType as NodeTypeValue)
+    for (const occupied of singletonTypesOccupiedBy(nodeType)) {
+      result.add(occupied)
     }
   }
   for (const [definitionId, candidate] of Object.entries(submodels ?? {})) {
@@ -123,7 +175,7 @@ export function singletonTypesInSubmodelDefinition(
 
 /** Nodes that only produce data — no input handle. */
 export const SOURCE_ONLY_TYPES = new Set<string>([
-  NODE_TYPES.DATA_INPUT, NODE_TYPES.API_INPUT, NODE_TYPES.CONSTANT,
+  NODE_TYPES.DATA_INPUT, NODE_TYPES.API_INPUT, NODE_TYPES.WORKBENCH_INPUT, NODE_TYPES.CONSTANT,
 ])
 
 /** Nodes whose newly-added columns originate from generated scenario/config data. */
@@ -133,10 +185,15 @@ export const GENERATED_COLUMN_ORIGIN_TYPES = new Set<string>([
 
 /** Nodes that only consume data — no output handle. */
 export const SINK_ONLY_TYPES = new Set<string>([
-  NODE_TYPES.OUTPUT, NODE_TYPES.DATA_OUTPUT, NODE_TYPES.EXPLORE, NODE_TYPES.MODELLING, NODE_TYPES.OPTIMISER,
+  NODE_TYPES.OUTPUT, NODE_TYPES.WORKBENCH_OUTPUT, NODE_TYPES.DATA_OUTPUT, NODE_TYPES.EXPLORE, NODE_TYPES.MODELLING, NODE_TYPES.OPTIMISER,
 ])
 
-/** Node types shown in the palette, in display order. Submodel/port are excluded (created via dialog). */
+/**
+ * Node types shown in the palette, in display order. Submodel/port are excluded
+ * (created via dialog). The palette shows the Workbench Input in the Quote
+ * Input's place while the project's workbench is enabled, and the Workbench
+ * Output in the Quote Response's.
+ */
 export const PALETTE_TYPES: NodeTypeValue[] = [
   NODE_TYPES.API_INPUT, NODE_TYPES.LIVE_SWITCH, NODE_TYPES.OUTPUT,
   NODE_TYPES.DATA_INPUT, NODE_TYPES.DATA_OUTPUT, NODE_TYPES.EXTERNAL_FILE, NODE_TYPES.CONSTANT,

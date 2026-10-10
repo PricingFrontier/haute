@@ -4,11 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import MoveConfirmModal from "../MoveConfirmModal"
 import useGitStore from "../../stores/useGitStore"
 import useGraphStore from "../../stores/useGraphStore"
+import useWorkbenchStore from "../../stores/useWorkbenchStore"
 
 describe("MoveConfirmModal", () => {
   beforeEach(() => {
     useGitStore.setState({ moveTarget: { sha: "abc123", label: "v2.0" } })
     useGraphStore.setState({ dirty: false })
+    useWorkbenchStore.setState({ formDirty: false })
   })
   afterEach(cleanup)
 
@@ -34,6 +36,17 @@ describe("MoveConfirmModal", () => {
     // The plain confirm is replaced by the two explicit choices.
     expect(screen.queryByTestId("move-confirm")).toBeNull()
 
+    fireEvent.click(screen.getByTestId("move-save"))
+    expect(onConfirm).toHaveBeenCalledWith(true)
+  })
+
+  it("asks about unsaved edits in the workbench's form as it asks about the canvas", () => {
+    useWorkbenchStore.setState({ formDirty: true })
+    const onConfirm = vi.fn()
+    render(<MoveConfirmModal onConfirm={onConfirm} onClose={vi.fn()} />)
+
+    expect(screen.getByTestId("move-dirty-warning")).toBeInTheDocument()
+    expect(screen.queryByTestId("move-confirm")).toBeNull()
     fireEvent.click(screen.getByTestId("move-save"))
     expect(onConfirm).toHaveBeenCalledWith(true)
   })

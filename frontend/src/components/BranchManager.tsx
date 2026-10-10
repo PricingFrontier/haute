@@ -15,7 +15,7 @@ import {
 } from "../api/client"
 import type { GitManagedBranch } from "../api/types"
 import useGitStore from "../stores/useGitStore"
-import useGraphStore from "../stores/useGraphStore"
+import useProjectDirty, { discardFormEdits } from "../hooks/useProjectDirty"
 import useToastStore from "../stores/useToastStore"
 import { recordArchive, recordDelete, recordRestore, recordSwitch } from "../utils/vcHistory"
 import { apiErrorMessage } from "../api/errors"
@@ -49,7 +49,7 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
   const historyNonce = useGitStore((s) => s.historyNonce)
   const commitNonce = useGitStore((s) => s.commitNonce)
   const addToast = useToastStore((s) => s.addToast)
-  const dirty = useGraphStore((s) => s.dirty)
+  const dirty = useProjectDirty()
 
   const [newBranch, setNewBranch] = useState("")
   const [busy, setBusy] = useState<string | null>(null)
@@ -179,6 +179,7 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
       const from = branches.find((x) => x.is_current && !x.is_archived)?.name ?? null
       void run(b.name, "switch", async () => {
         await setWorkingBranch(b.name, false)
+        await discardFormEdits()
         addToast("success", `Switched to ${b.name}`)
         if (from !== null) recordSwitch(from, b.name)
       })

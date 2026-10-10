@@ -840,6 +840,32 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/UtilityWriteResponse"},
         },
     },
+    "/api/workbench": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchStatusResponse"},
+        },
+    },
+    "/api/workbench/form": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchFormResponse"},
+        },
+        "PUT": {
+            "request_ref": "#/components/schemas/WorkbenchFormSaveRequest",
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchFormSaveResponse"},
+        },
+    },
+    "/api/workbench/tables": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchTablesResponse"},
+        },
+        "POST": {
+            "request_ref": "#/components/schemas/WorkbenchFormTablesRequest",
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchTablesResponse"},
+        },
+    },
 }
 
 

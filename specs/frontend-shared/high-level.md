@@ -53,6 +53,16 @@ In scope:
   (structure/status/model/chart/syntax) for code that needs a token as a
   JS value, plus the literal `NODE_GROUP_COLORS` palette — it is a
   consumer-facing view of the token layer, not the layer itself.
+- `haute-ui` (`frontend/src/haute-ui/`), the chrome kit Haute's toolbars and palettes are
+  built from, the pipeline editor's and the workbench's alike, so the two match by
+  construction: the toolbar's stylesheet, the React components the toolbar is built
+  from (the brand, a two-row column, a labelled toolbar button, Undo/Redo,
+  Zoom In/Zoom Out and Save/Commit), the palette's shell (its column, its
+  header with the minimiser, the strip that reveals it again, and its items, with
+  their stylesheet), the frame of a right-hand panel (resized from its left edge,
+  with a header and Close), and the native dropdowns' colours. Haute's `Toolbar`
+  and node palette render these components, as the workbench's toolbar and palette
+  do.
 - Chrome widgets and app-shell surfaces: `ErrorBoundary`, `Toast`,
   `ModalShell`, `Tooltip`, `ContextMenu`, `KeyboardShortcuts`, `Toolbar`,
   `GlobalConstantsPanel`, `BackgroundJobPolling`, `NodeSearch`, `BreadcrumbBar`.
@@ -229,7 +239,11 @@ text labels, zoom in/out, centre/layout, Submodel/Instance selection actions, Ut
 assistant and a Help menu (Documentation, Hotkeys, Report a bug), and the working branch indicator stacked above
 equal-width Save and Commit buttons. The Pipeline control reports the pipeline's live state:
 the calculation mode while the server is reachable, and "Offline" once live sync has lost
-the server. The toolbar carries no unsaved-changes indicator.
+the server. The toolbar carries no unsaved-changes indicator. Its frame, brand, Undo/Redo
+and Zoom In/Zoom Out columns and Save/Commit pair are `haute-ui` components, the same ones
+the workbench's toolbar is built from. Its right-hand group, Assistant, Help
+and the branch indicator with Save and Commit, is `ProjectControls`, which the workbench's
+toolbar ends with too ([workbench](../workbench/high-level.md)).
 `NodeSearch` is the Ctrl+K command palette, windowed to
 render only visible rows for large graphs; the application loads its module
 only when the palette is opened, so this user-triggered surface is not part
@@ -329,6 +343,15 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   `PIVOT_CONDITIONAL_FORMAT_COLORS` palettes, which are fixed branding or
   visualisation semantics rather than theme roles. The semantic-colour
   tokenization test rejects fixed colour literals everywhere else.
+- **One chrome kit.** The toolbar's frame and controls, the palette's shell and the
+  side panel's frame are one directory the pipeline editor and the workbench's view both
+  render, so the two toolbars and palettes match by construction rather than by copied
+  styles. Its stylesheets are plain CSS, written when the kit was also an npm package
+  for Obverse's standalone form builder, whose own Tailwind build could not see the
+  editor's utilities, and kept so now that the builder has landed in Haute: they read as
+  one unit, and `frontend/src/haute-ui/__tests__/tokens.test.ts` pins that they draw
+  colours only from `index.css`'s tokens and keep the layout the toolbar, palette and
+  side panel rely on.
 - **Endpoint modules split out of `api/client.ts` when their only
   consumer is lazy-loaded.** `api/dispersion.ts` exists as a separate file
   — not more exports on `client.ts` — specifically so its code isn't
@@ -360,6 +383,11 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   through `api/client.ts`, read/write `useNodeResultsStore` /
   `useSettingsStore` / `useToastStore` / `useUIStore`, and render inside the
   chrome this component provides.
+- [workbench](../workbench/high-level.md): the API client validates the workbench's
+  status, tables and form with the generated contract; the workbench's toolbar is built
+  from `haute-ui` and `ProjectControls`, its palette and properties panel from the kit's
+  palette shell and side panel, its schema editor and panel from the shared form
+  primitives, and its field order from the list-reorder hook the step editor's cards use.
 - Talks to [server-api](../server-api/high-level.md) exclusively through the
   typed functions in `api/client.ts` — no other module in the frontend is
   expected to call `fetch()` directly against `/api/*`; split endpoint

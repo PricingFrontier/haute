@@ -28,7 +28,13 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from haute._graph_utils import _sanitize_func_name, edge_input_name
-from haute._types import GLOBAL_CONSTANTS_NAME, GraphNode, NodeType, PipelineGraph
+from haute._types import (
+    GLOBAL_CONSTANTS_NAME,
+    REQUEST_INPUT_NODE_TYPES,
+    GraphNode,
+    NodeType,
+    PipelineGraph,
+)
 
 #: The names a generated module binds itself, with what it binds them to.
 #: Comparison with them is exact, as Python's is.
@@ -236,7 +242,7 @@ def _edge_bindings(scoped: PipelineGraph) -> dict[str, list[tuple[str, str]]]:
         except ValueError:
             # A frame edge without its handle is refused where the edge is checked.
             continue
-        if source.data.nodeType == NodeType.API_INPUT:
+        if source.data.nodeType in REQUEST_INPUT_NODE_TYPES:
             origin = f"frame {name!r} of {source.data.label!r}"
         elif source.data.nodeType == NodeType.SUBMODEL:
             origin = f"output port {name!r} of {source.data.label!r}"

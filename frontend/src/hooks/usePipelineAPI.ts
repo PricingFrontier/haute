@@ -18,8 +18,7 @@ import type { NodeResult, PreviewNodeResponse } from "../api/types"
 import useToastStore from "../stores/useToastStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useGraphStore, { captureGraphSnapshot } from "../stores/useGraphStore"
-import useGitStore from "../stores/useGitStore"
-import { isIdentityPromptDismissed } from "../stores/identityPrompt"
+import { reportSaveCapture } from "../stores/saveCapture"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useNodeDataStore from "../stores/useNodeDataStore"
 import useDocumentStatusStore, { documentReadOnlyReason } from "../stores/useDocumentStatusStore"
@@ -28,7 +27,7 @@ import { validateConfigRefs, formatConfigRefWarnings } from "../utils/validateCo
 import { findFirstInvalidEdgeJoin, formatEdgeJoinValidationIssue } from "../utils/edgeJoinValidation"
 import { effectiveNodeType, nodeData } from "../types/node"
 import type { NodeStatus, PipelineEdge } from "../types/node"
-import { NODE_TYPES } from "../utils/nodeTypes"
+import { NODE_TYPES, isRequestInputType } from "../utils/nodeTypes"
 import {
   adaptPipelineEditorDocument,
   parsePipelineEditorDocument,
@@ -36,6 +35,7 @@ import {
 } from "../types/pipelineDocument"
 import { type ColumnFingerprintInput } from "../utils/columnFingerprint"
 import { authoritativeSourceHandles } from "../utils/apiInputPorts"
+import { workbenchTablePorts } from "../utils/workbenchTables"
 import {
   runtimeNodeIdForVisibleNode,
   type DrilledOccurrenceIdentity,
@@ -127,7 +127,9 @@ function nodeLabel(node: Node): string {
 
 function previewPortLabel(node: Node): string | undefined {
   const data = nodeData(node)
-  if (data.nodeType !== NODE_TYPES.API_INPUT) return undefined
+  // A Workbench Output's tables are its frames: its preview starts at the first.
+  if (data.nodeType === NODE_TYPES.WORKBENCH_OUTPUT) return workbenchTablePorts(data.config)[0]
+  if (!isRequestInputType(data.nodeType)) return undefined
   return authoritativeSourceHandles({
     id: node.id,
     data,
@@ -1448,28 +1450,9 @@ export default function usePipelineAPI({
           useUIStore.getState().setSyncBanner(null)
         }
       }
-      // Reflect the new ledger commit in the toolbar indicator (P2). null
-      // when no working branch is configured — the indicator stays as-is.
-      if (data.git_sha !== undefined) {
-        useGitStore.getState().setLastSaveSha(data.git_sha)
-      }
-      // Let an open Git panel re-fetch its history (S38).
-      useGitStore.getState().notifyHistoryChanged()
       addToast("success", `Saved → ${data.file}`)
-      // The save succeeded but the backend flagged something unfinished (a
-      // transform with no code, an API Input with no tables). These are
-      // deliberately non-blocking, so they'd be invisible without their own
-      // toast — and the user would only discover the problem on the next run.
-      for (const warning of data.warnings ?? []) {
-        addToast("warning", warning)
-      }
-      // A restored container has no git commit identity, so the save landed on
-      // disk but was never version-captured. Prompt once per session — the
-      // warning above keeps saying so after the user waves it away.
-      if (data.identity_required && !isIdentityPromptDismissed()) {
-        const git = useGitStore.getState()
-        if (git.modal !== "identity") git.openModal("identity")
-      }
+      // The ledger commit, the warnings and the identity prompt, as every save reports them.
+      reportSaveCapture(data)
       return true
     } catch (err: unknown) {
       if (

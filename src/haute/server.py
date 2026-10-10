@@ -100,6 +100,7 @@ from haute.routes.pipeline import router as pipeline_router
 from haute.routes.rating import router as rating_router
 from haute.routes.submodel import router as submodel_router
 from haute.routes.utility import router as utility_router
+from haute.routes.workbench import router as workbench_router
 from haute.schemas import SessionStatusResponse
 
 # Windows registry often maps .js to text/plain, causing browsers to reject
@@ -632,6 +633,7 @@ app.include_router(optimiser_router)
 app.include_router(mlflow_router)
 app.include_router(utility_router)
 app.include_router(git_router)
+app.include_router(workbench_router)
 
 
 # ---------------------------------------------------------------------------

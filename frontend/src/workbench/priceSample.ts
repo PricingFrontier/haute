@@ -1,0 +1,46 @@
+/**
+ * A sample priced on the pipeline open in the editor (specs/workbench): the Workbench
+ * Output's tables as its preview shows them. The document's top-level workbench nodes run
+ * with the tables and sample the form gives, in this request alone, as a fetch gives them
+ * copies; a Workbench Input inside a submodel keeps its copy, and the document itself is
+ * left alone.
+ */
+import { previewNode } from "../api/client"
+import { apiErrorMessage } from "../api/errors"
+import type { GraphPayload, WorkbenchTablesResponse } from "../api/types"
+import { NODE_TYPES } from "../utils/nodeTypes"
+import { WORKBENCH_COPY_PATCHES, workbenchTablePorts, type PricedSample } from "../utils/workbenchTables"
+
+/** The preview route's most rows: a quote's many-row tables fit. */
+const ROW_LIMIT = 10_000
+
+export async function priceSample(graph: GraphPayload, workbench: WorkbenchTablesResponse, source: string): Promise<PricedSample> {
+  const copies = { tables: workbench.tables, sample: workbench.sample, responseTables: workbench.response_tables }
+  const nodes = graph.nodes.map((node) => {
+    const config = (node.data.config ?? {}) as Record<string, unknown>
+    const patch = WORKBENCH_COPY_PATCHES[String(node.data.nodeType)]?.(config, copies) ?? null
+    return patch === null ? node : { ...node, data: { ...node.data, config: { ...config, ...patch } } }
+  })
+  const output = nodes.find((node) => node.data.nodeType === NODE_TYPES.WORKBENCH_OUTPUT)
+  if (output === undefined) {
+    throw new Error(
+      "The pipeline has no Workbench Output: add one from the palette and connect a frame to each of its tables.",
+    )
+  }
+  const priced = { ...graph, nodes }
+  const labels = workbenchTablePorts(output.data.config as Record<string, unknown> | undefined)
+  const tables = await Promise.all(
+    labels.map(async (label) => {
+      const result = await previewNode({ graph: priced, nodeId: output.id, rowLimit: ROW_LIMIT, source, portLabel: label })
+        // The server's reason, such as a sample that does not fit, rather than its status.
+        .catch((error: unknown) => {
+          throw new Error(apiErrorMessage(error))
+        })
+      if (result.status !== "ok") {
+        throw new Error(result.error || `The Workbench Output's '${label}' table could not be previewed.`)
+      }
+      return [label, result.preview ?? []] as const
+    }),
+  )
+  return { tables: Object.fromEntries(tables) }
+}

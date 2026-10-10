@@ -19,7 +19,7 @@ or maintenance issue; `P3` opportunistic work.
 |---|---|---|
 | [Assistant](assistant.md) | Blocking data findings, structured step authoring, typed banding and rating, item-level edits and per-model qualification (all deferred) | — |
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup, one worker primitive | `ROAD-WORKER-05` |
-| [Bugs](bugs.md) | Defects found outside component work: a deployed pipeline that skips its submodels, statements a save drops from a submodel file, generated CI/CD files that fail before a first release, and help text that no longer matches behaviour | `BUG-18` |
+| [Bugs](bugs.md) | Defects found outside component work: a deployed pipeline that skips its submodels, statements a save drops from a submodel file, generated CI/CD files that fail before a first release, help text that no longer matches behaviour, and a deployed Quote Input that hands every port the whole request | `BUG-18` |
 | [Caching](caching.md) | Planning and housekeeping cost, the shapes that cannot carry a write recipe, chunked-write bounds, cache identity | `CACHE-S17` |
 | [Engineering quality](engineering-quality.md) | Model-training test cost, order- and load-sensitive tests, compatibility shard balance, dead code, test organisation | `ENGQ-CI03` |
 | [Explore and EDA](explore-eda.md) | Advanced pivot and PivotChart parity | — |
@@ -34,6 +34,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Server API](server-api.md) | Domain errors, generated browser contract | `API-R02` |
 | [Submodels](submodels.md) | Submodels registered by import, one reuse mechanism | `SUB-R02` |
 | [t-boost](t-boost.md) | What rating-table models make possible: cell-level holdout A/E, unfolding into rating steps, model comparison with premium attribution, measured analyst adjustments (all awaiting a decision) | `TBOOST-02` |
+| [Workbench](workbench.md) | The underwriter app: the sheets outside Haute, priced through the deployed pipeline (awaiting a decision on hosting and first scope); a workbench project's CI/CD: the form checked against the pipeline, the app deployed with it, a smoke of one quote per request | `WB-07` |
 
 ## Delivery plan — 24 September 2026
 

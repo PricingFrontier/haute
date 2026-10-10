@@ -45,6 +45,7 @@ from haute._types import (
     NodeType,
     RatingTable,
 )
+from haute._workbench_tables import WorkbenchTablesError, parse_workbench_tables
 from haute.errors import ConfigError
 from haute.modelling._descriptors import DESCRIPTORS
 from haute.modelling._train_config import (
@@ -388,7 +389,11 @@ def _validator_issues(
     node_type: NodeType, config: dict[str, Any], input_names: Sequence[str] | None
 ) -> list[RecoveryIssue]:
     try:
-        if node_type is NodeType.API_INPUT and "tables" in config:
+        if node_type is NodeType.WORKBENCH_INPUT and "tables" in config:
+            parse_workbench_tables(config["tables"], owner="Workbench Input")
+        elif node_type is NodeType.WORKBENCH_OUTPUT and "tables" in config:
+            parse_workbench_tables(config["tables"], owner="Workbench Output")
+        elif node_type == NodeType.API_INPUT and "tables" in config:  # the Quote Input alone
             validate_v2_schema(config)
         elif node_type is NodeType.DATA_INPUT:
             # Missing locators are completeness, not a recovery error.
@@ -425,6 +430,7 @@ def _validator_issues(
             )
     except (
         ApiInputSchemaError,
+        WorkbenchTablesError,
         OutputMappingSchemaError,
         PolarsIoConfigError,
         ConfigError,

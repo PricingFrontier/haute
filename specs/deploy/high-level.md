@@ -32,8 +32,8 @@ In scope:
 - Discovering and bundling supported local artefacts (model files, file-backed optimiser
   artefacts, static data sources, feature contracts) the pruned graph needs. MLflow-sourced
   optimiser applies remain runtime MLflow dependencies.
-- Inferring the input schema from the configured source and the output schema by an
-  at-most-one-row dry-run through the pruned graph.
+- Inferring the input schema from the configured source (a Workbench Input's from its
+  tables) and the output schema by an at-most-one-row dry-run through the pruned graph.
 - Runtime scoring of the pruned graph against live-injected data, shared identically by
   every deploy target.
 - Packaging and shipping to two implemented backends: Databricks (MLflow pyfunc + Model
@@ -85,11 +85,24 @@ parent-traversal-shaped identifiers are rejected before download. A configured
 `feature_contract_path` is bundled under the canonical model-sidecar name and takes
 precedence over an adjacent downloaded sidecar.
 
-An `apiInput` is the preferred live request source. For a graph with no `apiInput`,
+A request input, a Quote Input (`apiInput`) or a Workbench Input (`workbenchInput`), is the
+preferred live request source, and a pipeline with more than one, counting those inside its
+submodels, is refused before anything is pruned. A Workbench Input reads no sample file: its
+request schema comes from its tables, the dry run reads one quote with nothing filled in, one
+row of nulls per table, and a served request is read into its tables from the records as they
+were sent, one quote per request, each consumer sized by the memory estimate from the table
+that feeds it; its test quotes are not pre-checked for columns, and their expected outputs
+are compared into the response's tables; a Databricks deployment's signature holds each
+table as a map of any values or an array of them, the reader holding the request to the
+tables' columns ([workbench](../workbench/high-level.md)). For a graph with no request input,
 exactly one source may be promoted only when it is a `dataInput`, whose configured data
 provides schema/sample information before live requests replace it. A `constant` or any
 other source type is never promoted accidentally; deployment fails with a correction that
-names the node and asks for an API Input.
+names the node and asks for a Quote Input or a Workbench Input.
+
+The response node, a Quote Response (`output`) or a Workbench Output (`workbenchOutput`), is
+the declared output node: deploy prunes to it, dry-runs its schema and serves its response
+document, alike for either ([workbench](../workbench/high-level.md)).
 
 **Validation.** Before anything ships, `validate_deploy()` checks structural invariants
 (output/input nodes present in the pruned graph, input nodes are true sources, artefacts

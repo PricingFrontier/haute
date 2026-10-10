@@ -1,12 +1,30 @@
-import { PanelLeftClose } from "lucide-react"
 import type { DragEvent } from "react"
-import { NODE_TYPE_META, PALETTE_TYPES, SINGLETON_TYPES } from "../utils/nodeTypes"
+import { PaletteColumn, PaletteHeader, PaletteItem, PaletteItems } from "../haute-ui"
+import useWorkbenchStore from "../stores/useWorkbenchStore"
+import { paletteWorkbenchInputConfig, paletteWorkbenchOutputConfig } from "../utils/workbenchTables"
+import {
+  NODE_TYPE_META,
+  NODE_TYPES,
+  PALETTE_TYPES,
+  SINGLETON_TYPES,
+  singletonSlotName,
+} from "../utils/nodeTypes"
 import type { NodeTypeValue } from "../utils/nodeTypes"
 
+/** The config a node dragged from the palette starts with. */
+function paletteConfig(type: NodeTypeValue): Record<string, unknown> {
+  const { defaultConfig } = NODE_TYPE_META[type]
+  // A Workbench Input or Output starts with the newest tables the workbench supplied.
+  const { tables } = useWorkbenchStore.getState()
+  if (type === NODE_TYPES.WORKBENCH_INPUT) return paletteWorkbenchInputConfig(defaultConfig, tables)
+  if (type === NODE_TYPES.WORKBENCH_OUTPUT) return paletteWorkbenchOutputConfig(defaultConfig, tables)
+  return defaultConfig
+}
+
 function onDragStart(event: DragEvent, type: NodeTypeValue) {
-  const meta = NODE_TYPE_META[type]
+  const config = paletteConfig(type)
   event.dataTransfer.setData("application/reactflow-type", type)
-  event.dataTransfer.setData("application/reactflow-config", JSON.stringify(meta.defaultConfig))
+  event.dataTransfer.setData("application/reactflow-config", JSON.stringify(config))
   event.dataTransfer.effectAllowed = "move"
 }
 
@@ -17,44 +35,37 @@ export default function NodePalette({
   onCollapse?: () => void
   existingSingletonTypes?: ReadonlySet<NodeTypeValue>
 }) {
+  // While the project's workbench is enabled, the Workbench Input takes the Quote
+  // Input's place and the Workbench Output the Quote Response's (specs/workbench).
+  const workbench = useWorkbenchStore((state) => state.enabled)
+  const types = PALETTE_TYPES.map((type) => {
+    if (workbench && type === NODE_TYPES.API_INPUT) return NODE_TYPES.WORKBENCH_INPUT
+    if (workbench && type === NODE_TYPES.OUTPUT) return NODE_TYPES.WORKBENCH_OUTPUT
+    return type
+  })
   return (
-    <div className="w-[180px] h-full overflow-y-auto shrink-0 flex flex-col" style={{ background: "var(--chrome)", borderRight: "1px solid var(--chrome-border)" }}>
-      <div className="px-4 py-3 flex items-center justify-between">
-        <h2 className="text-[11px] font-bold uppercase tracking-[0.1em]" style={{ color: "var(--text-muted)" }}>Nodes</h2>
-        {onCollapse && (
-          <button
-            onClick={onCollapse}
-            className="p-0.5 rounded transition-colors hover:bg-[var(--chrome-hover)] hover:text-[var(--text-secondary)]"
-            style={{ color: 'var(--text-muted)' }}
-            title="Collapse palette"
-          >
-            <PanelLeftClose size={14} />
-          </button>
-        )}
-      </div>
+    <PaletteColumn>
+      <PaletteHeader title="Nodes" onCollapse={onCollapse} />
 
-      <div className="px-2 space-y-0.5 flex-1">
-        {PALETTE_TYPES.map((type) => {
+      <PaletteItems>
+        {types.map((type) => {
           const meta = NODE_TYPE_META[type]
-          const Icon = meta.icon
           const disabled = SINGLETON_TYPES.has(type) && existingSingletonTypes.has(type)
           return (
-            <div
+            <PaletteItem
               key={type}
               data-testid={`node-palette-item-${type}`}
+              icon={meta.icon}
+              label={meta.name}
+              color={meta.color}
+              disabled={disabled}
               draggable={!disabled}
               onDragStart={(e) => { if (!disabled) onDragStart(e, type) }}
-              className={`flex items-center gap-2.5 px-2.5 py-2 rounded-lg transition-colors ${disabled ? "opacity-35 cursor-not-allowed" : "cursor-grab active:cursor-grabbing hover:bg-[var(--chrome-hover)]"}`}
-              title={disabled ? `Only one ${meta.name} allowed per pipeline` : meta.description}
-            >
-              <div className="w-6 h-6 rounded-md flex items-center justify-center shrink-0" style={{ background: `${meta.color}18` }}>
-                <Icon size={13} style={{ color: meta.color }} />
-              </div>
-              <span className="text-[13px] font-medium" style={{ color: "var(--text-primary)" }}>{meta.name}</span>
-            </div>
+              title={disabled ? `Only one ${singletonSlotName(type)} allowed per pipeline` : meta.description}
+            />
           )
         })}
-      </div>
-    </div>
+      </PaletteItems>
+    </PaletteColumn>
   )
 }

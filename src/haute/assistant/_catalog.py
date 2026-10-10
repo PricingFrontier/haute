@@ -21,6 +21,7 @@ from typing import Literal, Required, Union, cast, get_args, get_origin, get_typ
 from haute._cache import canonical_json
 from haute._config_io import NODE_TYPE_TO_FOLDER, palette_default_config
 from haute._config_validation import _TYPED_DICT_BY_NODE_TYPE, VALID_KEYS
+from haute._graph_shape import SINGLETON_NODE_GROUPS
 from haute._polars_steps import (
     AGGREGATIONS,
     BINARY_OPERATORS,
@@ -38,11 +39,15 @@ from haute._polars_steps import (
     stepped_surface_for,
 )
 from haute._standalone_nodes import SOURCE_NODE_TYPES, STANDALONE_PASSTHROUGH_TYPES
-from haute._types import NODE_TYPE_TO_DECORATOR, SINK_ONLY_NODE_TYPES, NodeType
+from haute._types import (
+    NODE_TYPE_TO_DECORATOR,
+    REQUEST_INPUT_NODE_TYPES,
+    SINK_ONLY_NODE_TYPES,
+    NodeType,
+)
 from haute.assistant._node_cards import node_card
 from haute.assistant._recipes import recipe_manifest
 from haute.assistant._wire_ops import MAX_DECLARED_POSTCONDITIONS, graph_edit_operations_schema
-from haute.routes._save_pipeline import _SINGLETON_NODE_TYPES
 from haute.schemas import (
     ASSISTANT_BUILD_PLAN_ID_PATTERN,
     ASSISTANT_BUILD_PLAN_TITLE_LIMIT,
@@ -51,10 +56,13 @@ from haute.schemas import (
     ASSISTANT_RECEIPT_TEXT_LIMIT,
 )
 
-# The save service is the authority for singleton policy.  Keep this derived
-# rather than repeating the node list here: a new singleton must be visible to
-# both save validation and the capability manifest in the same change.
-_SINGLETON_TYPES = frozenset(node_type for node_type, _label in _SINGLETON_NODE_TYPES)
+# The singleton groups that save and deploy enforce are the authority for
+# singleton policy.  Keep this derived rather than repeating the node list here:
+# a new singleton must be visible to both and to the capability manifest in the
+# same change.
+_SINGLETON_TYPES = frozenset(
+    node_type for group, _label in SINGLETON_NODE_GROUPS for node_type in group
+)
 
 
 #: How an incoming edge names the input it gives, in the words of
@@ -63,8 +71,9 @@ _SINGLETON_TYPES = frozenset(node_type for node_type, _label in _SINGLETON_NODE_
 #: state it verbatim, held so by test.
 INPUT_NAMING_RULE = (
     "An input is named after its incoming edge: the upstream node's name, except that "
-    "an edge from a Quote Input frame, which `add_edge`'s `source_handle` selects, is "
-    "named by that frame, and an edge from a submodel output by its port."
+    "an edge from a Quote Input or Workbench Input frame, which `add_edge`'s "
+    "`source_handle` selects, is named by that frame, and an edge from a submodel output "
+    "by its port."
 )
 
 
@@ -75,6 +84,11 @@ _USAGE_NOTES: dict[NodeType, str] = {
     NodeType.API_INPUT: (
         "Declare the request contract and its input tables; use this as the "
         "pipeline's external quote boundary."
+    ),
+    NodeType.WORKBENCH_INPUT: (
+        "Read-only to you: the live quote request, split into the tables the installed "
+        "workbench defines, which the editor copies and keeps current. Wire downstream "
+        "nodes to its frames as to a Quote Input's; never add, change, rename or delete it."
     ),
     NodeType.DATA_INPUT: (
         "Read a file, database, lakehouse, Databricks table, or inline records through "
@@ -115,6 +129,12 @@ _USAGE_NOTES: dict[NodeType, str] = {
         "Assemble the top-level JSON response from selected upstream columns "
         "with an explicit outputMapping whose source_port names the incoming "
         "frame; it has no output edge."
+    ),
+    NodeType.WORKBENCH_OUTPUT: (
+        "Read-only to you: the pipeline's response, the tables the workbench "
+        "defines, each filled from the frame connected to its port, column by column "
+        "through its mapping. Wire one upstream node to each table; never add, change, "
+        "rename or delete it."
     ),
     NodeType.EXPLORE: (
         "Summarise, pivot and chart its one input frame for analysis; it has no "
@@ -174,6 +194,7 @@ _USAGE_NOTES: dict[NodeType, str] = {
 # the model and the analyst call each node by the same name.
 _DISPLAY_NAMES: dict[NodeType, str] = {
     NodeType.API_INPUT: "Quote Input",
+    NodeType.WORKBENCH_INPUT: "Workbench Input",
     NodeType.DATA_INPUT: "Data Input",
     NodeType.DATA_OUTPUT: "Data Output",
     NodeType.POLARS: "Transform",
@@ -182,6 +203,7 @@ _DISPLAY_NAMES: dict[NodeType, str] = {
     NodeType.BANDING: "Banding",
     NodeType.RATING_STEP: "Rating Step",
     NodeType.OUTPUT: "Quote Response",
+    NodeType.WORKBENCH_OUTPUT: "Workbench Output",
     NodeType.EXPLORE: "Explore",
     NodeType.EXTERNAL_FILE: "Load File",
     NodeType.LIVE_SWITCH: "Source Switch",
@@ -198,6 +220,7 @@ _DISPLAY_NAMES: dict[NodeType, str] = {
 # One-line purposes shown beside each palette name in the prompt's node index.
 _SUMMARIES: dict[NodeType, str] = {
     NodeType.API_INPUT: "The live quote request, one frame per declared request table.",
+    NodeType.WORKBENCH_INPUT: "The live quote request, one frame per table the workbench defines.",
     NodeType.DATA_INPUT: "Read a file, database, lakehouse, Databricks table or inline records.",
     NodeType.DATA_OUTPUT: "Write a frame to a file, database or lakehouse when the output is run.",
     NodeType.POLARS: "Transform one or more frames with Polars steps.",
@@ -206,6 +229,7 @@ _SUMMARIES: dict[NodeType, str] = {
     NodeType.BANDING: "Group number, date or categorical values into named bands.",
     NodeType.RATING_STEP: "Look up rating factors from tables and combine them.",
     NodeType.OUTPUT: "Assemble the quote's JSON response from upstream columns.",
+    NodeType.WORKBENCH_OUTPUT: "The quote's response: the tables the workbench defines, filled.",
     NodeType.EXPLORE: "Analyse an upstream frame with summaries, pivots and charts.",
     NodeType.EXTERNAL_FILE: "Load a pickle, JSON, joblib or CatBoost file for use in steps.",
     NodeType.LIVE_SWITCH: "Route the live request or a batch source by scenario.",
@@ -528,6 +552,7 @@ _MULTI_INPUT_NODE_TYPES = frozenset(
     {
         NodeType.POLARS,
         NodeType.OUTPUT,
+        NodeType.WORKBENCH_OUTPUT,
         NodeType.LIVE_SWITCH,
         NodeType.OPTIMISER,
         NodeType.OPTIMISER_APPLY,
@@ -536,6 +561,9 @@ _MULTI_INPUT_NODE_TYPES = frozenset(
 )
 _EXAMPLE_IDS: dict[NodeType, tuple[str, ...]] = {
     NodeType.API_INPUT: ("minimal_live_quote",),
+    # The assistant authors no Workbench Input or Output, so no example shows one.
+    NodeType.WORKBENCH_INPUT: (),
+    NodeType.WORKBENCH_OUTPUT: (),
     NodeType.DATA_INPUT: ("minimal_batch",),
     NodeType.BANDING: ("discrete_banding",),
     NodeType.EDGE_JOIN: ("reference_join",),
@@ -552,6 +580,7 @@ _RECIPE_IDS: dict[NodeType, tuple[str, ...]] = {
 _MULTI_INPUT_PORTS: dict[NodeType, str] = {
     NodeType.POLARS: "one or more frames, each named by its edge",
     NodeType.OUTPUT: "one or more frames, each addressed by a mapping row's source_port",
+    NodeType.WORKBENCH_OUTPUT: "one frame per table the workbench defines, on that table's port",
     NodeType.OPTIMISER: (
         "one or more frames; data_input names the frame to optimise when several are connected"
     ),
@@ -564,7 +593,7 @@ _MULTI_INPUT_PORTS: dict[NodeType, str] = {
 
 def _node_ports(node_type: NodeType) -> dict[str, object]:
     outputs: object = [] if node_type in SINK_ONLY_NODE_TYPES else ["frame"]
-    if node_type is NodeType.API_INPUT:
+    if node_type in REQUEST_INPUT_NODE_TYPES:
         return {
             "inputs": [],
             "outputs": "one named output per declared request table",
@@ -611,6 +640,7 @@ def _input_cardinality(node_type: NodeType) -> str:
 def _schema_effect(node_type: NodeType) -> str:
     effects = {
         NodeType.API_INPUT: "emits the declared request-table schemas",
+        NodeType.WORKBENCH_INPUT: "emits the request-table schemas the workbench defines",
         NodeType.DATA_INPUT: "emits the selected source schema",
         NodeType.DATA_OUTPUT: "writes its input schema to the destination",
         NodeType.POLARS: "derives the schema from validated Polars expressions",
@@ -619,6 +649,7 @@ def _schema_effect(node_type: NodeType) -> str:
         NodeType.BANDING: "adds each configured factor output column",
         NodeType.RATING_STEP: "adds table-factor and combined-output columns to its first input",
         NodeType.OUTPUT: "projects mapped columns into the declared JSON response",
+        NodeType.WORKBENCH_OUTPUT: "fills the response's tables with their declared columns",
         NodeType.EXPLORE: "reads its input for summaries, pivots and charts",
         NodeType.EXTERNAL_FILE: "the steps or code see the loaded object as `obj`",
         NodeType.LIVE_SWITCH: "requires compatible schemas across selected scenarios",
@@ -672,6 +703,10 @@ _WIRING_EXTRAS: dict[NodeType, str] = {
         "result applies to the first input."
     ),
     NodeType.OUTPUT: "Each outputMapping row's source_port names one incoming frame.",
+    NodeType.WORKBENCH_OUTPUT: (
+        "Connect each table's frame with target_handle set to the table's name; a table "
+        "takes one edge and a node fills one table."
+    ),
 }
 
 

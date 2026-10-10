@@ -10,8 +10,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from haute._graph_shape import validate_singleton_groups
 from haute._io import read_user_text
 from haute._logging import get_logger
+from haute._workbench_config import WORKBENCH_TOML_KEYS
 from haute.assistant._config import ASSISTANT_EGRESS_TOML_KEYS, ASSISTANT_TOML_KEYS
 from haute.deploy._project_modules import ProjectModules, resolve_project_modules
 from haute.deploy._pruner import (
@@ -21,7 +23,7 @@ from haute.deploy._pruner import (
     prune_for_deploy,
 )
 from haute.errors import DeployError
-from haute.graph_utils import NodeType, PipelineGraph
+from haute.graph_utils import NodeType, PipelineGraph, flatten_graph
 
 logger = get_logger(component="deploy.config")
 
@@ -191,6 +193,9 @@ _VALID_TOML_SCHEMA: dict[str, set[str] | dict[str, set[str]]] = {
         "_self": set(ASSISTANT_TOML_KEYS - {"egress"}),
         "egress": set(ASSISTANT_EGRESS_TOML_KEYS),
     },
+    # Owned by the workbench (haute._workbench_config); listed so whole-file
+    # validation accepts a project whose workbench is enabled.
+    "workbench": set(WORKBENCH_TOML_KEYS),
 }
 
 
@@ -589,6 +594,9 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
     full_graph = parse_pipeline_file(config.pipeline_file)
     if not full_graph.nodes:
         raise ValueError(f"No nodes found in {config.pipeline_file}")
+    # One request input and one response, counting those inside submodels, as
+    # save requires: a pipeline file written by hand can hold more.
+    validate_singleton_groups(flatten_graph(full_graph))
 
     # Find output node
     output_node_id = find_output_node(full_graph)
@@ -607,7 +615,8 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
             if source.data.nodeType != NodeType.DATA_INPUT:
                 raise ValueError(
                     f"Sole source node {source_id!r} is {source.data.nodeType.value!r}, "
-                    "not a dataInput. Add an API Input node with @pipeline.api_input(...)."
+                    "not a dataInput. Add a Quote Input (@pipeline.api_input(...)) or a "
+                    "Workbench Input (@pipeline.workbench_input(...))."
                 )
             deploy_inputs = all_sources
         elif len(all_sources) == 0:
@@ -615,8 +624,8 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
         else:
             raise ValueError(
                 f"Multiple source nodes in pruned graph ({all_sources}) but none "
-                "is an apiInput node. Add an API Input node with "
-                "@pipeline.api_input(path=...)."
+                "is a request input. Add a Quote Input (@pipeline.api_input(...)) or a "
+                "Workbench Input (@pipeline.workbench_input(...))."
             )
 
     # Collect artifacts. Snapshot generations remain leased until the

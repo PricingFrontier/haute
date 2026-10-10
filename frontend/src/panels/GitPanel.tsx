@@ -10,7 +10,7 @@ import RemotePushControl from "../components/RemotePushControl"
 import Tooltip from "../components/Tooltip"
 import useToastStore from "../stores/useToastStore"
 import useGitStore from "../stores/useGitStore"
-import useGraphStore from "../stores/useGraphStore"
+import useProjectDirty, { discardFormEdits } from "../hooks/useProjectDirty"
 import { createWorkingBranch, setWorkingBranch } from "../api/client"
 import type { GitLedgerSave, GitFileChange } from "../api/types"
 import { computeGitGraphLayout, computeRailRuns, railWidth } from "./gitgraph/layout"
@@ -101,7 +101,7 @@ function GitPanelBranchScope({
 }: GitPanelBranchScopeProps) {
   const addToast = useToastStore((s) => s.addToast)
   const loadStatus = useGitStore((s) => s.loadStatus)
-  const dirty = useGraphStore((s) => s.dirty)
+  const dirty = useProjectDirty()
   const setViewBranch = useGitStore((s) => s.setPeekBranch)
   const openComparison = useGitStore((s) => s.openComparison)
   const {
@@ -192,6 +192,7 @@ function GitPanelBranchScope({
     const from = workingBranch
     try {
       await setWorkingBranch(branch, false)
+      await discardFormEdits()
       addToast("success", `Switched to ${branch}`)
       if (from !== null) recordSwitch(from, branch)
       setViewBranch(null)

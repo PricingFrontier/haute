@@ -1814,7 +1814,7 @@ describe("useEdgeHandlers", () => {
     expect(params.setNodes).not.toHaveBeenCalled()
     expect(useToastStore.getState().toasts.at(-1)).toMatchObject({
       type: "info",
-      text: "Only one Quote Input node is allowed per pipeline",
+      text: "Only one Quote Input or Workbench Input node is allowed per pipeline",
     })
   })
 
@@ -1830,7 +1830,7 @@ describe("useEdgeHandlers", () => {
     expect(params.resolveGraphIdentities).not.toHaveBeenCalled()
     expect(params.setNodes).not.toHaveBeenCalled()
     expect(useToastStore.getState().toasts.at(-1)?.text).toBe(
-      "Only one Quote Input node is allowed per pipeline",
+      "Only one Quote Input or Workbench Input node is allowed per pipeline",
     )
   })
 
@@ -2838,7 +2838,7 @@ describe("useEdgeHandlers connection drop menu", () => {
     expect(params.setNodesRaw).not.toHaveBeenCalled()
     expect(params.nodeIdCounter.current).toBe(0)
     expect(useToastStore.getState().toasts.at(-1)?.text).toBe(
-      "Connection rejected: apiInput connections require a frame handle",
+      "Connection rejected: Connect from one of a's tables, not the node itself",
     )
   })
 

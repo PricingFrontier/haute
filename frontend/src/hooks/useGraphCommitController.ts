@@ -4,7 +4,7 @@ import type { Edge, Node } from "@xyflow/react"
 
 import type { OnUpdateConfigResult } from "../panels/editors/_shared"
 import { isSubmodelInstanceConfig, type SubmodelInstanceConfig } from "../types/node"
-import { NODE_TYPES } from "../utils/nodeTypes"
+import { NODE_TYPES, isRequestInputType } from "../utils/nodeTypes"
 import { structuralFingerprint } from "../utils/structuralFingerprint"
 import {
   prepareNodeUpdate,
@@ -51,8 +51,21 @@ export type UseGraphCommitControllerOptions = {
   addToast: (type: ToastType, text: string) => void
 }
 
+export type NodeUpdateOptions = {
+  /**
+   * False once the update no longer applies, such as tables fetched for a document the
+   * editor has since replaced. Checked before committing, again after identity resolution.
+   */
+  isCurrent?: () => boolean
+  /**
+   * Called once with the update's final result: at once for an ordinary node, and
+   * after identity resolution for a request input, whose call returns before it commits.
+   */
+  onSettled?: (result: OnUpdateConfigResult) => void
+}
+
 export type GraphCommitController = {
-  onUpdateNode: (nodeId: string, data: Record<string, unknown>) => OnUpdateConfigResult
+  onUpdateNode: (nodeId: string, data: Record<string, unknown>, options?: NodeUpdateOptions) => OnUpdateConfigResult
   onRenameNode: (nodeId: string, label: string) => Promise<OnUpdateConfigResult>
   waitForPendingCommits: () => Promise<OnUpdateConfigResult>
 }
@@ -172,31 +185,47 @@ export default function useGraphCommitController({
     ))
     if (prepared.removed.length === 0) return
     const label = String(prepared.data.label ?? prepared.nodeId)
+    const one = prepared.removed.length === 1
+    // A Workbench Output loses the connections whose tables went; anything else, those
+    // whose source frames went.
+    const gone = prepared.data.nodeType === NODE_TYPES.WORKBENCH_OUTPUT
+      ? (one ? "the table it filled no longer exists" : "the tables they filled no longer exist")
+      : (one ? "the source frame no longer exists" : "the source frames no longer exist")
     addToast(
       "warning",
-      `Disconnected ${prepared.removed.length} edge${prepared.removed.length === 1 ? "" : "s"} from ${label}: the source ${prepared.removed.length === 1 ? "frame no longer exists" : "frames no longer exist"} after your edit.`,
+      `Disconnected ${prepared.removed.length} edge${one ? "" : "s"} from ${label}: ${gone} after your edit.`,
     )
   }, [addToast, commitGraph, graphRef, setSelectedNode, submodelsRef])
 
   const onUpdateNode = useCallback((
     nodeId: string,
     data: Record<string, unknown>,
+    options: NodeUpdateOptions = {},
   ): OnUpdateConfigResult => {
+    const superseded = {
+      ok: false as const,
+      error: "Node update was not applied because the document, editing capability, or a newer node edit superseded it.",
+    }
+    const settle = (result: OnUpdateConfigResult): OnUpdateConfigResult => {
+      options.onSettled?.(result)
+      return result
+    }
+    if (options.isCurrent?.() === false) return settle(superseded)
     const currentNode = graphRef.current.nodes.find((node) => node.id === nodeId)
-    if (!currentNode) return { ok: false, error: `Cannot update missing node "${nodeId}".` }
+    if (!currentNode) return settle({ ok: false, error: `Cannot update missing node "${nodeId}".` })
     if (currentNode.data.label !== data.label) {
-      return {
+      return settle({
         ok: false,
         error: "Use the rename action so the server can resolve the node identity before commit.",
-      }
+      })
     }
 
     const preflight = prepare(nodeId, data, false)
-    if (!preflight.ok) return preflight
+    if (!preflight.ok) return settle(preflight)
     const request = beginRequest(nodeId)
-    if (data.nodeType !== NODE_TYPES.API_INPUT) {
+    if (!isRequestInputType(data.nodeType)) {
       commit(preflight)
-      return { ok: true }
+      return settle({ ok: true })
     }
 
     const pending = (async (): Promise<OnUpdateConfigResult> => {
@@ -209,12 +238,7 @@ export default function useGraphCommitController({
           if (resolved.length !== 1 || resolved[0]?.id !== nodeId) {
             throw new Error("identity resolver returned an invalid node")
           }
-          if (requestInvalidated(attemptRequest)) {
-            return {
-              ok: false,
-              error: "Node update was not applied because the document, editing capability, or a newer node edit superseded it.",
-            }
-          }
+          if (requestInvalidated(attemptRequest) || options.isCurrent?.() === false) return superseded
           if (requestIsStale(attemptRequest)) continue
           const finalPlan = prepare(nodeId, resolved[0].data, true)
           if (!finalPlan.ok) return finalPlan
@@ -234,6 +258,7 @@ export default function useGraphCommitController({
     })()
     registerPendingCommit(pending)
     void pending.then((result) => {
+      options.onSettled?.(result)
       if (!result.ok) addToast("error", result.error)
     })
     return { ok: true }

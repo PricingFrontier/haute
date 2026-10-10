@@ -53,6 +53,7 @@ from haute._polars_utils import (
 from haute._source_cache import SourceCacheCorruptError
 from haute._topo import ancestors
 from haute._types import (
+    REQUEST_INPUT_NODE_TYPES,
     GraphEdge,
     GraphNode,
     NodeType,
@@ -1106,7 +1107,7 @@ def _runtime_projectable_source_ids(
     node_map: Mapping[str, GraphNode],
 ) -> frozenset[str]:
     """Return source parents whose lazy scans can absorb their runtime edge demand."""
-    source_types = {NodeType.API_INPUT, NodeType.DATA_INPUT, NodeType.EXTERNAL_FILE}
+    source_types = REQUEST_INPUT_NODE_TYPES | {NodeType.DATA_INPUT, NodeType.EXTERNAL_FILE}
     demand_by_parent: dict[str, set[str]] = {}
     for edge_key, columns in demands_by_edge.items():
         demand_by_parent.setdefault(edge_key.source, set()).update(columns)
@@ -1563,7 +1564,8 @@ def _build_funcs(
             except ValueError:
                 # Preview reports null-handle routing errors on the consumer.
                 if not (
-                    source_node.data.nodeType == NodeType.API_INPUT and edge.sourceHandle is None
+                    source_node.data.nodeType in REQUEST_INPUT_NODE_TYPES
+                    and edge.sourceHandle is None
                 ):
                     raise
         duplicates = duplicate_input_names(src_names)
@@ -1656,12 +1658,19 @@ def _located_step_line(
 def _declared_api_input_frame_schema_items(
     node: GraphNode,
 ) -> dict[str, list[tuple[str, str]]]:
-    """Return all declared emitting-port schemas without opening payloads."""
-    if node.data.nodeType is not NodeType.API_INPUT or not isinstance(
+    """Return all declared port schemas of a request input without opening payloads."""
+    if node.data.nodeType not in REQUEST_INPUT_NODE_TYPES or not isinstance(
         node.data.config.get("tables"),
         list,
     ):
         return {}
+    if node.data.nodeType is NodeType.WORKBENCH_INPUT:
+        from haute._workbench_input import workbench_input_tables
+
+        return {
+            table.name: [(name, str(dtype)) for name, dtype in table.frame_schema.items()]
+            for table in workbench_input_tables(node.data.config)
+        }
     from haute._json_shred._shred import _declared_frame_schema, _emitting_table_specs
 
     declared: dict[str, list[tuple[str, str]]] = {}

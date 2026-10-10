@@ -234,6 +234,49 @@ class TestSaveAndLoad:
         rel = _write_node_config_sidecar(NodeType.API_INPUT, "quotes", config, tmp_path)
         assert load_node_config(rel, base_dir=tmp_path) == config
 
+    def test_workbench_input_tables_survive_its_config_file(self, tmp_path):
+        from haute._workbench_input import workbench_table_labels
+
+        config = {
+            "sample": {"policy_details": {"state": "NY"}},
+            "tables": [
+                {
+                    "name": "policy_details",
+                    "rows": "one",
+                    "columns": [{"name": "state", "type": "str"}],
+                }
+            ],
+        }
+        rel = _write_node_config_sidecar(NodeType.WORKBENCH_INPUT, "quote", config, tmp_path)
+        assert rel.as_posix() == "config/workbench_input/quote.json"
+        loaded = load_node_config(rel, base_dir=tmp_path)
+        assert loaded == config
+        assert workbench_table_labels(loaded) == ("policy_details",)
+
+    def test_a_workbench_input_config_with_a_path_is_refused(self, tmp_path):
+        """A Workbench Input reads no file, so its config declares no ``path``."""
+        from haute.errors import ConfigError
+
+        config = {"path": "tests/quotes/example.json", "tables": []}
+        with pytest.raises(ConfigError, match="'path'"):
+            _write_node_config_sidecar(NodeType.WORKBENCH_INPUT, "quote", config, tmp_path)
+        assert not (tmp_path / "config" / "workbench_input" / "quote.json").exists()
+
+    def test_workbench_output_tables_survive_its_config_file(self, tmp_path):
+        from haute._workbench_output import workbench_output_tables
+
+        config = {
+            "tables": [
+                {"name": "layers", "rows": "many", "columns": [{"name": "layer", "type": "int"}]}
+            ],
+            "mapping": {"layers": {"layer": "layer_number"}},
+        }
+        rel = _write_node_config_sidecar(NodeType.WORKBENCH_OUTPUT, "response", config, tmp_path)
+        assert rel.as_posix() == "config/workbench_output/response.json"
+        loaded = load_node_config(rel, base_dir=tmp_path)
+        assert loaded == config
+        assert [table.name for table in workbench_output_tables(loaded)] == ["layers"]
+
     def test_code_key_excluded_from_json(self, tmp_path):
         config = {"path": "model.pkl", "fileType": "pickle", "code": "df = obj.predict(df)"}
         _write_node_config_sidecar(NodeType.EXTERNAL_FILE, "ext", config, tmp_path)

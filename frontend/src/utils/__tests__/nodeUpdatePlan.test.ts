@@ -365,3 +365,38 @@ describe("prepareNodeUpdate rename stable bindings", () => {
     })
   })
 })
+
+describe("prepareNodeUpdate on a Workbench Output", () => {
+  const outputTable = (name: string) => ({ name, rows: "one", columns: [{ name: "x", type: "int" }] })
+  const fill = (id: string, source: string, table: string): Edge => ({
+    id,
+    source,
+    target: "response",
+    sourceHandle: null,
+    targetHandle: table,
+  })
+
+  it("keeps a connection while its table remains, wherever it moved, and removes it with its table", () => {
+    const response = makeNode("response", "response", NODE_TYPES.WORKBENCH_OUTPUT, {
+      tables: [outputTable("pricing_output"), outputTable("layers")],
+    })
+    const priced = makeNode("priced", "priced", NODE_TYPES.POLARS)
+    const layered = makeNode("layered", "layered", NODE_TYPES.POLARS)
+    const edges = [fill("e_priced", "priced", "pricing_output"), fill("e_layered", "layered", "layers")]
+
+    const result = prepareNodeUpdate({
+      nodeId: "response",
+      data: { ...response.data, config: { tables: [outputTable("summary"), outputTable("pricing_output")] } },
+      refreshSourceIdentity: false,
+      readOnly: false,
+      graph: { nodes: [response, priced, layered], edges },
+      submodels: {},
+      reservedApiInputFrameLabels: RESERVED,
+    })
+
+    expect(result.ok).toBe(true)
+    const prepared = result as PreparedNodeUpdate
+    expect(prepared.edges.map((edge) => edge.id)).toEqual(["e_priced"])
+    expect(prepared.removed.map(({ edge }) => edge.id)).toEqual(["e_layered"])
+  })
+})

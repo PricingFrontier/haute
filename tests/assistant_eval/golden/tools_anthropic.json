@@ -151,6 +151,8 @@
                     "description": "Node type id, exactly as the prompt's node index lists it.",
                     "enum": [
                       "apiInput",
+                      "workbenchInput",
+                      "workbenchOutput",
                       "dataInput",
                       "dataOutput",
                       "polars",

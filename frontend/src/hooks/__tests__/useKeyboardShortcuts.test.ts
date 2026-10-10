@@ -32,6 +32,7 @@ function resolvedIdentityGraph(
 
 function makeParams(overrides: Partial<Parameters<typeof useKeyboardShortcuts>[0]> = {}) {
   return {
+    enabled: true,
     handleSave: vi.fn(),
     setNodes: vi.fn(),
     setEdges: vi.fn(),

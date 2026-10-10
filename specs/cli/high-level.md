@@ -40,9 +40,11 @@ Out of scope, owned elsewhere:
   interpreter but block generated console-launcher executables. It maintains no separate command
   registry or parser: Click receives the arguments and preserves the command and exit-code
   contracts, while identifying the chosen invocation form in usage text.
-- `haute init [--target ...] [--ci ...] [--force]` scaffolds a new project in the current directory:
-  `haute.toml`, a blank `rating/` pipeline package, `.env.example`, test-quote fixtures, CI/CD
-  workflow files for the chosen provider, a git pre-commit hook, and `.gitignore` guard entries.
+- `haute init [--target ...] [--ci ...] [--workbench] [--force]` scaffolds a new project in the
+  current directory: `haute.toml`, a blank `rating/` pipeline package, `.env.example`, test-quote
+  fixtures, CI/CD workflow files for the chosen provider, a git pre-commit hook, and `.gitignore`
+  guard entries; with `--workbench`, the `[workbench]` table in `haute.toml` and a blank
+  `forms/form.json` ([workbench](../workbench/high-level.md)).
   Refuses to run if `haute.toml` already exists unless `--force` is given. A root `main.py` is
   always deleted: `uv init` recreates that placeholder every time it runs, and a Haute project's
   real entry point is `rating/main.py`, so the root file is a tooling artifact — never user

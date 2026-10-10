@@ -1,7 +1,8 @@
 import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
 import { isSubmodelDefinition, isSubmodelInstanceConfig } from "../types/node"
-import { NODE_TYPES } from "./nodeTypes"
+import { NODE_TYPES, isRequestInputType } from "./nodeTypes"
 import { SUBMODEL_INPUT_HANDLE } from "./flowHandles"
+import { workbenchTablePorts } from "./workbenchTables"
 import {
   edgeInputName,
   incomingEdgeInputNames,
@@ -52,8 +53,8 @@ function actualEdge(
   const sourceNode = nodesById.get(connection.source as string)
   const targetNode = nodesById.get(connection.target as string)
   if (
-    (targetNode?.data.nodeType === NODE_TYPES.API_INPUT
-      && sourceNode?.data.nodeType !== NODE_TYPES.API_INPUT)
+    (isRequestInputType(targetNode?.data.nodeType)
+      && !isRequestInputType(sourceNode?.data.nodeType))
     || (sourceNode?.data.nodeType === NODE_TYPES.SUBMODEL
       && (connection.sourceHandle?.startsWith("in__")
         || connection.sourceHandle === SUBMODEL_INPUT_HANDLE))
@@ -86,6 +87,30 @@ function targetEndpointIsSource(connection: ConnectionLike): boolean {
   return connection.targetHandleType === "source"
     || handleType(connection.targetHandle) === "source"
     || handleType(connection.toHandle) === "source"
+}
+
+/**
+ * Why a connection cannot fill a table of the Workbench Output *target*, or null when it
+ * can: it lands on one of its tables' ports, a table takes one connection, and a node
+ * fills one table (specs/workbench).
+ */
+function workbenchOutputConnectionFailure(
+  candidate: { source: string; targetHandle: string | null | undefined },
+  target: SimpleNode,
+  nodesById: Map<string, SimpleNode>,
+  edges: readonly SimpleEdge[],
+): string | null {
+  const name = (nodeId: string) => String(nodesById.get(nodeId)?.data.label ?? nodeId)
+  const table = candidate.targetHandle
+  if (typeof table !== "string" || !workbenchTablePorts(target.data.config).includes(table)) {
+    return `Connect to one of ${name(target.id)}'s tables`
+  }
+  const incoming = edges.filter((edge) => edge.target === target.id)
+  const filled = incoming.find((edge) => edge.targetHandle === table)
+  if (filled) return `${table} is already filled by ${name(filled.source)}`
+  const fills = incoming.find((edge) => edge.source === candidate.source)
+  if (fills) return `${name(candidate.source)} already fills ${String(fills.targetHandle)}; a node fills one table`
+  return null
 }
 
 function resolvedTarget(
@@ -132,9 +157,14 @@ export function validatePipelineConnection(
     return { ok: false, reason: { kind: "invalid-connection", message: "Connection node is missing" } }
   }
 
-  if (sourceNode.data.nodeType === NODE_TYPES.API_INPUT
+  if (isRequestInputType(sourceNode.data.nodeType)
     && (candidate.sourceHandle === null || candidate.sourceHandle === undefined)) {
-    return { ok: false, reason: { kind: "invalid-connection", message: "apiInput connections require a frame handle" } }
+    return { ok: false, reason: { kind: "invalid-connection", message: `Connect from one of ${sourceNode.data.label}'s tables, not the node itself` } }
+  }
+
+  if (targetNode.data.nodeType === NODE_TYPES.WORKBENCH_OUTPUT) {
+    const failure = workbenchOutputConnectionFailure(candidate, targetNode, nodesById, edges)
+    if (failure !== null) return { ok: false, reason: { kind: "invalid-connection", message: failure } }
   }
 
   let candidateName: string

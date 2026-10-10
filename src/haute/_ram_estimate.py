@@ -53,11 +53,24 @@ from haute._logging import get_logger
 from haute._polars_operations import materialisation_factor_basis_points
 from haute._polars_selectors import preamble_selector_aliases
 from haute._polars_utils import read_parquet_metadata
-from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
+from haute._types import (
+    REQUEST_INPUT_NODE_TYPES,
+    GraphEdge,
+    GraphNode,
+    NodeType,
+    PipelineGraph,
+)
 from haute.errors import ConfigError
 from haute.projection import ProjectionEdgeKey
 
 logger = get_logger(component="ram_estimate")
+
+#: Sources whose size the estimate reads from their metadata.
+_SIZED_SOURCE_TYPES = REQUEST_INPUT_NODE_TYPES | frozenset({NodeType.DATA_INPUT})
+
+#: Request-local source frames, by node: the frame a source node was given, or for a
+#: multi-frame source (a Workbench Input reading its quote) a frame per port, keyed by it.
+RuntimeSourceFrames = Mapping[str, pl.DataFrame | Mapping[str, pl.DataFrame]]
 
 __all__ = [
     "MaterialisationEstimate",
@@ -380,7 +393,7 @@ class _EstimateGraphIndex:
         graph: PipelineGraph,
         source: str,
         *,
-        runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
+        runtime_source_frames_by_node: RuntimeSourceFrames | None = None,
     ) -> _EstimateGraphIndex:
         """Build an index, optionally overriding source metadata for this request."""
         from haute._execute_lazy import _prune_live_switch_edges
@@ -403,8 +416,24 @@ class _EstimateGraphIndex:
             )
         )
         runtime_metadata_by_node: dict[str, _DetailedSourceMetadata | None] = {}
+        runtime_port_metadata: dict[tuple[str, str], _DetailedSourceMetadata | None] = {}
         if runtime_source_frames_by_node is not None:
             for node_id, frame in runtime_source_frames_by_node.items():
+                if isinstance(frame, Mapping):
+                    # A multi-frame source read for this request, a Workbench Input's
+                    # quote: each port its own frame and no whole-node summary, so a
+                    # consumer is sized from the table that feeds it.
+                    for port, port_frame in frame.items():
+                        if not isinstance(port_frame, pl.DataFrame):
+                            raise TypeError(
+                                "runtime_source_frames_by_node port values must be polars "
+                                f"DataFrames (node_id={node_id!r}, port={port!r})"
+                            )
+                        runtime_port_metadata[(node_id, port)] = _detailed_dataframe_metadata(
+                            port_frame, node_id
+                        )
+                    runtime_metadata_by_node[node_id] = None
+                    continue
                 if not isinstance(frame, pl.DataFrame):
                     raise TypeError(
                         "runtime_source_frames_by_node values must be polars DataFrames "
@@ -423,7 +452,7 @@ class _EstimateGraphIndex:
             metadata_by_node=runtime_metadata_by_node,
             columns_by_target={},
             resolving_targets=set(),
-            port_metadata={},
+            port_metadata=runtime_port_metadata,
             cardinality_by_target={},
             resolving_cardinality=set(),
         )
@@ -438,11 +467,15 @@ class _EstimateGraphIndex:
         node: GraphNode,
         port: str,
     ) -> _DetailedSourceMetadata | None:
-        """Metadata for one emitted table of a JSON API-input cache."""
+        """Metadata for one emitted table of a JSON API-input cache or a Workbench Input."""
 
         key = (node.id, port)
         if key not in self.port_metadata:
-            self.port_metadata[key] = _json_api_input_port_metadata(node, port)
+            self.port_metadata[key] = (
+                _workbench_input_port_metadata(node, port)
+                if node.data.nodeType is NodeType.WORKBENCH_INPUT
+                else _json_api_input_port_metadata(node, port)
+            )
         return self.port_metadata[key]
 
     def parent_ports(self, child_id: str) -> tuple[tuple[str, str | None], ...]:
@@ -664,6 +697,31 @@ def _data_input_parquet_artifact(
     return generation.metadata.row_count, generation.data_paths
 
 
+def _workbench_input_port_metadata(node: GraphNode, port: str) -> _DetailedSourceMetadata | None:
+    """Return the metadata of one table of a Workbench Input: its sample's rows.
+
+    A Workbench Input reads no file, so its table is sized from the frame it
+    yields: its sample's rows, or a single row of nulls. Tables that fail leave
+    the size unknown; a sample that does not fit them raises, so a preview says
+    what to correct rather than that a size is unknown.
+    """
+    from haute._workbench_input import workbench_table_frames, workbench_table_labels
+    from haute._workbench_tables import WorkbenchTablesError
+
+    config = dict(node.data.config)
+    try:
+        labels = workbench_table_labels(config)
+    except WorkbenchTablesError as exc:
+        logger.warning(
+            "workbench_input_port_metadata_failed", node_id=node.id, port=port, error=str(exc)
+        )
+        return None
+    if port not in labels:
+        return None
+    frame = workbench_table_frames(config, port_columns={port: None})[port]
+    return _detailed_dataframe_metadata(frame.collect(), node.id)
+
+
 def _json_api_input_port_metadata(node: GraphNode, port: str) -> _DetailedSourceMetadata | None:
     """Return the published snapshot metadata of one emitted table of a JSON API input.
 
@@ -722,7 +780,7 @@ def _detailed_source_metadata_for_node(node: GraphNode) -> _DetailedSourceMetada
     try:
         path = config.get("path", "")
 
-        if node_type == NodeType.API_INPUT:
+        if node_type in REQUEST_INPUT_NODE_TYPES:
             if not path:
                 return None
             if isinstance(path, str) and is_json_api_input_path(path):
@@ -773,10 +831,10 @@ def _detailed_ancestor_source_metadata(
         node = index.node_map.get(nid)
         if node is None:
             continue
-        if node.data.nodeType not in (NodeType.API_INPUT, NodeType.DATA_INPUT):
+        if node.data.nodeType not in _SIZED_SOURCE_TYPES:
             continue
         node_metadata = [index.source_metadata(node)]
-        if node_metadata[0] is None and node.data.nodeType == NodeType.API_INPUT:
+        if node_metadata[0] is None and node.data.nodeType in REQUEST_INPUT_NODE_TYPES:
             # A multi-frame JSON API input has no whole-node summary. Size it
             # from exactly the tables that feed this target, not from every
             # table it could emit.
@@ -1034,9 +1092,9 @@ def _resolve_row_cardinality_from_index(
         return _ResolvedRowCardinality.unavailable(target_node_id, "node_missing")
     node_type = node.data.nodeType
 
-    if node_type in {NodeType.API_INPUT, NodeType.DATA_INPUT}:
+    if node_type in _SIZED_SOURCE_TYPES:
         metadata = index.source_metadata(node)
-        if metadata is None and node_type is NodeType.API_INPUT and port is not None:
+        if metadata is None and node_type in REQUEST_INPUT_NODE_TYPES and port is not None:
             metadata = index.api_input_port_metadata(node, port)
         if metadata is None:
             return _ResolvedRowCardinality.unavailable(
@@ -1677,9 +1735,9 @@ def _resolve_target_columns_from_index(
                     return _filter_resolved_columns(parent_columns, selected_columns)
             return _resolved_from_columns(selected_columns)
 
-        if node.data.nodeType in (NodeType.API_INPUT, NodeType.DATA_INPUT):
+        if node.data.nodeType in _SIZED_SOURCE_TYPES:
             meta = index.source_metadata(node)
-            if meta is None and node.data.nodeType == NodeType.API_INPUT and port is not None:
+            if meta is None and node.data.nodeType in REQUEST_INPUT_NODE_TYPES and port is not None:
                 meta = index.api_input_port_metadata(node, port)
             if meta is not None:
                 return _resolved_from_source_metadata(meta)
@@ -1990,7 +2048,7 @@ def estimate_materialisation_boundaries(
     *,
     source: str = "live",
     edge_demands: Mapping[ProjectionEdgeKey, frozenset[str] | None] | None = None,
-    runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
+    runtime_source_frames_by_node: RuntimeSourceFrames | None = None,
     boundary_operators: Mapping[str, Sequence[str]] | None = None,
 ) -> Iterator[tuple[str, MaterialisationEstimate]]:
     """Yield boundary estimates through one request-local metadata index.
@@ -1999,7 +2057,8 @@ def estimate_materialisation_boundaries(
     boundary does not probe unrelated later sources. Iterating more than one
     result still shares all graph, schema, and source-metadata memoisation.
     ``runtime_source_frames_by_node`` supplies request-local source metadata
-    for injected DataFrames, without reading the replaced configured path.
+    for injected DataFrames, without reading the replaced configured path: a
+    frame per node, or a frame per port, keyed by it, for a multi-frame source.
     ``boundary_operators`` names the planner's boundary operator per node so the
     estimate carries that operator's measured memory factor; a node without one
     is estimated with no operator surcharge.

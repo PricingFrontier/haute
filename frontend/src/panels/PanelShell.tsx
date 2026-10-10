@@ -1,6 +1,6 @@
-import { useEffect, useRef, useCallback, useState, type ReactNode } from "react"
+import { useState } from "react"
+import { SidePanel, type SidePanelProps } from "../haute-ui"
 import useUIStore from "../stores/useUIStore"
-import PanelHeader from "./PanelHeader"
 
 const MIN_PANEL_W = 320
 const LEFT_PALETTE_W = 180
@@ -23,158 +23,38 @@ function maxPanelWidth(): number {
   return Math.max(MIN_PANEL_W, Math.floor(availableSpace() * 0.75))
 }
 
-interface PanelShellBaseProps {
-  children: ReactNode
-  /** Additional opacity/transition styles (e.g. dimmed NodePanel) */
-  style?: React.CSSProperties
-  /** data-testid applied to the outer wrapper (for E2E tests) */
-  testId?: string
+/** Omit over each member of a union, so a header's title still needs its onClose. */
+type OmitEach<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never
+
+type PanelShellProps = OmitEach<SidePanelProps, "width" | "onWidthChange" | "minWidth" | "maxWidth"> & {
   /** Optional per-panel width ceiling (px). Sidebar-style panels (Git) cap
    *  here so they don't open half-screen-wide on a large monitor (S38). */
   maxWidth?: number
 }
 
 /**
- * Either no header at all (children render raw, suitable for panels like
- * TracePanel/NodePanel that build their own bespoke header), OR a full
- * header with both a title and an onClose handler.  The discriminated union
- * makes it impossible to pass `title` without `onClose` — TypeScript catches
- * the mistake at compile time, no runtime guard needed.
- */
-type PanelShellHeaderProps =
-  | {
-      title?: undefined
-      onClose?: undefined
-      icon?: undefined
-      subtitle?: undefined
-      actions?: undefined
-    }
-  | {
-      title: string | ReactNode
-      onClose: () => void
-      icon?: ReactNode
-      subtitle?: ReactNode
-      actions?: ReactNode
-    }
-
-type PanelShellProps = PanelShellBaseProps & PanelShellHeaderProps
-
-/**
  * Shared wrapper for all right-side panels (NodePanel, UtilityPanel,
- * ImportsPanel, GitPanel, TracePanel).  Provides:
- * - Width from the UI store (shared across all panels)
- * - A visible left-edge drag handle for resizing
- * - Slide-in animation
- * - Consistent background color
- * - Optional inlined header (title/icon/subtitle/actions/close) so callers
- *   don't repeat the `<PanelShell><PanelHeader ...>` boilerplate.
+ * ImportsPanel, GitPanel, TracePanel): haute-ui's `SidePanel` (the drag
+ * handle, slide-in and optional header, shared with the workbench), sized from
+ * the UI store. All panels share one width. With none stored, a panel takes
+ * half the space beside the palette when it mounts, and keeps that width
+ * across unrelated rerenders and viewport changes; only a drag changes it.
  */
-export default function PanelShell({
-  children,
-  style,
-  testId,
-  title,
-  onClose,
-  icon,
-  subtitle,
-  actions,
-  maxWidth,
-}: PanelShellProps) {
+export default function PanelShell({ maxWidth, ...props }: PanelShellProps) {
   const storedWidth = useUIStore((s) => s.nodePanelWidth)
   const setNodePanelWidth = useUIStore((s) => s.setNodePanelWidth)
-  // 0 = sentinel: choose the dynamic default once when the panel mounts.
-  // Incidental rerenders must not resize an open panel after the viewport
-  // changes; only an explicit drag should change its established width.
   const [mountDefaultWidth] = useState(defaultPanelWidth)
   const rawWidth = storedWidth > 0 ? storedWidth : mountDefaultWidth
   // Per-panel ceiling (e.g. the Git sidebar) clamps the shared width locally.
-  const panelWidth = maxWidth ? Math.min(rawWidth, maxWidth) : rawWidth
-
-  const isDragging = useRef(false)
-  const startX = useRef(0)
-  const startW = useRef(panelWidth)
-  const widthRef = useRef(panelWidth)
-  const panelRef = useRef<HTMLDivElement>(null)
-  // Visual drag state drives the `.dragging` class on the handle so the
-  // accent colour stays visible even when the pointer wanders off the
-  // narrow hit area.  The `isDragging` ref remains the source of truth
-  // for the mousemove/mouseup handlers; this state only mirrors it for
-  // the render path.
-  const [dragActive, setDragActive] = useState(false)
-
-  useEffect(() => {
-    const onMouseMove = (e: MouseEvent) => {
-      if (!isDragging.current) return
-      const maxW = maxWidth ? Math.min(maxPanelWidth(), maxWidth) : maxPanelWidth()
-      const delta = startX.current - e.clientX
-      const newW = Math.min(maxW, Math.max(MIN_PANEL_W, startW.current + delta))
-      widthRef.current = newW
-      if (panelRef.current) {
-        panelRef.current.style.width = `${newW}px`
-      }
-    }
-    const onMouseUp = () => {
-      if (isDragging.current) {
-        isDragging.current = false
-        document.body.style.cursor = ""
-        document.body.style.userSelect = ""
-        setNodePanelWidth(widthRef.current)
-        setDragActive(false)
-      }
-    }
-    window.addEventListener("mousemove", onMouseMove)
-    window.addEventListener("mouseup", onMouseUp)
-    return () => {
-      window.removeEventListener("mousemove", onMouseMove)
-      window.removeEventListener("mouseup", onMouseUp)
-    }
-  }, [setNodePanelWidth, maxWidth])
-
-  const onDragStart = useCallback(
-    (e: React.MouseEvent) => {
-      isDragging.current = true
-      startX.current = e.clientX
-      startW.current = panelWidth
-      widthRef.current = panelWidth
-      document.body.style.cursor = "col-resize"
-      document.body.style.userSelect = "none"
-      setDragActive(true)
-    },
-    [panelWidth],
-  )
+  const width = maxWidth ? Math.min(rawWidth, maxWidth) : rawWidth
 
   return (
-    <div
-      ref={panelRef}
-      data-testid={testId}
-      className="h-full shrink-0 flex flex-row animate-slide-in"
-      style={{ width: panelWidth, background: "var(--bg-panel)", ...style }}
-    >
-      {/* Drag handle — hover and drag-active states are driven by CSS
-          (`.panel-drag-handle`).  The `.dragging` modifier is synced
-          to the `isDragging` ref via `dragActive` state so the accent
-          colour sticks while the user is mid-drag, even if the
-          pointer wanders off the narrow hit area. */}
-      <div
-        onMouseDown={onDragStart}
-        data-testid="panel-resize-handle"
-        className={`panel-drag-handle shrink-0 h-full w-1 cursor-col-resize transition-colors${
-          dragActive ? " dragging" : ""
-        }`}
-        style={{ background: "var(--chrome-border)" }}
-      />
-      <div className="flex-1 min-w-0 h-full flex flex-col overflow-hidden">
-        {title !== undefined && (
-          <PanelHeader
-            title={title}
-            onClose={onClose}
-            icon={icon}
-            subtitle={subtitle}
-            actions={actions}
-          />
-        )}
-        {children}
-      </div>
-    </div>
+    <SidePanel
+      {...props}
+      width={width}
+      onWidthChange={setNodePanelWidth}
+      minWidth={MIN_PANEL_W}
+      maxWidth={() => (maxWidth ? Math.min(maxPanelWidth(), maxWidth) : maxPanelWidth())}
+    />
   )
 }

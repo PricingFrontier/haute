@@ -51,7 +51,13 @@ from haute._polars_operations import (
 from haute._polars_selectors import preamble_selector_aliases
 from haute._registry import NODE_REGISTRY, ensure_registry_ready
 from haute._topo import CycleError, ancestors, canonical_topological_order, topo_sort_ids
-from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
+from haute._types import (
+    REQUEST_INPUT_NODE_TYPES,
+    GraphEdge,
+    GraphNode,
+    NodeType,
+    PipelineGraph,
+)
 from haute.errors import (
     ConfigError,
     ContractMismatchError,
@@ -3135,8 +3141,10 @@ def _declared_api_input_port_columns(
     execution keeps its established full-source path and the owning loader can
     report the authoritative validation error.
     """
-    if node.data.nodeType is not NodeType.API_INPUT:
+    if node.data.nodeType not in REQUEST_INPUT_NODE_TYPES:
         return None
+    if node.data.nodeType is NodeType.WORKBENCH_INPUT:
+        return _declared_workbench_port_columns(node)
     tables = node.data.config.get("tables")
     if not isinstance(tables, list):
         return None
@@ -3166,6 +3174,22 @@ def _declared_api_input_port_columns(
     return ports or None
 
 
+def _declared_workbench_port_columns(node: GraphNode) -> dict[str, frozenset[str]] | None:
+    """A Workbench Input's ports with their columns: every column of every table with one.
+
+    A config its loader would refuse returns ``None``, as a Quote Input's does, so the loader
+    reports the authoritative error.
+    """
+    from haute._workbench_input import workbench_input_tables
+    from haute._workbench_tables import WorkbenchTablesError
+
+    try:
+        tables = workbench_input_tables(node.data.config)
+    except WorkbenchTablesError:
+        return None
+    return {table.name: frozenset(column.name for column in table.columns) for table in tables}
+
+
 def api_input_port_columns_by_node(
     node_map: Mapping[str, GraphNode],
     relevant_edges: Iterable[GraphEdge],
@@ -3183,7 +3207,7 @@ def api_input_port_columns_by_node(
     declared_by_node: dict[str, dict[str, frozenset[str]] | None] = {}
     for edge in relevant_edges:
         source = node_map.get(edge.source)
-        if source is None or source.data.nodeType is not NodeType.API_INPUT:
+        if source is None or source.data.nodeType not in REQUEST_INPUT_NODE_TYPES:
             continue
         if edge.source not in declared_by_node:
             declared_by_node[edge.source] = _declared_api_input_port_columns(source)
@@ -3683,9 +3707,8 @@ class OpaqueContractRule:
 _OPAQUE_CONTRACT_RULE = OpaqueContractRule()
 
 
-_USER_CODE_NODE_TYPES = frozenset(
+_USER_CODE_NODE_TYPES = REQUEST_INPUT_NODE_TYPES | frozenset(
     {
-        NodeType.API_INPUT,
         NodeType.DATA_INPUT,
         NodeType.EXTERNAL_FILE,
         NodeType.MODEL_SCORE,
@@ -3734,8 +3757,7 @@ def _must_run_source_user_code_unprojected(node: GraphNode, demand: set[str] | N
     its builder reads exactly the columns that code consumes.  An External File
     opens no scan, so its code is analysed as a transform instead.
     """
-    if node.data.nodeType not in {
-        NodeType.API_INPUT,
+    if node.data.nodeType not in REQUEST_INPUT_NODE_TYPES | {
         NodeType.DATA_INPUT,
     } or not _user_code_has_unbounded_projection_contract(node):
         return False
@@ -4022,6 +4044,7 @@ _PROJECTION_RULE_COVERAGE_BY_NODE_TYPE: Mapping[NodeType, ProjectionRuleCoverage
     MappingProxyType(
         {
             NodeType.API_INPUT: _coverage(NodeType.API_INPUT, _SOURCE_SCAN_RULE_NAME),
+            NodeType.WORKBENCH_INPUT: _coverage(NodeType.WORKBENCH_INPUT, _SOURCE_SCAN_RULE_NAME),
             NodeType.DATA_INPUT: _coverage(NodeType.DATA_INPUT, _SOURCE_SCAN_RULE_NAME),
             NodeType.EXTERNAL_FILE: _coverage(
                 NodeType.EXTERNAL_FILE,
@@ -4047,6 +4070,10 @@ _PROJECTION_RULE_COVERAGE_BY_NODE_TYPE: Mapping[NodeType, ProjectionRuleCoverage
             NodeType.BANDING: _coverage(NodeType.BANDING, _GENERIC_CONTRACT_RULE_NAME),
             NodeType.RATING_STEP: _coverage(NodeType.RATING_STEP, _GENERIC_CONTRACT_RULE_NAME),
             NodeType.OUTPUT: _coverage(NodeType.OUTPUT, _GENERIC_CONTRACT_RULE_NAME),
+            NodeType.WORKBENCH_OUTPUT: _coverage(
+                NodeType.WORKBENCH_OUTPUT,
+                _GENERIC_CONTRACT_RULE_NAME,
+            ),
             NodeType.EXPLORE: _coverage(NodeType.EXPLORE, _GENERIC_CONTRACT_RULE_NAME),
             NodeType.MODELLING: _coverage(NodeType.MODELLING, _GENERIC_CONTRACT_RULE_NAME),
             NodeType.SCENARIO_EXPANDER: _coverage(
@@ -4535,7 +4562,7 @@ def _exact_columns_for_parent_edge(
     if known is not None:
         return known
     parent = node_map[edge.source]
-    if parent.data.nodeType is NodeType.API_INPUT:
+    if parent.data.nodeType in REQUEST_INPUT_NODE_TYPES:
         declared = _declared_api_input_port_columns(parent)
         if declared is None or edge.sourceHandle is None:
             return None

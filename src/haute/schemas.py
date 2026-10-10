@@ -8,7 +8,6 @@ with API-friendly aliases so that FastAPI endpoint signatures stay clean.
 from __future__ import annotations
 
 import itertools
-import keyword
 import math
 from collections.abc import Mapping
 from datetime import datetime
@@ -50,17 +49,20 @@ from haute._execution_schemas import (
     NodeExecutionStatus,  # noqa: F401
     _validate_diagnostic_collection,
 )
+from haute._graph_utils import is_frame_label
 from haute._pipeline_settings import (
     MAX_SIZE_GB,
     MAX_STREAMING_CHUNK_SIZE,
     MAX_TIME_LIMIT_MINUTES,
 )
+from haute._types import REQUEST_INPUT_NODE_TYPES, NodeType
 from haute._types import GlobalConstant as GlobalConstant  # noqa: F401
 from haute._types import GraphEdge as GraphEdge  # noqa: F401
 from haute._types import GraphNode as GraphNode  # noqa: F401
 from haute._types import NodeData as GraphNodeData  # noqa: F401
-from haute._types import NodeType
 from haute._types import PipelineGraph as Graph  # noqa: F401
+from haute._workbench_form import FormSpec
+from haute._workbench_tables import WorkbenchTable
 
 
 def _reject_bool(value: object) -> object:
@@ -148,6 +150,70 @@ class ColumnInfo(BaseModel):
 
 class SessionStatusResponse(BaseModel):
     ok: bool = True
+
+
+class WorkbenchStatusResponse(BaseModel):
+    """Whether the project's workbench is enabled (``[workbench]`` in ``haute.toml``)."""
+
+    enabled: bool
+    # The form's path as haute.toml names it, relative to the project root; null while
+    # the workbench is not enabled.
+    form: str | None = None
+
+
+class WorkbenchTablesResponse(BaseModel):
+    """The workbench's tables, as the pipeline holds them, as its form defines them now.
+
+    ``tables`` are the Workbench Input's; ``sample`` is the sample quote typed while
+    building, as a request holds it: ``{}`` for none; ``response_tables`` are the tables a
+    priced quote fills in, in the same shape, which a Workbench Output fills: ``[]`` for none.
+    """
+
+    tables: list[WorkbenchTable]
+    sample: dict[str, Any] = Field(default_factory=dict)
+    response_tables: list[WorkbenchTable] = Field(default_factory=list)
+
+
+class WorkbenchFormResponse(BaseModel):
+    """The workbench's form as its file holds it now, with the file's revision.
+
+    ``revision`` is the file's content hash, which a save quotes as its ``base_revision``;
+    null while the form has never been saved, when ``form`` is the blank form.
+    """
+
+    form: FormSpec
+    revision: str | None = None
+
+
+class WorkbenchFormSaveRequest(BaseModel):
+    """The whole form to write, with the revision of the file it was read from.
+
+    ``base_revision`` must still be the file's revision (null: the file did not exist), or
+    the save is refused as stale and nothing is written.
+    """
+
+    form: FormSpec
+    base_revision: str | None = None
+
+
+class WorkbenchFormSaveResponse(WorkbenchFormResponse):
+    """The form as written, with its new revision and the save's version capture.
+
+    The capture fields mean what they mean on the pipeline save's response: ``git_sha`` is
+    the ledger commit the save produced when the clone has a working branch, else null;
+    ``warnings`` are non-fatal, a capture that failed among them; ``identity_required`` is
+    true only when the capture was skipped because git has no commit identity.
+    """
+
+    warnings: list[str] = Field(default_factory=list)
+    git_sha: str | None = None
+    identity_required: bool = False
+
+
+class WorkbenchFormTablesRequest(BaseModel):
+    """A form as the view holds it, saved or not, whose tables and sample are asked for."""
+
+    form: FormSpec
 
 
 # ---------------------------------------------------------------------------
@@ -910,13 +976,15 @@ class EditorIdentityRequestNode(BaseModel):
             for handle in self.source_handles:
                 if not handle or not handle.isascii() or not handle.isidentifier():
                     raise ValueError("submodelPort source handles must be ASCII identifiers.")
-        if self.node_type == NodeType.API_INPUT and any(
-            not handle.isascii() or not handle.isidentifier() or keyword.iskeyword(handle)
-            for handle in self.source_handles
+        if self.node_type in REQUEST_INPUT_NODE_TYPES and any(
+            not is_frame_label(handle) for handle in self.source_handles
         ):
-            raise ValueError("apiInput source handles must be non-keyword ASCII identifiers.")
+            raise ValueError(
+                f"{self.node_type.value} source handles must be non-keyword ASCII identifiers."
+            )
         if (
-            self.node_type not in {NodeType.API_INPUT, NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}
+            self.node_type
+            not in REQUEST_INPUT_NODE_TYPES | {NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}
             and self.source_handles
         ):
             raise ValueError("source_handles are not valid for this node type.")
@@ -1646,7 +1714,8 @@ class InputCacheSourceRequest(_StrictInputCacheModel):
 
     A structured API Input (JSON, JSONL, NDJSON, XML with a v2 ``tables``
     schema) is one snapshot per emitting table; its requests act on every
-    table of the node together.
+    table of the node together. ``node_type`` says how the source is read, so a
+    Workbench Input's tables, read as a Quote Input's, are sent as ``apiInput``.
     """
 
     schema_version: Literal[1] = 1

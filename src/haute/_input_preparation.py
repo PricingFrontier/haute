@@ -82,24 +82,24 @@ _REMEDIATION_BY_REASON: Mapping[str, str] = {
     ),
 }
 _API_INPUT_REMEDIATION = (
-    "Build this API Input's tables from the API Input panel, or give the "
+    "Build this input's tables from its panel, or give the "
     "execution more memory headroom, and try again."
 )
 _API_INPUT_REMEDIATION_BY_REASON: Mapping[str, str] = {
     "cap_unavailable": (
         "This host cannot install the native memory cap an automatic snapshot "
-        "build requires. Build this API Input's tables explicitly from the API "
-        "Input panel, or run on a host that supports the cap."
+        "build requires. Build this input's tables explicitly from its "
+        "panel, or run on a host that supports the cap."
     ),
     "memory_limited": (
-        "Preparing this API Input's tables ran out of memory. Give the execution "
-        "more memory headroom, or build them explicitly from the API Input "
+        "Preparing this input's tables ran out of memory. Give the execution "
+        "more memory headroom, or build them explicitly from its "
         "panel, and try again."
     ),
-    "cancelled": "Preparing this API Input's tables was cancelled. Try again.",
+    "cancelled": "Preparing this input's tables was cancelled. Try again.",
     "timed_out": (
-        "Preparing this API Input's tables exceeded its time budget. Build them "
-        "from the API Input panel, or raise the preparation timeout, and try again."
+        "Preparing this input's tables exceeded its time budget. Build them "
+        "from its panel, or raise the preparation timeout, and try again."
     ),
 }
 
@@ -256,6 +256,7 @@ def snapshot_backed_inputs(
     runtime path resolved through the node builder's project-root guard.
     """
     from haute._builders import _config_with_resolved_data_path
+    from haute._types import REQUEST_INPUT_NODE_TYPES
     from haute.schemas import NodeType
 
     found: list[tuple[str, InputKind, Mapping[str, Any]]] = []
@@ -263,7 +264,7 @@ def snapshot_backed_inputs(
         node = node_map.get(node_id)
         if node is None:
             continue
-        if node.data.nodeType == NodeType.API_INPUT:
+        if node.data.nodeType in REQUEST_INPUT_NODE_TYPES:
             if _is_structured_api_input(node.data.config):
                 found.append(
                     (node_id, "api_input", _config_with_resolved_data_path(node.data.config))
@@ -573,7 +574,7 @@ def _wait_for_single_flight(
     kind: InputKind = "data_input",
 ) -> None:
     """Wait for another execution's build, staying cancellable and bounded."""
-    noun = "API Input's tables" if kind == "api_input" else "Data Input's snapshot"
+    noun = "input's tables" if kind == "api_input" else "Data Input's snapshot"
     while not event.wait(timeout=0.1):
         if time.monotonic() > deadline:
             raise _failure(
