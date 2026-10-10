@@ -1,11 +1,12 @@
 /**
- * The view's shortcuts on the sheets (specs/workbench): Ctrl+1 fits the sheet, and with a
- * component selected Escape deselects, Delete removes, Ctrl+D duplicates and the arrows
- * nudge as one undo step per burst; none of it from a field or a select, nor on the
- * schema section, nor in Preview, where only Ctrl+1 applies.
+ * The view's shortcuts on the sheets (specs/workbench): Ctrl+S saves the project through
+ * the host, Ctrl+1 fits the sheet, and with a component selected Escape deselects, Delete
+ * removes, Ctrl+D duplicates and the arrows nudge as one undo step per burst; none of
+ * the sheet's keys from a field or a select, nor on the schema section, nor in Preview,
+ * where only Ctrl+1 applies.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { cleanup, renderHook } from "@testing-library/react"
+import { cleanup, renderHook, waitFor } from "@testing-library/react"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import useWorkbenchShortcuts from "../useWorkbenchShortcuts"
@@ -14,17 +15,39 @@ import { currentForm, loadForm } from "./fixtures"
 const key = (init: KeyboardEventInit, target: EventTarget = window) =>
   target.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }))
 const widgets = () => currentForm().pages[0].widgets
+const onSave = vi.fn()
 
 describe("useWorkbenchShortcuts on the sheets", () => {
   beforeEach(() => {
     loadForm()
     useWorkbenchViewStore.setState({ selectedId: "w_boxes" })
-    renderHook(() => useWorkbenchShortcuts())
+    renderHook(() => useWorkbenchShortcuts(onSave))
   })
 
   afterEach(() => {
     cleanup()
     vi.useRealTimers()
+    onSave.mockClear()
+  })
+
+  it("saves the project through the host on Ctrl+S or Cmd+S, a focused field's edit committed first", async () => {
+    key({ key: "s", ctrlKey: true })
+    expect(onSave).toHaveBeenCalledTimes(1)
+    key({ key: "s", metaKey: true })
+    expect(onSave).toHaveBeenCalledTimes(2)
+
+    // From a field: the field loses focus, which commits its edit, and then the save runs.
+    const field = document.createElement("input")
+    document.body.appendChild(field)
+    try {
+      field.focus()
+      key({ key: "s", ctrlKey: true }, field)
+      expect(document.activeElement).not.toBe(field)
+      expect(onSave).toHaveBeenCalledTimes(2)
+      await waitFor(() => expect(onSave).toHaveBeenCalledTimes(3))
+    } finally {
+      field.remove()
+    }
   })
 
   it("deselects on Escape and removes the selected component on Delete or Backspace", () => {

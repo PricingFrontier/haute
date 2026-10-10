@@ -8,8 +8,15 @@ import useWorkbenchViewStore, { ZOOM_STEP } from "../stores/useWorkbenchViewStor
 import { quoteFilled } from "../utils/sheetValues"
 
 interface WorkbenchToolbarProps {
-  /** Commit: the host's milestone flow, which saves the form's unsaved edits first. */
+  /** Save: the host's project save, the one the pipeline toolbar's Save runs. */
+  onSave: () => void
+  /** Commit: the host's milestone flow, which saves the project first. */
   onCommit: () => void
+  /**
+   * The pipeline document cannot be edited: Save and Commit are off, as they are in the
+   * pipeline toolbar, and the Assistant unless a turn is running.
+   */
+  editingDisabled?: boolean
 }
 
 /**
@@ -17,17 +24,15 @@ interface WorkbenchToolbarProps {
  * Preview; while building, Sheets over Schema, the form's Undo and Redo and, while the
  * sheets show, Zoom In over Zoom Out and why pricing the sample last failed; in Preview,
  * Price over Clear for the quote, the zoom, and why the quote has no price; and the
- * project's controls, whose Save saves the form and whose Commit records a milestone
- * through the host, the form and the pipeline saved first.
+ * project's controls, the host's and the same as the pipeline toolbar's: Save saves the
+ * project, the form and then the pipeline, and Commit records a milestone after that save.
  */
-export default function WorkbenchToolbar({ onCommit }: WorkbenchToolbarProps) {
+export default function WorkbenchToolbar({ onSave, onCommit, editingDisabled = false }: WorkbenchToolbarProps) {
   const ready = useWorkbenchFormStore((s) => s.status === "ready")
   const canUndo = useWorkbenchFormStore((s) => s.undoStack.length > 0)
   const canRedo = useWorkbenchFormStore((s) => s.redoStack.length > 0)
-  const saving = useWorkbenchFormStore((s) => s.saving)
   const undo = useWorkbenchFormStore((s) => s.undo)
   const redo = useWorkbenchFormStore((s) => s.redo)
-  const save = useWorkbenchFormStore((s) => s.save)
   const section = useWorkbenchViewStore((s) => s.section)
   const showSection = useWorkbenchViewStore((s) => s.showSection)
   const zoomBy = useWorkbenchViewStore((s) => s.zoomBy)
@@ -102,7 +107,7 @@ export default function WorkbenchToolbar({ onCommit }: WorkbenchToolbarProps) {
           </span>
         )}
       </div>
-      <ProjectControls onSave={() => { void save() }} onCommit={onCommit} saveDisabled={!ready || saving} />
+      <ProjectControls onSave={onSave} onCommit={onCommit} editingDisabled={editingDisabled} />
     </header>
   )
 }

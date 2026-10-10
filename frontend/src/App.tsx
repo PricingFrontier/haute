@@ -77,7 +77,7 @@ import { stopNodeWork, useNodeWorkRunning } from "./stores/useNodeWorkStore"
 import { PreviewRunContext, type PreviewRun } from "./panels/previewRunContext"
 import InputImportButton from "./components/InputImportButton"
 import AskAssistantButton from "./components/AskAssistantButton"
-import useDocumentStatusStore from "./stores/useDocumentStatusStore"
+import useDocumentStatusStore, { documentReadOnlyReason } from "./stores/useDocumentStatusStore"
 import { HAUTE_SESSION_EXPIRED_EVENT } from "./api/client"
 
 import {
@@ -1261,17 +1261,24 @@ function FlowEditor() {
     return handleSave()
   }, [addToast, handleSave, waitForPendingCommits])
 
-  // The git flows' save, before a milestone, a move, a branch switch or an
-  // identity retry: the workbench's form first, when it holds unsaved edits or
-  // a save the ledger did not capture, then the workbench nodes' copies brought
-  // up to date with it, then the pipeline through the graph-commit fence, so
-  // what is saved runs on the form that was saved; a pipeline whose copies could
-  // not be brought up to date is not saved. The form store is a lazy chunk,
-  // imported here only while the workbench is enabled and never on start.
+  // The project's save: Save and Ctrl/Cmd+S in either toolbar, and the git flows
+  // before a milestone, a move, a branch switch or an identity retry. The
+  // workbench's form first, when it holds unsaved edits or a save the ledger did
+  // not capture, then the workbench nodes' copies brought up to date with it,
+  // then the pipeline through the graph-commit fence, so what is saved runs on
+  // the form that was saved; a pipeline whose copies could not be brought up to
+  // date is not saved. The form store is a lazy chunk, imported here only while
+  // the workbench is enabled and never on start.
   const saveProject = useCallback(async (): Promise<boolean> => {
-    // Refused up front, before the form is saved: a save inside a submodel is refused by
-    // the pipeline's save anyway, and a form saved first would be a milestone's worth of
-    // work the refusal then stops short of.
+    // Refused up front, before the form is saved: a save of a document that cannot be
+    // saved, or one asked for inside a submodel, is refused by the pipeline's save
+    // anyway, and a form saved first would leave the pipeline's copies behind it on
+    // disk, or be a milestone's worth of work the refusal then stops short of.
+    const documentStatus = useDocumentStatusStore.getState()
+    if (documentStatus.capabilities?.can_save !== true || !documentStatus.graphSynchronized) {
+      addToast("error", documentReadOnlyReason())
+      return false
+    }
     if (parentGraphRef.current) {
       addToast("error", "Return to the main pipeline before saving.")
       return false
@@ -1297,17 +1304,18 @@ function FlowEditor() {
   }, [saveProject])
 
   // Save-gate: resolve Git readiness before deciding whether to save now or
-  // queue the action behind branch/divergence setup.
+  // queue the action behind branch/divergence setup. Save is the project's
+  // save, the same from either toolbar and from Ctrl/Cmd+S.
   const requestSave = useCallback(async () => {
     const st = useGitStore.getState().status ?? (await useGitStore.getState().loadStatus())
     if (st === null || st.state === "no-repository" || st.state === "git-unavailable" || st.state === "ready") {
-      void saveWithPendingCommits()
+      void saveProject()
       return
     }
     useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select", {
       pendingAction: "save",
     })
-  }, [saveWithPendingCommits])
+  }, [saveProject])
 
   // Commit uses the same readiness gate, but a ready repository first flushes
   // the fenced graph and only then opens the milestone modal.
@@ -1338,9 +1346,9 @@ function FlowEditor() {
   const handleGitModalConfirmed = useCallback(() => {
     const pending = useGitStore.getState().pendingAction
     useGitStore.getState().closeModal()
-    if (pending === "save") void saveWithPendingCommits()
+    if (pending === "save") void saveProject()
     else if (pending === "commit") void flushSaveThenMilestone()
-  }, [flushSaveThenMilestone, saveWithPendingCommits])
+  }, [flushSaveThenMilestone, saveProject])
 
   // Moving versions replaces the working tree. If requested, park the fenced
   // graph on the current branch first; a failed save keeps the user in place.
@@ -1819,7 +1827,7 @@ function FlowEditor() {
       ) : (
         <ErrorBoundary name="WorkbenchToolbar">
           <Suspense fallback={<header role="toolbar" aria-label="Workbench toolbar" className="toolbar" />}>
-            <WorkbenchToolbar onCommit={requestCommit} />
+            <WorkbenchToolbar onSave={requestSave} onCommit={requestCommit} editingDisabled={editingReadOnly} />
           </Suspense>
         </ErrorBoundary>
       )}
@@ -2066,6 +2074,7 @@ function FlowEditor() {
           <Suspense fallback={null}>
             <WorkbenchView
               onSave={saveProject}
+              onSaveShortcut={requestSave}
               isInsideSubmodel={viewStack.length > 1}
               readOnly={documentReadOnly}
               resolveGraph={resolveWorkbenchGraph}

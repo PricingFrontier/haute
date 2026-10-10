@@ -153,22 +153,29 @@ Out of scope:
     | Building, the schema showing | Sheets over Schema, and Undo and Redo |
     | Preview | Price over Clear for the quote (both disabled while nothing is typed in the tables the schema has now), Zoom In over Zoom Out, and why the quote has no price |
 
-  - **Save.** Save and Ctrl/Cmd+S save the form, with a focused field's edit included, and
-    the save is reported as the pipeline's is: the ledger commit on the branch indicator,
-    each warning in a toast of its own, and the git-identity prompt when the capture waits
-    on one, once per session.
-  - **Commit** runs the project's milestone flow, the same from either toolbar: the form is
-    saved first when it holds unsaved edits or a save the ledger did not capture (for want
-    of an identity, or because the capture failed), the Workbench Input's and Workbench
-    Output's copies follow it, and then the pipeline is saved and the milestone asked for,
-    so what the milestone records runs on the form it records. The tables are fetched
-    afresh for that, and a fetch that fails refuses the save, with a toast saying the
-    pipeline was not saved, rather than record copies behind the form. A form save refused,
-    as stale or failed, saves no pipeline and asks for no milestone either, so the pipeline
-    never carries copies of a form the view does not show; and a save asked for inside a
-    submodel is refused before the form is saved, as the pipeline's save refuses it. The
-    identity prompt's retry, a move's Save first and the Git panel's save before a switch
-    save the project the same way.
+  - **Save.** Save and Ctrl/Cmd+S save the project, the same from either toolbar, with a
+    focused field's edit included: the form is saved first when it holds unsaved edits or
+    a save the ledger did not capture (for want of an identity, or because the capture
+    failed), the Workbench Input's and Workbench Output's copies follow it, and then the
+    pipeline is saved, so what is saved runs on the form that was saved. The tables are
+    fetched afresh for that, and a fetch that fails refuses the pipeline's save, with a
+    toast saying the pipeline was not saved, rather than record copies behind the form. A
+    form save refused, as stale or failed, saves no pipeline, so the pipeline never carries
+    copies of a form the view does not show; and a save of a pipeline document that cannot
+    be saved (read-only, or changed on disk under unsaved edits), or one asked for inside a
+    submodel, is refused before the form is saved, with the pipeline save's own reason, so
+    the form is never saved ahead of a pipeline that is not. Save passes the pipeline
+    editor's git readiness gate first, as it does there: with no working branch chosen, or
+    a divergent one, the gate's modal opens and the save follows its confirmation. Each
+    file's save is reported as the pipeline's is: "Saved → forms/form.json" and the
+    pipeline's own toast, the ledger commit on the branch indicator, each warning in a
+    toast of its own, and the git-identity prompt when the capture waits on one, once per
+    session. Which view shows never decides what a save records.
+  - **Commit** runs the project's milestone flow, the same from either toolbar: the project
+    is saved as Save saves it, and then the milestone is asked for, so what the milestone
+    records runs on the form it records; a save refused asks for no milestone. The identity
+    prompt's retry, a move's Save first and the Git panel's save before a switch save the
+    project the same way.
   - **Guards.** A move, a branch switch, an archive or a delete that would replace the
     working tree asks about unsaved edits in the form as it asks about the canvas, and a
     switch chosen over them reads the destination's form in their place once it has
@@ -315,13 +322,13 @@ Out of scope:
   once the quote changes until Price again; a pricing that fails shows its reason in the
   toolbar. Clear, after a confirmation, empties the quote, its marks and its price, and an
   answer to a pricing still on its way is dropped, as one is once the view has left.
-  Ctrl/Cmd+S still saves the form in Preview and Ctrl/Cmd+1 fits the sheet; the sheet's
+  Ctrl/Cmd+S still saves the project in Preview and Ctrl/Cmd+1 fits the sheet; the sheet's
   editing keys and undo do nothing.
-- **Saved.** A successful save adopts the file's new revision and fetches the tables
-  again, so the Workbench Input's and Workbench Output's copies follow the schema and the
-  pipeline has changes to save, as after any fetch. A save refused as stale keeps the edits
-  and says so, in a toast and in a banner in the view whose Reload reads the file again,
-  dropping the edits and the history.
+- **Saved.** A successful save of the form adopts the file's new revision; the project
+  save then fetches the tables afresh, so the Workbench Input's and Workbench Output's
+  copies follow the schema, as after any fetch, and saves the pipeline with them. A save refused
+  as stale keeps the edits and says so, in a toast and in a banner in the view whose
+  Reload reads the file again, dropping the edits and the history.
 - **The tables as the pipeline holds them.** The input tables are the Workbench Input's, in
   schema order: each table its name, `one` row per quote or `many`, and its columns, each its
   name and its type, the index column an Integer. The form's keys, labels, rules and allowed
@@ -554,11 +561,16 @@ Out of scope:
   capture rather than a capture of its own, so one place decides what a save on the ledger
   means: no working branch, a missing identity, a failed capture. Commit's sweep takes
   only tracked files, and the form is tracked from its first captured save, so a hand edit
-  reaches the milestone without the view's help. Commit saves the form only when there is
-  something to save, unsaved edits or an uncaptured save, so a milestone from the pipeline
-  editor costs the form no request and no toast while it is as saved. It saves the form
-  before the pipeline and lets the nodes' copies follow in between, so a milestone records
-  a pipeline that runs on the form it records.
+  reaches the milestone without the view's help.
+- **One Save.** The form and the pipeline are one project on one ledger, so Save, Ctrl/Cmd+S
+  and Commit save both, the same from either toolbar, and which view shows never decides
+  what a save records. A form saved alone would leave the pipeline's copies behind it on
+  disk until the next pipeline save, and a pipeline saved alone would carry copies of a
+  form the view does not show; one save, the form before the pipeline with the nodes'
+  copies following in between, records a pipeline that runs on the form it records. The
+  form is saved only when there is something to save, unsaved edits or an uncaptured save,
+  so a save from the pipeline editor costs the form no request and no toast while it is
+  as saved.
 - **The blank form is a form.** A project whose workbench was enabled by hand has no file
   yet, and the view is where its first form is made, so an absent file reads as the blank
   form with no revision rather than as an error, and the first save creates it.

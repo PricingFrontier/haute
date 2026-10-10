@@ -219,8 +219,10 @@ describe("useWorkbenchFormStore", () => {
     expect(api.puts).toEqual([{ form: named("home"), base_revision: "rev-0" }])
     expect(store()).toMatchObject({ revision: "rev-1", dirty: false, saving: false, stale: false })
     expect(toasts()).toEqual([["success", "Saved → forms/form.json"]])
-    // The schema may have changed: the workbench nodes' copies follow.
-    expect(useWorkbenchStore.getState().refreshTables).toHaveBeenCalledTimes(1)
+    // The schema may have changed, but the save fetches no tables itself: the project
+    // save it is the form step of fetches them afresh next, and a second fetch would
+    // publish a second update of each workbench node.
+    expect(useWorkbenchStore.getState().refreshTables).not.toHaveBeenCalled()
 
     // The next save quotes the revision the last one gave.
     store().change((form) => ({ ...form, name: "boat" }))

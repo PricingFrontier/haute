@@ -1,8 +1,8 @@
 /**
  * The toolbar while the workbench's view shows (specs/workbench): the brand, Build over
  * Preview, the sections, the form's Undo and Redo, the sheet's zoom, the project's
- * controls with Save saving the form and Commit running the host's milestone flow, and
- * in Preview Price and Clear for the quote.
+ * controls, Save and Commit, both the host's as the pipeline toolbar's are, and in
+ * Preview Price and Clear for the quote.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
@@ -41,11 +41,12 @@ const form: FormSpec = {
   },
 }
 
+const onSave = vi.fn()
 const onCommit = vi.fn()
-const renderToolbar = () => render(<WorkbenchToolbar onCommit={onCommit} />)
+const renderToolbar = () => render(<WorkbenchToolbar onSave={onSave} onCommit={onCommit} />)
 
 describe("WorkbenchToolbar", () => {
-  const actions = { save: vi.fn(async () => true), undo: vi.fn(), redo: vi.fn() }
+  const actions = { undo: vi.fn(), redo: vi.fn() }
   const quote = { priceQuote: vi.fn(async () => {}), clear: vi.fn() }
 
   beforeEach(() => {
@@ -146,23 +147,28 @@ describe("WorkbenchToolbar", () => {
     expect(useWorkbenchViewStore.getState().zoom).toBeCloseTo(0.9)
   })
 
-  it("saves the form, commits through the host, and keeps both off while the form loads or saves", () => {
+  it("saves and commits through the host, the pipeline toolbar's controls, off while editing is disabled and on whatever the form's own state", () => {
     const { rerender } = renderToolbar()
     fireEvent.click(screen.getByTestId("toolbar-save"))
-    expect(actions.save).toHaveBeenCalledTimes(1)
+    expect(onSave).toHaveBeenCalledTimes(1)
     fireEvent.click(screen.getByTestId("toolbar-save-commit"))
     expect(onCommit).toHaveBeenCalledTimes(1)
 
-    useWorkbenchFormStore.setState({ saving: true })
-    rerender(<WorkbenchToolbar onCommit={onCommit} />)
+    // The pipeline document cannot be edited: Save and Commit are off, and the Assistant
+    // while no turn runs, as they are in the pipeline toolbar.
+    rerender(<WorkbenchToolbar onSave={onSave} onCommit={onCommit} editingDisabled />)
     expect(screen.getByTestId("toolbar-save")).toBeDisabled()
     expect(screen.getByTestId("toolbar-save-commit")).toBeDisabled()
+    expect(screen.getByTestId("toolbar-assistant")).toBeDisabled()
 
-    useWorkbenchFormStore.setState({ saving: false, status: "loading" })
-    rerender(<WorkbenchToolbar onCommit={onCommit} />)
-    expect(screen.getByTestId("toolbar-save")).toBeDisabled()
-    expect(screen.getByTestId("toolbar-save-commit")).toBeDisabled()
+    // The form loading or saving is the form's state, not the project's: Save stays the
+    // project's, and only the form's own controls wait for it.
+    useWorkbenchFormStore.setState({ saving: true, status: "loading" })
+    rerender(<WorkbenchToolbar onSave={onSave} onCommit={onCommit} />)
+    expect(screen.getByTestId("toolbar-save")).toBeEnabled()
+    expect(screen.getByTestId("toolbar-save-commit")).toBeEnabled()
     expect(screen.getByTestId("toolbar-assistant")).toBeEnabled()
+    expect(screen.getByTestId("toolbar-undo")).toBeDisabled()
   })
 
   it("says why pricing the sample last failed while building, and why the quote has no price in Preview", () => {
@@ -170,16 +176,16 @@ describe("WorkbenchToolbar", () => {
     expect(screen.queryByTestId("workbench-pricing-error")).not.toBeInTheDocument()
 
     useWorkbenchPricingStore.setState({ error: "Connect a frame to the Workbench Output's 'pricing_output' table." })
-    rerender(<WorkbenchToolbar onCommit={onCommit} />)
+    rerender(<WorkbenchToolbar onSave={onSave} onCommit={onCommit} />)
     const note = screen.getByTestId("workbench-pricing-error")
     expect(note).toHaveTextContent("Pricing failed: Connect a frame to the Workbench Output's 'pricing_output' table.")
     expect(note).toHaveAttribute("title", "Connect a frame to the Workbench Output's 'pricing_output' table.")
 
     useWorkbenchViewStore.setState({ section: "preview" })
-    rerender(<WorkbenchToolbar onCommit={onCommit} />)
+    rerender(<WorkbenchToolbar onSave={onSave} onCommit={onCommit} />)
     expect(screen.queryByTestId("workbench-pricing-error")).not.toBeInTheDocument()
     useWorkbenchPreviewStore.setState({ error: "2 cells need attention" })
-    rerender(<WorkbenchToolbar onCommit={onCommit} />)
+    rerender(<WorkbenchToolbar onSave={onSave} onCommit={onCommit} />)
     expect(screen.getByTestId("workbench-pricing-error")).toHaveTextContent("2 cells need attention")
   })
 

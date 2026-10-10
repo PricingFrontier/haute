@@ -24,6 +24,8 @@ const AssistantPanel = lazy(() => import("../panels/assistant/AssistantPanel"))
 interface WorkbenchViewProps {
   /** The Git panel's save, as the node properties panel gives it. */
   onSave: () => Promise<boolean>
+  /** Ctrl/Cmd+S: the toolbar's Save, the project's save behind the git readiness gate. */
+  onSaveShortcut: () => void
   /** The Assistant panel's props, as the node properties panel gives them. */
   isInsideSubmodel: boolean
   readOnly: boolean
@@ -50,7 +52,7 @@ const BANNER_STYLE = {
  * pauses, and when the sheets show while building, as the pipeline may have changed
  * meanwhile.
  */
-export default function WorkbenchView({ onSave, isInsideSubmodel, readOnly, resolveGraph }: WorkbenchViewProps) {
+export default function WorkbenchView({ onSave, onSaveShortcut, isInsideSubmodel, readOnly, resolveGraph }: WorkbenchViewProps) {
   const status = useWorkbenchFormStore((s) => s.status)
   const loadError = useWorkbenchFormStore((s) => s.loadError)
   const stale = useWorkbenchFormStore((s) => s.stale)
@@ -67,7 +69,7 @@ export default function WorkbenchView({ onSave, isInsideSubmodel, readOnly, reso
   useEffect(() => {
     void useWorkbenchFormStore.getState().load()
   }, [])
-  useWorkbenchShortcuts()
+  useWorkbenchShortcuts(onSaveShortcut)
   // The pricer prices on the document and the source as they are when it is called.
   useEffect(() => {
     setPricer((workbench) => priceSample(resolveGraph(), workbench, useSettingsStore.getState().activeSource))

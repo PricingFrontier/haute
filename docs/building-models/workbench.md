@@ -30,11 +30,13 @@ toolbar keeps Haute's project controls (Assistant, Help, the branch, **Save** an
 **Sheets** over **Schema**, **Undo** over **Redo**, and **Zoom In** over **Zoom Out** on
 the sheets.
 
-**Save** and Ctrl+S write `forms/form.json`, and each save is recorded on your branch's
-save ledger like a save of the pipeline, so it shows in the Git panel's history. **Commit**
-records a milestone of the whole project: the workbench's unsaved edits are saved first,
-the pipeline follows them, and both are recorded. A save is refused when the file changed on disk since the workbench read
-it (an edit by hand, or a branch switched outside Haute); the banner's **Reload** reads it
+**Save** and Ctrl+S save the project, the same from either view: `forms/form.json` first
+when the workbench has unsaved edits, then the pipeline, with the Workbench Input's and
+Workbench Output's tables brought up to date in between, and each file's save is recorded
+on your branch's save ledger, so it shows in the Git panel's history. **Commit** records a
+milestone of the whole project after that save. A save is refused when the form file
+changed on disk since the workbench read it (an edit by hand, or a branch switched outside
+Haute), and then the pipeline is not saved either; the banner's **Reload** reads the file
 again, dropping your unsaved edits. When the pipeline is read again from disk and the file
 changed too, the workbench follows it, unless you have unsaved edits, when the banner
 appears instead.
@@ -63,8 +65,9 @@ required, a range for a number, the allowed values.
   Changing a column's type drops the rules the new type cannot have.
 - Removing a column or a table a sheet shows asks first, and takes it off the sheet.
 
-When the schema is saved, the editor fetches the tables again and the workbench Input's
-ports follow it, so the pipeline has changes to save, as after any edit.
+A table or a column you add reaches the pipeline when you save: the editor fetches the
+tables again, the Workbench Input's and Workbench Output's tables follow the schema, and
+the pipeline is saved with them in the same save. Until then it is on the sheets alone.
 
 ## Sheets
 
@@ -124,4 +127,4 @@ follow the cells as you fix them. A quote that passes is priced on the pipeline 
 editor, and every output column shows its value: a Collection's its table's one row, and a
 Table's the row keyed like each grid row. The values dim when you change the quote, until
 you press **Price** again, and the quote is priced exactly as a deployed pipeline would price
-it. **Clear** empties the quote, after asking. Ctrl+S still saves the sheets in Preview.
+it. **Clear** empties the quote, after asking. Ctrl+S still saves the project in Preview.

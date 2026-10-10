@@ -10,16 +10,16 @@ const NUDGE_BURST_MS = 800
 
 /**
  * The workbench view's keyboard shortcuts, registered while it shows (specs/workbench):
- * Ctrl+S saves the form, with a focused field's edit included; while building, Ctrl+Z
- * and Ctrl+Shift+Z (or Ctrl+Y) undo and redo an edit outside a text field. While the
- * sheets show, building or in Preview, Ctrl+1 fits the sheet to its viewport; while
- * building, with a component selected, Escape deselects it, Delete or Backspace removes
- * it, Ctrl+D duplicates it and the arrow keys nudge it by a grid step (Shift: a pixel), a
- * burst of nudges being one undo step; none of that from a control, whose own keys pick
- * an option. Keys in a modal dialog are the dialog's, as they are for the pipeline
- * editor's shortcuts.
+ * Ctrl+S saves the project through the host, as the toolbar's Save does, with a focused
+ * field's edit included; while building, Ctrl+Z and Ctrl+Shift+Z (or Ctrl+Y) undo and
+ * redo an edit outside a text field. While the sheets show, building or in Preview,
+ * Ctrl+1 fits the sheet to its viewport; while building, with a component selected,
+ * Escape deselects it, Delete or Backspace removes it, Ctrl+D duplicates it and the
+ * arrow keys nudge it by a grid step (Shift: a pixel), a burst of nudges being one undo
+ * step; none of that from a control, whose own keys pick an option. Keys in a modal
+ * dialog are the dialog's, as they are for the pipeline editor's shortcuts.
  */
-export default function useWorkbenchShortcuts(): void {
+export default function useWorkbenchShortcuts(onSave: () => void): void {
   // The component being nudged, when its burst ends, and the form the last nudge made:
   // an undo, a redo or any other edit in between replaces it, and ends the burst.
   const nudging = useRef<{ id: string; until: number; form: object } | null>(null)
@@ -31,9 +31,7 @@ export default function useWorkbenchShortcuts(): void {
       const forms = useWorkbenchFormStore.getState()
       if (mod && key === "s") {
         e.preventDefault()
-        saveCommittingField(e.target, () => {
-          void forms.save()
-        })
+        saveCommittingField(e.target, onSave)
         return
       }
       if (isTypingTarget(e.target)) return
@@ -91,5 +89,5 @@ export default function useWorkbenchShortcuts(): void {
     }
     window.addEventListener("keydown", handler)
     return () => window.removeEventListener("keydown", handler)
-  }, [])
+  }, [onSave])
 }

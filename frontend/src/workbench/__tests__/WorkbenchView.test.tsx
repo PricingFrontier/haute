@@ -28,17 +28,20 @@ vi.mock("../../panels/GitPanel", () => ({ default: () => <div data-testid="git-p
 vi.mock("../../panels/assistant/AssistantPanel", () => ({ default: () => <div data-testid="assistant-panel" /> }))
 
 const onSave = vi.fn(async () => true)
+const onSaveShortcut = vi.fn()
 const resolveGraph = vi.fn(() => ({ nodes: [], edges: [] }))
 
 function renderView() {
-  return render(<WorkbenchView onSave={onSave} isInsideSubmodel={false} readOnly={false} resolveGraph={resolveGraph} />)
+  return render(
+    <WorkbenchView onSave={onSave} onSaveShortcut={onSaveShortcut} isInsideSubmodel={false} readOnly={false} resolveGraph={resolveGraph} />,
+  )
 }
 
 const key = (target: EventTarget, init: KeyboardEventInit) =>
   target.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }))
 
 describe("WorkbenchView", () => {
-  const actions = { load: vi.fn(async () => {}), reload: vi.fn(async () => {}), save: vi.fn(async () => true), undo: vi.fn(), redo: vi.fn() }
+  const actions = { load: vi.fn(async () => {}), reload: vi.fn(async () => {}), undo: vi.fn(), redo: vi.fn() }
 
   const pricing = { setPricer: vi.fn(), schedule: vi.fn() }
 
@@ -103,7 +106,9 @@ describe("WorkbenchView", () => {
     act(() => {
       useWorkbenchFormStore.setState({ status: "failed", loadError: "forms/form.json is not JSON: bad" })
     })
-    rerender(<WorkbenchView onSave={onSave} isInsideSubmodel={false} readOnly={false} resolveGraph={resolveGraph} />)
+    rerender(
+      <WorkbenchView onSave={onSave} onSaveShortcut={onSaveShortcut} isInsideSubmodel={false} readOnly={false} resolveGraph={resolveGraph} />,
+    )
     expect(screen.getByRole("alert")).toHaveTextContent("Could not read the workbench: forms/form.json is not JSON: bad")
     fireEvent.click(screen.getByRole("button", { name: "Try again" }))
     expect(actions.reload).toHaveBeenCalledTimes(1)
@@ -120,7 +125,7 @@ describe("WorkbenchView", () => {
     expect(actions.reload).toHaveBeenCalledTimes(1)
   })
 
-  it("saves on Ctrl+S, with a focused field's edit included", async () => {
+  it("saves the project through the host on Ctrl+S, with a focused field's edit included", async () => {
     vi.useFakeTimers()
     try {
       useWorkbenchViewStore.setState({ section: "schema" })
@@ -130,12 +135,12 @@ describe("WorkbenchView", () => {
 
       key(field, { key: "s", ctrlKey: true })
       expect(document.activeElement).not.toBe(field)
-      expect(actions.save).not.toHaveBeenCalled()
+      expect(onSaveShortcut).not.toHaveBeenCalled()
       await vi.runAllTimersAsync()
-      expect(actions.save).toHaveBeenCalledTimes(1)
+      expect(onSaveShortcut).toHaveBeenCalledTimes(1)
 
       key(window, { key: "s", metaKey: true })
-      expect(actions.save).toHaveBeenCalledTimes(2)
+      expect(onSaveShortcut).toHaveBeenCalledTimes(2)
     } finally {
       vi.useRealTimers()
     }
@@ -158,7 +163,7 @@ describe("WorkbenchView", () => {
     key(dialog, { key: "z", ctrlKey: true })
     key(dialog, { key: "s", ctrlKey: true })
     expect(actions.undo).toHaveBeenCalledTimes(1)
-    expect(actions.save).not.toHaveBeenCalled()
+    expect(onSaveShortcut).not.toHaveBeenCalled()
   })
 
   it("gives the pricing store a pricer while it shows, and prices the sample when its basis changes on the sheets", () => {

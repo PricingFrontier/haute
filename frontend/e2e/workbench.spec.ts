@@ -2,8 +2,9 @@
  * The workbench end to end (specs/workbench): switched on for the project, its schema read
  * into the Schema section, a Collection dragged onto a sheet and given its fields, the
  * sample typed and priced live on the pipeline open in the editor, an underwriter's quote
- * priced in Preview apart from the sample, and the sheets saved to forms/form.json on the
- * project's ledger.
+ * priced in Preview apart from the sample, a column added to the schema, and the project
+ * saved in one Save: the sheets to forms/form.json and the pipeline after them, its
+ * Workbench Input's copy carrying the column, both on the project's ledger.
  */
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
@@ -230,10 +231,25 @@ test.describe("workbench", () => {
     await page.getByRole("button", { name: "Build" }).click()
     await expect(page.getByRole("textbox", { name: "Limit" })).toHaveValue("1000")
 
-    // Saved: the sheet and the sample, in the file the workbench reads.
+    // A column added to the schema, unsaved: on the sheets alone until the save.
+    await page.getByRole("button", { name: "Schema" }).click()
+    await page.getByRole("button", { name: "Add column" }).first().click()
+    const added = page.getByLabel("Column name").nth(2)
+    await expect(added).toBeFocused()
+    await added.fill("excess")
+    await added.press("Tab")
+
+    // Saved, the project in one Save: the sheet, the sample and the schema in the file the
+    // workbench reads, then the pipeline, its Workbench Input's copy carrying the column.
     await page.getByRole("button", { name: "Save", exact: true }).click()
     await expect(page.getByTestId("toast-notification").filter({ hasText: "Saved → forms/form.json" })).toBeVisible()
+    await expect(page.getByTestId("toast-notification").filter({ hasText: /Saved → rating[\\/]main\.py/ })).toBeVisible()
     const saved = JSON.parse(readFileSync(resolve(e2eProjectRoot, "forms", "form.json"), "utf8"))
+    expect(saved.schema.tables[0].columns.map((column: { name: string }) => column.name)).toEqual(["limit", "region", "excess"])
+    const copy = JSON.parse(readFileSync(resolve(e2eProjectRoot, "rating", "config", "workbench_input", "quote.json"), "utf8"))
+    expect(copy.tables).toEqual([
+      { name: "policy", rows: "one", columns: [{ name: "limit", type: "int" }, { name: "region", type: "str" }, { name: "excess", type: "str" }] },
+    ])
     expect(saved.pages[0].widgets).toHaveLength(1)
     expect(saved.pages[0].widgets[0]).toMatchObject({
       type: "collection",
