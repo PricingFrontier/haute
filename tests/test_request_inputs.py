@@ -31,7 +31,7 @@ from haute._data_points import DataPoint, DataPointResolver, point_kind
 from haute._execution_admission import create_admitted_execution_context
 from haute._graph_utils import REQUEST_INPUT_KINDS
 from haute._input_preparation import snapshot_backed_inputs
-from haute._json_shred._cache import workbench_table_frames
+from haute._json_shred._cache import workbench_table_frames, workbench_table_labels
 from haute._json_shred._shred import request_record_schema
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
 from haute._sandbox import _get_project_root, set_project_root
@@ -564,6 +564,8 @@ def test_a_workbench_input_previews_one_null_row_per_table(project: Path) -> Non
     assert joined.to_dicts() == [{"state": None, "limit": None, "value": None}]
     with pytest.raises(RuntimeError, match="has no tables"):
         workbench_table_frames({"tables": []})
+    with pytest.raises(RuntimeError, match="has no tables"):
+        workbench_table_labels({"tables": [{**_TABLES[0], "emit": False}]})
 
 
 def test_a_workbench_input_table_point_reads_directly(project: Path) -> None:
@@ -598,6 +600,56 @@ def test_deploy_derives_a_workbench_inputs_request_schema(project: Path) -> None
     empty.nodes[0].data.config["tables"] = []
     with pytest.raises(ValueError, match="has no tables"):
         infer_input_schema(empty, "request")
+    clashing = graph.model_copy(deep=True)
+    clashing.nodes[0].data.config["tables"] = clash
+    with pytest.raises(
+        ValueError, match="Cannot derive the request schema of Workbench Input 'request'"
+    ):
+        infer_input_schema(clashing, "request")
+
+
+# A table of values: each element of `tags` is one row's `tag`.
+_TAGS: dict[str, Any] = {
+    "path": "$[:].tags[:]",
+    "label": "tags",
+    "emit": True,
+    "row_id_column": None,
+    "columns": [{**_column("tags", "tag", "str", many=True), "path": "$[:].tags[:].$value"}],
+}
+
+
+def test_the_request_schema_reads_a_list_of_values_and_skips_a_table_that_does_not_emit() -> None:
+    schema = request_record_schema({"tables": [_TAGS, {**_TABLES[1], "emit": False}]})
+
+    assert schema == pl.Schema({"tags": pl.List(pl.String)})
+
+
+@pytest.mark.parametrize(
+    ("label", "column"),
+    [
+        pytest.param(
+            "policy",
+            {**_column("policy", "limit_text", "str"), "path": "$[:].policy.limit"},
+            id="the same field with another type",
+        ),
+        pytest.param(
+            "policy",
+            {**_column("policy", "whole", "str"), "path": "$[:].policy.$value"},
+            id="values where there are fields",
+        ),
+        pytest.param(
+            "tags",
+            {**_column("tags", "name", "str", many=True), "path": "$[:].tags[:].meta.name"},
+            id="a field inside a list of values",
+        ),
+    ],
+)
+def test_the_request_schema_refuses_paths_that_disagree(label: str, column: dict[str, Any]) -> None:
+    tables = {table["label"]: table for table in copy.deepcopy([*_TABLES, _TAGS])}
+    tables[label]["columns"].append(column)
+
+    with pytest.raises(ApiInputSchemaError, match="disagree"):
+        request_record_schema({"tables": list(tables.values())})
 
 
 def test_deploy_resolves_a_workbench_input_without_a_sample_file(project: Path) -> None:
@@ -744,6 +796,23 @@ def test_a_workbench_input_previews_its_sample(project: Path) -> None:
     frames = workbench_table_frames(nested)
     assert frames["policy"].collect().to_dicts() == [{"limit": 1000, "zone": None}]
     assert frames["items"].collect().to_dicts() == [{"item_id": None, "value": None}]
+
+
+def test_a_list_of_values_in_the_sample_is_read_as_rows_and_refused_a_container() -> None:
+    config = {"tables": [_TAGS], "sample": {"tags": ["a", None]}}
+
+    assert workbench_table_frames(config)["tags"].collect().to_dicts() == [
+        {"tag": "a"},
+        {"tag": None},
+    ]
+
+    for sample, reason in (
+        ([], "the sample is a list, not an object"),
+        ({"tags": [["a"]]}, "tags[0] is a list, not a value"),
+        ({"tags": ["a", {"tag": "b"}]}, "tags[1] is an object, not a value"),
+    ):
+        with pytest.raises(ApiInputSchemaError, match=re.escape(f"tables: {reason}. Correct")):
+            workbench_table_frames({**config, "sample": sample})
 
 
 def test_a_workbench_inputs_table_point_follows_its_sample(project: Path) -> None:

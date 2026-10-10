@@ -451,4 +451,36 @@ describe("useWorkbenchFormStore", () => {
 
     expect(fetchSpy).not.toHaveBeenCalled()
   })
+
+  it("refuses an edit before the form is read, and undoes or redoes nothing when there is nothing to", async () => {
+    const store = useWorkbenchFormStore.getState
+    expect(() => store().change((form) => form)).toThrow("The workbench's form is not loaded")
+    expect(() => store().pushSnapshot()).toThrow("The workbench's form is not loaded")
+    store().undo()
+    store().redo()
+    expect(store()).toMatchObject({ form: null, undoStack: [], redoStack: [] })
+
+    server({ form: blank, revision: "rev-0" })
+    await store().load()
+    store().undo()
+    store().redo()
+    expect(store()).toMatchObject({ form: blank, dirty: false, undoStack: [], redoStack: [] })
+  })
+
+  it("names forms/form.json until the workbench's status says where the form is", async () => {
+    server({ form: blank, revision: "rev-0" })
+    const store = useWorkbenchFormStore.getState
+    await store().load()
+    useWorkbenchStore.setState({ formPath: null })
+    vi.mocked(fetch).mockImplementation(async () => json({ detail: "gone" }, 409))
+
+    await store().sync()
+    store().change((form) => ({ ...form, name: "home" }))
+    await expect(store().save()).resolves.toBe(false)
+
+    expect(toasts()).toEqual([
+      ["error", "Could not read forms/form.json again: gone"],
+      ["error", "Could not save forms/form.json: gone"],
+    ])
+  })
 })

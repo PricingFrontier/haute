@@ -770,14 +770,19 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   and redo and `dirty`, the `MAX_HISTORY` cap, a save against the revision (the PUT's body,
   the new revision, the toast, the tables fetched again, the next save quoting it), edits
   during a save staying unsaved, a stale refusal keeping the edits until a reload, any
-  other failure's toast, no save before the form is read, the capture reported (the ledger
+  other failure's toast, no save, edit or snapshot before the form is read, nothing undone
+  or redone with nothing to, `forms/form.json` named until the status says where the form
+  is, the capture reported (the ledger
   commit, each warning, the identity prompt and the flush that saves again, a failed
   capture leaving the form uncaptured until the next flush), `flush` saving only unsaved
   edits or an uncaptured save and refused with a refused save, `dirty` mirrored onto the
   workbench store for the editor's guards, and `sync` (the same revision, a changed file
   adopted while clean, stale while dirty, no request before the form is read, its turn
   after a save in flight, a failed read's toast);
-  `frontend/src/utils/__tests__/workbenchForm.test.ts` the pure operations and
+  `frontend/src/stores/__tests__/useWorkbenchViewStore.test.ts` a sheet shown on the sheets
+  section while building and in Preview as before, `activePage`, the zoom within its bounds
+  whether set, stepped or fitted (nothing to fit to without a viewport or a form), and the
+  panel's width kept; `frontend/src/utils/__tests__/workbenchForm.test.ts` the pure operations and
   `schemaProblems`; `frontend/src/workbench/__tests__/SchemaEditor.test.tsx` the editor
   (tables and types listed, a table added with its name focused, a rename committing as one
   undo step, role and rows with keys dropped, the type marker and the key toggle, Enter
@@ -855,7 +860,10 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   preview yields nulls and it has no snapshot; previews one typed null row per table, with a
   join downstream admitted; reads its table points directly, in the cache report and through
   the node-data routes' point, run and clear too;
-  derives its request schema and resolves a deploy without a sample file; runs its generated
+  derives its request schema (a list of values as a `pl.List`, a table that does not emit
+  skipped, paths that disagree refused by `request_record_schema` and by deploy) and resolves
+  a deploy without a sample file; reads a sample's list of values as rows and refuses a
+  container among them or a sample that is not an object; runs its generated
   code to the same null rows and parses a submodel's `workbench_input`; previews, runs and
   leases its sample's rows, a downstream calculation included, with a null row for a table
   the sample leaves empty and a partly null object keeping its row

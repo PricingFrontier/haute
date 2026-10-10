@@ -312,7 +312,9 @@ def _sample_rows(
             _row_sink=lambda label, row: rows[label].append(row),
         )
         skipped = sorted(label for label, count in stats.skipped_rows_by_table.items() if count)
-        if stats.skipped_records or skipped:
+        # The shape check above refuses every entry the shred would skip, so this guard
+        # against the two diverging is never reached.
+        if stats.skipped_records or skipped:  # pragma: no cover - guarded above
             raise _SampleMisfitError(
                 f"table {', '.join(map(repr, skipped))} has entries that are not rows"
             )
