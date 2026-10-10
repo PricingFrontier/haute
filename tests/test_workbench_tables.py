@@ -300,6 +300,8 @@ def test_a_number_is_typed_by_the_rule_the_view_applies() -> None:
     # float would read it: the two apply one rule.
     assert typed("1_000", "١٢") == {"limit": "1_000", "value": "١٢"}
     assert typed("inf", "nan") == {"limit": "inf", "value": "nan"}
+    # A number too large for a float is not a finite one: kept as typed, as the view keeps it.
+    assert typed("1e999", "-1e999") == {"limit": "1e999", "value": "-1e999"}
 
 
 def test_a_sample_with_an_empty_many_row_table_prices_as_its_quote_would_when_deployed() -> None:

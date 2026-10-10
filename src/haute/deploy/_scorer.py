@@ -726,6 +726,7 @@ def _score_graph_lazy(
     # that feeds it rather than from the one-row request that holds them all.
     quote_tables: dict[str, dict[str, pl.DataFrame]] = {}
     runtime_source_frames_by_node: dict[str, pl.DataFrame | Mapping[str, pl.DataFrame]] = {}
+    # The input nodes are the request input or the promoted Data Input, nothing else.
     for node in graph.nodes:
         if node.id not in input_set:
             continue
@@ -735,17 +736,16 @@ def _score_graph_lazy(
             )
             quote_tables[node.id] = workbench_request_frames(node.data.config, records)
             runtime_source_frames_by_node[node.id] = quote_tables[node.id]
-        elif (
-            node.data.nodeType in REQUEST_INPUT_NODE_TYPES
-            or node.data.nodeType == NodeType.DATA_INPUT
-        ):
-            if isinstance(input_df, QuoteRequest):
-                raise ValueError(
-                    f"A QuoteRequest is read by a Workbench Input alone; {node.id!r} is a "
-                    f"{node.data.nodeType.value} and takes a frame."
-                )
-            runtime_source_frames_by_node[node.id] = input_df
-    input_lf = None if isinstance(input_df, QuoteRequest) else input_df.lazy()
+            continue
+        if isinstance(input_df, QuoteRequest):
+            raise ValueError(
+                f"A QuoteRequest is read by a Workbench Input alone; {node.id!r} is a "
+                f"{node.data.nodeType.value} and takes a frame."
+            )
+        runtime_source_frames_by_node[node.id] = input_df
+    # A Workbench Input's quote was read above; any other input takes the frame. With a
+    # QuoteRequest there is no other input (the loop refused one), so this is never read.
+    input_lf = pl.LazyFrame() if isinstance(input_df, QuoteRequest) else input_df.lazy()
     model_score_temp_paths: list[str] = []
     retained_lazy_frames: list[pl.LazyFrame] = []
 
@@ -776,11 +776,8 @@ def _score_graph_lazy(
 
                 return func_name, inject_workbench_request, True
 
-            assert input_lf is not None
-            request_lf: pl.LazyFrame = input_lf
-
-            def inject_input(_lf: pl.LazyFrame = request_lf) -> _Frame:
-                return _lf
+            def inject_input() -> _Frame:
+                return input_lf
 
             return func_name, inject_input, True
 
@@ -790,11 +787,8 @@ def _score_graph_lazy(
             _preamble = build_kwargs.get("preamble_ns")
             _profile = build_kwargs.get("execution_profile")
             _required = build_kwargs.get("required_output_columns")
-            assert input_lf is not None
-            source_lf: pl.LazyFrame = input_lf
 
             def inject_data_input(
-                _lf: pl.LazyFrame = source_lf,
                 _config: dict[str, Any] = config,
                 _node_id: str = nid,
                 _code_value: str = _code,
@@ -805,7 +799,7 @@ def _score_graph_lazy(
                 from haute._builders import apply_source_scan
 
                 return apply_source_scan(
-                    _lf,
+                    input_lf,
                     profile=_execution_profile,
                     required_output_columns=_required_columns,
                     config=_config,
