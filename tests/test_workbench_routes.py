@@ -502,6 +502,13 @@ async def test_two_saves_against_one_revision_take_turns_and_the_second_is_refus
 
     monkeypatch.setattr(route, "form_file_revision", counted_read)
     monkeypatch.setattr(route, "write_form", gated_write)
+    # ``save_lock`` is the project's one module-level asyncio.Lock, and asyncio binds a
+    # lock to the loop that first awaits it while held. An earlier test that contended it
+    # left it bound to that test's loop, so the second save here would raise "bound to a
+    # different event loop" instead of being refused as stale; and contending the shared
+    # lock here would bind it for a later test. A fresh lock binds to this client's loop;
+    # serialisation is what the route needs from it.
+    monkeypatch.setattr(route, "save_lock", asyncio.Lock())
     transport = httpx.ASGITransport(app=app())
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         served = (await client.get("/api/workbench/form")).json()
