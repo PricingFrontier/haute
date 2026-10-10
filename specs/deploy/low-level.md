@@ -14,7 +14,7 @@
 | `src/haute/deploy/_project_modules.py` | Project-module resolution for the bundle (`resolve_project_modules`): the project-local `utility` package the preamble resolves, which deploy ships, and every other project-local static import, which validation refuses. |
 | `src/haute/deploy/_validators.py` | Pre-deploy validation (`validate_deploy`): structural checks + exactly one test-quote scoring pass, returning successful per-file results to its caller; golden test-quote parsing and expected-output tolerance comparison, walked into a Workbench Output's tables (`_first_mismatch`); `score_test_quotes`. |
 | `src/haute/deploy/_utils.py` | Shared helpers: `get_user`, `get_haute_version`, `build_manifest` (the canonical deploy-manifest schema). |
-| `src/haute/deploy/_mlflow.py` | Databricks target: `deploy_to_mlflow`, `get_deploy_status`, MLflow signature building (each rendered dtype parsed by `_polars_dtypes.parse_rendered_dtype` and mapped by `rendered_dtype_mlflow_type_name`; a struct an `Object` of its fields and a list an `Array`, every property optional and a table's column not required, a date inside a table a string), conda-env building, Databricks Model Serving endpoint create/update, connectivity pre-check, and the MLflow destination check (`_resolve_mlflow_databricks`) that binds its logging and registry calls. |
+| `src/haute/deploy/_mlflow.py` | Databricks target: `deploy_to_mlflow`, `get_deploy_status`, MLflow signature building (each rendered dtype parsed by `_polars_dtypes.parse_rendered_dtype` and mapped by `rendered_dtype_mlflow_type_name`; a struct a `Map` of `AnyType` and a list an `Array` of its inner type, a table's column not required, since the Workbench Input's reader holds the request to the table's columns and leaves others unread where MLflow's typed object would refuse them), conda-env building, Databricks Model Serving endpoint create/update, connectivity pre-check, and the MLflow destination check (`_resolve_mlflow_databricks`) that binds its logging and registry calls. |
 | `src/haute/deploy/_model_code.py` | MLflow models-from-code entry point: `HauteModel` (`mlflow.pyfunc.PythonModel` subclass) wrapping `score_graph`. |
 | `src/haute/deploy/_container.py` | Container build/push orchestration, build-directory preparation (`prepare_build_directory`), generated FastAPI `/health` and `/quote` runtime, stable JSON/NDJSON response handling, pinned Dockerfile generation, Docker subprocess calls, and the platform service-update stub. |
 | `scripts/container_smoke.py` | Standalone CLI script to verify the container deployment pipeline for an example (copy bundle, resolve deploy config, prepare build directory, and optionally execute a live uvicorn process smoke check). |
@@ -421,8 +421,9 @@ read their registered version back from the registry. It checks Databricks conne
 `MlflowClient` bound to the Databricks tracking URI and its Unity Catalog registry URI,
 builds the manifest, writes it under `<pipeline_dir>/.haute_build/`, builds an MLflow
 `ModelSignature` from the resolved schemas (`Categorical` and parameterised `Enum` map to
-MLflow string; a workbench pipeline's struct and list columns to `Object` and `Array`;
-genuinely unrepresentable Polars types, a `Decimal` among them, fail loudly), and selects or creates
+MLflow string; a workbench pipeline's struct and list columns to a `Map` of `AnyType` and an
+`Array` of them; genuinely unrepresentable Polars types, a `Decimal` among them, fail
+loudly), and selects or creates
 the experiment (suffix-isolated for staging) on that client through
 `ensure_experiment`, so a new experiment's missing Databricks workspace folder is created
 first (see [modelling](../modelling/low-level.md)). The client creates the

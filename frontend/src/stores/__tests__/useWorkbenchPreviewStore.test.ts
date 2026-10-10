@@ -118,11 +118,16 @@ describe("useWorkbenchPreviewStore", () => {
 
     expect(pricer).not.toHaveBeenCalled()
     expect(store()).toMatchObject({ checked: true, error: "1 cell needs attention", price: null })
-    // Nothing typed in a required column: marked once checked, as the sheet reads it.
-    useWorkbenchPreviewStore.setState({ quote: {} })
-    await store().priceQuote()
-    expect(store()).toMatchObject({ checked: true, error: "1 cell needs attention" })
-    expect(quoteProblems(form.schema, store().quote)).toEqual({ [cellKey("t1", 0, "c1")]: "Required" })
+    // Nothing typed in the tables the schema has now, a value in a column since removed
+    // included: not priced, as a deployed request never holds a blank quote.
+    const blanks: Record<string, Record<string, string>[]>[] = [{}, { t1: [{ gone: "x" }] }, { gone: [{ c1: "y" }] }]
+    for (const quote of blanks) {
+      useWorkbenchPreviewStore.setState({ quote, error: null, checked: false })
+      await store().priceQuote()
+      expect(pricer).not.toHaveBeenCalled()
+      expect(store()).toMatchObject({ checked: true, error: "Type the quote first", price: null })
+    }
+    expect(quoteProblems(form.schema, {})).toEqual({ [cellKey("t1", 0, "c1")]: "Required" })
   })
 
   it("drops an answer that arrives after Clear, or after the view replaced its pricer", async () => {

@@ -7,7 +7,7 @@
  */
 import { create } from "zustand"
 import { apiErrorMessage } from "../api/errors"
-import { quoteProblems, valuesBasis } from "../utils/sheetValues"
+import { quoteFilled, quoteProblems, valuesBasis } from "../utils/sheetValues"
 import { withCell, type SampleRow, type SampleValue } from "../utils/workbenchForm"
 import useWorkbenchFormStore from "./useWorkbenchFormStore"
 import useWorkbenchPricingStore, { priceForm, type SamplePrice } from "./useWorkbenchPricingStore"
@@ -34,7 +34,9 @@ interface WorkbenchPreviewState {
   /**
    * Check the quote against the columns' rules and, when every cell passes, price it on
    * the pipeline through the pricer the view gave the pricing store; one pricing at a
-   * time, a press meanwhile doing nothing. An answer that arrives after Clear, or after
+   * time, a press meanwhile doing nothing. A quote with nothing typed in the tables the
+   * schema has now is not priced: a deployed request never holds a blank quote, and the
+   * server would read one as the null quote. An answer that arrives after Clear, or after
    * the view replaced or dropped its pricer, is nobody's.
    */
   priceQuote: () => Promise<void>
@@ -61,6 +63,10 @@ const useWorkbenchPreviewStore = create<WorkbenchPreviewState>()((set, get) => (
     const { pricer } = useWorkbenchPricingStore.getState()
     if (get().pricing || form === null || status !== "ready" || pricer === null) return
     const { quote } = get()
+    if (!quoteFilled(form.schema, quote)) {
+      set({ checked: true, price: null, error: "Type the quote first" })
+      return
+    }
     const problems = Object.keys(quoteProblems(form.schema, quote)).length
     if (problems > 0) {
       set({ checked: true, error: `${problems} ${problems === 1 ? "cell needs" : "cells need"} attention` })

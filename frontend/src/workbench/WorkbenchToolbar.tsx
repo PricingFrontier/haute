@@ -5,7 +5,7 @@ import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore from "../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore, { ZOOM_STEP } from "../stores/useWorkbenchViewStore"
-import { filled } from "../utils/sheetValues"
+import { quoteFilled } from "../utils/sheetValues"
 
 interface WorkbenchToolbarProps {
   /** Commit: the host's milestone flow, which saves the form's unsaved edits first. */
@@ -34,7 +34,11 @@ export default function WorkbenchToolbar({ onCommit }: WorkbenchToolbarProps) {
   const sampleError = useWorkbenchPricingStore((s) => s.error)
   const previewError = useWorkbenchPreviewStore((s) => s.error)
   const pricing = useWorkbenchPreviewStore((s) => s.pricing)
-  const blank = useWorkbenchPreviewStore((s) => !Object.values(s.quote).some((rows) => rows.some((row) => Object.values(row).some(filled))))
+  const schema = useWorkbenchFormStore((s) => s.form?.schema ?? null)
+  const quote = useWorkbenchPreviewStore((s) => s.quote)
+  // Judged by the tables the schema has now: a value typed in a column since removed is
+  // nothing to price or to clear, as the server leaves it out of the quote.
+  const blank = schema === null || !quoteFilled(schema, quote)
   const priceQuote = useWorkbenchPreviewStore((s) => s.priceQuote)
   const clear = useWorkbenchPreviewStore((s) => s.clear)
   const previewing = section === "preview"

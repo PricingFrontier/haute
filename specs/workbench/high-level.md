@@ -148,7 +148,7 @@ Out of scope:
     | Building or Preview | Build over Preview |
     | Building, the sheets showing | Sheets over Schema, the form's Undo and Redo, Zoom In over Zoom Out, and why pricing the sample last failed |
     | Building, the schema showing | Sheets over Schema, and Undo and Redo |
-    | Preview | Price over Clear for the quote (Price disabled while nothing is typed, Clear while nothing is typed), Zoom In over Zoom Out, and why the quote has no price |
+    | Preview | Price over Clear for the quote (both disabled while nothing is typed in the tables the schema has now), Zoom In over Zoom Out, and why the quote has no price |
 
   - **Save.** Save and Ctrl/Cmd+S save the form, with a focused field's edit included, and
     the save is reported as the pipeline's is: the ledger commit on the branch indicator,
@@ -292,9 +292,12 @@ Out of scope:
   components disabled, no properties panel, no Undo or Redo, and the zoom. An
   underwriter's quote is keyed into the components' input cells as the sample is, through
   the same controls, and is kept apart from the sample: it lasts while the editor is open,
-  through Build and back, is never saved with the form and never undone. Price, disabled
-  while nothing is typed (a deployed request never holds a blank quote), checks the quote
-  against the columns' rules first: a required cell left empty, text that is not a
+  through Build and back, is never saved with the form and never undone. Price is disabled
+  while nothing is typed in the input tables the schema has now (a value typed in a column
+  since removed counts for nothing, as the server leaves it out of the quote), and refuses
+  such a quote with "Type the quote first" however it is asked: a deployed request never
+  holds a blank quote, and the server would read one as the null quote. Price checks the
+  quote against the columns' rules first: a required cell left empty, text that is not a
   number in a number column or not a whole number in a whole-number column, a number
   outside the column's range, a value that is not one of the allowed values; a one-row
   table's one row is always checked, a many-row table's filled rows only, and a tick box
@@ -380,9 +383,11 @@ Out of scope:
     tables as a Quote Input's are to its columns: a quote may leave a table out, and the
     reader says what does not fit when it is scored; their expected outputs are compared
     into the response's tables, a number inside one held to the tolerance and a boolean to a
-    boolean. A Databricks deployment's MLflow signature holds each table as an object of its
-    columns, or an array of them, every property optional and a table allowed to be left out
-    of a request, a date inside a table the string a request carries it as.
+    boolean. A Databricks deployment's MLflow signature holds each table as a map of any
+    values, or an array of them, a table allowed to be left out of a request, since a quote
+    may carry columns the tables do not name, which the reader leaves unread and which
+    MLflow's typed object would refuse; the table's columns are in the manifest's input
+    schema, and the reader holds a served request to them as it holds the container's.
   - **One request input per pipeline.** A pipeline holds at most one Quote Input or Workbench
     Input, counting those inside its submodels. Saving or deploying a pipeline with two is
     refused with "Only one Quote Input or Workbench Input node is allowed per pipeline (found

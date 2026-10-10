@@ -25,6 +25,22 @@ const blank: FormSpec = {
   sample: {},
 }
 
+/** The blank form with one input table, `t1`, holding one column, `c1`: what a quote can be typed into. */
+const form: FormSpec = {
+  ...blank,
+  schema: {
+    tables: [
+      {
+        id: "t1",
+        name: "policy",
+        role: "input",
+        rows: "one",
+        columns: [{ id: "c1", name: "limit", type: "str", label: "", key: false, required: false, min: null, max: null, options: [], index: false }],
+      },
+    ],
+  },
+}
+
 const onCommit = vi.fn()
 const renderToolbar = () => render(<WorkbenchToolbar onCommit={onCommit} />)
 
@@ -33,7 +49,7 @@ describe("WorkbenchToolbar", () => {
   const quote = { priceQuote: vi.fn(async () => {}), clear: vi.fn() }
 
   beforeEach(() => {
-    useWorkbenchFormStore.setState({ status: "ready", saving: false, undoStack: [], redoStack: [], ...actions })
+    useWorkbenchFormStore.setState({ form, status: "ready", saving: false, undoStack: [], redoStack: [], ...actions })
     useWorkbenchViewStore.setState({ section: "sheets", zoom: 1 })
     useWorkbenchPricingStore.setState({ error: null })
     useWorkbenchPreviewStore.setState({ quote: {}, error: null, pricing: false, ...quote })
@@ -90,6 +106,12 @@ describe("WorkbenchToolbar", () => {
     // and nothing to clear. Typed: Price prices it, and Clear asks, then starts over.
     expect(screen.getByRole("button", { name: "Price" })).toBeDisabled()
     expect(screen.getByRole("button", { name: "Price" })).toHaveAttribute("title", "Type the quote first")
+    expect(screen.getByRole("button", { name: "Clear" })).toBeDisabled()
+    // A value in a column the schema no longer has counts for nothing.
+    act(() => {
+      useWorkbenchPreviewStore.setState({ quote: { t1: [{ gone: "x" }], gone: [{ c1: "y" }] } })
+    })
+    expect(screen.getByRole("button", { name: "Price" })).toBeDisabled()
     expect(screen.getByRole("button", { name: "Clear" })).toBeDisabled()
     act(() => {
       useWorkbenchPreviewStore.setState({ quote: { t1: [{ c1: "x" }] } })

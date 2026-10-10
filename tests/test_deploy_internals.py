@@ -4941,11 +4941,9 @@ class TestBuildSignature:
 
         assert self._input_type_map(sig)["category"] == DataType.string
 
-    @pytest.mark.parametrize(
-        "dtype", ["Decimal(12, 2)", "List(Decimal(12, 2))", "Struct({'x': Decimal(12, 2)})"]
-    )
+    @pytest.mark.parametrize("dtype", ["Decimal(12, 2)", "List(Decimal(12, 2))", "Object"])
     def test_unknown_dtype_fails_loudly(self, dtype):
-        """Unsupported Polars dtypes must not be misdeclared as strings, nested ones too."""
+        """Unsupported Polars dtypes must not be misdeclared as strings, in a list too."""
         from haute.deploy._mlflow import _build_signature
         from haute.errors import DeployError
 
@@ -4959,10 +4957,10 @@ class TestBuildSignature:
 
         assert dtype in str(exc_info.value)
 
-    def test_a_workbench_pipelines_tables_are_objects_and_arrays(self):
-        """A one-row table is an Object of its columns and a many-row table an Array of them,
-        every property optional and a table left out of a request allowed; a date inside a
-        table is the string a request carries it as; a flat column is as it was."""
+    def test_a_workbench_pipelines_tables_are_maps_and_arrays_of_them(self):
+        """A one-row table is a map of anything and a many-row table an array of them, a
+        table left out of a request allowed; a flat column is as it was. The columns are the
+        reader's to hold the request to, not the signature's."""
         from haute.deploy._mlflow import _build_signature
 
         resolved = _make_resolved(
@@ -4979,53 +4977,85 @@ class TestBuildSignature:
 
         sig = _build_signature(resolved)
 
+        table = {"type": "map", "values": {"type": "any"}}
         assert [spec.to_dict() for spec in sig.inputs.inputs] == [
-            {
-                "type": "object",
-                "properties": {
-                    "limit": {"type": "long", "required": False},
-                    "start": {"type": "string", "required": False},
-                },
-                "name": "policy",
-                "required": False,
-            },
-            {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "item_id": {"type": "string", "required": False},
-                        "value": {"type": "double", "required": False},
-                    },
-                },
-                "name": "items",
-                "required": False,
-            },
+            {**table, "name": "policy", "required": False},
+            {"type": "array", "items": table, "name": "items", "required": False},
             {"type": "datetime", "name": "when", "required": True},
         ]
         assert [spec.to_dict() for spec in sig.outputs.inputs] == [
-            {
-                "type": "object",
-                "properties": {
-                    "premium": {"type": "double", "required": False},
-                    "referral": {"type": "string", "required": False},
-                },
-                "name": "pricing",
-                "required": False,
-            },
-            {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "layer": {"type": "integer", "required": False},
-                        "ok": {"type": "boolean", "required": False},
-                    },
-                },
-                "name": "layers",
-                "required": False,
-            },
+            {**table, "name": "pricing", "required": False},
+            {"type": "array", "items": table, "name": "layers", "required": False},
         ]
+
+    def test_a_request_mlflow_lets_through_is_one_the_workbench_input_reads(self):
+        """What MLflow's enforcement passes to ``predict`` is what the container's reader
+        takes: a column the tables do not name, a table left out, an empty many-row table
+        and a null one all reach the Workbench Input and read as the records would; a
+        misfit reaches it too, to be refused naming the spot, as the container refuses it."""
+        import pandas as pd
+        from mlflow.models.utils import _enforce_schema
+        from polars.testing import assert_frame_equal
+
+        from haute._workbench_input import WorkbenchInputError, workbench_request_frames
+        from haute._workbench_tables import parse_workbench_tables, quote_schema
+        from haute.deploy._mlflow import _build_signature
+
+        config = {
+            "tables": [
+                {
+                    "name": "policy",
+                    "rows": "one",
+                    "columns": [
+                        {"name": "limit", "type": "int"},
+                        {"name": "start", "type": "date"},
+                    ],
+                },
+                {
+                    "name": "items",
+                    "rows": "many",
+                    "columns": [
+                        {"name": "item_id", "type": "str"},
+                        {"name": "value", "type": "float"},
+                    ],
+                },
+            ]
+        }
+        tables = parse_workbench_tables(config["tables"], owner="Workbench Input")
+        resolved = _make_resolved(
+            input_schema={name: str(dtype) for name, dtype in quote_schema(tables).items()},
+            output_schema={"pricing": "Struct({'premium': Float64})"},
+        )
+        signature = _build_signature(resolved)
+
+        def served(quote: dict) -> dict:
+            # The pandas frame MLflow hands ``predict`` after enforcing the signature, read
+            # as ``HauteModel.predict`` reads it, through polars.
+            enforced = _enforce_schema(pd.DataFrame([quote]), signature.inputs)
+            frames = workbench_request_frames(config, pl.from_pandas(enforced).to_dicts())
+            return {name: frame.to_dicts() for name, frame in frames.items()}
+
+        quote = {
+            "policy": {"limit": 100, "start": "2026-01-02", "client_reference": "ABC"},
+            "items": [{"item_id": "Z", "value": 7.0, "note": None}],
+        }
+        assert served(quote) == {
+            "policy": [{"limit": 100, "start": __import__("datetime").date(2026, 1, 2)}],
+            "items": [{"item_id": "Z", "value": 7.0}],
+        }
+        for name, frame in workbench_request_frames(config, [quote]).items():
+            assert_frame_equal(pl.DataFrame(served(quote)[name], schema=frame.schema), frame)
+        assert served({"policy": {"limit": 100}}) == {
+            "policy": [{"limit": 100, "start": None}],
+            "items": [],
+        }
+        assert served({"policy": {"limit": 100}, "items": []})["items"] == []
+        assert served({"policy": None, "items": None}) == {
+            "policy": [{"limit": None, "start": None}],
+            "items": [],
+        }
+        with pytest.raises(WorkbenchInputError, match="policy.limit is 'lots', not 'int'"):
+            served({"policy": {"limit": "lots"}})
 
     def test_all_numeric_types(self):
         """All supported numeric types should produce correct MLflow type mappings."""

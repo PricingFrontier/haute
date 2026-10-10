@@ -25,6 +25,14 @@ export const filled = (value: SampleValue | undefined): boolean =>
 export const rowFilled = (table: SchemaTable, row: SampleRow | undefined): boolean =>
   row !== undefined && table.columns.some((column) => !column.index && filled(row[column.id]))
 
+/**
+ * Whether anything is typed in the input tables the schema has now, as the server counts
+ * it: a value in a column or a table since removed from the schema is left out of the
+ * quote the server types, so it does not count.
+ */
+export const quoteFilled = (schema: FormSchema, rows: RowsByTable): boolean =>
+  schema.tables.some((table) => table.role === "input" && (rows[table.id] ?? []).some((row) => rowFilled(table, row)))
+
 /** A decimal number as the server reads one, once a currency sign, separators and spaces are gone. */
 const NUMBER = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/
 

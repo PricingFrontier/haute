@@ -272,16 +272,19 @@ def _build_signature(resolved: ResolvedDeploy) -> object:
     """Build an MLflow ModelSignature from resolved schemas.
 
     A flat column is its MLflow type. A workbench pipeline's request and response hold
-    their tables as nested columns (specs/workbench): a one-row table is a struct, an
-    ``Object`` of its columns, and a many-row table a list of structs, an ``Array`` of
-    them. Every property is optional, as a quote need not hold every column, and so is a
-    table's column, as a quote need not hold every table. A date inside a table is a
-    ``string``: a request carries it as ``YYYY-MM-DD``, which the Workbench Input reads.
+    their tables as nested columns (specs/workbench): a one-row table is a struct and a
+    many-row table a list of structs. The signature says what a table is, a ``Map`` of
+    anything or an ``Array`` of them, not which columns it has: a quote may carry columns
+    the tables do not name, which the Workbench Input leaves unread, and MLflow's ``Object``
+    would refuse them before the pipeline saw the quote. The table's columns are in the
+    manifest's input schema, and the reader holds the request to them, refusing a misfit
+    naming the spot, as it does for the container's ``/quote``. A table's column is not
+    required, as a quote need not hold every table.
     """
     import polars as pl
     from mlflow.models import ModelSignature
     from mlflow.types import ColSpec, DataType, Schema
-    from mlflow.types.schema import Array, Object, Property
+    from mlflow.types.schema import AnyType, Array, Map
 
     def unsupported(col_name: str, dtype_str: str) -> DeployError:
         return DeployError(
@@ -291,28 +294,15 @@ def _build_signature(resolved: ResolvedDeploy) -> object:
             dtype=dtype_str,
         )
 
-    def mlflow_type(dtype: Any, *, col_name: str, dtype_str: str, nested: bool) -> Any:
+    def mlflow_type(dtype: Any, *, col_name: str, dtype_str: str) -> Any:
         if isinstance(dtype, pl.Struct):
-            return Object(
-                [
-                    Property(
-                        field.name,
-                        mlflow_type(
-                            field.dtype, col_name=col_name, dtype_str=dtype_str, nested=True
-                        ),
-                        required=False,
-                    )
-                    for field in dtype.fields
-                ]
-            )
+            return Map(AnyType())
         if isinstance(dtype, pl.List):
-            return Array(
-                mlflow_type(dtype.inner, col_name=col_name, dtype_str=dtype_str, nested=True)
-            )
+            return Array(mlflow_type(dtype.inner, col_name=col_name, dtype_str=dtype_str))
         name = rendered_dtype_mlflow_type_name(str(dtype))
         if name is None:
             raise unsupported(col_name, dtype_str)
-        return DataType.string if nested and dtype == pl.Date else DataType[name]
+        return DataType[name]
 
     def _to_colspecs(schema: dict[str, str]) -> list[ColSpec]:
         specs = []
@@ -321,7 +311,7 @@ def _build_signature(resolved: ResolvedDeploy) -> object:
                 dtype = parse_rendered_dtype(dtype_str, column=col_name)
             except SchemaMismatchError as exc:
                 raise unsupported(col_name, dtype_str) from exc
-            kind = mlflow_type(dtype, col_name=col_name, dtype_str=dtype_str, nested=False)
+            kind = mlflow_type(dtype, col_name=col_name, dtype_str=dtype_str)
             table = isinstance(dtype, pl.Struct | pl.List)
             specs.append(ColSpec(type=kind, name=col_name, required=not table))
         return specs

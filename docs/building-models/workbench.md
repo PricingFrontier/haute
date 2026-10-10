@@ -116,7 +116,7 @@ Table's output columns show the row in the answer keyed like each grid row.
 **Preview** shows the sheets as an underwriter uses them: the same components at the same
 positions, with nothing to move or lay out. Type a quote into the cells, kept apart from
 the sample (it is never saved, and stays while you switch to Build and back), and press
-**Price**, enabled once something is typed. Haute first checks every cell against its column's rules: a required cell left
+**Price**, enabled once something is typed into the tables the schema has. Haute first checks every cell against its column's rules: a required cell left
 empty, a number that is not one, a whole number that is not whole, a number outside its
 range, a value that is not one of the allowed ones. A cell that breaks a rule is outlined,
 naming the problem when you hover, and the toolbar says how many need attention; the marks
