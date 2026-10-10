@@ -60,6 +60,9 @@ Out of scope:
   ([sandbox-security](../sandbox-security/high-level.md)), which apply to the workbench
   routes exactly as to any other `/api/` route.
 - How a deployed pipeline reads a request into its tables ([deploy](../deploy/high-level.md)).
+- The app that shows the sheets to an underwriter outside Haute and prices through the
+  deployed pipeline ([WB-07](../roadmap/workbench.md#wb-07--the-underwriter-app)). Preview
+  is those sheets inside the builder, priced on the pipeline open in the editor.
 - `haute init`'s other scaffolding ([cli](../cli/high-level.md),
   [pipeline-config](../pipeline-config/high-level.md)).
 
