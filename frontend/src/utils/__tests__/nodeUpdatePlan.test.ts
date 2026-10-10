@@ -367,7 +367,7 @@ describe("prepareNodeUpdate rename stable bindings", () => {
 })
 
 describe("prepareNodeUpdate on a Workbench Output", () => {
-  const outputTable = (label: string) => ({ path: "$[:]", label, emit: true, columns: [] })
+  const outputTable = (name: string) => ({ name, rows: "one", columns: [{ name: "x", type: "int" }] })
   const fill = (id: string, source: string, table: string): Edge => ({
     id,
     source,

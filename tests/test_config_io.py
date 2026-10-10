@@ -9,7 +9,6 @@ from typing import Any
 
 import pytest
 
-from haute._api_input_schema import validate_v2_schema
 from haute._config_io import (
     FOLDER_TO_NODE_TYPE,
     NODE_TYPE_TO_FOLDER,
@@ -236,24 +235,15 @@ class TestSaveAndLoad:
         assert load_node_config(rel, base_dir=tmp_path) == config
 
     def test_workbench_input_tables_survive_its_config_file(self, tmp_path):
+        from haute._workbench_input import workbench_table_labels
+
         config = {
             "sample": {"policy_details": {"state": "NY"}},
             "tables": [
                 {
-                    "path": "$[:]",
-                    "label": "policy_details",
-                    "emit": True,
-                    "row_id_column": None,
-                    "columns": [
-                        {
-                            "name": "state",
-                            "path": "$[:].policy_details.state",
-                            "type": "str",
-                            "status": "Confirmed",
-                            "selected": True,
-                            "levels": None,
-                        }
-                    ],
+                    "name": "policy_details",
+                    "rows": "one",
+                    "columns": [{"name": "state", "type": "str"}],
                 }
             ],
         }
@@ -261,7 +251,7 @@ class TestSaveAndLoad:
         assert rel.as_posix() == "config/workbench_input/quote.json"
         loaded = load_node_config(rel, base_dir=tmp_path)
         assert loaded == config
-        validate_v2_schema(loaded)
+        assert workbench_table_labels(loaded) == ("policy_details",)
 
     def test_a_workbench_input_config_with_a_path_is_refused(self, tmp_path):
         """A Workbench Input reads no file, so its config declares no ``path``."""
@@ -273,24 +263,11 @@ class TestSaveAndLoad:
         assert not (tmp_path / "config" / "workbench_input" / "quote.json").exists()
 
     def test_workbench_output_tables_survive_its_config_file(self, tmp_path):
+        from haute._workbench_output import workbench_output_tables
+
         config = {
             "tables": [
-                {
-                    "path": "$[:].layers[:]",
-                    "label": "layers",
-                    "emit": True,
-                    "row_id_column": "layer",
-                    "columns": [
-                        {
-                            "name": "layer",
-                            "path": "$[:].layers[:].layer",
-                            "type": "int",
-                            "status": "Confirmed",
-                            "selected": True,
-                            "levels": None,
-                        }
-                    ],
-                }
+                {"name": "layers", "rows": "many", "columns": [{"name": "layer", "type": "int"}]}
             ],
             "mapping": {"layers": {"layer": "layer_number"}},
         }
@@ -298,7 +275,7 @@ class TestSaveAndLoad:
         assert rel.as_posix() == "config/workbench_output/response.json"
         loaded = load_node_config(rel, base_dir=tmp_path)
         assert loaded == config
-        validate_v2_schema(loaded)
+        assert [table.name for table in workbench_output_tables(loaded)] == ["layers"]
 
     def test_code_key_excluded_from_json(self, tmp_path):
         config = {"path": "model.pkl", "fileType": "pickle", "code": "df = obj.predict(df)"}

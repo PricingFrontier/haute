@@ -1190,13 +1190,9 @@ class TestOutputSchemaConservativeFallback:
         with them keeps the float, so the sum over it is a float, not a null column.
         """
         table = {
-            "path": "$[:]",
-            "label": "quotes",
-            "emit": True,
-            "columns": [
-                {"name": "segment", "path": "$[:].segment", "type": "str", "selected": True},
-                {"name": "premium", "path": "$[:].premium", "type": "float", "selected": True},
-            ],
+            "name": "quotes",
+            "rows": "one",
+            "columns": [{"name": "segment", "type": "str"}, {"name": "premium", "type": "float"}],
         }
         conservative = _conservative_graph()
         graph = conservative.model_copy(

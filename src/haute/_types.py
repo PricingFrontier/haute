@@ -158,11 +158,12 @@ class ApiInputConfig(TypedDict, total=False):
 class WorkbenchInputConfig(TypedDict, total=False):
     """Config for workbenchInput nodes.
 
-    ``tables`` and ``sample`` are the copies of the workbench's tables and sample
-    quote that the editor keeps current (specs/workbench). A request is
-    read through the tables exactly as through a Quote Input's; with no request,
-    as in a preview, the sample is read through them, and a table it gives no rows
-    is one row of nulls, typed as declared. A Workbench Input reads no file.
+    ``tables`` and ``sample`` are the copies of the workbench's input tables and
+    sample quote that the editor keeps current (specs/workbench): each table its
+    name, one row per quote or many, and its typed columns, as
+    ``haute._workbench_tables`` holds them. A request, and with no request, as in a
+    preview, the sample, is read into one frame per table; a table the sample gives
+    no rows is one row of nulls, typed as declared. A Workbench Input reads no file.
     """
 
     tables: list[dict[str, Any]]
@@ -173,10 +174,11 @@ class WorkbenchOutputConfig(TypedDict, total=False):
     """Config for workbenchOutput nodes.
 
     ``tables`` is the copy of the response's tables the project's workbench
-    supplies, which the editor keeps current (specs/workbench). Each is filled
-    from the frame connected to the port its label names: each column from the
-    frame column ``mapping`` picks (by table label, then column name; ``None`` for
-    none), or else from the frame's column of the same name.
+    supplies, which the editor keeps current (specs/workbench), in the Workbench
+    Input's shape. Each is filled from the frame connected to the port its name
+    names: each column from the frame column ``mapping`` picks (by table name, then
+    column name; ``None`` for none), or else from the frame's column of the same
+    name.
     """
 
     tables: list[dict[str, Any]]

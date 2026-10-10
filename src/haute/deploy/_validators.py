@@ -204,11 +204,46 @@ def _format_expected_mismatch(
     return f"row {row_index} column {column!r} mismatch: expected={expected!r} actual={actual!r}"
 
 
+def _case_errors(
+    *,
+    row_index: int,
+    case: _TestQuoteCase,
+    row: dict[str, Any],
+    columns: list[str],
+    missing_columns: set[str],
+) -> list[str]:
+    """What *row*, the output for *case* (row *row_index* of its file), gets wrong."""
+    assert case.expected is not None
+    errors: list[str] = []
+    for column, expected_value in case.expected.items():
+        if column not in columns:
+            if column not in missing_columns:
+                errors.append(
+                    f"missing expected output column {column!r}; available columns {columns!r}"
+                )
+                missing_columns.add(column)
+            continue
+        actual_value = row[column]
+        if _expected_value_matches(actual_value, expected_value, case.tolerance_pct):
+            continue
+        errors.append(
+            _format_expected_mismatch(
+                row_index=row_index,
+                column=column,
+                actual=actual_value,
+                expected=expected_value,
+                tolerance_pct=case.tolerance_pct,
+            )
+        )
+    return errors
+
+
 def _validate_expected_outputs(
     *,
     cases: list[_TestQuoteCase],
     output: pl.DataFrame,
 ) -> None:
+    """Check *output*, one request's rows for every case, row by row against the cases."""
     expected_cases = [(i, case) for i, case in enumerate(cases) if case.expected is not None]
     if not expected_cases:
         return
@@ -219,40 +254,53 @@ def _validate_expected_outputs(
             f"{len(cases)} expected row(s), {output.height} output row(s)."
         )
 
-    output_columns = set(output.columns)
     output_rows = output.to_dicts()
     errors: list[str] = []
     missing_columns: set[str] = set()
-
     for row_index, case in expected_cases:
-        assert case.expected is not None
-        for column, expected_value in case.expected.items():
-            if column not in output_columns:
-                if column not in missing_columns:
-                    errors.append(
-                        f"missing expected output column {column!r}; "
-                        f"available columns {output.columns!r}"
-                    )
-                    missing_columns.add(column)
-                continue
-
-            actual_value = output_rows[row_index][column]
-            if _expected_value_matches(
-                actual_value,
-                expected_value,
-                case.tolerance_pct,
-            ):
-                continue
-            errors.append(
-                _format_expected_mismatch(
-                    row_index=row_index,
-                    column=column,
-                    actual=actual_value,
-                    expected=expected_value,
-                    tolerance_pct=case.tolerance_pct,
-                )
+        errors.extend(
+            _case_errors(
+                row_index=row_index,
+                case=case,
+                row=output_rows[row_index],
+                columns=output.columns,
+                missing_columns=missing_columns,
             )
+        )
 
+    if errors:
+        raise ValueError("expected-output validation failed: " + "; ".join(errors))
+
+
+def _validate_expected_outputs_per_case(
+    *,
+    cases: list[_TestQuoteCase],
+    outputs: list[pl.DataFrame],
+) -> None:
+    """Check each case against its own request's output, numbered as in its file.
+
+    A request answers one quote with one row, so a case's output holding other than one
+    row is wrong on its own, never made up for by another case's.
+    """
+    errors: list[str] = []
+    missing_columns: set[str] = set()
+    for row_index, (case, output) in enumerate(zip(cases, outputs, strict=True)):
+        if case.expected is None:
+            continue
+        if output.height != 1:
+            errors.append(
+                f"row {row_index}: expected one output row, {output.height} output row(s)."
+            )
+            continue
+        errors.extend(
+            _case_errors(
+                row_index=row_index,
+                case=case,
+                row=output.to_dicts()[0],
+                columns=output.columns,
+                missing_columns=missing_columns,
+            )
+        )
     if errors:
         raise ValueError("expected-output validation failed: " + "; ".join(errors))
 
@@ -457,13 +505,26 @@ def validate_deploy(resolved: ResolvedDeploy) -> list[TestQuoteResult]:
     return quote_results
 
 
+def _reads_one_quote_per_request(resolved: ResolvedDeploy) -> bool:
+    """Whether the request input reads one quote per request: a Workbench Input does."""
+    inputs = set(resolved.input_node_ids)
+    return any(
+        node.data.nodeType is NodeType.WORKBENCH_INPUT
+        for node in resolved.pruned_graph.nodes
+        if node.id in inputs
+    )
+
+
 def score_test_quotes(
     resolved: ResolvedDeploy,
     test_quotes_dir: Path | None = None,
 ) -> list[TestQuoteResult]:
     """Score every JSON file in the test_quotes directory.
 
-    Each JSON file should contain a list of dicts (quote objects).
+    Each JSON file should contain a list of dicts (quote objects). A Quote Input's cases
+    are scored as one request; a Workbench Input reads one quote per request, so its
+    cases are scored one request each, each case's expected output compared with its own
+    request's one row.
 
     Args:
         resolved: Fully resolved deployment config.
@@ -485,29 +546,36 @@ def score_test_quotes(
         return []
 
     results: list[TestQuoteResult] = []
+    one_quote_per_request = _reads_one_quote_per_request(resolved)
+
+    def score(input_df: pl.DataFrame) -> pl.DataFrame:
+        return score_graph(
+            graph=resolved.pruned_graph,
+            input_df=input_df,
+            input_node_ids=resolved.input_node_ids,
+            output_node_id=resolved.output_node_id,
+            artifact_paths={name: str(path) for name, path in resolved.artifacts.items()},
+            output_fields=resolved.config.output_fields,
+        )
 
     for jf in json_files:
         t0 = time.perf_counter()
         try:
             cases = _load_test_quote_cases(jf)
-            cleaned = [case.input for case in cases]
-            input_df = pl.DataFrame(cleaned)
-
-            output = score_graph(
-                graph=resolved.pruned_graph,
-                input_df=input_df,
-                input_node_ids=resolved.input_node_ids,
-                output_node_id=resolved.output_node_id,
-                artifact_paths={name: str(path) for name, path in resolved.artifacts.items()},
-                output_fields=resolved.config.output_fields,
-            )
-            _validate_expected_outputs(cases=cases, output=output)
+            if one_quote_per_request:
+                outputs = [score(pl.DataFrame([case.input])) for case in cases]
+                _validate_expected_outputs_per_case(cases=cases, outputs=outputs)
+                rows = sum(output.height for output in outputs)
+            else:
+                output = score(pl.DataFrame([case.input for case in cases]))
+                _validate_expected_outputs(cases=cases, output=output)
+                rows = output.height
 
             elapsed = (time.perf_counter() - t0) * 1000
             results.append(
                 {
                     "file": jf.name,
-                    "rows": len(output),
+                    "rows": rows,
                     "status": "ok",
                     "time_ms": round(elapsed, 1),
                     "error": "",

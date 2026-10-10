@@ -41,6 +41,7 @@ from haute._types import (
     PipelineGraph,
     _Frame,
 )
+from haute._workbench_input import workbench_request_frames
 from haute._workbench_output import as_response
 from haute.execution import (
     _stat_gated_runtime_path_fingerprint,
@@ -715,8 +716,16 @@ def _score_graph_lazy(
         # code boxes see beside their own, exactly as the editor builders give them.
         _preamble_names: dict[str, Any] = dict(build_kwargs.get("preamble_ns") or {})
 
-        # Intercept: the request input → inject live DataFrame directly
+        # Intercept: the request input → inject the live DataFrame directly; a
+        # Workbench Input's request is read into its tables first.
         if node_type in REQUEST_INPUT_NODE_TYPES and nid in input_set:
+            if node_type is NodeType.WORKBENCH_INPUT:
+                # A frame per port, as a multi-frame source gives, which the walk
+                # hands each edge by its handle.
+                def inject_workbench_request(_config: dict[str, Any] = config) -> Any:
+                    return dict(workbench_request_frames(_config, input_df))
+
+                return func_name, inject_workbench_request, True
 
             def inject_input() -> _Frame:
                 return input_lf

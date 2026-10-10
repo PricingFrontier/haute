@@ -1,43 +1,69 @@
 /**
  * The copy rules for a Workbench Input, whose tables and sample quote the project's
  * workbench supplies, and a Workbench Output, whose response tables it supplies
- * (specs/workbench): when a copy needs updating, and what each starts with from the palette.
+ * (specs/workbench): how a copy is read, which tables are ports, when a copy needs
+ * updating, and what each starts with from the palette.
  */
 import { describe, expect, it } from "vitest"
 import {
   paletteWorkbenchInputConfig,
   paletteWorkbenchOutputConfig,
   quoteTablesPatch,
+  readWorkbenchTables,
   responseTablesPatch,
-  workbenchOutputTableLabels,
+  workbenchTablePorts,
   type WorkbenchTables,
 } from "../workbenchTables"
 
-const table = {
-  path: "$[:]",
-  label: "policy_details",
-  emit: true,
-  row_id_column: null,
-  columns: [
-    { name: "state", path: "$[:].policy_details.state", type: "str", status: "Confirmed", selected: true, levels: null },
-  ],
-}
+const table = { name: "policy_details", rows: "one" as const, columns: [{ name: "state", type: "str" as const }] }
 const sample = { policy_details: { state: "NY" } }
-const responseTable = {
-  path: "$[:].layers[:]",
-  label: "layers",
-  emit: true,
-  row_id_column: "layer",
-  columns: [
-    { name: "layer", path: "$[:].layers[:].layer", type: "int", status: "Confirmed", selected: true, levels: null },
-  ],
-}
+const responseTable = { name: "layers", rows: "many" as const, columns: [{ name: "layer", type: "int" as const }] }
 const fetched: WorkbenchTables = {
   tables: [table],
   sample,
   responseTables: [responseTable],
   fetch: 3,
 }
+
+describe("readWorkbenchTables", () => {
+  it("reads each table's name, rows and typed columns, leaving out what is not one", () => {
+    const config = {
+      tables: [
+        table,
+        { name: "equipment", rows: "many", columns: [{ name: "value", type: "float" }, { name: "x", type: "text" }, 5] },
+        { name: "bare", rows: "one", columns: [] },
+        { path: "$[:]", label: "old", emit: true, columns: [] },
+        { name: "neither", rows: "some", columns: [] },
+        "policy",
+        null,
+      ],
+    }
+
+    expect(readWorkbenchTables(config)).toEqual([
+      table,
+      { name: "equipment", rows: "many", columns: [{ name: "value", type: "float" }] },
+      { name: "bare", rows: "one", columns: [] },
+    ])
+    expect(readWorkbenchTables({})).toEqual([])
+    expect(readWorkbenchTables(undefined)).toEqual([])
+  })
+})
+
+describe("workbenchTablePorts", () => {
+  it("makes each table with a column a port, by name, in order, once", () => {
+    const config = {
+      tables: [
+        responseTable,
+        { name: "bare", rows: "one", columns: [] },
+        table,
+        { name: "layers", rows: "one", columns: [{ name: "again", type: "int" }] },
+      ],
+    }
+
+    expect(workbenchTablePorts(config)).toEqual(["layers", "policy_details"])
+    expect(workbenchTablePorts({})).toEqual([])
+  })
+})
 
 describe("quoteTablesPatch", () => {
   it("updates a copy whose tables or sample differ from the workbench's, with both", () => {
@@ -103,10 +129,5 @@ describe("the response's tables", () => {
   it("starts a Workbench Output with the newest response tables fetched, or none until they are", () => {
     expect(paletteWorkbenchOutputConfig({ tables: [] }, fetched)).toEqual({ tables: [responseTable] })
     expect(paletteWorkbenchOutputConfig({ tables: [] }, null)).toEqual({ tables: [] })
-  })
-
-  it("makes each table's label a port, in order", () => {
-    expect(workbenchOutputTableLabels({ tables: [responseTable, table] })).toEqual(["layers", "policy_details"])
-    expect(workbenchOutputTableLabels({})).toEqual([])
   })
 })

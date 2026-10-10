@@ -526,9 +526,11 @@ export type {
   SchemaColumn,
   SchemaTable,
   TableInputWidget,
+  WorkbenchColumn,
   WorkbenchFormResponse,
   WorkbenchFormSaveResponse,
   WorkbenchStatusResponse,
+  WorkbenchTable,
   WorkbenchTablesResponse,
 } from "../generated/api-contracts.generated"
 

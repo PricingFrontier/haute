@@ -8,7 +8,6 @@ with API-friendly aliases so that FastAPI endpoint signatures stay clean.
 from __future__ import annotations
 
 import itertools
-import keyword
 import math
 from collections.abc import Mapping
 from datetime import datetime
@@ -50,6 +49,7 @@ from haute._execution_schemas import (
     NodeExecutionStatus,  # noqa: F401
     _validate_diagnostic_collection,
 )
+from haute._graph_utils import is_frame_label
 from haute._pipeline_settings import (
     MAX_SIZE_GB,
     MAX_STREAMING_CHUNK_SIZE,
@@ -62,6 +62,7 @@ from haute._types import GraphNode as GraphNode  # noqa: F401
 from haute._types import NodeData as GraphNodeData  # noqa: F401
 from haute._types import PipelineGraph as Graph  # noqa: F401
 from haute._workbench_form import FormSpec
+from haute._workbench_tables import WorkbenchTable
 
 
 def _reject_bool(value: object) -> object:
@@ -161,16 +162,16 @@ class WorkbenchStatusResponse(BaseModel):
 
 
 class WorkbenchTablesResponse(BaseModel):
-    """The workbench's tables, in the Quote Input's v2 shape, as its form defines them now.
+    """The workbench's tables, as the pipeline holds them, as its form defines them now.
 
     ``tables`` are the Workbench Input's; ``sample`` is the sample quote typed while
     building, as a request holds it: ``{}`` for none; ``response_tables`` are the tables a
     priced quote fills in, in the same shape, which a Workbench Output fills: ``[]`` for none.
     """
 
-    tables: list[dict[str, Any]]
+    tables: list[WorkbenchTable]
     sample: dict[str, Any] = Field(default_factory=dict)
-    response_tables: list[dict[str, Any]] = Field(default_factory=list)
+    response_tables: list[WorkbenchTable] = Field(default_factory=list)
 
 
 class WorkbenchFormResponse(BaseModel):
@@ -976,8 +977,7 @@ class EditorIdentityRequestNode(BaseModel):
                 if not handle or not handle.isascii() or not handle.isidentifier():
                     raise ValueError("submodelPort source handles must be ASCII identifiers.")
         if self.node_type in REQUEST_INPUT_NODE_TYPES and any(
-            not handle.isascii() or not handle.isidentifier() or keyword.iskeyword(handle)
-            for handle in self.source_handles
+            not is_frame_label(handle) for handle in self.source_handles
         ):
             raise ValueError(
                 f"{self.node_type.value} source handles must be non-keyword ASCII identifiers."

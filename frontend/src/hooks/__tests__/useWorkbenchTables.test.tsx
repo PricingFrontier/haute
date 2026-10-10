@@ -12,7 +12,7 @@ import useGraphCommitController, { type GraphCommitController } from "../useGrap
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
 
-const tables = (label: string) => [{ path: "$[:]", label, emit: true, row_id_column: null, columns: [] }]
+const tables = (name: string) => [{ name, rows: "one" as const, columns: [] }]
 
 function requestInput(nodeType: "workbenchInput" | "apiInput", config: Record<string, unknown>, id: string): Node {
   return { id, type: nodeType, position: { x: 0, y: 0 }, data: { label: id, nodeType, config } }

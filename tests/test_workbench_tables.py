@@ -1,13 +1,29 @@
-"""The form's tables as Haute takes them (specs/workbench): the Workbench Input's and
-Workbench Output's tables in the Quote Input's v2 shape, and the sample quote as a request
-holds it."""
+"""The workbench's tables as the pipeline holds them (specs/workbench): the Workbench
+Input's and Workbench Output's tables, each its name, one row per quote or many, and its
+typed columns; the sample quote as a request holds it; and the tables the pipeline refuses."""
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
+import polars as pl
+import pytest
+
+from haute._json_shred._shred import _POLARS_TYPE_MAP
 from haute._workbench_form import FormSpec
-from haute._workbench_tables import input_tables, output_tables, sample_quote, workbench_tables
+from haute._workbench_tables import (
+    COLUMN_DTYPES,
+    WorkbenchTable,
+    WorkbenchTablesError,
+    input_tables,
+    output_tables,
+    parse_workbench_tables,
+    port_tables,
+    quote_schema,
+    sample_quote,
+    workbench_tables,
+)
 
 
 def form(*tables: dict[str, Any]) -> FormSpec:
@@ -24,7 +40,11 @@ def column(name: str, type_: str = "str", **rules: object) -> dict[str, Any]:
     return {"id": f"c_{name}", "name": name, "type": type_, **rules}
 
 
-def test_input_tables_become_the_quote_inputs_tables_in_schema_order() -> None:
+def dumped(tables: tuple[WorkbenchTable, ...]) -> list[dict[str, Any]]:
+    return [table.model_dump() for table in tables]
+
+
+def test_input_tables_become_the_pipelines_tables_in_schema_order() -> None:
     spec = form(
         {
             "id": "t1",
@@ -54,50 +74,118 @@ def test_input_tables_become_the_quote_inputs_tables_in_schema_order() -> None:
 
     equipment, policy = input_tables(spec)
 
-    # A many-row table is an array of objects under its name, its single key the row id.
-    assert equipment == {
-        "path": "$[:].equipment[:]",
-        "label": "equipment",
-        "emit": True,
-        "row_id_column": "item_id",
-        "columns": [
-            {
-                "name": "item_id",
-                "path": "$[:].equipment[:].item_id",
-                "type": "str",
-                "status": "Confirmed",
-                "selected": True,
-                "levels": None,
-            },
-            {
-                "name": "value",
-                "path": "$[:].equipment[:].value",
-                "type": "float",
-                "status": "Confirmed",
-                "selected": True,
-                "levels": None,
-            },
-        ],
-    }
-    # A one-row table is an object under its name, read at the quote's own level.
-    assert policy["path"] == "$[:]"
-    assert policy["row_id_column"] is None
-    assert [(c["name"], c["path"], c["type"], c["levels"]) for c in policy["columns"]] == [
-        ("state", "$[:].policy_details.state", "str", ["CA", "NY"]),
-        ("inception_date", "$[:].policy_details.inception_date", "date", None),
+    # Each table is its name, its rows per quote and its typed columns; the form's keys,
+    # rules and allowed values stay in the form.
+    assert dumped((equipment, policy)) == [
+        {
+            "name": "equipment",
+            "rows": "many",
+            "columns": [{"name": "item_id", "type": "str"}, {"name": "value", "type": "float"}],
+        },
+        {
+            "name": "policy_details",
+            "rows": "one",
+            "columns": [
+                {"name": "state", "type": "str"},
+                {"name": "inception_date", "type": "date"},
+            ],
+        },
     ]
+    assert (equipment.one_row, policy.one_row) == (False, True)
+    assert policy.frame_schema == pl.Schema({"state": pl.String, "inception_date": pl.Date})
+    # In a quote, a one-row table is an object under its name and a many-row table a list.
+    assert quote_schema([equipment, policy]) == pl.Schema(
+        {
+            "equipment": pl.List(pl.Struct({"item_id": pl.String, "value": pl.Float64})),
+            "policy_details": pl.Struct({"state": pl.String, "inception_date": pl.Date}),
+        }
+    )
 
 
-def test_a_many_row_table_without_exactly_one_key_has_no_row_id() -> None:
-    keyless = {"id": "t", "name": "drivers", "rows": "many", "columns": [column("age", "int")]}
-    two_keys = {
-        "id": "u",
-        "name": "vehicles",
-        "rows": "many",
-        "columns": [column("make", key=True), column("model", key=True)],
-    }
+def test_each_column_type_is_the_quote_inputs_dtype() -> None:
+    assert set(COLUMN_DTYPES) == {"int", "float", "str", "bool", "date"}
+    assert COLUMN_DTYPES == _POLARS_TYPE_MAP
 
-    assert [t["row_id_column"] for t in input_tables(form(keyless, two_keys))] == [None, None]
+
+def test_a_table_without_columns_is_not_a_port() -> None:
+    tables = parse_workbench_tables(
+        [
+            {"name": "bare", "rows": "one"},
+            {"name": "items", "rows": "many", "columns": [{"name": "value", "type": "int"}]},
+        ],
+        owner="Workbench Input",
+    )
+
+    assert [table.name for table in port_tables(tables)] == ["items"]
+    assert tables[0].columns == [] and tables[0].frame_schema == pl.Schema({})
+
+
+_REFUSED = {
+    "not a list": (
+        None,
+        "The Workbench Input's tables are not as the workbench writes them (tables: Input "
+        "should be a valid list). Open the pipeline in the editor and save it.",
+    ),
+    "a key the workbench does not write": (
+        [{"name": "a", "rows": "one", "path": "$[:]"}],
+        "(tables[0].path: Extra inputs are not permitted)",
+    ),
+    "a key missing": ([{"name": "a"}], "(tables[0].rows: Field required)"),
+    "a type that is not a column's": (
+        [{"name": "a", "rows": "one", "columns": [{"name": "x", "type": "text"}]}],
+        "(tables[0].columns[0].type: Input should be 'int', 'float', 'str', 'bool' or 'date')",
+    ),
+    "a name that cannot be a port": (
+        [{"name": "class", "rows": "one"}],
+        "The Workbench Input's table 'class' cannot be a port: a table's name is letters, "
+        "digits and underscores, not starting with a digit and not a Python keyword.",
+    ),
+    "a name used twice": (
+        [{"name": "a", "rows": "one"}, {"name": "a", "rows": "many"}],
+        "The Workbench Input's tables name 'a' twice.",
+    ),
+    "names differing in case": (
+        [{"name": "a", "rows": "one"}, {"name": "A", "rows": "one"}],
+        "The Workbench Input's tables 'a' and 'A' differ only in case, so they cannot both "
+        "be ports.",
+    ),
+    "a column that cannot be a frame's": (
+        [{"name": "a", "rows": "one", "columns": [{"name": "my col", "type": "int"}]}],
+        "The Workbench Input's table 'a' has a column 'my col', which cannot name a frame's "
+        "column: a column's name is letters, digits and underscores, not starting with a "
+        "digit and not a Python keyword.",
+    ),
+    "a column named twice": (
+        [
+            {
+                "name": "a",
+                "rows": "one",
+                "columns": [{"name": "x", "type": "int"}, {"name": "x", "type": "str"}],
+            }
+        ],
+        "The Workbench Input's table 'a' names a column 'x' twice.",
+    ),
+}
+
+
+@pytest.mark.parametrize(("value", "says"), list(_REFUSED.values()), ids=list(_REFUSED))
+def test_tables_the_pipeline_cannot_take_are_refused_naming_the_problem(
+    value: Any, says: str
+) -> None:
+    with pytest.raises(WorkbenchTablesError, match=re.escape(says)):
+        parse_workbench_tables(value, owner="Workbench Input")
+
+
+def test_a_forms_table_the_pipeline_cannot_take_is_refused_by_the_nodes_name() -> None:
+    spec = form(
+        {"id": "t1", "name": "class", "role": "input", "columns": [column("x")]},
+        {"id": "t2", "name": "priced", "role": "output", "columns": [column("x"), column("x")]},
+    )
+
+    with pytest.raises(WorkbenchTablesError, match="The Workbench Input's table 'class'"):
+        input_tables(spec)
+    with pytest.raises(WorkbenchTablesError, match="The Workbench Output's table 'priced'"):
+        output_tables(spec)
 
 
 def test_the_sample_typed_while_building_is_one_quote_by_table_and_column_names() -> None:
@@ -140,6 +228,7 @@ def test_the_sample_typed_while_building_is_one_quote_by_table_and_column_names(
             {"c_item_id": "A", "c_value": "$2,500.50", "c_leased": True},
             {"c_item_id": "", "c_value": " "},
             {"c_item_id": "B", "c_value": "lots"},
+            {"c_item_id": "C", "c_value": "inf"},
         ],
         "t3": [{"c_premium": "9"}],
         "t4": [{}],
@@ -148,10 +237,12 @@ def test_the_sample_typed_while_building_is_one_quote_by_table_and_column_names(
     assert sample_quote(spec) == {
         # Typed as each column holds it; an unticked box in a filled row is false.
         "policy_details": {"state": "NY", "limit": 1000, "cover": False, "start": "2026-01-15"},
-        # Empty rows are left out; a value that isn't a number stays as typed, to be reported.
+        # Empty rows are left out; a value that isn't a finite number stays as typed, to be
+        # reported.
         "equipment": [
             {"item_id": "A", "value": 2500.5, "leased": True},
             {"item_id": "B", "value": "lots", "leased": False},
+            {"item_id": "C", "value": "inf", "leased": False},
         ],
     }
 
@@ -195,7 +286,7 @@ def test_a_tables_index_is_an_integer_column_numbering_the_rows_as_they_stand() 
             "role": "input",
             "rows": "many",
             "columns": [
-                {**column("line", "int", key=True), "index": True},
+                {**column("line", "str", key=True), "index": True},
                 column("item_id"),
                 column("value", "float"),
             ],
@@ -205,16 +296,8 @@ def test_a_tables_index_is_an_integer_column_numbering_the_rows_as_they_stand() 
 
     (table,) = input_tables(spec)
 
-    # The index, made the key, is the row id; it is an Integer with no levels.
-    assert table["row_id_column"] == "line"
-    assert table["columns"][0] == {
-        "name": "line",
-        "path": "$[:].equipment[:].line",
-        "type": "int",
-        "status": "Confirmed",
-        "selected": True,
-        "levels": None,
-    }
+    # The index is an Integer, whatever type the form holds for it.
+    assert table.columns[0].model_dump() == {"name": "line", "type": "int"}
     # Each row's number as the rows stand: the empty second row is not sent.
     assert sample_quote(spec) == {
         "equipment": [{"line": 1, "item_id": "A"}, {"line": 3, "item_id": "B", "value": 5.0}]
@@ -246,24 +329,21 @@ def test_output_tables_become_the_workbench_outputs_tables_in_schema_order() -> 
         },
     )
 
-    layers, pricing = output_tables(spec)
-
     # The same shape as the input tables: in the response a one-row table is an object under
-    # its name and a many-row table an array of objects under its name.
-    assert (layers["path"], layers["label"], layers["row_id_column"]) == (
-        "$[:].layer_premiums[:]",
-        "layer_premiums",
-        "layer",
-    )
-    assert [(c["name"], c["path"], c["type"]) for c in layers["columns"]] == [
-        ("layer", "$[:].layer_premiums[:].layer", "int"),
-        ("premium", "$[:].layer_premiums[:].premium", "float"),
+    # its name and a many-row table a list of objects under its name.
+    assert dumped(output_tables(spec)) == [
+        {
+            "name": "layer_premiums",
+            "rows": "many",
+            "columns": [{"name": "layer", "type": "int"}, {"name": "premium", "type": "float"}],
+        },
+        {
+            "name": "pricing_output",
+            "rows": "one",
+            "columns": [{"name": "charged_premium", "type": "float"}],
+        },
     ]
-    assert (pricing["path"], [c["path"] for c in pricing["columns"]]) == (
-        "$[:]",
-        ["$[:].pricing_output.charged_premium"],
-    )
-    assert [table["label"] for table in input_tables(spec)] == ["policy_details"]
+    assert [table.name for table in input_tables(spec)] == ["policy_details"]
 
 
 def test_workbench_tables_gathers_the_three_as_the_route_serves_them() -> None:

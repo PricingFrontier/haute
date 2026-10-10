@@ -2,7 +2,7 @@ import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
 import { isSubmodelDefinition, isSubmodelInstanceConfig } from "../types/node"
 import { NODE_TYPES, isRequestInputType } from "./nodeTypes"
 import { SUBMODEL_INPUT_HANDLE } from "./flowHandles"
-import { workbenchOutputTableLabels } from "./workbenchTables"
+import { workbenchTablePorts } from "./workbenchTables"
 import {
   edgeInputName,
   incomingEdgeInputNames,
@@ -102,7 +102,7 @@ function workbenchOutputConnectionFailure(
 ): string | null {
   const name = (nodeId: string) => String(nodesById.get(nodeId)?.data.label ?? nodeId)
   const table = candidate.targetHandle
-  if (typeof table !== "string" || !workbenchOutputTableLabels(target.data.config).includes(table)) {
+  if (typeof table !== "string" || !workbenchTablePorts(target.data.config).includes(table)) {
     return `Connect to one of ${name(target.id)}'s tables`
   }
   const incoming = edges.filter((edge) => edge.target === target.id)

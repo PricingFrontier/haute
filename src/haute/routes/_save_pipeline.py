@@ -1106,8 +1106,15 @@ class SavePipelineService:
                 if not isinstance(tables, list):
                     continue
                 own_name = _sanitize_func_name(node.data.label)
+                # A Workbench Input's tables carry their port as `name`, a Quote Input's
+                # as `label`.
+                kind, key = (
+                    ("Workbench Input", "name")
+                    if node.data.nodeType is NodeType.WORKBENCH_INPUT
+                    else ("Quote Input", "label")
+                )
                 for table in tables:
-                    label = table.get("label") if isinstance(table, dict) else None
+                    label = table.get(key) if isinstance(table, dict) else None
                     if not isinstance(label, str) or label == own_name:
                         continue
                     clashing = labels_by_name.get(label)
@@ -1116,7 +1123,7 @@ class SavePipelineService:
                     raise HTTPException(
                         status_code=400,
                         detail=(
-                            f"Quote Input {node.data.label!r} has a table {label!r} named "
+                            f"{kind} {node.data.label!r} has a table {label!r} named "
                             f"like the node {clashing!r}. A step or parameter reading "
                             f"{label!r} would read both, so the pipeline could not be "
                             "reloaded. Rename the table or the node. Nothing was saved."

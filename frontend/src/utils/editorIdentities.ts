@@ -18,7 +18,7 @@ import {
   type PipelineEdge,
   type SubmodelDefinition,
 } from "../types/node"
-import { apiInputFrameLabels } from "./apiInputPorts"
+import { requestInputFrameLabels } from "./apiInputPorts"
 import { NODE_TYPES, isRequestInputType } from "./nodeTypes"
 
 type SubmodelRegistry = Record<string, unknown>
@@ -79,7 +79,8 @@ function requestNode(
   let sourceHandles: string[] = []
   let alias: string | undefined
   if (isRequestInputType(nodeType)) {
-    sourceHandles = apiInputFrameLabels(
+    sourceHandles = requestInputFrameLabels(
+      nodeType,
       node.data.config as Record<string, unknown> | undefined,
       reservedApiInputFrameLabels,
     )

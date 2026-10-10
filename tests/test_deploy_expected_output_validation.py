@@ -26,10 +26,11 @@ def _resolved_with_quotes(
     *,
     input_schema: dict[str, str] | None = None,
     output_schema: dict[str, str] | None = None,
+    request_input: NodeType = NodeType.API_INPUT,
 ) -> ResolvedDeploy:
     inp = GraphNode(
         id="api_in",
-        data=NodeData(label="api_in", nodeType=NodeType.API_INPUT, config={}),
+        data=NodeData(label="api_in", nodeType=request_input, config={}),
     )
     out = GraphNode(
         id="output",
@@ -122,6 +123,55 @@ def test_score_test_quotes_passes_expected_outputs_within_tolerance(
         {"VehPower": 7, "Area": "C"},
         {"VehPower": 9, "Area": "D"},
     ]
+
+
+def test_score_test_quotes_scores_a_workbench_inputs_cases_one_request_each(
+    tmp_path: Path,
+) -> None:
+    """A Workbench Input reads one quote per request, so each case is its own request and
+    the outputs are stacked in the file's order for the expected-output comparison."""
+    quotes_dir = tmp_path / "quotes"
+    quotes_dir.mkdir()
+    _write_json(
+        quotes_dir / "golden.json",
+        [
+            {"input": {"policy": {"limit": 7}}, "expected": {"premium": 70.0}},
+            {"input": {"policy": {"limit": 9}}, "expected": {"premium": 90.0}},
+        ],
+    )
+    resolved = _resolved_with_quotes(quotes_dir, request_input=NodeType.WORKBENCH_INPUT)
+
+    with patch("haute.deploy._validators.score_graph") as score_graph:
+        score_graph.side_effect = lambda **kwargs: pl.DataFrame(
+            {"premium": [kwargs["input_df"].to_dicts()[0]["policy"]["limit"] * 10.0]}
+        )
+        [result] = score_test_quotes(resolved)
+
+    assert (result["status"], result["rows"]) == ("ok", 2)
+    assert [call.kwargs["input_df"].to_dicts() for call in score_graph.call_args_list] == [
+        [{"policy": {"limit": 7}}],
+        [{"policy": {"limit": 9}}],
+    ]
+
+    with patch("haute.deploy._validators.score_graph") as score_graph:
+        score_graph.return_value = pl.DataFrame({"premium": [70.0]})
+        [drifted] = score_test_quotes(resolved)
+
+    assert drifted["status"] == "error"
+    assert "row 1 column 'premium'" in str(drifted["error"])
+
+    # Each case answers with one row of its own: two rows for the first case and none for
+    # the second are two failures, never one request's rows making up for another's.
+    with patch("haute.deploy._validators.score_graph") as score_graph:
+        score_graph.side_effect = [
+            pl.DataFrame({"premium": [70.0, 90.0]}),
+            pl.DataFrame({"premium": []}, schema={"premium": pl.Float64}),
+        ]
+        [uneven] = score_test_quotes(resolved)
+
+    assert uneven["status"] == "error"
+    assert "row 0: expected one output row, 2 output row(s)" in str(uneven["error"])
+    assert "row 1: expected one output row, 0 output row(s)" in str(uneven["error"])
 
 
 def test_score_test_quotes_reports_expected_output_drift(tmp_path: Path) -> None:

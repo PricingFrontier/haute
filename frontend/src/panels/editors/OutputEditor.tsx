@@ -22,7 +22,7 @@ import {
 } from "./outputPathTools"
 import { parsePath } from "./jsonpath"
 import { isRequestInputType } from "../../utils/nodeTypes"
-import { apiInputFrameColumns, authoritativeSourceHandles, edgeInputName } from "../../utils/apiInputPorts"
+import { authoritativeSourceHandles, edgeInputName, requestInputFrameColumns } from "../../utils/apiInputPorts"
 
 // ─── Preview chunk size ───────────────────────────────────────────
 //
@@ -110,7 +110,7 @@ function frameIsUnresolved(edge: SimpleEdge, sourceNode: SimpleNode | undefined)
  * dataInput, …) there is no `tables` config, so fall back to the node's
  * `_columns` (populated by preview/run).
  *
- * SHAPE NOTE: the apiInput branch delegates to `apiInputFrameColumns`, the
+ * SHAPE NOTE: the apiInput branch delegates to `requestInputFrameColumns`, the
  * single frontend derivation of a frame's column set. A future backend
  * per-frame schema endpoint can replace that helper without touching any
  * caller — callers only ever see `string[]`.
@@ -123,7 +123,7 @@ function frameColumns(edge: SimpleEdge, sourceNode: SimpleNode | undefined): str
 
   // apiInput v2: derive from the runtime-eligible config table for this frame.
   if (tables) {
-    return apiInputFrameColumns(cfg, edge.sourceHandle).map((column) => column.name)
+    return requestInputFrameColumns(data.nodeType, cfg, edge.sourceHandle).map((column) => column.name)
   }
 
   // Non-apiInput source: cached columns from preview/run.
@@ -140,7 +140,7 @@ function frameColumns(edge: SimpleEdge, sourceNode: SimpleNode | undefined): str
  * `frameColumns` exactly — only the shape differs (`{name, type}` here vs
  * `string` there):
  *   - apiInput v2 (`config.tables`): the matching emit table's selected
- *     columns via `apiInputFrameColumns`, surfaced as `name` + `type`;
+ *     columns via `requestInputFrameColumns`, surfaced as `name` + `type`;
  *   - non-apiInput: `_columns` are `[{name, dtype}]` — surface `name` + `dtype`.
  * A missing/unknown type renders as an empty string (the row still shows its
  * name). Like `frameColumns`, this is the single place that derives a frame's
@@ -157,7 +157,7 @@ function frameSchemaColumns(
 
   // apiInput v2: derive from the runtime-eligible config table for this frame.
   if (tables) {
-    return apiInputFrameColumns(cfg, edge.sourceHandle).map((column) => ({
+    return requestInputFrameColumns(data.nodeType, cfg, edge.sourceHandle).map((column) => ({
       name: column.name,
       type: column.dtype,
     }))

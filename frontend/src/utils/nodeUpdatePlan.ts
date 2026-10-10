@@ -8,7 +8,7 @@ import {
   incomingEdgeInputNames,
 } from "./apiInputPorts"
 import { attachEditorEdgeIdentities } from "./editorIdentities"
-import { workbenchOutputTableLabels } from "./workbenchTables"
+import { workbenchTablePorts } from "./workbenchTables"
 import { NODE_TYPES, isRequestInputType } from "./nodeTypes"
 import { renameStepInputs, steppedSurfaceAllowsInputReferences } from "./polarsStepInputs"
 import { isPlainObject } from "../types/guards"
@@ -107,11 +107,11 @@ function reconcileSourceEdges({
     const previousConfig = ((previousNode.data as Record<string, unknown>).config ?? {}) as Record<string, unknown>
     const result = applyApiInputConfigChange({
       nodeId,
+      nodeType: data.nodeType,
       prevConfig: previousConfig,
       nextConfig: config,
       edges: graph.edges,
       reservedLabels: reservedApiInputFrameLabels,
-      followNames: data.nodeType === NODE_TYPES.WORKBENCH_INPUT,
     })
     if (!refreshSourceIdentity) {
       return { ok: true, edges: result.edges, rebound: result.rebound, removed: result.removed }
@@ -134,7 +134,7 @@ function reconcileSourceEdges({
   // A Workbench Output's connections land on its tables' ports, so one whose table the
   // new tables lack goes with it (specs/workbench).
   const tables = data.nodeType === NODE_TYPES.WORKBENCH_OUTPUT
-    ? new Set(workbenchOutputTableLabels(data.config as Record<string, unknown> | undefined))
+    ? new Set(workbenchTablePorts(data.config as Record<string, unknown> | undefined))
     : null
   const tableless = tables === null
     ? []

@@ -242,17 +242,9 @@ def _capstone_root_graph(
                 {
                     "tables": [
                         {
-                            "path": "$[:]",
-                            "label": "keyed",
-                            "emit": True,
-                            "columns": [
-                                {
-                                    "name": "state",
-                                    "path": "$[:].keyed.state",
-                                    "type": "str",
-                                    "selected": True,
-                                }
-                            ],
+                            "name": "keyed",
+                            "rows": "one",
+                            "columns": [{"name": "state", "type": "str"}],
                         }
                     ],
                 }
@@ -269,17 +261,9 @@ def _capstone_root_graph(
                 {
                     "tables": [
                         {
-                            "path": "$[:]",
-                            "label": "priced",
-                            "emit": True,
-                            "columns": [
-                                {
-                                    "name": "premium",
-                                    "path": "$[:].priced.premium",
-                                    "type": "float",
-                                    "selected": True,
-                                }
-                            ],
+                            "name": "priced",
+                            "rows": "one",
+                            "columns": [{"name": "premium", "type": "float"}],
                         }
                     ],
                 }

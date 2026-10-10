@@ -17,16 +17,14 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import JSONResponse
 
-from haute._api_input_schema import ApiInputSchemaError, validate_v2_schema
 from haute._logging import get_logger
 from haute._workbench_config import WorkbenchConfig, read_workbench_config
 from haute._workbench_form import FormSpec, form_file_revision, read_form_document, write_form
-from haute._workbench_tables import workbench_tables
+from haute._workbench_tables import WorkbenchTablesError, workbench_tables
+from haute.routes._contract_errors import contract_error_http_exception
 from haute.routes._helpers import save_lock
 from haute.routes._save_pipeline import StaleDocumentRevisionError, capture_save_in_ledger
-from haute.routes.json_cache import api_input_schema_error_response
 from haute.schemas import (
     WorkbenchFormResponse,
     WorkbenchFormSaveRequest,
@@ -55,22 +53,22 @@ async def _enabled_config() -> WorkbenchConfig:
     return config
 
 
-def _tables_response(spec: FormSpec) -> WorkbenchTablesResponse | JSONResponse:
-    """The tables, sample and response tables of *spec*, the tables checked as a Quote Input's."""
-    tables = workbench_tables(spec)
+def _tables_response(spec: FormSpec) -> WorkbenchTablesResponse:
+    """The tables, sample and response tables of *spec*, the tables checked as the pipeline's."""
     try:
-        validate_v2_schema({"tables": tables.tables})
-        validate_v2_schema({"tables": tables.response_tables})
-    except ApiInputSchemaError as exc:
-        return api_input_schema_error_response(exc)
+        tables = workbench_tables(spec)
+    except WorkbenchTablesError as exc:
+        raise contract_error_http_exception(exc) from exc
     # Not checked against the tables here: a sample that doesn't fit fails the previews
     # that read it, and never stops the tables updating.
     return WorkbenchTablesResponse(
-        tables=tables.tables, sample=tables.sample, response_tables=tables.response_tables
+        tables=list(tables.tables),
+        sample=tables.sample,
+        response_tables=list(tables.response_tables),
     )
 
 
-def _saved_tables_response(config: WorkbenchConfig) -> WorkbenchTablesResponse | JSONResponse:
+def _saved_tables_response(config: WorkbenchConfig) -> WorkbenchTablesResponse:
     return _tables_response(read_form_document(config).spec)
 
 
@@ -112,16 +110,14 @@ async def workbench_status() -> WorkbenchStatusResponse:
 
 
 @router.get("/tables", response_model=WorkbenchTablesResponse)
-async def get_workbench_tables() -> WorkbenchTablesResponse | JSONResponse:
+async def get_workbench_tables() -> WorkbenchTablesResponse:
     """The workbench's tables, sample and response tables as its form defines them now."""
     config = await _enabled_config()
     return await run_in_threadpool(_saved_tables_response, config)
 
 
 @router.post("/tables", response_model=WorkbenchTablesResponse)
-async def post_workbench_tables(
-    body: WorkbenchFormTablesRequest,
-) -> WorkbenchTablesResponse | JSONResponse:
+async def post_workbench_tables(body: WorkbenchFormTablesRequest) -> WorkbenchTablesResponse:
     """The tables, sample and response tables of a form as the view holds it, saved or not."""
     await _enabled_config()
     return await run_in_threadpool(_tables_response, body.form)

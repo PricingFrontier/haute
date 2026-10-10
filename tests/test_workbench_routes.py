@@ -126,16 +126,19 @@ def test_the_tables_are_served_from_the_form_as_it_is_now(project: Path) -> None
     served = client().get("/api/workbench/tables")
     assert served.status_code == 200, served.text
     body = served.json()
-    assert [t["label"] for t in body["tables"]] == ["policy_details"]
-    assert body["tables"][0]["columns"][0]["levels"] == ["CA", "NY"]
+    assert body["tables"] == [
+        {
+            "name": "policy_details",
+            "rows": "one",
+            "columns": [{"name": "state", "type": "str"}, {"name": "exposure", "type": "float"}],
+        }
+    ]
     assert body["sample"] == {"policy_details": {"state": "NY", "exposure": 1000.0}}
-    assert [t["label"] for t in body["response_tables"]] == ["pricing_output"]
+    assert [t["name"] for t in body["response_tables"]] == ["pricing_output"]
 
     # Nothing is cached: a form changed on disk is served on the next request.
     write_form(project, form({**POLICY, "name": "policy"}, PRICING))
-    assert [t["label"] for t in client().get("/api/workbench/tables").json()["tables"]] == [
-        "policy"
-    ]
+    assert [t["name"] for t in client().get("/api/workbench/tables").json()["tables"]] == ["policy"]
 
 
 def test_the_form_is_read_from_where_the_table_says(project: Path) -> None:
@@ -143,7 +146,7 @@ def test_the_form_is_read_from_where_the_table_says(project: Path) -> None:
     write_form(project, form(POLICY), at="workbench/quote.json")
 
     assert client().get("/api/workbench").json()["form"] == "workbench/quote.json"
-    assert client().get("/api/workbench/tables").json()["tables"][0]["label"] == "policy_details"
+    assert client().get("/api/workbench/tables").json()["tables"][0]["name"] == "policy_details"
 
 
 def test_a_missing_form_is_the_blank_form_with_no_tables(project: Path) -> None:
@@ -198,9 +201,7 @@ def test_the_form_is_served_with_its_revision_and_saved_against_it(project: Path
         "form": renamed,
         "revision": saved.json()["revision"],
     }
-    assert [t["label"] for t in client().get("/api/workbench/tables").json()["tables"]] == [
-        "policy"
-    ]
+    assert [t["name"] for t in client().get("/api/workbench/tables").json()["tables"]] == ["policy"]
 
 
 def test_a_save_against_a_form_that_changed_on_disk_is_refused_writing_nothing(
@@ -385,14 +386,18 @@ def test_a_misshapen_form_and_a_bad_table_answer_409_naming_what_to_fix(project:
         assert bad.json()["detail"] == "[workbench].enabled must be true or false"
 
 
-def test_a_table_the_quote_input_s_rules_refuse_answers_the_structured_422(project: Path) -> None:
+def test_a_table_the_pipeline_cannot_take_answers_the_structured_422(project: Path) -> None:
     enable(project)
     write_form(project, form({**POLICY, "name": "class"}))
 
     response = client().get("/api/workbench/tables")
 
     assert response.status_code == 422
-    assert "class" in response.json()["detail"]
+    assert response.json()["detail"] == {
+        "error_code": "workbench_tables_invalid",
+        "message": "The Workbench Input's table 'class' cannot be a port: a table's name is "
+        "letters, digits and underscores, not starting with a digit and not a Python keyword.",
+    }
 
 
 def test_the_tables_of_an_unsaved_form_are_served_without_writing_it(project: Path) -> None:
@@ -405,17 +410,17 @@ def test_the_tables_of_an_unsaved_form_are_served_without_writing_it(project: Pa
 
     assert posted.status_code == 200, posted.text
     body = posted.json()
-    assert [t["label"] for t in body["tables"]] == ["policy"]
+    assert [t["name"] for t in body["tables"]] == ["policy"]
     assert body["sample"] == {"policy": {"state": "CA"}}
-    assert [t["label"] for t in body["response_tables"]] == ["pricing_output"]
+    assert [t["name"] for t in body["response_tables"]] == ["pricing_output"]
     # The file is as it was, and the saved form is what the GET still serves.
     assert (project / "forms" / "form.json").read_bytes() == before
-    assert [t["label"] for t in client().get("/api/workbench/tables").json()["tables"]] == [
+    assert [t["name"] for t in client().get("/api/workbench/tables").json()["tables"]] == [
         "policy_details"
     ]
 
 
-def test_an_unsaved_form_the_quote_input_s_rules_refuse_answers_the_structured_422(
+def test_an_unsaved_form_the_pipeline_cannot_take_answers_the_structured_422(
     project: Path,
 ) -> None:
     enable(project)
@@ -426,7 +431,7 @@ def test_an_unsaved_form_the_quote_input_s_rules_refuse_answers_the_structured_4
     misshapen = client().post("/api/workbench/tables", json={"form": {**form(), "pages": []}})
 
     assert refused.status_code == 422
-    assert "class" in refused.json()["detail"]
+    assert "table 'class' cannot be a port" in refused.json()["detail"]["message"]
     assert misshapen.status_code == 422
     assert not (project / "forms").exists()
 

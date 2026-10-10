@@ -76,7 +76,7 @@ describe("useWorkbenchStore", () => {
 })
 
 describe("refreshTables", () => {
-  const tables = (label: string) => [{ path: "$[:]", label, emit: true, row_id_column: null, columns: [] }]
+  const tables = (name: string) => [{ name, rows: "one" as const, columns: [] }]
 
   /** Answers each fetch when the test says so, in whatever order it says. */
   function heldResponses() {

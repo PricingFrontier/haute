@@ -106,8 +106,8 @@ describe("NodePalette", () => {
   })
 
   describe("while the project's workbench is enabled", () => {
-    const tables = [{ path: "$[:]", label: "policy_details", emit: true, row_id_column: null, columns: [] }]
-    const responseTables = [{ path: "$[:]", label: "pricing_output", emit: true, row_id_column: null, columns: [] }]
+    const tables = [{ name: "policy_details", rows: "one" as const, columns: [] }]
+    const responseTables = [{ name: "pricing_output", rows: "one" as const, columns: [] }]
     const dragConfig = (name: string, type: string) => {
       const setData = vi.fn()
       fireEvent.dragStart(screen.getByText(name).closest("[draggable]")!, {

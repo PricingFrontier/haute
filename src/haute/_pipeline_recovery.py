@@ -28,7 +28,7 @@ from haute._ast_helpers import (
 )
 from haute._cache import canonical_json
 from haute._editor_identities import (
-    recoverable_api_input_source_handles,
+    recoverable_request_input_source_handles,
     resolve_editor_identity,
 )
 from haute._executable_names import RESERVED_NAMES, ROOT_MODULE, NameViolation
@@ -945,7 +945,11 @@ def _build_recovery_graph(
                 if candidate.node_type in REQUEST_INPUT_NODE_TYPES and isinstance(
                     candidate.config, dict
                 ):
-                    source_handles = list(recoverable_api_input_source_handles(candidate.config))
+                    source_handles = list(
+                        recoverable_request_input_source_handles(
+                            candidate.node_type, candidate.config
+                        )
+                    )
                 elif candidate.node_type == NodeType.SUBMODEL:
                     source_handles = [
                         f"out__{port_name}" for port_name in candidate.submodel_output_ports
@@ -1088,7 +1092,9 @@ def _canonical_snapshot(
 
     def source_handles_for(node: GraphNode) -> list[str]:
         if node.data.nodeType in REQUEST_INPUT_NODE_TYPES:
-            return list(recoverable_api_input_source_handles(node.data.config))
+            return list(
+                recoverable_request_input_source_handles(node.data.nodeType, node.data.config)
+            )
         if node.data.nodeType == NodeType.SUBMODEL:
             definition_id = node.data.config.get("definitionId")
             definition = (

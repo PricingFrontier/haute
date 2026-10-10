@@ -62,7 +62,7 @@ import re
 from collections.abc import Sequence
 from typing import Any, Literal, TypedDict
 
-from haute._graph_utils import _sanitize_identifier_characters
+from haute._graph_utils import _sanitize_identifier_characters, is_frame_label
 from haute._jsonpath import _Seg, make_output_path, parse_data_path
 from haute.errors import HauteError
 
@@ -424,7 +424,7 @@ def validate_v2_schema(config: dict[str, Any]) -> None:
                 f"v2 tables[{ti}].label is missing or not a non-empty string "
                 "(must be unique within the apiInput)",
             )
-        if not label.isascii() or not label.isidentifier() or keyword.iskeyword(label):
+        if not is_frame_label(label):
             raise ApiInputSchemaError(
                 f"v2 table label {label!r} must be an ASCII Python identifier "
                 "and must not be a hard Python keyword",

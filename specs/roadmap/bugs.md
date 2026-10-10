@@ -318,7 +318,9 @@ takes frames already split per table. No deploy test sends a multi-table request
 **Plan:** Deployed scoring shreds the request records through the Quote Input's `tables[]`
 with the shared shredder, which takes records in memory, and injects one frame per emitting
 table, as the runtime loader returns them. The single-row `/quote` path, its batch worker and
-the Databricks model share that step.
+the Databricks model share that step. A Workbench Input already reads its request into a
+frame per table at that injection point (`workbench_request_frames`, one quote per request);
+the fix gives a Quote Input the same.
 
 **Acceptance:** A deployed pipeline whose Quote Input emits a one-row and a many-row table
 scores a nested request with each port receiving its own table's rows and types, matching the

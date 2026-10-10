@@ -10,21 +10,13 @@ import useWorkbenchStore from "../../stores/useWorkbenchStore"
 
 const RESERVED = new Set(["class", "pl", "pipeline"])
 
-const column = (table: string, name: string, type: string, many = false) => ({
-  name,
-  path: many ? `$[:].${table}[:].${name}` : `$[:].${table}.${name}`,
-  type,
-  status: "Confirmed",
-  selected: true,
-  levels: null,
-})
+const column = (name: string, type: string) => ({ name, type })
 const config = {
   tables: [
-    { path: "$[:]", label: "policy_details", emit: true, row_id_column: null,
-      columns: [column("policy_details", "state", "str"), column("policy_details", "inception_date", "date")] },
-    { path: "$[:].equipment[:]", label: "equipment", emit: true, row_id_column: "item_id",
-      columns: [column("equipment", "item_id", "str", true), column("equipment", "value", "float", true)] },
-    { path: "$[:]", label: "pl", emit: true, row_id_column: null, columns: [column("pl", "x", "int")] },
+    { name: "policy_details", rows: "one", columns: [column("state", "str"), column("inception_date", "date")] },
+    { name: "equipment", rows: "many", columns: [column("item_id", "str"), column("value", "float")] },
+    { name: "pl", rows: "one", columns: [column("x", "int")] },
+    { name: "bare", rows: "one", columns: [] },
   ],
 }
 function renderEditor(props: { insideSubmodel?: boolean; sample?: Record<string, unknown> } = {}) {
@@ -57,6 +49,8 @@ describe("WorkbenchInputEditor", () => {
     expect(within(policy).getByText("state")).toBeInTheDocument()
     expect(within(policy).getByText("date")).toBeInTheDocument()
     expect(within(within(tables).getByTestId("workbench-table-equipment")).getByText("many per quote")).toBeInTheDocument()
+    // A table without a column has no frame, so no port.
+    expect(within(tables).getByTestId("workbench-table-bare")).toHaveTextContent("No columns yet, so no port.")
     expect(screen.queryByText("Infer Tables")).not.toBeInTheDocument()
     expect(screen.queryAllByRole("textbox")).toEqual([])
     expect(screen.queryByRole("note")).not.toBeInTheDocument()
@@ -81,7 +75,7 @@ describe("WorkbenchInputEditor", () => {
     )
   })
 
-  it("says what stops a table's label being a port", () => {
+  it("says what stops a table's name being a port", () => {
     renderEditor()
 
     const reserved = screen.getByTestId("workbench-table-pl")

@@ -2936,7 +2936,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
     input.data.config = { tables: [], sample: {} }
     vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({ nodes: [input], edges: [], preamble: "", preserved_blocks: [], source_revision: "revision-test" }))
   }
-  const policyTables = [{ path: "$[:]", label: "policy", emit: true, row_id_column: null, columns: [] }]
+  const policyTables = [{ name: "policy", rows: "one" as const, columns: [] }]
   /** The Workbench Input's tables in the pipeline the save sent. */
   const savedInputTables = () => {
     const graph = vi.mocked(api.savePipeline).mock.calls[0][0].graph

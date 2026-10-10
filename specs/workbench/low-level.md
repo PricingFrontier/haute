@@ -6,20 +6,21 @@
 |---|---|
 | `src/haute/_workbench_config.py` | The `[workbench]` table of `haute.toml`: `WORKBENCH_TOML_KEYS` (`enabled`, `form`), `DEFAULT_FORM_PATH` (`forms/form.json`), `WorkbenchError` (the base of every workbench problem the analyst fixes in the project), `WorkbenchConfigError`, the frozen `WorkbenchConfig` record (`enabled`, `form` as `haute.toml` names it, `project_root`, and `form_path`) and `read_workbench_config` (the table read and checked from the project root's `haute.toml`: disabled without the file or the table). |
 | `src/haute/_workbench_form.py` | The form file's canonical shape, its reading and its revision: the pydantic models `FormSpec`, `FormSchema`, `SchemaTable`, `SchemaColumn`, `Page`, `TableInputWidget`, `CollectionWidget` and `FieldRef` (every field written, unknown fields refused), `WorkbenchFormError`, `FormDocument` (a form with its file's revision), `blank_form` (one blank sheet, named after the project), `render_form` (the file's text), `form_revision` (a file's revision: the content hash of its bytes), `write_form` (an atomic write, answering the written file's revision), `form_file_revision` (the file's revision as it is now, None when the file does not exist) and `read_form_document` (the file's bytes read once, hashed and checked, the blank form with no revision when the file does not exist, naming the file and what is wrong otherwise). |
-| `src/haute/_workbench_tables.py` | The form's tables as Haute takes them: `input_tables` (the schema's input tables in the Quote Input's v2 shape, in schema order), `output_tables` (its output tables in the same shape), `sample_quote` (the sample typed while building as one request holds it, each value as its column's type holds it) and `workbench_tables`, which gathers the three as a `WorkbenchTables`. |
-| `src/haute/_workbench_output.py` | The Workbench Output's tables and response: `WorkbenchOutputError`, `workbench_output_tables` (its tables read from its config: checked with `validate_v2_schema`, each one-row or many-row by its path, each column at its table's level), `workbench_output_mapping` (its mapping read from its config, checked against the tables), `WorkbenchOutputTables` (its result: its tables' frames by label, carrying the tables they fill), `fill_workbench_tables` (the tables filled from the frames by port through the mapping, each column checked against and cast to its declared type, a one-row table checked for its one row when it is read), `workbench_response` (the response built from the tables by the Quote Response's assembler) and `as_response` (a response node's result as the frame a request is answered with). |
-| `src/haute/routes/workbench.py` | `router`, the workbench routes under `/api/workbench`: `workbench_status` (`GET /api/workbench`), `get_workbench_tables` (`GET /api/workbench/tables`) and `post_workbench_tables` (`POST /api/workbench/tables`, the same of a form in the request), both through `_tables_response` (the tables and the response tables checked with `validate_v2_schema`), `get_workbench_form` (`GET /api/workbench/form`, the form with its revision) and `put_workbench_form` (`PUT /api/workbench/form`, through `_save_form`, which raises `StaleDocumentRevisionError` when the file's revision is not the base revision quoted, answered as the pipeline save answers it, else, under `save_lock`, writes the form and captures the written file on the save ledger through the pipeline save's capture, answering the form, its revision and the capture's commit, warnings and identity flag); each reads `haute.toml` through `_enabled_config` (404 while the workbench is not enabled), and all but the status the form, from the working directory on every request, off the event loop. |
+| `src/haute/_workbench_tables.py` | The workbench's tables as the pipeline holds them: the models `WorkbenchTable` (`name`, `rows`, `columns`; `one_row`, `frame_schema`, `quote_dtype`) and `WorkbenchColumn` (`name`, `type`; `dtype`), `COLUMN_DTYPES`, `WorkbenchTablesError`, `parse_workbench_tables` (a node's `tables` config read strictly, naming the spot that is not as the workbench writes it), `check_tables` (every name held to `is_frame_label`, unique across tables whatever its case and within a table), `port_tables` (the tables with a column), `quote_schema` (the schema of one quote holding tables), `input_tables` and `output_tables` (the schema's tables of the role, in schema order, checked), `sample_quote` (the sample typed while building as one request holds it, each value as its column's type holds it) and `workbench_tables`, which gathers the three as a `WorkbenchTables`. |
+| `src/haute/_workbench_input.py` | The Workbench Input's reading: `WorkbenchInputError`, `workbench_input_tables` (its ports from its config: the tables with a column, none refused saying what to add), `workbench_table_labels`, `read_quote` (each table's frame from a quote, typed as declared, a part that is not of its shape or a value that is not of its type refused naming the spot), `null_quote` (one quote with nothing filled in, one row of nulls per table), `workbench_table_frames` (its frames without a request: the sample read whole through `read_quote`, a table it gives no rows one row of nulls, then cut to the demanded ports and columns) and `workbench_request_frames` (a deployed request's frames: its one quote read through `read_quote`). |
+| `src/haute/_workbench_output.py` | The Workbench Output's tables and response: `WorkbenchOutputError`, `workbench_output_tables` (its tables read from its config through `parse_workbench_tables`, the ports those with a column, none refused saying what to add), `workbench_output_mapping` (its mapping read from its config, checked against the tables), `WorkbenchOutputTables` (its result: its tables' frames by name, carrying the tables they fill), `fill_workbench_tables` (the tables filled from the frames by port through the mapping, each column checked against and cast to its declared type, a one-row table checked for its one row when it is read), `workbench_response` (the response for one quote: each table under its name, built from the tables as a quote holds them) and `as_response` (a response node's result as the frame a request is answered with). |
+| `src/haute/routes/workbench.py` | `router`, the workbench routes under `/api/workbench`: `workbench_status` (`GET /api/workbench`), `get_workbench_tables` (`GET /api/workbench/tables`) and `post_workbench_tables` (`POST /api/workbench/tables`, the same of a form in the request), both through `_tables_response` (the tables and the response tables checked as the pipeline takes them, a `WorkbenchTablesError` answered as the public contract 422), `get_workbench_form` (`GET /api/workbench/form`, the form with its revision) and `put_workbench_form` (`PUT /api/workbench/form`, through `_save_form`, which raises `StaleDocumentRevisionError` when the file's revision is not the base revision quoted, answered as the pipeline save answers it, else, under `save_lock`, writes the form and captures the written file on the save ledger through the pipeline save's capture, answering the form, its revision and the capture's commit, warnings and identity flag); each reads `haute.toml` through `_enabled_config` (404 while the workbench is not enabled), and all but the status the form, from the working directory on every request, off the event loop. |
 | `frontend/src/api/workbench.ts` | `fetchWorkbenchStatus`: `GET /api/workbench` through the shared request machinery, validated by the generated `workbench` contract, whose validators load with the first response. `fetchWorkbenchTables`: `GET /api/workbench/tables`, validated by the same group's `WorkbenchTablesResponse`. `fetchWorkbenchFormTables`: `POST /api/workbench/tables` with a form, validated by `WorkbenchTablesResponse`. `fetchWorkbenchForm`: `GET /api/workbench/form`, validated by `WorkbenchFormResponse`. `saveWorkbenchForm`: `PUT /api/workbench/form` with the form and its `base_revision`, in one attempt (a retry of a save that landed but lost its answer would read as stale), validated by `WorkbenchFormSaveResponse`: the form at its new revision with the save's capture. |
 | `frontend/src/stores/useWorkbenchStore.ts` | `useWorkbenchStore`: `enabled`, whether the project's workbench is, and `formPath`, where its form is as `haute.toml` names it; `load`, which fetches the status, leaves the store untouched while the workbench is not enabled (so the editor never re-renders for it) and reports a failure as one error toast; `activeView`, which view shows (`EditorView`: `pipeline` or `workbench`), and `showView`, which refuses the workbench's view while the workbench is not enabled; `tables`, the workbench's tables, sample and response tables from the newest fetch that succeeded; `refreshTables`, which numbers its fetches so that only the newest publishes them or toasts its failure; `awaitTables`, which settles with whether the newest fetch published (a superseded fetch taking the newer one's outcome); and `formDirty`, the form store's `dirty` mirrored by that store for the editor's navigation guards. |
-| `frontend/src/utils/workbenchTables.ts` | The copy rules for a Workbench Input and a Workbench Output: `WorkbenchTables`, `PricedSample` (the sample priced: each output table's rows by its label), `quoteTablesPatch` (the update a Workbench Input's copy needs, `{tables, sample}`, both compared as JSON with object keys sorted and a missing sample read as `{}`, or null), `responseTablesPatch` (the update a Workbench Output's copy needs, `{tables}` compared the same way and `mapping` without the entries of tables and columns the new tables lack, or null), `paletteWorkbenchInputConfig` and `paletteWorkbenchOutputConfig` (what the palette's Workbench Input and Workbench Output start with: the newest tables, and sample, fetched), `workbenchOutputTableLabels` (a Workbench Output's ports, its tables' labels in order), and `WORKBENCH_COPY_PATCHES` (the update rule for each workbench node type, `quoteTablesPatch` for a Workbench Input and `responseTablesPatch` for a Workbench Output). |
+| `frontend/src/utils/workbenchTables.ts` | The copy rules for a Workbench Input and a Workbench Output: `WorkbenchTables`, `PricedSample` (the sample priced: each output table's rows by its label), `quoteTablesPatch` (the update a Workbench Input's copy needs, `{tables, sample}`, both compared as JSON with object keys sorted and a missing sample read as `{}`, or null), `responseTablesPatch` (the update a Workbench Output's copy needs, `{tables}` compared the same way and `mapping` without the entries of tables and columns the new tables lack, or null), `paletteWorkbenchInputConfig` and `paletteWorkbenchOutputConfig` (what the palette's Workbench Input and Workbench Output start with: the newest tables, and sample, fetched), `readWorkbenchTables` (a copy's tables as the editor reads them, typed by the generated `WorkbenchTable`: each entry with a name, `one` or `many` rows and typed columns, any other left out), `workbenchTablePorts` (a workbench node's ports: its tables with a column, by name, in order, once), and `WORKBENCH_COPY_PATCHES` (the update rule for each workbench node type, `quoteTablesPatch` for a Workbench Input and `responseTablesPatch` for a Workbench Output). |
 | `frontend/src/hooks/useWorkbenchTables.ts` | The hook the editor shell (`frontend/src/App.tsx`) calls to keep those copies current: a fetch when the workbench is enabled and on each `executionGeneration`, recorded against the generation; eligible tables applied once per Workbench Input and Workbench Output for each fetch, by `WORKBENCH_COPY_PATCHES`, through `onUpdateNode`, with an `isCurrent` that checks the generation, while the document is editable and its top level shows; `nodeCreated` for a node a palette drop created; `bringUpToDate`, which fetches afresh, waits for that fetch (`awaitTables`) and applies it at once, resolving false when it failed, for the git flows' save; nothing while the document cannot change. |
-| `frontend/src/panels/editors/WorkbenchInputEditor.tsx` | The Workbench Input's panel, which `frontend/src/panels/NodeConfigEditor.tsx` renders for a Workbench Input: the tables read-only with each label's `apiInputLabelIssue`, a note on what previews run on, chosen by whether the config's sample is a non-empty object, a note while the workbench is not enabled, and one while a submodel is open (`insideSubmodel`, passed down from `frontend/src/panels/NodePanel.tsx`). It exports `WorkbenchTable`, one table read-only, and `WorkbenchTablesHeader`, the section's title, its "Edit in Workbench" button while the workbench is enabled (`showView`) and its notes, which the Workbench Output's panel shares, and `WORKBENCH_DISABLED_NOTE`, the note's one wording. |
-| `frontend/src/panels/editors/WorkbenchOutputEditor.tsx` | The Workbench Output's panel, which `frontend/src/panels/NodeConfigEditor.tsx` renders for a Workbench Output: under `WorkbenchTablesHeader`, each table with its label's `apiInputLabelIssue`, the node connected to its port (from the `targetHandle` of the panel's input sources) or "Not connected", and a row per column with a select of the connected frame's columns (the input source's `columns`) that fills it, chosen by `mappedSource`, through `onUpdate` with the new `mapping`. |
+| `frontend/src/panels/editors/WorkbenchInputEditor.tsx` | The Workbench Input's panel, which `frontend/src/panels/NodeConfigEditor.tsx` renders for a Workbench Input: the tables read-only (`readWorkbenchTables`) with each name's `apiInputLabelIssue`, a note on what previews run on, chosen by whether the config's sample is a non-empty object, a note while the workbench is not enabled, and one while a submodel is open (`insideSubmodel`, passed down from `frontend/src/panels/NodePanel.tsx`). It exports `WorkbenchTableCard`, one table read-only (its name, its rows per quote and its columns, or `NO_COLUMNS_NOTE` for a table without any, which is no port), and `WorkbenchTablesHeader`, the section's title, its "Edit in Workbench" button while the workbench is enabled (`showView`) and its notes, which the Workbench Output's panel shares, and `WORKBENCH_DISABLED_NOTE`, the note's one wording. |
+| `frontend/src/panels/editors/WorkbenchOutputEditor.tsx` | The Workbench Output's panel, which `frontend/src/panels/NodeConfigEditor.tsx` renders for a Workbench Output: under `WorkbenchTablesHeader`, each table (`readWorkbenchTables`) with its name's `apiInputLabelIssue`, `NO_COLUMNS_NOTE` for a table without columns, else the node connected to its port (from the `targetHandle` of the panel's input sources) or "Not connected", and a row per column with a select of the connected frame's columns (the input source's `columns`) that fills it, chosen by `mappedSource`, through `onUpdate` with the new `mapping`. |
 | `frontend/src/stores/useWorkbenchFormStore.ts` | `useWorkbenchFormStore`, the form while the view edits it: `form` and `revision` as read (`load`, once; `reload`, again, dropping edits and history) through `fetchWorkbenchForm`, with `status` and `loadError`; `change` (an edit that undo reverses, on the graph store's `appendHistoryEntry` and its history cap), `undo`, `redo`, `undoStack`, `redoStack`, `savedForm` and `dirty` (mirrored onto the workbench store's `formDirty` for the editor's guards); `save`, which takes its turn after the saves and syncs before it, writes the form as it stands through `saveWorkbenchForm` with the revision, adopts the new revision, toasts "Saved → <form>", reports the capture through `reportSaveCapture` (`uncaptured` set while the capture waited on a git identity or failed, every warning on a form save being the capture's) and fetches the tables again through `useWorkbenchStore.refreshTables`; `flush`, the git flows' save: `save` while the form holds unsaved edits or an uncaptured save, else true without a request; `sync`, run after each adoption of the pipeline's document (`executionGeneration`, subscribed at module load) and after any save in flight: the file read again through `fetchWorkbenchForm`, nothing at the same revision, a changed file adopted with history dropped while the form is as saved, else `stale` set, and a failed read one error toast; `stale`, set by a save refused as `stale_document_revision` (one error toast, the edits kept) or by a sync that found the file changed under unsaved edits, and cleared by a reload; `saving`; and the gesture setters `pushSnapshot` (the form recorded for undo, the redo stack cleared) and `setFormRaw` (the form replaced without history, `dirty` recomputed), so a drag is one undo step. |
 | `frontend/src/stores/useWorkbenchViewStore.ts` | `useWorkbenchViewStore`, the view's own state, neither saved nor undone: `section` (`sheets` or `schema` while building, or `preview`), `pageId` (null until chosen; `activePage` reads the form's first), `selectedId`, `zoom` (25% to 200%, `ZOOM_STEP` 10%), `creating` (a component being dragged out of the palette, with the pointer), `panelWidth`, and the `sheet` and `viewport` elements; `showSection`, `showPage` (the sheets section, or Preview as before, nothing selected), `select`, `setZoom`, `zoomBy`, `fitZoom` (the viewport's width less the padding over the sheet's reach, through `sheetGeometry.fitZoom`, clamped through `setZoom`), `setCreating`, `setPanelWidth`, `setSheet` and `setViewport`. |
 | `frontend/src/stores/useWorkbenchPricingStore.ts` | `useWorkbenchPricingStore`, the sample priced live: `pricer` (the view host's `Pricer`, null while the view is away), `price` (a `SamplePrice`: the tables, the values as the server typed them and the basis priced for), `error` (why the last pricing failed, until one succeeds) and `pricing`; `setPricer` (null also drops a scheduled pricing), `schedule` (`PRICING_DELAY_MS` after the last call) and `priceNow`, which runs one pricing at a time and once more for a request made meanwhile, an answer after the pricer changed dropped. `priceForm(form, pricer)`, the pricing itself (the form's tables through `fetchWorkbenchFormTables`, then the pricer, answering the tables with the typed sample as `PricedValues`), is Preview's too. |
 | `frontend/src/stores/useWorkbenchPreviewStore.ts` | `useWorkbenchPreviewStore`, Preview's quote, apart from the sample and never saved or undone: `quote` (rows by table id, as typed), `checked` (Price has been pressed, so the cells that break a rule are marked), `price` (a `SamplePrice` for the quote), `error` (why there is no price, as the toolbar says it) and `pricing`; `setCell` (`withCell`), `setRows`, `clear`, and `priceQuote`, which does nothing while a pricing runs, the form is not read or the view has given no pricer, else checks `quoteProblems` (any: `checked` set, `error` "N cells need attention", nothing sent) and prices through `priceForm` with the quote in the sample's place, keeping the price with `valuesBasis` of the schema and the quote, or "Pricing failed: …", unless Clear or a change of pricer came first, when the answer is dropped. |
-| `frontend/src/workbench/priceSample.ts` | `priceSample(graph, workbench, source)`: the document's top-level nodes patched through `WORKBENCH_COPY_PATCHES` with the form's tables, sample and response tables, the Workbench Output found (none: an error naming what to add), and each of its `workbenchOutputTableLabels` previewed through `previewNode` with `portLabel`, a failure rejecting with the server's reason or the preview's error; the document itself untouched. |
+| `frontend/src/workbench/priceSample.ts` | `priceSample(graph, workbench, source)`: the document's top-level nodes patched through `WORKBENCH_COPY_PATCHES` with the form's tables, sample and response tables, the Workbench Output found (none: an error naming what to add), and each of its ports (`workbenchTablePorts`) previewed through `previewNode` with `portLabel`, a failure rejecting with the server's reason or the preview's error; the document itself untouched. |
 | `frontend/src/utils/sheetGeometry.ts` | Placing components on a sheet, in unzoomed pixels: `GRID` (8), `snap`, `moveRect` (snapped, kept off the top and left edges), `resizeRect` (by a `Handle`, the opposite edges kept, no smaller than a minimum), `placeAt`, `nextFreeSpot`, `contains`, `contentRight`, `sheetWidth` (the viewport's at the zoom, or wider to hold the components plus `SHEET_EDGE`), `sheetHeight` (at least `MIN_SHEET_HEIGHT`, with room below the lowest component), `fitZoom` (in steps of 5%, never past 100%), `SHEET_PADDING` and `HANDLES`. |
 | `frontend/src/utils/workbenchForm.ts` | Pure operations on the form, each returning a new form: `newId`, `uniqueName`, `readableName` and `allWidgets`; the sheets, `createPage` (named in turn), `addPage`, `renamePage` and `removePage` (never the last); the components, `findWidget`, `createWidget` (720 wide, a Table 200 high with 3 rows or a Collection 120 high with 3 columns, no fields), `addWidget`, `updateWidget` (a `WidgetPatch`, `rows` refused on a Collection and `columns` on a Table), `removeWidget` and `duplicateWidget` (16px below and to the right, a new id); what they show, `rowsShown`, `tableGrain`, `toggleField`, `moveField` and `shownFields` (each field with its column, or null); `widgetName` and `widgetProblems`, what stops a component showing what it should (no fields, a column gone, a table of the other kind, tables whose rows do not line up), each a `WidgetProblem` naming its component; the sample, `withCell`, `withSampleCell` (one cell, empty rows added up to it) and `withSampleRows` (several tables' rows as one edit); and `pricingBasis`, the schema and the sample as one string (`valuesBasis` of them, memoised per form); `createSchemaTable`, `createSchemaColumn` and `createIndexColumn` (`row_number`, an Integer, `index`); `addSchemaTable`, `updateSchemaTable`, `removeSchemaTable` (its columns taken out of the widgets that show them, its rows out of the sample), `setSchemaTableRows` (keys cleared for one row), `addSchemaColumn` (at an index), `moveSchemaColumn`, `updateSchemaColumn` and `removeSchemaColumn` (taken out of the widgets and the sample); `fieldUses` and `fieldColumn`; and `schemaProblems`, what would stop the schema being the pipeline's tables, each a `SchemaProblem` naming its table: a table's name through `apiInputLabelIssue` with the document's reserved labels, a column's name an identifier unique in its table, a many-row table's key, and an input column's range and allowed values. `Widget` and `ColumnType` are derived from the generated form types. |
 | `frontend/src/utils/sheetValues.ts` | The values typed into a sheet, the sample or a quote (`RowsByTable`): `cellKey`; `filled` and `rowFilled`, a value and a row as the server counts them (a tick or text other than blank, in any column but the index); `parseTypedNumber`, a number as the server types it, a currency sign, separators and spaces allowed; `cellProblem`, what breaks an input column's rules in a value (required, not a number, not a whole number, below `min`, above `max`, not one of the options; never a tick box or the index) and `quoteProblems`, the problems by cell over each input table's rows, a one-row table's one row always and a many-row table's filled rows only; `valuesBasis`, the schema and the values as one string; and `pricedRows`, a priced output table's rows (`PricedRows`) lined up with a grid's rows of an input table keyed alike, each filled grid row taking the next typed row and the output row whose key columns hold the same values as text. |
@@ -79,13 +80,23 @@ recovery, saving, tracing, scoring and deploy), and every mapping keyed by node 
 has a Quote Input entry has the same Workbench Input entry, except the two in
 `src/haute/execution.py` that name the file each node type reads,
 `_SOURCE_PATH_CONFIG_BY_NODE_TYPE` and `_LOCAL_RUNTIME_INPUT_PATH_FIELDS_BY_NODE_TYPE`: a
-Workbench Input reads none. Its frames without a request, read from its sample, come from
-`workbench_table_frames` in `src/haute/_json_shred/_cache.py`, through
-`resolve_workbench_input_from_config` in `src/haute/_node_apply.py`; its ports from
-`workbench_table_labels`, which reads the tables alone; and its request's schema, for deploy
-and for checking the sample's shape, from `request_record_schema` in
-`src/haute/_json_shred/_shred.py`. `src/haute/_graph_utils.py`, which
-`haute._types` imports, holds the same set as plain values, `REQUEST_INPUT_KINDS`.
+Workbench Input reads none. Its tables are `haute._workbench_tables`' and its reading
+`haute._workbench_input`'s: its frames without a request, read from its sample, come from
+`workbench_table_frames`, through `resolve_workbench_input_from_config` in
+`src/haute/_node_apply.py`; its ports from `workbench_table_labels`, which reads the tables
+alone; a deployed request's frames from `workbench_request_frames`, which
+`_score_graph_lazy` in `src/haute/deploy/_scorer.py` injects; and its request's schema, for
+deploy, from `quote_schema` of its ports. The generic readers of a request input's tables
+each decide by type: `_declared_api_input_port_columns` in `src/haute/projection.py`,
+`_declared_api_input_frame_schema_items` in `src/haute/_execute_lazy.py`,
+`_validator_issues` in `src/haute/_node_config_recovery.py`, `_resolve_api_input_table` in
+`src/haute/_data_points.py`, `recoverable_request_input_source_handles` in
+`src/haute/_editor_identities.py` (recovery and the document's identities), the test-quote
+scoring in `src/haute/deploy/_validators.py` and the table-name clash check in
+`src/haute/routes/_save_pipeline.py`. `src/haute/_graph_utils.py`, which
+`haute._types` imports, holds the same set as plain values, `REQUEST_INPUT_KINDS`, and
+`is_frame_label`, the one rule a Quote Input's table labels, a workbench table's and
+column's names and the editor's source handles follow.
 `src/haute/_graph_shape.py` holds `SINGLETON_NODE_GROUPS` and `validate_singleton_groups`,
 which save (`src/haute/routes/_save_pipeline.py`) and deploy (`resolve_config` in
 `src/haute/deploy/_config.py`) enforce and the assistant's capability manifest
@@ -97,9 +108,11 @@ Input's `NODE_TYPE_META` entry, `REQUEST_INPUT_TYPES`, `isRequestInputType`,
 `singletonTypesOccupiedBy` and `singletonLimitMessage`, and every request-input check uses
 `isRequestInputType`; `frontend/src/panels/NodePalette.tsx` shows the Workbench Input in the
 Quote Input's place while the workbench is enabled and drags it with
-`paletteWorkbenchInputConfig`; `applyApiInputConfigChange` in
-`frontend/src/utils/apiInputPorts.ts` takes `followNames`, which
-`frontend/src/utils/nodeUpdatePlan.ts` sets for a Workbench Input; `onUpdateNode` in
+`paletteWorkbenchInputConfig`; `requestInputFrameLabels` and `requestInputFrameColumns` in
+`frontend/src/utils/apiInputPorts.ts` derive a request input's frames and their columns by
+its type (a Workbench Input's through `workbenchInputFrameLabels`: `workbenchTablePorts`
+judged as a Quote Input's labels are), and `applyApiInputConfigChange` there takes the
+node's type, following names for a Workbench Input; `onUpdateNode` in
 `frontend/src/hooks/useGraphCommitController.ts` takes `NodeUpdateOptions`; `onDrop` in
 `frontend/src/hooks/useEdgeHandlers.ts` reports the node it creates to `onNodeCreated`; and
 `NodeConfigEditor` renders `WorkbenchInputEditor` for a Workbench Input and `ApiInputEditor`, the
@@ -157,10 +170,18 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   `columns` 1–12), each with `id`, `x`, `y` (0 or more), `w`, `h` (1 or more); a `FieldRef`
   names a `table` and a `column` by id. Every model forbids unknown fields, and
   `model_dump(mode="json")` writes every field, defaults included.
-- **`WorkbenchTables`** (`src/haute/_workbench_tables.py`): `tables`, `sample` and
-  `response_tables`, as `GET /api/workbench/tables` serves them. A table is
-  `{path, label, emit, row_id_column, columns}` and a column
-  `{name, path, type, status, selected, levels}`, the v2 shape `validate_v2_schema` checks.
+- **`WorkbenchTable`** and **`WorkbenchColumn`** (`src/haute/_workbench_tables.py`): the
+  pydantic models of a workbench node's tables, unknown fields refused: a table is `name`,
+  `rows` (`one` or `many`) and `columns`, a column `name` and `type` (`int`, `float`, `str`,
+  `bool` or `date`); `one_row`, `frame_schema` (the columns' dtypes, `COLUMN_DTYPES`, held
+  equal to the Quote Input's) and `quote_dtype` (a `pl.Struct` of them, in a `pl.List` for a
+  many-row table) read off a table. `parse_workbench_tables(value, owner=...)` reads a
+  config's list strictly and `check_tables` holds every name to `is_frame_label`, unique
+  across tables whatever its case and within a table; `port_tables` are the tables with a
+  column and `quote_schema` the schema of one quote holding tables. **`WorkbenchTables`**:
+  `tables`, `sample` and `response_tables`, as `GET /api/workbench/tables` serves them; the
+  generated contract types the tables as `WorkbenchTable`, which `frontend/src/api/types.ts`
+  re-exports.
 - **`WorkbenchStatusResponse`** (`src/haute/schemas.py`): `enabled` and `form` (the path as
   `haute.toml` names it while enabled, else `null`). **`WorkbenchTablesResponse`**: `tables`,
   `sample` (an object, `{}` for none) and `response_tables` (`[]` for none).
@@ -211,20 +232,19 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   Input or Workbench Input")` and `(RESPONSE_NODE_TYPES, "Quote Response or Workbench Output")`.
 - **`RESPONSE_NODE_TYPES`** (`src/haute/_types.py`): the frozenset of `NodeType.OUTPUT` and
   `NodeType.WORKBENCH_OUTPUT`; `RESPONSE_TYPES` (`frontend/src/utils/nodeTypes.ts`) is the
-  editor's twin. **`WorkbenchOutputConfig`**: `tables`, the response's tables in the v2 shape,
-  and `mapping`, `dict[str, dict[str, str | None]]` by table label and column name: a frame
-  column's name, or `None` for none; a column without an entry is filled by name.
-- **A Workbench Output's tables** (`src/haute/_workbench_output.py`): each table is one-row
-  when its path is the root, `$[:]`, and many-row when its path has one array step below it,
-  `$[:].<name>[:]`; every column's path must have its table's path as its array prefix (no
-  `[:]` after it), so it sits at its table's level. A port is a table's label. A column's
-  declared type admits a frame's column of that dtype or `pl.Null`, and also any integer
-  dtype for `int`, any integer, float or decimal dtype for `float`, and `pl.Categorical` or
-  `pl.Enum` for `str`; the column is cast to the declared dtype (`_POLARS_TYPE_MAP`).
+  editor's twin. **`WorkbenchOutputConfig`**: `tables`, the response's tables in the
+  Workbench Input's shape, and `mapping`, `dict[str, dict[str, str | None]]` by table name and
+  column name: a frame column's name, or `None` for none; a column without an entry is
+  filled by name.
+- **A Workbench Output's tables** (`src/haute/_workbench_output.py`): `WorkbenchTable`s read
+  by `parse_workbench_tables`, the ports those with a column. A column's declared type
+  admits a frame's column of that dtype or `pl.Null`, and also any integer dtype for `int`,
+  any integer, float or decimal dtype for `float`, and `pl.Categorical` or `pl.Enum` for
+  `str`; the column is cast to the declared dtype (`COLUMN_DTYPES`).
 - **`assemble_workbench_output_from_config(*dfs, config, base_dir=None, ports=None)`**
   (`src/haute/_node_apply.py`): `dfs` are the incoming frames in edge order and `ports` the
   target port of each, aligned; without `ports` it refuses to run. It returns
-  `WorkbenchOutputTables`, a `dict` of lazy frames by table label with the tables as `.tables`.
+  `WorkbenchOutputTables`, a `dict` of lazy frames by table name with the tables as `.tables`.
 
 ## Control flow
 
@@ -234,15 +254,12 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
    error toast naming the cause and the store stays as it started.
 2. **The tables, served.** `GET /api/workbench/tables` reads the config the same way, answers
    404 while it is disabled, reads the form with `read_form` in the thread pool, builds
-   `workbench_tables(spec)`, checks the tables and the response tables with
-   `validate_v2_schema({"tables": ...})`, answering the structured 422 from
-   `api_input_schema_error_response` when either fails, and answers
-   `WorkbenchTablesResponse` with the tables, the sample (unchecked) and the response tables.
-   `input_tables` and `output_tables` make a table per schema table of the role, in schema
-   order: a one-row table at `$[:]` with its columns at `$[:].<table>.<column>`, a many-row
-   table at `$[:].<table>[:]` with its columns below it, every table emitting, every column
-   selected and `Confirmed`, a column's `options` as its `levels`, the index column an `int`
-   with none, and a many-row table's single key column as its `row_id_column`. `sample_quote`
+   `workbench_tables(spec)`, whose `input_tables` and `output_tables` check their names with
+   `check_tables`, answering a `WorkbenchTablesError` as the public contract 422 through
+   `contract_error_http_exception`, and answers `WorkbenchTablesResponse` with the tables,
+   the sample (unchecked) and the response tables. `input_tables` and `output_tables` make a
+   `WorkbenchTable` per schema table of the role, in schema order: its name, its rows per
+   quote and its columns, each its name and type, the index column an `int`. `sample_quote`
    walks the input tables: for each, the sample's rows (one for a one-row table), each row with
    values typed, a record left out when nothing is typed in it, the index set to the row's
    number as the rows stand, a non-empty string coerced for an `int` or `float` column
@@ -261,9 +278,10 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
    `isCurrent` that checks the generation, and for each Workbench Output with
    `responseTablesPatch` (none when the copy matches). The commit controller checks `isCurrent`
    before committing, again after identity resolution, and `prepareNodeUpdate` runs
-   `applyApiInputConfigChange` with `followNames` for a Workbench Input, which keeps only the
-   connections whose labels remain and reports the rest, and for a Workbench Output keeps each
-   connection whose `targetHandle` is one of the new tables' labels and removes the rest, which
+   `applyApiInputConfigChange` with the node's type, which for a Workbench Input keeps only
+   the connections whose tables' names remain ports and reports the rest, and for a Workbench
+   Output keeps each connection whose `targetHandle` is one of the new tables' ports
+   (`workbenchTablePorts`) and removes the rest, which
    the commit controller reports in one warning toast as connections whose tables no longer
    exist. The hook reads the nodes through `App`'s graph ref, so graph edits, undo and redo
    never run it. When a palette drop creates a node, `onDrop` reports it to `onNodeCreated`,
@@ -283,21 +301,26 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
 7. **Frames without a request.** `_build_api_input` gives a Workbench Input a source that
    calls `resolve_workbench_input_from_config` with the ports' demanded columns, and the
    standalone runner in `src/haute/_standalone_nodes.py` calls it too. The resolver loads the
-   config as `resolve_api_input_from_config` does. `workbench_table_frames` parses the
-   emitting tables as `load_v2_api_source` does (`_emitting_table_specs`, then
-   `_projected_table_specs` for the demand). With no sample (absent, `None` or `{}`) each
-   port is a one-row `LazyFrame` with `_declared_frame_schema`'s dtypes and null values.
-   With one, it reads the sample whole before it projects: the sample must be a `dict`;
-   `_check_sample_shape` walks it against `request_record_schema(config)` (a value under a
-   `pl.Struct` a `dict` or `None`, one under a `pl.List` a `list` or `None`, each element of a
-   list of `pl.Struct` a `dict` and each element of a list of values neither a `dict` nor a
-   `list`; keys the schema does not name are not walked); `shred_to_buffers([sample], ...)`
-   with the complete specs, a `ShredSkipStats` and a row sink gathers each table's rows, any
-   skip being a misfit; and `_rows_to_frame` types every table's rows. Each port is then its
-   complete frame cut to the projected columns, or the one-row null frame when it has no
-   rows. A misfit raises `ApiInputSchemaError` "The workbench's sample does not fit this
-   Workbench Input's tables: <reason>. Correct it in the workbench and save it.", a public
-   contract error, so a preview in its worker answers 422 with it. `snapshot_backed_inputs`
+   config as `resolve_api_input_from_config` does. `workbench_table_frames` reads the ports
+   with `workbench_input_tables` (`parse_workbench_tables`, then `port_tables`; no table, or
+   none with a column, raises `WorkbenchInputError` saying what to add). With no sample
+   (absent, `None` or `{}`) each port is a one-row `LazyFrame` of its `frame_schema` and null
+   values. With one, it reads the sample whole before it projects, through `read_quote`: the
+   sample must be a `dict`; each one-row table's part a `dict` or `None` (its one row, of
+   nulls when `None`), each many-row table's a `list` or `None` (its rows, none when `None`)
+   whose entries are `dict`s; each declared column's value is read by `_value` as its type
+   holds it (`str`: a `str`; `bool`: a `bool`; `int`: an `int` that is not a `bool`; `float`:
+   an `int` or finite `float` that is not a `bool`, as a `float`; `date`: a `YYYY-MM-DD`
+   string `date.fromisoformat` accepts), `None` staying null, and a frame is built per table
+   with `pl.DataFrame(columns, schema=frame_schema)`. A refusal names the spot
+   (`policy.limit is 'lots', not 'int'`, `items[1] is a value, not a row`, `the sample is a
+   list, not an object`), and `workbench_table_frames` raises it as `WorkbenchInputError`
+   "The workbench's sample does not fit this Workbench Input's tables: <reason>. Correct it
+   in the workbench and save it.", a public contract error, so a preview in its worker
+   answers 422 with it. Each port is then its frame cut to the demanded columns
+   (`_demanded`: every port whole without a demand; an unknown port or column a
+   `ValueError`; an empty demand kept by one carrier column), or the one-row null frame when
+   it has no rows. `snapshot_backed_inputs`
    leaves the node out, since it has no structured path; `own_facts` in
    `src/haute/_seed_plans.py` reports it cheap and slice-transparent, and the bounded-admission
    check admits it without a read; `api_input_port_metadata` in `src/haute/_ram_estimate.py`
@@ -315,23 +338,35 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
    labels from `workbench_table_labels` and `api_input_table_digests` gives none, so
    `points_for_graph` reports the tables together as one row that reads directly.
 9. **Deploy.** Deploy reads a Workbench Input's tables, never its sample. For a Workbench
-   Input, `infer_input_schema` in `src/haute/deploy/_schema.py` returns `request_record_schema`
-   of its tables as dtype strings, through `_workbench_request_schema`, and `_read_sample_row`,
-   which execution-policy planning and the output-schema dry run share, returns one record of
-   nulls in that schema. `request_record_schema` walks each emitting table's path, then each
-   selected column's, hop by hop as `parse_table_path` and `_parse_dollar_path` split them: an
-   object hop is a `pl.Struct` field, an array hop a `pl.List` of `pl.Struct`, and the leaf has
-   its declared type; a column at the reserved `$value` leaf makes its array a `pl.List` of
-   that type, and a table whose selected columns all sit at an ancestor level keeps its own
-   array, as a `pl.List` of an empty `pl.Struct`. When the dry run falls back to the
-   hard-capped batch worker, `_capped_worker_output_schema` passes the sample's schema to
-   `prepare_batch_scoring` as `input_schema`, carried on `BatchScoreRequest`, and the worker
-   builds its input frame with it, so a record of nulls keeps its types; a served request
-   passes none.
+   Input, `infer_input_schema` in `src/haute/deploy/_schema.py` returns `quote_schema` of its
+   ports as dtype strings, through `_workbench_tables` (a `WorkbenchTablesError` becoming a
+   `ValueError` naming the node), and `_read_sample_row`, which execution-policy planning and
+   the output-schema dry run share, returns `null_quote` of them, one quote with nothing
+   filled in (each one-row table an object of nulls, each many-row table a list of one row of
+   nulls), typed by that schema. When the dry run falls back to the hard-capped batch worker,
+   `_capped_worker_output_schema` passes the sample's schema to `prepare_batch_scoring` as
+   `input_schema`, carried on `BatchScoreRequest`, and the worker builds its input frame with
+   it, so the quote of nulls keeps its types; a served request passes none. Where
+   `_score_graph_lazy` injects the live frame as a Quote Input's output, for a Workbench Input
+   it injects `workbench_request_frames` of the frame: its records as `to_dicts()` gives them,
+   refused unless exactly one, read through `read_quote` into a frame per port, a refusal
+   raised as "The request does not fit this Workbench Input's tables: <reason>."; the walk
+   hands each edge its port's frame by its handle, as it does a multi-frame source's.
+   `score_test_quotes` in `src/haute/deploy/_validators.py` therefore scores a Workbench
+   Input's test-quote cases one request each and checks each against its own request's one
+   row, reported by its row in the file (`_validate_expected_outputs_per_case`; a case
+   answered with other than one row fails on its own), where a Quote Input's cases are one
+   request.
+   Recovery and the document's identities take a Workbench Input's source handles from
+   `recoverable_request_input_source_handles` in `src/haute/_editor_identities.py`, which
+   reads a copy as the editor does (`recoverable_workbench_source_handles`: a table with a
+   name, `one` or `many` rows and a column of a known type, its name a handle by
+   `is_frame_label`, once whatever its case) and refuses nothing.
 10. **Connected.** `PipelineNode` renders a Workbench Output's body as `FramePortRows` with
-    `direction="target"`, one row per label from `workbenchOutputTableLabels`, each a target
-    `Handle` whose id is the label, or "No tables" with none; it has no default input and no
-    source handle, and the labels join the signature that re-measures the node's handles.
+    `direction="target"`, one row per port from `workbenchTablePorts`, each a target
+    `Handle` whose id is the table's name, or "No tables" with none; it has no default input
+    and no source handle, and the ports join the signature that re-measures the node's
+    handles.
     `validatePipelineConnection` refuses a connection into a Workbench Output whose target
     handle is none of its tables ("Connect to one of <node>'s tables"), one to a table that
     already has a connection ("<table> is already filled by <node>"), and one from a node that
@@ -347,7 +382,7 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
     to connect. The standalone runner calls it with the node's sidecar and `target_ports`:
     `Pipeline._execute_transform` passes the target port of each incoming `pipeline.connect`,
     through `Node._invoke` and `run_configured_node`. The function pairs each frame with its
-    port, raising when a port is missing, is none of the tables' labels or repeats one, reads
+    port, raising when a port is missing, is none of the tables' names or repeats one, reads
     `workbench_output_tables` and `workbench_output_mapping`, and calls
     `fill_workbench_tables`, which for each table takes its frame (raising when none is
     connected) and, against its `collect_schema()`, gives each column its source: the mapping's
@@ -363,7 +398,7 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
     table named by the request's `port_label`, its `frame_columns` listing every table for the
     preview's table picker, and one with a single table shows that table.
     `previewPortLabel` in `frontend/src/hooks/usePipelineAPI.ts` asks for the first of
-    `workbenchOutputTableLabels`. `is_node_output` in `src/haute/_seed_plans.py` never makes a
+    `workbenchTablePorts`. `is_node_output` in `src/haute/_seed_plans.py` never makes a
     Workbench Output a node-output snapshot point, as it never makes a request input one: a
     bundle is not one frame, so a preview with shared snapshots never captures it, though two
     inputs make it a join point. The executor renders only a Quote Response's preview with
@@ -378,13 +413,12 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
     `Pipeline.run` and `Pipeline.score` before collecting, and `_score_graph_lazy` in
     `src/haute/deploy/_scorer.py`, which a deployed pipeline's `/quote`, test quotes, the
     output-schema dry run and batch scoring share, before selecting `output_fields`. For a
-    Workbench Output it calls `workbench_response`: the tables' columns renamed to their paths,
-    the response's schema from `output_document_schema` with an identity mapping (the one-row
-    tables' columns as one source frame and each many-row table's as its own), and a
-    `limited_python_scan` whose producer collects the one-row tables, puts their single rows
-    side by side with `pl.concat(how="horizontal")`, and builds the document with
-    `assemble_output_from_mapping`. A Quote Response's result is its document already, so
-    `_quote_response_content` renders either unchanged.
+    Workbench Output it calls `workbench_response`: the response's schema is `quote_schema`
+    of its tables, and a `limited_python_scan` whose producer collects each table through
+    `execution_collect` (a one-row table's scan having checked its one row), takes a one-row
+    table's row as an object and a many-row table's rows as a list of objects, and builds the
+    one-row response with `pl.DataFrame([document], schema=...)`. A Quote Response's result is
+    its document already, so `_quote_response_content` renders either unchanged.
 14. **One response node.** `validate_singleton_groups` counts both response node types as one
     group. In the editor, `singletonTypesOccupiedBy` gives both for either, so the palette greys
     out the one it offers and the drop and paste checks refuse a second, with
@@ -462,7 +496,7 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
     (`POST /api/workbench/tables`, `_tables_response` on the posted form), then the pricer,
     `priceSample(resolveGraph(), workbench, activeSource)`, which patches the top-level
     workbench nodes through `WORKBENCH_COPY_PATCHES` and previews the Workbench Output per
-    table label (both through `priceForm`); the store keeps `{basis, tables, sample}`, the
+    port (both through `priceForm`); the store keeps `{basis, tables, sample}`, the
     sample as the server typed it, or the reason. A request made while one runs sets a
     flag, and the run prices once more when it finishes.
 26. **Shown.** `FieldBoxes` reads the values' `price` and shows
@@ -532,8 +566,9 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   pass, when the top level shows again or the next fetch arrives, sends it again.
 - A fetch that completes while a submodel is open, or the document is read-only, applies
   when the top level shows again and the document can change.
-- An empty `tables` list is a valid answer: the Workbench Input has no ports, and
-  `workbench_table_labels` and `workbench_table_frames` refuse to make any.
+- An empty `tables` list is a valid answer, and so is one whose tables have no columns yet:
+  the Workbench Input has no ports, and `workbench_table_labels` and `workbench_table_frames`
+  refuse to make any, each saying what to add.
 - A Workbench Input's sample is read whole whatever a reader asks of it, so every reader finds
   the same misfit; resolving its points reads the tables alone and never does. A missing or
   `None` part reads as in a request: under a `pl.List` the table has no rows, and under a
@@ -671,23 +706,30 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
 - `validate_singleton_groups` raises `ValueError` naming the group and how many it found;
   save answers it as a 400 and `resolve_config` lets it propagate. The assistant's
   operations raise `OpValidationError` for a Workbench Input they may not author.
-- `workbench_table_labels` and `workbench_table_frames` raise `RuntimeError` "This Workbench
-  Input has no tables: add input tables to the workbench's schema and save it." when no table
-  emits, and `workbench_table_frames` raises `ApiInputSchemaError` for a sample that does not
-  fit, naming what does not; `api_input_table_labels` turns it into
-  `NodeDataPointInvalidError`, an error row in the cache report. `request_record_schema`
-  raises `ApiInputSchemaError` when two paths disagree about a request field, which
-  `_workbench_request_schema` turns into a `ValueError` naming the node, as it does for tables
-  that give no schema.
+- `WorkbenchTablesError` (`src/haute/_workbench_tables.py`, `error_code`
+  `workbench_tables_invalid`, one of `PUBLIC_CONTRACT_ERROR_TYPES`) is a workbench node's
+  tables the pipeline cannot take: a copy not as the workbench writes it ("The <node>'s
+  tables are not as the workbench writes them (<where>: <what>). Open the pipeline in the
+  editor and save it.", the spot from pydantic's first error), a name that cannot be a port's
+  or a frame column's, or a name used twice, across tables whatever its case. The tables
+  route answers it 422 through `contract_error_http_exception`, and a preview's worker
+  answers it 422 as it answers any public contract error. `WorkbenchInputError`
+  (`src/haute/_workbench_input.py`, `error_code` `workbench_input_invalid`, listed in
+  `PUBLIC_CONTRACT_ERROR_TYPES` itself, since a preview's worker reports an error by its
+  exact class), its subclass, is a Workbench Input with no tables, or with tables that have
+  no columns yet, a sample or a request that does not fit, and a request of other than one
+  quote; `api_input_table_labels` turns a `WorkbenchTablesError`
+  into `NodeDataPointInvalidError`, an error row in the cache report, and deploy's
+  `_workbench_tables` into a `ValueError` naming the node.
 - `WorkbenchOutputError`, an `ExecutionError` with no public error code, carries every
   failure of a Workbench Output's run: no tables, a port with no connection, a connection on a
   port that is none of its tables or on a port another connection has, a mapping entry for a
   table or column it does not have, a mapping entry naming a column its frame lacks, a column
   whose dtype does not fit, and a one-row table without exactly one row. It names the table. A
   preview shows it on the node, `run()` and `score()` raise it, and a deployed pipeline answers
-  it as its other internal errors, a 500 carrying the message. Tables that break the v2 rules
-  raise `ApiInputSchemaError` from `validate_v2_schema`, and a table whose path or a column's
-  path is not of the shapes above raises `WorkbenchOutputError`.
+  it as its other internal errors, a 500 carrying the message. Tables the pipeline cannot
+  take raise `WorkbenchTablesError` from `parse_workbench_tables`, and tables that have no
+  columns yet `WorkbenchOutputError`, saying what to add.
 - The assistant's operations raise `OpValidationError` for a Workbench Output they may not
   author, as for a Workbench Input.
 - `DeployConfig.from_toml` raises `ValueError` for a key under `[workbench]` outside
@@ -709,11 +751,17 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   it and is written with it, an absent `sample` written as `{}`), an unknown field and an
   out-of-range widget refused, and the message for an unreadable, non-UTF-8, non-JSON and
   misshapen file.
-- `tests/test_workbench_tables.py` covers input tables in schema order with their paths, levels
-  and row id, a many-row table without exactly one key having none, the index column, output
-  tables in the same shape, and the sample: typed values, currency and separators, ticked and
-  unticked boxes, empty rows left out, a value that no longer fits its column kept as typed,
-  the index numbering rows as they stand, and an empty sample for a form with nothing typed.
+- `tests/test_workbench_tables.py` covers input tables in schema order as the pipeline holds
+  them (names, rows per quote and typed columns, the form's keys and rules left behind, the
+  frame and quote schemas), each column type's dtype held equal to the Quote Input's, a
+  table without columns being no port, every refusal of `parse_workbench_tables` (not a
+  list, a key the workbench does not write, a key missing, a type that is not a column's, a
+  name that cannot be a port, a name used twice, names differing in case, a column that
+  cannot be a frame's, a column named twice), a form's bad table name refused by the node's
+  name, the index column, output tables in the same shape, and the sample: typed values,
+  currency and separators, ticked and unticked boxes, empty rows left out, a value that no
+  longer fits its column kept as typed, the index numbering rows as they stand, and an empty
+  sample for a form with nothing typed.
 - `tests/test_workbench_routes.py` covers `GET /api/workbench` disabled and enabled, `GET
   /api/workbench/tables` serving the test project's form from the working directory (tables,
   sample and response tables), 404 while disabled, a missing form as the blank form with no
@@ -847,49 +895,53 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   Clear with its confirmation and the quote's reason; and
   `frontend/src/workbench/__tests__/WorkbenchView.test.tsx` Preview read only without the
   properties panel.
-- The quote's tables: `tests/test_api_input_table_snapshots.py` shreds a two-quote request
-  through tables in the workbench's shape into one frame per table; `tests/test_config_io.py`
-  writes a Workbench Input's config file, its sample included, to `config/workbench_input/`
-  and reads it back, and refuses one with a `path`.
+- The quote's tables: `tests/test_config_io.py` writes a Workbench Input's config file, its
+  sample included, to `config/workbench_input/` and reads it back as ports, and refuses one
+  with a `path`.
 - The Workbench Input: `tests/test_request_inputs.py` runs the checker over `src/haute` after
   its fixtures show each allowed form passing and each other form reported; holds
   `REQUEST_INPUT_KINDS` and the editor's `REQUEST_INPUT_TYPES` equal to
-  `REQUEST_INPUT_NODE_TYPES`; shows a Workbench Input beside a Constant reading a request as
-  a Quote Input with the same tables does through codegen and parsing (with no `path` in its
-  config file), data points, `Pipeline.score`, deploy scoring and trace lineage, while its
-  preview yields nulls and it has no snapshot; previews one typed null row per table, with a
-  join downstream admitted; reads its table points directly, in the cache report and through
-  the node-data routes' point, run and clear too;
-  derives its request schema (a list of values as a `pl.List`, a table that does not emit
-  skipped, paths that disagree refused by `request_record_schema` and by deploy) and resolves
-  a deploy without a sample file; reads a sample's list of values as rows and refuses a
-  container among them or a sample that is not an object; runs its generated
-  code to the same null rows and parses a submodel's `workbench_input`; previews, runs and
-  leases its sample's rows, a downstream calculation included, with a null row for a table
-  the sample leaves empty and a partly null object keeping its row
-  (`test_a_workbench_input_previews_its_sample`); changes a table point's version with the
-  sample; fails each kind of misfit wherever rows are read, a join's planning and the
-  preview route's worker (422) included, while the cache report still has the points; never
-  reads the sample for a request (`test_a_request_never_reads_the_sample`); and refuses a
-  second request input in save and in `resolve_config`. `tests/test_deploy_batch_scoring.py` keeps a
+  `REQUEST_INPUT_NODE_TYPES`; holds a Quote Input's labels, a workbench table's names and the
+  editor's source handles to `is_frame_label` alike; shows a Workbench Input beside a Constant
+  as the request input a Quote Input with the same tables is through codegen and parsing
+  (with no `path` in its config file), data points, `Pipeline.score`, deploy scoring and
+  trace lineage, while its preview yields nulls and it has no snapshot; previews one typed
+  null row per table, with a join downstream admitted, and refuses tables without columns as
+  ports; reads its table points directly, in the cache report and through the node-data
+  routes' point, run and clear too; derives its request schema and dry-run quote (a copy not
+  as the workbench writes it refused by deploy) and resolves a deploy without a sample file;
+  runs its generated code to the same null rows and parses a submodel's `workbench_input`;
+  previews, runs and leases its sample's rows, a downstream calculation included, with a null
+  row for a table the sample leaves out and a null for a column a row leaves out
+  (`test_a_workbench_input_previews_its_sample`); cuts the sample to a demand's ports and
+  columns; reads each value as its column's type and refuses each that is not, naming it;
+  changes a table point's version with the sample; fails each kind of misfit wherever rows
+  are read, a join's planning and the preview route's worker (422) included, while the cache
+  report still has the points; never reads the sample for a request
+  (`test_a_request_never_reads_the_sample`); reads a deployed request into the tables, one
+  quote per request, a misfit refused
+  (`test_a_deployed_pipeline_reads_the_request_into_the_tables`); and refuses a second
+  request input in save and in `resolve_config`. `tests/test_deploy_batch_scoring.py` keeps a
   null sample's types in the hard-capped worker. `tests/test_assistant_ops.py` covers the
   assistant's refusals and its wiring to a Workbench Input's frames, and
   `tests/test_codegen_roundtrip_property.py` round-trips one in its corpus.
 - In the frontend, `frontend/src/utils/__tests__/requestInputTypes.test.ts` runs the editor's
   guard over `frontend/src` after its fixtures, and covers `isRequestInputType` and the shared
-  singleton slot; `frontend/src/utils/__tests__/apiInputPorts.test.ts` connections following
-  names with `followNames`; `frontend/src/hooks/__tests__/useEdgeHandlers.test.ts` a palette
+  singleton slot; `frontend/src/utils/__tests__/apiInputPorts.test.ts` a Workbench Input's
+  frames (its tables with a column, named by their tables, judged as labels are) and their
+  columns, and connections following names; `frontend/src/hooks/__tests__/useEdgeHandlers.test.ts` a palette
   drop reporting its node; and `frontend/src/hooks/__tests__/useNodeDataCache.test.tsx` a point
   that reads directly clearing nothing.
 - The Workbench Output: `tests/test_workbench_output.py` covers the tables read from a config
-  (one-row and many-row by path, a column outside its table refused, no tables refused), the
+  (no tables refused, tables without columns refused), the
   mapping (picks, none, an entry for a table or column the node lacks refused), filling (by
   name, by pick, a pick the frame lacks, a dtype that does not fit, a typed null for a column
   nothing fills, a one-row table with other than one row, the columns cut to the table's in
   order), the response document and `as_response` for either response node, a pipeline running
   and scoring to it, codegen and parsing of `target_port`, the second response node refused in
   save and deploy, deploy pruning to it and serving its response, and the preview's table
-  picker. In the frontend, `frontend/src/nodes/__tests__/PipelineNode.test.tsx` covers its
+  picker. In the frontend, `frontend/src/utils/__tests__/workbenchTables.test.ts` covers a
+  copy read and its ports, `frontend/src/nodes/__tests__/PipelineNode.test.tsx` its
   port rows, `frontend/src/utils/__tests__/connectionValidation.test.ts` the connection rules,
   `frontend/src/utils/__tests__/nodeUpdatePlan.test.ts` the connections a tables update
   removes, and `frontend/src/hooks/__tests__/usePipelineAPI.nodeDataEpoch.test.ts` the preview's

@@ -14059,6 +14059,33 @@
       "title": "WarehouseListResponse",
       "type": "object"
     },
+    "WorkbenchColumn": {
+      "additionalProperties": false,
+      "description": "A column of a table: its name in the frame and its type.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "int",
+            "float",
+            "str",
+            "bool",
+            "date"
+          ],
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "WorkbenchColumn",
+      "type": "object"
+    },
     "WorkbenchFormResponse": {
       "description": "The workbench's form as its file holds it now, with the file's revision.\n\n``revision`` is the file's content hash, which a save quotes as its ``base_revision``;\nnull while the form has never been saved, when ``form`` is the blank form.",
       "properties": {
@@ -14165,13 +14192,44 @@
       "title": "WorkbenchStatusResponse",
       "type": "object"
     },
+    "WorkbenchTable": {
+      "additionalProperties": false,
+      "description": "A table: a port of the node, one row per quote or many, and its columns.",
+      "properties": {
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchColumn"
+          },
+          "title": "Columns",
+          "type": "array"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "rows": {
+          "enum": [
+            "one",
+            "many"
+          ],
+          "title": "Rows",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "rows",
+        "columns"
+      ],
+      "title": "WorkbenchTable",
+      "type": "object"
+    },
     "WorkbenchTablesResponse": {
-      "description": "The workbench's tables, in the Quote Input's v2 shape, as its form defines them now.\n\n``tables`` are the Workbench Input's; ``sample`` is the sample quote typed while\nbuilding, as a request holds it: ``{}`` for none; ``response_tables`` are the tables a\npriced quote fills in, in the same shape, which a Workbench Output fills: ``[]`` for none.",
+      "description": "The workbench's tables, as the pipeline holds them, as its form defines them now.\n\n``tables`` are the Workbench Input's; ``sample`` is the sample quote typed while\nbuilding, as a request holds it: ``{}`` for none; ``response_tables`` are the tables a\npriced quote fills in, in the same shape, which a Workbench Output fills: ``[]`` for none.",
       "properties": {
         "response_tables": {
           "items": {
-            "additionalProperties": true,
-            "type": "object"
+            "$ref": "#/$defs/WorkbenchTable"
           },
           "title": "Response Tables",
           "type": "array"
@@ -14183,8 +14241,7 @@
         },
         "tables": {
           "items": {
-            "additionalProperties": true,
-            "type": "object"
+            "$ref": "#/$defs/WorkbenchTable"
           },
           "title": "Tables",
           "type": "array"

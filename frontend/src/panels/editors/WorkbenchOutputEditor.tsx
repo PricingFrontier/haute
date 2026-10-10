@@ -1,8 +1,8 @@
+import type { WorkbenchTable } from "../../api/types"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
-import type { WorkbenchOutputMapping } from "../../utils/workbenchTables"
+import { readWorkbenchTables, type WorkbenchOutputMapping } from "../../utils/workbenchTables"
 import type { InputSource, OnUpdateConfig } from "./_shared"
-import { readV2, type ApiInputTableV2 } from "./apiInputSchema"
-import { WorkbenchTablesHeader, tableLabelIssue } from "./WorkbenchInputEditor"
+import { NO_COLUMNS_NOTE, WorkbenchTablesHeader, tableLabelIssue } from "./WorkbenchInputEditor"
 
 type Picks = Readonly<Record<string, string | null>>
 
@@ -65,7 +65,8 @@ export default function WorkbenchOutputEditor({
   insideSubmodel?: boolean
 }) {
   const enabled = useWorkbenchStore((state) => state.enabled)
-  const tables = readV2(config).tables
+  const tables = readWorkbenchTables(config)
+  const names = tables.map((table) => table.name)
   const mapping = readMapping(config.mapping)
 
   return (
@@ -83,13 +84,13 @@ export default function WorkbenchOutputEditor({
         />
         {tables.map((table, index) => (
           <OutputTable
-            key={`${index}:${table.label}`}
+            key={`${index}:${table.name}`}
             table={table}
-            issue={tableLabelIssue(tables, index, new Set())}
-            source={inputSources.find((input) => input.targetHandle === table.label) ?? null}
-            picks={mapping[table.label] ?? {}}
+            issue={tableLabelIssue(names, index, new Set())}
+            source={inputSources.find((input) => input.targetHandle === table.name) ?? null}
+            picks={mapping[table.name] ?? {}}
             onPick={(column, source, frameColumns) =>
-              onUpdate("mapping", picked(mapping, table.label, column, source, frameColumns))}
+              onUpdate("mapping", picked(mapping, table.name, column, source, frameColumns))}
           />
         ))}
       </section>
@@ -104,7 +105,7 @@ function OutputTable({
   picks,
   onPick,
 }: {
-  table: ApiInputTableV2
+  table: WorkbenchTable
   issue: string | null
   source: InputSource | null
   picks: Picks
@@ -114,14 +115,14 @@ function OutputTable({
   const frameColumns = source?.columns ? source.columns.map((column) => column.name) : null
   return (
     <div
-      data-testid={`workbench-table-${table.label}`}
+      data-testid={`workbench-table-${table.name}`}
       className="rounded-md border px-2 py-1.5 text-xs"
       style={{ borderColor: issue ? "var(--warning)" : "var(--border)", background: "var(--bg-elevated)" }}
     >
       <div className="flex items-baseline justify-between gap-2">
-        <span className="font-mono font-semibold truncate">{table.label}</span>
+        <span className="font-mono font-semibold truncate">{table.name}</span>
         <span className="shrink-0 text-[11px]" style={{ color: "var(--text-muted)" }}>
-          {table.path === "$[:]" ? "one per quote" : "many per quote"}
+          {table.rows === "one" ? "one per quote" : "many per quote"}
         </span>
       </div>
       {issue && (
@@ -129,27 +130,35 @@ function OutputTable({
           {issue}
         </p>
       )}
-      <p
-        data-testid={`workbench-table-connection-${table.label}`}
-        className="mt-0.5 text-[11px]"
-        style={{ color: source === null ? "var(--warning)" : "var(--text-muted)" }}
-      >
-        {source === null ? "Not connected" : `From ${source.sourceLabel}`}
-      </p>
-      <ul className="mt-1 space-y-0.5">
-        {table.columns.map((column) => (
-          <MappedColumn
-            key={column.name}
-            table={table.label}
-            name={column.name}
-            type={column.type}
-            connected={source !== null}
-            frameColumns={frameColumns}
-            mapped={mappedSource(column.name, picks, frameColumns)}
-            onPick={(value) => onPick(column.name, value, frameColumns)}
-          />
-        ))}
-      </ul>
+      {table.columns.length === 0 ? (
+        <p className="mt-0.5 text-[11px]" style={{ color: "var(--text-muted)" }}>
+          {NO_COLUMNS_NOTE}
+        </p>
+      ) : (
+        <>
+          <p
+            data-testid={`workbench-table-connection-${table.name}`}
+            className="mt-0.5 text-[11px]"
+            style={{ color: source === null ? "var(--warning)" : "var(--text-muted)" }}
+          >
+            {source === null ? "Not connected" : `From ${source.sourceLabel}`}
+          </p>
+          <ul className="mt-1 space-y-0.5">
+            {table.columns.map((column) => (
+              <MappedColumn
+                key={column.name}
+                table={table.name}
+                name={column.name}
+                type={column.type}
+                connected={source !== null}
+                frameColumns={frameColumns}
+                mapped={mappedSource(column.name, picks, frameColumns)}
+                onPick={(value) => onPick(column.name, value, frameColumns)}
+              />
+            ))}
+          </ul>
+        </>
+      )}
     </div>
   )
 }

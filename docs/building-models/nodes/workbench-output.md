@@ -5,7 +5,7 @@ When your quotes are keyed in through the project's workbench, its schema also d
 !!! info "When to use"
     While the project's workbench is enabled, the palette offers the Workbench Output in place of the [Quote Response](output.md). Use it as the response for live pricing of keyed-in quotes. Without a workbench, use the Quote Response and map its columns yourself.
 
-A Workbench Output has no outputs. Each table of the workbench's schema is a separate input, named by the table's name: drag a connection from the node whose frame fills the table onto that input. A table takes one connection, and a node fills one table; to fill two tables from the same data, give each its own node. A pipeline has only one Quote Response or Workbench Output: once it has either, the palette entry is greyed out with "Only one Quote Response or Workbench Output allowed per pipeline". Enabling or disabling the workbench changes only what the palette offers; to swap a Quote Response for a Workbench Output, delete it and drag in the other.
+A Workbench Output has no outputs. Each table of the workbench's schema that has a column is a separate input, named by the table's name: drag a connection from the node whose frame fills the table onto that input. A table takes one connection, and a node fills one table; to fill two tables from the same data, give each its own node. A pipeline has only one Quote Response or Workbench Output: once it has either, the palette entry is greyed out with "Only one Quote Response or Workbench Output allowed per pipeline". Enabling or disabling the workbench changes only what the palette offers; to swap a Quote Response for a Workbench Output, delete it and drag in the other.
 
 ## Filling the tables
 
@@ -48,6 +48,7 @@ The panel lists the workbench's output tables. You can't change the tables here,
 | **From** ... or **Not connected** | The node whose frame fills the table, or that nothing does yet. |
 | Each column's name and type, and a column picker | The frame column that fills it. A same-named column fills it until you pick another, shown as **(by name)**. **— none —** leaves it empty, and the picker is highlighted when nothing fills the column or the column you picked is no longer in the frame (**(missing)**). The picker lists the frame's columns once the node it comes from has been previewed, and is greyed out until a frame is connected. |
 | A warning under the name | The name can't be an input: it isn't an identifier, or another table has it. Rename the table in the workbench. |
+| **No columns yet, so no port.** | The table has no columns, so there is nothing to fill. Add its columns in the workbench. |
 
 Changing a pick is an edit to the pipeline, saved and undone like any other.
 
@@ -60,7 +61,7 @@ While the workbench is not enabled, the section says "The workbench is not enabl
 
     | Setting in the editor | Stored as |
     |---|---|
-    | The tables | `tables`: the workbench's output tables, in the same format as a Quote Input's |
+    | The tables | `tables`: the workbench's output tables, in the Workbench Input's format: each its `name`, its `rows` per quote and its typed `columns` |
     | Your picks | `mapping`: by table name, then column name, the frame column that fills it, or `null` for none. A column without an entry is filled by name, so a new node has no `mapping` |
 
     For example, `"mapping": {"pricing_output": {"model_premium": "premium"}}` fills `pricing_output`'s `model_premium` from the frame's `premium` column. When the workbench drops a table or column, the editor drops its entries from `mapping` as it updates the tables. The pipeline fills the tables from `tables` and `mapping` alone, so it runs, tests and deploys without the workbench enabled.

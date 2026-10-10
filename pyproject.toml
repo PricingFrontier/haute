@@ -334,6 +334,10 @@ paths = [
     # Cache identity
     "src/haute/_json_shred/_source_proof.py",
     "src/haute/_json_shred/_inference_cache.py",
+    # The workbench's tables
+    "src/haute/_workbench_tables.py",
+    "src/haute/_workbench_input.py",
+    "src/haute/_workbench_output.py",
 ]
 report_paths = ["src/haute"]
 
@@ -527,6 +531,24 @@ path = "src/haute/_json_shred/_inference_cache.py"
 min_statement_coverage = 98.0
 min_branch_coverage = 98.0
 rationale = "Cache identity: Schema reuse is proven against unchanged source freshness tokens. Seeded 2 points below the 24 September 2026 CI measurement."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_workbench_tables.py"
+min_statement_coverage = 95.0
+min_branch_coverage = 92.0
+rationale = "The workbench's tables as the pipeline holds them: a table's name, rows per quote and typed columns decide what a quote is read into and what a response holds; a malformed copy or a name that cannot be a port must be refused, never read around. Seeded below the 10 October 2026 measurement (100/100)."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_workbench_input.py"
+min_statement_coverage = 95.0
+min_branch_coverage = 92.0
+rationale = "Reads a quote's tables as dataframes, the sample in previews and the request in a deployed pipeline: a value read as the wrong type or a misfit let through changes a price silently. Seeded below the 10 October 2026 measurement (100/100)."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_workbench_output.py"
+min_statement_coverage = 95.0
+min_branch_coverage = 92.0
+rationale = "Fills the response's tables from the frames connected to them and builds the response a request is answered with: a column filled from the wrong source or cast wrongly is a wrong price. Seeded below the 10 October 2026 measurement (100/100)."
 
 [tool.mypy]
 python_version = "3.11"

@@ -10,7 +10,7 @@ import type { PipelineFlowNode } from "../types/node"
 import { EDGE_JOIN_BASE_HANDLE, EDGE_JOIN_JOIN_BOTTOM_HANDLE, EDGE_JOIN_JOIN_HANDLE } from "../utils/edgeJoinRoles"
 import { OUTPUT_ORIGIN_HANDLE_CLASS } from "../utils/flowHandles"
 import { authoritativeSourceHandles } from "../utils/apiInputPorts"
-import { workbenchOutputTableLabels } from "../utils/workbenchTables"
+import { workbenchTablePorts } from "../utils/workbenchTables"
 import FramePortRows, { DefaultInputPort } from "./FramePortRows"
 
 const statusColors: Record<string, string> = {
@@ -177,7 +177,7 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   )
   // A Workbench Output's tables are its input ports (specs/workbench).
   const tableLabels = useMemo<string[]>(
-    () => (isWorkbenchOutput ? workbenchOutputTableLabels(nodeData.config) : []),
+    () => (isWorkbenchOutput ? workbenchTablePorts(nodeData.config) : []),
     [isWorkbenchOutput, nodeData.config],
   )
 

@@ -685,12 +685,13 @@ def _workbench_input_port_metadata(node: GraphNode, port: str) -> _DetailedSourc
     the size unknown; a sample that does not fit them raises, so a preview says
     what to correct rather than that a size is unknown.
     """
-    from haute._json_shred._cache import workbench_table_frames, workbench_table_labels
+    from haute._workbench_input import workbench_table_frames, workbench_table_labels
+    from haute._workbench_tables import WorkbenchTablesError
 
     config = dict(node.data.config)
     try:
         labels = workbench_table_labels(config)
-    except (ApiInputSchemaError, RuntimeError, TypeError, ValueError) as exc:
+    except WorkbenchTablesError as exc:
         logger.warning(
             "workbench_input_port_metadata_failed", node_id=node.id, port=port, error=str(exc)
         )

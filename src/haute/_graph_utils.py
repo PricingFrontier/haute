@@ -114,6 +114,18 @@ def _edge_id(
     return f"e_{source}_{target}_{digest}"
 
 
+def is_frame_label(label: str) -> bool:
+    """Whether *label* can name a frame a request input emits.
+
+    The one rule for a Quote Input's table labels, a Workbench Input's and Workbench
+    Output's table names and the editor's source handles: an ASCII Python identifier
+    that is not a keyword, so a step can read the frame by name.
+    """
+    import keyword
+
+    return label.isascii() and label.isidentifier() and not keyword.iskeyword(label)
+
+
 def _sanitize_func_name(label: str) -> str:
     """Convert a human label to a valid Python function name (preserves casing).
 

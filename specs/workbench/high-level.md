@@ -32,9 +32,9 @@ In scope:
   where its form is.
 - The form file: its canonical shape, how it is read and written, and the blank form
   `haute init --workbench` scaffolds.
-- The workbench's tables as Haute takes them: the schema's input tables in the Quote
-  Input's v2 shape, the sample quote as a request holds it, and the output tables in the
-  same shape.
+- The workbench's tables as the pipeline holds them: the schema's input tables, each its
+  name, its rows per quote and its typed columns, the sample quote as a request holds it,
+  and the output tables in the same shape.
 - `GET /api/workbench`, the status the editor reads, `GET /api/workbench/tables`, the
   tables, sample and response tables as the saved form defines them now, and
   `POST /api/workbench/tables`, the same of a form the view holds, saved or not.
@@ -104,10 +104,10 @@ Out of scope:
 - **The tables.** `GET /api/workbench/tables` answers the schema's input tables as `tables`,
   the sample quote as `sample` and the output tables as `response_tables`, as the form
   defines them now. It answers 404 while the workbench is not enabled; the tables and the
-  response tables are checked by the Quote Input's schema rules
-  ([json-shredding](../json-shredding/high-level.md)) and a breach answers the structured 422
-  that Infer Tables answers; the sample is served unchecked, since a sample that does not fit
-  fails the previews that read it and never stops the tables updating.
+  response tables are checked as the pipeline takes them (a table's name a port's, a column's
+  name a frame column's, no name twice) and a breach answers the structured 422 of a public
+  contract error; the sample is served unchecked, since a sample that does not fit fails the
+  previews that read it and never stops the tables updating.
   `POST /api/workbench/tables` answers the same for a form sent in the request, saved or
   not, checked the same way and 404 while the workbench is not enabled alike; it writes
   nothing.
@@ -289,15 +289,14 @@ Out of scope:
   pipeline has changes to save, as after any fetch. A save refused as stale keeps the edits
   and says so, in a toast and in a banner in the view whose Reload reads the file again,
   dropping the edits and the history.
-- **The tables as Haute takes them.** The input tables are the Workbench Input's, in schema
-  order. In each quote a one-row table is an object under its own name (table path `$[:]`,
-  columns `$[:].<table>.<column>`) and a many-row table is an array of objects under its name
-  (path `$[:].<table>[:]`, columns `$[:].<table>[:].<column>`); a request is one quote or a
-  list of them. Column types carry over, a column's allowed values become its `levels`, the
-  index column is an Integer with no levels, every column is selected, every table emits, and
-  a many-row table with exactly one key column uses it as its `row_id_column`. Rules such as
-  required and ranges stay in the form. The output tables are the Workbench Output's, in
-  schema order and in the same shape. The sample is one quote: each input table with values
+- **The tables as the pipeline holds them.** The input tables are the Workbench Input's, in
+  schema order: each table its name, `one` row per quote or `many`, and its columns, each its
+  name and its type, the index column an Integer. The form's keys, labels, rules and allowed
+  values stay in the form: the pipeline has no use for them. In each quote a one-row table is
+  an object under its name and a many-row table a list of objects under its name; a request
+  is one quote. A table with no columns yet is not a port: there is nothing to read into it.
+  The output tables are the Workbench Output's, in schema order and in the same shape. The
+  sample is one quote: each input table with values
   under its name, an object for a one-row table and a list of its filled rows for a many-row
   one, rows with nothing typed left out and numbered as they stand for the index. Each value
   is as its column's type holds it: a number typed with a currency sign or separators is a
@@ -310,28 +309,32 @@ Out of scope:
   Input", badged "WORKBENCH IN", in the entry group with the Quote Input's colour and shape
   and an icon of its own. Its config has `tables` and `sample`, copies of the workbench's
   tables and sample quote.
-  - **Read as a Quote Input.** A Workbench Input has one port per emitting table, named by the
-    table's label, as a Quote Input with the same `tables` has, and a request is read through
-    them exactly as through a Quote Input's: by `Pipeline.score`, a deployed pipeline's
-    `/quote` and deploy's test quotes, none of which reads the sample. Deploy shares the Quote
-    Input's defect
-    [BUG-31](../roadmap/bugs.md#bug-31--a-deployed-quote-input-splits-a-request-into-its-tables):
-    a deployed pipeline hands every port the whole request, so a Workbench Input's tables
-    reach their ports in deploy only where a Quote Input's would. Haute calls the two the
-    request inputs and decides this once, from one set holding both types; tests fail when a
-    check in the code names the Quote Input alone where it means a request input. The
-    pipeline never needs the workbench: the copies are an ordinary `tables` list and
-    `sample` object.
+  - **Read as dataframes.** A Workbench Input has one port per table with a column, named by
+    the table, and reads a quote into them with no JSON path: a one-row table is its one row
+    (of nulls when the quote does not hold it) and a many-row table the rows the quote holds.
+    Each value is read as its column's type holds it: a whole number for an Integer, a
+    number for a Decimal, text for Text, true or false, and a `YYYY-MM-DD` date; a value that
+    is not, a part of the quote that is not of its table's shape, or a quote that is not an
+    object, is refused naming the spot. A key the tables do not name is not read, and a column
+    a row does not hold is null. `Pipeline.score` takes frames already split per table; a
+    deployed pipeline's `/quote`, deploy's test quotes (each case scored as a request of its
+    own) and its dry run read the request through the same reader, one quote per request,
+    each table under its name, so a deployed Workbench Input gives each port its table where
+    a deployed Quote Input still hands every port the whole request
+    ([BUG-31](../roadmap/bugs.md#bug-31--a-deployed-quote-input-splits-a-request-into-its-tables)).
+    None of them reads the sample. Haute calls the two the request inputs and decides this
+    once, from one set holding both types; tests fail when a check in the code names the Quote
+    Input alone where it means a request input. The pipeline never needs the workbench: the
+    copies are an ordinary `tables` list and `sample` object.
   - **No file; the sample.** A Workbench Input reads no file. Without a request, in editor
-    runs and previews and in generated code's `run()`, it reads its sample as one request is
-    read through its tables: each emitting table is the rows the sample gives it, typed as
-    declared, and a table the sample gives no rows, or every table when there is no sample,
-    is one row of nulls, for a many-row table too. The sample is read whole, whatever a
-    preview asks of it: every emitting table and every selected column, then cut to what is
-    asked. What the tables do not read (fields under no table, unselected columns, tables
-    that do not emit) is ignored, as a request's is, and a missing or `null` part reads as a
-    request's does: as a many-row table's list it gives no rows, and as an object it leaves
-    the columns under it null, keeping the row and its other values. Downstream nodes run on
+    runs and previews and in generated code's `run()`, it reads its sample as it reads a
+    quote: each port is the rows the sample gives its table, typed as declared, and a table
+    the sample gives no rows, or every table when there is no sample, is one row of nulls,
+    for a many-row table too. The sample is read whole, whatever a preview asks of it: every
+    port and every column, then cut to what is asked. What the tables do not read (keys under
+    no table, columns no table declares) is ignored, as a request's is, and a missing or
+    `null` table reads as a request's does: a many-row table has no rows, and a one-row table
+    its one row of nulls. Downstream nodes run on
     those rows, so a calculation previews on the sample's values, and a node that cannot take
     a null, such as a rating lookup on a null key, reports it in its preview as it would for
     any null input. The editor builds nothing for a Workbench Input: its tables have no input
@@ -339,10 +342,11 @@ Out of scope:
     with nothing to cache, build or clear, and the cache report shows its tables together as
     current and read directly. Where deploy reads a Quote Input's sample file, to learn the
     request's schema and to dry-run the pipeline on one row, it derives both from a Workbench
-    Input's tables, never its sample: the schema places each selected column where its path
-    names, under an object for a one-row table and a list of objects for a many-row one, with
-    its declared type, and the dry run reads one request record of nulls in that schema. A
-    node that cannot take a null fails that dry run with its own error.
+    Input's tables, never its sample: the schema holds each table under its name, an object of
+    its columns for a one-row table and a list of them for a many-row one, with their declared
+    types, and the dry run reads one quote with nothing filled in, one row of nulls per table,
+    the rows a preview runs on before the workbench supplies values. A node that cannot take a
+    null fails that dry run with its own error.
   - **One request input per pipeline.** A pipeline holds at most one Quote Input or Workbench
     Input, counting those inside its submodels. Saving or deploying a pipeline with two is
     refused with "Only one Quote Input or Workbench Input node is allowed per pipeline (found
@@ -395,23 +399,23 @@ Out of scope:
   the workbench's output tables and whose `mapping` says which frame column fills which table
   column. In the editor it is "Workbench Output", badged "WORKBENCH OUT", in the exit group
   with the Quote Response's colour and shape and an icon of its own.
-  - **A port per table.** A Workbench Output has one input port per table, named by the
-    table's label, in the tables' order, and nothing downstream. A connection lands on one
-    table's port: its `targetHandle` is the table's label, and the pipeline file says
+  - **A port per table.** A Workbench Output has one input port per table with a column,
+    named by the table, in the tables' order, and nothing downstream. A connection lands on
+    one table's port: its `targetHandle` is the table's name, and the pipeline file says
     `pipeline.connect("<node>", "<workbench output>", target_port="<table>")`. A table takes
     one connection, and a node fills one table: its frame reaches the Workbench Output under
     the node's own name, as it reaches any node, so a second connection from the same node is
     refused, saying which table that node already fills.
   - **The mapping.** Each table column is filled from one column of the frame connected to
     its table's port: the frame's column of the same name, unless the mapping picks another or
-    none. The mapping is `mapping` in the config, by table label and then column name, each
+    none. The mapping is `mapping` in the config, by table name and then column name, each
     entry a frame column's name or `null` for none; a column without an entry is filled by
     name. A column with no source, because the mapping says none or the frame has no column of
     its name, is filled with nulls, and the panel flags it. An entry naming a frame column the
     frame lacks fails the run, naming both. The fetch that updates the tables drops the entries
     of tables and columns the new tables no longer have.
   - **Its tables are its result.** When the node runs, its result is its tables, one frame per
-    table under the table's label, each holding the table's columns in the tables' order with
+    table with a column, under the table's name, each holding the table's columns in the tables' order with
     their declared types, and nothing else of the frames it was given. A column fits its
     declared type when it is of that type or null throughout, when it is any integer for an
     Integer column or any number for a Decimal one, and when it is categorical for a Text one.
@@ -421,11 +425,10 @@ Out of scope:
     connected to its table: tracing one of the tables' own cells says so.
   - **The response.** The tables are what a priced quote's output tables are filled with. Where
     the pipeline answers a request, its tables become the response for one quote: a list of one
-    object holding each one-row table as an object under its label and each many-row table as
-    a list of objects under its label, each column at its path. The Quote Response's assembler
-    builds it from the columns placed at their paths, so a null value or an empty list is left
-    out as a Quote Response leaves it out, and two rows of a many-row table that agree on every
-    column are one row, as in a Quote Response.
+    object holding each one-row table as an object under its name and each many-row table as a
+    list of objects under its name, each column under its name, as a quote holds its tables.
+    The response is the tables as they are, every row and every column, and where it is
+    rendered as JSON a null value or an empty list is left out, as a Quote Response's are.
   - **A response node.** A Workbench Output is the pipeline's response as a Quote Response is:
     `Pipeline.run` and `Pipeline.score` return its response, deploy prunes the pipeline to it
     and takes the response's schema from it, and a deployed pipeline answers `/quote` with its
@@ -549,10 +552,12 @@ Out of scope:
   from one whose tables are built in its panel, yet both read the same in the pipeline file and
   the editor branched on the difference everywhere. The Workbench Input says in the pipeline
   file where its tables come from, and the Quote Input keeps one job.
-- **One way of reading a request.** The two types read a request identically, so their
-  behaviour is decided from one set rather than copied: a change to how a request is read,
-  such as the fix for BUG-31, covers both, and a test reports a check that names the Quote
-  Input alone.
+- **Read as what they are.** A Quote Input's request is a JSON document, read through its
+  tables' paths by the Quote Input's reader; a Workbench Input's is the workbench's tables,
+  read as dataframes with no path, by a few rules a pricing analyst can hold in their head.
+  The two share one decision, that either is the request input, and nothing else: the Quote
+  Input's reader stays its own, the workbench's tables carry nothing derived, and a test
+  reports a check that names the Quote Input alone where it means a request input.
 - **A copy, not a reference.** The pipeline file is canonical and runs without the GUI, so a
   Workbench Input holds the tables it runs from instead of pointing at the form: runs, tests,
   generated code and deploy never read the form, and the editor, which has both, keeps the
@@ -584,9 +589,10 @@ Out of scope:
   checks them as tables, so the node's result is its tables and its preview a dataframe per
   table, as a Workbench Input's is per input table. The response document is how the tables
   travel in a request's answer, so it is built where the pipeline answers one.
-- **One assembler.** The Workbench Output's response places each column at its path and hands
-  them to the Quote Response's assembler, so the two response nodes build, prune and type a
-  response alike, and deploy serves either unchanged.
+- **The tables are the response.** A Workbench Output's response is its tables under their
+  names, as a quote holds its tables, built where the pipeline answers a request and rendered
+  as a Quote Response's is; nothing is placed at a path, so the response has exactly the
+  tables' shape and deploy serves it unchanged.
 - **One quote per request.** A request's quotes carry no identity into their tables' rows, so
   the rows of several quotes cannot be told apart once they are tables. A workbench prices
   one quote at a time, so a Workbench Output answers one, and a one-row table with other than
@@ -608,8 +614,9 @@ Out of scope:
   `workbench_input` and `workbench_output` decorators and their config folders.
 - [deploy](../deploy/high-level.md): `DeployConfig.from_toml`'s whole-file check accepts the
   `[workbench]` table; save and deploy refuse a second request input or response node, deploy
-  takes a Workbench Input's request schema and sample record from its tables, and a deployed
-  pipeline answers with a Workbench Output's response as with a Quote Response's.
+  takes a Workbench Input's request schema and dry-run quote from its tables and reads a
+  served request into them, and a deployed pipeline answers with a Workbench Output's
+  response as with a Quote Response's.
 - [git-integration](../git-integration/high-level.md): an unborn repository's seed commit
   takes `forms/` with the pipeline's files; a form save is one save on the clone's ledger
   through the pipeline save's capture, reported in the editor through the shared
@@ -629,9 +636,9 @@ Out of scope:
   editor's cards use.
 - [engineering-quality](../engineering-quality/high-level.md): the generated contract bundle
   carries the `workbench` response group.
-- [json-shredding](../json-shredding/high-level.md): the v2 tables the form defines, checked by
-  the Quote Input's schema rules and read as a Quote Input's are, its sample read through them
-  in memory, and the Quote Response's assembler building a Workbench Output's response.
+- [json-shredding](../json-shredding/high-level.md): the Quote Input's reader, which the
+  Workbench Input leaves alone; its columns' types are the Quote Input's, held equal by a test,
+  and a table's name follows the one rule a Quote Input's labels follow.
 - [frontend-node-editors](../frontend-node-editors/high-level.md): the palette's Workbench
   Input and Workbench Output and their panels.
 - [frontend-graph-canvas](../frontend-graph-canvas/high-level.md): the editor shell hosts
@@ -698,28 +705,38 @@ Out of scope:
   does; a press of Price while one runs does nothing.
 - The schema editor refuses nothing: a problem is shown beside its table, and a save
   writes the form as it is. The tables route then answers the structured 422 for a table
-  the Quote Input's rules refuse, which the tables fetch shows as one toast, so the
-  problem is visible in both views until it is fixed.
+  the pipeline cannot take, which the tables fetch shows as one toast, so the problem is
+  visible in both views until it is fixed.
 - `GET /api/workbench/tables` answers 404 while the workbench is not enabled; the editor
-  never asks then. Tables or response tables that break the Quote Input's schema rules, such
-  as a table named with a Python keyword, answer the structured 422 that Infer Tables answers.
+  never asks then. Tables or response tables the pipeline cannot take, such as a table named
+  with a Python keyword, two tables of one name or two that differ only in case, answer the
+  structured 422 of a public contract error (`workbench_tables_invalid`), the message naming
+  the table.
 - A failed status request shows one error toast; the editor behaves as it does with the
   workbench not enabled.
 - A Workbench Input or Workbench Output in a project whose workbench is not enabled keeps its
   copy and runs from it; its panel says so and nothing updates it.
-- A Workbench Input with no tables has no ports. Previewing it fails with "This Workbench
-  Input has no tables: add input tables to the workbench's schema and save it.", and
-  deploying it fails because its request has no schema. Deploy also fails, naming the field,
-  when two of its columns' paths disagree about a request field.
+- A Workbench Input with no tables has no ports, and nor has one whose tables have no
+  columns yet. Previewing either fails with "This Workbench Input has no tables: add input
+  tables to the workbench's schema and save it." or "This Workbench Input's tables have no
+  columns yet: add their columns in the workbench's schema and save it.", and deploying it
+  fails for the same reason. A copy that is not as the workbench writes it, such as one
+  holding a key the workbench does not write, fails wherever it is read with "The Workbench
+  Input's tables are not as the workbench writes them (<where>: <what>). Open the pipeline in
+  the editor and save it.", the editor's fetch being what rewrites the copy.
 - A sample that does not fit its Workbench Input's tables fails whatever reads its rows
   (previews, `run()`, leasing a table point), and planning a preview that sizes the tables,
   with "The workbench's sample does not fit this Workbench Input's tables: <reason>. Correct
   it in the workbench and save it." It does not fit when a value is not of its column's
-  declared type, when something other than a list stands where a many-row table's rows
-  belong, when something other than an object stands where a one-row table's object, or any
-  object a column's path passes through, belongs, or when a many-row table's list holds
-  anything but rows (a value, `null` or a list). Resolving a table point and the cache report
-  read the tables alone, so a misfit sample never stops them.
+  declared type (`policy.limit is 'lots', not 'int'`), when something other than a list
+  stands where a many-row table's rows belong, when something other than an object stands
+  where a one-row table's belongs, or when a many-row table's list holds anything but rows (a
+  value, `null` or a list). Resolving a table point and the cache report read the tables
+  alone, so a misfit sample never stops them.
+- A deployed pipeline's request of other than one quote fails with "A Workbench Input reads
+  one quote per request, and this request holds <n>.", and a quote that does not fit the
+  tables with "The request does not fit this Workbench Input's tables: <reason>.", the reasons
+  the sample's are.
 - Two request inputs of either type, at the top level or in a submodel, fail save and deploy
   with "Only one Quote Input or Workbench Input node is allowed per pipeline (found 2)." and
   `Pipeline.score` as two Quote Inputs do. A config key a Workbench Input does not declare,
@@ -727,7 +744,10 @@ Out of scope:
 - Running a Workbench Output, in a preview, `run()`, `score()` or a deployed pipeline, fails
   with a message naming its table:
   - with no tables, "This Workbench Output has no tables: add output tables to the
-    workbench's schema and save it.";
+    workbench's schema and save it.", and with tables that have no columns yet, "This
+    Workbench Output's tables have no columns yet: add their columns in the workbench's
+    schema and save it.";
+  - with a copy that is not as the workbench writes it, as a Workbench Input's fails;
   - for a table nothing is connected to, "Connect a frame to the Workbench Output's
     '<table>' table.";
   - for a connection to a port that is no table of the node's;

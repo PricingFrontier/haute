@@ -304,12 +304,12 @@ class DataPointResolver:
         """
         node = _node(self.graph, node_id)
         if node.data.nodeType is NodeType.WORKBENCH_INPUT:
-            from haute._api_input_schema import ApiInputSchemaError
-            from haute._json_shred._cache import workbench_table_labels
+            from haute._workbench_input import workbench_table_labels
+            from haute._workbench_tables import WorkbenchTablesError
 
             try:
                 return workbench_table_labels(node.data.config)
-            except (ApiInputSchemaError, RuntimeError) as exc:
+            except WorkbenchTablesError as exc:
                 raise NodeDataPointInvalidError(str(exc)) from exc
         return tuple(table.label for table in self._api_input_tables(node_id))
 
@@ -408,6 +408,8 @@ class DataPointResolver:
         from haute._node_apply import _anchored_required_path
 
         node = _node(self.graph, point.producer_node_id)
+        if node.data.nodeType is NodeType.WORKBENCH_INPUT:
+            return self._resolve_workbench_table(point, demand, node)
         config = dict(node.data.config)
         tables = config.get("tables")
         labels = (
@@ -419,8 +421,6 @@ class DataPointResolver:
             raise NodeDataPointInvalidError(
                 f"API Input {node.data.label!r} has no table {point.port_label!r}."
             )
-        if node.data.nodeType is NodeType.WORKBENCH_INPUT:
-            return self._resolve_workbench_table(point, demand, node)
         data_path = _anchored_required_path(config, _pipeline_base_dir(self.graph))
         source = api_input_snapshot_source(config, data_path)
         assert point.port_label is not None
@@ -447,7 +447,7 @@ class DataPointResolver:
         nothing to build or clear; leasing it computes the table's frame. Resolving it
         reads the tables alone, never the sample.
         """
-        from haute._json_shred._cache import workbench_table_labels
+        from haute._workbench_input import workbench_table_labels
 
         config = dict(node.data.config)
         if point.port_label not in workbench_table_labels(config):
@@ -574,7 +574,7 @@ class DataPointResolver:
             raise CacheRequiredError(resolution)
         assert resolution.data_version is not None
         if resolution.kind == "api_input_table" and resolution.input_identity is None:
-            from haute._json_shred._cache import workbench_table_frames
+            from haute._workbench_input import workbench_table_frames
 
             assert point.port_label is not None
             config = dict(_node(self.graph, point.producer_node_id).data.config)

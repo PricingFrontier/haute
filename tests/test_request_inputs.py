@@ -1,10 +1,11 @@
-"""Request inputs: the Quote Input and the Workbench Input read a quote request alike.
+"""Request inputs: the Quote Input and the Workbench Input are the pipeline's request input alike.
 
-A Workbench Input's tables come from the project's workbench (specs/workbench), but
-every context reads a request through either type
-exactly alike. Code that means "the request input" asks ``REQUEST_INPUT_NODE_TYPES``
-rather than naming one type, which the checker here enforces, and a pipeline holds
-at most one request input of either type.
+A Quote Input reads a JSON request through its tables' paths; a Workbench Input's tables
+come from the project's workbench (specs/workbench) and read a quote's tables as
+dataframes. Every context treats either as the request input exactly alike: code that
+means "the request input" asks ``REQUEST_INPUT_NODE_TYPES`` rather than naming one type,
+which the checker here enforces, and a pipeline holds at most one request input of
+either type.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import re
 import sys
 import uuid
 from collections.abc import Iterator
+from datetime import date
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -24,16 +26,20 @@ import polars as pl
 import pytest
 from fastapi import HTTPException
 from polars.testing import assert_frame_equal
+from pydantic import ValidationError
 
-from haute._api_input_schema import ApiInputSchemaError
+from haute._api_input_schema import ApiInputSchemaError, validate_v2_schema
 from haute._builders import _build_node_fn
 from haute._data_points import DataPoint, DataPointResolver, point_kind
+from haute._editor_identities import (
+    recoverable_api_input_source_handles,
+    recoverable_request_input_source_handles,
+)
 from haute._execution_admission import create_admitted_execution_context
-from haute._graph_utils import REQUEST_INPUT_KINDS
+from haute._graph_utils import REQUEST_INPUT_KINDS, is_frame_label
 from haute._input_preparation import snapshot_backed_inputs
-from haute._json_shred._cache import workbench_table_frames, workbench_table_labels
-from haute._json_shred._shred import request_record_schema
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
+from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._sandbox import _get_project_root, set_project_root
 from haute._trace_enrichment import detect_row_lineage_type
 from haute._types import (
@@ -45,15 +51,24 @@ from haute._types import (
     PipelineGraph,
     SubmodelDefinition,
 )
+from haute._workbench_input import (
+    WorkbenchInputError,
+    read_quote,
+    workbench_table_frames,
+    workbench_table_labels,
+)
+from haute._workbench_tables import WorkbenchTablesError, parse_workbench_tables
 from haute.codegen import graph_to_code_multi
 from haute.deploy._config import DeployConfig, resolve_config
 from haute.deploy._pruner import find_deploy_input_nodes
 from haute.deploy._schema import _read_sample_row, infer_input_schema
 from haute.deploy._scorer import score_graph
+from haute.deploy._validators import score_test_quotes
 from haute.execution import ExecutionProfile, execute_lazy_graph
 from haute.parser import parse_pipeline_file
 from haute.routes._save_pipeline import SavePipelineService
 from haute.routes.node_data import node_data_service
+from haute.schemas import EditorIdentityRequestNode
 from tests._source_files import source_files
 from tests.conftest import build_test_api_input_snapshots, make_output_config
 
@@ -325,12 +340,88 @@ def test_request_input_kinds_match_the_node_types() -> None:
     assert _editor_set("REQUEST_INPUT_TYPES") == values
 
 
+@pytest.mark.parametrize(
+    ("label", "allowed"),
+    [
+        ("policy", True),
+        ("_x1", True),
+        ("class", False),
+        ("1st", False),
+        ("naïve", False),
+        ("my table", False),
+        ("", False),
+    ],
+)
+def test_a_frame_label_follows_one_rule_everywhere(label: str, allowed: bool) -> None:
+    """A Quote Input's table labels, a Workbench Input's table names and the editor's
+    source handles are held to `is_frame_label` alike."""
+    assert is_frame_label(label) is allowed
+    quote_table = {
+        "path": "$[:]",
+        "label": label,
+        "emit": True,
+        "columns": [{"name": "x", "path": "$[:].x", "type": "int", "selected": True}],
+    }
+    workbench_table = {"name": label, "rows": "one", "columns": [{"name": "x", "type": "int"}]}
+
+    refused: list[str] = []
+    try:
+        validate_v2_schema({"tables": [quote_table]})
+    except ApiInputSchemaError:
+        refused.append("quote input")
+    try:
+        parse_workbench_tables([workbench_table], owner="Workbench Input")
+    except WorkbenchTablesError:
+        refused.append("workbench input")
+    try:
+        EditorIdentityRequestNode(
+            node_id="n", label="n", node_type=NodeType.WORKBENCH_INPUT, source_handles=[label]
+        )
+    except ValidationError:
+        refused.append("identity")
+
+    assert refused == ([] if allowed else ["quote input", "workbench input", "identity"])
+    # Recovery derives a request input's handles by its type, held to the same rule.
+    expected = (label,) if allowed else ()
+    assert recoverable_api_input_source_handles({"tables": [quote_table]}) == expected
+    assert (
+        recoverable_request_input_source_handles(NodeType.API_INPUT, {"tables": [quote_table]})
+        == expected
+    )
+    assert (
+        recoverable_request_input_source_handles(
+            NodeType.WORKBENCH_INPUT, {"tables": [workbench_table]}
+        )
+        == expected
+    )
+
+
 # ---------------------------------------------------------------------------
-# One way of reading a request
+# The request inputs, side by side
 # ---------------------------------------------------------------------------
 
 
-def _column(table: str, name: str, kind: str, *, many: bool = False) -> dict[str, Any]:
+def _column(name: str, kind: str) -> dict[str, Any]:
+    return {"name": name, "type": kind}
+
+
+# A one-row and a many-row table, as the workbench supplies them.
+_TABLES: list[dict[str, Any]] = [
+    {
+        "name": "policy",
+        "rows": "one",
+        "columns": [_column("state", "str"), _column("limit", "int")],
+    },
+    {
+        "name": "items",
+        "rows": "many",
+        "columns": [_column("item_id", "str"), _column("value", "float")],
+    },
+]
+
+
+def _quote_column(table: str, name: str, kind: str, *, many: bool = False) -> dict[str, Any]:
+    """A Quote Input's column at the level the workbench's shape puts it."""
     level = f"$[:].{table}[:]" if many else f"$[:].{table}"
     return {
         "name": name,
@@ -342,14 +433,17 @@ def _column(table: str, name: str, kind: str, *, many: bool = False) -> dict[str
     }
 
 
-# A one-row and a many-row table, in the shape the workbench supplies.
-_TABLES: list[dict[str, Any]] = [
+# The same two tables as a Quote Input declares them: JSON paths into each quote.
+_QUOTE_TABLES: list[dict[str, Any]] = [
     {
         "path": "$[:]",
         "label": "policy",
         "emit": True,
         "row_id_column": None,
-        "columns": [_column("policy", "state", "str"), _column("policy", "limit", "int")],
+        "columns": [
+            _quote_column("policy", "state", "str"),
+            _quote_column("policy", "limit", "int"),
+        ],
     },
     {
         "path": "$[:].items[:]",
@@ -357,8 +451,8 @@ _TABLES: list[dict[str, Any]] = [
         "emit": True,
         "row_id_column": "item_id",
         "columns": [
-            _column("items", "item_id", "str", many=True),
-            _column("items", "value", "float", many=True),
+            _quote_column("items", "item_id", "str", many=True),
+            _quote_column("items", "value", "float", many=True),
         ],
     },
 ]
@@ -407,8 +501,9 @@ def _pricing(project: Path, node_type: NodeType) -> PipelineGraph:
 
     A Quote Input reads its sample file; a Workbench Input reads none.
     """
-    config: dict[str, Any] = {"tables": copy.deepcopy(_TABLES)}
-    if node_type is not NodeType.WORKBENCH_INPUT:
+    workbench = node_type is NodeType.WORKBENCH_INPUT
+    config: dict[str, Any] = {"tables": copy.deepcopy(_TABLES if workbench else _QUOTE_TABLES)}
+    if not workbench:
         sample = project / "quotes.json"
         sample.write_text(json.dumps(_SAMPLE), encoding="utf-8")
         config["path"] = str(sample)
@@ -480,7 +575,7 @@ def test_a_workbench_input_reads_a_request_as_a_quote_input_does(
     assert f'@pipeline.{DECORATORS[node_type]}(config="config/{folder}/request.json")' in code
     parsed = parse_pipeline_file(pipeline_file).node_map["request"]
     assert parsed.data.nodeType is node_type
-    assert parsed.data.config["tables"] == _TABLES
+    assert parsed.data.config["tables"] == (_QUOTE_TABLES if reads_a_file else _TABLES)
     assert ("path" in parsed.data.config) is reads_a_file
 
     # In the editor, a Quote Input reads its sample and a Workbench Input yields nulls.
@@ -507,21 +602,31 @@ def test_a_workbench_input_reads_a_request_as_a_quote_input_does(
 
 @REQUEST_INPUTS
 def test_deploy_scoring_seeds_the_request_input(project: Path, node_type: NodeType) -> None:
-    sample = project / "quotes.json"
-    sample.write_text(json.dumps([{"state": "NY", "limit": 1000}]), encoding="utf-8")
-    table = {
-        "path": "$[:]",
-        "label": "quote",
-        "emit": True,
-        "row_id_column": None,
-        "columns": [
-            {**_column("quote", "state", "str"), "path": "$[:].state"},
-            {**_column("quote", "limit", "int"), "path": "$[:].limit"},
-        ],
-    }
-    config: dict[str, Any] = {"tables": [table]}
-    if node_type is not NodeType.WORKBENCH_INPUT:
-        config["path"] = str(sample)
+    if node_type is NodeType.WORKBENCH_INPUT:
+        table = {
+            "name": "quote",
+            "rows": "one",
+            "columns": [_column("state", "str"), _column("limit", "int")],
+        }
+        config: dict[str, Any] = {"tables": [table]}
+        # One quote, its one-row table an object under its name, read into the table's frame.
+        request = pl.DataFrame([{"quote": {"state": "TX", "limit": 5}}])
+    else:
+        sample = project / "quotes.json"
+        sample.write_text(json.dumps([{"state": "NY", "limit": 1000}]), encoding="utf-8")
+        table = {
+            "path": "$[:]",
+            "label": "quote",
+            "emit": True,
+            "row_id_column": None,
+            "columns": [
+                {**_quote_column("quote", "state", "str"), "path": "$[:].state"},
+                {**_quote_column("quote", "limit", "int"), "path": "$[:].limit"},
+            ],
+        }
+        config = {"tables": [table], "path": str(sample)}
+        # The request's records, which deploy hands the port whole (BUG-31).
+        request = pl.DataFrame({"state": ["TX"], "limit": [5]})
     graph = PipelineGraph(
         nodes=[
             _node("request", node_type, config),
@@ -534,12 +639,7 @@ def test_deploy_scoring_seeds_the_request_input(project: Path, node_type: NodeTy
     )
 
     inputs = find_deploy_input_nodes(graph)
-    result = score_graph(
-        graph=graph,
-        input_df=pl.DataFrame({"state": ["TX"], "limit": [5]}),
-        input_node_ids=inputs,
-        output_node_id="out",
-    )
+    result = score_graph(graph=graph, input_df=request, input_node_ids=inputs, output_node_id="out")
 
     assert inputs == ["request"]
     assert result.select("state", "limit").to_dicts() == [{"state": "TX", "limit": 5}]
@@ -562,10 +662,14 @@ def test_a_workbench_input_previews_one_null_row_per_table(project: Path) -> Non
     # The join keeps its left key; every column keeps its declared type.
     assert joined.schema == pl.Schema({"state": pl.String, "limit": pl.Int64, "value": pl.Float64})
     assert joined.to_dicts() == [{"state": None, "limit": None, "value": None}]
-    with pytest.raises(RuntimeError, match="has no tables"):
+    with pytest.raises(WorkbenchInputError, match="has no tables"):
         workbench_table_frames({"tables": []})
-    with pytest.raises(RuntimeError, match="has no tables"):
-        workbench_table_labels({"tables": [{**_TABLES[0], "emit": False}]})
+    # A table with no columns yet is no port, and a node needs one.
+    with pytest.raises(WorkbenchInputError, match="have no columns yet"):
+        workbench_table_labels({"tables": [{**_TABLES[0], "columns": []}]})
+    assert workbench_table_labels({"tables": [{**_TABLES[0], "columns": []}, _TABLES[1]]}) == (
+        "items",
+    )
 
 
 def test_a_workbench_input_table_point_reads_directly(project: Path) -> None:
@@ -585,6 +689,47 @@ def test_a_workbench_input_table_point_reads_directly(project: Path) -> None:
     assert frame.to_dicts() == [{"value": None}]
 
 
+def test_a_saved_workbench_input_loads_with_its_ports(project: Path) -> None:
+    """The document's identities give a Workbench Input its tables' ports, read as the
+    editor reads a copy, without refusing a config that may still need repair."""
+    graph = _pricing(project, NodeType.WORKBENCH_INPUT)
+
+    document = load_pipeline_editor_document(_write(graph, project, "main"), project_root=project)
+
+    assert document.load_status == "ready"
+    request = next(node for node in document.nodes if node.authored_id == "request")
+    assert request.source_handle_input_names == {"policy": "policy", "items": "items"}
+    assert sorted(
+        edge.input_name for edge in document.edges if edge.source_authored_id == "request"
+    ) == ["items", "policy"]
+    # A table without a column, a name that cannot be a handle, a name already used whatever
+    # its case, and an entry that is not a table give no port; nothing is refused.
+    tables = [
+        {**_TABLES[0], "columns": []},
+        _TABLES[1],
+        {"name": "Items", "rows": "one", "columns": [_column("x", "int")]},
+        {"name": "class", "rows": "one", "columns": [_column("x", "int")]},
+        {"name": "half", "rows": "some", "columns": [_column("x", "int")]},
+        "policy",
+    ]
+    assert recoverable_request_input_source_handles(
+        NodeType.WORKBENCH_INPUT, {"tables": tables}
+    ) == ("items",)
+    assert recoverable_request_input_source_handles(NodeType.WORKBENCH_INPUT, {}) == ()
+
+    # A column whose type is not even a string is left out too, and the document still
+    # loads with the ports of the tables that read: a config to repair, not a crash.
+    broken = graph.model_copy(deep=True)
+    broken.nodes[0].data.config["tables"] = [
+        {**_TABLES[0], "columns": [{"name": "limit", "type": []}, {"name": "state", "type": {}}]},
+        _TABLES[1],
+    ]
+    loaded = load_pipeline_editor_document(_write(broken, project, "broken"), project_root=project)
+    assert loaded.load_status != "source_only"
+    request = next(node for node in loaded.nodes if node.authored_id == "request")
+    assert request.source_handle_input_names == {"items": "items"}
+
+
 def test_deploy_derives_a_workbench_inputs_request_schema(project: Path) -> None:
     graph = _pricing(project, NodeType.WORKBENCH_INPUT)
 
@@ -592,77 +737,36 @@ def test_deploy_derives_a_workbench_inputs_request_schema(project: Path) -> None
         "policy": str(pl.Struct({"state": pl.String, "limit": pl.Int64})),
         "items": str(pl.List(pl.Struct({"item_id": pl.String, "value": pl.Float64}))),
     }
-    clash = copy.deepcopy(_TABLES)
-    clash[0]["columns"].append({**_column("items", "count", "int"), "path": "$[:].items"})
-    with pytest.raises(ApiInputSchemaError, match="disagree"):
-        request_record_schema({"tables": clash})
+    # The dry run reads one quote with nothing filled in: one row of nulls per table.
+    assert _read_sample_row(graph, ["request"]).to_dicts() == [
+        {
+            "policy": {"state": None, "limit": None},
+            "items": [{"item_id": None, "value": None}],
+        }
+    ]
     empty = graph.model_copy(deep=True)
     empty.nodes[0].data.config["tables"] = []
     with pytest.raises(ValueError, match="has no tables"):
         infer_input_schema(empty, "request")
-    clashing = graph.model_copy(deep=True)
-    clashing.nodes[0].data.config["tables"] = clash
+    malformed = graph.model_copy(deep=True)
+    malformed.nodes[0].data.config["tables"] = [{**_TABLES[0], "path": "$[:]"}]
     with pytest.raises(
-        ValueError, match="Cannot derive the request schema of Workbench Input 'request'"
+        ValueError,
+        match=re.escape(
+            "Cannot derive the request schema of Workbench Input 'request': The Workbench "
+            "Input's tables are not as the workbench writes them (tables[0].path: Extra inputs "
+            "are not permitted)."
+        ),
     ):
-        infer_input_schema(clashing, "request")
-
-
-# A table of values: each element of `tags` is one row's `tag`.
-_TAGS: dict[str, Any] = {
-    "path": "$[:].tags[:]",
-    "label": "tags",
-    "emit": True,
-    "row_id_column": None,
-    "columns": [{**_column("tags", "tag", "str", many=True), "path": "$[:].tags[:].$value"}],
-}
-
-
-def test_the_request_schema_reads_a_list_of_values_and_skips_a_table_that_does_not_emit() -> None:
-    schema = request_record_schema({"tables": [_TAGS, {**_TABLES[1], "emit": False}]})
-
-    assert schema == pl.Schema({"tags": pl.List(pl.String)})
-
-
-@pytest.mark.parametrize(
-    ("label", "column"),
-    [
-        pytest.param(
-            "policy",
-            {**_column("policy", "limit_text", "str"), "path": "$[:].policy.limit"},
-            id="the same field with another type",
-        ),
-        pytest.param(
-            "policy",
-            {**_column("policy", "whole", "str"), "path": "$[:].policy.$value"},
-            id="values where there are fields",
-        ),
-        pytest.param(
-            "tags",
-            {**_column("tags", "name", "str", many=True), "path": "$[:].tags[:].meta.name"},
-            id="a field inside a list of values",
-        ),
-    ],
-)
-def test_the_request_schema_refuses_paths_that_disagree(label: str, column: dict[str, Any]) -> None:
-    tables = {table["label"]: table for table in copy.deepcopy([*_TABLES, _TAGS])}
-    tables[label]["columns"].append(column)
-
-    with pytest.raises(ApiInputSchemaError, match="disagree"):
-        request_record_schema({"tables": list(tables.values())})
+        infer_input_schema(malformed, "request")
 
 
 def test_deploy_resolves_a_workbench_input_without_a_sample_file(project: Path) -> None:
-    # One table of top-level columns: deploy hands the port the whole request (BUG-31).
+    # Deploy reads the request into the table, so the response's columns are the table's.
     table = {
-        "path": "$[:]",
-        "label": "quote",
-        "emit": True,
-        "row_id_column": None,
-        "columns": [
-            {**_column("quote", "state", "str"), "path": "$[:].state"},
-            {**_column("quote", "limit", "int"), "path": "$[:].limit"},
-        ],
+        "name": "quote",
+        "rows": "one",
+        "columns": [_column("state", "str"), _column("limit", "int")],
     }
     graph = PipelineGraph(
         nodes=[
@@ -679,8 +783,33 @@ def test_deploy_resolves_a_workbench_input_without_a_sample_file(project: Path) 
     )
 
     assert resolved.input_node_ids == ["request"]
-    assert resolved.input_schema == {"state": "String", "limit": "Int64"}
+    assert resolved.input_schema == {
+        "quote": str(pl.Struct({"state": pl.String, "limit": pl.Int64}))
+    }
     assert resolved.output_schema == {"state": "String", "limit": "Int64"}
+
+    # Deploy's test quotes are scored one request each, their expected outputs compared in
+    # the file's order: a file of several quotes passes, and a drift names its row.
+    def case(state: str, limit: int, expected_limit: int) -> dict[str, Any]:
+        return {
+            "input": {"quote": {"state": state, "limit": limit}},
+            "expected": {"state": state, "limit": expected_limit},
+        }
+
+    quotes = project / "test_quotes"
+    quotes.mkdir()
+    (quotes / "quotes.json").write_text(
+        json.dumps([case("TX", 5, 5), case("CA", 7, 7)]), encoding="utf-8"
+    )
+    (quotes / "drift.json").write_text(
+        json.dumps([case("TX", 5, 5), case("CA", 7, 8)]), encoding="utf-8"
+    )
+
+    results = {result["file"]: result for result in score_test_quotes(resolved, quotes)}
+
+    assert (results["quotes.json"]["status"], results["quotes.json"]["rows"]) == ("ok", 2)
+    assert results["drift.json"]["status"] == "error"
+    assert "row 1 column 'limit'" in str(results["drift.json"]["error"])
 
 
 def test_the_cache_report_reads_a_workbench_input_directly(project: Path) -> None:
@@ -773,46 +902,79 @@ def test_a_workbench_input_previews_its_sample(project: Path) -> None:
     with resolver.lease_resolved(resolution) as leased:
         assert leased.scan.collect().to_dicts() == [{"value": 10.0}, {"value": 30.0}]
 
-    # A missing or null object leaves the columns under it null and keeps the row; a table
-    # the sample gives no rows is one row of nulls; an unselected column is not read.
-    unselected = {**_column("policy", "count", "int"), "selected": False}
-    nested = {
-        "tables": [
-            {
-                "path": "$[:]",
-                "label": "policy",
-                "emit": True,
-                "row_id_column": None,
-                "columns": [
-                    _column("policy", "limit", "int"),
-                    {**_column("policy", "zone", "str"), "path": "$[:].policy.address.zone"},
-                    unselected,
-                ],
-            },
-            _TABLES[1],
-        ],
-        "sample": {"policy": {"limit": 1000, "address": None, "count": "not a number"}},
-    }
-    frames = workbench_table_frames(nested)
-    assert frames["policy"].collect().to_dicts() == [{"limit": 1000, "zone": None}]
+    # A column a row does not hold is null, and so is a column the quote does not name; a
+    # table the sample does not hold is one row of nulls.
+    partial = {"tables": _TABLES, "sample": {"policy": {"limit": 1000, "unread": "x"}}}
+    frames = workbench_table_frames(partial)
+    assert frames["policy"].collect().to_dicts() == [{"state": None, "limit": 1000}]
     assert frames["items"].collect().to_dicts() == [{"item_id": None, "value": None}]
 
 
-def test_a_list_of_values_in_the_sample_is_read_as_rows_and_refused_a_container() -> None:
-    config = {"tables": [_TAGS], "sample": {"tags": ["a", None]}}
+def test_a_demand_cuts_the_sample_to_the_ports_and_columns_asked_for() -> None:
+    config = {"tables": _TABLES, "sample": copy.deepcopy(_SAMPLE[0])}
 
-    assert workbench_table_frames(config)["tags"].collect().to_dicts() == [
-        {"tag": "a"},
-        {"tag": None},
-    ]
+    asked = workbench_table_frames(
+        config, port_columns={"items": frozenset({"value"}), "policy": None}
+    )
 
-    for sample, reason in (
-        ([], "the sample is a list, not an object"),
-        ({"tags": [["a"]]}, "tags[0] is a list, not a value"),
-        ({"tags": ["a", {"tag": "b"}]}, "tags[1] is an object, not a value"),
+    assert list(asked) == ["items", "policy"]
+    assert asked["items"].collect().to_dicts() == [{"value": 10.0}, {"value": 30.0}]
+    assert asked["policy"].collect_schema().names() == ["state", "limit"]
+    # A demand of no columns keeps the rows through one carrier column.
+    carried = workbench_table_frames(config, port_columns={"items": frozenset()})
+    assert carried["items"].collect_schema().names() == ["item_id"]
+    with pytest.raises(ValueError, match="requests unknown port 'nope'"):
+        workbench_table_frames(config, port_columns={"nope": None})
+    with pytest.raises(
+        ValueError,
+        match=re.escape("port_columns['items'] requests missing declared column(s): ['nope']"),
     ):
-        with pytest.raises(ApiInputSchemaError, match=re.escape(f"tables: {reason}. Correct")):
-            workbench_table_frames({**config, "sample": sample})
+        workbench_table_frames(config, port_columns={"items": frozenset({"nope"})})
+
+
+@pytest.mark.parametrize(
+    ("kind", "value", "read"),
+    [
+        ("str", "NY", "NY"),
+        ("int", 7, 7),
+        ("float", 7, 7.0),
+        ("float", 2.5, 2.5),
+        ("bool", False, False),
+        ("date", "2026-01-15", date(2026, 1, 15)),
+        ("int", None, None),
+    ],
+)
+def test_a_value_is_read_as_its_columns_type(kind: str, value: Any, read: Any) -> None:
+    tables = parse_workbench_tables(
+        [{"name": "t", "rows": "one", "columns": [_column("v", kind)]}], owner="Workbench Input"
+    )
+
+    assert read_quote(tables, {"t": {"v": value}})["t"].to_dicts() == [{"v": read}]
+
+
+@pytest.mark.parametrize(
+    ("kind", "value", "shown"),
+    [
+        ("int", True, "True"),
+        ("int", 5.5, "5.5"),
+        ("float", "7", "'7'"),
+        ("float", float("inf"), "inf"),
+        ("bool", 1, "1"),
+        ("str", 5, "5"),
+        ("date", "15/01/2026", "'15/01/2026'"),
+        ("date", "2026-13-40", "'2026-13-40'"),
+        ("int", "x" * 50, "'" + "x" * 38 + "…"),
+    ],
+)
+def test_a_value_that_is_not_of_its_columns_type_is_refused_naming_it(
+    kind: str, value: Any, shown: str
+) -> None:
+    tables = parse_workbench_tables(
+        [{"name": "t", "rows": "many", "columns": [_column("v", kind)]}], owner="Workbench Input"
+    )
+
+    with pytest.raises(WorkbenchInputError, match=re.escape(f"t[0].v is {shown}, not {kind!r}")):
+        read_quote(tables, {"t": [{"v": value}]})
 
 
 def test_a_workbench_inputs_table_point_follows_its_sample(project: Path) -> None:
@@ -828,10 +990,8 @@ def test_a_workbench_inputs_table_point_follows_its_sample(project: Path) -> Non
 
 
 _MISFITS = {
-    "wrong type": (
-        {"policy": {"limit": "lots"}},
-        "column 'limit' has a value that is not of its type 'int'",
-    ),
+    "wrong type": ({"policy": {"limit": "lots"}}, "policy.limit is 'lots', not 'int'"),
+    "not an object": ([], "the sample is a list, not an object"),
     "object for a list": ({"items": {"value": 1}}, "items is an object, not a list"),
     "value for an object": ({"policy": 17}, "policy is a value, not an object"),
     "value in a list": ({"items": [{"item_id": "A"}, 5]}, "items[1] is a value, not a row"),
@@ -848,16 +1008,16 @@ def test_a_misfit_sample_fails_what_reads_its_rows(
         "The workbench's sample does not fit this Workbench Input's tables: "
         f"{reason}. Correct it in the workbench and save it."
     )
-    with pytest.raises(ApiInputSchemaError, match=re.escape(message)):
+    with pytest.raises(WorkbenchInputError, match=re.escape(message)):
         _preview(_sampled(project, sample), "listed")
     # The sample is read whole, so a node reading only items still finds a misfit in policy.
-    with pytest.raises(ApiInputSchemaError, match=re.escape(message)):
+    with pytest.raises(WorkbenchInputError, match=re.escape(message)):
         _preview(_with_node(_sampled(project, sample), "doubled", _DOUBLED, "items"), "doubled")
     # Planning a join sizes both tables from the sample, and says what to correct.
     joined = _with_node(_sampled(project, sample), "joined", _JOINED, "policy", "items")
-    with pytest.raises(ApiInputSchemaError, match=re.escape(message)):
+    with pytest.raises(WorkbenchInputError, match=re.escape(message)):
         _preview(joined, "joined")
-    with pytest.raises(ApiInputSchemaError, match=re.escape(message)):
+    with pytest.raises(WorkbenchInputError, match=re.escape(message)):
         _import(_write(_sampled(project, sample), project)).pipeline.run(source="live")
 
     # Resolving points reads the tables alone, so the cache report still has them.
@@ -917,7 +1077,9 @@ def test_a_request_never_reads_the_sample(project: Path, sample: dict[str, Any])
     scored = _import(_write(graph, project)).pipeline.score(request)
     deployed = score_graph(
         graph=graph,
-        input_df=pl.DataFrame({"state": ["TX"], "limit": [5], "item_id": ["Z"], "value": [7.0]}),
+        input_df=_quote(
+            {"policy": {"state": "TX", "limit": 5}, "items": [{"item_id": "Z", "value": 7.0}]}
+        ),
         input_node_ids=["request"],
         output_node_id="listed",
     )
@@ -927,6 +1089,36 @@ def test_a_request_never_reads_the_sample(project: Path, sample: dict[str, Any])
     without = _pricing(project, NodeType.WORKBENCH_INPUT)
     assert infer_input_schema(graph, "request") == infer_input_schema(without, "request")
     assert_frame_equal(_read_sample_row(graph, ["request"]), _read_sample_row(without, ["request"]))
+
+
+def _quote(*quotes: dict[str, Any]) -> pl.DataFrame:
+    """A request as a deployed pipeline builds it: its quotes as records."""
+    return pl.DataFrame(list(quotes))
+
+
+def test_a_deployed_pipeline_reads_the_request_into_the_tables(project: Path) -> None:
+    graph = _pricing(project, NodeType.WORKBENCH_INPUT)
+    quote = {"policy": {"state": "TX", "limit": 5}, "items": [{"item_id": "Z", "value": 7.0}]}
+
+    def deployed(request: pl.DataFrame) -> pl.DataFrame:
+        return score_graph(
+            graph=graph, input_df=request, input_node_ids=["request"], output_node_id="listed"
+        )
+
+    assert deployed(_quote(quote))["name"].to_list() == ["TX", "Z", "2.0"]
+    # One quote per request, and each part as its table's shape.
+    with pytest.raises(
+        WorkbenchInputError, match="reads one quote per request, and this request holds 2"
+    ):
+        deployed(_quote(quote, quote))
+    with pytest.raises(
+        WorkbenchInputError,
+        match=re.escape(
+            "The request does not fit this Workbench Input's tables: items is an object, not "
+            "a list."
+        ),
+    ):
+        deployed(_quote({"policy": {"state": "TX", "limit": 5}, "items": {"item_id": "Z"}}))
 
 
 def test_generated_code_runs_a_workbench_input(project: Path) -> None:

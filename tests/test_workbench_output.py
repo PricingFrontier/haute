@@ -4,7 +4,7 @@ Its tables are a copy of the response's tables the project's workbench supplies
 (specs/workbench). Each is a port: the frame connected to it fills it, each column from
 the frame column its mapping picks or else the same-named one, given its declared type. The
 node's result is its tables; where the pipeline answers a request they become the response
-for one quote, built by the Quote Response's assembler.
+for one quote, each table under its name.
 """
 
 from __future__ import annotations
@@ -56,26 +56,16 @@ ONE_RESPONSE_NODE = (
 NODE_TYPES_TS = Path(__file__).resolve().parents[1] / "frontend" / "src" / "utils" / "nodeTypes.ts"
 
 
-def _column(table: str, name: str, kind: str, *, many: bool = False) -> dict[str, Any]:
-    level = f"$[:].{table}[:]" if many else f"$[:].{table}"
-    return {
-        "name": name,
-        "path": f"{level}.{name}",
-        "type": kind,
-        "status": "Confirmed",
-        "selected": True,
-        "levels": None,
-    }
+def _column(name: str, kind: str) -> dict[str, Any]:
+    return {"name": name, "type": kind}
 
 
-def _table(label: str, *columns: tuple[str, str], many: bool = False) -> dict[str, Any]:
+def _table(name: str, *columns: tuple[str, str], many: bool = False) -> dict[str, Any]:
     """A table in the shape the workbench supplies."""
     return {
-        "path": f"$[:].{label}[:]" if many else "$[:]",
-        "label": label,
-        "emit": True,
-        "row_id_column": None,
-        "columns": [_column(label, name, kind, many=many) for name, kind in columns],
+        "name": name,
+        "rows": "many" if many else "one",
+        "columns": [_column(column, kind) for column, kind in columns],
     }
 
 
@@ -224,7 +214,7 @@ def _mapped(mapping: dict[str, Any], *extra: tuple[str, str]) -> PipelineGraph:
     """The priced graph, its pricing table given *extra* columns and its mapping *mapping*."""
     graph = _priced()
     config = graph.node_map["response"].data.config
-    config["tables"][0]["columns"] += [_column("pricing", name, kind) for name, kind in extra]
+    config["tables"][0]["columns"] += [_column(name, kind) for name, kind in extra]
     config["mapping"] = mapping
     return graph
 
@@ -241,6 +231,16 @@ def test_the_mapping_picks_what_fills_each_column(project: Path) -> None:
 
     assert pricing == {"premium": 1000.0, "limit": 100.0, "referral": None, "discount": None}
     assert _response(graph)[0]["pricing"] == {"premium": 1000.0, "limit": 100.0}
+
+
+def test_a_column_of_nulls_fills_a_column_of_any_type(project: Path) -> None:
+    # A frame column that is null throughout has no dtype to disagree with the declared one.
+    graph = _priced()
+    graph.node_map["priced"].data.config["code"] = f"{_PRICED}\ndf = df.with_columns(referral=pl.lit(None))"
+
+    (pricing,) = _tables(graph)["pricing"].to_dicts()
+
+    assert pricing == {"premium": 100.0, "limit": 1000.0, "referral": None}
 
 
 def test_a_workbench_output_previews_before_the_workbench_has_a_sample(project: Path) -> None:
@@ -328,11 +328,8 @@ def test_generated_code_runs_a_workbench_output(project: Path) -> None:
 
 
 def _one_table_quote() -> PipelineGraph:
-    """One request table of top-level columns: deploy hands the port the whole request (BUG-31)."""
+    """One request table, which a deployed pipeline reads out of the request."""
     request = _table("quote", ("state", "str"), ("limit", "int"))
-    request["columns"] = [
-        {**column, "path": f"$[:].{column['name']}"} for column in request["columns"]
-    ]
     return PipelineGraph(
         nodes=[
             _node("request", NodeType.WORKBENCH_INPUT, {"tables": [request]}),
@@ -352,11 +349,13 @@ def _one_table_quote() -> PipelineGraph:
 
 def test_deploy_answers_with_a_workbench_output(project: Path) -> None:
     graph = _one_table_quote()
+    # One quote, as a deployed pipeline's request holds it: each table under its name.
+    request = pl.DataFrame([{"quote": {"state": "TX", "limit": 500}}])
 
     assert find_output_node(graph) == "response"
     scored = score_graph(
         graph=graph,
-        input_df=pl.DataFrame({"state": ["TX"], "limit": [500]}),
+        input_df=request,
         input_node_ids=find_deploy_input_nodes(graph),
         output_node_id="response",
     )
@@ -372,7 +371,7 @@ def test_deploy_answers_with_a_workbench_output(project: Path) -> None:
     # become.
     picked = score_graph(
         graph=graph,
-        input_df=pl.DataFrame({"state": ["TX"], "limit": [500]}),
+        input_df=request,
         input_node_ids=find_deploy_input_nodes(graph),
         output_node_id="response",
         output_fields=["pricing"],
@@ -382,6 +381,12 @@ def test_deploy_answers_with_a_workbench_output(project: Path) -> None:
 
 def _no_tables(graph: PipelineGraph) -> None:
     graph.node_map["response"].data.config["tables"] = []
+    graph.edges = [edge for edge in graph.edges if edge.target != "response"]
+
+
+def _no_columns(graph: PipelineGraph) -> None:
+    for table in graph.node_map["response"].data.config["tables"]:
+        table["columns"] = []
     graph.edges = [edge for edge in graph.edges if edge.target != "response"]
 
 
@@ -401,7 +406,7 @@ def _declares(column: tuple[str, str]) -> Callable[[PipelineGraph], None]:
         pricing = graph.node_map["response"].data.config["tables"][0]
         pricing["columns"] = [
             entry for entry in pricing["columns"] if entry["name"] != column[0]
-        ] + [_column("pricing", *column)]
+        ] + [_column(*column)]
 
     return change
 
@@ -426,6 +431,11 @@ _FAILURES: dict[str, tuple[Callable[[PipelineGraph], None], str]] = {
         "This Workbench Output has no tables: add output tables to the workbench's schema "
         "and save it.",
     ),
+    "no_columns": (
+        _no_columns,
+        "This Workbench Output's tables have no columns yet: add their columns in the "
+        "workbench's schema and save it.",
+    ),
     "unconnected": (_unconnected, "Connect a frame to the Workbench Output's 'item_prices' table."),
     "on_no_table": (_on_no_table, "on 'nope', which is none of its tables"),
     "mapped_from_a_missing_column": (
@@ -438,10 +448,36 @@ _FAILURES: dict[str, tuple[Callable[[PipelineGraph], None], str]] = {
         "The Workbench Output's mapping has a 'discount' column in its 'pricing' table, which "
         "has no such column.",
     ),
+    "mapping_not_an_object": (
+        _remapped("premium"),
+        "The Workbench Output's mapping must be an object of tables, each an object of columns.",
+    ),
+    "mapping_a_table_it_lacks": (
+        _remapped({"nope": {"premium": "premium"}}),
+        "The Workbench Output's mapping has a 'nope' table, which is none of its tables "
+        "(pricing, item_prices).",
+    ),
+    "mapping_entries_not_an_object": (
+        _remapped({"pricing": "premium"}),
+        "The Workbench Output's mapping for its 'pricing' table must be an object of columns.",
+    ),
+    "mapping_source_not_a_name": (
+        _remapped({"pricing": {"premium": 5}}),
+        "The Workbench Output's mapping for 'pricing'.'premium' must name a column, or be null "
+        "for none.",
+    ),
     "mistyped_column": (
         _declares(("referral", "int")),
         "The Workbench Output's 'pricing' table declares 'referral' as int, but 'referral', "
         "which fills it, is String.",
+    ),
+    "mistyped_bool": (
+        _declares(("referral", "bool")),
+        "declares 'referral' as bool, but 'referral', which fills it, is String.",
+    ),
+    "mistyped_date": (
+        _declares(("referral", "date")),
+        "declares 'referral' as date, but 'referral', which fills it, is String.",
     ),
     "two_rows": (
         _fed(f"{_PRICED}\ndf = pl.concat([df, df])"),

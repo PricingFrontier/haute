@@ -953,6 +953,7 @@ later write and cleanup checks still compare against the captured identities.
 | `ContractMismatchError` | trace, preview, output-assemble dry-run | 422 / embedded `NodeResult.error` / 422 | Message already names the node + symmetric column diff. |
 | `SchemaMismatchError` | preview | embedded `NodeResult.error` | Adapted identically to `ContractMismatchError`, so a propagated join-key dtype mismatch never becomes a generic 500. |
 | `ParseError` | preview | embedded `NodeResult.error` | Preview surfaces graph-shape issues per node. An unreadable document on the editor-document routes propagates to the request-ID backstop as a sanitized 500 (authored failures arrive as 200 degraded/source-only documents). |
+| `WorkbenchTablesError`, `WorkbenchInputError` | workbench tables; preview execution | 422 | A workbench node's tables the pipeline cannot take, or a Workbench Input with no port or a sample or request that does not fit its tables; the tables route and the preview worker (which maps a remote error by its exact class) answer the public payload. |
 | `ApiInputSchemaError` | json-cache; preview/write execution | 422 | JSON cache retains its `type` discriminator envelope; execution routes use the public-contract adapter (`api_input_schema_invalid`). |
 | `OutputMappingSchemaError` | output-assemble dry-run | 422 | Raised both by the schema-only pre-check and if execution surfaces it deeper (an unmapped port). |
 | `ExecutionAdmissionError`, `ExecutionMemoryLimitExceededError` | any synchronous route (application handler) | 507 | Payload is `exc.to_payload()`, nested under `detail`, through `memory_limit_http_exception`; training and the optimiser pass an operation noun that adds the curated `message`. |
@@ -975,6 +976,8 @@ use the same stable codes and named fields under terminal `contract_error` (or `
 | Exception | Stable code | Named fields |
 |---|---|---|
 | `ApiInputSchemaError` | `api_input_schema_invalid` | — |
+| `WorkbenchTablesError` | `workbench_tables_invalid` | — |
+| `WorkbenchInputError` | `workbench_input_invalid` | — |
 | `PreambleError` | `preamble_failed` | `source_line` |
 | `ContractResolutionError` | `contract_resolution_failed` | `node_id`, `node_type`, `failure_kind` |
 | `InputPreparationError` | `input_preparation_failed` | `node_id`, `identity_digest`, `build_class`, `reason_code`, `remediation` |

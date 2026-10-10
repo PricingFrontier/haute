@@ -19,14 +19,10 @@ Two smaller shared utilities back these: a single path-grammar core used to addr
 locations inside a JSON document from both the input and output sides, and a
 JSON-safe value encoder used whenever pipeline data crosses an HTTP boundary.
 
-Two node types read a request through this shredding, the request inputs: the Quote Input,
-whose tables are built in its panel, and the Workbench Input, whose tables the project's
-workbench supplies ([workbench](../workbench/high-level.md)). Everything this specification
-says of how a Quote Input's `tables` read a request holds for a Workbench Input with the same
-`tables`. A Workbench Input reads no file, so nothing here about a source file or its table
-snapshots applies to it: with no request it shreds the workbench's sample quote through its
-tables in memory, as one request, and a table the sample gives no rows is one row of nulls,
-typed as declared.
+The Quote Input alone reads a request through this shredding. The Workbench Input, whose
+tables the project's workbench supplies ([workbench](../workbench/high-level.md)), reads a
+quote's tables as dataframes with no path, and takes from here only the column types, held
+equal to this specification's by a test, and the one rule a table's label follows.
 
 ## Scope
 

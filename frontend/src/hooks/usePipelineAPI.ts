@@ -35,7 +35,7 @@ import {
 } from "../types/pipelineDocument"
 import { type ColumnFingerprintInput } from "../utils/columnFingerprint"
 import { authoritativeSourceHandles } from "../utils/apiInputPorts"
-import { workbenchOutputTableLabels } from "../utils/workbenchTables"
+import { workbenchTablePorts } from "../utils/workbenchTables"
 import {
   runtimeNodeIdForVisibleNode,
   type DrilledOccurrenceIdentity,
@@ -128,7 +128,7 @@ function nodeLabel(node: Node): string {
 function previewPortLabel(node: Node): string | undefined {
   const data = nodeData(node)
   // A Workbench Output's tables are its frames: its preview starts at the first.
-  if (data.nodeType === NODE_TYPES.WORKBENCH_OUTPUT) return workbenchOutputTableLabels(data.config)[0]
+  if (data.nodeType === NODE_TYPES.WORKBENCH_OUTPUT) return workbenchTablePorts(data.config)[0]
   if (!isRequestInputType(data.nodeType)) return undefined
   return authoritativeSourceHandles({
     id: node.id,

@@ -84,24 +84,14 @@ def _data_input(path: str, **extra: object) -> dict:
 
 # A workbench's tables: one the Workbench Input reads and one the Workbench Output fills.
 _WORKBENCH_INPUT = {
-    "tables": [
-        {
-            "path": "$[:]",
-            "label": "keyed",
-            "emit": True,
-            "columns": [{"name": "state", "path": "$[:].keyed.state", "type": "str"}],
-        }
-    ]
+    "tables": [{"name": "keyed", "rows": "one", "columns": [{"name": "state", "type": "str"}]}]
 }
 _WORKBENCH_OUTPUT = {
     "tables": [
         {
-            "path": "$[:]",
-            "label": "pricing_output",
-            "emit": True,
-            "columns": [
-                {"name": "premium", "path": "$[:].pricing_output.premium", "type": "float"}
-            ],
+            "name": "pricing_output",
+            "rows": "one",
+            "columns": [{"name": "premium", "type": "float"}],
         }
     ]
 }

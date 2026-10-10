@@ -184,8 +184,9 @@
    manifest provenance.
 8. `infer_input_schema()` (call `collect_schema()` on the first input node's source;
    lazy readers avoid row collection, while the existing plain-JSON reader may parse
-   eagerly). A Workbench Input has no source: its schema is `request_record_schema` of its
-   tables, and `_read_sample_row` gives one record of nulls in it
+   eagerly). A Workbench Input has no source: its schema is `quote_schema` of its
+   tables (`haute._workbench_tables`), and `_read_sample_row` gives `null_quote` of them,
+   one quote with nothing filled in, one row of nulls per table
    ([workbench](../workbench/low-level.md)).
    Then `infer_deploy_execution_policy()` plans the served `DEPLOY_BATCH` strategy once,
    over the same one-row sample (`_read_sample_row`) and the same bundled-contract graph
@@ -266,7 +267,10 @@ least one `*.json` file and pre-checks every quote's rows
 against the required input-schema columns (catching a missing column before scoring even
 starts, since a passthrough graph wouldn't otherwise surface it), then calls
 `score_test_quotes()` with `config.output_fields` to score the same projection served at
-runtime and collect per-file errors. All
+runtime and collect per-file errors (a Quote Input's cases as one request, a Workbench
+Input's one request each, since it reads one quote per request, each case's expected output
+compared with its own request's one row and reported by its row in the file;
+[workbench](../workbench/low-level.md)). All
 structural + test-quote errors are combined into one `DeployError` if any exist.
 On success, `validate_deploy()` returns that exact per-file result list so a
 presentation caller can render timings/status without executing the scorer again.

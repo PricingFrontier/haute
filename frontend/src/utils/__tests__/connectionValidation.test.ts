@@ -242,8 +242,8 @@ describe("a Workbench Output's tables", () => {
       nodeType: NODE_TYPES.WORKBENCH_OUTPUT,
       config: {
         tables: [
-          { path: "$[:]", label: "pricing_output", emit: true, columns: [] },
-          { path: "$[:].layers[:]", label: "layers", emit: true, columns: [] },
+          { name: "pricing_output", rows: "one", columns: [{ name: "premium", type: "float" }] },
+          { name: "layers", rows: "many", columns: [{ name: "layer", type: "int" }] },
         ],
       },
     },

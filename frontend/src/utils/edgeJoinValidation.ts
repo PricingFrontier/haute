@@ -1,6 +1,6 @@
 import { EDGE_JOIN_BASE_HANDLE, EDGE_JOIN_JOIN_HANDLE, edgeJoinCanonicalTargetHandle } from "./edgeJoinRoles"
 import { NODE_TYPE_META, NODE_TYPES, isRequestInputType } from "./nodeTypes"
-import { apiInputFrameColumns } from "./apiInputPorts"
+import { requestInputFrameColumns } from "./apiInputPorts"
 
 export type EdgeJoinColumnInfo = {
   name: string
@@ -263,7 +263,7 @@ function getColumns(
   node: EdgeJoinValidationNode | undefined,
 ): EdgeJoinColumnInfo[] {
   if (edge && node?.data && isRequestInputType(node.data.nodeType) && Array.isArray(node.data.config?.tables)) {
-    return apiInputFrameColumns(node.data.config, edge.sourceHandle)
+    return requestInputFrameColumns(node.data.nodeType, node.data.config, edge.sourceHandle)
   }
   return node?.data?._columns ?? []
 }

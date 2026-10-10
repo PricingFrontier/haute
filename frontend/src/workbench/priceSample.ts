@@ -9,7 +9,7 @@ import { previewNode } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
 import type { GraphPayload, WorkbenchTablesResponse } from "../api/types"
 import { NODE_TYPES } from "../utils/nodeTypes"
-import { WORKBENCH_COPY_PATCHES, workbenchOutputTableLabels, type PricedSample } from "../utils/workbenchTables"
+import { WORKBENCH_COPY_PATCHES, workbenchTablePorts, type PricedSample } from "../utils/workbenchTables"
 
 /** The preview route's most rows: a quote's many-row tables fit. */
 const ROW_LIMIT = 10_000
@@ -28,7 +28,7 @@ export async function priceSample(graph: GraphPayload, workbench: WorkbenchTable
     )
   }
   const priced = { ...graph, nodes }
-  const labels = workbenchOutputTableLabels(output.data.config as Record<string, unknown> | undefined)
+  const labels = workbenchTablePorts(output.data.config as Record<string, unknown> | undefined)
   const tables = await Promise.all(
     labels.map(async (label) => {
       const result = await previewNode({ graph: priced, nodeId: output.id, rowLimit: ROW_LIMIT, source, portLabel: label })

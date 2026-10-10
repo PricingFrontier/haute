@@ -206,10 +206,10 @@ def resolve_workbench_input_from_config(
 ) -> dict[str, _Frame]:
     """Load a Workbench Input's frames from its inline config or JSON sidecar.
 
-    It reads no file: each emitting table is its sample's rows, or one row of nulls
-    with its declared dtypes when the sample gives it none (specs/workbench).
+    It reads no file: each table is its sample's rows, or one row of nulls with its
+    declared dtypes when the sample gives it none (specs/workbench).
     """
-    from haute._json_shred._cache import workbench_table_frames
+    from haute._workbench_input import workbench_table_frames
 
     config = _resolve_node_config(config_or_path, base_dir)
     return dict(workbench_table_frames(config, port_columns=port_columns))
@@ -594,7 +594,7 @@ def assemble_workbench_output_from_config(
     cfg = _resolve_node_config(config, base_dir)
     tables = workbench_output_tables(cfg)
     mapping = workbench_output_mapping(cfg, tables)
-    labels = [table.label for table in tables]
+    labels = [table.name for table in tables]
     if ports is None or len(ports) != len(dfs):
         raise WorkbenchOutputError(
             "A Workbench Output fills each table from the frame connected to its port, so it "

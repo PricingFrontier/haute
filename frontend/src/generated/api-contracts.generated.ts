@@ -2377,22 +2377,33 @@ export interface WorkbenchStatusResponse {
   form: string | null;
 }
 /**
- * The workbench's tables, in the Quote Input's v2 shape, as its form defines them now.
+ * The workbench's tables, as the pipeline holds them, as its form defines them now.
  *
  * ``tables`` are the Workbench Input's; ``sample`` is the sample quote typed while
  * building, as a request holds it: ``{}`` for none; ``response_tables`` are the tables a
  * priced quote fills in, in the same shape, which a Workbench Output fills: ``[]`` for none.
  */
 export interface WorkbenchTablesResponse {
-  response_tables: {
-    [k: string]: unknown;
-  }[];
+  response_tables: WorkbenchTable[];
   sample: {
     [k: string]: unknown;
   };
-  tables: {
-    [k: string]: unknown;
-  }[];
+  tables: WorkbenchTable[];
+}
+/**
+ * A table: a port of the node, one row per quote or many, and its columns.
+ */
+export interface WorkbenchTable {
+  columns: WorkbenchColumn[];
+  name: string;
+  rows: 'one' | 'many';
+}
+/**
+ * A column of a table: its name in the frame and its type.
+ */
+export interface WorkbenchColumn {
+  name: string;
+  type: 'int' | 'float' | 'str' | 'bool' | 'date';
 }
 /**
  * The workbench's form as its file holds it now, with the file's revision.

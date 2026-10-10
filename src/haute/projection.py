@@ -3143,6 +3143,8 @@ def _declared_api_input_port_columns(
     """
     if node.data.nodeType not in REQUEST_INPUT_NODE_TYPES:
         return None
+    if node.data.nodeType is NodeType.WORKBENCH_INPUT:
+        return _declared_workbench_port_columns(node)
     tables = node.data.config.get("tables")
     if not isinstance(tables, list):
         return None
@@ -3170,6 +3172,22 @@ def _declared_api_input_port_columns(
             return None
         ports[label] = frozenset(selected)
     return ports or None
+
+
+def _declared_workbench_port_columns(node: GraphNode) -> dict[str, frozenset[str]] | None:
+    """A Workbench Input's ports with their columns: every column of every table with one.
+
+    A config its loader would refuse returns ``None``, as a Quote Input's does, so the loader
+    reports the authoritative error.
+    """
+    from haute._workbench_input import workbench_input_tables
+    from haute._workbench_tables import WorkbenchTablesError
+
+    try:
+        tables = workbench_input_tables(node.data.config)
+    except WorkbenchTablesError:
+        return None
+    return {table.name: frozenset(column.name for column in table.columns) for table in tables}
 
 
 def api_input_port_columns_by_node(

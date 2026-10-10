@@ -12,30 +12,16 @@ vi.mock("../../api/client", async (importOriginal) => ({
 
 import type { Node } from "@xyflow/react"
 import { ApiError, previewNode } from "../../api/client"
-import type { GraphPayload, PreviewNodeResponse, WorkbenchTablesResponse } from "../../api/types"
+import type { GraphPayload, PreviewNodeResponse, WorkbenchTable, WorkbenchTablesResponse } from "../../api/types"
 import { priceSample } from "../priceSample"
 
 const preview = vi.mocked(previewNode)
 
-const column = (table: string, name: string, type: string) => ({
-  name,
-  path: `$[:].${table}.${name}`,
-  type,
-  status: "Confirmed",
-  selected: true,
-  levels: null,
-})
-const policy = { path: "$[:]", label: "policy_details", emit: true, row_id_column: null, columns: [column("policy_details", "exposure", "float")] }
-const pricing = { path: "$[:]", label: "pricing_output", emit: true, row_id_column: null, columns: [column("pricing_output", "premium", "float")] }
-const layers = {
-  path: "$[:].layer_premiums[:]",
-  label: "layer_premiums",
-  emit: true,
-  row_id_column: "layer",
-  columns: [{ ...column("layer_premiums", "layer", "int"), path: "$[:].layer_premiums[:].layer" }],
-}
+const policy: WorkbenchTable = { name: "policy_details", rows: "one", columns: [{ name: "exposure", type: "float" }] }
+const pricing: WorkbenchTable = { name: "pricing_output", rows: "one", columns: [{ name: "premium", type: "float" }] }
+const layers: WorkbenchTable = { name: "layer_premiums", rows: "many", columns: [{ name: "layer", type: "int" }] }
 const typed = { policy_details: { exposure: 100000 } }
-const workbench = (responseTables: Record<string, unknown>[]): WorkbenchTablesResponse => ({
+const workbench = (responseTables: WorkbenchTable[]): WorkbenchTablesResponse => ({
   tables: [policy],
   sample: typed,
   response_tables: responseTables,

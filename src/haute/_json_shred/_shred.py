@@ -17,7 +17,6 @@ from haute._api_input_schema import (
     ApiInputSchemaError,
     ColumnType,
     PathSeg,
-    _parse_dollar_path,
     array_depth,
     parse_column_path_full,
     parse_table_path,
@@ -605,92 +604,6 @@ def _declared_frame_schema(table_spec: _EmittingTableSpec) -> pl.Schema:
             for name, _leaf, type_token, _depth in table_spec.columns
         },
     )
-
-
-@dataclass  # pragma: no mutate - declaration metadata, not runtime logic
-class _RecordField:
-    """One object or array field of a request record, as the tables' paths place it."""
-
-    is_array: bool
-    fields: dict[str, _RecordField | type[pl.DataType]] = field(default_factory=dict)
-    # A scalar array's element type: its column path ends at the reserved leaf.
-    element: type[pl.DataType] | None = None
-
-
-def request_record_schema(v2_config: Mapping[str, Any]) -> pl.Schema:
-    """Return the schema of one request record that a request input's tables read.
-
-    Each emitting table's own path, then each of its selected columns' paths, is
-    walked hop by hop as the shared parser splits it: an object hop is a
-    ``pl.Struct`` field, an array hop a ``pl.List`` of ``pl.Struct``, and a
-    column's leaf has its declared type. A column ending at the reserved
-    ``$value`` leaf makes its array a ``pl.List`` of that type, and a table whose
-    selected columns all sit at an ancestor level keeps its own array, of an empty
-    ``pl.Struct``. Deploy reads a Workbench Input's request schema here, as it
-    reads a Quote Input's from its sample file (specs/workbench). Two paths that
-    disagree about a field raise :class:`ApiInputSchemaError`.
-    """
-    validate_v2_schema(dict(v2_config))
-    root: dict[str, _RecordField | type[pl.DataType]] = {}
-
-    def walk(path: str, hops: Sequence[PathSeg]) -> tuple[dict[str, Any], _RecordField | None]:
-        """Create each hop's field, and return the last hop's fields and record."""
-        fields, record = root, None
-        for index, (key, is_array) in enumerate(hops):
-            current = fields.get(key)
-            if current is None:
-                current = fields[key] = _RecordField(is_array)
-            if not isinstance(current, _RecordField) or current.is_array != is_array:
-                _conflicting_request_field(path, key)
-            if current.element is not None and index < len(hops) - 1:
-                _conflicting_request_field(path, key)  # nothing lies inside a scalar array
-            fields, record = current.fields, current
-        return fields, record
-
-    for table in v2_config["tables"]:
-        if not table_is_emitting(table):
-            continue
-        walk(table["path"], parse_table_path(table["path"]))
-        for column in table.get("columns") or []:
-            if not column.get("selected"):
-                continue
-            path = column["path"]
-            *hops, (leaf, _leaf_is_array) = _parse_dollar_path(path)
-            dtype = _POLARS_TYPE_MAP[cast(ColumnType, column["type"])]
-            fields, record = walk(path, hops)
-            if leaf == _SCALAR_VALUE_LEAF:
-                if (
-                    record is None
-                    or not record.is_array
-                    or record.fields
-                    or record.element not in (None, dtype)
-                ):
-                    _conflicting_request_field(path, leaf)
-                record.element = dtype
-            elif (record is not None and record.element is not None) or fields.get(
-                leaf, dtype
-            ) is not dtype:
-                _conflicting_request_field(path, leaf)
-            else:
-                fields[leaf] = dtype
-    return pl.Schema({name: _record_dtype(value) for name, value in root.items()})
-
-
-def _conflicting_request_field(path: str, key: str) -> NoReturn:
-    raise ApiInputSchemaError(
-        f"Two columns' paths disagree about the request field {key!r}: one reads it as "
-        "a value and another as an object or list, or with another type.",
-        path=path,
-    )
-
-
-def _record_dtype(value: _RecordField | type[pl.DataType]) -> pl.DataType | type[pl.DataType]:
-    if not isinstance(value, _RecordField):
-        return value
-    if value.element is not None:
-        return pl.List(value.element)
-    struct = pl.Struct({name: _record_dtype(child) for name, child in value.fields.items()})
-    return pl.List(struct) if value.is_array else struct
 
 
 def _rows_to_frame(

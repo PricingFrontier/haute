@@ -10,21 +10,13 @@ import { WORKBENCH_DISABLED_NOTE } from "../../panels/editors/WorkbenchInputEdit
 import type { InputSource } from "../../panels/editors/_shared"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
 
-const column = (table: string, name: string, type: string, many = false) => ({
-  name,
-  path: many ? `$[:].${table}[:].${name}` : `$[:].${table}.${name}`,
-  type,
-  status: "Confirmed",
-  selected: true,
-  levels: null,
-})
+const column = (name: string, type: string) => ({ name, type })
 const config: Record<string, unknown> = {
   tables: [
-    { path: "$[:]", label: "pricing_output", emit: true, row_id_column: null,
-      columns: [column("pricing_output", "premium", "float"), column("pricing_output", "referral", "str")] },
-    { path: "$[:].layers[:]", label: "layers", emit: true, row_id_column: "layer",
-      columns: [column("layers", "layer", "int", true), column("layers", "premium", "float", true)] },
-    { path: "$[:]", label: "two words", emit: true, row_id_column: null, columns: [] },
+    { name: "pricing_output", rows: "one", columns: [column("premium", "float"), column("referral", "str")] },
+    { name: "layers", rows: "many", columns: [column("layer", "int"), column("premium", "float")] },
+    { name: "two words", rows: "one", columns: [column("x", "int")] },
+    { name: "bare", rows: "one", columns: [] },
   ],
 }
 const priced: InputSource = {
@@ -72,6 +64,9 @@ describe("WorkbenchOutputEditor", () => {
     expect(screen.getByTestId("workbench-table-layers")).toHaveTextContent("many per quote")
     expect(screen.getByTestId("workbench-table-connection-layers")).toHaveTextContent("Not connected")
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument()
+    // A table without a column has no port, so nothing to connect.
+    expect(screen.getByTestId("workbench-table-bare")).toHaveTextContent("No columns yet, so no port.")
+    expect(screen.queryByTestId("workbench-table-connection-bare")).not.toBeInTheDocument()
   })
 
   it("shows what fills each column: a same-named column by name, or nothing, flagged", () => {
