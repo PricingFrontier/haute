@@ -97,6 +97,37 @@ describe("useWorkbenchTables", () => {
     expect(onUpdateNode).not.toHaveBeenCalled()
   })
 
+  it("reports an update the document refuses outright, and a fence closed during its fetch, as not brought up to date", async () => {
+    const hook = render()
+    let settle: (published: boolean) => void = () => {}
+    useWorkbenchStore.setState({ awaitTables: vi.fn(() => new Promise<boolean>((resolve) => { settle = resolve })) })
+
+    // The commit controller refuses at once, as it does for a read-only document, and
+    // keeps refusing: the render's pass sends the update and is refused, the request's
+    // pass tries again and is refused again, and the caller is told.
+    onUpdateNode.mockImplementation((_nodeId, _data, options) => {
+      const result = { ok: false as const, error: "This pipeline document is read-only." }
+      options?.onSettled?.(result)
+      return result
+    })
+    const refusedOutright = hook.result.current.bringUpToDate()
+    publish(fetches, "policy")
+    settle(true)
+    await expect(refusedOutright).resolves.toBe(false)
+    expect(updates()).toEqual([["workbench", tables("policy")], ["workbench", tables("policy")]])
+
+    // The fence closes while the fetch runs (a submodel opened, the assistant's turn
+    // started): the save that asked began before it, and is told nothing was applied.
+    onUpdateNode.mockImplementation(() => ({ ok: true }))
+    graphRef.current.nodes.push(workbenchInput({ tables: [] }, "later"))
+    const fenced = hook.result.current.bringUpToDate()
+    hook.rerender({ editable: false })
+    publish(fetches, "policy")
+    settle(true)
+    await expect(fenced).resolves.toBe(false)
+    expect(updates()).toHaveLength(2)
+  })
+
   it("fetches when the workbench is enabled and on each document adoption", () => {
     useWorkbenchStore.setState({ enabled: false })
     render()

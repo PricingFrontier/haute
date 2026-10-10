@@ -24,8 +24,9 @@ export type UseWorkbenchTablesOptions = {
  * palette is reported through `nodeCreated`, so one made while its tables were being
  * fetched still gets them. `bringUpToDate` fetches afresh, waits for that fetch and
  * applies it at once, for a save that must carry the form's tables rather than wait for
- * a render; it resolves false when the fetch failed, and while the document cannot
- * change, when nothing could be applied, so the save is refused.
+ * a render; it resolves false when the fetch failed, when the document cannot change,
+ * read as it is now even for a save that began before a fence closed, and when an
+ * update was refused outright, so the save is refused.
  */
 export default function useWorkbenchTables({
   graphRef,
@@ -42,6 +43,10 @@ export default function useWorkbenchTables({
   const given = useRef({ generation, fetches: new Map<string, number>() })
   const created = useRef<string[]>([])
   const [creations, setCreations] = useState(0)
+  // `editable` as it is now, for a save that began before a fence closed (a submodel
+  // opened, the assistant's turn started) and still holds the earlier closure.
+  const editableRef = useRef(editable)
+  useEffect(() => { editableRef.current = editable }, [editable])
 
   useEffect(() => {
     if (!enabled) return
@@ -49,13 +54,23 @@ export default function useWorkbenchTables({
     if (fetch !== null) adoptionFetch.current = { generation, fetch }
   }, [enabled, generation])
 
-  const apply = useCallback((workbench: WorkbenchTables | null, only: ReadonlySet<string> | null) => {
+  /**
+   * Give the nodes *workbench*'s tables, and answer whether every update that was needed
+   * was accepted: false while nothing can be applied (the document cannot change, as
+   * rendered or as it is now; no tables; a fetch older than the document's own), and
+   * false when the commit controller refuses an update outright (the document read-only,
+   * the node gone, the update superseded), since nothing was applied and nothing will be.
+   * An update still resolving its identity is accepted here; its outcome reaches the
+   * pending commits a save waits for.
+   */
+  const apply = useCallback((workbench: WorkbenchTables | null, only: ReadonlySet<string> | null): boolean => {
     const adoption = adoptionFetch.current
-    if (!editable || workbench === null || adoption === null) return
-    if (adoption.generation !== generation || workbench.fetch < adoption.fetch) return
+    if (!editable || !editableRef.current || workbench === null || adoption === null) return false
+    if (adoption.generation !== generation || workbench.fetch < adoption.fetch) return false
     if (given.current.generation !== generation) given.current = { generation, fetches: new Map() }
     const { fetch } = workbench
     const fetches = given.current.fetches
+    let accepted = true
     for (const node of graphRef.current.nodes) {
       const patchFor = WORKBENCH_COPY_PATCHES[String(node.data.nodeType)]
       if (patchFor === undefined || (only !== null && !only.has(node.id))) continue
@@ -75,8 +90,10 @@ export default function useWorkbenchTables({
       const onSettled = (result: OnUpdateConfigResult) => {
         if (!result.ok && fetches.get(node.id) === fetch) fetches.delete(node.id)
       }
-      onUpdateNode(node.id, { ...node.data, config: { ...config, ...patch } }, { isCurrent, onSettled })
+      const result = onUpdateNode(node.id, { ...node.data, config: { ...config, ...patch } }, { isCurrent, onSettled })
+      if (!result.ok) accepted = false
     }
+    return accepted
   }, [editable, generation, graphRef, onUpdateNode])
 
   useEffect(() => {
@@ -93,18 +110,17 @@ export default function useWorkbenchTables({
     setCreations((count) => count + 1)
   }, [])
   // A fetch of its own, waited for and applied here rather than on a render: when this
-  // resolves true the nodes carry the workbench's tables as the form now has them, so a
-  // pipeline save that follows carries them too. False when the fetch failed, and while
-  // the document cannot change, when nothing can be applied: either way the nodes may be
-  // behind the form, and the save must not go on. The project save refuses such a
-  // document before asking, so the second is a guard, never a success.
+  // resolves true the nodes carry the workbench's tables as the form now has them, or an
+  // update on its way to them, so a pipeline save that follows carries them too. False
+  // when the fetch failed, when the document cannot change, before the fetch or once it
+  // has settled, and when an update was refused outright: either way the nodes may be
+  // behind the form, and the save must not go on.
   const bringUpToDate = useCallback(async (): Promise<boolean> => {
-    if (!editable) return false
+    if (!editableRef.current) return false
     const store = useWorkbenchStore.getState()
     if (store.refreshTables() === null) return true
     if (!(await store.awaitTables())) return false
-    apply(useWorkbenchStore.getState().tables, null)
-    return true
-  }, [apply, editable])
+    return apply(useWorkbenchStore.getState().tables, null)
+  }, [apply])
   return { nodeCreated, bringUpToDate }
 }

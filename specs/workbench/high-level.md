@@ -166,7 +166,12 @@ Out of scope:
     submodel, or one asked for while the assistant's turn runs, is refused before the form
     is saved, with the pipeline save's own reason, so the form is never saved ahead of a
     pipeline that is not: the fence that disables Save in both toolbars holds for
-    Ctrl/Cmd+S and the git flows too. A Save pressed while one runs waits for it and then
+    Ctrl/Cmd+S and the git flows too, and is read again after each wait, so a submodel
+    opened, the assistant's turn started or the document changed while the form was being
+    saved or the tables fetched refuses the rest of the save, the pipeline unsaved until
+    the next Save; an update of a node the document refuses outright is reported as
+    copies not brought up to date, never as a pipeline ready to save. A Save pressed
+    while one runs waits for it and then
     saves the project as it stands, as the form's own saves queue behind one another; two
     running at once would each fetch the tables, and the second fetch would supersede the
     first's updates of the nodes, which a save counts as a failure. Save passes the pipeline

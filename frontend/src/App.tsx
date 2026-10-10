@@ -1252,15 +1252,6 @@ function FlowEditor() {
     applyDocument: applyScopedSaveDocument,
   })
 
-  const saveWithPendingCommits = useCallback(async (): Promise<boolean> => {
-    const pending = await waitForPendingCommits()
-    if (!pending.ok) {
-      addToast("error", pending.error)
-      return false
-    }
-    return handleSave()
-  }, [addToast, handleSave, waitForPendingCommits])
-
   // The project's save, as it runs: Save and Ctrl/Cmd+S in either toolbar, and
   // the git flows before a milestone, a move, a branch switch or an identity
   // retry. The workbench's form first, when it holds unsaved edits or a save the
@@ -1270,39 +1261,57 @@ function FlowEditor() {
   // brought up to date is not saved. The form store is a lazy chunk, imported
   // here only while the workbench is enabled and never on start.
   const saveProjectNow = useCallback(async (): Promise<boolean> => {
-    // Refused up front, before the form is saved, on the fence that disables Save in
-    // both toolbars and on the pipeline save's own checks, read as the save runs: a save
-    // asked for inside a submodel, during the assistant's turn or of a document that
-    // cannot be saved is refused by the pipeline's save anyway, or would carry copies
-    // that cannot be brought up to date, and a form saved first would leave the
-    // pipeline's copies behind it on disk, or be a milestone's worth of work the refusal
-    // then stops short of.
-    if (parentGraphRef.current) {
-      addToast("error", "Return to the main pipeline before saving.")
+    // The fence that disables Save in both toolbars, and the pipeline save's own
+    // checks, read as they are now: before the form is saved, and again after each
+    // wait, since a submodel can open, the assistant's turn can start or the document
+    // can change while the save waits. A save asked for inside a submodel, during the
+    // assistant's turn or of a document that cannot be saved is refused by the
+    // pipeline's save anyway, or would carry copies that cannot be brought up to date;
+    // refused before the form is saved it never leaves the pipeline's copies behind
+    // the form on disk, and refused after, it saves no pipeline on a fence that closed
+    // meanwhile, rather than one behind the form just saved.
+    const refused = (): boolean => {
+      if (parentGraphRef.current) {
+        addToast("error", "Return to the main pipeline before saving.")
+        return true
+      }
+      if (useUIStore.getState().assistantTurn !== null) {
+        addToast("error", "The assistant is working on the pipeline: wait for its turn to finish, then save.")
+        return true
+      }
+      const documentStatus = useDocumentStatusStore.getState()
+      const capabilities = documentStatus.capabilities
+      if (capabilities?.can_mutate !== true || capabilities.can_save !== true || !documentStatus.graphSynchronized) {
+        addToast("error", documentReadOnlyReason())
+        return true
+      }
       return false
     }
-    if (useUIStore.getState().assistantTurn !== null) {
-      addToast("error", "The assistant is working on the pipeline: wait for its turn to finish, then save.")
-      return false
-    }
-    const documentStatus = useDocumentStatusStore.getState()
-    const capabilities = documentStatus.capabilities
-    if (capabilities?.can_mutate !== true || capabilities.can_save !== true || !documentStatus.graphSynchronized) {
-      addToast("error", documentReadOnlyReason())
-      return false
-    }
+    if (refused()) return false
     if (useWorkbenchStore.getState().enabled) {
       const { default: formStore } = await import("./stores/useWorkbenchFormStore")
       // A form save refused (stale, or failed) saves no pipeline: what is saved runs on
       // the form that was saved, never on copies of a form the view does not show.
       if (!(await formStore.getState().flush())) return false
-      if (!(await bringUpToDate())) {
+      if (refused()) return false
+      const brought = await bringUpToDate()
+      if (refused()) return false
+      if (!brought) {
         addToast("error", "The pipeline was not saved: its workbench nodes could not be brought up to date with the workbench's tables.")
         return false
       }
     }
-    return saveWithPendingCommits()
-  }, [addToast, bringUpToDate, saveWithPendingCommits])
+    // Through the graph-commit fence: an update of a node still resolving its identity,
+    // a workbench copy's among them, lands or fails before the pipeline is saved, and a
+    // failure saves nothing.
+    const pending = await waitForPendingCommits()
+    if (!pending.ok) {
+      addToast("error", pending.error)
+      return false
+    }
+    if (refused()) return false
+    return handleSave()
+  }, [addToast, bringUpToDate, handleSave, waitForPendingCommits])
   const saveProjectNowRef = useRef(saveProjectNow)
   useEffect(() => { saveProjectNowRef.current = saveProjectNow }, [saveProjectNow])
 

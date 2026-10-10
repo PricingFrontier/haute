@@ -3145,7 +3145,13 @@ describe("App integration - the workbench view (specs/workbench)", () => {
     fireEvent.click(save)
     await waitFor(() => expect(workbenchApi.saveWorkbenchForm).toHaveBeenCalledTimes(1))
     await waitFor(() => expect(identities).toHaveBeenCalled())
+    const fetchesByFirst = vi.mocked(workbenchApi.fetchWorkbenchTables).mock.calls.length
     fireEvent.click(save)
+    // The second Save's continuations run while the first still waits on the identity:
+    // it takes its turn behind the first, so it fetches nothing yet. Run at once, it
+    // would fetch now, and that fetch would supersede the first save's update.
+    await act(() => new Promise<void>((resolve) => { setTimeout(resolve, 100) }))
+    expect(vi.mocked(workbenchApi.fetchWorkbenchTables).mock.calls.length).toBe(fetchesByFirst)
     expect(api.savePipeline).not.toHaveBeenCalled()
 
     await act(async () => { release() })
@@ -3184,6 +3190,45 @@ describe("App integration - the workbench view (specs/workbench)", () => {
       expect(workbenchApi.saveWorkbenchForm).not.toHaveBeenCalled()
       expect(api.savePipeline).not.toHaveBeenCalled()
       expect(useWorkbenchFormStore.getState().dirty).toBe(true)
+    } finally {
+      act(() => { useUIStore.getState().endAssistantTurn() })
+    }
+  })
+
+  it("an assistant turn that starts while a Save waits on the form's save refuses the rest of it, so the pipeline never carries copies behind the sheets", async () => {
+    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "forms/form.json" })
+    withWorkbenchInput()
+    render(<App />)
+    await waitForAppReady()
+    const switcher = await within(screen.getByTestId("pipeline-view")).findByRole("group", { name: "Views" })
+    fireEvent.click(within(switcher).getByRole("button", { name: "Workbench" }))
+    const view = await screen.findByTestId("workbench-view", {}, { timeout: 10_000 })
+    await within(view).findByTestId("sheet-viewport", {}, { timeout: 10_000 })
+    act(() => {
+      useWorkbenchFormStore.getState().change((form) => ({ ...form, name: "renamed" }))
+    })
+    vi.mocked(workbenchApi.fetchWorkbenchTables).mockResolvedValue({ tables: policyTables, sample: {}, response_tables: [] })
+    // The form's save answers only when the test lets it; the assistant's turn starts
+    // meanwhile.
+    let answerFormSave: () => void = () => {}
+    vi.mocked(workbenchApi.saveWorkbenchForm).mockImplementationOnce(
+      (form) => new Promise((resolve) => {
+        answerFormSave = () => resolve({ form, revision: "form-rev-1", warnings: [], git_sha: null, identity_required: false })
+      }),
+    )
+
+    fireEvent.click(await screen.findByTestId("toolbar-save", {}, { timeout: 10_000 }))
+    await waitFor(() => expect(workbenchApi.saveWorkbenchForm).toHaveBeenCalledTimes(1))
+    act(() => { useUIStore.getState().startAssistantTurn(vi.fn()) })
+    try {
+      await act(async () => { answerFormSave() })
+
+      expect(
+        await screen.findByText("The assistant is working on the pipeline: wait for its turn to finish, then save.", {}, { timeout: 10_000 }),
+      ).toBeInTheDocument()
+      expect(api.savePipeline).not.toHaveBeenCalled()
+      // The sheets were saved before the turn began; the pipeline waits for the next Save.
+      expect(useWorkbenchFormStore.getState().dirty).toBe(false)
     } finally {
       act(() => { useUIStore.getState().endAssistantTurn() })
     }
