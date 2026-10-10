@@ -34,7 +34,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Server API](server-api.md) | Domain errors, generated browser contract | `API-R02` |
 | [Submodels](submodels.md) | Submodels registered by import, one reuse mechanism | `SUB-R02` |
 | [t-boost](t-boost.md) | What rating-table models make possible: cell-level holdout A/E, unfolding into rating steps, model comparison with premium attribution, measured analyst adjustments (all awaiting a decision) | `TBOOST-02` |
-| [Workbench](workbench.md) | The underwriter app: the sheets outside Haute, priced through the deployed pipeline (awaiting a decision on hosting and first scope) | `WB-07` |
+| [Workbench](workbench.md) | The underwriter app: the sheets outside Haute, priced through the deployed pipeline (awaiting a decision on hosting and first scope); a workbench project's CI/CD: the form checked against the pipeline, the app deployed with it, a smoke of one quote per request | `WB-07` |
 
 ## Delivery plan — 24 September 2026
 
