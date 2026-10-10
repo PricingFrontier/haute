@@ -162,9 +162,14 @@ Out of scope:
     toast saying the pipeline was not saved, rather than record copies behind the form. A
     form save refused, as stale or failed, saves no pipeline, so the pipeline never carries
     copies of a form the view does not show; and a save of a pipeline document that cannot
-    be saved (read-only, or changed on disk under unsaved edits), or one asked for inside a
-    submodel, is refused before the form is saved, with the pipeline save's own reason, so
-    the form is never saved ahead of a pipeline that is not. Save passes the pipeline
+    be saved (read-only, or changed on disk under unsaved edits), one asked for inside a
+    submodel, or one asked for while the assistant's turn runs, is refused before the form
+    is saved, with the pipeline save's own reason, so the form is never saved ahead of a
+    pipeline that is not: the fence that disables Save in both toolbars holds for
+    Ctrl/Cmd+S and the git flows too. A Save pressed while one runs waits for it and then
+    saves the project as it stands, as the form's own saves queue behind one another; two
+    running at once would each fetch the tables, and the second fetch would supersede the
+    first's updates of the nodes, which a save counts as a failure. Save passes the pipeline
     editor's git readiness gate first, as it does there: with no working branch chosen, or
     a divergent one, the gate's modal opens and the save follows its confirmation. Each
     file's save is reported as the pipeline's is: "Saved → forms/form.json" and the

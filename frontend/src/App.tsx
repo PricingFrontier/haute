@@ -1261,26 +1261,34 @@ function FlowEditor() {
     return handleSave()
   }, [addToast, handleSave, waitForPendingCommits])
 
-  // The project's save: Save and Ctrl/Cmd+S in either toolbar, and the git flows
-  // before a milestone, a move, a branch switch or an identity retry. The
-  // workbench's form first, when it holds unsaved edits or a save the ledger did
-  // not capture, then the workbench nodes' copies brought up to date with it,
-  // then the pipeline through the graph-commit fence, so what is saved runs on
-  // the form that was saved; a pipeline whose copies could not be brought up to
-  // date is not saved. The form store is a lazy chunk, imported here only while
-  // the workbench is enabled and never on start.
-  const saveProject = useCallback(async (): Promise<boolean> => {
-    // Refused up front, before the form is saved: a save of a document that cannot be
-    // saved, or one asked for inside a submodel, is refused by the pipeline's save
-    // anyway, and a form saved first would leave the pipeline's copies behind it on
-    // disk, or be a milestone's worth of work the refusal then stops short of.
-    const documentStatus = useDocumentStatusStore.getState()
-    if (documentStatus.capabilities?.can_save !== true || !documentStatus.graphSynchronized) {
-      addToast("error", documentReadOnlyReason())
-      return false
-    }
+  // The project's save, as it runs: Save and Ctrl/Cmd+S in either toolbar, and
+  // the git flows before a milestone, a move, a branch switch or an identity
+  // retry. The workbench's form first, when it holds unsaved edits or a save the
+  // ledger did not capture, then the workbench nodes' copies brought up to date
+  // with it, then the pipeline through the graph-commit fence, so what is saved
+  // runs on the form that was saved; a pipeline whose copies could not be
+  // brought up to date is not saved. The form store is a lazy chunk, imported
+  // here only while the workbench is enabled and never on start.
+  const saveProjectNow = useCallback(async (): Promise<boolean> => {
+    // Refused up front, before the form is saved, on the fence that disables Save in
+    // both toolbars and on the pipeline save's own checks, read as the save runs: a save
+    // asked for inside a submodel, during the assistant's turn or of a document that
+    // cannot be saved is refused by the pipeline's save anyway, or would carry copies
+    // that cannot be brought up to date, and a form saved first would leave the
+    // pipeline's copies behind it on disk, or be a milestone's worth of work the refusal
+    // then stops short of.
     if (parentGraphRef.current) {
       addToast("error", "Return to the main pipeline before saving.")
+      return false
+    }
+    if (useUIStore.getState().assistantTurn !== null) {
+      addToast("error", "The assistant is working on the pipeline: wait for its turn to finish, then save.")
+      return false
+    }
+    const documentStatus = useDocumentStatusStore.getState()
+    const capabilities = documentStatus.capabilities
+    if (capabilities?.can_mutate !== true || capabilities.can_save !== true || !documentStatus.graphSynchronized) {
+      addToast("error", documentReadOnlyReason())
       return false
     }
     if (useWorkbenchStore.getState().enabled) {
@@ -1295,6 +1303,21 @@ function FlowEditor() {
     }
     return saveWithPendingCommits()
   }, [addToast, bringUpToDate, saveWithPendingCommits])
+  const saveProjectNowRef = useRef(saveProjectNow)
+  useEffect(() => { saveProjectNowRef.current = saveProjectNow }, [saveProjectNow])
+
+  // Project saves take turns, as the form store's saves do: a Save pressed while
+  // one runs waits for it and then saves the project as it stands by then. Two
+  // running at once would each fetch the tables, the second fetch superseding the
+  // first fetch's updates of the workbench nodes, and a save waits for every update
+  // of the nodes, a superseded one counting as a failure, so both would be refused
+  // and the pipeline saved by neither.
+  const projectSaveTurns = useRef<Promise<unknown>>(Promise.resolve())
+  const saveProject = useCallback((): Promise<boolean> => {
+    const turn = projectSaveTurns.current.then(() => saveProjectNowRef.current())
+    projectSaveTurns.current = turn.catch(() => undefined)
+    return turn
+  }, [])
 
   // Flush the editor through the graph-commit fence before opening the
   // milestone modal, so Commit can never capture an older ledger snapshot.

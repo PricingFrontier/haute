@@ -87,11 +87,11 @@ describe("useWorkbenchTables", () => {
     expect(updates()).toHaveLength(2)
   })
 
-  it("has nothing to bring while the document cannot change, and fetches nothing then", async () => {
+  it("can bring nothing while the document cannot change, fetches nothing then, and never passes that off as up to date", async () => {
     const { result } = render(false)
     const fetches = vi.mocked(useWorkbenchStore.getState().refreshTables).mock.calls.length
 
-    await expect(result.current.bringUpToDate()).resolves.toBe(true)
+    await expect(result.current.bringUpToDate()).resolves.toBe(false)
 
     expect(useWorkbenchStore.getState().refreshTables).toHaveBeenCalledTimes(fetches)
     expect(onUpdateNode).not.toHaveBeenCalled()

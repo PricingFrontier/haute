@@ -24,7 +24,8 @@ export type UseWorkbenchTablesOptions = {
  * palette is reported through `nodeCreated`, so one made while its tables were being
  * fetched still gets them. `bringUpToDate` fetches afresh, waits for that fetch and
  * applies it at once, for a save that must carry the form's tables rather than wait for
- * a render; it resolves false when the fetch failed, so the save is refused.
+ * a render; it resolves false when the fetch failed, and while the document cannot
+ * change, when nothing could be applied, so the save is refused.
  */
 export default function useWorkbenchTables({
   graphRef,
@@ -93,11 +94,12 @@ export default function useWorkbenchTables({
   }, [])
   // A fetch of its own, waited for and applied here rather than on a render: when this
   // resolves true the nodes carry the workbench's tables as the form now has them, so a
-  // pipeline save that follows carries them too. False when the fetch failed: the nodes
-  // may be behind the form, and the save must not go on. While the document cannot change
-  // nothing can be applied, and the save that follows refuses for its own reason.
+  // pipeline save that follows carries them too. False when the fetch failed, and while
+  // the document cannot change, when nothing can be applied: either way the nodes may be
+  // behind the form, and the save must not go on. The project save refuses such a
+  // document before asking, so the second is a guard, never a success.
   const bringUpToDate = useCallback(async (): Promise<boolean> => {
-    if (!editable) return true
+    if (!editable) return false
     const store = useWorkbenchStore.getState()
     if (store.refreshTables() === null) return true
     if (!(await store.awaitTables())) return false

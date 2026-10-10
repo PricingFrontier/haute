@@ -15,7 +15,7 @@
 | `frontend/e2e/workbench.spec.ts` | The workbench's journey in a browser against the real server (Playwright, Chromium): the workbench switched on for the end-to-end project and its sheets written, the scaffold's Quote Input and Quote Response replaced through `POST /api/pipeline/save` by a Workbench Input, a Transform and a Workbench Output, the view opened, the schema read, a Collection dragged out of the palette onto the sheet and given its fields, the sample typed and priced live, a quote priced in Preview apart from the sample, a column added to the schema, and one Save writing the component, the sample and the column to `forms/form.json` and then the pipeline, its Workbench Input's copy (`rating/config/workbench_input/quote.json`) carrying the column. |
 | `frontend/src/utils/canonicalJson.ts` | `canonicalJson`, JSON with every object's keys sorted, so two values holding the same data compare equal whatever order their keys were written in: the form store's `dirty` and the copy patches' "already matches" both compare through it. |
 | `frontend/src/utils/workbenchTables.ts` | The copy rules for a Workbench Input and a Workbench Output: `WorkbenchTables`, `PricedSample` (the sample priced: each output table's rows by its label), `quoteTablesPatch` (the update a Workbench Input's copy needs, `{tables, sample}`, both compared as JSON with object keys sorted and a missing sample read as `{}`, or null), `responseTablesPatch` (the update a Workbench Output's copy needs, `{tables}` compared the same way and `mapping` without the entries of tables and columns the new tables lack, or null), `paletteWorkbenchInputConfig` and `paletteWorkbenchOutputConfig` (what the palette's Workbench Input and Workbench Output start with: the newest tables, and sample, fetched), `readWorkbenchTables` (a copy's tables as the editor reads them, typed by the generated `WorkbenchTable`: each entry with a name, `one` or `many` rows and typed columns, any other left out), `workbenchTablePorts` (a workbench node's ports: its tables with a column, by name, in order, once), and `WORKBENCH_COPY_PATCHES` (the update rule for each workbench node type, `quoteTablesPatch` for a Workbench Input and `responseTablesPatch` for a Workbench Output). |
-| `frontend/src/hooks/useWorkbenchTables.ts` | The hook the editor shell (`frontend/src/App.tsx`) calls to keep those copies current: a fetch when the workbench is enabled and on each `executionGeneration`, recorded against the generation; eligible tables applied once per Workbench Input and Workbench Output for each fetch, by `WORKBENCH_COPY_PATCHES`, through `onUpdateNode`, with an `isCurrent` that checks the generation and that no newer fetch has reached the node, while the document is editable and its top level shows; `nodeCreated` for a node a palette drop created; `bringUpToDate`, which fetches afresh, waits for that fetch (`awaitTables`) and applies it at once, resolving false when it failed, for the git flows' save; nothing while the document cannot change. |
+| `frontend/src/hooks/useWorkbenchTables.ts` | The hook the editor shell (`frontend/src/App.tsx`) calls to keep those copies current: a fetch when the workbench is enabled and on each `executionGeneration`, recorded against the generation; eligible tables applied once per Workbench Input and Workbench Output for each fetch, by `WORKBENCH_COPY_PATCHES`, through `onUpdateNode`, with an `isCurrent` that checks the generation and that no newer fetch has reached the node, while the document is editable and its top level shows; `nodeCreated` for a node a palette drop created; `bringUpToDate`, which fetches afresh, waits for that fetch (`awaitTables`) and applies it at once, for the project save, resolving false when the fetch failed and while the document cannot change, when it fetches nothing and applies nothing, so neither passes for up to date. |
 | `frontend/src/panels/editors/WorkbenchInputEditor.tsx` | The Workbench Input's panel, which `frontend/src/panels/NodeConfigEditor.tsx` renders for a Workbench Input: the tables read-only (`readWorkbenchTables`) with each name's `apiInputLabelIssue`, a note on what previews run on, chosen by whether the config's sample is a non-empty object, a note while the workbench is not enabled, and one while a submodel is open (`insideSubmodel`, passed down from `frontend/src/panels/NodePanel.tsx`). It exports `WorkbenchTableCard`, one table read-only (its name, its rows per quote and its columns, or `NO_COLUMNS_NOTE` for a table without any, which is no port), and `WorkbenchTablesHeader`, the section's title, its "Edit in Workbench" button while the workbench is enabled (`showView`) and its notes, which the Workbench Output's panel shares, and `WORKBENCH_DISABLED_NOTE`, the note's one wording. |
 | `frontend/src/panels/editors/WorkbenchOutputEditor.tsx` | The Workbench Output's panel, which `frontend/src/panels/NodeConfigEditor.tsx` renders for a Workbench Output: under `WorkbenchTablesHeader`, each table (`readWorkbenchTables`) with its name's `apiInputLabelIssue` against the document's reserved labels, as the Workbench Input's panel judges them, `NO_COLUMNS_NOTE` for a table without columns, else the node connected to its port (from the `targetHandle` of the panel's input sources) or "Not connected", and a row per column with a select of the connected frame's columns (the input source's `columns`) that fills it, chosen by `mappedSource`, through `onUpdate` with the new `mapping`: a pick kept by name, none kept as null, and a pick of the column's own name no entry, which fills by name. |
 | `frontend/src/stores/useWorkbenchFormStore.ts` | `useWorkbenchFormStore`, the form while the view edits it: `form` and `revision` as read (`load`, once; `reload`, again, dropping edits and history), each read a turn in the store's queue, through `fetchWorkbenchForm`, with `status` and `loadError`; `change` (an edit that undo reverses, on the graph store's `appendHistoryEntry` and its history cap), `undo`, `redo`, `undoStack`, `redoStack`, `savedForm` and `dirty` (the form and the saved form compared through `canonicalJson`, whatever order the file writes their keys in; mirrored onto the workbench store's `formDirty` for the editor's guards); `save`, which takes its turn after the saves and syncs before it, writes the form as it stands through `saveWorkbenchForm` with the revision, adopts the new revision, toasts "Saved → <form>", reports the capture through `reportSaveCapture` (`uncaptured` set while the capture waited on a git identity or failed, every warning on a form save being the capture's), and fetches nothing itself, the project save it is the form step of fetching the tables afresh next; `flush`, the project save's form step: `save` while the form holds unsaved edits or an uncaptured save, else true without a request; `sync`, run after each adoption of the pipeline's document (`executionGeneration`, subscribed at module load) and after any save in flight: the file read again through `fetchWorkbenchForm`, nothing at the same revision, a changed file adopted with history dropped while the form is as saved, else `stale` set, and a failed read one error toast; `stale`, set by a save refused as `stale_document_revision` (one error toast, the edits kept) or by a sync that found the file changed under unsaved edits, and cleared by a reload; `saving`; and the gesture setters `pushSnapshot` (the form recorded for undo, the redo stack cleared) and `setFormRaw` (the form replaced without history, `dirty` recomputed), so a drag is one undo step. |
@@ -528,16 +528,22 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
     `requestCommit`, both behind the git readiness gate (the working-branch or divergence
     modal, whose confirmation runs the pending save or commit), and from a move's Save
     first, the Git panel's save before a switch and the identity prompt's retry directly.
-    It refuses up front, before the form is saved, a document whose `can_save` is false or
-    whose graph is not synchronised (`documentReadOnlyReason`, the pipeline save's own
-    refusal) and a save asked for inside a submodel; then, while the workbench is enabled,
-    saves the form through the form store's `flush` (the store imported lazily, so a
-    project that never showed the view saves nothing) and brings the workbench nodes'
-    copies up to date through `useWorkbenchTables`'s `bringUpToDate` (a fetch of its own
-    awaited, its tables applied at once; a fetch that failed refuses the project's save
-    with one error toast, and no pipeline is saved), then saves the pipeline through
-    `saveWithPendingCommits`, which waits for those updates to commit. Commit
-    (`flushSaveThenMilestone`) opens the milestone modal once that save resolves true.
+    Project saves take turns (`projectSaveTurns`, a promise chain as the form store's
+    `takeTurn`): a save asked for while one runs waits for it and then runs the save as it
+    is by then (`saveProjectNowRef`). The save, `saveProjectNow`, refuses up front, before
+    the form is saved, reading the fence as it runs: inside a submodel
+    (`parentGraphRef`), during the assistant's turn (`useUIStore.assistantTurn`, "The
+    assistant is working on the pipeline: wait for its turn to finish, then save."), and
+    a document whose `can_mutate` or `can_save` is false or whose graph is not
+    synchronised (`documentReadOnlyReason`, the pipeline save's own refusal); then, while
+    the workbench is enabled, saves the form through the form store's `flush` (the store
+    imported lazily, so a project that never showed the view saves nothing) and brings
+    the workbench nodes' copies up to date through `useWorkbenchTables`'s `bringUpToDate`
+    (a fetch of its own awaited, its tables applied at once; a fetch that failed, or a
+    document that cannot change, refuses the project's save with one error toast, and no
+    pipeline is saved), then saves the pipeline through `saveWithPendingCommits`, which
+    waits for those updates to commit. Commit (`flushSaveThenMilestone`) opens the
+    milestone modal once that save resolves true.
 28. **Synced.** The form store subscribes to `executionGeneration` at module load and runs
     `sync` on each advance, after any save in flight: `fetchWorkbenchForm`, then nothing at
     the same revision, the form adopted (history dropped) while `dirty` is false, else
@@ -630,8 +636,15 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   no form toast. A form save refused, as stale or failed, saves no pipeline and refuses
   the milestone, as a refused pipeline save refuses the milestone: the pipeline never
   carries copies of a form the view does not show. A save of a document that cannot be
-  saved, or one asked for inside a submodel, is refused before the form is saved, with
-  the pipeline save's reason, so the form is never saved ahead of a pipeline that is not.
+  saved, one asked for inside a submodel, or one asked for during the assistant's turn,
+  is refused before the form is saved, with the pipeline save's reason, so the form is
+  never saved ahead of a pipeline that is not; the fence is read as the save runs, not
+  as it was asked for, since a save may have waited its turn.
+- Project saves take turns: a second save asked for while one runs waits for it, so two
+  never fetch the tables at once. Two fetches that both publish give each workbench node
+  two updates, the first superseded by the second, and `waitForPendingCommits` returns a
+  superseded update as a failure, which would refuse both saves and save the pipeline in
+  neither.
 - A save saves the form before the pipeline and brings the workbench nodes' copies up to
   date in between, so the pipeline it records carries the form it records; when the
   tables cannot be fetched, no pipeline is saved and no milestone asked for.
@@ -855,8 +868,11 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   toolbar saving the form's edits and then the pipeline with its Workbench Input carrying
   the tables fetched for the saved form before the milestone modal opens, Commit refused
   with no pipeline saved when that fetch fails, Save in the pipeline toolbar saving the
-  form's unsaved edits and then the pipeline with the fetched tables, and Save refused
-  before the form is saved while the document cannot be saved.
+  form's unsaved edits and then the pipeline with the fetched tables, Save refused
+  before the form is saved while the document cannot be saved, two Saves pressed while
+  the first waits on a node's identity saved in turn with the pipeline saved by both and
+  no update superseded, and Ctrl/Cmd+S during the assistant's turn refused before the
+  form is saved.
   `frontend/src/__tests__/App.workbenchLazy.test.ts` guards that the view, its toolbar, the
   schema editor, the form store and the form's operations are loaded lazily.
 - The view: `frontend/src/stores/__tests__/useWorkbenchFormStore.test.ts` covers reading
