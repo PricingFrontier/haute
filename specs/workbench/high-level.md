@@ -294,7 +294,8 @@ Out of scope:
   the same controls, and is kept apart from the sample: it lasts while the editor is open,
   through Build and back, is never saved with the form and never undone. Price is disabled
   while nothing is typed in the input tables the schema has now (a value typed in a column
-  since removed counts for nothing, as the server leaves it out of the quote), and refuses
+  since removed, or in a second row of a table now with one row per quote, counts for
+  nothing, as the server leaves it out of the quote), and refuses
   such a quote with "Type the quote first" however it is asked: a deployed request never
   holds a blank quote, and the server would read one as the null quote. Price checks the
   quote against the columns' rules first: a required cell left empty, text that is not a
@@ -387,7 +388,9 @@ Out of scope:
     values, or an array of them, a table allowed to be left out of a request, since a quote
     may carry columns the tables do not name, which the reader leaves unread and which
     MLflow's typed object would refuse; the table's columns are in the manifest's input
-    schema, and the reader holds a served request to them as it holds the container's.
+    schema, and the reader holds a served request to them as it holds the container's,
+    reading the records MLflow passed rather than a frame inferred from them, which a
+    column of mixed types the tables do not name would fail.
   - **One request input per pipeline.** A pipeline holds at most one Quote Input or Workbench
     Input, counting those inside its submodels. Saving or deploying a pipeline with two is
     refused with "Only one Quote Input or Workbench Input node is allowed per pipeline (found

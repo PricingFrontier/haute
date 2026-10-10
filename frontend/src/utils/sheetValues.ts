@@ -27,11 +27,16 @@ export const rowFilled = (table: SchemaTable, row: SampleRow | undefined): boole
 
 /**
  * Whether anything is typed in the input tables the schema has now, as the server counts
- * it: a value in a column or a table since removed from the schema is left out of the
- * quote the server types, so it does not count.
+ * it: a value in a column or a table since removed from the schema, or in a row past the
+ * first of a table now with one row per quote, is left out of the quote the server types,
+ * so it does not count.
  */
 export const quoteFilled = (schema: FormSchema, rows: RowsByTable): boolean =>
-  schema.tables.some((table) => table.role === "input" && (rows[table.id] ?? []).some((row) => rowFilled(table, row)))
+  schema.tables.some((table) => {
+    if (table.role !== "input") return false
+    const held = rows[table.id] ?? []
+    return (table.rows === "one" ? held.slice(0, 1) : held).some((row) => rowFilled(table, row))
+  })
 
 /** A decimal number as the server reads one, once a currency sign, separators and spaces are gone. */
 const NUMBER = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/

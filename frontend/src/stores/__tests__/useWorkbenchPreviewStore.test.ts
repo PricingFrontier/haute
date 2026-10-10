@@ -120,7 +120,13 @@ describe("useWorkbenchPreviewStore", () => {
     expect(store()).toMatchObject({ checked: true, error: "1 cell needs attention", price: null })
     // Nothing typed in the tables the schema has now, a value in a column since removed
     // included: not priced, as a deployed request never holds a blank quote.
-    const blanks: Record<string, Record<string, string>[]>[] = [{}, { t1: [{ gone: "x" }] }, { gone: [{ c1: "y" }] }]
+    const blanks: Record<string, Record<string, string>[]>[] = [
+      {},
+      { t1: [{ gone: "x" }] },
+      { gone: [{ c1: "y" }] },
+      // A second row of a table with one row per quote: the server reads the first alone.
+      { t1: [{}, { c1: "100" }] },
+    ]
     for (const quote of blanks) {
       useWorkbenchPreviewStore.setState({ quote, error: null, checked: false })
       await store().priceQuote()

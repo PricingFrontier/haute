@@ -353,8 +353,9 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
    `_score_graph_lazy` injects the live frame as a Quote Input's output, for a Workbench Input
    it reads the request once, at planning, through `workbench_request_frames`: the records of
    a `QuoteRequest` (`src/haute/deploy/_scorer.py`), which `/quote`, the batch worker and
-   `score_test_quotes` hand over as the quotes were sent, or `to_dicts()` of a frame (MLflow's
-   `predict` gives one, typed by the model's signature), refused unless exactly one, read
+   `score_test_quotes` hand over as the quotes were sent and MLflow's `predict` as the
+   records its signature, a map of anything per table, let through (`_request` in
+   `src/haute/deploy/_model_code.py`), or `to_dicts()` of a frame, refused unless exactly one, read
    through `read_quote` into a frame per port, which the memory estimate takes as the
    per-port frames of `runtime_source_frames_by_node` so each consumer is sized from its
    table, a refusal

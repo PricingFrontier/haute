@@ -107,9 +107,10 @@ describe("WorkbenchToolbar", () => {
     expect(screen.getByRole("button", { name: "Price" })).toBeDisabled()
     expect(screen.getByRole("button", { name: "Price" })).toHaveAttribute("title", "Type the quote first")
     expect(screen.getByRole("button", { name: "Clear" })).toBeDisabled()
-    // A value in a column the schema no longer has counts for nothing.
+    // A value in a column the schema no longer has, or in a second row of a table now
+    // with one row per quote, counts for nothing: the server leaves it out.
     act(() => {
-      useWorkbenchPreviewStore.setState({ quote: { t1: [{ gone: "x" }], gone: [{ c1: "y" }] } })
+      useWorkbenchPreviewStore.setState({ quote: { t1: [{ gone: "x" }, { c1: "z" }], gone: [{ c1: "y" }] } })
     })
     expect(screen.getByRole("button", { name: "Price" })).toBeDisabled()
     expect(screen.getByRole("button", { name: "Clear" })).toBeDisabled()

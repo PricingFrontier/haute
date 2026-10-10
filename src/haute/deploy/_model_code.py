@@ -4,13 +4,51 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import mlflow.pyfunc
+import numpy as np
 import pandas as pd
 from mlflow.models import set_model
 from mlflow.pyfunc import PythonModelContext
 
 from haute._types import PipelineGraph
+
+if TYPE_CHECKING:
+    from haute.deploy._scorer import DeployInput
+
+
+def _plain(value: Any) -> Any:
+    """*value* as JSON holds it: numpy's scalars and arrays, which a pandas frame built
+    by hand may carry inside a table, as Python's own."""
+    if isinstance(value, dict):
+        return {key: _plain(item) for key, item in value.items()}
+    if isinstance(value, list | tuple | np.ndarray):
+        return [_plain(item) for item in value]
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def _request(
+    graph: PipelineGraph, input_node_ids: list[str], model_input: pd.DataFrame
+) -> DeployInput:
+    """The request as the pipeline's request input takes it.
+
+    A Workbench Input reads its quotes as their records, each value as it was sent: a
+    frame inferred from the request would type a column the tables do not name, and fail
+    on one of mixed types, before the reader could leave it unread, where the signature
+    lets any value through (specs/workbench). Any other request input takes the frame.
+    """
+    import polars as pl
+
+    from haute.deploy._scorer import QuoteRequest, reads_one_quote_per_request
+
+    if reads_one_quote_per_request(graph, input_node_ids):
+        return QuoteRequest(
+            tuple(_plain(record) for record in model_input.to_dict(orient="records"))
+        )
+    return pl.from_pandas(model_input)
 
 
 class HauteModel(mlflow.pyfunc.PythonModel):  # type: ignore[name-defined]
@@ -43,7 +81,6 @@ class HauteModel(mlflow.pyfunc.PythonModel):  # type: ignore[name-defined]
         params: dict | None = None,
     ) -> pd.DataFrame:
         """Score one or more rows through the pipeline."""
-        import polars as pl
 
         from haute.deploy._scorer import admit_deploy_execution, score_graph
 
@@ -54,7 +91,7 @@ class HauteModel(mlflow.pyfunc.PythonModel):  # type: ignore[name-defined]
         preserve_primary_error = False
         try:
             with execution_context.stage("deploy_from_pandas"):
-                input_df = pl.from_pandas(model_input)
+                input_df = _request(self._graph, self._input_node_ids, model_input)
             execution_context.checkpoint(label="after_deploy_from_pandas")
             result = score_graph(
                 graph=self._graph,
