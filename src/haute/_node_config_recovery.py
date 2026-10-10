@@ -41,7 +41,6 @@ from haute._recovery_schemas import RecoveryFieldChange, RecoveryIssue
 from haute._types import (
     DATA_INPUT_CONFIG_TYPES,
     DATA_OUTPUT_CONFIG_TYPES,
-    REQUEST_INPUT_NODE_TYPES,
     BandingFactor,
     NodeType,
     RatingTable,
@@ -394,7 +393,7 @@ def _validator_issues(
             parse_workbench_tables(config["tables"], owner="Workbench Input")
         elif node_type is NodeType.WORKBENCH_OUTPUT and "tables" in config:
             parse_workbench_tables(config["tables"], owner="Workbench Output")
-        elif node_type in REQUEST_INPUT_NODE_TYPES and "tables" in config:
+        elif node_type is NodeType.API_INPUT and "tables" in config:  # the Quote Input alone
             validate_v2_schema(config)
         elif node_type is NodeType.DATA_INPUT:
             # Missing locators are completeness, not a recovery error.

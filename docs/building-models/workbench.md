@@ -1,6 +1,6 @@
 # Workbench
 
-The Workbench is where a pricing team lays out the quote an underwriter keys in: the
+The workbench is where a pricing team lays out the quote an underwriter keys in: the
 **schema** of typed tables the pipeline reads, and the **sheets** of Tables and Collections
 that show those tables' columns. It is part of Haute, switched on per project, and what it
 holds lives in a file in the project, `forms/form.json`, versioned beside the pipeline.
@@ -21,22 +21,22 @@ holds lives in a file in the project, `forms/form.json`, versioned beside the pi
 
 ## Switching views
 
-**Workbench** at the bottom of the node palette shows the Workbench over the pipeline
+**Workbench** at the bottom of the node palette shows the workbench over the pipeline
 editor; **Pricing** brings the pipeline back. The pipeline editor keeps everything it had
-(its document, its undo history, live sync) while the Workbench shows; its keyboard
-shortcuts are off meanwhile, so nothing you press in the Workbench edits the pipeline. The
+(its document, its undo history, live sync) while the workbench shows; its keyboard
+shortcuts are off meanwhile, so nothing you press in the workbench edits the pipeline. The
 toolbar keeps Haute's project controls (Assistant, Help, the branch, **Save** and
-**Commit**) and shows the Workbench's own: **Build** over **Preview**, then, while building,
+**Commit**) and shows the workbench's own: **Build** over **Preview**, then, while building,
 **Sheets** over **Schema**, **Undo** over **Redo**, and **Zoom In** over **Zoom Out** on
 the sheets.
 
 **Save** and Ctrl+S write `forms/form.json`, and each save is recorded on your branch's
 save ledger like a save of the pipeline, so it shows in the Git panel's history. **Commit**
-records a milestone of the whole project: the Workbench's unsaved edits are saved first,
-the pipeline follows them, and both are recorded. A save is refused when the file changed on disk since the Workbench read
+records a milestone of the whole project: the workbench's unsaved edits are saved first,
+the pipeline follows them, and both are recorded. A save is refused when the file changed on disk since the workbench read
 it (an edit by hand, or a branch switched outside Haute); the banner's **Reload** reads it
 again, dropping your unsaved edits. When the pipeline is read again from disk and the file
-changed too, the Workbench follows it, unless you have unsaved edits, when the banner
+changed too, the workbench follows it, unless you have unsaved edits, when the banner
 appears instead.
 
 Both workbench nodes' panels have **Edit in Workbench**, which opens the view.
@@ -57,12 +57,13 @@ required, a range for a number, the allowed values.
   renamed, that numbers the rows from 1. It is an Integer and can be the table's key.
 - The editor says what would stop the schema being the pipeline's tables: a table's name is
   held to the rules a Quote Input's labels follow (an identifier, no reserved name, unique
-  whatever its case), a column's name is an identifier unique in its table, a many-row table
-  needs a key, and an input column's range must not be inverted and its allowed values must
-  be of its type.
+  whatever its case), a column's name is an identifier that is not a Python keyword, unique
+  in its table, a many-row table needs a key, an input column's range must not be inverted
+  and its allowed values must be of its type, and a True/false or Date column can have none.
+  Changing a column's type drops the rules the new type cannot have.
 - Removing a column or a table a sheet shows asks first, and takes it off the sheet.
 
-When the schema is saved, the editor fetches the tables again and the Workbench Input's
+When the schema is saved, the editor fetches the tables again and the workbench Input's
 ports follow it, so the pipeline has changes to save, as after any edit.
 
 ## Sheets
@@ -83,12 +84,13 @@ one kind of row, so once a Table shows a field, tables whose rows do not line up
 line up, so each row can show its premium. Output columns are shaded.
 
 Drag a component to move it and any of its eight handles to resize it; everything snaps to
-the grid. With a component selected, the arrow keys nudge it (Shift for a pixel), Ctrl+D
-duplicates it, Delete removes it and Escape deselects it. Ctrl+1 fits the sheet to the
-window. A component with a problem — no fields, a column no longer in the schema, a table
+the grid. With a component selected (click it, or Tab to it), the arrow keys nudge it
+(Shift for a pixel), Ctrl+D duplicates it, Delete or Backspace removes it and Escape
+deselects it; Ctrl+Z and Ctrl+Y undo and redo. Ctrl+1 fits the sheet to the window, and
+the zoom runs from 25% to 200%. A component with a problem — no fields, a column no longer in the schema, a table
 of the other kind — gets a dashed frame that names the problem.
 
-Sheets have tabs along the top: **+** adds one, double-click renames one, and the cross on
+Sheets have tabs along the top: **+** adds one, double-click (or F2) renames one, and the cross on
 the showing tab deletes it (asking first when components are on it; the schema and the
 sample stay).
 
@@ -114,11 +116,12 @@ Table's output columns show the row in the answer keyed like each grid row.
 **Preview** shows the sheets as an underwriter uses them: the same components at the same
 positions, with nothing to move or lay out. Type a quote into the cells, kept apart from
 the sample (it is never saved, and stays while you switch to Build and back), and press
-**Price**. Haute first checks every cell against its column's rules: a required cell left
+**Price**, enabled once something is typed. Haute first checks every cell against its column's rules: a required cell left
 empty, a number that is not one, a whole number that is not whole, a number outside its
 range, a value that is not one of the allowed ones. A cell that breaks a rule is outlined,
 naming the problem when you hover, and the toolbar says how many need attention; the marks
 follow the cells as you fix them. A quote that passes is priced on the pipeline open in the
 editor, and every output column shows its value: a Collection's its table's one row, and a
 Table's the row keyed like each grid row. The values dim when you change the quote, until
-you press **Price** again. **Clear** empties the quote.
+you press **Price** again, and the quote is priced exactly as a deployed pipeline would price
+it. **Clear** empties the quote, after asking. Ctrl+S still saves the sheets in Preview.

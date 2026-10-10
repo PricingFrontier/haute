@@ -154,6 +154,17 @@ def test_an_edit_to_the_file_changes_its_revision(tmp_path: Path) -> None:
     assert form_file_revision(config(tmp_path)) != first
 
 
+def test_the_file_keeps_text_as_typed(tmp_path: Path) -> None:
+    """A label or an allowed value outside ASCII is written as it is, as the node configs are."""
+    spec = FormSpec.model_validate(FORM)
+    spec.data_schema.tables[0].columns[0].label = "Zürich"
+
+    text = render_form(spec)
+
+    assert '"label": "Zürich"' in text
+    assert "\\u00fc" not in text
+
+
 def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> None:
     # A file written without the index flags and the sample, as a builder that leaves
     # defaults out would write it.
@@ -184,6 +195,9 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         (lambda f: f["schema"]["tables"][0]["columns"][0].update(type="money"), "type"),
         (lambda f: f.update(pages=[]), "pages"),
         (lambda f: f["pages"][0]["widgets"][0].update(type="chart"), "type"),
+        # A cell is held as typed, text or a tick: a number is another client's shape.
+        (lambda f: f.update(sample={"t1": [{"c1": 1}]}), "sample"),
+        (lambda f: f.update(sample={"t1": [{"c1": None}]}), "sample"),
     ],
 )
 def test_an_unknown_field_or_a_value_outside_the_shape_is_refused(

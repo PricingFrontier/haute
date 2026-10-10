@@ -10,6 +10,7 @@ import {
   addSchemaColumn,
   addSchemaTable,
   addWidget,
+  changeSchemaColumnType,
   createIndexColumn,
   createPage,
   createSchemaColumn,
@@ -121,24 +122,51 @@ describe("problems", () => {
     ])
   })
 
-  it("catches invalid and repeated column names", () => {
-    const spec = withTable(column("a", "sum insured"), column("b", "value"), column("c", "value"))
+  it("catches invalid, keyword and repeated column names, as the server refuses them", () => {
+    const spec = withTable(column("a", "sum insured"), column("b", "value"), column("c", "value"), column("d", "class"))
 
     expect(messages(spec)).toEqual([
       'Column "sum insured" in Table "t" needs a name of letters, digits and _',
       'Column "value" in Table "t" repeats the name value',
+      'Column "class" in Table "t" cannot be named with a Python keyword',
     ])
   })
 
-  it("needs a key in a many-row table, and drops keys when a table goes back to one row", () => {
+  it("flags allowed values on a tick box or a date, which cannot have them", () => {
+    const spec = withTable(column("a", "smoker", { type: "bool", options: ["Y"] }), column("b", "start", { type: "date", options: ["2020-01-01"] }))
+
+    expect(messages(spec)).toEqual([
+      'Column "smoker" in Table "t" allows values, which a tick box cannot',
+      'Column "start" in Table "t" allows values, which a date cannot',
+    ])
+  })
+
+  it("needs a key in a many-row table, and drops keys and the index when a table goes back to one row", () => {
     let spec = setSchemaTableRows(withTable(column("a", "item"), column("b", "value")), "t", "many")
     expect(messages(spec)).toEqual(['Table "t" has many rows, so it needs a key column'])
 
     spec = updateSchemaColumn(spec, "t", "a", { key: true })
     expect(messages(spec)).toEqual([])
+    const index = createIndexColumn(spec, "t")
+    spec = addSchemaColumn(spec, "t", index, 0)
+    spec = withSampleCell(spec, "t", 0, "a", "x")
+    spec = addWidget(spec, "p", { ...createWidget("tableInput", { x: 0, y: 0, w: 720, h: 200 }), fields: [{ table: "t", column: index.id }] })
 
     spec = setSchemaTableRows(spec, "t", "one")
-    expect(spec.schema.tables[0].columns.map((c) => c.key)).toEqual([false, false])
+    expect(spec.schema.tables[0].columns.map((c) => [c.name, c.key])).toEqual([["item", false], ["value", false]])
+    expect(spec.pages[0].widgets[0].fields).toEqual([])
+    expect(spec.sample).toEqual({ t: [{ a: "x" }] })
+  })
+
+  it("changes a column's type, dropping the rules the new type cannot have", () => {
+    let spec = withTable(column("a", "value", { type: "float", min: 1, max: 5, options: ["1", "2"] }))
+
+    spec = changeSchemaColumnType(spec, "t", "a", "str")
+    expect(spec.schema.tables[0].columns[0]).toMatchObject({ type: "str", min: null, max: null, options: ["1", "2"] })
+    spec = changeSchemaColumnType(spec, "t", "a", "date")
+    expect(spec.schema.tables[0].columns[0]).toMatchObject({ type: "date", options: [] })
+    spec = changeSchemaColumnType(spec, "t", "a", "int")
+    expect(spec.schema.tables[0].columns[0]).toMatchObject({ type: "int", min: null, max: null, options: [] })
   })
 
   it("checks an input column's rules, which an output table ignores", () => {
@@ -167,6 +195,14 @@ describe("columns", () => {
     expect(names()).toEqual(["a", "x", "b", "c"])
     spec = moveSchemaColumn(spec, "t", "a", 3)
     expect(names()).toEqual(["x", "b", "c", "a"])
+
+    // The index stays first: it is not moved, and nothing is moved above it.
+    spec = setSchemaTableRows(spec, "t", "many")
+    spec = addSchemaColumn(spec, "t", createIndexColumn(spec, "t"), 0)
+    expect(moveSchemaColumn(spec, "t", spec.schema.tables[0].columns[0].id, 2)).toBe(spec)
+    expect(moveSchemaColumn(spec, "t", "b", 0)).toBe(spec)
+    spec = moveSchemaColumn(spec, "t", "b", 1)
+    expect(names()).toEqual(["row_number", "b", "x", "c", "a"])
   })
 
   it("gives a table an index column, an Integer named row_number, that can be its key", () => {
@@ -287,6 +323,8 @@ describe("what the sheets show", () => {
     expect(grid).toMatchObject({ type: "tableInput", title: "", fields: [], rows: 3 })
     expect(boxes).toMatchObject({ type: "collection", title: "", fields: [], columns: 3 })
     expect(grid).not.toHaveProperty("columns")
+    // In the file's order, so a component the view made compares equal to it saved.
+    expect(Object.keys(grid)).toEqual(["id", "x", "y", "w", "h", "type", "title", "fields", "rows"])
 
     spec = addWidget(addWidget(spec, "p", grid), "p", boxes)
     spec = updateWidget(spec, grid.id, { title: "Equipment", rows: 5, x: 16 })

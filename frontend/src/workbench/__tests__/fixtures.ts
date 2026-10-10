@@ -86,7 +86,7 @@ export function loadForm(form: FormSpec = sheetForm()): void {
     stale: false,
     saving: false,
   })
-  useWorkbenchViewStore.setState({ section: "sheets", pageId: null, selectedId: null, zoom: 1, creating: null, sheet: null, viewport: null })
+  useWorkbenchViewStore.setState({ section: "sheets", pageId: null, selectedId: null, zoom: 1, fitted: false, creating: null, sheet: null, viewport: null })
 }
 
 export const currentForm = (): FormSpec => {

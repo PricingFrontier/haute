@@ -149,6 +149,26 @@ describe("SheetCanvas", () => {
     expect(screen.getByTestId("sheet")).toHaveStyle({ transform: "scale(0.25)" })
   })
 
+  it("keeps a zoom chosen since the sheets were fitted when they show again, until the form is read anew", () => {
+    const wide = { ...sheetForm(), pages: [{ id: "p1", title: "Sheet 1", widgets: [{ id: "w", type: "tableInput" as const, x: 0, y: 0, w: 1968, h: 100, title: "", rows: 3, fields: [] }] }] }
+    loadForm(wide)
+    const first = render(<SheetCanvas />)
+    expect(useWorkbenchViewStore.getState().zoom).toBe(0.45)
+    act(() => useWorkbenchViewStore.getState().setZoom(1))
+    first.unmount()
+
+    // Back from the schema, or from the pipeline editor: the chosen zoom stands.
+    render(<SheetCanvas />)
+    expect(useWorkbenchViewStore.getState().zoom).toBe(1)
+    cleanup()
+
+    // Another form read, as a branch switch brings: fitted afresh.
+    act(() => useWorkbenchFormStore.setState({ status: "loading" }))
+    act(() => loadForm(wide))
+    render(<SheetCanvas />)
+    expect(useWorkbenchViewStore.getState().zoom).toBe(0.45)
+  })
+
   it("in Preview, neither selects nor moves a component, offers no drop, and types into the quote", () => {
     useWorkbenchViewStore.setState({ section: "preview" })
     render(

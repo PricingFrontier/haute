@@ -21,6 +21,7 @@ from collections.abc import Iterator
 from datetime import date
 from pathlib import Path
 from typing import Any, NamedTuple
+from unittest.mock import patch
 
 import polars as pl
 import pytest
@@ -54,15 +55,18 @@ from haute._types import (
 from haute._workbench_input import (
     WorkbenchInputError,
     read_quote,
+    workbench_request_frames,
     workbench_table_frames,
     workbench_table_labels,
 )
 from haute._workbench_tables import WorkbenchTablesError, parse_workbench_tables
 from haute.codegen import graph_to_code_multi
+from haute.deploy import _scorer
 from haute.deploy._config import DeployConfig, resolve_config
+from haute.deploy._container import _generate_app_source
 from haute.deploy._pruner import find_deploy_input_nodes
 from haute.deploy._schema import _read_sample_row, infer_input_schema
-from haute.deploy._scorer import score_graph
+from haute.deploy._scorer import DeployInput, QuoteRequest, score_graph
 from haute.deploy._validators import score_test_quotes
 from haute.execution import ExecutionProfile, execute_lazy_graph
 from haute.parser import parse_pipeline_file
@@ -217,19 +221,29 @@ def _allowed(tree: ast.Module, path: str) -> set[int]:
     return allowed
 
 
+#: A line that means the Quote Input alone, deliberately, says so: the one form a check
+#: against the Quote Input's type may take outside the forms the file holds.
+QUOTE_INPUT_ALONE = "# the Quote Input alone"
+
+
 def request_input_reports(source: str, path: str) -> list[Report]:
     """Each Quote Input reference in *source* outside the forms *path* may hold."""
     tree = ast.parse(source)
     allowed = _allowed(tree, path)
+    lines = source.splitlines()
     return sorted(
         Report(path, getattr(node, "lineno", 0))
         for node in ast.walk(tree)
-        if (_is_member(node, "API_INPUT") or _is_api_input_value(node)) and id(node) not in allowed
+        if (_is_member(node, "API_INPUT") or _is_api_input_value(node))
+        and id(node) not in allowed
+        and QUOTE_INPUT_ALONE not in lines[node.lineno - 1]
     )
 
 
 _ACCEPTED = [
     ("execution.py", "M = {NodeType.API_INPUT: 'path', NodeType.WORKBENCH_INPUT: 'path'}\n"),
+    # A check that means the Quote Input alone, deliberately, says so on its line.
+    ("_seed_plans.py", "ok = node.data.nodeType is NodeType.API_INPUT  # the Quote Input alone\n"),
     (
         "projection.py",
         "M = {\n"
@@ -902,12 +916,38 @@ def test_a_workbench_input_previews_its_sample(project: Path) -> None:
     with resolver.lease_resolved(resolution) as leased:
         assert leased.scan.collect().to_dicts() == [{"value": 10.0}, {"value": 30.0}]
 
-    # A column a row does not hold is null, and so is a column the quote does not name; a
-    # table the sample does not hold is one row of nulls.
+    # A column a row does not hold is null, and so is a column the quote does not name. The
+    # sample is read as a request is: a many-row table it does not hold has no rows and a
+    # one-row table its one row of nulls, so the sample prices as its quote would deployed.
     partial = {"tables": _TABLES, "sample": {"policy": {"limit": 1000, "unread": "x"}}}
     frames = workbench_table_frames(partial)
     assert frames["policy"].collect().to_dicts() == [{"state": None, "limit": 1000}]
-    assert frames["items"].collect().to_dicts() == [{"item_id": None, "value": None}]
+    assert frames["items"].collect().to_dicts() == []
+    # No sample, or nothing typed in it: one row of nulls per table, the null quote.
+    for sample in ({}, None):
+        blank = workbench_table_frames({"tables": _TABLES, "sample": sample})
+        assert blank["policy"].collect().to_dicts() == [{"state": None, "limit": None}]
+        assert blank["items"].collect().to_dicts() == [{"item_id": None, "value": None}]
+
+
+@pytest.mark.parametrize(
+    "quote",
+    [
+        {"policy": {"state": "TX", "limit": 5}},
+        {"policy": {"state": "TX", "limit": 5}, "items": []},
+        {"items": [{"item_id": "Z", "value": 7.0}]},
+        _SAMPLE[0],
+    ],
+    ids=["no many-row table", "an empty many-row table", "no one-row table", "a full quote"],
+)
+def test_a_sample_prices_as_its_quote_would_when_deployed(quote: dict[str, Any]) -> None:
+    """Preview prices a quote as the sample; a deployed pipeline reads it as the request."""
+    sampled = workbench_table_frames({"tables": _TABLES, "sample": copy.deepcopy(quote)})
+    requested = workbench_request_frames({"tables": _TABLES}, [copy.deepcopy(quote)])
+
+    assert list(sampled) == list(requested)
+    for name, frame in requested.items():
+        assert_frame_equal(sampled[name].collect(), frame)
 
 
 def test_a_demand_cuts_the_sample_to_the_ports_and_columns_asked_for() -> None:
@@ -1100,7 +1140,7 @@ def test_a_deployed_pipeline_reads_the_request_into_the_tables(project: Path) ->
     graph = _pricing(project, NodeType.WORKBENCH_INPUT)
     quote = {"policy": {"state": "TX", "limit": 5}, "items": [{"item_id": "Z", "value": 7.0}]}
 
-    def deployed(request: pl.DataFrame) -> pl.DataFrame:
+    def deployed(request: DeployInput) -> pl.DataFrame:
         return score_graph(
             graph=graph, input_df=request, input_node_ids=["request"], output_node_id="listed"
         )
@@ -1119,6 +1159,123 @@ def test_a_deployed_pipeline_reads_the_request_into_the_tables(project: Path) ->
         ),
     ):
         deployed(_quote({"policy": {"state": "TX", "limit": 5}, "items": {"item_id": "Z"}}))
+
+    # The records as they were sent, which the container's /quote and deploy's test quotes
+    # hand over: a quote need not hold every table, and a value Polars could not build a
+    # frame from is refused by the reader, naming the spot.
+    assert deployed(QuoteRequest((quote,)))["name"].to_list() == ["TX", "Z", "2.0"]
+    only_policy = QuoteRequest(({"policy": {"state": "TX", "limit": 5}},))
+    assert deployed(only_policy)["name"].to_list() == ["TX", "2.0"]
+    for misfit, says in (
+        (
+            {"policy": {"state": "TX", "limit": 5}, "items": [{"value": 1}, {"value": "x"}]},
+            "items[1].value is 'x', not 'float'",
+        ),
+        (
+            {"policy": {"state": "TX", "limit": 5}, "items": [{"value": 1}, 5]},
+            "items[1] is a value, not a row",
+        ),
+    ):
+        with pytest.raises(
+            WorkbenchInputError,
+            match=re.escape(f"The request does not fit this Workbench Input's tables: {says}."),
+        ):
+            deployed(QuoteRequest((misfit,)))
+    with pytest.raises(
+        WorkbenchInputError, match="reads one quote per request, and this request holds 2"
+    ):
+        deployed(QuoteRequest((quote, quote)))
+    # The records are a Workbench Input's alone: a Quote Input takes its request as a frame.
+    with pytest.raises(ValueError, match="read by a Workbench Input alone"):
+        score_graph(
+            graph=_pricing(project, NodeType.API_INPUT),
+            input_df=QuoteRequest((quote,)),
+            input_node_ids=["request"],
+            output_node_id="listed",
+        )
+
+
+def test_a_deployed_request_is_sized_per_table_for_the_memory_estimate(project: Path) -> None:
+    """The estimate sees each port's rows, not the one-row request that holds them all."""
+    graph = _pricing(project, NodeType.WORKBENCH_INPUT)
+    quote = {
+        "policy": {"state": "TX", "limit": 5},
+        "items": [{"item_id": item, "value": 1.0} for item in "ABC"],
+    }
+    sized: dict[str, Any] = {}
+    real = _scorer.execute_lazy_graph
+
+    def recording(graph_: PipelineGraph, builder: Any, **kwargs: Any) -> Any:
+        sized.update(kwargs["runtime_source_frames_by_node"])
+        return real(graph_, builder, **kwargs)
+
+    with patch.object(_scorer, "execute_lazy_graph", recording):
+        listed = score_graph(
+            graph=graph,
+            input_df=QuoteRequest((quote,)),
+            input_node_ids=["request"],
+            output_node_id="listed",
+        )
+
+    assert listed["name"].to_list() == ["TX", "A", "B", "C", "2.0"]
+    assert {port: frame.height for port, frame in sized["request"].items()} == {
+        "policy": 1,
+        "items": 3,
+    }
+
+
+def test_the_containers_quote_route_reads_the_request_as_sent(project: Path) -> None:
+    """A served quote answers 200 priced, and a misfit the structured 422, not Polars' 500."""
+    from fastapi.testclient import TestClient
+
+    graph = _pricing(project, NodeType.WORKBENCH_INPUT)
+    container = project / "container"
+    container.mkdir()
+    manifest = {
+        "pruned_graph": graph.model_dump(mode="json"),
+        "input_node_ids": ["request"],
+        "output_node_id": "listed",
+        "artifacts": {},
+        "output_fields": None,
+    }
+    (container / "deploy_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    app_path = container / "app.py"
+    app_path.write_text(_generate_app_source("motor", 8080), encoding="utf-8")
+    module_name = f"_haute_workbench_app_{uuid.uuid4().hex}"
+    spec = importlib.util.spec_from_file_location(module_name, app_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+        with TestClient(module.app) as client:
+            priced = client.post(
+                "/quote",
+                json={
+                    "policy": {"state": "TX", "limit": 5},
+                    "items": [{"item_id": "Z", "value": 7.0}],
+                },
+            )
+            # A text where a number belongs, in a later row: Polars could not build a frame
+            # from it, so it is read from the records and answered as the reader says it.
+            refused = client.post(
+                "/quote",
+                json={
+                    "policy": {"state": "TX", "limit": 5},
+                    "items": [{"value": 1}, {"value": "x"}],
+                },
+            )
+    finally:
+        sys.modules.pop(module_name, None)
+
+    assert priced.status_code == 200, priced.text
+    assert [row["name"] for row in priced.json()["rows"]] == ["TX", "Z", "2.0"]
+    assert refused.status_code == 422, refused.text
+    assert refused.json() == {
+        "error_code": "workbench_input_invalid",
+        "message": "The request does not fit this Workbench Input's tables: items[1].value is "
+        "'x', not 'float'.",
+    }
 
 
 def test_generated_code_runs_a_workbench_input(project: Path) -> None:

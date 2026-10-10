@@ -69,7 +69,9 @@ def workbench_output_mapping(
     An entry is a frame column's name, or ``None`` for none; a column without one is filled
     by name. An entry for a table or column the tables do not have fails.
     """
-    mapping = config.get("mapping") or {}
+    mapping = config.get("mapping")
+    if mapping is None:
+        mapping = {}
     if not isinstance(mapping, dict):
         raise WorkbenchOutputError(
             "The Workbench Output's mapping must be an object of tables, each an object of columns."

@@ -61,3 +61,25 @@ Two naming notes:
 - **`.haute_cache/`** — the cache root at the project root. It holds more than one cache system — shredded parquet for structured inputs, remote-table parquet cache, output schema artefacts — so do not describe it as any single one of them.
 
 - **working / committed cache layers** — the two layers of the structured-input parquet cache. The **working** layer is volatile and in-session, written by the explicit cache action; the **committed** layer is durable, promoted at save.
+
+## 4. Workbench
+
+- **workbench** — the project's view where a pricing team lays out the sheets an underwriter keys a quote into, enabled by `[workbench]` in `haute.toml`, with its sheets saved in `forms/form.json`. In user-facing text say "the workbench" (lower case) and "the sheets" or `forms/form.json`, never "the form".
+
+- **sheet** — one page of the workbench: a canvas the components are laid out on. `pages` in the file.
+
+- **component** — a Table or a Collection on a sheet. `widgets` in the file; say "component" in prose and in UI copy, never "widget".
+
+- **Table (component)** — a grid of rows showing columns of the schema's many-row tables (`tableInput` in the file). Not a schema table.
+
+- **Collection** — boxes showing columns of the schema's one-row tables (`collection` in the file).
+
+- **schema table** — a table of the workbench's schema: a name, a role (input, sent to the pricing engine, or output, returned by it), one row per quote or many, and typed columns. The input tables are the Workbench Input's ports and the output tables the Workbench Output's.
+
+- **key** — a column of a many-row schema table that, with the table's other keys, says which row is which; how a Table's output rows are matched to its input rows.
+
+- **index** — a many-row schema table's row-number column, `row_number` until renamed, an Integer numbering the rows from 1.
+
+- **the sample** — the quote typed into the sheets while building: saved with the sheets, priced live, and what the Workbench Input's previews run on, read as a request is read.
+
+- **Build / Preview** — the workbench's two modes: Build lays out the sheets and edits the schema; Preview shows the sheets as an underwriter uses them, with a quote kept apart from the sample and never saved.

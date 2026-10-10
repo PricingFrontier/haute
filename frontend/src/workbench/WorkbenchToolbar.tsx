@@ -7,8 +7,6 @@ import useWorkbenchPricingStore from "../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore, { ZOOM_STEP } from "../stores/useWorkbenchViewStore"
 import { filled } from "../utils/sheetValues"
 
-declare const __APP_VERSION__: string
-
 interface WorkbenchToolbarProps {
   /** Commit: the host's milestone flow, which saves the form's unsaved edits first. */
   onCommit: () => void
@@ -58,7 +56,12 @@ export default function WorkbenchToolbar({ onCommit }: WorkbenchToolbarProps) {
         </ToolbarColumn>
         {previewing ? (
           <ToolbarColumn role="group" aria-label="Quote">
-            <ToolbarButton icon={Calculator} onClick={() => { void priceQuote() }} disabled={!ready || pricing} title="Check the quote and price it on the pipeline">
+            <ToolbarButton
+              icon={Calculator}
+              onClick={() => { void priceQuote() }}
+              disabled={!ready || pricing || blank}
+              title={blank ? "Type the quote first" : "Check the quote and price it on the pipeline"}
+            >
               Price
             </ToolbarButton>
             <ToolbarButton

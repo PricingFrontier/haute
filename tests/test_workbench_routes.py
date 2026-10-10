@@ -219,11 +219,29 @@ def test_a_save_against_a_form_that_changed_on_disk_is_refused_writing_nothing(
 
     assert stale.status_code == 409
     assert stale.json()["detail"] == (
-        "stale_document_revision: The workbench's form changed on disk after the workbench "
+        "stale_document_revision: forms/form.json changed on disk after the workbench "
         "read it. Reload the workbench before saving."
     )
     on_disk = json.loads((project / "forms" / "form.json").read_text(encoding="utf-8"))
     assert on_disk["schema"]["tables"][0]["name"] == "policy"
+
+
+def test_a_save_whose_file_cannot_be_written_says_so(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    enable(project)
+
+    def refuse(path: Path, spec: Any) -> str:
+        raise PermissionError(f"[Errno 13] Permission denied: {path.name}")
+
+    monkeypatch.setattr("haute.routes.workbench.write_form", refuse)
+    failed = client().put("/api/workbench/form", json={"form": form(POLICY), "base_revision": None})
+
+    assert failed.status_code == 409
+    assert failed.json()["detail"] == (
+        "forms/form.json could not be written: [Errno 13] Permission denied: form.json"
+    )
+    assert not (project / "forms" / "form.json").exists()
 
 
 def test_the_first_save_creates_the_form_unless_one_has_appeared(project: Path) -> None:
@@ -447,28 +465,6 @@ def test_haute_server_answers_the_status_ahead_of_its_404_guard_behind_the_sessi
     # The /api 404 guard would answer {"detail": "No such route: ..."} instead.
     assert answered.status_code == 200
     assert isinstance(answered.json()["enabled"], bool)
-
-
-def test_the_form_s_save_holds_the_shared_save_lock() -> None:
-    """``put_workbench_form`` opens ``async with save_lock``, as the pipeline's save does."""
-    import ast
-
-    from haute.routes import workbench as workbench_module
-
-    tree = ast.parse(Path(workbench_module.__file__).read_text(encoding="utf-8"))
-    route = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "put_workbench_form"
-    )
-    assert any(
-        isinstance(child, ast.AsyncWith)
-        and any(
-            isinstance(item.context_expr, ast.Name) and item.context_expr.id == "save_lock"
-            for item in child.items
-        )
-        for child in ast.walk(route)
-    )
 
 
 async def test_two_saves_against_one_revision_take_turns_and_the_second_is_refused(

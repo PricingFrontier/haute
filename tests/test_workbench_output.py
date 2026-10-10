@@ -37,7 +37,12 @@ from haute._types import (
     NodeType,
     PipelineGraph,
 )
-from haute._workbench_output import WorkbenchOutputError, WorkbenchOutputTables, as_response
+from haute._workbench_output import (
+    WorkbenchOutputError,
+    WorkbenchOutputTables,
+    _fits,
+    as_response,
+)
 from haute.codegen import graph_to_code_multi
 from haute.deploy._config import DeployConfig, resolve_config
 from haute.deploy._pruner import find_deploy_input_nodes, find_output_node
@@ -236,7 +241,9 @@ def test_the_mapping_picks_what_fills_each_column(project: Path) -> None:
 def test_a_column_of_nulls_fills_a_column_of_any_type(project: Path) -> None:
     # A frame column that is null throughout has no dtype to disagree with the declared one.
     graph = _priced()
-    graph.node_map["priced"].data.config["code"] = f"{_PRICED}\ndf = df.with_columns(referral=pl.lit(None))"
+    graph.node_map["priced"].data.config["code"] = (
+        f"{_PRICED}\ndf = df.with_columns(referral=pl.lit(None))"
+    )
 
     (pricing,) = _tables(graph)["pricing"].to_dicts()
 
@@ -452,6 +459,10 @@ _FAILURES: dict[str, tuple[Callable[[PipelineGraph], None], str]] = {
         _remapped("premium"),
         "The Workbench Output's mapping must be an object of tables, each an object of columns.",
     ),
+    "mapping_a_list": (
+        _remapped([]),
+        "The Workbench Output's mapping must be an object of tables, each an object of columns.",
+    ),
     "mapping_a_table_it_lacks": (
         _remapped({"nope": {"premium": "premium"}}),
         "The Workbench Output's mapping has a 'nope' table, which is none of its tables "
@@ -500,6 +511,35 @@ def test_a_workbench_output_that_cannot_fill_its_tables_fails(
 
     with pytest.raises(WorkbenchOutputError, match=re.escape(says)):
         _tables(graph)
+
+
+@pytest.mark.parametrize(
+    ("declared", "dtype", "fits"),
+    [
+        ("int", pl.Int32(), True),
+        ("int", pl.UInt8(), True),
+        ("int", pl.Float64(), False),
+        ("float", pl.Int64(), True),
+        ("float", pl.Decimal(12, 2), True),
+        ("float", pl.String(), False),
+        ("str", pl.String(), True),
+        ("str", pl.Categorical(), True),
+        ("str", pl.Enum(["a"]), True),
+        ("str", pl.Int64(), False),
+        ("bool", pl.Boolean(), True),
+        ("bool", pl.Int64(), False),
+        ("date", pl.Date(), True),
+        ("date", pl.Datetime("us"), False),
+        ("date", pl.String(), False),
+        ("int", pl.Null(), True),
+    ],
+    ids=str,
+)
+def test_which_frame_columns_fill_a_declared_column(
+    declared: str, dtype: pl.DataType, fits: bool
+) -> None:
+    """Any integer fills an Integer, any number a Decimal, a category Text; a null anything."""
+    assert _fits(declared, dtype) is fits
 
 
 def test_a_request_of_several_quotes_fails_a_workbench_output(project: Path) -> None:

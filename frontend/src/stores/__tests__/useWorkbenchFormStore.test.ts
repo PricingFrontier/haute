@@ -7,7 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { FormSpec } from "../../api/types"
 import { makeGitWorkingBranch } from "../../test-utils/factories"
-import { withSampleCell, withSampleRows } from "../../utils/workbenchForm"
+import { addWidget, createWidget, withSampleCell, withSampleRows } from "../../utils/workbenchForm"
 import { resetIdentityPromptForTests } from "../identityPrompt"
 import type { SaveCapture } from "../saveCapture"
 import useDocumentStatusStore from "../useDocumentStatusStore"
@@ -391,6 +391,56 @@ describe("useWorkbenchFormStore", () => {
 
     expect(gets).toBe(2)
     expect(store()).toMatchObject({ form: named("home"), revision: "rev-1", dirty: false, stale: false })
+  })
+
+  it("reads the file again after a read in flight when a document is adopted meanwhile, never ending on the old branch's form", async () => {
+    let finish: (response: Response) => void = () => {}
+    let gets = 0
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      gets += 1
+      if (gets === 1) {
+        return new Promise<Response>((resolve) => {
+          finish = resolve
+        })
+      }
+      return json({ form: named("other branch"), revision: "rev-7" })
+    })
+    const store = useWorkbenchFormStore.getState
+
+    const loading = store().load()
+    expect(store().status).toBe("loading")
+    await vi.waitFor(() => expect(gets).toBe(1))
+    // A branch switched while the file was being read: the sync waits its turn.
+    useDocumentStatusStore.getState().reset()
+    finish(json({ form: blank, revision: "rev-0" }))
+    await loading
+
+    await vi.waitFor(() => expect(store().revision).toBe("rev-7"))
+    expect(store()).toMatchObject({ form: named("other branch"), status: "ready", dirty: false, stale: false })
+    expect(gets).toBe(2)
+  })
+
+  it("is as saved after a save whatever order the file writes a component's keys in", async () => {
+    const api = server({ form: blank, revision: "rev-0" })
+    // The server writes a component's fields in its own order.
+    api.refusePut(() => {
+      const body = JSON.parse(String(vi.mocked(fetch).mock.calls.at(-1)?.[1]?.body)) as { form: FormSpec }
+      const page = body.form.pages[0]
+      const reordered = page.widgets.map((widget) => Object.fromEntries(Object.entries(widget).reverse()))
+      return saved({ ...body.form, pages: [{ ...page, widgets: reordered as typeof page.widgets }] }, "rev-1")
+    })
+    const store = useWorkbenchFormStore.getState
+    await store().load()
+    store().change((form) => addWidget(form, "page_1", createWidget("collection", { x: 0, y: 0, w: 720, h: 120 })))
+    expect(store().dirty).toBe(true)
+
+    await expect(store().save()).resolves.toBe(true)
+
+    expect(store()).toMatchObject({ revision: "rev-1", dirty: false })
+    expect(useWorkbenchStore.getState().formDirty).toBe(false)
+    // Undoing the edit makes the form differ from the file again.
+    store().undo()
+    expect(store().dirty).toBe(true)
   })
 
   it("says when the file could not be read again, leaving the form as it is", async () => {

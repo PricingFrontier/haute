@@ -11,7 +11,7 @@ node types for live scoring:
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -96,6 +96,37 @@ def _clear_deploy_artifact_caches() -> None:
 
     clear_local_model_cache()
     _clear_contract_cache()
+
+
+@dataclass(frozen=True, slots=True)
+class QuoteRequest:
+    """A Workbench Input's request as it was sent: its quotes, one record each, untyped.
+
+    A deployed Workbench Input reads its request itself, each value as its column's type
+    holds it, and refuses a misfit naming the spot (specs/workbench). A frame built from the
+    records by inference would type them first, and refuse a misfit as Polars does, so a
+    request bound for a Workbench Input is handed over as its records.
+    """
+
+    records: tuple[Mapping[str, Any], ...]
+
+    @property
+    def height(self) -> int:
+        """How many quotes the request holds, as a frame's ``height`` counts its rows."""
+        return len(self.records)
+
+
+#: A deployed request: the rows of a Quote Input's or a Data Input's request as a frame,
+#: or a Workbench Input's quotes as their records.
+DeployInput = pl.DataFrame | QuoteRequest
+
+
+def reads_one_quote_per_request(graph: PipelineGraph, input_node_ids: Sequence[str]) -> bool:
+    """Whether the request input reads one quote per request: a Workbench Input does."""
+    inputs = set(input_node_ids)
+    return any(
+        node.data.nodeType is NodeType.WORKBENCH_INPUT for node in graph.nodes if node.id in inputs
+    )
 
 
 @dataclass(slots=True)
@@ -575,7 +606,7 @@ def _assert_runtime_contract_matches(
 
 def score_graph_lazy(
     graph: PipelineGraph,
-    input_df: pl.DataFrame,
+    input_df: DeployInput,
     input_node_ids: list[str],
     output_node_id: str,
     artifact_paths: dict[str, str] | None = None,
@@ -592,7 +623,8 @@ def score_graph_lazy(
 
     Args:
         graph: Pruned React Flow graph JSON.
-        input_df: The live input data (1 or N rows).
+        input_df: The live input data (1 or N rows), or a :class:`QuoteRequest`
+            for a Workbench Input, which reads its quote from the records.
         input_node_ids: Source node IDs that receive the live input.
         output_node_id: The node whose output is the API response.
         artifact_paths: Optional remapped artifact paths
@@ -660,7 +692,7 @@ def _reject_incomplete_stepped_nodes(graph: PipelineGraph, relevant_node_ids: se
 
 def _score_graph_lazy(
     graph: PipelineGraph,
-    input_df: pl.DataFrame,
+    input_df: DeployInput,
     input_node_ids: list[str],
     output_node_id: str,
     artifact_paths: dict[str, str] | None,
@@ -689,16 +721,31 @@ def _score_graph_lazy(
             # dynamic model contract can fail with a lower-level config error.
             _validate_deploy_model_score_source(node, remap)
     input_set = set(input_node_ids)
-    input_lf = input_df.lazy()
-    runtime_source_frames_by_node = {
-        node.id: input_df
-        for node in graph.nodes
-        if node.id in input_set
-        and (
+    # A Workbench Input's quote is read once, here, into a frame per port: the walk hands
+    # each edge its table, and the memory estimate sizes each consumer from the table
+    # that feeds it rather than from the one-row request that holds them all.
+    quote_tables: dict[str, dict[str, pl.DataFrame]] = {}
+    runtime_source_frames_by_node: dict[str, pl.DataFrame | Mapping[str, pl.DataFrame]] = {}
+    for node in graph.nodes:
+        if node.id not in input_set:
+            continue
+        if node.data.nodeType is NodeType.WORKBENCH_INPUT:
+            records = (
+                input_df.records if isinstance(input_df, QuoteRequest) else input_df.to_dicts()
+            )
+            quote_tables[node.id] = workbench_request_frames(node.data.config, records)
+            runtime_source_frames_by_node[node.id] = quote_tables[node.id]
+        elif (
             node.data.nodeType in REQUEST_INPUT_NODE_TYPES
             or node.data.nodeType == NodeType.DATA_INPUT
-        )
-    }
+        ):
+            if isinstance(input_df, QuoteRequest):
+                raise ValueError(
+                    f"A QuoteRequest is read by a Workbench Input alone; {node.id!r} is a "
+                    f"{node.data.nodeType.value} and takes a frame."
+                )
+            runtime_source_frames_by_node[node.id] = input_df
+    input_lf = None if isinstance(input_df, QuoteRequest) else input_df.lazy()
     model_score_temp_paths: list[str] = []
     retained_lazy_frames: list[pl.LazyFrame] = []
 
@@ -717,18 +764,23 @@ def _score_graph_lazy(
         _preamble_names: dict[str, Any] = dict(build_kwargs.get("preamble_ns") or {})
 
         # Intercept: the request input → inject the live DataFrame directly; a
-        # Workbench Input's request is read into its tables first.
+        # Workbench Input's request was read into its tables above.
         if node_type in REQUEST_INPUT_NODE_TYPES and nid in input_set:
             if node_type is NodeType.WORKBENCH_INPUT:
                 # A frame per port, as a multi-frame source gives, which the walk
                 # hands each edge by its handle.
-                def inject_workbench_request(_config: dict[str, Any] = config) -> Any:
-                    return dict(workbench_request_frames(_config, input_df))
+                def inject_workbench_request(
+                    _tables: dict[str, pl.DataFrame] = quote_tables[nid],
+                ) -> Any:
+                    return {port: table.lazy() for port, table in _tables.items()}
 
                 return func_name, inject_workbench_request, True
 
-            def inject_input() -> _Frame:
-                return input_lf
+            assert input_lf is not None
+            request_lf: pl.LazyFrame = input_lf
+
+            def inject_input(_lf: pl.LazyFrame = request_lf) -> _Frame:
+                return _lf
 
             return func_name, inject_input, True
 
@@ -738,8 +790,11 @@ def _score_graph_lazy(
             _preamble = build_kwargs.get("preamble_ns")
             _profile = build_kwargs.get("execution_profile")
             _required = build_kwargs.get("required_output_columns")
+            assert input_lf is not None
+            source_lf: pl.LazyFrame = input_lf
 
             def inject_data_input(
+                _lf: pl.LazyFrame = source_lf,
                 _config: dict[str, Any] = config,
                 _node_id: str = nid,
                 _code_value: str = _code,
@@ -750,7 +805,7 @@ def _score_graph_lazy(
                 from haute._builders import apply_source_scan
 
                 return apply_source_scan(
-                    input_lf,
+                    _lf,
                     profile=_execution_profile,
                     required_output_columns=_required_columns,
                     config=_config,
@@ -1122,7 +1177,7 @@ def _score_graph_lazy(
 
 def score_graph(
     graph: PipelineGraph,
-    input_df: pl.DataFrame,
+    input_df: DeployInput,
     input_node_ids: list[str],
     output_node_id: str,
     artifact_paths: dict[str, str] | None = None,

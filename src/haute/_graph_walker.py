@@ -88,6 +88,7 @@ from haute.errors import (
 
 if TYPE_CHECKING:
     from haute._node_snapshots import NodeSnapshotArtifact
+    from haute._ram_estimate import RuntimeSourceFrames
     from haute._seed_plans import SeedPlan, SeedPlanDecision
 
 logger = get_logger(component="execute")
@@ -303,7 +304,7 @@ class WalkRequest:
     """Non-source outputs kept after their last consumer ran."""
     schema_only: bool = False
     """The caller reads ``collect_schema()`` and never collects or sinks."""
-    runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None
+    runtime_source_frames_by_node: RuntimeSourceFrames | None = None
     prepare_inputs: bool = True
     """A sink walk prepares snapshot-backed inputs; a display walk's caller does."""
     walk_node_ids: frozenset[str] | None = None
@@ -404,7 +405,7 @@ def walk_graph(
     source_by_node: Mapping[str, str] | None = None,
     preserve_node_ids: Iterable[str] = (),
     schema_only: bool = False,
-    runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
+    runtime_source_frames_by_node: RuntimeSourceFrames | None = None,
     prepare_inputs: bool = True,
 ) -> WalkResult:
     """Walk *graph* once under *policy* and return what it built.

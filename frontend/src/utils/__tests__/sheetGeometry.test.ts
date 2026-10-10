@@ -1,17 +1,15 @@
 /**
  * Placing components on a sheet (specs/workbench): the snap grid, moves kept on the sheet,
- * resizes from each handle, the next free spot, and the sheet's size and fit.
+ * resizes from each handle, and the sheet's size and fit.
  */
 import { describe, expect, it } from "vitest"
 import {
   GRID,
   MIN_SHEET_HEIGHT,
   SHEET_EDGE,
-  contains,
   contentRight,
   fitZoom,
   moveRect,
-  nextFreeSpot,
   placeAt,
   resizeRect,
   sheetHeight,
@@ -45,15 +43,8 @@ describe("sheetGeometry", () => {
     expect(resizeRect(rect, "s", 0, 7, min)).toMatchObject({ y: 96, h: 72 })
   })
 
-  it("places a component near a point, and finds a free spot below everything", () => {
+  it("places a component near a point, and tells how far right the components reach", () => {
     expect(placeAt(13, -20, { w: 240, h: 64 })).toEqual({ x: 16, y: 0, w: 240, h: 64 })
-    expect(nextFreeSpot([], { w: 240, h: 64 })).toEqual({ x: 16, y: 16, w: 240, h: 64 })
-    expect(nextFreeSpot([rect], { w: 240, h: 64 }).y).toBe(176)
-  })
-
-  it("tells whether a point is on a component, and how far right the components reach", () => {
-    expect(contains(rect, 96, 96)).toBe(true)
-    expect(contains(rect, 297, 100)).toBe(false)
     expect(contentRight([rect, { x: 0, y: 0, w: 400, h: 10 }])).toBe(400)
     expect(contentRight([])).toBe(0)
   })

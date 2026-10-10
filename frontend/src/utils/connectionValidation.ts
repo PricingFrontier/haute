@@ -159,7 +159,7 @@ export function validatePipelineConnection(
 
   if (isRequestInputType(sourceNode.data.nodeType)
     && (candidate.sourceHandle === null || candidate.sourceHandle === undefined)) {
-    return { ok: false, reason: { kind: "invalid-connection", message: `${sourceNode.data.nodeType} connections require a frame handle` } }
+    return { ok: false, reason: { kind: "invalid-connection", message: `Connect from one of ${sourceNode.data.label}'s tables, not the node itself` } }
   }
 
   if (targetNode.data.nodeType === NODE_TYPES.WORKBENCH_OUTPUT) {

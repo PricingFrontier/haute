@@ -1179,19 +1179,22 @@ class TestOutputSchemaConservativeFallback:
         assert admission["profile"] == "deploy_batch"
         assert admission["operation"] == "deploy_bundle_schema"
 
+    @pytest.mark.parametrize("rows", ["one", "many"])
     def test_a_workbench_inputs_null_sample_keeps_its_types_in_the_capped_worker(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
+        rows: str,
     ) -> None:
         """A Workbench Input reads no file: its sample is a record of typed nulls.
 
-        The rows reach the worker as JSON, where a null has no type; the schema sent
-        with them keeps the float, so the sum over it is a float, not a null column.
+        The rows reach the worker as JSON, where a null has no type; the Workbench Input
+        reads them there through its tables, so the float column is a float and the sum
+        over it a float, not a null column, for a one-row and a many-row table alike.
         """
         table = {
             "name": "quotes",
-            "rows": "one",
+            "rows": rows,
             "columns": [{"name": "segment", "type": "str"}, {"name": "premium", "type": "float"}],
         }
         conservative = _conservative_graph()

@@ -6,6 +6,7 @@
  * what each starts with from the palette. `useWorkbenchTables` applies them.
  */
 import type { WorkbenchColumn, WorkbenchTable } from "../api/types"
+import { canonicalJson } from "./canonicalJson"
 import { NODE_TYPES } from "./nodeTypes"
 
 /** The workbench's tables and sample quote from one fetch, numbered so that only the newest counts. */
@@ -55,14 +56,6 @@ export function workbenchTablePorts(config: Record<string, unknown> | undefined 
 }
 
 /** JSON with every object's keys sorted, so the order of keys never reads as a change. */
-function canonicalJson(value: unknown): string {
-  return JSON.stringify(value ?? null, (_key, entry: unknown) =>
-    entry !== null && typeof entry === "object" && !Array.isArray(entry)
-      ? Object.fromEntries(Object.entries(entry).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
-      : entry,
-  )
-}
-
 /**
  * The update a Workbench Input's config needs to match the fetched tables and sample, or
  * null when none does. A config without a sample matches an empty one.

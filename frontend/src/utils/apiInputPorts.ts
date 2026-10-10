@@ -117,7 +117,8 @@ export function apiInputFrameColumns(
   })
 }
 
-const ASCII_IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+/** The shape of a frame label, and of a workbench column's name: an ASCII identifier. */
+export const ASCII_IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 
 function isValidFrameLabel(
   label: string | null,

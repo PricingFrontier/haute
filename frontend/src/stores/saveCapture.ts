@@ -21,10 +21,10 @@ export interface SaveCapture {
 
 export function reportSaveCapture(capture: SaveCapture): void {
   const git = useGitStore.getState()
-  // Reflect the new ledger commit in the toolbar indicator (P2). null when no working
+  // Reflect the new ledger commit in the toolbar indicator. null when no working
   // branch is configured — the indicator stays as-is.
   if (capture.git_sha !== undefined) git.setLastSaveSha(capture.git_sha)
-  // Let an open Git panel re-fetch its history (S38).
+  // Let an open Git panel re-fetch its history.
   git.notifyHistoryChanged()
   // The save succeeded but the backend flagged something unfinished (a transform with no
   // code, a capture that failed). These are deliberately non-blocking, so they'd be

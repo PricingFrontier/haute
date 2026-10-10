@@ -573,12 +573,17 @@ class DataPointResolver:
         if resolution.state != "current":
             raise CacheRequiredError(resolution)
         assert resolution.data_version is not None
-        if resolution.kind == "api_input_table" and resolution.input_identity is None:
+        producer = _node(self.graph, point.producer_node_id)
+        if (
+            resolution.kind == "api_input_table"
+            and producer.data.nodeType is NodeType.WORKBENCH_INPUT
+        ):
             from haute._workbench_input import workbench_table_frames
 
             assert point.port_label is not None
-            config = dict(_node(self.graph, point.producer_node_id).data.config)
-            frames = workbench_table_frames(config, port_columns={point.port_label: None})
+            frames = workbench_table_frames(
+                dict(producer.data.config), port_columns={point.port_label: None}
+            )
             yield LeasedPointFrame(
                 kind=resolution.kind,
                 data_version=resolution.data_version,

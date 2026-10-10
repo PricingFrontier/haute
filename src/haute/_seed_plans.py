@@ -1473,12 +1473,11 @@ def preview_lineage_admitted(graph: PipelineGraph, target_node_id: str, *, sourc
         )
     )
     node_map = prepared.graph_plan.node_map
-    # A Workbench Input reads no file: its tables are one row each, so always bounded.
+    # A Workbench Input reads no file: its tables are a quote's rows, so always bounded.
     return all(
         _flat_file_api_input_is_bounded(node_map[node_id].data.config)
         for node_id in prepared.graph_plan.order
-        if node_map[node_id].data.nodeType in REQUEST_INPUT_NODE_TYPES
-        and node_map[node_id].data.nodeType is not NodeType.WORKBENCH_INPUT
+        if node_map[node_id].data.nodeType is NodeType.API_INPUT  # the Quote Input alone
     )
 
 

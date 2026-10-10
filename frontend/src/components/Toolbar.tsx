@@ -15,7 +15,6 @@ import MlflowSettingsModal from "./MlflowSettingsModal"
 
 const PipelineSettingsModal = lazy(() => import("./PipelineSettingsModal"))
 
-declare const __APP_VERSION__: string
 
 function formatTiming(ms: number): string {
   const rounded = Math.round(ms)

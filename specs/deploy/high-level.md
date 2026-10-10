@@ -89,7 +89,11 @@ A request input, a Quote Input (`apiInput`) or a Workbench Input (`workbenchInpu
 preferred live request source, and a pipeline with more than one, counting those inside its
 submodels, is refused before anything is pruned. A Workbench Input reads no sample file: its
 request schema comes from its tables, the dry run reads one quote with nothing filled in, one
-row of nulls per table, and a served request is read into its tables, one quote per request
+row of nulls per table, and a served request is read into its tables from the records as they
+were sent, one quote per request, each consumer sized by the memory estimate from the table
+that feeds it; its test quotes are not pre-checked for columns, and their expected outputs
+are compared into the response's tables; a Databricks deployment's signature holds each
+table as an object of its columns or an array of them
 ([workbench](../workbench/high-level.md)). For a graph with no request input,
 exactly one source may be promoted only when it is a `dataInput`, whose configured data
 provides schema/sample information before live requests replace it. A `constant` or any

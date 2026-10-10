@@ -91,6 +91,7 @@ Below is a simple motor pricing pipeline that takes in quote data, enriches it, 
 Nodes that bring data into your pipeline. They have no upstream connections.
 
 - **[Quote Input](quote-input.md)**  - entry point for live pricing; reads a preview file during development
+- **[Workbench Input](workbench-input.md)**  - entry point for quotes keyed in through the project's workbench; runs on the workbench's sample while you build
 - **[Data Input](data-input.md)**  - reads files (parquet, CSV and more), lakehouse, database or Databricks tables, or inline records
 - **[Constant](constant.md)**  - stores fixed values like expense loadings or tax rates
 

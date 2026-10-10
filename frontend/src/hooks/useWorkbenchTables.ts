@@ -53,7 +53,6 @@ export default function useWorkbenchTables({
     if (!editable || workbench === null || adoption === null) return
     if (adoption.generation !== generation || workbench.fetch < adoption.fetch) return
     if (given.current.generation !== generation) given.current = { generation, fetches: new Map() }
-    const isCurrent = () => useDocumentStatusStore.getState().executionGeneration === generation
     const { fetch } = workbench
     const fetches = given.current.fetches
     for (const node of graphRef.current.nodes) {
@@ -64,6 +63,11 @@ export default function useWorkbenchTables({
       fetches.set(node.id, fetch)
       const patch = patchFor(config, workbench)
       if (patch === null) continue
+      // Current while the document is, and while no newer fetch has reached the node: an
+      // update still resolving its identity when a newer fetch finds the node up to date
+      // would otherwise commit the older tables over the newer.
+      const isCurrent = () =>
+        useDocumentStatusStore.getState().executionGeneration === generation && fetches.get(node.id) === fetch
       // An update that does not commit, such as one a submodel opened while its identity
       // was resolving, is forgotten, so the next pass (the top level showing again, or the
       // next fetch) tries it again.

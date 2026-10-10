@@ -126,6 +126,22 @@ describe("useWorkbenchTables", () => {
     expect(isCurrent?.()).toBe(false)
   })
 
+  it("drops an update still resolving when a newer fetch finds the node up to date", () => {
+    graphRef.current.nodes = [workbenchInput({ tables: tables("policy"), sample: {} })]
+    render()
+    // An older fetch's tables, sent while the identity resolves.
+    publish(1, "other")
+    expect(onUpdateNode).toHaveBeenCalledOnce()
+    const isCurrent = onUpdateNode.mock.calls[0][2]?.isCurrent
+    expect(isCurrent?.()).toBe(true)
+
+    // The newest fetch's tables are the node's already: nothing to send, and the older
+    // update, committed now, would leave the node behind the newest fetch.
+    publish(2, "policy")
+    expect(onUpdateNode).toHaveBeenCalledOnce()
+    expect(isCurrent?.()).toBe(false)
+  })
+
   it("brings the sample quote with the tables, and a changed sample alone", () => {
     const sample = { policy_details: { state: "NY" } }
     render()

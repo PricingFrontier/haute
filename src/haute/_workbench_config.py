@@ -19,7 +19,8 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-from haute.errors import ConfigError, HauteError
+from haute._sandbox import contained_path
+from haute.errors import ConfigError, HauteError, PathOutsideProjectError
 
 #: The keys the table may hold. ``haute deploy``'s whole-file check of ``haute.toml``
 #: (``haute.deploy._config``) accepts exactly these under ``[workbench]``.
@@ -117,12 +118,13 @@ def _form(raw: object, project_root: Path, toml_path: Path) -> str:
         )
     else:
         form = raw
-    # The default path is checked like a configured one: a `forms` folder that is a symlink
-    # or junction to somewhere outside the project is refused too, since the workbench must
-    # never read a file outside it.
-    root = project_root.resolve()
-    if not (root / form).resolve().is_relative_to(root):
+    # The default path is checked like a configured one, through the one containment check:
+    # a `forms` folder that is a symlink or junction to somewhere outside the project is
+    # refused too, since the workbench must never read a file outside it.
+    try:
+        contained_path(project_root, form)
+    except PathOutsideProjectError as exc:
         raise WorkbenchConfigError(
             "[workbench].form must stay inside the project", path=str(toml_path), form=form
-        )
+        ) from exc
     return form

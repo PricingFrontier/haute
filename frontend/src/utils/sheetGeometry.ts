@@ -22,8 +22,6 @@ export const MIN_SHEET_HEIGHT = 800
 export const SHEET_PADDING = 32
 /** The sheet reaches at least this far past its rightmost component. */
 export const SHEET_EDGE = GRID * 4
-/** Below everything, and in from the left, where a click-added component goes. */
-const INSET = 16
 /** Past the sheet's lowest component, so it has room to grow. */
 const ROOM_BELOW = 240
 
@@ -55,15 +53,6 @@ export function resizeRect(rect: Rect, handle: Handle, dx: number, dy: number, m
 export function placeAt(px: number, py: number, size: Size): Rect {
   return { x: Math.max(0, snap(px)), y: Math.max(0, snap(py)), ...size }
 }
-
-/** Below everything already on the sheet. */
-export function nextFreeSpot(rects: readonly Rect[], size: Size): Rect {
-  const bottom = rects.reduce((max, rect) => Math.max(max, rect.y + rect.h), 0)
-  return placeAt(INSET, rects.length === 0 ? INSET : bottom + INSET, size)
-}
-
-export const contains = (rect: Rect, px: number, py: number): boolean =>
-  px >= rect.x && px <= rect.x + rect.w && py >= rect.y && py <= rect.y + rect.h
 
 /** How far right the sheet's components reach. */
 export const contentRight = (rects: readonly Rect[]): number => rects.reduce((max, rect) => Math.max(max, rect.x + rect.w), 0)

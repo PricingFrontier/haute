@@ -86,13 +86,16 @@ describe("WorkbenchToolbar", () => {
     expect(screen.queryByTestId("toolbar-undo")).not.toBeInTheDocument()
     expect(screen.getByTestId("toolbar-zoom-in")).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole("button", { name: "Price" }))
-    expect(quote.priceQuote).toHaveBeenCalledTimes(1)
-    // Nothing typed: nothing to clear. Typed: Clear asks, then starts over.
+    // Nothing typed: nothing to price, as a deployed request never holds a blank quote,
+    // and nothing to clear. Typed: Price prices it, and Clear asks, then starts over.
+    expect(screen.getByRole("button", { name: "Price" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Price" })).toHaveAttribute("title", "Type the quote first")
     expect(screen.getByRole("button", { name: "Clear" })).toBeDisabled()
     act(() => {
       useWorkbenchPreviewStore.setState({ quote: { t1: [{ c1: "x" }] } })
     })
+    fireEvent.click(screen.getByRole("button", { name: "Price" }))
+    expect(quote.priceQuote).toHaveBeenCalledTimes(1)
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false)
     fireEvent.click(screen.getByRole("button", { name: "Clear" }))
     expect(confirm).toHaveBeenCalledWith("Clear the quote? Every cell will be emptied.")

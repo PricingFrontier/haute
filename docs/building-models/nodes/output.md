@@ -56,7 +56,7 @@ The API response then holds only the quote ID, the final premium, and the area f
     You can only have one Quote Response or [Workbench Output](workbench-output.md) node in a pipeline.
 
 !!! note "Required for live pricing"
-    The Quote Response node is required for live pricing deployments. If your pipeline is batch-only (using Data Output), you don't need one.
+    A Quote Response or Workbench Output node is required for live pricing deployments. If your pipeline is batch-only (using Data Output), you don't need one.
 
 ??? note "In the pipeline file"
     The node's settings are stored in a JSON sidecar, `config/quote_response/<node name>.json`, which the pipeline's `.py` file names in the node's decorator: `@pipeline.output(config="config/quote_response/<node name>.json")`.

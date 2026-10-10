@@ -90,7 +90,7 @@ Out of scope:
   Quote Input's column types (`str`, `int`, `float`, `bool`, `date`), a `label`, whether it
   is a `key` (a many-row table's keys say which row is which), its rules (`required`, `min`,
   `max`, `options`), and whether it is the table's `index`, the column numbering its rows
-  from 1. A sheet has an id, a title and its widgets: a Table (`tableInput`, a grid of at
+  from 1. A sheet has an id, a title and its components (`widgets` in the file): a Table (`tableInput`, a grid of at
   least `rows` rows showing columns of many-row tables) or a Collection (`collection`, boxes
   showing columns of one-row tables, `columns` across), each placed by its `x`, `y`, `w`, `h`
   and showing its `fields`, schema columns named by table id and column id so a rename keeps
@@ -131,58 +131,78 @@ Out of scope:
   `null`) creates the file unless one has appeared. Both routes answer 404 while the
   workbench is not enabled.
 - **The view.** While the workbench is enabled, a view switcher at the bottom of the left
-  palette offers "Pricing", the pipeline editor, and "Workbench". The Workbench view
-  covers the area below the toolbar: its own left column, the component palette with the
-  switcher back, and the section the toolbar chooses, Sheets or Schema. Meanwhile the
-  pipeline editor stays
-  mounted (live sync, the document and its undo history go on) but invisible and inert, its
-  keyboard shortcuts, Ctrl/Cmd+Enter and React Flow's delete and pan keys off and its
-  floating menus closed, so a key pressed in the view never edits the hidden pipeline. The
-  toolbar keeps the brand and the project's controls (Assistant, Help, the branch, Save and
-  Commit) and shows the view's own: Sheets over Schema, the form's Undo and Redo, and Zoom
-  In over Zoom Out while the sheets show. Save and Ctrl/Cmd+S save the form, with a
-  focused field's edit included, and the save is reported as the pipeline's is: the ledger
-  commit on the branch indicator, each warning in a toast of its own, and the git-identity
-  prompt when the capture waits on one, once per session. Commit runs the project's
-  milestone flow, the same from either toolbar: the form is saved first when it holds
-  unsaved edits or a save the ledger did not capture (for want of an identity, or because
-  the capture failed), the Workbench Input's and Workbench Output's copies follow it, and
-  then the pipeline is saved and the milestone asked for, so what the milestone records
-  runs on the form it records (the tables are fetched afresh for that, and a fetch that
-  fails refuses the save, with a toast saying the pipeline was not saved, rather than
-  record copies behind the form); the identity prompt's retry, a move's Save first and the
-  Git panel's save before a switch save the project the same way. A move, a branch switch,
-  an archive or a delete that would replace the working tree asks about unsaved edits in
-  the form as it asks about the canvas, and a switch chosen over them reads the
-  destination's form in their place once it has succeeded. The Git and Assistant panels
-  open beside
-  the view, in the properties panel's place. The Workbench Input's and Workbench Output's
-  panels offer "Edit in Workbench", which shows the view. The view reads the form when it
-  first shows and keeps it, with its unsaved edits and history, across a trip to the
-  pipeline editor, and reads the file again whenever the pipeline editor adopts its
-  document anew, as a branch switched by hand or a change on disk brings: a file at the
-  same revision changes nothing; a changed one replaces the form, its history dropped,
-  while the form is as saved, and otherwise the view says the file changed on disk and
-  offers Reload. A move or a switch from the Git panel reloads the page, and the view
-  reads the form anew when it next shows. A form that cannot be read is reported in the
-  view, with what is wrong and a way to try again.
+  palette offers "Pricing", the pipeline editor, and "Workbench".
+  - **Showing it.** The Workbench view covers the area below the toolbar: its own left
+    column, the component palette with the switcher back, and the section the toolbar
+    chooses. Meanwhile the pipeline editor stays mounted (live sync, the document and its
+    undo history go on) but invisible and inert, its keyboard shortcuts, Ctrl/Cmd+Enter and
+    React Flow's delete and pan keys off and its floating menus closed, so a key pressed in
+    the view never edits the hidden pipeline. The Git and Assistant panels open beside the
+    view, in the properties panel's place. The Workbench Input's and Workbench Output's
+    panels offer "Edit in Workbench", which shows the view.
+  - **The toolbar** keeps the brand and the project's controls (Assistant, Help, the branch,
+    Save and Commit) and shows the view's own, by mode:
+
+    | Mode | The view's controls |
+    |---|---|
+    | Building or Preview | Build over Preview |
+    | Building, the sheets showing | Sheets over Schema, the form's Undo and Redo, Zoom In over Zoom Out, and why pricing the sample last failed |
+    | Building, the schema showing | Sheets over Schema, and Undo and Redo |
+    | Preview | Price over Clear for the quote (Price disabled while nothing is typed, Clear while nothing is typed), Zoom In over Zoom Out, and why the quote has no price |
+
+  - **Save.** Save and Ctrl/Cmd+S save the form, with a focused field's edit included, and
+    the save is reported as the pipeline's is: the ledger commit on the branch indicator,
+    each warning in a toast of its own, and the git-identity prompt when the capture waits
+    on one, once per session.
+  - **Commit** runs the project's milestone flow, the same from either toolbar: the form is
+    saved first when it holds unsaved edits or a save the ledger did not capture (for want
+    of an identity, or because the capture failed), the Workbench Input's and Workbench
+    Output's copies follow it, and then the pipeline is saved and the milestone asked for,
+    so what the milestone records runs on the form it records. The tables are fetched
+    afresh for that, and a fetch that fails refuses the save, with a toast saying the
+    pipeline was not saved, rather than record copies behind the form. A form save refused,
+    as stale or failed, saves no pipeline and asks for no milestone either, so the pipeline
+    never carries copies of a form the view does not show; and a save asked for inside a
+    submodel is refused before the form is saved, as the pipeline's save refuses it. The
+    identity prompt's retry, a move's Save first and the Git panel's save before a switch
+    save the project the same way.
+  - **Guards.** A move, a branch switch, an archive or a delete that would replace the
+    working tree asks about unsaved edits in the form as it asks about the canvas, and a
+    switch chosen over them reads the destination's form in their place once it has
+    succeeded.
+  - **Reading the form.** The view reads the form when it first shows and keeps it, with
+    its unsaved edits and history, across a trip to the pipeline editor, and reads the file
+    again whenever the pipeline editor adopts its document anew, as a branch switched by
+    hand or a change on disk brings: a file at the same revision changes nothing; a changed
+    one replaces the form, its history dropped, while the form is as saved, and otherwise
+    the view says the file changed on disk and offers Reload. A document adopted while the
+    file is still being read is read again after it, so the form never ends on the branch
+    the read began on. A move reloads the page, and the view reads the form anew when it
+    next shows; a switch in place from the Git panel reads the destination's form through
+    that adoption, or at once when the switch was chosen over the form's unsaved edits. A
+    form that cannot be read is reported in the view, with what is wrong and a way to try
+    again.
 - **The schema editor.** The form's tables, each with its name, its role (Input, sent to
   the pricing engine, or Output, returned by it), its rows (One row per quote, or Many
   rows) and its columns; each column with its type, drawn as the step editor's marker for
   the kind (a number, text, true/false, a date) in the data preview's colour and changed
   from it, its name and, in a many-row table, whether it is a key. A column's label and, in
-  an input table, its rules (required, a range for a number, the allowed values) open
-  beside it. Every text field commits on blur or Enter, so an edit is one undo step; Enter
-  in a column's name adds the next column, Alt+Up and Alt+Down move one, and a new table's
-  or column's name takes the focus. A many-row table can have an index: a column first in
-  the table, `row_number` until renamed, an Integer whose type cannot change, numbering
-  the rows from 1; switching a table to one row clears its keys. Removing a column or a
-  table a sheet shows asks first, and takes it off the sheet and out of the sample. The
-  editor says what would stop the schema being the pipeline's tables: a table's name is
-  held to the port rules the Quote Input's labels are held to (an identifier, none of the
-  document's reserved labels, unique whatever its case), a column's name is an identifier
-  unique in its table, a many-row table needs a key, and an input column's range must not
-  be inverted and its allowed values must be of its type.
+  an input table, its rules open beside it: required, a range for an Integer or a Decimal,
+  and the allowed values, typed comma-separated, for any type but True/false and Date.
+  Changing a column's type drops the rules the new type cannot have. Every text field
+  commits on blur or Enter, so an edit is one undo step; Enter in a column's name adds the
+  next column, Alt+Up and Alt+Down move one, and a new table's or column's name takes the
+  focus. A many-row table can have an index: a column first in the table, `row_number`
+  until renamed, an Integer whose type cannot change, numbering the rows from 1, which
+  Alt+Up and Alt+Down neither move nor pass; switching a table to one row clears its keys
+  and drops its index, with what shows it. Removing a column or a table a sheet shows asks
+  first, and takes it off the sheet and out of the sample. The editor says what would stop
+  the schema being the pipeline's tables: a table's name is held to the port rules the
+  Quote Input's labels are held to (an identifier, none of the document's reserved labels,
+  unique whatever its case), a column's name is an identifier that is not a Python keyword,
+  as the server holds it, unique in its table, a many-row table needs a key, an input
+  column's range must not be inverted and its allowed values must be of its type, and
+  True/false and Date columns can have none.
 - **The sheets.** A sheet is a canvas on an 8px snap grid that fills its viewport across
   at the zoom and, like a spreadsheet, has no right or bottom edge: it widens and
   lengthens to hold what is on it. Its tabs run along the top: the sheet showing is
@@ -197,11 +217,14 @@ Out of scope:
   Dragging a component moves it; selected, it has eight handles that resize it, no
   smaller than its kind's minimum. Positions snap to the grid, pointer movement is
   divided by the zoom, and a move or a resize is one undo step, a click that does not
-  move recording nothing. Pressing the empty sheet deselects. A component with a problem
-  (no fields, a column no longer in the schema, a table of the other kind, tables whose
-  rows do not line up) gets a dashed frame in the warning colour naming the problem. The
-  zoom runs from 25% to 200% in steps of 10%; what is on the sheet is fitted to the
-  viewport, never past 100%, when the sheets first show and on Ctrl/Cmd+1.
+  move recording nothing. Pressing the empty sheet deselects. A component takes the
+  keyboard's focus too: reached by Tab, it is selected, so the sheet's keys work without a
+  pointer. A component with a problem (no fields, a column no longer in the schema, a table
+  of the other kind, tables whose rows do not line up) gets a dashed frame in the warning
+  colour naming the problem, on hover and to a screen reader. The zoom runs from 25% to
+  200% in steps of 10%; what is on the sheet is fitted to the viewport, never past 100%,
+  when the sheets first show for a form read (a zoom chosen since is kept across a trip to
+  the schema or the pipeline editor) and on Ctrl/Cmd+1.
 - **The palette.** The view's left column is Haute's palette shell with a Table and a
   Collection, in the entry colour, and the switcher under them. A component is dragged
   out of it onto the sheet: a chip follows the pointer until the sheet shows a ghost where
@@ -212,10 +235,11 @@ Out of scope:
   switcher under it.
 - **The properties panel.** Selecting a component opens its panel on the right, Haute's
   side panel resized from its left edge, where the Git and Assistant panels open while
-  they are closed: the component's kind and its title; its layout, a Table's rows (1 to
-  50) or a Collection's columns across (1 to 12), a value outside the range refused at the
-  field; the order of the fields it shows, moved by dragging or Alt+Up and Alt+Down, each
-  with a cross that stops showing it; and its fields, ticked from the schema tables of its
+  they are closed: the component's kind and its title; once it shows a field, its layout,
+  a Table's rows (1 to 50) or a Collection's columns across (1 to 12), a value outside the
+  range refused at the field, and the order of the fields it shows, moved by dragging or
+  Alt+Up and Alt+Down, each with a cross that stops showing it; and its fields, ticked from
+  the schema tables of its
   kind, many-row tables for a Table and one-row tables for a Collection, each table
   collapsible with its role and how many of its columns show, each column with its type's
   icon, its name and its label. Fields are held by table and column id, in the order
@@ -268,8 +292,9 @@ Out of scope:
   components disabled, no properties panel, no Undo or Redo, and the zoom. An
   underwriter's quote is keyed into the components' input cells as the sample is, through
   the same controls, and is kept apart from the sample: it lasts while the editor is open,
-  through Build and back, is never saved with the form and never undone. Price checks the
-  quote against the columns' rules first: a required cell left empty, text that is not a
+  through Build and back, is never saved with the form and never undone. Price, disabled
+  while nothing is typed (a deployed request never holds a blank quote), checks the quote
+  against the columns' rules first: a required cell left empty, text that is not a
   number in a number column or not a whole number in a whole-number column, a number
   outside the column's range, a value that is not one of the allowed values; a one-row
   table's one row is always checked, a many-row table's filled rows only, and a tick box
@@ -277,7 +302,8 @@ Out of scope:
   outlined, naming its problem on hover, the toolbar says how many cells need attention,
   and from then on the marks follow the cells as they are edited, until the quote is
   cleared. A quote that passes is priced as the sample is, on the pipeline open in the
-  editor with the quote in the sample's place, and every output column shows its value, a
+  editor with the quote in the sample's place, read as a request is, so it prices as it
+  would deployed, and every output column shows its value, a
   Collection's its table's one row and a Table's the row keyed like each grid row, dimmed
   once the quote changes until Price again; a pricing that fails shows its reason in the
   toolbar. Clear, after a confirmation, empties the quote, its marks and its price, and an
@@ -319,22 +345,26 @@ Out of scope:
     a row does not hold is null. `Pipeline.score` takes frames already split per table; a
     deployed pipeline's `/quote`, deploy's test quotes (each case scored as a request of its
     own) and its dry run read the request through the same reader, one quote per request,
-    each table under its name, so a deployed Workbench Input gives each port its table where
-    a deployed Quote Input still hands every port the whole request
+    each table under its name, from the records as they were sent (a frame built from them
+    by inference would type them first, and refuse a misfit as Polars does rather than as
+    the input does), so a deployed Workbench Input gives each port its table where a
+    deployed Quote Input still hands every port the whole request
     ([BUG-31](../roadmap/bugs.md#bug-31--a-deployed-quote-input-splits-a-request-into-its-tables)).
-    None of them reads the sample. Haute calls the two the request inputs and decides this
+    The memory estimate of a deployed run sizes each consumer from the table that feeds it,
+    not from the one-row request that holds them all. None of them reads the sample. Haute calls the two the request inputs and decides this
     once, from one set holding both types; tests fail when a check in the code names the Quote
     Input alone where it means a request input. The pipeline never needs the workbench: the
     copies are an ordinary `tables` list and `sample` object.
   - **No file; the sample.** A Workbench Input reads no file. Without a request, in editor
     runs and previews and in generated code's `run()`, it reads its sample as it reads a
-    quote: each port is the rows the sample gives its table, typed as declared, and a table
-    the sample gives no rows, or every table when there is no sample, is one row of nulls,
-    for a many-row table too. The sample is read whole, whatever a preview asks of it: every
-    port and every column, then cut to what is asked. What the tables do not read (keys under
-    no table, columns no table declares) is ignored, as a request's is, and a missing or
-    `null` table reads as a request's does: a many-row table has no rows, and a one-row table
-    its one row of nulls. Downstream nodes run on
+    request, so the sample prices as the quote it stands for would when deployed: each port
+    is the rows the sample gives its table, typed as declared, a many-row table the sample
+    does not hold has no rows, and a one-row table it does not hold is its one row of nulls.
+    While there is no sample (none, or nothing typed in it), every table is one row of
+    nulls, the null quote, so the pipeline previews before the workbench supplies values.
+    The sample is read whole, whatever a preview asks of it: every port and every column,
+    then cut to what is asked. What the tables do not read (keys under no table, columns no
+    table declares) is ignored, as a request's is. Downstream nodes run on
     those rows, so a calculation previews on the sample's values, and a node that cannot take
     a null, such as a rating lookup on a null key, reports it in its preview as it would for
     any null input. The editor builds nothing for a Workbench Input: its tables have no input
@@ -346,7 +376,13 @@ Out of scope:
     its columns for a one-row table and a list of them for a many-row one, with their declared
     types, and the dry run reads one quote with nothing filled in, one row of nulls per table,
     the rows a preview runs on before the workbench supplies values. A node that cannot take a
-    null fails that dry run with its own error.
+    null fails that dry run with its own error. Deploy's test quotes are not held to the
+    tables as a Quote Input's are to its columns: a quote may leave a table out, and the
+    reader says what does not fit when it is scored; their expected outputs are compared
+    into the response's tables, a number inside one held to the tolerance and a boolean to a
+    boolean. A Databricks deployment's MLflow signature holds each table as an object of its
+    columns, or an array of them, every property optional and a table allowed to be left out
+    of a request, a date inside a table the string a request carries it as.
   - **One request input per pipeline.** A pipeline holds at most one Quote Input or Workbench
     Input, counting those inside its submodels. Saving or deploying a pipeline with two is
     refused with "Only one Quote Input or Workbench Input node is allowed per pipeline (found
@@ -380,7 +416,8 @@ Out of scope:
   - **Its panel** shows the tables read-only under "Tables from the workbench", with whatever
     the editor finds wrong with a table's name as a port (not an identifier, a reserved word,
     a repeat), and a note on what previews run on: "Previews run on the workbench's sample
-    values; a table with none is one row of nulls." while the copy has a sample, and
+    values, read as a request is: a table with many rows and nothing typed has none." while
+    the copy has a sample, and
     "Previews run on one row of nulls per table until the workbench supplies values." while
     it has none. While the workbench is not enabled the title is "Tables" and the panel says
     "The workbench is not enabled in haute.toml, so these tables are the last copy and
@@ -440,9 +477,12 @@ Out of scope:
     Workbench Output allowed per pipeline", and dropping or pasting another is refused.
   - **One quote per request.** A request read through a request input gives each one-row table
     one row per quote, and its many-row tables' rows say nothing of their quote, so a
-    Workbench Output answers one quote: a request of several fails it on its first one-row
-    table, and a pipeline whose Workbench Output has only many-row tables puts every row of
-    every quote under one.
+    Workbench Output answers one quote: a deployed pipeline refuses a request of several
+    quotes at its Workbench Input first ("A Workbench Input reads one quote per request, and
+    this request holds 2."); a frame that reaches a one-row table with other than one row,
+    as `Pipeline.score` with split frames or a Quote Input upstream can bring, fails it on
+    that table, and a pipeline whose Workbench Output has only many-row tables puts every
+    row of every quote under one.
   - **The palette.** While the workbench is enabled, the palette shows the Workbench Output
     where the Quote Response was, and otherwise the Quote Response; never both. A Workbench
     Output dragged from it starts with the newest tables fetched, or none while the first
@@ -483,8 +523,8 @@ Out of scope:
 - **The form is a project file.** The pipeline's quote tables come from the form, so the form
   belongs beside the pipeline, in the project and in its history, where a reviewer sees the
   schema change that changed the pipeline's ports. Haute reads it from disk on every request
-  that needs it rather than caching it, so the standalone builder's save, a hand edit and a
-  branch switch each reach the next fetch without a restart or a stale copy.
+  that needs it rather than caching it, so a hand edit and a branch switch each reach the
+  next fetch without a restart or a stale copy.
 - **Read per request, fail where it can be fixed.** The status and tables routes read
   `haute.toml` and the form each time. A bad `[workbench]` table or an invalid form
   answers 409 with what to fix, which the editor shows as a toast, and the pipeline editor goes
@@ -626,7 +666,7 @@ Out of scope:
   store's mirror of them, and the Git panel's save before a switch is the project's save.
 - [sandbox-security](../sandbox-security/high-level.md): the local Host, Origin and session
   middleware gate the workbench routes.
-- [frontend-shared](../frontend-shared/high-level.md): the API client validates the three
+- [frontend-shared](../frontend-shared/high-level.md): the API client validates the four
   workbench responses with the generated contract; the workbench's toolbar is built from
   the kit's brand, Undo/Redo and Zoom In/Zoom Out and the project's controls the pipeline
   toolbar ends with; its palette is the kit's palette shell, whose reveal strip takes a
@@ -675,10 +715,12 @@ Out of scope:
   read of the form that fails is shown in the view in place of the schema editor, with a
   way to try again.
 - `PUT /api/workbench/form` answers 404 while the workbench is not enabled; 409
-  "stale_document_revision: The workbench's form changed on disk after the workbench read
-  it. Reload the workbench before saving." when the file's revision is not the
-  `base_revision` quoted (a file that appeared since a first save included), writing
-  nothing; and FastAPI's 422 for a body that is not a form, as any typed body answers.
+  "stale_document_revision: <form> changed on disk after the workbench read it. Reload the
+  workbench before saving." when the file's revision is not the `base_revision` quoted (a
+  file that appeared since a first save included), writing nothing; 409 "<form> could not
+  be written: <reason>" when the file or its folder cannot be written; and FastAPI's 422 for
+  a body that is not a form, as any typed body answers. A sample cell that is not text or a
+  tick (a number, a null) is not a form.
   Saves take turns under the pipeline save's lock: of two quoting one revision, the second
   finds the first's and is refused. The
   view reports a stale refusal in a toast and a banner, keeping the edits until Reload, and
@@ -736,7 +778,9 @@ Out of scope:
 - A deployed pipeline's request of other than one quote fails with "A Workbench Input reads
   one quote per request, and this request holds <n>.", and a quote that does not fit the
   tables with "The request does not fit this Workbench Input's tables: <reason>.", the reasons
-  the sample's are.
+  the sample's are. Either answers `/quote` as 422 with the input's own code,
+  `workbench_input_invalid`, a value Polars itself could not build a frame from included,
+  since the request is read from its records.
 - Two request inputs of either type, at the top level or in a submodel, fail save and deploy
   with "Only one Quote Input or Workbench Input node is allowed per pipeline (found 2)." and
   `Pipeline.score` as two Quote Inputs do. A config key a Workbench Input does not declare,

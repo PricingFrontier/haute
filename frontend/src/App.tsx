@@ -1269,17 +1269,24 @@ function FlowEditor() {
   // not be brought up to date is not saved. The form store is a lazy chunk,
   // imported here only while the workbench is enabled and never on start.
   const saveProject = useCallback(async (): Promise<boolean> => {
-    let formSaved = true
+    // Refused up front, before the form is saved: a save inside a submodel is refused by
+    // the pipeline's save anyway, and a form saved first would be a milestone's worth of
+    // work the refusal then stops short of.
+    if (parentGraphRef.current) {
+      addToast("error", "Return to the main pipeline before saving.")
+      return false
+    }
     if (useWorkbenchStore.getState().enabled) {
       const { default: formStore } = await import("./stores/useWorkbenchFormStore")
-      formSaved = await formStore.getState().flush()
+      // A form save refused (stale, or failed) saves no pipeline: what is saved runs on
+      // the form that was saved, never on copies of a form the view does not show.
+      if (!(await formStore.getState().flush())) return false
       if (!(await bringUpToDate())) {
         addToast("error", "The pipeline was not saved: its workbench nodes could not be brought up to date with the workbench's tables.")
         return false
       }
     }
-    const pipelineSaved = await saveWithPendingCommits()
-    return formSaved && pipelineSaved
+    return saveWithPendingCommits()
   }, [addToast, bringUpToDate, saveWithPendingCommits])
 
   // Flush the editor through the graph-commit fence before opening the
@@ -1357,7 +1364,7 @@ function FlowEditor() {
         useGitStore.getState().closeMove()
       }
     },
-    [addToast, saveWithPendingCommits],
+    [addToast, saveProject],
   )
 
   useKeyboardShortcuts({

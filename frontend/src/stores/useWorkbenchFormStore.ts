@@ -14,6 +14,7 @@ import { ApiError } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
 import type { FormSpec } from "../api/types"
 import { fetchWorkbenchForm, saveWorkbenchForm } from "../api/workbench"
+import { canonicalJson } from "../utils/canonicalJson"
 import { reportSaveCapture } from "./saveCapture"
 import useDocumentStatusStore from "./useDocumentStatusStore"
 import { appendHistoryEntry } from "./useGraphStore"
@@ -87,7 +88,8 @@ interface WorkbenchFormState {
   flush: () => Promise<boolean>
 }
 
-const serialise = (form: FormSpec): string => JSON.stringify(form)
+/** The form as compared for unsaved edits: the server writes its keys in its own order. */
+const serialise = (form: FormSpec): string => canonicalJson(form)
 
 const isStaleRevision = (error: unknown): boolean =>
   error instanceof ApiError
@@ -105,23 +107,28 @@ const takeTurn = <T>(act: () => Promise<T>): Promise<T> => {
 }
 
 const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
-  const read = async (): Promise<void> => {
+  // A read takes a turn like a save or a sync: a sync queued behind it, as a document
+  // adopted while the file is being read queues one, reads the file again after it, so
+  // the form never ends on the branch the read began on.
+  const read = (): Promise<void> => {
     set({ status: "loading", loadError: null })
-    try {
-      const { form, revision } = await fetchWorkbenchForm()
-      set({
-        form,
-        revision,
-        status: "ready",
-        savedForm: serialise(form),
-        dirty: false,
-        undoStack: [],
-        redoStack: [],
-        stale: false,
-      })
-    } catch (error: unknown) {
-      set({ status: "failed", loadError: apiErrorMessage(error) })
-    }
+    return takeTurn(async () => {
+      try {
+        const { form, revision } = await fetchWorkbenchForm()
+        set({
+          form,
+          revision,
+          status: "ready",
+          savedForm: serialise(form),
+          dirty: false,
+          undoStack: [],
+          redoStack: [],
+          stale: false,
+        })
+      } catch (error: unknown) {
+        set({ status: "failed", loadError: apiErrorMessage(error) })
+      }
+    })
   }
 
   return {

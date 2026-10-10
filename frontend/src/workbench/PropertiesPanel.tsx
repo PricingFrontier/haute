@@ -178,7 +178,7 @@ function FieldOrder({ form, widget }: { form: FormSpec; widget: Widget }) {
   const change = useWorkbenchFormStore((s) => s.change)
   const dragFor = useListReorder((from, to) => change((spec) => moveField(spec, widget.id, from, to)))
   return (
-    <div className="flex flex-col gap-0.5 rounded-md p-1" style={{ border: "1px solid var(--border)", background: "var(--bg-elevated)" }}>
+    <div role="list" className="flex flex-col gap-0.5 rounded-md p-1" style={{ border: "1px solid var(--border)", background: "var(--bg-elevated)" }}>
       {widget.fields.map((field, index) => (
         <OrderRow key={fieldKey(field)} form={form} widget={widget} field={field} index={index} drag={dragFor(index)} />
       ))}

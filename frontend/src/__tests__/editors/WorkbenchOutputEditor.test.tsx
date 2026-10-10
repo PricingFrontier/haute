@@ -37,6 +37,7 @@ function renderEditor(
       config={props.mapping === undefined ? config : { ...config, mapping: props.mapping }}
       onUpdate={onUpdate}
       inputSources={props.inputSources ?? [priced]}
+      reservedFrameLabels={new Set(["class"])}
       insideSubmodel={props.insideSubmodel}
     />,
   )
@@ -88,8 +89,8 @@ describe("WorkbenchOutputEditor", () => {
     expect(mapped("pricing_output", "referral")).toHaveTextContent("reason (missing)")
   })
 
-  it("sends a pick as the new mapping, and drops one that is the default again", () => {
-    const { onUpdate } = renderEditor({ mapping: { pricing_output: { referral: null } } })
+  it("sends a pick as the new mapping, keeps none as none, and drops a pick of the column's own name", () => {
+    const { onUpdate } = renderEditor({ mapping: { pricing_output: { referral: null, premium: "base_premium" } } })
 
     fireEvent.change(mapped("pricing_output", "premium"), { target: { value: "base_premium" } })
     expect(onUpdate).toHaveBeenLastCalledWith("mapping", {
@@ -99,9 +100,14 @@ describe("WorkbenchOutputEditor", () => {
     fireEvent.change(mapped("pricing_output", "premium"), { target: { value: "" } })
     expect(onUpdate).toHaveBeenLastCalledWith("mapping", { pricing_output: { premium: null, referral: null } })
 
-    // `referral` has no same-named column, so nothing filling it is its default.
+    // `referral` has no same-named column today, so none fills it either way; the pick is
+    // kept as null all the same, so a `referral` the frame gains later does not fill it.
     fireEvent.change(mapped("pricing_output", "referral"), { target: { value: "" } })
-    expect(onUpdate).toHaveBeenLastCalledWith("mapping", {})
+    expect(onUpdate).toHaveBeenLastCalledWith("mapping", { pricing_output: { referral: null, premium: "base_premium" } })
+
+    // The column's own name is filling by name: no entry.
+    fireEvent.change(mapped("pricing_output", "premium"), { target: { value: "premium" } })
+    expect(onUpdate).toHaveBeenLastCalledWith("mapping", { pricing_output: { referral: null } })
   })
 
   it("says what stops a table's name being a port", () => {

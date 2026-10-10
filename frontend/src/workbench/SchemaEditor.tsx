@@ -15,6 +15,7 @@ import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import {
   addSchemaColumn,
   addSchemaTable,
+  changeSchemaColumnType,
   createIndexColumn,
   createSchemaColumn,
   createSchemaTable,
@@ -320,7 +321,7 @@ function ColumnRow({ form, table, column, index, fresh, open, onToggleDetails, o
             icon={Icon}
             value={column.type}
             options={COLUMN_TYPE_OPTIONS}
-            onChange={(type) => set({ type })}
+            onChange={(type) => change((f) => changeSchemaColumnType(f, table.id, column.id, type))}
             ariaLabel={`Type of ${column.name}`}
             title={`${label} (change the type)`}
             className={`w-6 rounded-md ${color}`}

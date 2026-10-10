@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, Strict, ValidationError
 
 from haute._file_ops import atomic_write_bytes
 from haute._hashing import content_hash_bytes
@@ -27,6 +27,10 @@ from haute._workbench_config import WorkbenchConfig, WorkbenchError
 
 #: The column types of the Quote Input's tables (``haute._api_input_schema.ColumnType``).
 ColumnType = Literal["int", "float", "str", "bool", "date"]
+
+
+#: A sample cell as typed: text, or a tick. Strict, so a number or a null is refused.
+Cell = Annotated[str, Strict()] | Annotated[bool, Strict()]
 
 
 class WorkbenchFormError(WorkbenchError):
@@ -129,7 +133,8 @@ class FormSpec(_Strict):
     pages: list[Page] = Field(min_length=1)
     #: The sample quote typed while building: rows by schema table id, each keyed by column
     #: id, each value as typed (text, or a tick). The Workbench Input's previews run on it.
-    sample: dict[str, list[dict[str, str | bool]]] = Field(default_factory=dict)
+    #: Held as typed, strictly: a number or a null for a cell is not a form the view writes.
+    sample: dict[str, list[dict[str, Cell]]] = Field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,7 +154,8 @@ def blank_form(name: str) -> FormSpec:
 
 def render_form(spec: FormSpec) -> str:
     """The file's text: every field, defaults included, indented, ending in a newline."""
-    return json.dumps(spec.model_dump(mode="json"), indent=2) + "\n"
+    # Non-ASCII text as typed, a label or an allowed value, as the node configs keep it.
+    return json.dumps(spec.model_dump(mode="json"), indent=2, ensure_ascii=False) + "\n"
 
 
 def form_revision(data: bytes) -> str:

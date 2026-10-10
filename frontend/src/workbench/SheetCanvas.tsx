@@ -15,7 +15,8 @@ import { WIDGET_KINDS } from "./widgetKinds"
  * Preview), with, while building, a ghost where a component dragged out of the palette
  * would land. Pressing the empty sheet deselects. The sheet and its viewport are
  * registered with the view store, which places drops on them and fits the zoom to them;
- * what is on the sheet is fitted to the viewport when the sheets first show.
+ * what is on the sheet is fitted to the viewport when the sheets first show for a form,
+ * and a zoom chosen since is kept across a trip to the schema or the pipeline editor.
  */
 export default function SheetCanvas() {
   const form = useWorkbenchFormStore((s) => s.form)
@@ -27,6 +28,7 @@ export default function SheetCanvas() {
   const setSheet = useWorkbenchViewStore((s) => s.setSheet)
   const setViewport = useWorkbenchViewStore((s) => s.setViewport)
   const fitZoom = useWorkbenchViewStore((s) => s.fitZoom)
+  const fitted = useWorkbenchViewStore((s) => s.fitted)
   const sample = useSampleValues()
   const preview = usePreviewValues()
   const viewportRef = useRef<HTMLDivElement>(null)
@@ -46,8 +48,8 @@ export default function SheetCanvas() {
     }
   }, [setViewport])
   useLayoutEffect(() => {
-    fitZoom()
-  }, [fitZoom])
+    if (!fitted) fitZoom()
+  }, [fitted, fitZoom])
   const problems = useMemo(() => {
     const byWidget = new Map<string, string>()
     if (form !== null) for (const problem of widgetProblems(form)) if (!byWidget.has(problem.widgetId)) byWidget.set(problem.widgetId, problem.message)
@@ -81,7 +83,7 @@ export default function SheetCanvas() {
             transformOrigin: "0 0",
             background: "var(--bg-base)",
             boxShadow: "0 0 0 1px var(--border)",
-            backgroundImage: "radial-gradient(circle, rgba(255,255,255,.07) 1px, transparent 1px)",
+            backgroundImage: "radial-gradient(circle, var(--border) 1px, transparent 1px)",
             backgroundSize: `${GRID * 2}px ${GRID * 2}px`,
           }}
         >

@@ -35,7 +35,7 @@ type PanelShellProps = OmitEach<SidePanelProps, "width" | "onWidthChange" | "min
 /**
  * Shared wrapper for all right-side panels (NodePanel, UtilityPanel,
  * ImportsPanel, GitPanel, TracePanel): haute-ui's `SidePanel` (the drag
- * handle, slide-in and optional header, shared with extensions), sized from
+ * handle, slide-in and optional header, shared with the workbench), sized from
  * the UI store. All panels share one width. With none stored, a panel takes
  * half the space beside the palette when it mounts, and keeps that width
  * across unrelated rerenders and viewport changes; only a drag changes it.

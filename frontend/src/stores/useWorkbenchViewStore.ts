@@ -40,6 +40,8 @@ interface WorkbenchViewState {
   /** The selected component, whose properties panel is open. */
   selectedId: string | null
   zoom: number
+  /** The sheets have been fitted to the viewport since the form was read: a zoom chosen since is kept. */
+  fitted: boolean
   creating: Creating | null
   /** The properties panel's width, kept between openings. */
   panelWidth: number
@@ -52,7 +54,7 @@ interface WorkbenchViewState {
   select: (id: string | null) => void
   setZoom: (zoom: number) => void
   zoomBy: (step: number) => void
-  /** Zoom so everything on the sheet fits the viewport across, never past 100%. */
+  /** Zoom so everything on the sheet fits the viewport across, never past 100%, and count the sheets fitted. */
   fitZoom: () => void
   setCreating: (creating: Creating | null) => void
   setPanelWidth: (width: number) => void
@@ -65,6 +67,7 @@ const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
   pageId: null,
   selectedId: null,
   zoom: 1,
+  fitted: false,
   creating: null,
   panelWidth: DEFAULT_PANEL_WIDTH,
   sheet: null,
@@ -81,11 +84,20 @@ const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
     // Through the same bounds as the other zoom controls: a very wide sheet fits at the
     // minimum, never at nothing.
     get().setZoom(zoomToFit(viewport.clientWidth - SHEET_PADDING * 2, activePage(form, pageId).widgets))
+    set({ fitted: true })
   },
   setCreating: (creating) => set({ creating }),
   setPanelWidth: (panelWidth) => set({ panelWidth }),
   setSheet: (sheet) => set({ sheet }),
   setViewport: (viewport) => set({ viewport }),
 }))
+
+// A form read anew, on the view's first showing or after a branch switch, is fitted when its
+// sheets next show; the zoom chosen for the form before is nobody's.
+useWorkbenchFormStore.subscribe((state, previous) => {
+  if (state.status === "ready" && (previous.status !== "ready" || state.revision !== previous.revision) && state.undoStack.length === 0 && !state.dirty) {
+    useWorkbenchViewStore.setState({ fitted: false })
+  }
+})
 
 export default useWorkbenchViewStore

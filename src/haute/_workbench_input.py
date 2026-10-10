@@ -6,9 +6,10 @@ one-row table and a list of objects for a many-row one. It reads no file and wal
 path: the quote's shape is the tables'. :func:`read_quote` gives one frame per port, each
 column typed as declared, and refuses a part of the quote that is not of its table's shape
 or a value that is not of its column's type, naming it. Without a request, in editor runs
-and previews and in generated code, :func:`workbench_table_frames` reads the sample, and a
-table the sample gives no rows is one row of nulls; a deployed pipeline reads the request
-through :func:`workbench_request_frames`.
+and previews and in generated code, :func:`workbench_table_frames` reads the sample as a
+request is read, so a sample prices as the quote it stands for would when deployed; while
+there is no sample, every table is one row of nulls. A deployed pipeline reads the request
+through :func:`workbench_request_frames`, from the records as they were sent.
 """
 
 from __future__ import annotations
@@ -162,8 +163,8 @@ def _shown(value: object) -> str:
 def null_quote(tables: Sequence[WorkbenchTable]) -> dict[str, Any]:
     """One quote holding *tables* with nothing filled in: one row of nulls each.
 
-    Deploy's dry run reads it, so it checks the pipeline on the rows a preview runs on before
-    the workbench supplies values.
+    What the previews run on while the workbench has supplied no sample, and what deploy's
+    dry run reads, so it checks the pipeline on those rows.
     """
     return {
         table.name: (
@@ -182,55 +183,54 @@ def workbench_table_frames(
 ) -> dict[str, pl.LazyFrame]:
     """A Workbench Input's frames without a request: its sample's rows, typed as declared.
 
-    The sample, the copy of the quote the workbench supplies, is read whole, every port and
-    every column whatever *port_columns* asks for, and only then cut to it, so every reader
-    finds the same misfit. A table the sample gives no rows, or every table when there is no
-    sample, is one row of nulls.
+    The sample, the copy of the quote the workbench supplies, is read as a request is, so
+    the sample prices as the quote it stands for would when deployed: a many-row table it
+    does not hold has no rows, and a one-row table its one row of nulls. While there is no
+    sample (none, or nothing typed in it), every table is one row of nulls, the
+    :func:`null_quote`, so the pipeline previews before the workbench supplies values. The
+    sample is read whole, every port and every column whatever *port_columns* asks for, and
+    only then cut to it, so every reader finds the same misfit.
     """
     tables = workbench_input_tables(config)
     sample = config.get("sample")
     try:
-        read = (
-            {} if sample is None or sample == {} else read_quote(tables, sample, what="the sample")
+        read = read_quote(
+            tables,
+            null_quote(tables) if sample is None or sample == {} else sample,
+            what="the sample",
         )
     except WorkbenchInputError as exc:
         raise WorkbenchInputError(
             f"The workbench's sample does not fit this Workbench Input's tables: {exc}. "
             "Correct it in the workbench and save it."
         ) from exc
-    frames: dict[str, pl.LazyFrame] = {}
-    for table, columns in _demanded(tables, port_columns):
-        frame = read.get(table.name)
-        if frame is None or frame.height == 0:
-            frame = pl.DataFrame(
-                {column.name: [None] for column in table.columns}, schema=table.frame_schema
-            )
-        frames[table.name] = frame.select(columns).lazy()
-    return frames
+    return {
+        table.name: read[table.name].select(columns).lazy()
+        for table, columns in _demanded(tables, port_columns)
+    }
 
 
 def workbench_request_frames(
-    config: Mapping[str, Any], request: pl.DataFrame
-) -> dict[str, pl.LazyFrame]:
-    """A deployed pipeline's frames: the one quote in *request*, read through the tables.
+    config: Mapping[str, Any], records: Sequence[Mapping[str, Any]]
+) -> dict[str, pl.DataFrame]:
+    """A deployed pipeline's frames: the one quote in *records*, read through the tables.
 
-    *request* is the request's records as a deployed pipeline builds them, one quote: each
-    table under its name, as the quote holds it. A request of several quotes is refused, as a
-    Workbench Output answers one quote per request.
+    *records* are the request's quotes as they were sent, one object each, untyped: the
+    reader types each value as its column holds it and refuses a misfit naming the spot,
+    where a frame built from them by inference would refuse it as Polars does. A request of
+    several quotes is refused, as a Workbench Output answers one quote per request.
     """
     tables = workbench_input_tables(config)
-    quotes = request.to_dicts()
-    if len(quotes) != 1:
+    if len(records) != 1:
         raise WorkbenchInputError(
-            f"A Workbench Input reads one quote per request, and this request holds {len(quotes)}."
+            f"A Workbench Input reads one quote per request, and this request holds {len(records)}."
         )
     try:
-        frames = read_quote(tables, quotes[0], what="the request")
+        return read_quote(tables, records[0], what="the request")
     except WorkbenchInputError as exc:
         raise WorkbenchInputError(
             f"The request does not fit this Workbench Input's tables: {exc}."
         ) from exc
-    return {name: frame.lazy() for name, frame in frames.items()}
 
 
 def _demanded(

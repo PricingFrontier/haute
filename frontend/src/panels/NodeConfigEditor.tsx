@@ -167,6 +167,7 @@ export function NodeConfigEditor({
           config={config}
           onUpdate={onUpdateConfig}
           inputSources={inputSources}
+          reservedFrameLabels={reservedApiInputFrameLabels}
           insideSubmodel={insideSubmodel}
         />
       )

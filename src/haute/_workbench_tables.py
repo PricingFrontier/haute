@@ -249,14 +249,20 @@ def _filled(raw: str | bool | None) -> bool:
     return raw is True or (isinstance(raw, str) and raw.strip() != "")
 
 
+#: A decimal number, once a currency sign, separators and spaces are gone: the one rule the
+#: view's ``parseTypedNumber`` (``frontend/src/utils/sheetValues.ts``) applies too, so a cell
+#: the view marks is one the server would keep as typed.
+_NUMBER = re.compile(r"[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
+
+
 def _typed(column_type: str, text: str) -> Any:
     """Typed text as its column's type holds it; text that isn't of that type, as typed."""
     if column_type not in ("int", "float"):
         return text
-    try:
-        number = float(re.sub(r"[$£€,\s]", "", text))
-    except ValueError:
+    cleaned = re.sub(r"[$£€,\s]", "", text)
+    if _NUMBER.fullmatch(cleaned) is None:
         return text
+    number = float(cleaned)
     if not math.isfinite(number):
         return text
     return int(number) if column_type == "int" and number.is_integer() else number

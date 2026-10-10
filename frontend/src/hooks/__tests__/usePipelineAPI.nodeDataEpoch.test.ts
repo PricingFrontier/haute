@@ -260,7 +260,12 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
       data: {
         label: "response",
         nodeType: "workbenchOutput",
-        config: { tables: [{ label: "pricing_output" }, { label: "layers" }] },
+        config: {
+          tables: [
+            { name: "pricing_output", rows: "one", columns: [{ name: "premium", type: "float" }] },
+            { name: "layers", rows: "many", columns: [{ name: "layer", type: "int" }] },
+          ],
+        },
       },
     })
     const { result } = await renderLoaded([response])

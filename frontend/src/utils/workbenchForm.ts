@@ -5,7 +5,8 @@
  * showing what it should. Each operation returns a new form and leaves its input untouched.
  */
 import type { FieldRef, FormSpec, Page, SchemaColumn, SchemaTable } from "../api/types"
-import { apiInputLabelIssue, apiInputLabelIssueMessage } from "./apiInputPorts"
+import { ASCII_IDENTIFIER_RE, apiInputLabelIssue, apiInputLabelIssueMessage } from "./apiInputPorts"
+import { PYTHON_KEYWORDS } from "./globalConstants"
 import type { Rect } from "./sheetGeometry"
 import { valuesBasis } from "./sheetValues"
 
@@ -102,13 +103,20 @@ export const removeSchemaTable = (spec: FormSpec, id: string): FormSpec =>
     delete draft.sample[id]
   })
 
-/** A table with one row per quote has no keys: keys say which of many rows is which. */
-export const setSchemaTableRows = (spec: FormSpec, id: string, rows: SchemaTable["rows"]): FormSpec =>
-  edit(spec, (draft) => {
+/**
+ * A table with one row per quote has no keys, which say which of many rows is which, and
+ * no index, which numbers them: switching to one row drops both, the index column with
+ * what shows it and its sample values, as removing a column does.
+ */
+export const setSchemaTableRows = (spec: FormSpec, id: string, rows: SchemaTable["rows"]): FormSpec => {
+  const index = rows === "one" ? schemaTableOf(spec, id).columns.find((column) => column.index) : undefined
+  const without = index === undefined ? spec : removeSchemaColumn(spec, id, index.id)
+  return edit(without, (draft) => {
     const table = schemaTableOf(draft, id)
     table.rows = rows
     if (rows === "one") for (const column of table.columns) column.key = false
   })
+}
 
 /** Add a column at `index`, or at the end. */
 export const addSchemaColumn = (spec: FormSpec, tableId: string, column: SchemaColumn, index?: number): FormSpec =>
@@ -117,13 +125,17 @@ export const addSchemaColumn = (spec: FormSpec, tableId: string, column: SchemaC
     columns.splice(index ?? columns.length, 0, column)
   })
 
-export const moveSchemaColumn = (spec: FormSpec, tableId: string, columnId: string, to: number): FormSpec =>
-  edit(spec, (draft) => {
-    const { columns } = schemaTableOf(draft, tableId)
-    const from = columns.findIndex((column) => column.id === columnId)
-    const [column] = columns.splice(from, 1)
-    columns.splice(to, 0, column)
+/** Move a column to `to`; the index, first in its table, stays first, and nothing goes above it. */
+export const moveSchemaColumn = (spec: FormSpec, tableId: string, columnId: string, to: number): FormSpec => {
+  const { columns } = schemaTableOf(spec, tableId)
+  const from = columns.findIndex((column) => column.id === columnId)
+  if (from === to || columns[from].index || (to === 0 && columns[0].index)) return spec
+  return edit(spec, (draft) => {
+    const moved = schemaTableOf(draft, tableId).columns
+    const [column] = moved.splice(from, 1)
+    moved.splice(to, 0, column)
   })
+}
 
 export const updateSchemaColumn = (
   spec: FormSpec,
@@ -133,6 +145,30 @@ export const updateSchemaColumn = (
 ): FormSpec =>
   edit(spec, (draft) => {
     Object.assign(schemaColumnOf(schemaTableOf(draft, tableId), columnId), patch)
+  })
+
+/** Whether a column of `type` can have allowed values: any but a tick box or a date. */
+export const takesOptions = (type: SchemaColumn["type"]): boolean => type !== "bool" && type !== "date"
+
+/**
+ * Change a column's type, dropping the rules the new type cannot have: the range of a
+ * column no longer a number, and the allowed values of one now a tick box or a date,
+ * which would otherwise still rule its cells.
+ */
+export const changeSchemaColumnType = (
+  spec: FormSpec,
+  tableId: string,
+  columnId: string,
+  type: SchemaColumn["type"],
+): FormSpec =>
+  edit(spec, (draft) => {
+    const column = schemaColumnOf(schemaTableOf(draft, tableId), columnId)
+    column.type = type
+    if (type !== "int" && type !== "float") {
+      column.min = null
+      column.max = null
+    }
+    if (!takesOptions(type)) column.options = []
   })
 
 /** Removing a column removes it from the widgets that show it, and its sample values. */
@@ -216,7 +252,9 @@ function widgetOf(spec: FormSpec, id: string): Widget {
 
 /** A new component of `type` at `rect`, showing nothing yet. */
 export function createWidget(type: WidgetType, rect: Rect): Widget {
-  const placed = { id: newId("w"), ...rect, title: "", fields: [] as FieldRef[] }
+  // In the file's order, so a component the view made compares equal to it saved.
+  const { x, y, w, h } = rect
+  const placed = { id: newId("w"), x, y, w, h, type, title: "", fields: [] as FieldRef[] }
   return type === "collection" ? { ...placed, type, columns: 3 } : { ...placed, type, rows: 3 }
 }
 
@@ -376,7 +414,12 @@ export interface SchemaProblem {
   message: string
 }
 
-const COLUMN_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
+/** Why `name` cannot name a frame's column, as the server holds it (`is_frame_label`), or null. */
+export function columnNameProblem(name: string): string | null {
+  if (!ASCII_IDENTIFIER_RE.test(name)) return "needs a name of letters, digits and _"
+  if (PYTHON_KEYWORDS.has(name)) return "cannot be named with a Python keyword"
+  return null
+}
 
 const isNumber = (text: string, whole: boolean): boolean => {
   const n = Number(text)
@@ -409,13 +452,18 @@ export function schemaProblems(spec: FormSpec, reservedLabels: ReadonlySet<strin
     const columnNames = new Set<string>()
     for (const column of table.columns) {
       const columnName = `Column "${column.name}" in ${name}`
-      if (!COLUMN_NAME.test(column.name)) {
-        problems.push({ tableId: table.id, message: `${columnName} needs a name of letters, digits and _` })
+      const nameProblem = columnNameProblem(column.name)
+      if (nameProblem !== null) {
+        problems.push({ tableId: table.id, message: `${columnName} ${nameProblem}` })
       } else if (columnNames.has(column.name)) {
         problems.push({ tableId: table.id, message: `${columnName} repeats the name ${column.name}` })
       }
       columnNames.add(column.name)
       if (table.role !== "input" || column.index) continue
+      if (!takesOptions(column.type) && column.options.length > 0) {
+        const kind = column.type === "bool" ? "a tick box" : "a date"
+        problems.push({ tableId: table.id, message: `${columnName} allows values, which ${kind} cannot` })
+      }
       if (column.type === "int" || column.type === "float") {
         if (column.min !== null && column.max !== null && column.min > column.max) {
           problems.push({ tableId: table.id, message: `${columnName} has a minimum above its maximum` })

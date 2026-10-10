@@ -2838,7 +2838,7 @@ describe("useEdgeHandlers connection drop menu", () => {
     expect(params.setNodesRaw).not.toHaveBeenCalled()
     expect(params.nodeIdCounter.current).toBe(0)
     expect(useToastStore.getState().toasts.at(-1)?.text).toBe(
-      "Connection rejected: apiInput connections require a frame handle",
+      "Connection rejected: Connect from one of a's tables, not the node itself",
     )
   })
 

@@ -81,7 +81,7 @@ def _save_form(
         raise StaleDocumentRevisionError(
             expected_revision=current,
             provided_revision=body.base_revision,
-            message="The workbench's form changed on disk after the workbench read it. "
+            message=f"{config.form} changed on disk after the workbench read it. "
             "Reload the workbench before saving.",
         )
     revision = write_form(config.form_path, body.form)
@@ -150,3 +150,10 @@ async def put_workbench_form(body: WorkbenchFormSaveRequest) -> WorkbenchFormSav
             provided_revision=exc.provided_revision,
         )
         raise HTTPException(status_code=409, detail=f"{exc.code}: {exc}") from None
+    except OSError as exc:
+        # The file or its folder could not be written (a permission, a file where the
+        # folder should be): the pipeline's writes answer the same way.
+        logger.warning("workbench_form_write_failed", form=config.form, error=str(exc))
+        raise HTTPException(
+            status_code=409, detail=f"{config.form} could not be written: {exc}"
+        ) from None

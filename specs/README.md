@@ -219,7 +219,7 @@ tabular persistence; the removed `dataSource` and `dataSink` types have no compa
 | Node type | Core behaviour specced in |
 |---|---|
 | `apiInput` | [json-shredding](json-shredding/high-level.md) (v2 input codec and JSON/JSONL/XML→frames shredding); [caching](caching/high-level.md) owns the structured-input cache HTTP route |
-| `workbenchInput` | [workbench](workbench/high-level.md) (where its tables and sample come from, how the editor keeps them current, and the rows it gives without a request); a request read as `apiInput` reads one ([json-shredding](json-shredding/high-level.md)) |
+| `workbenchInput` | [workbench](workbench/high-level.md) (where its tables and sample come from, how the editor keeps them current, how a quote is read into them as dataframes, and the rows it gives without a request); it takes only its column types and its tables' name rule from [json-shredding](json-shredding/high-level.md) |
 | `dataInput` | [io-layer](io-layer/high-level.md) (file, database, lakehouse, Databricks, inline, cache lifecycle, chunking, and optional Polars transform); [databricks-io](databricks-io/high-level.md) for Databricks browsing |
 | `dataOutput` | [io-layer](io-layer/high-level.md) (registry-backed writers and explicit write action) |
 | `polars` | [execution-engine](execution-engine/high-level.md) (execution), [sandbox-security](sandbox-security/high-level.md) (user-code validation), [expression-parsing](expression-parsing/high-level.md) (trace formulae) |
@@ -227,7 +227,7 @@ tabular persistence; the removed `dataSource` and `dataSink` types have no compa
 | `modelScore` | [mlflow-model-registry](mlflow-model-registry/high-level.md) (loading/scoring/explainability) |
 | `banding` / `ratingStep` | [rating](rating/high-level.md) |
 | `output` | [json-shredding](json-shredding/high-level.md) (output mapping and assembly), [server-api](server-api/high-level.md) (editor dry-run route), [deploy](deploy/high-level.md) (served response) |
-| `workbenchOutput` | [workbench](workbench/high-level.md) (where its tables come from, how the editor keeps them current, and how the frames connected to them fill the response); the Quote Response's assembler builds it ([json-shredding](json-shredding/high-level.md)) |
+| `workbenchOutput` | [workbench](workbench/high-level.md) (where its tables come from, how the editor keeps them current, and how the frames connected to them fill the response); its response document is built in `_workbench_output.py` and served as a Quote Response's is ([deploy](deploy/high-level.md)) |
 | `explore` | [explore-eda](explore-eda/high-level.md) (backend), [frontend-preview-explore](frontend-preview-explore/high-level.md) (UI) |
 | `externalFile` | [pipeline-config](pipeline-config/high-level.md) (config/builders), [io-layer](io-layer/high-level.md) (reading), [deploy](deploy/high-level.md) (bundling) |
 | `liveSwitch` | [execution-engine](execution-engine/high-level.md) (`_node_apply.py`), [deploy](deploy/high-level.md) (live-branch collapse at deploy time) |

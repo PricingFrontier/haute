@@ -65,7 +65,7 @@ describe("WorkbenchInputEditor", () => {
   it("says previews run on the workbench's sample once it supplies one", () => {
     renderEditor({ sample: { policy_details: { state: "NY" } } })
     expect(screen.getByTestId("workbench-input-preview-note")).toHaveTextContent(
-      "Previews run on the workbench's sample values; a table with none is one row of nulls.",
+      "Previews run on the workbench's sample values, read as a request is: a table with many rows and nothing typed has none.",
     )
     cleanup()
 

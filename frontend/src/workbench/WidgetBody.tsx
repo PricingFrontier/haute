@@ -109,18 +109,20 @@ function Cell({
       value={text}
       onCommit={onChange}
       inputMode={isNumeric(column.type) ? "decimal" : undefined}
+      placeholder={isNumeric(column.type) ? "0" : undefined}
       className={`${className} ${isNumeric(column.type) ? "text-right tabular-nums" : ""}`}
       style={style}
     />
   )
 }
 
-/** Pressing in a cell types there: it selects the component instead of moving it. */
+/** Pressing in a cell types there: while building, it selects the component instead of moving it. */
 function useTypeHere(widgetId: string) {
   const select = useWorkbenchViewStore((s) => s.select)
+  const editable = useWorkbenchViewStore((s) => s.section !== "preview")
   return (event: ReactPointerEvent) => {
     event.stopPropagation()
-    select(widgetId)
+    if (editable) select(widgetId)
   }
 }
 

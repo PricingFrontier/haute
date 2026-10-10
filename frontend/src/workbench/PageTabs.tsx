@@ -72,7 +72,8 @@ export default function PageTabs({ readOnly = false }: { readOnly?: boolean }) {
               aria-selected={active}
               onClick={() => showPage(sheet.id)}
               onDoubleClick={readOnly ? undefined : () => setRenaming(sheet.id)}
-              title={readOnly ? undefined : "Double-click to rename"}
+              onKeyDown={readOnly ? undefined : (event) => { if (event.key === "F2") setRenaming(sheet.id) }}
+              title={readOnly ? undefined : "Double-click, or F2, to rename"}
               className="-mb-px border-b-2 px-3 py-2 text-xs"
               style={{
                 borderColor: active ? "var(--accent)" : "transparent",

@@ -47,9 +47,9 @@ backend API modules own validation and persistence.
   output frame blocks present the same names — there is no separate display identity anywhere.
 - Editors retain incomplete persisted rows when they can be repaired (notably API schema and
   output mappings); fresh inference data may be normalised separately from persisted data.
-- The Workbench Input's panel shows the workbench's tables read-only: each table's label, one
+- The Workbench Input's panel shows the workbench's tables read-only: each table's name, one
   row or many per quote, its columns and their types, and whatever the editor finds wrong
-  with the label as a port; and a note on what previews run on: the workbench's sample
+  with the name as a port; and a note on what previews run on: the workbench's sample
   values, or one row of nulls per table until it supplies any. While the project's workbench
   is not enabled it says they are the last copy and nothing updates them, and while a
   submodel is open that the editor updates them only at the pipeline's top level. While the

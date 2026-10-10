@@ -4941,9 +4941,11 @@ class TestBuildSignature:
 
         assert self._input_type_map(sig)["category"] == DataType.string
 
-    @pytest.mark.parametrize("dtype", ["Decimal(12, 2)", "List(Int64)", "Struct({'x': Int64})"])
+    @pytest.mark.parametrize(
+        "dtype", ["Decimal(12, 2)", "List(Decimal(12, 2))", "Struct({'x': Decimal(12, 2)})"]
+    )
     def test_unknown_dtype_fails_loudly(self, dtype):
-        """Unsupported Polars dtypes must not be misdeclared as strings."""
+        """Unsupported Polars dtypes must not be misdeclared as strings, nested ones too."""
         from haute.deploy._mlflow import _build_signature
         from haute.errors import DeployError
 
@@ -4956,6 +4958,74 @@ class TestBuildSignature:
             _build_signature(resolved)
 
         assert dtype in str(exc_info.value)
+
+    def test_a_workbench_pipelines_tables_are_objects_and_arrays(self):
+        """A one-row table is an Object of its columns and a many-row table an Array of them,
+        every property optional and a table left out of a request allowed; a date inside a
+        table is the string a request carries it as; a flat column is as it was."""
+        from haute.deploy._mlflow import _build_signature
+
+        resolved = _make_resolved(
+            input_schema={
+                "policy": "Struct({'limit': Int64, 'start': Date})",
+                "items": "List(Struct({'item_id': String, 'value': Float64}))",
+                "when": "Date",
+            },
+            output_schema={
+                "pricing": "Struct({'premium': Float64, 'referral': String})",
+                "layers": "List(Struct({'layer': Int32, 'ok': Boolean}))",
+            },
+        )
+
+        sig = _build_signature(resolved)
+
+        assert [spec.to_dict() for spec in sig.inputs.inputs] == [
+            {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "long", "required": False},
+                    "start": {"type": "string", "required": False},
+                },
+                "name": "policy",
+                "required": False,
+            },
+            {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "item_id": {"type": "string", "required": False},
+                        "value": {"type": "double", "required": False},
+                    },
+                },
+                "name": "items",
+                "required": False,
+            },
+            {"type": "datetime", "name": "when", "required": True},
+        ]
+        assert [spec.to_dict() for spec in sig.outputs.inputs] == [
+            {
+                "type": "object",
+                "properties": {
+                    "premium": {"type": "double", "required": False},
+                    "referral": {"type": "string", "required": False},
+                },
+                "name": "pricing",
+                "required": False,
+            },
+            {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "layer": {"type": "integer", "required": False},
+                        "ok": {"type": "boolean", "required": False},
+                    },
+                },
+                "name": "layers",
+                "required": False,
+            },
+        ]
 
     def test_all_numeric_types(self):
         """All supported numeric types should produce correct MLflow type mappings."""

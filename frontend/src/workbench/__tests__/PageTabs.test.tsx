@@ -54,6 +54,12 @@ describe("PageTabs", () => {
     fireEvent.change(screen.getByRole("textbox", { name: "Sheet name" }), { target: { value: "   " } })
     fireEvent.blur(screen.getByRole("textbox", { name: "Sheet name" }))
     expect(currentForm().pages[0].title).toBe("Policy")
+
+    // By the keyboard: F2 on the tab.
+    fireEvent.keyDown(screen.getByRole("tab", { name: "Policy" }), { key: "F2" })
+    fireEvent.change(screen.getByRole("textbox", { name: "Sheet name" }), { target: { value: "Cover" } })
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Sheet name" }), { key: "Enter" })
+    expect(currentForm().pages[0].title).toBe("Cover")
   })
 
   it("deletes the showing sheet, asking first when components are on it, and never the last one", () => {

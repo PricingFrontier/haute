@@ -33,7 +33,7 @@ from haute.schemas import JsonCacheInferRequest, JsonCacheInferResponse
 router = APIRouter(prefix="/api/json-cache", tags=["json-cache"])
 
 
-def api_input_schema_error_response(err: ApiInputSchemaError) -> JSONResponse:
+def _api_input_schema_error_response(err: ApiInputSchemaError) -> JSONResponse:
     """422 response with the structured discriminator.
 
     Frontend reads ``body.type === "ApiInputSchemaError"`` to branch
@@ -92,5 +92,5 @@ async def infer_json_cache_schema(body: JsonCacheInferRequest) -> Any:
     except ApiInputSchemaError as e:
         # e.g. a nested array (array of arrays) that can't be a flat table —
         # surface the structured 422 naming the field rather than an opaque 500.
-        return api_input_schema_error_response(e)
+        return _api_input_schema_error_response(e)
     return JsonCacheInferResponse(tables=result.get("tables", []))

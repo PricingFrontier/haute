@@ -1,6 +1,6 @@
 @import "tailwindcss";
 /* The toolbar's, the palette's, the right-hand panels' and native dropdowns' styles,
-   shared with extensions (haute-ui, specs/frontend-shared). */
+   shared by the pipeline editor and the workbench (haute-ui, specs/frontend-shared). */
 @import "./haute-ui/toolbar.css";
 @import "./haute-ui/palette.css";
 @import "./haute-ui/side-panel.css";

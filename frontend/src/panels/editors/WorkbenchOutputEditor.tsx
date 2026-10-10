@@ -20,17 +20,20 @@ export function mappedSource(column: string, picks: Picks, frameColumns: readonl
   return { source: byName ? column : null, byName }
 }
 
-/** The mapping with *column* of *table* filled from *source*: a pick, or no entry when it is the default. */
+/**
+ * The mapping with *column* of *table* filled from *source*: picked by name, or no entry
+ * when the pick is the column's own name, which is filling by name. None is kept as null:
+ * a column whose frame has no same-named column is left empty either way today, but an
+ * entry of null stays empty when the frame gains one, where no entry would fill it.
+ */
 function picked(
   mapping: WorkbenchOutputMapping,
   table: string,
   column: string,
   source: string | null,
-  frameColumns: readonly string[] | null,
 ): WorkbenchOutputMapping {
   const entries: Record<string, string | null> = { ...(mapping[table] ?? {}) }
-  const byDefault = mappedSource(column, {}, frameColumns).source
-  if (source === byDefault) delete entries[column]
+  if (source === column) delete entries[column]
   else entries[column] = source
   const next = { ...mapping }
   if (Object.keys(entries).length === 0) delete next[table]
@@ -55,12 +58,15 @@ export default function WorkbenchOutputEditor({
   config,
   onUpdate,
   inputSources,
+  reservedFrameLabels,
   insideSubmodel = false,
 }: {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
   /** The node's inputs, each with the table port its edge lands on. */
   inputSources: readonly InputSource[]
+  /** The document's reserved labels, which a table's name is held against as the schema editor holds it. */
+  reservedFrameLabels: ReadonlySet<string>
   /** A submodel is open: the editor updates the tables only at the pipeline's top level. */
   insideSubmodel?: boolean
 }) {
@@ -86,11 +92,10 @@ export default function WorkbenchOutputEditor({
           <OutputTable
             key={`${index}:${table.name}`}
             table={table}
-            issue={tableLabelIssue(names, index, new Set())}
+            issue={tableLabelIssue(names, index, reservedFrameLabels)}
             source={inputSources.find((input) => input.targetHandle === table.name) ?? null}
             picks={mapping[table.name] ?? {}}
-            onPick={(column, source, frameColumns) =>
-              onUpdate("mapping", picked(mapping, table.name, column, source, frameColumns))}
+            onPick={(column, source) => onUpdate("mapping", picked(mapping, table.name, column, source))}
           />
         ))}
       </section>
@@ -109,7 +114,7 @@ function OutputTable({
   issue: string | null
   source: InputSource | null
   picks: Picks
-  onPick: (column: string, source: string | null, frameColumns: readonly string[] | null) => void
+  onPick: (column: string, source: string | null) => void
 }) {
   // The frame's columns as its last preview recorded them; unknown until it has one.
   const frameColumns = source?.columns ? source.columns.map((column) => column.name) : null
@@ -153,7 +158,7 @@ function OutputTable({
                 connected={source !== null}
                 frameColumns={frameColumns}
                 mapped={mappedSource(column.name, picks, frameColumns)}
-                onPick={(value) => onPick(column.name, value, frameColumns)}
+                onPick={(value) => onPick(column.name, value)}
               />
             ))}
           </ul>

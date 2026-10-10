@@ -17,7 +17,7 @@ from haute._io import read_user_text
 from haute._logging import get_logger
 from haute._types import GLOBAL_CONSTANTS_FILE, NodeType, PipelineGraph
 from haute.deploy._config import ResolvedDeploy
-from haute.deploy._scorer import score_graph
+from haute.deploy._scorer import QuoteRequest, reads_one_quote_per_request, score_graph
 
 logger = get_logger(component="deploy.validators")
 
@@ -173,11 +173,57 @@ def _numeric_comparison(actual: Any, expected: Any, tolerance_pct: float) -> _Nu
 
 
 def _expected_value_matches(actual: Any, expected: Any, tolerance_pct: float) -> bool:
+    """Whether one value matches: a number within the tolerance, a boolean a boolean."""
     if _is_numeric(actual) and _is_numeric(expected):
         return _numeric_comparison(actual, expected, tolerance_pct).matched
     if isinstance(actual, bool) or isinstance(expected, bool):
         return isinstance(actual, bool) and isinstance(expected, bool) and actual is expected
     return bool(actual == expected)
+
+
+class _Mismatch(NamedTuple):
+    """Where an output value first differs from what was expected, and the two leaves."""
+
+    #: Into the value: ``.premium`` in an object, ``[1]`` in a list, chained; empty at the top.
+    path: str
+    actual: Any
+    expected: Any
+
+
+#: What a missing key shows as in a mismatch.
+_MISSING = "<missing>"
+
+
+def _first_mismatch(actual: Any, expected: Any, tolerance_pct: float) -> _Mismatch | None:
+    """Where *actual* first differs from *expected*, or None when it matches throughout.
+
+    A Workbench Output's response nests its tables, so the comparison walks into them: an
+    object matches when it holds every expected key with a matching value (what it holds
+    besides is not checked, as a row's other columns are not), a list when it is as long
+    and each item matches, and a leaf by :func:`_expected_value_matches`, so a number deep
+    in a table is held to the tolerance and a boolean to a boolean.
+    """
+    if isinstance(expected, dict):
+        if not isinstance(actual, dict):
+            return _Mismatch("", actual, expected)
+        for key, value in expected.items():
+            if key not in actual:
+                return _Mismatch(f".{key}", _MISSING, value)
+            found = _first_mismatch(actual[key], value, tolerance_pct)
+            if found is not None:
+                return _Mismatch(f".{key}{found.path}", found.actual, found.expected)
+        return None
+    if isinstance(expected, list):
+        if not isinstance(actual, list) or len(actual) != len(expected):
+            return _Mismatch("", actual, expected)
+        for index, (item, wanted) in enumerate(zip(actual, expected, strict=True)):
+            found = _first_mismatch(item, wanted, tolerance_pct)
+            if found is not None:
+                return _Mismatch(f"[{index}]{found.path}", found.actual, found.expected)
+        return None
+    if _expected_value_matches(actual, expected, tolerance_pct):
+        return None
+    return _Mismatch("", actual, expected)
 
 
 def _format_expected_mismatch(
@@ -223,15 +269,15 @@ def _case_errors(
                 )
                 missing_columns.add(column)
             continue
-        actual_value = row[column]
-        if _expected_value_matches(actual_value, expected_value, case.tolerance_pct):
+        mismatch = _first_mismatch(row[column], expected_value, case.tolerance_pct)
+        if mismatch is None:
             continue
         errors.append(
             _format_expected_mismatch(
                 row_index=row_index,
-                column=column,
-                actual=actual_value,
-                expected=expected_value,
+                column=column + mismatch.path,
+                actual=mismatch.actual,
+                expected=mismatch.expected,
                 tolerance_pct=case.tolerance_pct,
             )
         )
@@ -461,13 +507,20 @@ def validate_deploy(resolved: ResolvedDeploy) -> list[TestQuoteResult]:
     elif tq_dir is not None:
         # Pre-check each quote against the declared input schema; a
         # silently missing column won't be caught by a passthrough graph
-        # and would deploy an API that accepts garbage quotes.
+        # and would deploy an API that accepts garbage quotes. A Workbench
+        # Input's quote need not hold every table (a many-row table it leaves
+        # out has no rows, a one-row one its row of nulls), and its reader
+        # refuses a quote that does not fit, naming the spot, when it is
+        # scored below, so its cases are not held to the columns here.
         required_cols = set(resolved.input_schema or {})
+        reads_quotes = _reads_one_quote_per_request(resolved)
         for jf in sorted(tq_dir.glob("*.json")):
             try:
                 cleaned = load_test_quote_file(jf)
             except Exception as exc:
                 test_quote_errors.append(f"test quote {jf.name!r} failed: could not parse ({exc})")
+                continue
+            if reads_quotes:
                 continue
             for row in cleaned:
                 missing = sorted(required_cols - set(row))
@@ -507,12 +560,7 @@ def validate_deploy(resolved: ResolvedDeploy) -> list[TestQuoteResult]:
 
 def _reads_one_quote_per_request(resolved: ResolvedDeploy) -> bool:
     """Whether the request input reads one quote per request: a Workbench Input does."""
-    inputs = set(resolved.input_node_ids)
-    return any(
-        node.data.nodeType is NodeType.WORKBENCH_INPUT
-        for node in resolved.pruned_graph.nodes
-        if node.id in inputs
-    )
+    return reads_one_quote_per_request(resolved.pruned_graph, resolved.input_node_ids)
 
 
 def score_test_quotes(
@@ -548,7 +596,7 @@ def score_test_quotes(
     results: list[TestQuoteResult] = []
     one_quote_per_request = _reads_one_quote_per_request(resolved)
 
-    def score(input_df: pl.DataFrame) -> pl.DataFrame:
+    def score(input_df: pl.DataFrame | QuoteRequest) -> pl.DataFrame:
         return score_graph(
             graph=resolved.pruned_graph,
             input_df=input_df,
@@ -563,7 +611,8 @@ def score_test_quotes(
         try:
             cases = _load_test_quote_cases(jf)
             if one_quote_per_request:
-                outputs = [score(pl.DataFrame([case.input])) for case in cases]
+                # Each case as its request was sent: the Workbench Input types it.
+                outputs = [score(QuoteRequest((case.input,))) for case in cases]
                 _validate_expected_outputs_per_case(cases=cases, outputs=outputs)
                 rows = sum(output.height for output in outputs)
             else:

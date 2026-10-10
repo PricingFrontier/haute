@@ -2938,6 +2938,39 @@ class TestUnavailableEstimateReasons:
         assert estimate.unavailable_reason == "target_schema_unavailable"
 
 
+def test_a_request_read_per_port_sizes_each_table_from_its_own_frame() -> None:
+    """A deployed Workbench Input's quote: each port its rows, no whole-node summary."""
+    node = _make_source_node(
+        node_id="request",
+        node_type="workbenchInput",
+        config={
+            "tables": [
+                {"name": "policy", "rows": "one", "columns": [{"name": "limit", "type": "int"}]},
+                {"name": "items", "rows": "many", "columns": [{"name": "value", "type": "float"}]},
+            ]
+        },
+    )
+    graph = PipelineGraph(nodes=[node], edges=[])
+    tables = {
+        "policy": pl.DataFrame({"limit": [5]}),
+        "items": pl.DataFrame({"value": [1.0, 2.0, 3.0]}),
+    }
+
+    index = _EstimateGraphIndex.build(
+        graph, "live", runtime_source_frames_by_node={"request": tables}
+    )
+
+    assert index.source_metadata(node) is None
+    policy = index.api_input_port_metadata(node, "policy")
+    items = index.api_input_port_metadata(node, "items")
+    assert policy is not None and policy.row_count == 1
+    assert items is not None and items.row_count == 3
+    with pytest.raises(TypeError, match="port values must be polars DataFrames"):
+        _EstimateGraphIndex.build(
+            graph, "live", runtime_source_frames_by_node={"request": {"policy": object()}}
+        )
+
+
 def test_variable_width_probe_is_empty_when_it_reads_no_rows(tmp_path) -> None:
     """Parquet metadata can claim rows the scan does not return. The probe
     measures the representation materialisation actually allocates, so with

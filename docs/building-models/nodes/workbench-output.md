@@ -1,6 +1,6 @@
 # Workbench Output
 
-When your quotes are keyed in through the project's workbench, its schema also defines what a priced quote fills in: its output tables. The Workbench Output is the pipeline's response for those quotes. Its tables are the workbench's output tables, copied into the pipeline and kept up to date as you change the schema, and each one is an input you connect a frame to. When the pipeline runs, each table is filled from its frame, and those tables are what fills the workbench's output tables.
+When your quotes are keyed in through the project's workbench, its schema also defines what a priced quote fills in: its output tables. The Workbench Output is the pipeline's response for those quotes. Its tables are the workbench's output tables, copied into the pipeline and kept up to date as you change the schema, and each one is an input you connect a frame to. When the pipeline runs, each table is filled from its frame, and the filled tables are the response.
 
 !!! info "When to use"
     While the project's workbench is enabled, the palette offers the Workbench Output in place of the [Quote Response](output.md). Use it as the response for live pricing of keyed-in quotes. Without a workbench, use the Quote Response and map its columns yourself.
@@ -15,7 +15,7 @@ A table with one row per quote takes exactly one row from its frame; a table wit
 
 Click the node to preview its tables, filled for the workbench's sample quote: each table is a dataframe, with the table picker at the top of the preview choosing which one shows when there are several. To trace a value back through the pipeline, click it in the preview of the node connected to its table.
 
-Showing the pipeline's values in the workbench's Collections as the sample is typed is planned; the node's own preview runs on the sample as saved in the form.
+While you build, the workbench prices the sample live and shows the answer in its output columns (see [The sample](../workbench.md#the-sample)); the node's own preview runs on the sample as last saved.
 
 ## The response
 
@@ -35,7 +35,7 @@ When the pipeline answers a request, through a deployment's `/quote` or `pipelin
 
 Values that are null, and tables with no rows, are left out of the response, as in a Quote Response's.
 
-A Workbench Output answers one quote per request. A request of several quotes gives a one-row table several rows, which stops the run with "The Workbench Output's '...' table has one row per quote, but the frame connected to it has 2 rows."
+A Workbench Output answers one quote per request. A deployed pipeline refuses a request of several quotes at its Workbench Input ("A Workbench Input reads one quote per request, and this request holds 2."); a frame that reaches a table with one row per quote with other than one row, as `pipeline.score()` can bring, stops the run with "The Workbench Output's '...' table has one row per quote, but the frame connected to it has 2 rows."
 
 ## TABLES FROM THE WORKBENCH
 
@@ -52,7 +52,7 @@ The panel lists the workbench's output tables. You can't change the tables here,
 
 Changing a pick is an edit to the pipeline, saved and undone like any other.
 
-The tables are the workbench's schema, edited in the Workbench view: **Edit in Workbench** in this section opens it, and the switcher at the bottom of the node palette brings you back to **Pricing**. When the form is saved there (**Save**, or Ctrl+S), the editor fetches the tables again and the node's tables and inputs follow, and the pipeline has changes to save, as after any edit. Connections follow table names: a connection to a table that keeps its name stays, and one to a table that was renamed or removed is removed, with a message. Changes not yet saved in the Workbench are priced on the Workbench's own sheets but don't reach the pipeline until saved.
+The tables are the workbench's schema, edited in the Workbench view: **Edit in Workbench** in this section opens it, and the switcher at the bottom of the node palette brings you back to **Pricing**. When you save there (**Save**, or Ctrl+S), the editor fetches the tables again and the node's tables and inputs follow, and the pipeline has changes to save, as after any edit. Connections follow table names: a connection to a table that keeps its name stays, and one to a table that was renamed or removed is removed, with a message. Changes not yet saved in the Workbench are priced on the Workbench's own sheets but don't reach the pipeline until saved.
 
 While the workbench is not enabled, the section says "The workbench is not enabled in haute.toml, so these tables are the last copy and nothing updates them." The pipeline still runs, tests and deploys from that copy. Inside a submodel the section says "The editor updates these tables only at the pipeline's top level."
 

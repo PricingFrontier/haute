@@ -49,7 +49,7 @@ export default function WorkbenchInputEditor({
 
       <p data-testid="workbench-input-preview-note" className="text-[11px]" style={{ color: "var(--text-muted)" }}>
         {hasSample
-          ? "Previews run on the workbench's sample values; a table with none is one row of nulls."
+          ? "Previews run on the workbench's sample values, read as a request is: a table with many rows and nothing typed has none."
           : "Previews run on one row of nulls per table until the workbench supplies values."}
       </p>
 

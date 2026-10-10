@@ -13,7 +13,7 @@ vi.mock("../../api/workbench", async (importOriginal) => ({
 
 import type { FormSpec, SchemaColumn, SchemaTable, WorkbenchTablesResponse } from "../../api/types"
 import { fetchWorkbenchFormTables } from "../../api/workbench"
-import { cellKey, valuesBasis } from "../../utils/sheetValues"
+import { cellKey, quoteProblems, valuesBasis } from "../../utils/sheetValues"
 import type { PricedSample } from "../../utils/workbenchTables"
 import useWorkbenchFormStore from "../useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../useWorkbenchPreviewStore"
@@ -118,10 +118,11 @@ describe("useWorkbenchPreviewStore", () => {
 
     expect(pricer).not.toHaveBeenCalled()
     expect(store()).toMatchObject({ checked: true, error: "1 cell needs attention", price: null })
+    // Nothing typed in a required column: marked once checked, as the sheet reads it.
     useWorkbenchPreviewStore.setState({ quote: {} })
     await store().priceQuote()
-    expect(store().error).toBe("1 cell needs attention")
-    expect(Object.keys({ [cellKey("t1", 0, "c1")]: "Required" })).toHaveLength(1)
+    expect(store()).toMatchObject({ checked: true, error: "1 cell needs attention" })
+    expect(quoteProblems(form.schema, store().quote)).toEqual({ [cellKey("t1", 0, "c1")]: "Required" })
   })
 
   it("drops an answer that arrives after Clear, or after the view replaced its pricer", async () => {

@@ -68,6 +68,10 @@ logger = get_logger(component="ram_estimate")
 #: Sources whose size the estimate reads from their metadata.
 _SIZED_SOURCE_TYPES = REQUEST_INPUT_NODE_TYPES | frozenset({NodeType.DATA_INPUT})
 
+#: Request-local source frames, by node: the frame a source node was given, or for a
+#: multi-frame source (a Workbench Input reading its quote) a frame per port, keyed by it.
+RuntimeSourceFrames = Mapping[str, pl.DataFrame | Mapping[str, pl.DataFrame]]
+
 __all__ = [
     "MaterialisationEstimate",
     "MaterialisationEstimateBasis",
@@ -389,7 +393,7 @@ class _EstimateGraphIndex:
         graph: PipelineGraph,
         source: str,
         *,
-        runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
+        runtime_source_frames_by_node: RuntimeSourceFrames | None = None,
     ) -> _EstimateGraphIndex:
         """Build an index, optionally overriding source metadata for this request."""
         from haute._execute_lazy import _prune_live_switch_edges
@@ -412,8 +416,24 @@ class _EstimateGraphIndex:
             )
         )
         runtime_metadata_by_node: dict[str, _DetailedSourceMetadata | None] = {}
+        runtime_port_metadata: dict[tuple[str, str], _DetailedSourceMetadata | None] = {}
         if runtime_source_frames_by_node is not None:
             for node_id, frame in runtime_source_frames_by_node.items():
+                if isinstance(frame, Mapping):
+                    # A multi-frame source read for this request, a Workbench Input's
+                    # quote: each port its own frame and no whole-node summary, so a
+                    # consumer is sized from the table that feeds it.
+                    for port, port_frame in frame.items():
+                        if not isinstance(port_frame, pl.DataFrame):
+                            raise TypeError(
+                                "runtime_source_frames_by_node port values must be polars "
+                                f"DataFrames (node_id={node_id!r}, port={port!r})"
+                            )
+                        runtime_port_metadata[(node_id, port)] = _detailed_dataframe_metadata(
+                            port_frame, node_id
+                        )
+                    runtime_metadata_by_node[node_id] = None
+                    continue
                 if not isinstance(frame, pl.DataFrame):
                     raise TypeError(
                         "runtime_source_frames_by_node values must be polars DataFrames "
@@ -432,7 +452,7 @@ class _EstimateGraphIndex:
             metadata_by_node=runtime_metadata_by_node,
             columns_by_target={},
             resolving_targets=set(),
-            port_metadata={},
+            port_metadata=runtime_port_metadata,
             cardinality_by_target={},
             resolving_cardinality=set(),
         )
@@ -2028,7 +2048,7 @@ def estimate_materialisation_boundaries(
     *,
     source: str = "live",
     edge_demands: Mapping[ProjectionEdgeKey, frozenset[str] | None] | None = None,
-    runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
+    runtime_source_frames_by_node: RuntimeSourceFrames | None = None,
     boundary_operators: Mapping[str, Sequence[str]] | None = None,
 ) -> Iterator[tuple[str, MaterialisationEstimate]]:
     """Yield boundary estimates through one request-local metadata index.
@@ -2037,7 +2057,8 @@ def estimate_materialisation_boundaries(
     boundary does not probe unrelated later sources. Iterating more than one
     result still shares all graph, schema, and source-metadata memoisation.
     ``runtime_source_frames_by_node`` supplies request-local source metadata
-    for injected DataFrames, without reading the replaced configured path.
+    for injected DataFrames, without reading the replaced configured path: a
+    frame per node, or a frame per port, keyed by it, for a multi-frame source.
     ``boundary_operators`` names the planner's boundary operator per node so the
     estimate carries that operator's measured memory factor; a node without one
     is estimated with no operator surcharge.

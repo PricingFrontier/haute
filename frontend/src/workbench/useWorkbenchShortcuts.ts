@@ -20,8 +20,9 @@ const NUDGE_BURST_MS = 800
  * editor's shortcuts.
  */
 export default function useWorkbenchShortcuts(): void {
-  // The component being nudged and when its burst ends.
-  const nudging = useRef<{ id: string; until: number } | null>(null)
+  // The component being nudged, when its burst ends, and the form the last nudge made:
+  // an undo, a redo or any other edit in between replaces it, and ends the burst.
+  const nudging = useRef<{ id: string; until: number; form: object } | null>(null)
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.defaultPrevented || inModalDialog(e.target)) return
@@ -77,11 +78,12 @@ export default function useWorkbenchShortcuts(): void {
         if (dx === 0 && dy === 0) return
         const now = Date.now()
         const burst = nudging.current
-        if (burst === null || burst.id !== selected.id || now > burst.until) forms.pushSnapshot()
-        nudging.current = { id: selected.id, until: now + NUDGE_BURST_MS }
-        forms.setFormRaw(
-          updateWidget(forms.form, selected.id, { x: Math.max(0, selected.x + dx), y: Math.max(0, selected.y + dy) }),
-        )
+        if (burst === null || burst.id !== selected.id || now > burst.until || burst.form !== forms.form) {
+          forms.pushSnapshot()
+        }
+        const nudged = updateWidget(forms.form, selected.id, { x: Math.max(0, selected.x + dx), y: Math.max(0, selected.y + dy) })
+        nudging.current = { id: selected.id, until: now + NUDGE_BURST_MS, form: nudged }
+        forms.setFormRaw(nudged)
       } else {
         return
       }

@@ -59,6 +59,18 @@ describe("useWorkbenchShortcuts on the sheets", () => {
     key({ key: "ArrowUp" })
     expect(widgets()[0]).toMatchObject({ x: 23, y: 16 })
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(2)
+
+    // An undo inside the burst ends it: the next nudge is a step of its own, and the
+    // undone step is not left to redo over it.
+    key({ key: "z", ctrlKey: true })
+    expect(widgets()[0]).toMatchObject({ x: 23, y: 24 })
+    expect(useWorkbenchFormStore.getState().redoStack).toHaveLength(1)
+    key({ key: "ArrowRight" })
+    expect(widgets()[0]).toMatchObject({ x: 31, y: 24 })
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(2)
+    expect(useWorkbenchFormStore.getState().redoStack).toHaveLength(0)
+    key({ key: "z", ctrlKey: true })
+    expect(widgets()[0]).toMatchObject({ x: 23, y: 24 })
   })
 
   it("fits the sheet on Ctrl+1", () => {

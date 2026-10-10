@@ -92,6 +92,11 @@ export function startTransform(e: ReactPointerEvent, id: string, handle?: Handle
   const { form } = useWorkbenchFormStore.getState()
   const found = form === null ? null : findWidget(form, id)
   if (found === null) return
+  // The press does not move the focus (its default is prevented): a cell focused earlier
+  // would otherwise keep taking the keys meant for the selected component.
+  if (document.activeElement instanceof HTMLElement && document.activeElement !== e.currentTarget) {
+    document.activeElement.blur()
+  }
   select(id)
   const { x, y, w, h } = found.widget
   const original = { x, y, w, h }

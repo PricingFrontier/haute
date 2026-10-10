@@ -368,7 +368,13 @@ from haute.deploy._batch_scoring import (
     prepare_batch_scoring,
     score_batch_worker,
 )
-from haute.deploy._scorer import admit_deploy_execution, score_graph, score_graph_lazy
+from haute.deploy._scorer import (
+    QuoteRequest,
+    admit_deploy_execution,
+    reads_one_quote_per_request,
+    score_graph,
+    score_graph_lazy,
+)
 from haute.routes._isolated_worker_async import run_isolated_worker_async
 
 # ── Load manifest at startup ────────────────────────────────────────
@@ -378,6 +384,9 @@ _manifest = json.loads(_MANIFEST_PATH.read_text())
 
 _pruned_graph = PipelineGraph.model_validate(_manifest["pruned_graph"])
 _input_node_ids = _manifest["input_node_ids"]
+# A Workbench Input reads its quote from the records as sent, typing each value itself;
+# any other request input takes the rows as a frame.
+_reads_quotes = reads_one_quote_per_request(_pruned_graph, _input_node_ids)
 _output_node_id = _manifest["output_node_id"]
 
 
@@ -791,7 +800,7 @@ async def quote(request: Request) -> JSONResponse:
             row_count=row_count,
         )
         execution_context.checkpoint(label="before_deploy_request_dataframe")
-        input_df = pl.DataFrame(rows)
+        input_df = QuoteRequest(tuple(rows)) if _reads_quotes else pl.DataFrame(rows)
         execution_context.checkpoint(label="after_deploy_request_dataframe")
         if _wants_ndjson(request):
             plan = score_graph_lazy(

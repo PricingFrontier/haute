@@ -92,7 +92,7 @@ def _build_node_config(
     config: dict[str, Any] = {}
     if node_type in REQUEST_INPUT_NODE_TYPES:
         # A Workbench Input reads no file; a Quote Input's previews read `path`.
-        if node_type is not NodeType.WORKBENCH_INPUT:
+        if node_type is NodeType.API_INPUT:  # the Quote Input alone
             config["path"] = decorator_kwargs.get("path", "")
         # `tables[]` is the schema mapping, typically loaded from the sidecar
         # by ``_resolve_node_config``; `row_id_column` belongs to each table.

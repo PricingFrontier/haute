@@ -12,6 +12,7 @@ import pytest
 
 from haute._json_shred._shred import _POLARS_TYPE_MAP
 from haute._workbench_form import FormSpec
+from haute._workbench_input import workbench_request_frames, workbench_table_frames
 from haute._workbench_tables import (
     COLUMN_DTYPES,
     WorkbenchTable,
@@ -276,6 +277,60 @@ def test_a_value_that_no_longer_fits_its_column_is_sent_as_it_is() -> None:
     # Both reach the Workbench Input as values that are not of their column's type; an
     # unticked box in a column that is no longer True/false is nothing typed.
     assert sample_quote(spec) == {"policy_details": {"smoker": "Y", "count": True}}
+
+
+def test_a_number_is_typed_by_the_rule_the_view_applies() -> None:
+    spec = form(
+        {
+            "id": "t1",
+            "name": "policy",
+            "role": "input",
+            "rows": "one",
+            "columns": [column("limit", "int"), column("value", "float")],
+        }
+    )
+
+    def typed(limit: str, value: str) -> dict[str, Any]:
+        spec.sample = {"t1": [{"c_limit": limit, "c_value": value}]}
+        return sample_quote(spec)["policy"]
+
+    assert typed("£1,000", " 2.5e2 ") == {"limit": 1000, "value": 250.0}
+    assert typed("+7", "-.5") == {"limit": 7, "value": -0.5}
+    # What the view marks as not a number, the server keeps as typed, even where Python's
+    # float would read it: the two apply one rule.
+    assert typed("1_000", "١٢") == {"limit": "1_000", "value": "١٢"}
+    assert typed("inf", "nan") == {"limit": "inf", "value": "nan"}
+
+
+def test_a_sample_with_an_empty_many_row_table_prices_as_its_quote_would_when_deployed() -> None:
+    spec = form(
+        {
+            "id": "t1",
+            "name": "policy_details",
+            "role": "input",
+            "rows": "one",
+            "columns": [column("state")],
+        },
+        {
+            "id": "t2",
+            "name": "equipment",
+            "role": "input",
+            "rows": "many",
+            "columns": [column("item_id", key=True), column("value", "float")],
+        },
+    )
+    spec.sample = {"t1": [{"c_state": "TX"}], "t2": [{"c_item_id": "", "c_value": " "}]}
+    tables = dumped(input_tables(spec))
+
+    # A table with nothing typed in it is left out of the sample, as a quote may leave it
+    # out of a request; the Workbench Input then gives it no rows on either path.
+    quote = sample_quote(spec)
+    assert quote == {"policy_details": {"state": "TX"}}
+    sampled = workbench_table_frames({"tables": tables, "sample": quote})
+    requested = workbench_request_frames({"tables": tables}, [quote])
+    assert sampled["equipment"].collect().to_dicts() == [] == requested["equipment"].to_dicts()
+    assert sampled["policy_details"].collect().to_dicts() == [{"state": "TX"}]
+    assert requested["policy_details"].to_dicts() == [{"state": "TX"}]
 
 
 def test_a_tables_index_is_an_integer_column_numbering_the_rows_as_they_stand() -> None:

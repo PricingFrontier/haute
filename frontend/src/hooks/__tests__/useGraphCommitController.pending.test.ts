@@ -106,7 +106,7 @@ describe("useGraphCommitController pending commits", () => {
   })
 
   it("drops a Workbench Output's connections whose tables went, and says so", () => {
-    const table = (label: string) => ({ path: "$[:]", label, emit: true, columns: [] })
+    const table = (name: string) => ({ name, rows: "one", columns: [{ name: "premium", type: "float" }] })
     const node = makeNode("response", "workbenchOutput", {
       data: { label: "response", nodeType: "workbenchOutput", config: { tables: [table("pricing_output"), table("layers")] } },
     })
