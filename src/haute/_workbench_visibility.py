@@ -3,13 +3,13 @@ columns a quote leaves out (specs/workbench).
 
 A sheet or a component with conditions shows only while they hold on the values typed
 into the sheets, and a component on a sheet that does not show does not show either. A
-condition holds while it fits (``condition_fits``), its column is on a component that
-shows, and the value typed into the column's first row passes its test, read as the
-sample's values are typed. Everything starts shown and anything whose conditions fail
-is hidden, round after round, until a round hides nothing: hiding never shows anything, so
-the answer does not depend on the order of the sheets, components or conditions. A
-condition that does not fit never holds; it is a problem the view reports, never an
-error here.
+condition holds while it fits (``condition_fits``), its column is on a Table or a
+Collection that shows (a Chart takes nothing typed, so its columns never count), and the
+value typed into the column's first row passes its test, read as the sample's values are
+typed. Everything starts shown and anything whose conditions fail is hidden, round after
+round, until a round hides nothing: hiding never shows anything, so the answer does not
+depend on the order of the sheets, components or conditions. A condition that does not
+fit never holds; it is a problem the view reports, never an error here.
 
 The view applies the same rules in ``frontend/src/utils/sheetVisibility.ts``; both are
 held to the cases in ``frontend/src/utils/__tests__/fixtures/sheetVisibility.json``.
@@ -25,12 +25,15 @@ from datetime import date
 from typing import Any
 
 from haute._workbench_form import (
+    ChartWidget,
     ColumnType,
     Condition,
     ConditionTest,
+    FieldRef,
     FormSpec,
     SchemaColumn,
     ShowWhen,
+    Widget,
 )
 from haute._workbench_tables import _filled, _typed
 
@@ -75,7 +78,7 @@ class Visibility:
     #: The ids of the components that show, each on a sheet that shows.
     widgets: frozenset[str]
     #: The input columns left out of the quote, each a table id and a column id: columns
-    #: other than the index on at least one component, none of which shows.
+    #: other than the index on at least one Table or Collection, none of which shows.
     hidden: frozenset[tuple[str, str]]
 
 
@@ -90,7 +93,7 @@ def visibility(spec: FormSpec, rows: Rows) -> Visibility:
             if page.id in pages
             for widget in page.widgets
             if widget.id in widgets
-            for field in widget.fields
+            for field in _entered(widget)
         }
         hiding_pages = {
             page.id
@@ -112,7 +115,7 @@ def visibility(spec: FormSpec, rows: Rows) -> Visibility:
         (field.table, field.column)
         for page in spec.pages
         for widget in page.widgets
-        for field in widget.fields
+        for field in _entered(widget)
     }
     inputs = {
         (table.id, column.id)
@@ -123,6 +126,12 @@ def visibility(spec: FormSpec, rows: Rows) -> Visibility:
     }
     hidden = (on_widgets - shown) & inputs
     return Visibility(frozenset(pages), frozenset(widgets), frozenset(hidden))
+
+
+def _entered(widget: Widget) -> list[FieldRef]:
+    """The columns a component has values typed into: a Table's and a Collection's fields, and
+    none of a Chart's, which it only plots."""
+    return [] if isinstance(widget, ChartWidget) else widget.fields
 
 
 def condition_fits(spec: FormSpec, condition: Condition) -> bool:

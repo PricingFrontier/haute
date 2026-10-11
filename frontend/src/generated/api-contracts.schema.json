@@ -608,6 +608,128 @@
       "title": "ChartValueEncoding",
       "type": "object"
     },
+    "ChartWidget": {
+      "additionalProperties": false,
+      "description": "A Chart: number columns plotted, of one-row tables a point each, or of many-row tables\nwhose rows line up a series each over their rows. It takes nothing typed.",
+      "properties": {
+        "category": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FieldRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "chart_type": {
+          "default": "column",
+          "enum": [
+            "column",
+            "line",
+            "area",
+            "pie"
+          ],
+          "title": "Chart Type",
+          "type": "string"
+        },
+        "data_labels": {
+          "default": false,
+          "title": "Data Labels",
+          "type": "boolean"
+        },
+        "fields": {
+          "items": {
+            "$ref": "#/$defs/FieldRef"
+          },
+          "title": "Fields",
+          "type": "array"
+        },
+        "h": {
+          "exclusiveMinimum": 0,
+          "title": "H",
+          "type": "integer"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "legend": {
+          "default": "bottom",
+          "enum": [
+            "bottom",
+            "top",
+            "left",
+            "right",
+            "none"
+          ],
+          "title": "Legend",
+          "type": "string"
+        },
+        "orientation": {
+          "default": "vertical",
+          "enum": [
+            "vertical",
+            "horizontal"
+          ],
+          "title": "Orientation",
+          "type": "string"
+        },
+        "show_when": {
+          "$ref": "#/$defs/ShowWhen"
+        },
+        "stacked": {
+          "default": false,
+          "title": "Stacked",
+          "type": "boolean"
+        },
+        "title": {
+          "default": "",
+          "title": "Title",
+          "type": "string"
+        },
+        "type": {
+          "const": "chart",
+          "title": "Type",
+          "type": "string"
+        },
+        "w": {
+          "exclusiveMinimum": 0,
+          "title": "W",
+          "type": "integer"
+        },
+        "x": {
+          "minimum": 0,
+          "title": "X",
+          "type": "integer"
+        },
+        "y": {
+          "minimum": 0,
+          "title": "Y",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "x",
+        "y",
+        "w",
+        "h",
+        "type",
+        "title",
+        "fields",
+        "show_when",
+        "category",
+        "chart_type",
+        "orientation",
+        "stacked",
+        "legend",
+        "data_labels"
+      ],
+      "title": "ChartWidget",
+      "type": "object"
+    },
     "CollectionWidget": {
       "additionalProperties": false,
       "description": "A Collection: boxes showing columns of one-row schema tables, ``columns`` across.",
@@ -11377,6 +11499,9 @@
               },
               {
                 "$ref": "#/$defs/CollectionWidget"
+              },
+              {
+                "$ref": "#/$defs/ChartWidget"
               }
             ]
           },

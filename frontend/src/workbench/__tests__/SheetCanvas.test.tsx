@@ -9,7 +9,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
-import { TABLE_OPTIONS } from "../../utils/workbenchForm"
+import { CHART_OPTIONS, TABLE_OPTIONS } from "../../utils/workbenchForm"
 import SheetCanvas from "../SheetCanvas"
 import WorkbenchPalette from "../WorkbenchPalette"
 import { coverForm, currentForm, drag, loadForm, releasePointer, sheetForm, stubLayout } from "./fixtures"
@@ -131,6 +131,29 @@ describe("SheetCanvas", () => {
     expect(added).toMatchObject({ type: "collection", x: 288, y: 488, w: 720, h: 120, fields: [], columns: 3 })
     expect(useWorkbenchViewStore.getState().selectedId).toBe(added.id)
     expect(useWorkbenchViewStore.getState().creating).toBeNull()
+  })
+
+  it("adds a Chart dropped out of the palette at its size, with a new Chart's options and no fields, selecting it", () => {
+    render(
+      <>
+        <WorkbenchPalette />
+        <SheetCanvas />
+      </>,
+    )
+
+    act(() => {
+      screen.getByTestId("palette-item-chart").dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 10, clientY: 10 }))
+      window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 300, clientY: 500 }))
+    })
+    expect(screen.getByTestId("drop-ghost")).toHaveTextContent("Chart")
+    act(() => {
+      window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 300, clientY: 500 }))
+    })
+
+    const added = currentForm().pages[0].widgets[2]
+    expect(added).toMatchObject({ type: "chart", x: 288, y: 488, w: 480, h: 280, fields: [], ...CHART_OPTIONS })
+    expect(useWorkbenchViewStore.getState().selectedId).toBe(added.id)
+    expect(within(frame(added.id)).getByText("Choose its fields from the schema in the panel on the right")).toBeInTheDocument()
   })
 
   it("fits what is on the sheet to the viewport when it first shows, and sizes the sheet to hold its components", () => {

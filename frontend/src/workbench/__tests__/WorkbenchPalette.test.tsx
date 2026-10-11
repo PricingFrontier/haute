@@ -1,5 +1,5 @@
 /**
- * The workbench's palette (specs/workbench): Table and Collection in Haute's palette
+ * The workbench's palette (specs/workbench): Table, Collection and Chart in Haute's palette
  * shell with the switcher under them, collapsing with the node palette, and disabled in
  * Preview.
  */
@@ -23,12 +23,13 @@ describe("WorkbenchPalette", () => {
     useWorkbenchViewStore.setState({ section: "sheets", creating: null })
   })
 
-  it("offers a Table and a Collection, with the switcher at the bottom", () => {
+  it("offers a Table, a Collection and a Chart, with the switcher at the bottom", () => {
     render(<WorkbenchPalette />)
 
     expect(screen.getByRole("heading", { name: "Components" })).toBeInTheDocument()
     expect(screen.getByTestId("palette-item-tableInput")).toHaveTextContent("Table")
     expect(screen.getByTestId("palette-item-collection")).toHaveTextContent("Collection")
+    expect(screen.getByTestId("palette-item-chart")).toHaveTextContent("Chart")
     expect(within(screen.getByRole("group", { name: "Views" })).getByRole("button", { name: "Workbench" })).toHaveAttribute("aria-pressed", "true")
   })
 

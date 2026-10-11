@@ -3,7 +3,7 @@ import useUIStore from "../stores/useUIStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
 import { startCreate } from "./sheetInteractions"
 import ViewSwitcher from "./ViewSwitcher"
-import { COMPONENT_COLOR, PALETTE_KINDS, WIDGET_KINDS } from "./widgetKinds"
+import { PALETTE_KINDS, WIDGET_KINDS } from "./widgetKinds"
 
 /**
  * The workbench's left column (specs/workbench), in Haute's palette shell: the components
@@ -38,7 +38,7 @@ export default function WorkbenchPalette() {
               data-testid={`palette-item-${type}`}
               icon={kind.icon}
               label={kind.label}
-              color={COMPONENT_COLOR}
+              color={kind.color}
               disabled={previewing}
               title={previewing ? "Build to lay out the sheets" : kind.hint}
               onPointerDown={previewing ? undefined : (event) => startCreate(event, type)}

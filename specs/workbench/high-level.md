@@ -3,8 +3,8 @@
 ## Purpose
 
 The workbench is where a pricing team lays out the quote an underwriter keys in: a schema
-of typed tables, the sheets of Tables and Collections that show those tables' columns, and
-the sample quote typed into them while building. It is part of Haute, switched on per
+of typed tables, the sheets of Tables and Collections that show those tables' columns and
+of Charts that plot them, and the sample quote typed into them while building. It is part of Haute, switched on per
 project in `haute.toml`, and its form is a file in the project, `forms/form.json`, versioned
 beside the pipeline.
 
@@ -42,8 +42,8 @@ In scope:
   `PUT /api/workbench/form`, which writes the form unless the file changed since it was read.
 - The Workbench view: how it is shown beside the pipeline editor and what the pipeline
   editor does meanwhile, its toolbar and keyboard shortcuts, its schema editor, its sheets
-  (the canvas, the Table and the Collection, their palette and properties panel, and the
-  sheet tabs), the sample typed into the components and priced live on the pipeline,
+  (the canvas, the Table, the Collection and the Chart, their palette and properties panel,
+  and the sheet tabs), the sample typed into the components and priced live on the pipeline,
   Preview, where an underwriter's quote is keyed into the sheets, checked against the
   columns' rules and priced, and how the form is read into it and saved from it.
 - The Workbench Input, the node type that holds a copy of the tables and sample, which the
@@ -100,8 +100,13 @@ Out of scope:
   automatic) and `use_grouping`. A sheet has an id, a title, when it shows (`show_when`) and its components (`widgets` in the file): a Table (`tableInput`, a grid of at
   least `rows` rows showing columns of many-row tables, with its look and whether its rows
   are fixed: `row_numbers`, `density` (`compact` or `comfortable`), `gridlines` (`rows`,
-  `all` or `none`), `striped` and `fixed_rows`) or a Collection (`collection`, boxes
-  showing columns of one-row tables, `columns` across), each placed by its `x`, `y`, `w`, `h`,
+  `all` or `none`), `striped` and `fixed_rows`), a Collection (`collection`, boxes
+  showing columns of one-row tables, `columns` across) or a Chart (`chart`, plotting number
+  columns, with what labels the rows of its many-row tables, `category`, a schema column
+  named as a field is or null to number them, and how it draws: `chart_type` (`column`,
+  `line`, `area` or `pie`), `orientation` (`vertical` or `horizontal`), `stacked`, `legend`
+  (`bottom`, `top`, `left`, `right` or `none`) and `data_labels`), each placed by its `x`,
+  `y`, `w`, `h`,
   showing its `fields`, schema columns named by table id and column id so a rename keeps
   them, and with a `show_when` of its own. A `show_when` holds `conditions` and whether `all`
   of them must hold or `any` (`match`); with none, the sheet or component always shows. A
@@ -256,7 +261,8 @@ Out of scope:
   (`rows`), between every column too (`all`) or none at all (`none`), every other row
   shaded unless `striped` is off, and Add row under the last row and a delete on each row
   unless its rows are fixed; a Collection as boxes with their labels above, its columns
-  across. Each field shows its label (its column's, or the name made readable), a star for
+  across; a Chart as its type draws the values it plots (Charts, below). Each field of a
+  Table or a Collection shows its label (its column's, or the name made readable), a star for
   a required input, a mark showing its help when it has some, a hint at its type (a
   dropdown's chevron, a date's calendar), an empty cell blank or showing its column's
   placeholder, a number in its column's format (a percent the value times 100, so a
@@ -269,18 +275,21 @@ Out of scope:
   move recording nothing. Pressing the empty sheet deselects. A component takes the
   keyboard's focus too: reached by Tab, it is selected, so the sheet's keys work without a
   pointer. A component with a problem (no fields, a column no longer in the schema, a table
-  of the other kind, tables whose rows do not line up, or one of its conditions', Shown
-  when below) gets a dashed frame in the warning colour naming the problem, on hover and to
+  of the other kind, tables whose rows do not line up, a Chart's field that is not a number
+  or is an index, a pie of many rows with more than one field, or one of its conditions',
+  Shown when below) gets a dashed frame in the warning colour naming the problem, on hover and to
   a screen reader. The zoom runs from 25% to
   200% in steps of 10%; what is on the sheet is fitted to the viewport, never past 100%,
   when the sheets first show for a form read (a zoom chosen since is kept across a trip to
   the schema or the pipeline editor) and on Ctrl/Cmd+1.
 - **The palette.** The view's left column is Haute's palette shell with a Table and a
-  Collection, in the entry colour, and the switcher under them. A component is dragged
-  out of it onto the sheet: a chip follows the pointer until the sheet shows a ghost where
-  the component would land; released there, it is added, 720 wide (a Table 200 high with
-  3 rows, numbered, compact, lined between rows, striped and not fixed, a Collection 120
-  high with 3 columns across), showing nothing yet, and selected.
+  Collection, in the entry colour, a Chart, in Explore's colour, and the switcher under
+  them. A component is dragged out of it onto the sheet: a chip follows the pointer until
+  the sheet shows a ghost where the component would land; released there, it is added (a
+  Table 720 by 200 with 3 rows, numbered, compact, lined between rows, striped and not
+  fixed, a Collection 720 by 120 with 3 columns across, a Chart 480 by 280 of columns,
+  upright, unstacked, its rows numbered, its legend at the bottom and no data labels),
+  showing nothing yet, and selected.
   A click adds nothing. The palette shares the node palette's open state, so collapsing it
   in either view collapses both; collapsed, it is the reveal strip with the compact
   switcher under it.
@@ -289,18 +298,27 @@ Out of scope:
   they are closed: the component's kind and its title; its Show when (below); once it shows a field, its layout,
   a Table's rows (1 to 50) and whether they are fixed, or a Collection's columns across (1
   to 12), a value outside the range refused at the field, a Table's look (its density, its
-  gridlines, its row numbers and its stripes), and the order of the fields it shows, moved
+  gridlines, its row numbers and its stripes), a Chart's chart (its type, Column, Line,
+  Area or Pie; while it plots many-row tables, what labels its rows, "Row number" or a
+  column of a table whose rows line up with its fields, other than an index, by table and
+  label; its legend, Bottom, Top, Left, Right or None; and whether it is stacked, horizontal
+  and shows its values as data labels, a pie being neither stacked nor horizontal), and
+  the order of the fields it shows, moved
   by dragging or Alt+Up and Alt+Down, each with a cross that stops showing it; and its
   fields, ticked from
   the schema tables of its
-  kind, many-row tables for a Table and one-row tables for a Collection, each table
+  kind, many-row tables for a Table, one-row tables for a Collection and any table for a
+  Chart, each table
   collapsible with its role and how many of its columns show, each column with its type's
-  icon, its name and its label. Fields are held by table and column id, in the order
+  icon, its name and its label, a Chart's columns other than numbers and an index disabled,
+  since a Chart plots numbers. Fields are held by table and column id, in the order
   ticked, so a rename keeps them. A grid holds one kind of row, so once a Table shows a
   field, tables whose rows do not line up with it (keyed by other columns, or keyless) are
   greyed out with their unticked columns disabled; an input table and an output table
-  keyed alike line up. With no table of the component's kind in the schema, the panel
-  says so and offers the schema. While building, the showing sheet's tab has a settings
+  keyed alike line up. A Chart's fields and the column labelling its rows line up the
+  same way, the first of them deciding, and one-row tables all line up with one another.
+  With no table of the component's kind in the schema, the panel says so and offers the
+  schema. While building, the showing sheet's tab has a settings
   mark beside its cross that opens the sheet's own panel in the same place, with its
   title and its Show when; pressing the empty sheet, Escape, the panel's close, or
   selecting a component closes it. Show when reads "Always" while there are no
@@ -359,6 +377,29 @@ Out of scope:
   row), found through the first many-row input table the grid shows that is keyed alike;
   a grid row with nothing typed, or none keyed like it, shows a dash, and a price for other
   values is dimmed on every row.
+- **Charts.** A Chart plots its fields' values as the sheets hold them, the sample while
+  building and the quote in Preview, with what pricing them gave. An input column's value
+  is read as the server reads it, a number typed with a currency sign or separators being
+  that number; text that is not a number, a cell left blank and a value the sheets hide
+  (Shown when, below) are gaps. An output column's value is the last answer's, nothing
+  before the first answer and after a pricing fails, and the whole chart is dimmed while it
+  plots a price for other values, as an output cell is. Of one-row tables, each field is a
+  column, a point of the line or the area, or a slice of the pie, named by its label, in
+  the fields' order. Of many-row tables, each field is a series over the rows: while it
+  shows an input table, the rows typed into the input tables it shows, a row counting while
+  something the quote takes is typed in it, in their order, and an output table's values
+  those of the row in the answer keyed like each, as a Table's output columns are matched;
+  showing only output tables, the rows the first one's answer holds, another's matched by
+  key. Each row is named by its value in the column that labels the rows, as the sheets
+  show it (a priced value for an output column), or by its number while none does; a pie of
+  many rows is a slice per row of its first field. Each value is shown in its column's
+  format, in the tooltip and as a data label, and the value axis takes the format its
+  columns share, or a compact number when they differ. Columns, lines and areas stack while
+  `stacked` is set and run across while `orientation` is `horizontal`, the first row at the
+  top; the legend is drawn where `legend` says while there are two series or more, and for
+  a pie. A Chart with nothing to plot says "Nothing to chart yet". While building, a Chart
+  is laid out like any component; in Preview pointing at a column, a point or a slice names
+  it and its value.
 - **Preview.** The toolbar's Build over Preview switches the view between building and
   the sheets as an underwriter uses them: the same sheets at the same positions, their
   tabs only switching sheets, the components neither selected nor moved, the palette's
@@ -381,7 +422,8 @@ Out of scope:
   cleared. A quote that passes is priced as the sample is, on the pipeline open in the
   editor with the quote in the sample's place, read as a request is, so it prices as it
   would deployed, and every output column shows its value, a
-  Collection's its table's one row and a Table's the row keyed like each grid row, dimmed
+  Collection's its table's one row and a Table's the row keyed like each grid row, and every
+  Chart plots it, dimmed
   once the quote changes until Price again; a pricing that fails shows its reason in the
   toolbar. Clear, after a confirmation, empties the quote, its marks and its price, and an
   answer to a pricing still on its way is dropped, as one is once the view has left.
@@ -390,8 +432,8 @@ Out of scope:
 - **Shown when.** A sheet or a component with conditions shows only while they hold on the
   values typed into the sheets, the sample while building and the quote in Preview, and a
   component on a sheet that does not show does not show either.
-  - **A condition holds** while its column is in a one-row input table and on a component
-    that shows, and the value typed into it passes the test, read as the server types it:
+  - **A condition holds** while its column is in a one-row input table and on a Table or a
+    Collection that shows, and the value typed into it passes the test, read as the server types it:
     text without the spaces around it, compared exactly; a tick box ticked or not, one
     never touched unticked; a number read as the sample's numbers are (a currency sign,
     separators and spaces allowed) and compared as a number; a date as the day it names;
@@ -410,10 +452,13 @@ Out of scope:
     hidden sheet is ticked is hidden too, whatever the box holds, and the order of the
     sheets and components decides nothing.
   - **A quote is what the sheets show.** A value typed into an input column that is on
-    components, none of which shows, is left out of the quote, as if it had never been
-    typed: a row with nothing typed in it but such values is left out as an empty row is;
-    the index, which nothing is typed into, is never left out; and a column on no component
-    is not left out. The values are kept, not cleared: they stay in the sample and the
+    Tables or Collections, none of which shows, is left out of the quote, as if it had never
+    been typed: a row with nothing typed in it but such values is left out as an empty row
+    is; the index, which nothing is typed into, is never left out; and a column on no Table
+    or Collection is not left out. A Chart takes nothing typed, so the columns it plots
+    count for nothing here: a value only hidden components take is left out however a Chart
+    that shows plots it, and a condition on a column only a Chart plots never holds. The
+    values are kept, not cleared: they stay in the sample and the
     quote as typed, the sample saved with them, and are in the quote again once their
     column shows. The server leaves them out where it makes a quote of the form's values,
     so the sample priced live, the sample the Workbench Input's copy holds and the quote
@@ -432,9 +477,9 @@ Out of scope:
     component's conditions doing what they say: a condition that cannot hold as written,
     saying why; a value that is not one of its column's allowed values; and a sheet or
     component that nothing could show again once hidden, since each column its conditions
-    need is only on itself, on its own components or on components that cannot show
-    without it, as a tick box on the very sheet it shows is. None is refused: the form is
-    saved as it is.
+    need is on no Table or Collection, or only on itself, on its own components or on
+    components that cannot show without it, as a tick box on the very sheet it shows is.
+    None is refused: the form is saved as it is.
 - **Saved.** A successful save of the form adopts the file's new revision; the project
   save then fetches the tables afresh, so the Workbench Input's and Workbench Output's
   copies follow the schema, as after any fetch, and saves the pipeline with them. A save refused
@@ -714,6 +759,14 @@ Out of scope:
   the typed sample the pricing answers with, not the text in the grid: the server leaves
   empty rows out and numbers the index as the grid does, so the filled grid rows are its
   typed rows in order, and a key typed as "$1,000" matches an output row holding 1000.
+- **A Chart is a picture of the sheets.** A Chart plots the values the components are
+  given, the sample while building and the quote in Preview, with their price, rather than
+  values of its own, so it shows what was typed and what it priced at together, its rows
+  lined up as a Table's are and dimmed as its output cells are. Its fields are held and
+  lined up as a Table's are, by table and column id, so a column renamed, retyped or
+  removed reaches it as it reaches them, and its numbers take their columns' formats,
+  since how a column shows is the column's; a value axis shared by columns of different
+  formats can take none of them, so it shows compact numbers.
 - **What shows is what is priced.** A hidden value the pipeline still received would price
   what the underwriter switched off unless the pipeline repeated every condition, and a
   quote ticked, filled and unticked again would price differently from one never ticked.
@@ -729,6 +782,16 @@ Out of scope:
   whatever the order of the sheets and components, a chain of conditions (a sheet shown by
   a box on a sheet shown by another box) is followed without being written twice, and no
   value the underwriter cannot see decides what they see.
+- **A Chart takes nothing.** A quote holds what can be typed into the sheets that show, so
+  a column counts for Shown when only on the components it is typed into. Were a Chart's
+  columns to count, a Chart that plots a section's values would keep them in the quote
+  after the underwriter switched the section off, and a condition could hold on a box
+  nobody can tick.
+- **Drawn as Explore draws.** A Chart draws through the ECharts runtime Explore's charts
+  load, in SVG with their theme, decals and reduced motion, and only once a sheet shows a
+  Chart, so the editor pays nothing for charts until then; it builds its own options,
+  since it plots a sheet's values rather than a pivot's result. The runtime registers Pie
+  beside Bar and Line for it.
 - **Problems, not refusals.** A condition is written against the schema, which changes
   under it as columns are retyped, given other allowed values or their table moved between
   one row and many, so a condition that no longer fits is reported where it is, as a field
@@ -849,6 +912,8 @@ Out of scope:
   have no input snapshots.
 - [assistant](../assistant/high-level.md): the Workbench Input's and Workbench Output's node
   cards and the operations that refuse to author either.
+- [frontend-preview-explore](../frontend-preview-explore/high-level.md): a Chart draws
+  through the lazy chart runtime and the theme Explore's charts use.
 
 ## Failure model
 
@@ -890,6 +955,13 @@ Out of scope:
   rows 1 to 50, a Collection's columns 1 to 12) is refused at the field, which says the
   range. A component dropped outside the sheet's viewport is not added. Fit never takes
   the zoom below its minimum: a sheet too wide to fit at 25% fits at 25%.
+- A Chart's problems are refused nowhere: the form reads and saves with them, and the view
+  names each on the dashed frame while building. A field that is not a number or is an
+  index, a field whose rows do not line up with the first field's and a field gone from
+  the schema plot nothing; a column labelling the rows that does not line up, or is gone,
+  leaves them numbered; a pie of many rows plots its first field. A Chart that cannot be
+  drawn, its runtime failing to load or its options refused, says why in its place, and the
+  rest of the sheet is drawn as ever.
 - `POST /api/workbench/tables` answers 404 while the workbench is not enabled, the
   structured 422 for tables the Quote Input's rules refuse and FastAPI's 422 for a body
   that is not a form; it writes nothing. A pricing that fails for any reason, a pipeline

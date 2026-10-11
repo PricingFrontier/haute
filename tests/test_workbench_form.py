@@ -47,8 +47,8 @@ def column(name: str, type_: str = "str", **rest: Any) -> dict[str, Any]:
 
 
 # The test project's shape: one-row and many-row input tables, an index column, an output
-# table, a Collection and a Table, the Table shown while a condition holds, and a sample
-# typed into the Collection.
+# table, a Collection, a Table and a Chart, the Table shown while a condition holds, and a
+# sample typed into the Collection.
 ALWAYS: dict[str, Any] = {"match": "all", "conditions": []}
 FORM: dict[str, Any] = {
     "version": 1,
@@ -81,6 +81,7 @@ FORM: dict[str, Any] = {
                 "columns": [
                     column("layer", "int", key=True, index=True),
                     column("limit", "float"),
+                    column("layer_name"),
                 ],
             },
             {
@@ -140,6 +141,25 @@ FORM: dict[str, Any] = {
                     "gridlines": "all",
                     "striped": False,
                     "fixed_rows": True,
+                },
+                {
+                    "id": "w_limits",
+                    "type": "chart",
+                    "x": 760,
+                    "y": 16,
+                    "w": 480,
+                    "h": 280,
+                    "title": "Limits",
+                    "fields": [{"table": "t_layers", "column": "c_limit"}],
+                    "show_when": ALWAYS,
+                    # The layers' names label the rows, drawn as lines across, stacked, the
+                    # legend on the right and each value labelled.
+                    "category": {"table": "t_layers", "column": "c_layer_name"},
+                    "chart_type": "line",
+                    "orientation": "horizontal",
+                    "stacked": True,
+                    "legend": "right",
+                    "data_labels": True,
                 },
             ],
         }
@@ -202,11 +222,12 @@ def test_the_file_keeps_text_as_typed(tmp_path: Path) -> None:
 
 
 def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> None:
-    # A file written without the index flags, the columns' display, the Table's options, the
-    # sheet's and the Collection's show_when and the sample, as a builder that leaves defaults
-    # out would write it.
+    # A file written without the index flags, the columns' display, the Table's and the
+    # Chart's options, the sheet's and the Collection's show_when and the sample, as a builder
+    # that leaves defaults out would write it.
     display = ("help", "placeholder", "number_format", "decimal_places", "use_grouping")
     options = ("row_numbers", "density", "gridlines", "striped", "fixed_rows")
+    chart_options = ("category", "chart_type", "orientation", "stacked", "legend", "data_labels")
     sparse = json.loads(json.dumps(FORM))
     del sparse["sample"]
     for table in sparse["schema"]["tables"]:
@@ -217,6 +238,8 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
     sparse["schema"]["tables"][1]["columns"][0]["index"] = True
     for field in options:
         del sparse["pages"][0]["widgets"][1][field]
+    for field in chart_options:
+        del sparse["pages"][0]["widgets"][2][field]
     del sparse["pages"][0]["show_when"]
     del sparse["pages"][0]["widgets"][0]["show_when"]
     (tmp_path / "forms").mkdir()
@@ -225,7 +248,7 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
     spec = read_form_document(config(tmp_path)).spec
 
     assert spec.sample == {}
-    assert [c.index for c in spec.data_schema.tables[1].columns] == [True, False]
+    assert [c.index for c in spec.data_schema.tables[1].columns] == [True, False, False]
     written = json.loads(render_form(spec))
     assert written["sample"] == {}
     assert all("index" in c for t in written["schema"]["tables"] for c in t["columns"])
@@ -237,6 +260,17 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         "gridlines": "rows",
         "striped": True,
         "fixed_rows": False,
+    }
+    chart = written["pages"][0]["widgets"][2]
+    # Its rows numbered, drawn as upright columns, unstacked, the legend at the bottom and
+    # no data labels.
+    assert {field: chart[field] for field in chart_options} == {
+        "category": None,
+        "chart_type": "column",
+        "orientation": "vertical",
+        "stacked": False,
+        "legend": "bottom",
+        "data_labels": False,
     }
     # Always shown.
     assert written["pages"][0]["show_when"] == ALWAYS
@@ -253,6 +287,15 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         (lambda f: f["pages"][0]["widgets"][1].update(gridlines="dotted"), "gridlines"),
         # A Collection has none of a Table's options.
         (lambda f: f["pages"][0]["widgets"][0].update(striped=True), "striped"),
+        (lambda f: f["pages"][0]["widgets"][2].update(chart_type="bar"), "chart_type"),
+        (lambda f: f["pages"][0]["widgets"][2].update(legend="inside"), "legend"),
+        # A Chart has none of a Table's options, and a Table and a Collection none of a
+        # Chart's.
+        (lambda f: f["pages"][0]["widgets"][2].update(striped=True), "striped"),
+        (lambda f: f["pages"][0]["widgets"][1].update(chart_type="line"), "chart_type"),
+        (lambda f: f["pages"][0]["widgets"][0].update(legend="top"), "legend"),
+        # What labels a Chart's rows is held as a field is: a table and a column.
+        (lambda f: f["pages"][0]["widgets"][2].update(category={"table": "t_layers"}), "category"),
         (lambda f: f["schema"]["tables"][0]["columns"][0].update(type="money"), "type"),
         (
             lambda f: f["schema"]["tables"][0]["columns"][1].update(number_format="yen"),
@@ -263,7 +306,7 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
             "decimal_places",
         ),
         (lambda f: f.update(pages=[]), "pages"),
-        (lambda f: f["pages"][0]["widgets"][0].update(type="chart"), "type"),
+        (lambda f: f["pages"][0]["widgets"][0].update(type="slider"), "type"),
         (lambda f: f["pages"][0]["show_when"].update(match="none"), "match"),
         (
             lambda f: f["pages"][0]["widgets"][1]["show_when"]["conditions"][0].update(op="has"),

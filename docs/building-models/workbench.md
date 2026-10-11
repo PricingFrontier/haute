@@ -2,8 +2,9 @@
 
 The workbench is where a pricing team lays out the quote an underwriter keys in: the
 **schema** of typed tables the pipeline reads, and the **sheets** of Tables and Collections
-that show those tables' columns. It is part of Haute, switched on per project, and what it
-holds lives in a file in the project, `forms/form.json`, versioned beside the pipeline.
+that show those tables' columns and Charts that plot them. It is part of Haute, switched
+on per project, and what it holds lives in a file in the project, `forms/form.json`,
+versioned beside the pipeline.
 
 !!! note "Enabling it"
     Add the table to `haute.toml` (`haute init --workbench` writes it for a new project):
@@ -78,29 +79,38 @@ the pipeline is saved with them in the same save. Until then it is on the sheets
 ## Sheets
 
 A sheet is a canvas on a snap grid that fills its width and grows to hold what is on it.
-The palette on the left offers two components; drag one onto the sheet (a ghost shows
+The palette on the left offers three components; drag one onto the sheet (a ghost shows
 where it lands):
 
 - A **Table** shows columns of many-row tables as a grid of at least its number of rows.
 - A **Collection** shows columns of one-row tables as boxes with their labels above, its
   number of boxes across.
+- A **Chart** plots number columns, typed or priced. Of one-row tables it gives a point per
+  field; of many-row tables, a series per field over the rows, each row labelled by a
+  column you choose or numbered.
 
 Select a component to open its properties on the right: its title, when it shows (see
 [Showing sheets and components conditionally](#showing-sheets-and-components-conditionally)), its layout (a Table's
 rows and whether they are **fixed**, with no Add row or delete, or a Collection's columns
 across), a Table's **look** (compact or comfortable rows; gridlines between the rows, a full
 grid or none; row numbers; striped rows), the **order** of the fields it shows (drag, or
-Alt+Up and Alt+Down), and its **fields**, ticked from the schema tables of its kind. A grid holds
-one kind of row, so once a Table shows a field, tables whose rows do not line up with it
-(keyed differently) are greyed out; an input table and an output table with the same key
-line up, so each row can show its premium. Output columns are shaded.
+Alt+Up and Alt+Down), and its **fields**, ticked from the schema tables of its kind. A
+Chart's settings are its **Type** (Column, Line, Area or Pie), **Rows** (what labels the
+rows of many-row tables, or Row number), its **Legend**, and whether it is **Stacked**,
+**Horizontal** and shows **Data labels**; its fields come from any table, number columns
+other than an index. A grid holds one kind of row, so once a Table or a Chart shows a
+field, tables whose rows do not line up with it (keyed differently) are greyed out; an
+input table and an output table with the same key line up, so each row can show its
+premium. Output columns are shaded.
 
 Drag a component to move it and any of its eight handles to resize it; everything snaps to
 the grid. With a component selected (click it, or Tab to it), the arrow keys nudge it
 (Shift for a pixel), Ctrl+D duplicates it, Delete or Backspace removes it and Escape
 deselects it; Ctrl+Z and Ctrl+Y undo and redo. Ctrl+1 fits the sheet to the window, and
 the zoom runs from 25% to 200%. A component with a problem — no fields, a column no longer in the schema, a table
-of the other kind — gets a dashed frame that names the problem.
+of the other kind, a Chart's field that is not a number or is an index, tables whose rows
+do not line up, a pie of many rows with more than one field — gets a dashed frame that
+names the problem.
 
 Sheets have tabs along the top: **+** adds one, double-click (or F2) renames one, dragging
 a tab onto another moves its sheet there (or press Alt+Left and Alt+Right on a tab), the
@@ -137,7 +147,10 @@ hidden component is not drawn; its space stays empty, since components are place
 A quote is what the sheets show. Values typed into hidden cells are left out of what is
 priced, as if they had never been typed, for the sample priced live (and the Workbench
 Input's copy of it) and for the quote in Preview, and a hidden required cell never stops
-**Price**. The values are kept, so ticking the cover again brings them back. A condition
+**Price**. The values are kept, so ticking the cover again brings them back. A Chart takes
+nothing typed, so a column only a Chart plots never hides and a condition on it never
+holds, and a value only a hidden component takes is left out even when a Chart that shows
+plots it. A condition
 that cannot work (its column gone or retyped, a missing value) and a sheet nothing could
 show again once hidden (its tick box only on that very sheet) are named on the sheet's tab
 or the component's dashed frame.
@@ -158,7 +171,8 @@ pauses, Haute prices it on the pipeline open in the editor, as it stands, saved 
 a Collection's output columns show what the pipeline gave them, dimmed while a newer
 answer is on its way. When pricing fails — no Workbench Output on the pipeline, a table
 with nothing connected, a value that does not fit its column — the toolbar says why. A
-Table's output columns show the row in the answer keyed like each grid row.
+Table's output columns show the row in the answer keyed like each grid row. A Chart plots
+the sample, with what pricing it gave.
 
 ## Preview
 
@@ -172,6 +186,7 @@ range, a value that is not one of the allowed ones. A cell that breaks a rule is
 naming the problem when you hover, and the toolbar says how many need attention; the marks
 follow the cells as you fix them. A quote that passes is priced on the pipeline open in the
 editor, and every output column shows its value: a Collection's its table's one row, and a
-Table's the row keyed like each grid row. The values dim when you change the quote, until
+Table's the row keyed like each grid row, and every Chart plots the quote. The values and
+the Charts dim when you change the quote, until
 you press **Price** again, and the quote is priced exactly as a deployed pipeline would price
 it. **Clear** empties the quote, after asking. Ctrl+S still saves the project in Preview.

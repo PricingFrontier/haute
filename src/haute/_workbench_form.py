@@ -2,10 +2,10 @@
 (specs/workbench).
 
 ``forms/form.json`` is the file the workbench edits: the schema of typed tables the quote is
-keyed into, the sheets of Tables and Collections that show those tables' columns, and the
-sample quote typed into them while building. It is one JSON document with one spelling:
-every field is written, defaults included, and an unknown field is refused by name. Nothing
-migrates an older spelling.
+keyed into, the sheets of Tables and Collections that show those tables' columns and of
+Charts that plot them, and the sample quote typed into them while building. It is one JSON
+document with one spelling: every field is written, defaults included, and an unknown
+field is refused by name. Nothing migrates an older spelling.
 
 A file that does not exist is the blank form that has never been saved. A file's revision
 is its content hash, which a save quotes so a form that changed on disk since it was read
@@ -40,6 +40,12 @@ TableDensity = Literal["compact", "comfortable"]
 #: The lines a Table draws: between its rows and before each output column, between every
 #: column too, or none.
 TableGridlines = Literal["rows", "all", "none"]
+
+#: How a Chart draws its values: as columns, a line, a filled area, or the slices of a pie.
+ChartType = Literal["column", "line", "area", "pie"]
+
+#: Where a Chart's legend sits, or none.
+ChartLegend = Literal["bottom", "top", "left", "right", "none"]
 
 #: What a condition tests its column's value for: a tick box ticked or not; any other
 #: column filled or empty, or equal to a value or not; a Text or number column one of some
@@ -140,7 +146,26 @@ class CollectionWidget(_Placed):
     columns: int = Field(default=3, ge=1, le=12)
 
 
-Widget = Annotated[TableInputWidget | CollectionWidget, Field(discriminator="type")]
+class ChartWidget(_Placed):
+    """A Chart: number columns plotted, of one-row tables a point each, or of many-row tables
+    whose rows line up a series each over their rows. It takes nothing typed."""
+
+    type: Literal["chart"]
+    title: str = ""
+    fields: list[FieldRef] = Field(default_factory=list)
+    show_when: ShowWhen = Field(default_factory=ShowWhen)
+    #: What names the rows of its many-row tables, as a field is named; None numbers them.
+    category: FieldRef | None = None
+    # How it draws: by default columns, upright, unstacked, the legend at the bottom and no
+    # data labels.
+    chart_type: ChartType = "column"
+    orientation: Literal["vertical", "horizontal"] = "vertical"
+    stacked: bool = False
+    legend: ChartLegend = "bottom"
+    data_labels: bool = False
+
+
+Widget = Annotated[TableInputWidget | CollectionWidget | ChartWidget, Field(discriminator="type")]
 
 
 class Page(_Strict):

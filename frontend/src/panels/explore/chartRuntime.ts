@@ -1,5 +1,5 @@
 import * as echarts from "echarts/core"
-import { BarChart, LineChart } from "echarts/charts"
+import { BarChart, LineChart, PieChart } from "echarts/charts"
 import {
   AriaComponent,
   DataZoomComponent,
@@ -13,6 +13,8 @@ import { SVGRenderer } from "echarts/renderers"
 echarts.use([
   BarChart,
   LineChart,
+  // The workbench's Chart draws pies; Explore's charts draw none.
+  PieChart,
   GridComponent,
   TooltipComponent,
   LegendComponent,
@@ -22,8 +24,11 @@ echarts.use([
   SVGRenderer,
 ])
 
+/** How a new option joins a chart's: merged, the component types listed replaced whole. */
+export type ChartOptionSettings = { replaceMerge?: string[] }
+
 export type ComboChartInstance = {
-  setOption(option: Record<string, unknown>): void
+  setOption(option: Record<string, unknown>, settings?: ChartOptionSettings): void
   resize(): void
   dispose(): void
   getDataURL(): string
@@ -32,8 +37,9 @@ export type ComboChartInstance = {
 export function createComboChart(element: HTMLElement): ComboChartInstance {
   const instance = echarts.init(element, undefined, { renderer: "svg" })
   return {
-    setOption(option) {
-      instance.setOption(option)
+    setOption(option, settings) {
+      if (settings === undefined) instance.setOption(option)
+      else instance.setOption(option, settings)
     },
     resize() {
       instance.resize()

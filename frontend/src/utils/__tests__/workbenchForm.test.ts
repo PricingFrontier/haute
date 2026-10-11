@@ -4,13 +4,15 @@
  * pipeline's tables.
  */
 import { describe, expect, it } from "vitest"
-import type { Condition, FormSpec, SchemaColumn, SchemaTable, ShowWhen } from "../../api/types"
+import type { ChartWidget, Condition, FieldRef, FormSchema, FormSpec, SchemaColumn, SchemaTable, ShowWhen } from "../../api/types"
 import {
   addPage,
   addSchemaColumn,
   addSchemaTable,
   addWidget,
   changeSchemaColumnType,
+  CHART_OPTIONS,
+  chartGrain,
   conditionText,
   conditionUses,
   createIndexColumn,
@@ -22,10 +24,13 @@ import {
   fieldColumn,
   fieldUses,
   findWidget,
+  labelColumns,
+  linedUpOutputs,
   moveField,
   movePage,
   moveSchemaColumn,
   pageProblems,
+  plottable,
   pricingBasis,
   readableName,
   removePage,
@@ -394,6 +399,31 @@ describe("what the sheets show", () => {
     expect(findWidget(spec, grid.id)).toBeNull()
   })
 
+  it("creates a Chart with its own options, which only a Chart takes, and duplicates it with them", () => {
+    const chart = createWidget("chart", { x: 0, y: 0, w: 480, h: 280 })
+    const grid = createWidget("tableInput", { x: 0, y: 320, w: 720, h: 200 })
+    const boxes = createWidget("collection", { x: 0, y: 560, w: 720, h: 120 })
+    // Its rows numbered, of columns, upright, unstacked, its legend at the bottom and no data labels.
+    expect(CHART_OPTIONS).toEqual({ category: null, chart_type: "column", orientation: "vertical", stacked: false, legend: "bottom", data_labels: false })
+    expect(chart).toMatchObject({ type: "chart", title: "", fields: [], ...CHART_OPTIONS })
+    expect(Object.keys(chart)).toEqual(["id", "x", "y", "w", "h", "type", "title", "fields", "show_when", "category", "chart_type", "orientation", "stacked", "legend", "data_labels"])
+    expect(chart).not.toHaveProperty("rows")
+    expect(chart).not.toHaveProperty("density")
+    expect(chart).not.toHaveProperty("columns")
+
+    let spec = [chart, grid, boxes].reduce((current, widget) => addWidget(current, "p", widget), blank())
+    const options = { category: { table: "t", column: "c" }, chart_type: "pie", orientation: "horizontal", stacked: true, legend: "right", data_labels: true } as const
+    spec = updateWidget(spec, chart.id, { title: "Premiums", ...options })
+    expect(findWidget(spec, chart.id)?.widget).toMatchObject({ title: "Premiums", ...options })
+    expect(() => updateWidget(spec, grid.id, { chart_type: "line" })).toThrow("Only a Chart has chart_type")
+    expect(() => updateWidget(spec, boxes.id, { chart_type: "line" })).toThrow("Only a Chart has chart_type")
+    expect(() => updateWidget(spec, chart.id, { rows: 2 })).toThrow("Only a Table has rows")
+    expect(() => updateWidget(spec, chart.id, { columns: 2 })).toThrow("Only a Collection has columns")
+
+    const copied = duplicateWidget(spec, chart.id)
+    expect(findWidget(copied.spec, copied.id)).toMatchObject({ index: 1, widget: { type: "chart", title: "Premiums", x: 16, y: 16, ...options } })
+  })
+
   it("shows a column in a component, stops showing it, and moves fields in order", () => {
     let spec = sheet()
     spec = toggleField(spec, "w_boxes", { table: "policy", column: "policy.state" })
@@ -557,7 +587,15 @@ describe("when sheets and components show", () => {
       'Sheet "BI" waits on limit, which is only on components that hide with it, so it could not show again once hidden',
     ])
     expect(pageProblems(setPageShowWhen(spec, "p_bi", { match: "all", conditions: [{ table: "policy", column: "policy.extra", op: "filled", values: [] }] })).map((p) => p.message)).toEqual([
-      'Sheet "BI" waits on extra, which is on no component',
+      'Sheet "BI" waits on extra, which is on no Table or Collection',
+    ])
+    // A Chart only plots, so a column only a Chart plots is on no Table or Collection either.
+    const plotted = addWidget(changeSchemaColumnType(spec, "policy", "policy.extra", "float"), "p", {
+      ...createWidget("chart", { x: 0, y: 240, w: 480, h: 280 }),
+      fields: [{ table: "policy", column: "policy.extra" }],
+    })
+    expect(pageProblems(setPageShowWhen(plotted, "p_bi", { match: "all", conditions: [{ table: "policy", column: "policy.extra", op: "filled", values: [] }] })).map((p) => p.message)).toEqual([
+      'Sheet "BI" waits on extra, which is on no Table or Collection',
     ])
   })
 
@@ -580,5 +618,170 @@ describe("when sheets and components show", () => {
     const spec = covered()
     expect(pricingBasis(setPageShowWhen(spec, "p_bi", always()))).not.toBe(pricingBasis(spec))
     expect(pricingBasis(updateWidget(spec, "w_bi", { x: 100 }))).toBe(pricingBasis(spec))
+  })
+})
+
+describe("charts", () => {
+  /**
+   * A one-row policy, equipment typed in many rows numbered by an index and keyed by item,
+   * premiums priced for each item, and claims keyed otherwise.
+   */
+  const schema = (): FormSchema => ({
+    tables: [
+      table("policy", "policy", {
+        columns: [
+          column("policy.si", "sum_insured", { type: "float" }),
+          column("policy.excess", "excess", { type: "int" }),
+          column("policy.state", "state"),
+        ],
+      }),
+      table("equipment", "equipment", {
+        rows: "many",
+        columns: [
+          column("equipment.row", "row_number", { type: "int", index: true }),
+          column("equipment.item", "item", { key: true, label: "Item" }),
+          column("equipment.value", "value", { type: "float" }),
+        ],
+      }),
+      table("premiums", "premiums", {
+        role: "output",
+        rows: "many",
+        columns: [column("premiums.item", "item", { key: true }), column("premiums.premium", "premium", { type: "float" })],
+      }),
+      table("claims", "claims", {
+        rows: "many",
+        columns: [column("claims.claim", "claim", { key: true }), column("claims.paid", "paid", { type: "float" })],
+      }),
+    ],
+  })
+  const ref = (tableId: string, columnId: string): FieldRef => ({ table: tableId, column: columnId })
+  const chart = (fields: FieldRef[], options: Partial<ChartWidget> = {}): ChartWidget => ({
+    id: "w_chart",
+    type: "chart",
+    x: 0,
+    y: 0,
+    w: 480,
+    h: 280,
+    title: "Premiums",
+    fields,
+    show_when: { match: "all", conditions: [] },
+    ...CHART_OPTIONS,
+    ...options,
+  })
+  /** The schema with one sheet holding `widget`. */
+  const charted = (widget: ChartWidget): FormSpec => ({ ...blank(), schema: schema(), pages: [{ ...blank().pages[0], widgets: [widget] }] })
+  const problems = (widget: ChartWidget) => widgetProblems(charted(widget)).map((problem) => problem.message)
+  const category = (spec: FormSpec) => {
+    const found = findWidget(spec, "w_chart")?.widget
+    return found?.type === "chart" ? found.category : undefined
+  }
+
+  it("counts the column labelling a Chart's rows as one it shows, and numbers the rows again once it is removed", () => {
+    // Plotting premiums, its rows labelled by equipment's items.
+    const spec = charted(chart([ref("premiums", "premiums.premium")], { category: ref("equipment", "equipment.item") }))
+
+    expect(fieldUses(spec, "equipment", "equipment.item").map((w) => w.id)).toEqual(["w_chart"])
+    expect(fieldUses(spec, "equipment").map((w) => w.id)).toEqual(["w_chart"])
+    expect(fieldUses(spec, "equipment", "equipment.value")).toEqual([])
+
+    expect(category(removeSchemaColumn(spec, "equipment", "equipment.value"))).toEqual(ref("equipment", "equipment.item"))
+    expect(category(removeSchemaColumn(spec, "equipment", "equipment.item"))).toBeNull()
+    expect(category(removeSchemaTable(spec, "equipment"))).toBeNull()
+  })
+
+  it("takes a Chart's rows from its first field's table, else from the column labelling them", () => {
+    const spec = charted(chart([]))
+
+    expect(chartGrain(spec, chart([ref("equipment", "equipment.value")]))).toBe("many:item")
+    expect(chartGrain(spec, chart([ref("policy", "policy.si")], { category: ref("equipment", "equipment.item") }))).toBe("one")
+    expect(chartGrain(spec, chart([], { category: ref("premiums", "premiums.item") }))).toBe("many:item")
+    expect(chartGrain(spec, chart([ref("gone", "gone.x"), ref("claims", "claims.paid")]))).toBe("many:claim")
+    expect(chartGrain(spec, chart([]))).toBeNull()
+  })
+
+  it("plots number columns other than the index", () => {
+    const types: SchemaColumn["type"][] = ["int", "float", "str", "bool", "date"]
+    expect(types.map((type) => plottable(column("a", "a", { type })))).toEqual([true, true, false, false, false])
+    expect(plottable(column("a", "row_number", { type: "int", index: true }))).toBe(false)
+  })
+
+  it("labels a many-row Chart's rows by the columns of the tables keyed alike, an output's included, but never the index", () => {
+    const spec = charted(chart([]))
+    const labels = (widget: ChartWidget) =>
+      labelColumns(spec, widget).map(({ table: shown, columns }) => [shown.id, columns.map((c) => c.name)])
+
+    expect(labels(chart([ref("equipment", "equipment.value")]))).toEqual([
+      ["equipment", ["item", "value"]],
+      ["premiums", ["item", "premium"]],
+    ])
+    expect(labels(chart([ref("policy", "policy.si")]))).toEqual([])
+    expect(labels(chart([]))).toEqual([])
+  })
+
+  it("says what stops a Chart plotting what it should", () => {
+    expect(widgetName(chart([], { title: "" }))).toBe("A Chart")
+    expect(problems(chart([]))).toEqual(['Chart "Premiums" shows no fields'])
+    expect(problems(chart([ref("policy", "policy.si"), ref("policy", "policy.gone")]))).toEqual([
+      'Chart "Premiums" shows a column that is no longer in the schema',
+    ])
+    expect(problems(chart([ref("policy", "policy.state")]))).toEqual(['Chart "Premiums" plots State, which is not a number'])
+    expect(problems(chart([ref("equipment", "equipment.item")]))).toEqual(['Chart "Premiums" plots Item, which is not a number'])
+    expect(problems(chart([ref("equipment", "equipment.row")]))).toEqual(['Chart "Premiums" plots Row number, which numbers the rows'])
+    expect(problems(chart([ref("equipment", "equipment.value")], { category: ref("equipment", "equipment.gone") }))).toEqual([
+      'Chart "Premiums" labels its rows by a column that is no longer in the schema',
+    ])
+    expect(problems(chart([ref("equipment", "equipment.value"), ref("claims", "claims.paid")]))).toEqual([
+      'Chart "Premiums" shows tables whose rows do not line up',
+    ])
+    expect(problems(chart([ref("equipment", "equipment.value")], { category: ref("claims", "claims.claim") }))).toEqual([
+      'Chart "Premiums" shows tables whose rows do not line up',
+    ])
+    expect(problems(chart([ref("equipment", "equipment.value"), ref("premiums", "premiums.premium")], { chart_type: "pie" }))).toEqual([
+      'Chart "Premiums" is a pie of many rows, so it plots only its first field',
+    ])
+  })
+
+  it("finds nothing wrong with a Chart of one-row tables, or of input and output tables keyed alike", () => {
+    expect(problems(chart([ref("policy", "policy.si"), ref("policy", "policy.excess")]))).toEqual([])
+    expect(problems(chart([ref("policy", "policy.si"), ref("policy", "policy.excess")], { chart_type: "pie" }))).toEqual([])
+    expect(
+      problems(chart([ref("equipment", "equipment.value"), ref("premiums", "premiums.premium")], { category: ref("premiums", "premiums.item") })),
+    ).toEqual([])
+  })
+})
+
+describe("output tables lined up with a grid's rows", () => {
+  // Ids differ from names: the grid holds rows by id, the pricing answers by name.
+  const claims = table("t_claims", "claims", { rows: "many", columns: [column("c_claim", "claim", { key: true })] })
+  const equipment = table("t_equipment", "equipment", {
+    rows: "many",
+    columns: [column("c_item", "item", { key: true }), column("c_value", "value", { type: "float" })],
+  })
+  const premiums = table("t_premiums", "premiums", { role: "output", rows: "many", columns: [column("c_p_item", "item", { key: true })] })
+  const fees = table("t_fees", "fees", { role: "output", rows: "many", columns: [column("c_fee", "fee", { key: true })] })
+  const schema: FormSchema = { tables: [claims, equipment, premiums, fees] }
+  const price = (typed: Record<string, unknown>[]) => ({
+    sample: { equipment: typed },
+    tables: {
+      premiums: [{ item: "B", premium: 20 }, { item: "A", premium: 10 }],
+      fees: [{ fee: "x" }],
+    },
+  })
+
+  it("lines each many-row output up with the grid's rows through the first input table keyed alike", () => {
+    const held: Record<string, Record<string, string>[]> = { t_equipment: [{ c_item: "A", c_value: "1" }, {}, { c_item: "B" }] }
+    const lined = linedUpOutputs([claims, equipment], [premiums, fees], held, 4, price([{ item: "A", value: 1 }, { item: "B", value: null }]), schema)
+
+    expect([...lined.keys()]).toEqual(["t_premiums"])
+    expect(lined.get("t_premiums")).toEqual([{ item: "A", premium: 10 }, undefined, { item: "B", premium: 20 }, undefined])
+    expect(linedUpOutputs([claims, equipment], [premiums], held, 4, null, schema)).toEqual(new Map())
+  })
+
+  it("reads the grid's rows as the quote does: a value in a column it leaves out fills no row", () => {
+    const quoted: FormSchema = { tables: [{ ...equipment, columns: equipment.columns.filter((c) => c.id !== "c_value") }, premiums] }
+    const held: Record<string, Record<string, string>[]> = { t_equipment: [{ c_value: "5" }, { c_item: "A" }] }
+    const lined = linedUpOutputs([equipment], [premiums], held, 2, price([{ item: "A" }]), quoted)
+
+    expect(lined.get("t_premiums")).toEqual([undefined, { item: "A", premium: 10 }])
   })
 })

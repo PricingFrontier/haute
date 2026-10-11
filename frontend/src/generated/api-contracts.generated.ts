@@ -2439,7 +2439,7 @@ export interface Page {
   id: string;
   show_when: ShowWhen;
   title: string;
-  widgets: (TableInputWidget | CollectionWidget)[];
+  widgets: (TableInputWidget | CollectionWidget | ChartWidget)[];
 }
 /**
  * When a sheet or a widget shows: always, without conditions; else while all of them
@@ -2512,6 +2512,27 @@ export interface CollectionWidget {
   show_when: ShowWhen;
   title: string;
   type: 'collection';
+  w: number;
+  x: number;
+  y: number;
+}
+/**
+ * A Chart: number columns plotted, of one-row tables a point each, or of many-row tables
+ * whose rows line up a series each over their rows. It takes nothing typed.
+ */
+export interface ChartWidget {
+  category: FieldRef | null;
+  chart_type: 'column' | 'line' | 'area' | 'pie';
+  data_labels: boolean;
+  fields: FieldRef[];
+  h: number;
+  id: string;
+  legend: 'bottom' | 'top' | 'left' | 'right' | 'none';
+  orientation: 'vertical' | 'horizontal';
+  show_when: ShowWhen;
+  stacked: boolean;
+  title: string;
+  type: 'chart';
   w: number;
   x: number;
   y: number;

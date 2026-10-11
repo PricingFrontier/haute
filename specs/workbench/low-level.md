@@ -5,9 +5,9 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/_workbench_config.py` | The `[workbench]` table of `haute.toml`: `WORKBENCH_TOML_KEYS` (`enabled`, `form`), `DEFAULT_FORM_PATH` (`forms/form.json`), `WorkbenchError` (the base of every workbench problem the analyst fixes in the project), `WorkbenchConfigError`, the frozen `WorkbenchConfig` record (`enabled`, `form` as `haute.toml` names it, `project_root`, and `form_path`) and `read_workbench_config` (the table read and checked from the project root's `haute.toml`: disabled without the file or the table). |
-| `src/haute/_workbench_form.py` | The form file's canonical shape, its reading and its revision: the pydantic models `FormSpec`, `FormSchema`, `SchemaTable`, `SchemaColumn`, `Page`, `TableInputWidget`, `CollectionWidget`, `FieldRef`, `ShowWhen` and `Condition` (every field written, unknown fields refused), `ConditionTest` (a condition's twelve tests), `WorkbenchFormError`, `FormDocument` (a form with its file's revision), `blank_form` (one blank sheet, named after the project), `render_form` (the file's text), `form_revision` (a file's revision: the content hash of its bytes), `write_form` (an atomic write, answering the written file's revision), `form_file_revision` (the file's revision as it is now, None when the file does not exist) and `read_form_document` (the file's bytes read once, hashed and checked, the blank form with no revision when the file does not exist, naming the file and what is wrong otherwise). |
+| `src/haute/_workbench_form.py` | The form file's canonical shape, its reading and its revision: the pydantic models `FormSpec`, `FormSchema`, `SchemaTable`, `SchemaColumn`, `Page`, `TableInputWidget`, `CollectionWidget`, `ChartWidget`, `FieldRef`, `ShowWhen` and `Condition` (every field written, unknown fields refused), `ConditionTest` (a condition's twelve tests), `ChartType` and `ChartLegend` (how a Chart draws, and where its legend sits), `WorkbenchFormError`, `FormDocument` (a form with its file's revision), `blank_form` (one blank sheet, named after the project), `render_form` (the file's text), `form_revision` (a file's revision: the content hash of its bytes), `write_form` (an atomic write, answering the written file's revision), `form_file_revision` (the file's revision as it is now, None when the file does not exist) and `read_form_document` (the file's bytes read once, hashed and checked, the blank form with no revision when the file does not exist, naming the file and what is wrong otherwise). |
 | `src/haute/_workbench_tables.py` | The workbench's tables as the pipeline holds them: the models `WorkbenchTable` (`name`, `rows`, `columns`; `one_row`, `frame_schema`, `quote_dtype`) and `WorkbenchColumn` (`name`, `type`; `dtype`), `COLUMN_DTYPES`, `WorkbenchTablesError`, `parse_workbench_tables` (a node's `tables` config read strictly, naming the spot that is not as the workbench writes it), `check_tables` (every name held to `is_frame_label`, unique across tables whatever its case and within a table), `port_tables` (the tables with a column), `quote_schema` (the schema of one quote holding tables), `input_tables` and `output_tables` (the schema's tables of the role, in schema order, checked), `sample_quote` (the sample typed while building as one request holds it, each value as its column's type holds it, the values the sheets hide left out) and `workbench_tables`, which gathers the three as a `WorkbenchTables`. |
-| `src/haute/_workbench_visibility.py` | Which sheets and components show for values typed into the sheets, and so which input columns a quote leaves out: `Visibility` (`pages` and `widgets`, the ids of the sheets and components that show, and `hidden`, the input columns left out, each a table id and a column id), `visibility(spec, rows)` (everything shown, then anything whose conditions fail hidden, round after round, until nothing more hides) and `condition_fits` (whether a condition can hold as written: its column in a one-row input table, a test its type takes, the values its test takes, each one its column could hold). `frontend/src/utils/sheetVisibility.ts` applies the same rules in the view, both held to `frontend/src/utils/__tests__/fixtures/sheetVisibility.json`. |
+| `src/haute/_workbench_visibility.py` | Which sheets and components show for values typed into the sheets, and so which input columns a quote leaves out: `Visibility` (`pages` and `widgets`, the ids of the sheets and components that show, and `hidden`, the input columns left out, each a table id and a column id), `visibility(spec, rows)` (everything shown, then anything whose conditions fail hidden, round after round, until nothing more hides, the fields of Tables and Collections alone counting as on a component, through `_entered`, since a Chart takes nothing typed) and `condition_fits` (whether a condition can hold as written: its column in a one-row input table, a test its type takes, the values its test takes, each one its column could hold). `frontend/src/utils/sheetVisibility.ts` applies the same rules in the view, both held to `frontend/src/utils/__tests__/fixtures/sheetVisibility.json`. |
 | `src/haute/_workbench_input.py` | The Workbench Input's reading: `WorkbenchInputError`, `workbench_input_tables` (its ports from its config: the tables with a column, none refused saying what to add), `workbench_table_labels`, `read_quote` (each table's frame from a quote, typed as declared, a part that is not of its shape or a value that is not of its type refused naming the spot), `null_quote` (one quote with nothing filled in, one row of nulls per table), `workbench_table_frames` (its frames without a request: the sample read whole through `read_quote` as a request is, a many-row table it does not hold no rows and a one-row table its row of nulls, the `null_quote` while there is no sample, then cut to the demanded ports and columns) and `workbench_request_frames` (a deployed request's frames: its one quote, from the records as sent, read through `read_quote`). |
 | `src/haute/_workbench_output.py` | The Workbench Output's tables and response: `WorkbenchOutputError`, `workbench_output_tables` (its tables read from its config through `parse_workbench_tables`, the ports those with a column, none refused saying what to add), `workbench_output_mapping` (its mapping read from its config, checked against the tables), `WorkbenchOutputTables` (its result: its tables' frames by name, carrying the tables they fill), `fill_workbench_tables` (the tables filled from the frames by port through the mapping, each column checked against and cast to its declared type, a one-row table checked for its one row when it is read), `workbench_response` (the response for one quote: each table under its name, built from the tables as a quote holds them) and `as_response` (a response node's result as the frame a request is answered with). |
 | `src/haute/routes/workbench.py` | `router`, the workbench routes under `/api/workbench`: `workbench_status` (`GET /api/workbench`), `get_workbench_tables` (`GET /api/workbench/tables`) and `post_workbench_tables` (`POST /api/workbench/tables`, the same of a form in the request), both through `_tables_response` (the tables and the response tables checked as the pipeline takes them, a `WorkbenchTablesError` answered as the public contract 422), `get_workbench_form` (`GET /api/workbench/form`, the form with its revision) and `put_workbench_form` (`PUT /api/workbench/form`, through `_save_form`, which raises `StaleDocumentRevisionError` when the file's revision is not the base revision quoted, answered as the pipeline save answers it, else, under `save_lock`, writes the form and captures the written file on the save ledger through the pipeline save's capture, answering the form, its revision and the capture's commit, warnings and identity flag); each reads `haute.toml` through `_enabled_config` (404 while the workbench is not enabled), and all but the status the form, from the working directory on every request, off the event loop. |
@@ -25,18 +25,21 @@
 | `frontend/src/stores/useWorkbenchPreviewStore.ts` | `useWorkbenchPreviewStore`, Preview's quote, apart from the sample and never saved or undone: `quote` (rows by table id, as typed), `checked` (Price has been pressed, so the cells that break a rule are marked), `price` (a `SamplePrice` for the quote), `error` (why there is no price, as the toolbar says it) and `pricing`; `setCell` (`withCell`), `setRows`, `clear`, and `priceQuote`, which does nothing while a pricing runs, the form is not read or the view has given no pricer, and otherwise reads the quote through `quotedSchema` of the schema and the columns `sheetVisibility` hides for it: refuses a quote with nothing typed in those tables (`quoteFilled`; `checked` set, `error` "Type the quote first"), else checks `quoteProblems` (any: `checked` set, `error` "N cells need attention", nothing sent) and prices through `priceForm` with the quote in the sample's place, keeping the price with `valuesBasis` of that schema and the quote, or "Pricing failed: …", unless Clear or a change of pricer came first, when the answer is dropped. |
 | `frontend/src/workbench/priceSample.ts` | `priceSample(graph, workbench, source)`: the document's top-level nodes patched through `WORKBENCH_COPY_PATCHES` with the form's tables, sample and response tables, the Workbench Output found (none: an error naming what to add), and each of its ports (`workbenchTablePorts`) previewed through `previewNode` with `portLabel`, a failure rejecting with the server's reason or the preview's error; the document itself untouched. |
 | `frontend/src/utils/sheetGeometry.ts` | Placing components on a sheet, in unzoomed pixels: `GRID` (8), `snap`, `moveRect` (snapped, kept off the top and left edges), `resizeRect` (by a `Handle`, the opposite edges kept, no smaller than a minimum), `placeAt`, `contentRight`, `sheetWidth` (the viewport's at the zoom, or wider to hold the components plus `SHEET_EDGE`, 32), `sheetHeight` (at least `MIN_SHEET_HEIGHT`, 800, with 240px of room below the lowest component), `fitZoom` (in steps of 5%, never past 100%), `SHEET_PADDING` (32) and `HANDLES`. |
-| `frontend/src/utils/workbenchForm.ts` | Pure operations on the form, each returning a new form: `newId`, `uniqueName`, `readableName` and `allWidgets`; the sheets, `createPage` (named in turn, always shown), `addPage`, `renamePage`, `movePage` (to another place in the tabs' order), `setPageShowWhen` and `removePage` (never the last); the components, `findWidget`, `createWidget` (720 wide, a Table 200 high with 3 rows and `TABLE_OPTIONS`, numbered, compact, lined between rows, striped and not fixed, or a Collection 120 high with 3 columns, no fields, always shown, its keys in the file's order; a Table no smaller than 240 by 96, a Collection than 160 by 72, `widgetKinds.ts`), `addWidget`, `updateWidget` (a `WidgetPatch`, a Table's `rows` or options refused on a Collection and `columns` on a Table), `removeWidget` and `duplicateWidget` (16px below and to the right, a new id); what they show, `rowsShown`, `tableGrain`, `toggleField`, `moveField` and `shownFields` (each field with its column, or null); `widgetName` and `widgetProblems`, what stops a component showing what it should (no fields, a column gone, a table of the other kind, tables whose rows do not line up) and what stops its conditions doing what they say, each a `WidgetProblem` naming its component, and `pageProblems`, a sheet's, each a `PageProblem` naming its sheet: a condition that cannot hold as written (`conditionFault`), a value that is not one of its column's allowed values, and a sheet or component nothing could show again once hidden (`neverShown`); `conditionText` and `showWhenText`, a condition and a `show_when` read as a sentence by the columns' labels, for the eye's title; the sample, `withCell`, `withSampleCell` (one cell, empty rows added up to it) and `withSampleRows` (several tables' rows as one edit); and `pricingBasis`, the schema as the sample's quote reads it and the sample as one string (`valuesBasis` of `quotedSchema` of the schema and the columns `sheetVisibility` hides for the sample, and the sample, memoised per form); `createSchemaTable`, `createSchemaColumn` and `createIndexColumn` (`row_number`, an Integer, `index`); `addSchemaTable`, `updateSchemaTable`, `removeSchemaTable` (its columns taken out of the widgets that show them and the conditions that test them, its rows out of the sample), `setSchemaTableRows` (keys cleared and the index dropped for one row), `addSchemaColumn` (at an index), `moveSchemaColumn` (never the index, and nothing above it), `updateSchemaColumn`, `changeSchemaColumnType` (the range and the number format dropped for a column no longer a number, the allowed values for one that `takesOptions` no longer: True/false or Date) and `removeSchemaColumn` (taken out of the widgets, the conditions and the sample); `fieldUses`, `conditionUses` (the sheets and components whose conditions test a table's columns, or one of them) and `fieldColumn`; `columnNameProblem` (an ASCII identifier that is not one of `PYTHON_KEYWORDS`, the server's `is_frame_label`); and `schemaProblems`, what would stop the schema being the pipeline's tables, each a `SchemaProblem` naming its table: a table's name through `apiInputLabelIssue` with the document's reserved labels, a column's name through `columnNameProblem`, unique in its table, a many-row table's key, an input column's range and allowed values, and allowed values on a column that cannot have them. `Widget` and `ColumnType` are derived from the generated form types. |
+| `frontend/src/utils/workbenchForm.ts` | Pure operations on the form, each returning a new form: `newId`, `uniqueName`, `readableName` and `allWidgets`; the sheets, `createPage` (named in turn, always shown), `addPage`, `renamePage`, `movePage` (to another place in the tabs' order), `setPageShowWhen` and `removePage` (never the last); the components, `findWidget`, `createWidget` (a Table 720 by 200 with 3 rows and `TABLE_OPTIONS`, numbered, compact, lined between rows, striped and not fixed, a Collection 720 by 120 with 3 columns, or a Chart 480 by 280 with `CHART_OPTIONS`, its rows numbered, of columns, upright, unstacked, its legend at the bottom and no data labels; no fields, always shown, its keys in the file's order; a Table no smaller than 240 by 96, a Collection than 160 by 72, a Chart than 240 by 160, `widgetKinds.ts`), `addWidget`, `updateWidget` (a `WidgetPatch`, a Table's `rows` or options, a Collection's `columns` and a Chart's options each refused on the other kinds), `removeWidget` and `duplicateWidget` (16px below and to the right, a new id); what they show, `rowsShown` (the tables a Table's or a Collection's fields come from: many-row or one-row), `tableGrain`, `chartGrain` (a Chart's: the grain of its first field's table, else of its `category`'s, else null), `plottable` (a number column other than an index, what a Chart plots), `labelColumns` (the columns that can label a Chart's rows: those of the many-row tables of its grain, other than an index), `toggleField`, `moveField` and `shownFields` (each field with its column, or null); `widgetName` and `widgetProblems`, what stops a component showing what it should (no fields, a column gone, a table of the other kind, tables whose rows do not line up, a Chart's field that is not `plottable`, the column labelling a Chart's rows gone or not lining up, a pie of many rows with more than one field) and what stops its conditions doing what they say, each a `WidgetProblem` naming its component, and `pageProblems`, a sheet's, each a `PageProblem` naming its sheet: a condition that cannot hold as written (`conditionFault`), a value that is not one of its column's allowed values, and a sheet or component nothing could show again once hidden (`neverShown`); `conditionText` and `showWhenText`, a condition and a `show_when` read as a sentence by the columns' labels, for the eye's title; the sample, `withCell`, `withSampleCell` (one cell, empty rows added up to it) and `withSampleRows` (several tables' rows as one edit); `pricingBasis`, the schema as the sample's quote reads it and the sample as one string (`valuesBasis` of `quotedSchema` of the schema and the columns `sheetVisibility` hides for the sample, and the sample, memoised per form); `linedUpOutputs`, each many-row output table shown lined up through `pricedRows` with a grid's rows of the first many-row input table shown keyed alike, read through the quoted schema, which a Table's grid and a Chart share; `createSchemaTable`, `createSchemaColumn` and `createIndexColumn` (`row_number`, an Integer, `index`); `addSchemaTable`, `updateSchemaTable`, `removeSchemaTable` (its columns taken out of the widgets that show them and the conditions that test them, its rows out of the sample, a Chart labelling its rows by one of them numbering them again), `setSchemaTableRows` (keys cleared and the index dropped for one row), `addSchemaColumn` (at an index), `moveSchemaColumn` (never the index, and nothing above it), `updateSchemaColumn`, `changeSchemaColumnType` (the range and the number format dropped for a column no longer a number, the allowed values for one that `takesOptions` no longer: True/false or Date) and `removeSchemaColumn` (taken out of the widgets, the conditions and the sample, a Chart labelling its rows by it numbering them again); `fieldUses` (the components showing a table's columns, or one of them, a Chart's `category` included), `conditionUses` (the sheets and components whose conditions test a table's columns, or one of them) and `fieldColumn`; `columnNameProblem` (an ASCII identifier that is not one of `PYTHON_KEYWORDS`, the server's `is_frame_label`); and `schemaProblems`, what would stop the schema being the pipeline's tables, each a `SchemaProblem` naming its table: a table's name through `apiInputLabelIssue` with the document's reserved labels, a column's name through `columnNameProblem`, unique in its table, a many-row table's key, an input column's range and allowed values, and allowed values on a column that cannot have them. `Widget` and `ColumnType` are derived from the generated form types. |
 | `frontend/src/utils/sheetValues.ts` | The values typed into a sheet, the sample or a quote (`RowsByTable`): `cellKey`; `filled` and `rowFilled`, a value and a row as the server counts them (a tick or text other than blank, in any column but the index); `parseTypedNumber`, a number as the server types it, a currency sign, separators and spaces allowed, and finite, as the server keeps text that is not; `formattedNumber`, a number column's value in its format through `formatPivotNumber` (typed text read by `parseTypedNumber`), null in General with automatic decimal places, outside a number column or for a value that is not a number; `cellProblem`, what breaks an input column's rules in a value (required, not a number, not a whole number, below `min`, above `max`, not one of the options; never a tick box or the index), `quoteFilled` (anything typed in the schema's current input tables, a value in a column or table since removed not counting, as the server leaves it out) and `quoteProblems`, the problems by cell over each input table's rows, a one-row table's one row always and a many-row table's filled rows only; `valuesBasis`, the schema and the values as one string; and `pricedRows`, a priced output table's rows (`PricedRows`) lined up with a grid's rows of an input table keyed alike, each filled grid row taking the next typed row and the output row whose key columns hold the same values as text. Each reads the columns of the schema it is given, so given `quotedSchema` (`sheetVisibility.ts`) each leaves out what the server leaves out of the quote: a hidden cell counts for nothing, is never checked and does not make a row filled. |
-| `frontend/src/utils/sheetVisibility.ts` | The conditions on the sheets and components, and which show for values typed into the sheets, by the rules `src/haute/_workbench_visibility.py` applies on the server, both held to `frontend/src/utils/__tests__/fixtures/sheetVisibility.json`: `columnKey` (a column's key in a set: its table id and column id); `CONDITION_TESTS`, each test's values (none, one, or one or more); `testsFor`, the tests a column's type takes, in the editor's order; `testLabel`, a test's words for a type ("is after" for a Date's `above`); `valueFits`, whether a value is one a column could hold (text other than blank; a number by `parseTypedNumber`, whole for an Integer; a real `YYYY-MM-DD` day); `conditionFault`, what stops a condition holding as written, or null; `SheetVisibility` and `sheetVisibility(spec, rows)` (memoised per form and values: everything shown, then anything whose conditions fail hidden, round after round, until nothing more hides); `quotedSchema`, the schema without the columns hidden, the quote's tables as the server reads them; `neverShown`, the sheets and components nothing could show again once hidden, each with the condition it waits on; and the editor's steps, `newCondition` (the first column of a one-row input table with its type's first test and no value, or null without one), `withConditionColumn` (another column, the test kept while the type takes it and the values while they fit) and `withConditionTest` (another test, the values kept while they fit it). |
-| `frontend/src/workbench/widgetKinds.ts` | `WIDGET_KINDS`, each kind of component's label, icon, hint, starting size and minimum; `PALETTE_KINDS`, what the palette offers; `COMPONENT_COLOR`, the entry colour. |
+| `frontend/src/utils/sheetChart.ts` | What a Chart plots and how it draws, pure: `ChartSeries` (a series: its `key`, its field's; its `name`; its `values`, each a number or null for a gap; and its `labels`, each value as its column shows it), `ChartData` (`rows`, `one` or `many`; `categories`, what names each column, point or slice; `series`; `axis`, the column whose format the value axis takes, or null for compact numbers; and `stale`, a price for other values plotted), `sheetChartData(spec, widget, values)` (the values a Chart's fields hold on the sheet, a field it cannot plot or whose rows do not line up left out: an input's typed text read by `parseTypedNumber`, a column the quote leaves out a gap, an output's from the price; of one-row tables, one series of a point per field, named by their labels; of many-row tables, a series per field over the rows typed into the input tables it shows (`rowFilled` through the quoted schema), their outputs through `linedUpOutputs`, or, with output tables alone, over the first one's answer, the others matched by key; each row named by its value in `category`, or by its number), `hasValues` (whether it has a number to plot) and `sheetChartOptions(widget, data, tokens, reducedMotion)` (the ECharts option: columns, lines or areas over a category axis, turned for `horizontal` with the first row at the top and stacked for `stacked`, or a pie, a slice per point of the first series; the legend where `legend` says with two series or more, or for a pie; data labels and a rich-text tooltip, on the panel's colours, giving each value as its column shows it, a one-row Chart's points named by the axis alone; the value axis in the shared format, else `formatChartNumber`; the theme's colours, decals and reduced motion; each series identified by its field and how it is drawn, and the legend by its place, since a new option merges into a component of the same id: a series of new values moves, and one drawn otherwise, stacked or not or of another type, or a legend moved, is drawn anew). |
+| `frontend/src/utils/sheetVisibility.ts` | The conditions on the sheets and components, and which show for values typed into the sheets, by the rules `src/haute/_workbench_visibility.py` applies on the server, both held to `frontend/src/utils/__tests__/fixtures/sheetVisibility.json`: `columnKey` (a column's key in a set: its table id and column id); `CONDITION_TESTS`, each test's values (none, one, or one or more); `testsFor`, the tests a column's type takes, in the editor's order; `testLabel`, a test's words for a type ("is after" for a Date's `above`); `valueFits`, whether a value is one a column could hold (text other than blank; a number by `parseTypedNumber`, whole for an Integer; a real `YYYY-MM-DD` day); `conditionFault`, what stops a condition holding as written, or null; `SheetVisibility` and `sheetVisibility(spec, rows)` (memoised per form and values: everything shown, then anything whose conditions fail hidden, round after round, until nothing more hides, the fields of Tables and Collections alone counting as on a component, through `fieldKeys`, since a Chart takes nothing typed); `quotedSchema`, the schema without the columns hidden, the quote's tables as the server reads them; `neverShown`, the sheets and components nothing could show again once hidden, each with the condition it waits on; and the editor's steps, `newCondition` (the first column of a one-row input table with its type's first test and no value, or null without one), `withConditionColumn` (another column, the test kept while the type takes it and the values while they fit) and `withConditionTest` (another test, the values kept while they fit it). |
+| `frontend/src/workbench/widgetKinds.ts` | `WIDGET_KINDS`, each kind of component's label, icon, colour (`COMPONENT_COLOR`, the entry colour, for a Table and a Collection; `NODE_GROUP_COLORS.explore`, Explore's, for a Chart), hint, starting size and minimum; `PALETTE_KINDS`, what the palette offers. |
 | `frontend/src/workbench/sheetInteractions.ts` | The pointer interactions on a sheet: `dropAt` (where a palette item released at a pointer position lands, through the view store's sheet and viewport, null off the viewport), `startCreate` (a palette item dragged onto the sheet, `creating` following the pointer, the component added and selected on release; a click adds nothing) and `startTransform` (a component moved, or resized by a handle: selected on press, the form snapshotted on the first move and replaced on each move through `setFormRaw`), each tracking the pointer on the window until it is released. |
 | `frontend/src/workbench/SheetCanvas.tsx` | `SheetCanvas`, the showing sheet in its scrolling viewport: the viewport measured by a `ResizeObserver` and registered with the view store along with the sheet, the sheet sized by `sheetWidth` and `sheetHeight` and scaled by the zoom, the sheet's values given to the components through `SheetValuesContext` (`useSampleValues` while building, `usePreviewValues` in Preview), a `SheetWidget` per component with its `shownFields` and its first problem, editable and selectable while building alone, while building every component of `activePage`, those its values' `visibility` hides `hidden`, and in Preview only the components that show of the sheet `shownPage` gives, the sheet sized to them, or "No sheet shows for this quote." while it gives none, `DropGhost` where a component being dragged in would land while building, the sheet fitted on first show, and a press on the empty sheet deselecting, the sheet's panel closed with it. |
 | `frontend/src/workbench/SheetWidget.tsx` | `SheetWidget`, one component on the sheet: its `WidgetBody`, inert but for its cells while `editable`, in a frame that selects it on press (`startTransform`, which blurs a field focused before so the sheet's keys reach the component) and on focus (`tabIndex` 0) and drags it, and grows eight `ResizeHandle`s once selected, and in Preview does nothing but scroll; the frame accented when selected, dashed in the warning colour naming a problem in its `title` and to a screen reader (`aria-describedby`); while building, a component with conditions carries `ShowWhenMark` in its corner, titled with its `conditions` as a sentence, struck through while `hidden`, and a `hidden` one is drawn faded. |
-| `frontend/src/workbench/WidgetBody.tsx` | `WidgetBody`, a component on a sheet: its title, "Choose its fields from the schema in the panel on the right" with none, else `FieldBoxes` (a Collection's fields as labelled boxes, its columns across) or `FieldGrid` (a Table's fields as the columns of a grid of at least its rows, the index column numbering them, Add row and a delete per row across the input tables shown; its options give the `#` column (`row_numbers`), its rows' height (`ROW_HEIGHT` by `density`, each `Cell` given it), its lines (`gridlines`), the shading of every other row (`striped`) and, while `fixed_rows`, no Add row and no delete column). Each input column's `Cell` is the control its type calls for (a checkbox, a select of the options, a date, else a `CommittedTextField`), holding the sheet's value from `useSheetValues` and changing it through its `setCell` or `setRows`, outlined with its problem as the title when the values' `problems` name it by `cellKey`; pressing one selects the component (`useTypeHere`). A text field shows its column's `placeholder` while empty and a number in its column's format (`formattedNumber`) while not focused, the text as typed while it is; a select's empty option shows the placeholder, else nothing, and a number's options show its format, each holding the option as typed; a checkbox's cell in a grid takes the row's height. A label from its column with a star for a required input and an `Info` mark titled with its `help`, a gone column "Missing column"; an output column shaded, showing the values' `price` through `formattedNumber`, else `formatValue`: in a Collection its table's one row, in a Table the row `pricedRows` lines up with the grid row through the first input table shown that is keyed alike (`tableGrain`), read as the values' `quoted` schema has it so the grid's filled rows are the quote's, a dash for none, dimmed (`data-stale`) while `price.basis` is not the values' `basis`. |
+| `frontend/src/workbench/WidgetBody.tsx` | `WidgetBody`, a component on a sheet: its title, "Choose its fields from the schema in the panel on the right" with none, else `ChartBody` for a Chart, `FieldBoxes` (a Collection's fields as labelled boxes, its columns across) or `FieldGrid` (a Table's fields as the columns of a grid of at least its rows, the index column numbering them, Add row and a delete per row across the input tables shown; its options give the `#` column (`row_numbers`), its rows' height (`ROW_HEIGHT` by `density`, each `Cell` given it), its lines (`gridlines`), the shading of every other row (`striped`) and, while `fixed_rows`, no Add row and no delete column). Each input column's `Cell` is the control its type calls for (a checkbox, a select of the options, a date, else a `CommittedTextField`), holding the sheet's value from `useSheetValues` and changing it through its `setCell` or `setRows`, outlined with its problem as the title when the values' `problems` name it by `cellKey`; pressing one selects the component (`useTypeHere`). A text field shows its column's `placeholder` while empty and a number in its column's format (`formattedNumber`) while not focused, the text as typed while it is; a select's empty option shows the placeholder, else nothing, and a number's options show its format, each holding the option as typed; a checkbox's cell in a grid takes the row's height. A label from its column with a star for a required input and an `Info` mark titled with its `help`, a gone column "Missing column"; an output column shaded, showing the values' `price` through `formattedNumber`, else `formatValue`: in a Collection its table's one row, in a Table the row `linedUpOutputs` lines up with the grid row through the first input table shown that is keyed alike (`tableGrain`), read as the values' `quoted` schema has it so the grid's filled rows are the quote's, a dash for none, dimmed (`data-stale`) while `price.basis` is not the values' `basis`. |
+| `frontend/src/workbench/ChartBody.tsx` | `ChartBody`, a Chart on a sheet: its values from `useSheetValues` through `sheetChartData` of the form store's form, "Nothing to chart yet" with nothing to plot (`hasValues`), else a host the lazy runtime (`createComboChart`) draws `sheetChartOptions` into: one chart per mount and per change of theme or reduced motion, each new option merged into it with its series, axes, grid and legend replaced, resized by a `ResizeObserver` and disposed on unmount; dimmed (`data-stale`) while it plots a price for other values; its summary and its values as a table for a screen reader; a runtime that fails to load, or options it refuses, as an alert in its place. |
+| `frontend/src/workbench/ChartSettings.tsx` | `ChartSettings`, a Chart's Chart section in its panel, each change one edit through `updateWidget`: Type (`chart_type`: Column, Line, Area or Pie); Rows, what labels the rows of a Chart whose `chartGrain` is many-row ("Row number", or one of `labelColumns`, by table and label, through `category`); Legend (`legend`); and Stacked (`stacked`) and Horizontal (`orientation`), disabled for a pie, and Data labels (`data_labels`). |
 | `frontend/src/workbench/PageTabs.tsx` | `PageTabs`, the sheets' tabs: one per sheet (`showPage`), the showing one marked; a plus adding a sheet (`createPage`, `addPage`); a double-click, or F2 on the tab, renaming one in a `CommittedTextField` (a blank name kept out); a tab dragged onto another moving its sheet there (`useListReorder`, `movePage`), and Alt+Left and Alt+Right on a tab moving its sheet a place, the moved tab focused again, both through `moveSheet`, which first pins `pageId` to the sheet showing while none was chosen, so a move never changes which sheet shows; the showing sheet's settings mark (`SlidersHorizontal`, `selectSheet`) and its cross deleting it (`removePage`) after `window.confirm` when components are on it, while another sheet remains; a sheet with conditions marked with `ShowWhenMark`, a hidden one's tab faded, and a sheet's first `pageProblems` entry as a warning mark titled with it; `readOnly`, in Preview, the tabs only switch sheets, those of the sheets that show (`useSheetVisibility`), the one `shownPage` gives marked. |
-| `frontend/src/workbench/PropertiesPanel.tsx` | `PropertiesPanel`, the showing sheet's panel while `sheetSelected` (its Title, through `renamePage`, a blank one kept out, and Show when, through `setPageShowWhen`), else the selected component's, on the kit's `SidePanel` (its width in the view store): its kind, Title (`CommittedTextField`), Show when (`ShowWhenEditor`, through `updateWidget`), Layout (rows or columns in a `ValidatedTextField` holding the range, and a Table's Fixed rows), a Table's Look (Density and Gridlines selects, Row numbers and Striped rows checkboxes) and Order (`FieldOrder`, a list of rows through `useListReorder` and Alt+Up/Alt+Down, each with a cross through `toggleField`), each once the component shows a field, and Fields (`TableFields` per schema table of the component's kind, collapsible, a checkbox per column through `toggleField`, greyed with its unticked columns disabled when `tableGrain` does not match the fields already chosen), or a pointer to the schema when there is no table of the kind. |
+| `frontend/src/workbench/PropertiesPanel.tsx` | `PropertiesPanel`, the showing sheet's panel while `sheetSelected` (its Title, through `renamePage`, a blank one kept out, and Show when, through `setPageShowWhen`), else the selected component's, on the kit's `SidePanel` (its width in the view store): its kind, Title (`CommittedTextField`), Show when (`ShowWhenEditor`, through `updateWidget`), Layout (a Table's rows or a Collection's columns in a `ValidatedTextField` holding the range, and a Table's Fixed rows), a Table's Look (Density and Gridlines selects, Row numbers and Striped rows checkboxes), a Chart's Chart (`ChartSettings`) and Order (`FieldOrder`, a list of rows through `useListReorder` and Alt+Up/Alt+Down, each with a cross through `toggleField`), each once the component shows a field, and Fields (`TableFields` per schema table of the component's kind, every table for a Chart, collapsible, a checkbox per column through `toggleField`, a Chart's columns that are not `plottable` disabled, greyed with its unticked columns disabled when `tableGrain` does not match the fields already chosen, a Chart's `chartGrain`), or a pointer to the schema when there is no table of the kind. |
 | `frontend/src/workbench/ShowWhenEditor.tsx` | `ShowWhenEditor`, a sheet's or a component's Show when in its panel, given it as `showWhen` and an `onChange` that commits the whole new one as one edit: "Always" with no conditions; Add condition (`newCondition`, disabled with a note while the schema has no one-row input table with a column); a row per condition of its column (a select of the one-row input tables' columns, `optgroup` per table, by label, the column's type icon beside it; a condition whose column is gone keeps it as "Missing column"), its test (`testsFor`, `testLabel`), its value (`ConditionValue`: nothing for a test without values; for one value the cell's control, a select of the allowed values, a date input or a `CommittedTextField`; for one or more a `ConfigCheckbox` per allowed value, else a `CommittedTextField` of the values comma-separated, blanks dropped) and a cross; choosing a column or a test through `withConditionColumn` and `withConditionTest`; and, with two or more, "Show when [all|any] of these are true", the match a select in the sentence. `ShowWhenMark`, the eye a sheet's tab and a component carry while building: `Eye`, or `EyeOff` while hidden, titled with the conditions read as a sentence. |
-| `frontend/src/workbench/WorkbenchPalette.tsx` | `WorkbenchPalette`, the view's left column in the kit's palette shell: a `PaletteItem` per `PALETTE_KINDS` entry starting `startCreate` on press while building and disabled in Preview (titled "Build to lay out the sheets"), and the switcher under them; sharing `useUIStore.paletteOpen`, collapsed to the reveal strip (labelled "Show component palette") with the compact switcher. |
+| `frontend/src/workbench/WorkbenchPalette.tsx` | `WorkbenchPalette`, the view's left column in the kit's palette shell: a `PaletteItem` per `PALETTE_KINDS` entry, in its kind's colour, starting `startCreate` on press while building and disabled in Preview (titled "Build to lay out the sheets"), and the switcher under them; sharing `useUIStore.paletteOpen`, collapsed to the reveal strip (labelled "Show component palette") with the compact switcher. |
 | `frontend/src/workbench/ViewSwitcher.tsx` | `ViewSwitcher`, the Pricing and Workbench buttons at the bottom of the left palette while the workbench is enabled (nothing otherwise), pressing `activeView` and calling `showView`; `compact` is the column of icon buttons beside the collapsed node palette. |
 | `frontend/src/workbench/WorkbenchView.tsx` | `WorkbenchView`, the view over the area below the toolbar while it is active: given `resolveGraph` by the host, it sets the pricing store's pricer (`priceSample` on the resolved document with the settings store's active source) while mounted and schedules a pricing when the form's `pricingBasis` changes while the sheets show, and when the sheets show again; `WorkbenchPalette`, then the form read on first show (`load`), "Loading the workbench…", a read failure with Try again (`reload`), the stale banner with Reload, and once the form is read the section the view store names, `PageTabs` (read only in Preview) over `SheetCanvas`, or `SchemaEditor`; `useWorkbenchShortcuts` with the host's `onSaveShortcut`, the toolbar's Save; the lazy Git and Assistant panels as asides, else `PropertiesPanel` beside the sheets; and `DragChip`, which follows the pointer while a component is dragged out of the palette until the sheet's ghost takes over. |
 | `frontend/src/workbench/WorkbenchToolbar.tsx` | `WorkbenchToolbar`, the toolbar while the view shows: `ToolbarBrand`; a `ToolbarColumn` of Build over Preview (`showSection` to `sheets` or `preview`); while building, a `ToolbarColumn` of Sheets over Schema and `UndoRedo` on the form store's history, or in Preview a `ToolbarColumn` of Price (the preview store's `priceQuote`, disabled while pricing, before the form is read or while nothing the quote holds is typed in the schema's current tables, `quoteFilled` of the `quotedSchema` the quote's `sheetVisibility` gives) over Clear (`clear` after `window.confirm`, disabled while nothing is typed); `ZoomInOut` (`zoomBy`) while the schema is not showing; the pricing store's `error` as "Pricing failed: …" while building, or the preview store's `error` in Preview; and `ProjectControls` with the host's `onSave` and `onCommit`, the pipeline toolbar's own Save and Commit, and its `editingDisabled`, so both are off, and the Assistant while no turn runs, exactly when the pipeline toolbar's are. |
@@ -70,8 +73,13 @@ share. `frontend/src/components/ProjectControls.tsx` and
 are the toolbar's right-hand group and the icon-over-select control the view reuses;
 `frontend/src/hooks/useListReorder.ts` (frontend-shared) is the drag-reorder hook the fields'
 order and the sheets' tabs share with the step editor's cards; `frontend/src/haute-ui/PaletteShell.tsx`'s reveal
-strip takes the label the component palette gives it; and
-`frontend/src/stores/useGraphStore.ts` exports `appendHistoryEntry`, the one history rule.
+strip takes the label the component palette gives it;
+`frontend/src/stores/useGraphStore.ts` exports `appendHistoryEntry`, the one history rule;
+and a Chart draws through Explore's chart modules
+([frontend-preview-explore](../frontend-preview-explore/low-level.md)):
+`frontend/src/panels/explore/chartRuntime.ts`, the lazy ECharts runtime, which registers
+Pie for it and passes a new option's merge settings through, and
+`frontend/src/panels/explore/chartTheme.ts`, the chart theme read from the page's tokens.
 
 The Workbench Input reaches across Haute. `src/haute/_types.py` declares
 `NodeType.WORKBENCH_INPUT`, its `workbench_input` decorator name, `WorkbenchInputConfig` and
@@ -177,8 +185,12 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   `percent`, `currency_gbp`, `currency_usd` or `currency_eur`), `decimal_places` (0–10 or
   null) and `use_grouping`. A widget is a `TableInputWidget` (`type` `tableInput`, `title`,
   `fields`, `rows` 1–50, `row_numbers`, `density` (`compact` or `comfortable`), `gridlines`
-  (`rows`, `all` or `none`), `striped` and `fixed_rows`) or a `CollectionWidget` (`type`
-  `collection`, `title`, `fields`, `columns` 1–12), each with `id`, `x`, `y` (0 or more), `w`, `h` (1 or more) and a `show_when` after its `fields`; a `FieldRef`
+  (`rows`, `all` or `none`), `striped` and `fixed_rows`), a `CollectionWidget` (`type`
+  `collection`, `title`, `fields`, `columns` 1–12) or a `ChartWidget` (`type` `chart`,
+  `title`, `fields`, `category` (a `FieldRef`, or null to number the rows), `chart_type` (a
+  `ChartType`: `column`, `line`, `area` or `pie`), `orientation` (`vertical` or
+  `horizontal`), `stacked`, `legend` (a `ChartLegend`: `bottom`, `top`, `left`, `right` or
+  `none`) and `data_labels`), each with `id`, `x`, `y` (0 or more), `w`, `h` (1 or more) and a `show_when` after its `fields`; a `FieldRef`
   names a `table` and a `column` by id. A `ShowWhen` is `match` (`all` or `any`, `all`
   by default) and `conditions` (`[]` by default: always shown); a `Condition` is `table`
   and `column` (ids), `op` (a `ConditionTest`: `ticked`, `not_ticked`, `filled`, `empty`,
@@ -191,7 +203,8 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   (`frontend/src/utils/sheetVisibility.ts`): `pages` and `widgets`, the ids of the sheets
   and components that show (a component only on a sheet that shows), and `hidden`, the
   input columns left out of the quote, each a table id and a column id (`columnKey` in
-  the view): columns other than the index on at least one component, none of which shows.
+  the view): columns other than the index on at least one Table or Collection, none of
+  which shows.
 - **`WorkbenchTable`** and **`WorkbenchColumn`** (`src/haute/_workbench_tables.py`): the
   pydantic models of a workbench node's tables, unknown fields refused: a table is `name`,
   `rows` (`one` or `many`) and `columns`, a column `name` and `type` (`int`, `float`, `str`,
@@ -237,14 +250,19 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   **`WidgetProblem`**: `widgetId` and `message`. **`PageProblem`**: `pageId` and
   `message`. **`WidgetPatch`**: a partial `Rect` with
   `title`, `fields`, `show_when`, a Table's `rows` and `TableOptions` (`row_numbers`, `density`,
-  `gridlines`, `striped`, `fixed_rows`), or a Collection's `columns`. **`ShownField`**:
-  `key` and `found`, the field's table and column or null.
+  `gridlines`, `striped`, `fixed_rows`), a Collection's `columns`, or a Chart's `ChartOptions`
+  (`category`, `chart_type`, `orientation`, `stacked`, `legend`, `data_labels`).
+  **`ShownField`**: `key` and `found`, the field's table and column or null.
+  **`ChartSeries`** and **`ChartData`** (`frontend/src/utils/sheetChart.ts`): a series'
+  `key`, `name`, `values` (a number, or null for a gap) and `labels` (each value as its
+  column shows it, or null); a Chart's `rows` (`one` or `many`), `categories`, `series`,
+  `axis` (the column whose format the value axis takes, or null) and `stale`.
 - **`Rect`** and **`Handle`** (`frontend/src/utils/sheetGeometry.ts`): `x`, `y`, `w`, `h` in
   unzoomed pixels; one of the eight handles, `n`, `s`, `e`, `w` and their corners.
 - **View store state** (`frontend/src/stores/useWorkbenchViewStore.ts`): `section`, `pageId`,
   `selectedId`, `sheetSelected`, `zoom`, `creating` (`type`, `clientX`, `clientY`, or null), `panelWidth`,
   `sheet` and `viewport`. **`WIDGET_KINDS`** (`frontend/src/workbench/widgetKinds.ts`): per
-  kind, `label`, `icon`, `hint`, `size` and `min`.
+  kind, `label`, `icon`, `color`, `hint`, `size` and `min`.
 - **`NodeUpdateOptions`** (`frontend/src/hooks/useGraphCommitController.ts`): `isCurrent`, which
   returning false makes an update count as superseded, and `onSettled`, called once with the
   update's final result: at once for an ordinary node, after identity resolution for a request
@@ -527,7 +545,9 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
 23. **Properties.** `PropertiesPanel` finds the selected component in the form and edits it
     through `change` with `updateWidget`, `moveField` and `toggleField`; the fields offered
     are the schema tables whose `rows` match `rowsShown(widget)`, each usable when its
-    `tableGrain` matches the grain of the first field already shown. While `sheetSelected`
+    `tableGrain` matches the grain of the first field already shown, or for a Chart every
+    table, each usable when its `tableGrain` matches `chartGrain(form, widget)`, its columns
+    that are not `plottable` disabled, with `ChartSettings` editing its options. While `sheetSelected`
     it edits `activePage(form, pageId)` instead, through `renamePage` and
     `setPageShowWhen`. `ShowWhenEditor` hands every change up whole, so each is one
     `change` (item 33).
@@ -549,10 +569,11 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
     flag, and the run prices once more when it finishes.
 26. **Shown.** `FieldBoxes` reads the values' `price` and shows
     `price.tables[table.name][0][column.name]` for an output column; `FieldGrid` shows, for
-    a many-row output column, the row `pricedRows` lines up with each grid row (the typed
-    rows from `price.sample[input.name]`, the output rows from `price.tables[output.name]`,
-    the input table the first shown with the output table's `tableGrain`); both dimmed when
-    `price.basis` is not the values' `basis`; `WorkbenchToolbar` shows `error`.
+    a many-row output column, the row `linedUpOutputs` lines up with each grid row through
+    `pricedRows` (the typed rows from `price.sample[input.name]`, the output rows from
+    `price.tables[output.name]`, the input table the first shown with the output table's
+    `tableGrain`); both dimmed when `price.basis` is not the values' `basis`;
+    `WorkbenchToolbar` shows `error`. A Chart plots them (item 34).
 27. **The project saved, and committed.** `saveProject` (`App.tsx`) is the one save of the
     project: from Save and Ctrl/Cmd+S through `requestSave` and from Commit through
     `requestCommit`, both behind the git readiness gate (the working-branch or divergence
@@ -617,8 +638,9 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
     `not_ticked`, Text `filled`, `empty`, `equals`, `not_equals`, `one_of` and
     `not_one_of`, Integer and Decimal those and `above`, `at_least`, `below` and `at_most`,
     Date all but `one_of` and `not_one_of`; as many values as the test takes; and each
-    value one the column could hold), its column is among the fields of a component still
-    shown, and its value passes. The value is the first row's cell, read as `_record`
+    value one the column could hold), its column is among the fields of a Table or a
+    Collection still shown (a Chart's fields never count: `_entered` on the server,
+    `fieldKeys` in the view), and its value passes. The value is the first row's cell, read as `_record`
     reads it: text stripped, a number through `_typed` (`parseTypedNumber` in the view,
     whole for an Integer when it is whole), a tick `True`, anything else for a True/false
     column unticked, and empty while not `filled`. `ticked` passes `True`, `not_ticked`
@@ -629,8 +651,8 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
     the column's type compared with the condition's (numbers as numbers, days as their
     `YYYY-MM-DD` text). Rounds end when one hides nothing; hiding never shows anything, so
     there are at most as many rounds as sheets and components. `hidden` is then every
-    input column other than the index that is among the fields of a component and of no
-    component that shows.
+    input column other than the index that is among the fields of a Table or a Collection
+    and of none that shows.
 33. **Conditions edited.** The panel's `ShowWhenEditor` builds each change from the
     `show_when` it was given and hands the whole of it to `updateWidget` or
     `setPageShowWhen` through one `change`: Add condition appends `newCondition(form)`
@@ -646,10 +668,41 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
     confirmations what they would drop. `pageProblems` and `widgetProblems` report each
     condition's `conditionFault` and a value outside its column's `options` (with options),
     and `neverShown` (a least fixed point: a sheet or component can show again when its
-    conditions pass counting only those whose column is on a component outside it, not on
-    it when it is a sheet, that can show again; its sheet too for a component; any
-    condition not fitting can never pass) gives the ones nothing could show again,
-    reported unless a condition of theirs already is.
+    conditions pass counting only those whose column is on a Table or a Collection outside
+    it, not on it when it is a sheet, that can show again; its sheet too for a component;
+    any condition not fitting can never pass) gives the ones nothing could show again,
+    reported unless a condition of theirs already is, as waiting on a column on no Table or
+    Collection or only on components that hide with it.
+34. **Charted.** `SheetCanvas` gives a Chart its `shownFields` as it gives any component,
+    and `WidgetBody` draws it with `ChartBody`, which reads the form store's form and the
+    sheet's values through `useSheetValues`. `sheetChartData` plots by `chartGrain`. Of one-row tables it makes one
+    series with a point per field, named by the fields' labels. Of many-row tables it makes
+    a series per field over the rows: while the Chart shows a many-row input table (a
+    field's or `category`'s), the positions up to the longest of those tables' held rows at
+    which `rowFilled`, read through `quoted`, holds for any of them, its many-row output
+    tables' values lined up by `linedUpOutputs`; with output tables alone, the rows of the
+    first field's table's answer, another output table's row the one holding the same key
+    values as text. An input value is the cell's typed text through `parseTypedNumber`, a
+    gap for a tick, text that is not a number, a blank, and a column `quoted` leaves out; an
+    output value is the price's, a gap unless it is a finite number. A row is named by its
+    value in `category`, an input's as typed (a number in its column's format through
+    `formattedNumber`, a tick "Yes", else "No") and an output's as an output cell shows it,
+    or "—" for none; without a `category`, or one gone or not lining up, by its number, its
+    position in the grid or the answer from 1. A field that is not `plottable` or whose
+    table does not line up is left out, and a pie keeps its first series. `axis` is the
+    column whose `number_format`, `decimal_places` and `use_grouping` every plotted
+    column shares, else null; `stale` is set while the Chart plots an output column and
+    `price.basis` is not the values' `basis`. With no number to plot `ChartBody` shows
+    "Nothing to chart yet"; otherwise it imports `chartRuntime.ts` lazily, creates one chart
+    in its host per mount and per change of theme or reduced motion (watched as `ComboChart`
+    watches them, the tokens read through `chartTheme.ts`) and sets `sheetChartOptions` on
+    it, each new option merged with `series`, `xAxis`, `yAxis`, `grid` and `legend`
+    replaced, so a series identified by its field moves to its new values, while one drawn
+    otherwise (stacked or not, another type) or a legend moved is drawn anew. A
+    `ResizeObserver` resizes it, unmounting disposes it, and a failure to load the runtime
+    or to set the options is an alert in its place. `ChartSettings` changes its options
+    through `updateWidget`, and the Rows select offers `labelColumns` once `chartGrain` is
+    many-row.
 
 ## Edge cases and invariants
 
@@ -756,6 +809,20 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
 - Fields are held by table and column id, never by name, so renaming a column keeps it
   on the sheet; a column or table removed from the schema is dropped from the fields that
   showed it, and a field whose column is gone otherwise is shown as missing and reported.
+- A Chart's `category` is held as a field is: removing its column or its table sets it to
+  null, numbering the rows again, and a change that leaves it out of line (its table moved
+  between one row and many, or keyed otherwise) is reported by `widgetProblems`, the rows
+  numbered meanwhile.
+- A Chart takes nothing typed: `visibility`, `sheetVisibility` and `neverShown` never
+  count its fields, so a column only Charts plot is never hidden and a condition on it
+  never holds, and a value only a hidden Table or Collection takes is left out of the quote
+  and plotted as a gap by a Chart that shows.
+- A Chart plots the values the sheet's components are given, so building plots the sample
+  and Preview the quote; it holds no values of its own, and nothing it draws reaches the
+  form, the sample or the quote.
+- A Chart's runtime is imported only from `ChartBody`, beneath the lazy workbench view, so
+  the startup bundle never preloads `vendor-charts`; registering Pie grows that chunk, which
+  the bundle gate caps.
 - The view store is read against the form: a `pageId` the form no longer has reads as the
   first sheet, and a `selectedId` the form no longer has as no selection. In Preview a
   `pageId` naming a hidden sheet reads as the first sheet that shows, and is kept, so the
@@ -858,11 +925,16 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   preview error, or the server's reason for a failed preview request
   (`apiErrorMessage`); the pricing store keeps it as `error` and the toolbar shows it.
 - The pure operations fail loud on a caller's mistake: `removePage` on the last sheet,
-  `updateWidget` giving a Collection `rows` or another of a Table's options, or a Table
-  `columns`, and any operation naming
+  `updateWidget` giving another kind `rows` or another of a Table's options ("Only a Table
+  has <key>"), `columns` ("Only a Collection has columns") or a Chart's options ("Only a
+  Chart has <key>"), and any operation naming
   a sheet or a component the form does not have, each throw an `Error` naming it.
 - A condition is never an error: one that does not fit never holds, `visibility` and
-  `sheetVisibility` raise nothing for it, and the view reports it as a problem. Only a
+  `sheetVisibility` raise nothing for it, and the view reports it as a problem.
+- Nor is a Chart's problem: `sheetChartData` raises nothing for a field it cannot plot,
+  leaving it out. `ChartBody` turns a runtime that fails to load, or options ECharts
+  refuses, into an alert in the Chart's place naming the reason, until options set
+  cleanly; the rest of the sheet is drawn as ever. Only a
   `show_when` outside the form's shape fails, as `read_form_document`'s
   `WorkbenchFormError` or a body FastAPI refuses.
 - An update superseded through `isCurrent` resolves `{ok: false}` with the commit
@@ -909,14 +981,17 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   whole-file check accepts the table and refuses an unknown key under it.
 - `tests/test_workbench_form.py` covers the blank form's text, a saved form round-tripping
   through `write_form` and `read_form_document` with the file's revision (the test project's
-  shape: one-row and many-row tables, an index column, Tables and Collections, a sample),
+  shape: one-row and many-row tables, an index column, Tables, Collections and a Chart, a
+  sample),
   the same bytes reading as the same revision and a hand edit as another, a missing file as
   the blank form never saved, every field written (a column without `index` or its display
   settings reads back with them at their defaults and is written with them, a Table
-  without its options with theirs, a sheet or a component without `show_when` with it,
+  without its options with theirs, a Chart without its options with theirs, a sheet or a
+  component without `show_when` with it,
   always shown, an absent `sample` written as `{}`), an unknown field,
-  an out-of-range widget or Table option, a number format or decimal places outside
-  its range, an unknown test, an unknown match and a value that is not text refused, the
+  an out-of-range widget or Table option, a chart type or legend the Chart does not
+  have, a Table's option on a Chart and a Chart's on a Table, a number format or decimal
+  places outside its range, an unknown test, an unknown match and a value that is not text refused, the
   columns' number formats held equal to the Explore pivot's, and the
   message for an unreadable, non-UTF-8, non-JSON and misshapen file.
 - `tests/test_workbench_visibility.py` holds `visibility` to every case in
@@ -930,7 +1005,9 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   (a column gone, a many-row or output table's, a test the type does not take, too many
   or too few values, a blank value, a fraction for an Integer, a day that is not one), a
   value outside the allowed values still tested, a column on no component, a sheet
-  testing a column only on itself, and a hidden Table's index never hidden.
+  testing a column only on itself, a hidden Table's index never hidden, and a Chart taking
+  nothing (a column on a hidden Collection and on a Chart that shows hidden, a column only
+  a Chart plots never hidden, and a condition on it never holding).
 - `tests/test_workbench_tables.py` covers input tables in schema order as the pipeline holds
   them (names, rows per quote and typed columns, the form's keys and rules left behind, the
   frame and quote schemas), each column type's dtype held equal to the Quote Input's, a
@@ -943,7 +1020,9 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   longer fits its column kept as typed, the index numbering rows as they stand, an empty
   sample for a form with nothing typed, and the values the sheets hide left out (a hidden
   column's text and tick, a hidden True/false column not set to false, a row with nothing
-  else typed left out, the index of a kept row kept) while the form's sample keeps them.
+  else typed left out, the index of a kept row kept, a value a Chart that shows plots
+  left out while the Collection that takes it is hidden) while the form's sample keeps
+  them.
 - `tests/test_workbench_routes.py` covers `GET /api/workbench` disabled and enabled, `GET
   /api/workbench/tables` serving the test project's form from the working directory (tables,
   sample and response tables), 404 while disabled, a missing form as the blank form with no
@@ -1045,16 +1124,20 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   kept on the sheet, resizes from each handle, the next free spot, the sheet's size and
   the fit; `frontend/src/utils/__tests__/workbenchForm.test.ts` also the sheets (named in
   turn, renamed, moved, the last kept), the components (created with their kind's layout, a Table
-  with `TABLE_OPTIONS`, updated with the kind guards, duplicated, removed), the fields (toggled, moved),
-  `widgetProblems`, and the conditions (a sheet and a component created always shown,
+  with `TABLE_OPTIONS` and a Chart with `CHART_OPTIONS`, updated with the kind guards, duplicated,
+  removed), the fields (toggled, moved), a Chart's `category` (counted by `fieldUses`, set to
+  null with its column or table), `chartGrain`, `plottable` and `labelColumns`,
+  `widgetProblems` (a Chart's among them), and the conditions (a sheet and a component created always shown,
   `setPageShowWhen` and `updateWidget` with `show_when`, a column or table removed taking
   the conditions on it with it, `conditionUses`, each condition problem of a sheet and a
-  component, and `conditionText` and `showWhenText`); `frontend/src/hooks/__tests__/useListReorder.test.tsx` the shared
+  component, a sheet waiting on a column only a Chart plots, and `conditionText` and
+  `showWhenText`); `frontend/src/hooks/__tests__/useListReorder.test.tsx` the shared
   drag-reorder hook; `frontend/src/workbench/__tests__/SheetCanvas.test.tsx` (on the
   fixtures in `frontend/src/workbench/__tests__/fixtures.ts`) the components drawn where
   the form places them, the problem frame, selection, a drag moving one snapped and
   divided by the zoom as one undo step, a resize by a handle at its minimum, a component
-  dragged out of the palette and dropped (the chip, the ghost, a click adding nothing), the
+  dragged out of the palette and dropped (the chip, the ghost, a click adding nothing, a
+  Chart at its size), the
   fit (a very wide sheet at the zoom's minimum), a component the sample hides drawn faded
   with its struck-through eye and one that shows with its eye, and Preview (nothing
   selected or moved, no drop, the quote typed, a component the quote hides not drawn and
@@ -1066,8 +1149,11 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   problem marked, and in Preview a hidden sheet without a tab and the first that shows
   marked in place of a hidden one chosen;
   `frontend/src/workbench/__tests__/PropertiesPanel.test.tsx` the title and layout, a
-  Table's fixed rows and look, the fields ticked, a table greyed out, the order, the
-  pointer to the schema, a component's Show when, and the sheet's panel (its title and
+  Table's fixed rows and look, a Chart's section (its type, what labels its rows, its
+  legend, stacked, horizontal and data labels, those a pie does not take disabled), the
+  fields ticked, a Chart's from every table with the columns it cannot plot disabled, a
+  table greyed out, the order, the pointer to the schema, a component's Show when, and
+  the sheet's panel (its title and
   its Show when) closing as a component is selected;
   `frontend/src/workbench/__tests__/ShowWhenEditor.test.tsx` "Always", Add condition
   (and its note with no one-row input column), a column, a test and a value chosen for
@@ -1082,14 +1168,29 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   `quotedSchema`, the tests each type takes and their words, `valueFits`, each
   `conditionFault`, `neverShown` (a box on its own sheet, two sheets waiting on each other,
   a box elsewhere, `any` with one reachable condition) and the editor's steps; and
-  `frontend/src/workbench/__tests__/WorkbenchPalette.test.tsx` the palette, its collapse
-  with the node palette's and its items disabled in Preview.
+  `frontend/src/workbench/__tests__/WorkbenchPalette.test.tsx` the palette (a Table, a
+  Collection and a Chart), its collapse with the node palette's and its items disabled in
+  Preview.
+- Charts: `frontend/src/utils/__tests__/sheetChart.test.ts` covers `sheetChartData` (a
+  one-row Chart's point per field, typed and priced; a many-row Chart's rows typed into its
+  input tables, a row with nothing the quote takes left out, outputs matched by key and
+  output tables alone over their answer, the rows named by an input's, an output's or no
+  column; a hidden column, text that is not a number, a field it cannot plot and a field
+  out of line as gaps; the axis's shared format; `stale`) and `sheetChartOptions` (each
+  chart type, stacked and horizontal, a pie of one row and of many, the legend's place and
+  when it is drawn, data labels and the tooltip in each column's format, the axis
+  formatter, series identified by field); `frontend/src/workbench/__tests__/ChartBody.test.tsx`
+  (the runtime mocked) a Chart drawn once and given each new option merged, "Nothing to
+  chart yet", its values for a screen reader, the sample while building and the quote in
+  Preview, its dimming, a resize, a redraw on a change of theme, a failure's alert and
+  disposal on unmount; and `frontend/src/panels/explore/__tests__/chartRuntime.test.ts`
+  Pie registered and a new option's merge settings passed through.
 - The sample: `tests/test_workbench_routes.py` covers `POST /api/workbench/tables` for an
   unsaved form (its tables, sample and response tables, the file untouched, a value on a
   hidden sheet left out of the sample), the structured
   422 and a misshapen body, and 404 while disabled; `frontend/src/utils/__tests__/workbenchForm.test.ts`
-  `withCell`, `withSampleCell`, `withSampleRows` and `pricingBasis` (a layout change
-  changing nothing, a condition that hides a column changing it); `frontend/src/stores/__tests__/useWorkbenchFormStore.test.ts` the
+  `withCell`, `withSampleCell`, `withSampleRows`, `pricingBasis` (a layout change
+  changing nothing, a condition that hides a column changing it) and `linedUpOutputs`; `frontend/src/stores/__tests__/useWorkbenchFormStore.test.ts` the
   sample as part of the form, unsaved until saved and undone like any edit;
   `frontend/src/workbench/__tests__/priceSample.test.ts` the top-level nodes patched and
   the Workbench Output previewed per table, the document and its submodels untouched, and

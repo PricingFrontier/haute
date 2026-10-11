@@ -4,10 +4,10 @@
  * rows, keyed by item, an output), on one sheet, with a second, empty sheet.
  */
 import { vi } from "vitest"
-import type { FormSpec, SchemaColumn, SchemaTable } from "../../api/types"
+import type { ChartWidget, FieldRef, FormSpec, SchemaColumn, SchemaTable } from "../../api/types"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
-import { TABLE_OPTIONS } from "../../utils/workbenchForm"
+import { CHART_OPTIONS, TABLE_OPTIONS } from "../../utils/workbenchForm"
 
 export const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {}): SchemaColumn => ({
   id,
@@ -79,6 +79,21 @@ export const sheetForm = (): FormSpec => ({
     { id: "p2", title: "Sheet 2", show_when: { match: "all", conditions: [] }, widgets: [] },
   ],
   sample: {},
+})
+
+/** A Chart plotting `fields`, with a new Chart's options unless `overrides` says otherwise, always shown. */
+export const chartWidget = (id: string, fields: FieldRef[], overrides: Partial<ChartWidget> = {}): ChartWidget => ({
+  id,
+  type: "chart",
+  x: 16,
+  y: 380,
+  w: 480,
+  h: 280,
+  title: "",
+  fields,
+  show_when: { match: "all", conditions: [] },
+  ...CHART_OPTIONS,
+  ...overrides,
 })
 
 /**

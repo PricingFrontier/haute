@@ -518,6 +518,7 @@ export type {
 // ---------------------------------------------------------------------------
 
 export type {
+  ChartWidget,
   CollectionWidget,
   Condition,
   FieldRef,

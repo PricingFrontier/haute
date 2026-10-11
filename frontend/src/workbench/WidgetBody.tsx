@@ -1,6 +1,7 @@
 /**
  * How a component looks on a sheet (specs/workbench): a Collection's fields as labelled
- * boxes and a Table's as the columns of a grid, drawn as its options say. An input column takes the values the
+ * boxes and a Table's as the columns of a grid, drawn as its options say, and a Chart's
+ * plotted (`ChartBody`). An input column takes the values the
  * sheet holds, the sample while building or an underwriter's quote in Preview, through
  * the control its type calls for, marked when the value breaks the column's rules; an
  * output column is shaded and shows what pricing those values gave its row, dimmed until
@@ -13,8 +14,9 @@ import { CommittedTextField } from "../components/form"
 import { INPUT_STYLE } from "../panels/editors/_shared"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
 import { formatValue } from "../utils/formatValue"
-import { cellKey, formattedNumber, pricedRows, type PricedRows } from "../utils/sheetValues"
-import { readableName, tableGrain, type SampleRow, type SampleValue, type ShownField, type TableOptions, type Widget } from "../utils/workbenchForm"
+import { cellKey, formattedNumber } from "../utils/sheetValues"
+import { linedUpOutputs, readableName, type SampleRow, type SampleValue, type ShownField, type TableOptions, type Widget } from "../utils/workbenchForm"
+import ChartBody from "./ChartBody"
 import { isNumeric } from "./columnTypes"
 import { useSheetValues } from "./useSheetValues"
 
@@ -163,6 +165,8 @@ export default function WidgetBody({ widget, fields }: { widget: Widget; fields:
         >
           Choose its fields from the schema in the panel on the right
         </div>
+      ) : widget.type === "chart" ? (
+        <ChartBody widget={widget} />
       ) : widget.type === "collection" ? (
         <FieldBoxes widgetId={widget.id} fields={fields} columns={widget.columns} />
       ) : (
@@ -247,29 +251,15 @@ function FieldGrid({ widgetId, fields, rows, options }: { widgetId: string; fiel
   const { rows: held, setCell, setRows, price, basis, problems, quoted } = useSheetValues()
   const typeHere = useTypeHere(widgetId)
   const oneRow = (found: Fillable) => found.table.rows === "one"
-  const inputTables = [...new Set(fields.flatMap(({ found }) => (fillable(found) && !oneRow(found) ? [found.table.id] : [])))]
+  const inputs = [...new Map(fields.flatMap(({ found }) => (fillable(found) && !oneRow(found) ? [[found.table.id, found.table] as const] : []))).values()]
+  const inputTables = inputs.map((table) => table.id)
   const count = Math.max(rows, ...inputTables.map((id) => held[id]?.length ?? 0))
   const addRow = () => setRows(Object.fromEntries(inputTables.map((id) => [id, padRows(held[id] ?? [], count + 1)])))
   const deleteRow = (row: number) => setRows(Object.fromEntries(inputTables.map((id) => [id, (held[id] ?? []).filter((_, i) => i !== row)])))
   const stale = price !== null && price.basis !== basis
   // Each many-row output table's rows lined up with the grid's.
-  const matched = new Map<string, (Record<string, unknown> | undefined)[]>()
-  if (price !== null) {
-    for (const { found } of fields) {
-      if (found === null || found.table.role !== "output" || found.table.rows !== "many" || matched.has(found.table.id)) continue
-      const output = found.table
-      const input = fields.flatMap(({ found: shownField }) =>
-        fillable(shownField) && !oneRow(shownField) && tableGrain(shownField.table) === tableGrain(output) ? [shownField.table] : [],
-      )[0]
-      // The input table as the values' quote reads it: a column the sheets hide fills no row,
-      // so the grid's filled rows are the quote's typed rows.
-      const read = quoted.tables.find((table) => table.id === input?.id)
-      if (input === undefined || read === undefined) continue
-      const typed = price.sample[input.name]
-      const grid = Array.from({ length: count }, (_, row) => held[input.id]?.[row])
-      matched.set(output.id, pricedRows(read, grid, Array.isArray(typed) ? (typed as PricedRows) : [], price.tables[output.name] ?? []))
-    }
-  }
+  const outputs = fields.flatMap(({ found }) => (found !== null && found.table.role === "output" && found.table.rows === "many" ? [found.table] : []))
+  const matched = linedUpOutputs(inputs, outputs, held, count, price, quoted)
   const pricedAt = (found: NonNullable<Found>, row: number): unknown =>
     found.table.rows === "one" ? price?.tables[found.table.name]?.[0]?.[found.column.name] : matched.get(found.table.id)?.[row]?.[found.column.name]
 

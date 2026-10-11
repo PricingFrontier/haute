@@ -234,7 +234,9 @@ export interface SheetVisibility {
   hidden: ReadonlySet<string>
 }
 
-const fieldKeys = (widget: Widget): string[] => widget.fields.map((field) => columnKey(field.table, field.column))
+/** The columns a component has values typed into: a Table's and a Collection's fields, and none of a Chart's, which it only plots. */
+const fieldKeys = (widget: Widget): string[] =>
+  widget.type === "chart" ? [] : widget.fields.map((field) => columnKey(field.table, field.column))
 
 const showWhenPasses = (showWhen: ShowWhen, holds: (condition: Condition) => boolean): boolean => {
   if (showWhen.conditions.length === 0) return true

@@ -96,6 +96,23 @@
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
+              },
+              {
+                "id": "c_rate",
+                "name": "rate",
+                "type": "float",
+                "label": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
               }
             ]
           },
@@ -286,6 +303,23 @@
               "fields": [{"table": "t_out", "column": "c_premium"}],
               "show_when": {"match": "all", "conditions": []},
               "columns": 3
+            },
+            {
+              "id": "w_chart",
+              "x": 0,
+              "y": 320,
+              "w": 480,
+              "h": 280,
+              "type": "chart",
+              "title": "",
+              "fields": [{"table": "t_bi", "column": "c_bi_si"}, {"table": "t_policy", "column": "c_rate"}],
+              "show_when": {"match": "all", "conditions": []},
+              "category": null,
+              "chart_type": "column",
+              "orientation": "vertical",
+              "stacked": false,
+              "legend": "bottom",
+              "data_labels": false
             }
           ]
         },
@@ -781,6 +815,60 @@
         }
       },
       "values": {"t_policy": [{"c_ref": "Q-1", "c_class": "Property"}]},
+      "hidden_pages": ["p_bi", "p_ext", "p_items"],
+      "hidden_widgets": ["w_bi", "w_ext", "w_fleet", "w_items"],
+      "hidden_columns": [
+        ["t_bi", "c_bi_more"],
+        ["t_bi", "c_bi_si"],
+        ["t_ext", "c_ext_days"],
+        ["t_items", "c_item"],
+        ["t_items", "c_value"]
+      ]
+    },
+    {
+      "name": "a column on a hidden Collection and on a Chart that shows is hidden, since a Chart takes nothing typed",
+      "form": "quote",
+      "values": {"t_policy": [{"c_bi": false}], "t_bi": [{"c_bi_si": "100000"}]},
+      "hidden_pages": ["p_bi", "p_ext"],
+      "hidden_widgets": ["w_bi", "w_ext", "w_fleet", "w_items"],
+      "hidden_columns": [
+        ["t_bi", "c_bi_more"],
+        ["t_bi", "c_bi_si"],
+        ["t_ext", "c_ext_days"],
+        ["t_items", "c_item"],
+        ["t_items", "c_value"]
+      ]
+    },
+    {
+      "name": "a column only a Chart plots is never hidden, even while the Chart is",
+      "form": "quote",
+      "show_when": {
+        "w_chart": {
+          "match": "all",
+          "conditions": [{"table": "t_policy", "column": "c_bi", "op": "ticked", "values": []}]
+        }
+      },
+      "values": {"t_policy": [{"c_rate": "0.5"}]},
+      "hidden_pages": ["p_bi", "p_ext"],
+      "hidden_widgets": ["w_bi", "w_chart", "w_ext", "w_fleet", "w_items"],
+      "hidden_columns": [
+        ["t_bi", "c_bi_more"],
+        ["t_bi", "c_bi_si"],
+        ["t_ext", "c_ext_days"],
+        ["t_items", "c_item"],
+        ["t_items", "c_value"]
+      ]
+    },
+    {
+      "name": "a condition on a column only a Chart plots never holds, whatever the value",
+      "form": "quote",
+      "show_when": {
+        "p_items": {
+          "match": "all",
+          "conditions": [{"table": "t_policy", "column": "c_rate", "op": "filled", "values": []}]
+        }
+      },
+      "values": {"t_policy": [{"c_rate": "0.5", "c_class": "Property"}]},
       "hidden_pages": ["p_bi", "p_ext", "p_items"],
       "hidden_widgets": ["w_bi", "w_ext", "w_fleet", "w_items"],
       "hidden_columns": [

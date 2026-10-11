@@ -122,7 +122,11 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // conditions' rules, their editor in the properties panel and the sheets' eyes, all
 // in the lazy workbench chunks) bring it to 1,636.2 KiB; 1,638 KiB restores about
 // 1.8 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1638
+// The workbench's Chart (its data and options, its body and its panel section, in the
+// lazy workbench chunks, and the pie the shared chart runtime registers for it, 7.1 KiB
+// of the lazy vendor-charts chunk) brings it to 1,649.2 KiB; 1,651 KiB restores about
+// 1.8 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1651
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

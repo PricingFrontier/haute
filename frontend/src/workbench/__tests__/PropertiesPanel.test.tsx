@@ -1,18 +1,29 @@
 /**
  * The properties panel (specs/workbench): the selected component's title, Show when and
- * layout, a Table's fixed rows and look, the order of its fields, and the fields ticked
- * from the schema tables of its kind, with tables whose rows do not line up greyed out;
- * and the showing sheet's own panel, its title and its Show when.
+ * layout, a Table's fixed rows and look, a Chart's chart, the order of its fields, and the
+ * fields ticked from the schema tables of its kind (a Chart's from every table, the columns
+ * it cannot plot disabled), with tables whose rows do not line up greyed out; and the
+ * showing sheet's own panel, its title and its Show when.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import PropertiesPanel from "../PropertiesPanel"
-import { column, coverForm, currentForm, loadForm, sheetForm, table } from "./fixtures"
+import type { FieldRef, FormSpec } from "../../api/types"
+import { chartWidget, column, coverForm, currentForm, loadForm, sheetForm, table } from "./fixtures"
 
 const grid = () => currentForm().pages[0].widgets[1]
 const select = (id: string | null) => useWorkbenchViewStore.setState({ selectedId: id })
+const chart = () => currentForm().pages[0].widgets[2]
+
+/** `sheetForm` with a row-number index on equipment and a Chart, w_chart, plotting `fields`. */
+function chartForm(fields: FieldRef[]): FormSpec {
+  const form = sheetForm()
+  form.schema.tables[1].columns.unshift(column("equipment.row", "row", { type: "int", index: true }))
+  form.pages[0].widgets.push(chartWidget("w_chart", fields))
+  return form
+}
 
 describe("PropertiesPanel", () => {
   beforeEach(() => loadForm())
@@ -60,6 +71,86 @@ describe("PropertiesPanel", () => {
     rerender(<PropertiesPanel />)
     expect(screen.queryByRole("region", { name: "Look" })).not.toBeInTheDocument()
     expect(screen.queryByRole("checkbox", { name: "Fixed rows" })).not.toBeInTheDocument()
+  })
+
+  it("sets a Chart's type, what labels its rows, its legend, stacked, horizontal and data labels, each one undo step", () => {
+    loadForm(chartForm([]))
+    select("w_chart")
+    const { rerender } = render(<PropertiesPanel />)
+    expect(screen.getByText("Chart")).toBeInTheDocument()
+    expect(screen.queryByRole("region", { name: "Layout" })).not.toBeInTheDocument()
+    // Nothing to chart: no settings until it plots a field.
+    expect(screen.queryByRole("region", { name: "Chart" })).not.toBeInTheDocument()
+
+    loadForm(chartForm([{ table: "equipment", column: "equipment.value" }]))
+    select("w_chart")
+    rerender(<PropertiesPanel />)
+    expect(screen.queryByRole("region", { name: "Layout" })).not.toBeInTheDocument()
+    const settings = screen.getByRole("region", { name: "Chart" })
+    const undoSteps = () => useWorkbenchFormStore.getState().undoStack.length
+
+    // Rows: numbered, or labelled by a column of a table lined up with it, other than an index.
+    const rows = within(settings).getByRole("combobox", { name: "Label rows by" })
+    expect(rows).toHaveValue("")
+    expect(within(rows).getAllByRole("group").map((group) => group.getAttribute("label"))).toEqual(["equipment", "premiums"])
+    expect(within(rows).getAllByRole("option").map((option) => option.textContent)).toEqual(["Row number", "Item", "Value", "Item", "Premium"])
+    fireEvent.change(rows, { target: { value: JSON.stringify(["equipment", "equipment.item"]) } })
+    expect(chart()).toMatchObject({ category: { table: "equipment", column: "equipment.item" } })
+    expect(undoSteps()).toBe(1)
+    fireEvent.change(rows, { target: { value: "" } })
+    expect(chart()).toMatchObject({ category: null })
+    expect(undoSteps()).toBe(2)
+
+    fireEvent.change(within(settings).getByRole("combobox", { name: "Legend" }), { target: { value: "right" } })
+    expect(chart()).toMatchObject({ legend: "right" })
+    fireEvent.click(within(settings).getByRole("checkbox", { name: "Stacked" }))
+    fireEvent.click(within(settings).getByRole("checkbox", { name: "Horizontal" }))
+    fireEvent.click(within(settings).getByRole("checkbox", { name: "Data labels" }))
+    expect(chart()).toMatchObject({ stacked: true, orientation: "horizontal", data_labels: true })
+    expect(undoSteps()).toBe(6)
+
+    // A pie is neither stacked nor horizontal; it still takes data labels.
+    fireEvent.change(within(settings).getByRole("combobox", { name: "Chart type" }), { target: { value: "pie" } })
+    expect(chart()).toMatchObject({ chart_type: "pie" })
+    expect(undoSteps()).toBe(7)
+    expect(within(settings).getByRole("checkbox", { name: "Stacked" })).toBeDisabled()
+    expect(within(settings).getByRole("checkbox", { name: "Horizontal" })).toBeDisabled()
+    expect(within(settings).getByRole("checkbox", { name: "Data labels" })).toBeEnabled()
+
+    // Plotting a one-row table, its one row is not labelled.
+    loadForm(chartForm([{ table: "policy", column: "policy.year" }]))
+    select("w_chart")
+    rerender(<PropertiesPanel />)
+    expect(screen.getByRole("combobox", { name: "Chart type" })).toBeInTheDocument()
+    expect(screen.queryByRole("combobox", { name: "Label rows by" })).not.toBeInTheDocument()
+  })
+
+  it("ticks a Chart's fields from every table, the columns it cannot plot disabled and the tables out of line greyed out", () => {
+    loadForm(chartForm([]))
+    select("w_chart")
+    render(<PropertiesPanel />)
+    const fields = screen.getByRole("region", { name: "Fields" })
+    const cannotPlot = "A Chart plots number columns other than an index"
+
+    for (const id of ["policy", "equipment", "premiums"]) expect(within(fields).getByTestId(`fields-table-${id}`)).toHaveStyle({ opacity: "1" })
+    const state = within(fields).getByRole("checkbox", { name: "Show policy state" })
+    expect(state).toBeDisabled()
+    expect(state.closest("label")).toHaveAttribute("title", cannotPlot)
+    const index = within(fields).getByRole("checkbox", { name: "Show equipment row" })
+    expect(index).toBeDisabled()
+    expect(index.closest("label")).toHaveAttribute("title", cannotPlot)
+    expect(within(fields).getByRole("checkbox", { name: "Show premiums premium" })).toBeEnabled()
+    expect(within(fields).getByRole("checkbox", { name: "Show premiums premium" }).closest("label")).not.toHaveAttribute("title")
+
+    // Once it plots a one-row column, the many-row tables do not line up with it.
+    fireEvent.click(within(fields).getByRole("checkbox", { name: "Show policy year" }))
+    expect(chart().fields).toEqual([{ table: "policy", column: "policy.year" }])
+    expect(screen.getByTestId("fields-table-policy")).toHaveStyle({ opacity: "1" })
+    const equipment = screen.getByTestId("fields-table-equipment")
+    expect(equipment).toHaveStyle({ opacity: "0.5" })
+    expect(equipment).toHaveAttribute("title", "Its rows don't line up with the fields already chosen")
+    expect(within(equipment).getByRole("checkbox", { name: "Show equipment value" })).toBeDisabled()
+    expect(screen.getByTestId("fields-table-premiums")).toHaveStyle({ opacity: "0.5" })
   })
 
   it("ticks the fields from the schema tables of the component's kind, in the order ticked", () => {

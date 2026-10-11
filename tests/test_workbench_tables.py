@@ -445,6 +445,48 @@ def test_a_value_in_a_column_the_sheets_hide_is_left_out_of_the_sample() -> None
     }
 
 
+def test_a_value_a_chart_that_shows_plots_is_left_out_while_the_collection_taking_it_hides() -> (
+    None
+):
+    spec = form(
+        {
+            "id": "t1",
+            "name": "policy",
+            "role": "input",
+            "rows": "one",
+            "columns": [column("bi_cover", "bool"), column("assured"), column("bi_limit", "float")],
+        },
+        pages=[
+            {
+                "id": "p_main",
+                "title": "Main",
+                "widgets": [
+                    widget("w_policy", "collection", "t1.c_bi_cover", "t1.c_assured"),
+                    widget("w_chart", "chart", "t1.c_bi_limit"),
+                ],
+            },
+            {
+                "id": "p_bi",
+                "title": "Business interruption",
+                "show_when": {
+                    "conditions": [{"table": "t1", "column": "c_bi_cover", "op": "ticked"}]
+                },
+                "widgets": [widget("w_bi", "collection", "t1.c_bi_limit")],
+            },
+        ],
+    )
+    spec.sample = {"t1": [{"c_bi_cover": False, "c_assured": "Acme", "c_bi_limit": "500,000"}]}
+    typed = copy.deepcopy(spec.sample)
+
+    # A Chart takes nothing typed, so the limit it plots goes with the Collection's sheet.
+    assert sample_quote(spec) == {"policy": {"bi_cover": False, "assured": "Acme"}}
+    assert spec.sample == typed
+    spec.sample["t1"][0]["c_bi_cover"] = True
+    assert sample_quote(spec) == {
+        "policy": {"bi_cover": True, "assured": "Acme", "bi_limit": 500000.0}
+    }
+
+
 def test_output_tables_become_the_workbench_outputs_tables_in_schema_order() -> None:
     spec = form(
         {

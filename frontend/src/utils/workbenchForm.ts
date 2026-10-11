@@ -1,24 +1,26 @@
 /**
  * Pure operations on the workbench's form (specs/workbench): the schema's tables and
- * columns, the sheets and the components on them, what the components show of the
- * schema and when they show, and what would stop the schema being the pipeline's tables
+ * columns, the sheets and the components on them, what the components show or plot of
+ * the schema and when they show, and what would stop the schema being the pipeline's tables
  * or a sheet or a component showing what it should. Each operation returns a new form and
  * leaves its input untouched.
  */
-import type { Condition, FieldRef, FormSpec, Page, SchemaColumn, SchemaTable, ShowWhen } from "../api/types"
+import type { ChartWidget, Condition, FieldRef, FormSchema, FormSpec, Page, SchemaColumn, SchemaTable, ShowWhen } from "../api/types"
 import { ASCII_IDENTIFIER_RE, apiInputLabelIssue, apiInputLabelIssueMessage } from "./apiInputPorts"
 import { PYTHON_KEYWORDS } from "./globalConstants"
 import type { Rect } from "./sheetGeometry"
-import { parseTypedNumber, valuesBasis } from "./sheetValues"
+import { parseTypedNumber, pricedRows, valuesBasis, type PricedRows, type RowsByTable } from "./sheetValues"
 import { conditionFault, neverShown, quotedSchema, sheetVisibility, testLabel } from "./sheetVisibility"
 
-/** A sheet's widget: a Table or a Collection. */
+/** A sheet's widget: a Table, a Collection or a Chart. */
 export type Widget = Page["widgets"][number]
 export type WidgetType = Widget["type"]
 /** A column's type: the Quote Input's column types. */
 export type ColumnType = SchemaColumn["type"]
 /** How a Table's grid looks, and whether its rows are fixed: no Add row and no delete. */
 export type TableOptions = Pick<Extract<Widget, { type: "tableInput" }>, "row_numbers" | "density" | "gridlines" | "striped" | "fixed_rows">
+/** What names a Chart's rows, and how it draws. */
+export type ChartOptions = Pick<ChartWidget, "category" | "chart_type" | "orientation" | "stacked" | "legend" | "data_labels">
 
 export const newId = (prefix: string): string => `${prefix}_${crypto.randomUUID().slice(0, 8)}`
 
@@ -99,9 +101,15 @@ export const updateSchemaTable = (spec: FormSpec, id: string, patch: Partial<Sch
     Object.assign(schemaTableOf(draft, id), patch)
   })
 
-/** Take the schema columns `drop` matches out of every widget that shows them. */
+/**
+ * Take the schema columns `drop` matches out of every widget that shows them, numbering
+ * again the rows of a Chart that one of them labelled.
+ */
 const dropFields = (draft: FormSpec, drop: (field: FieldRef) => boolean): void => {
-  for (const widget of allWidgets(draft)) widget.fields = widget.fields.filter((field) => !drop(field))
+  for (const widget of allWidgets(draft)) {
+    widget.fields = widget.fields.filter((field) => !drop(field))
+    if (widget.type === "chart" && widget.category !== null && drop(widget.category)) widget.category = null
+  }
 }
 
 /** Take the conditions `drop` matches out of every sheet and widget that tests them. */
@@ -112,8 +120,8 @@ const dropConditions = (draft: FormSpec, drop: (condition: Condition) => boolean
 }
 
 /**
- * Removing a table removes its columns from the widgets that show them and the conditions
- * that test them, and its sample rows.
+ * Removing a table removes its columns from the widgets that show them, or label a Chart's
+ * rows, and the conditions that test them, and its sample rows.
  */
 export const removeSchemaTable = (spec: FormSpec, id: string): FormSpec =>
   edit(spec, (draft) => {
@@ -195,8 +203,8 @@ export const changeSchemaColumnType = (
   })
 
 /**
- * Removing a column removes it from the widgets that show it and the conditions that
- * test it, and its sample values.
+ * Removing a column removes it from the widgets that show it, or label a Chart's rows,
+ * and the conditions that test it, and its sample values.
  */
 export const removeSchemaColumn = (spec: FormSpec, tableId: string, columnId: string): FormSpec =>
   edit(spec, (draft) => {
@@ -207,10 +215,12 @@ export const removeSchemaColumn = (spec: FormSpec, tableId: string, columnId: st
     for (const row of draft.sample[tableId] ?? []) delete row[columnId]
   })
 
-/** The widgets showing a schema table's columns, or just one of them. */
+/** The widgets showing a schema table's columns, or just one of them, a Chart labelling its rows by one included. */
 export const fieldUses = (spec: FormSpec, tableId: string, columnId?: string): Widget[] =>
   allWidgets(spec).filter((widget) =>
-    widget.fields.some((field) => field.table === tableId && (columnId === undefined || field.column === columnId)),
+    [...widget.fields, ...(widget.type === "chart" && widget.category !== null ? [widget.category] : [])].some(
+      (field) => field.table === tableId && (columnId === undefined || field.column === columnId),
+    ),
   )
 
 /** The sheets and widgets whose conditions test a schema table's columns, or just one of them. */
@@ -309,12 +319,29 @@ function widgetOf(spec: FormSpec, id: string): Widget {
 /** A new Table's options: numbered, compact, lined between rows, striped and not fixed. */
 export const TABLE_OPTIONS: Readonly<TableOptions> = { row_numbers: true, density: "compact", gridlines: "rows", striped: true, fixed_rows: false }
 
+/** A new Chart's options: its rows numbered, columns, upright, unstacked, its legend at the bottom and no data labels. */
+export const CHART_OPTIONS: Readonly<ChartOptions> = {
+  category: null,
+  chart_type: "column",
+  orientation: "vertical",
+  stacked: false,
+  legend: "bottom",
+  data_labels: false,
+}
+
 /** A new component of `type` at `rect`, showing nothing yet, and always. */
 export function createWidget(type: WidgetType, rect: Rect): Widget {
   // In the file's order, so a component the view made compares equal to it saved.
   const { x, y, w, h } = rect
   const placed = { id: newId("w"), x, y, w, h, type, title: "", fields: [] as FieldRef[], show_when: alwaysShown() }
-  return type === "collection" ? { ...placed, type, columns: 3 } : { ...placed, type, rows: 3, ...TABLE_OPTIONS }
+  switch (type) {
+    case "collection":
+      return { ...placed, type, columns: 3 }
+    case "chart":
+      return { ...placed, type, ...CHART_OPTIONS }
+    case "tableInput":
+      return { ...placed, type, rows: 3, ...TABLE_OPTIONS }
+  }
 }
 
 export const addWidget = (spec: FormSpec, pageId: string, widget: Widget): FormSpec =>
@@ -322,10 +349,15 @@ export const addWidget = (spec: FormSpec, pageId: string, widget: Widget): FormS
     pageOf(draft, pageId).widgets.push(widget)
   })
 
-/** What any component can be given; `rows` and the options are a Table's alone and `columns` a Collection's. */
-export type WidgetPatch = Partial<Rect> & { title?: string; fields?: FieldRef[]; show_when?: ShowWhen; rows?: number; columns?: number } & Partial<TableOptions>
+/**
+ * What any component can be given; `rows` and the Table's options are a Table's alone,
+ * `columns` a Collection's and the Chart's options a Chart's.
+ */
+export type WidgetPatch = Partial<Rect> & { title?: string; fields?: FieldRef[]; show_when?: ShowWhen; rows?: number; columns?: number } & Partial<TableOptions> &
+  Partial<ChartOptions>
 
 const TABLE_ONLY = ["rows", ...Object.keys(TABLE_OPTIONS)]
+const CHART_ONLY = Object.keys(CHART_OPTIONS)
 
 export const updateWidget = (spec: FormSpec, id: string, patch: WidgetPatch): FormSpec =>
   edit(spec, (draft) => {
@@ -333,6 +365,8 @@ export const updateWidget = (spec: FormSpec, id: string, patch: WidgetPatch): Fo
     const tableOnly = TABLE_ONLY.find((key) => key in patch)
     if (tableOnly !== undefined && widget.type !== "tableInput") throw new Error(`Only a Table has ${tableOnly}`)
     if ("columns" in patch && widget.type !== "collection") throw new Error("Only a Collection has columns")
+    const chartOnly = CHART_ONLY.find((key) => key in patch)
+    if (chartOnly !== undefined && widget.type !== "chart") throw new Error(`Only a Chart has ${chartOnly}`)
     Object.assign(widget, patch)
   })
 
@@ -353,8 +387,8 @@ export function duplicateWidget(spec: FormSpec, id: string): { spec: FormSpec; i
   return { spec: next, id: copyId }
 }
 
-/** Whose columns a component shows: a Table, many-row tables'; a Collection, one-row tables'. */
-export const rowsShown = (widget: Pick<Widget, "type">): SchemaTable["rows"] =>
+/** Whose columns a Table or a Collection shows: a Table, many-row tables'; a Collection, one-row tables'. A Chart plots either. */
+export const rowsShown = (widget: { type: "tableInput" | "collection" }): SchemaTable["rows"] =>
   widget.type === "collection" ? "one" : "many"
 
 /**
@@ -371,6 +405,35 @@ export const tableGrain = (table: SchemaTable): string =>
           .sort()
           .join(",") || table.id
       }`
+
+/**
+ * Which rows a Chart's columns fill (`tableGrain`): its first field's table's, else that of
+ * the column labelling its rows; null while it has neither. The rest line up with it.
+ */
+export function chartGrain(spec: FormSpec, widget: ChartWidget): string | null {
+  const refs = widget.category === null ? widget.fields : [...widget.fields, widget.category]
+  for (const field of refs) {
+    const found = fieldColumn(spec, field)
+    if (found !== null) return tableGrain(found.table)
+  }
+  return null
+}
+
+/** Whether a Chart can plot a column: a number column, other than an index, which numbers the rows. */
+export const plottable = (column: SchemaColumn): boolean => (column.type === "int" || column.type === "float") && !column.index
+
+/**
+ * The columns that can label a Chart's rows: those of the many-row tables of its grain,
+ * other than an index ("Row number" numbers the rows as an index does), by table.
+ */
+export function labelColumns(spec: FormSpec, widget: ChartWidget): { table: SchemaTable; columns: SchemaColumn[] }[] {
+  const grain = chartGrain(spec, widget)
+  if (grain === null || grain === "one") return []
+  return spec.schema.tables
+    .filter((table) => table.rows === "many" && tableGrain(table) === grain)
+    .map((table) => ({ table, columns: table.columns.filter((column) => !column.index) }))
+    .filter(({ columns }) => columns.length > 0)
+}
 
 /** Move a component's field from one place in its order to another. */
 export const moveField = (spec: FormSpec, widgetId: string, from: number, to: number): FormSpec =>
@@ -434,13 +497,47 @@ export function pricingBasis(spec: FormSpec): string {
   return basis
 }
 
+/** What a pricing gave: the values it priced, as the server typed them, and its output tables by name. */
+interface Priced {
+  readonly sample: Readonly<Record<string, unknown>>
+  readonly tables: Readonly<Record<string, PricedRows>>
+}
+
+/**
+ * Each many-row output table of `outputs` lined up with a grid's `count` rows, through the
+ * first of `inputs` (the many-row input tables shown, in order) keyed alike: on each grid
+ * row, the output row `pricedRows` finds for it, the input table read as the quote reads it
+ * (`quoted`), so its filled rows are the typed rows the pricing answers with. An output
+ * table no input table lines up with is left out, and every one while there is no price.
+ */
+export function linedUpOutputs(
+  inputs: readonly SchemaTable[],
+  outputs: readonly SchemaTable[],
+  held: RowsByTable,
+  count: number,
+  price: Priced | null,
+  quoted: FormSchema,
+): Map<string, (Record<string, unknown> | undefined)[]> {
+  const lined = new Map<string, (Record<string, unknown> | undefined)[]>()
+  if (price === null) return lined
+  for (const output of outputs) {
+    const input = inputs.find((table) => tableGrain(table) === tableGrain(output))
+    const read = quoted.tables.find((table) => table.id === input?.id)
+    if (input === undefined || read === undefined || lined.has(output.id)) continue
+    const typed = price.sample[input.name]
+    const grid = Array.from({ length: count }, (_, row) => held[input.id]?.[row])
+    lined.set(output.id, pricedRows(read, grid, Array.isArray(typed) ? (typed as PricedRows) : [], price.tables[output.name] ?? []))
+  }
+  return lined
+}
+
 /** What stops a component showing what it should, by the component it is about. */
 export interface WidgetProblem {
   widgetId: string
   message: string
 }
 
-const KIND_NAMES: Record<WidgetType, string> = { tableInput: "Table", collection: "Collection" }
+const KIND_NAMES: Record<WidgetType, string> = { tableInput: "Table", collection: "Collection", chart: "Chart" }
 
 /** `Table "Layers"`, or `A Table` while it has no title. */
 export const widgetName = (widget: Widget): string =>
@@ -449,8 +546,9 @@ export const widgetName = (widget: Widget): string =>
 /**
  * What stops a component showing what it should: no fields, a column no longer in the
  * schema, a table of the other kind (as when a table is switched between one row and
- * many after its columns were chosen), or tables whose rows do not line up; and what
- * stops its conditions doing what they say (`conditionProblems`).
+ * many after its columns were chosen), tables whose rows do not line up, or what stops
+ * a Chart plotting what it should (`chartProblems`); and what stops its conditions
+ * doing what they say (`conditionProblems`).
  */
 export function widgetProblems(spec: FormSpec): WidgetProblem[] {
   const problems: WidgetProblem[] = []
@@ -461,13 +559,42 @@ export function widgetProblems(spec: FormSpec): WidgetProblem[] {
     if (widget.fields.length === 0) problem("shows no fields")
     const found = widget.fields.map((field) => fieldColumn(spec, field))
     if (found.includes(null)) problem("shows a column that is no longer in the schema")
-    const rows = rowsShown(widget)
-    if (found.some((shown) => shown !== null && shown.table.rows !== rows)) {
-      problem(rows === "many" ? "shows a one-row table; a Collection shows those" : "shows a many-row table; a Table shows those")
+    if (widget.type === "chart") {
+      for (const message of chartProblems(spec, widget)) problem(message)
+    } else {
+      const rows = rowsShown(widget)
+      if (found.some((shown) => shown !== null && shown.table.rows !== rows)) {
+        problem(rows === "many" ? "shows a one-row table; a Collection shows those" : "shows a many-row table; a Table shows those")
+      }
+      const grains = new Set(found.flatMap((shown) => (shown !== null && shown.table.rows === rows ? [tableGrain(shown.table)] : [])))
+      if (grains.size > 1) problem("shows tables whose rows do not line up")
     }
-    const grains = new Set(found.flatMap((shown) => (shown !== null && shown.table.rows === rows ? [tableGrain(shown.table)] : [])))
-    if (grains.size > 1) problem("shows tables whose rows do not line up")
     for (const message of conditionProblems(spec, widget, never)) problem(message)
+  }
+  return problems
+}
+
+/**
+ * What stops a Chart plotting what it should: a field it cannot plot (not a number, or an
+ * index), the column labelling its rows gone, tables whose rows do not line up (its fields'
+ * and that column's), or a pie of many rows given more than one field, of which it plots
+ * the first.
+ */
+function chartProblems(spec: FormSpec, widget: ChartWidget): string[] {
+  const problems: string[] = []
+  const found = widget.fields.map((field) => fieldColumn(spec, field))
+  for (const shown of found) {
+    if (shown === null || plottable(shown.column)) continue
+    const label = shown.column.label || readableName(shown.column.name)
+    problems.push(`plots ${label}, which ${shown.column.index ? "numbers the rows" : "is not a number"}`)
+  }
+  const category = widget.category === null ? undefined : fieldColumn(spec, widget.category)
+  if (category === null) problems.push("labels its rows by a column that is no longer in the schema")
+  const lined = [...found, category ?? null].flatMap((shown) => (shown === null ? [] : [tableGrain(shown.table)]))
+  if (new Set(lined).size > 1) problems.push("shows tables whose rows do not line up")
+  const grain = chartGrain(spec, widget)
+  if (widget.chart_type === "pie" && grain !== null && grain !== "one" && widget.fields.length > 1) {
+    problems.push("is a pie of many rows, so it plots only its first field")
   }
   return problems
 }
@@ -525,10 +652,14 @@ function conditionProblems(spec: FormSpec, holder: Page | Widget, never: Readonl
   const waiting = never.get(holder.id)
   if (waiting !== undefined) {
     const name = fieldColumn(spec, waiting)?.column.name ?? waiting.column
+    // Typed into a Table or a Collection: a Chart only plots, so it never counts.
+    const entered = allWidgets(spec).some(
+      (widget) => widget.type !== "chart" && widget.fields.some((field) => field.table === waiting.table && field.column === waiting.column),
+    )
     problems.push(
-      fieldUses(spec, waiting.table, waiting.column).length === 0
-        ? `waits on ${name}, which is on no component`
-        : `waits on ${name}, which is only on components that hide with it, so it could not show again once hidden`,
+      entered
+        ? `waits on ${name}, which is only on components that hide with it, so it could not show again once hidden`
+        : `waits on ${name}, which is on no Table or Collection`,
     )
   }
   return problems

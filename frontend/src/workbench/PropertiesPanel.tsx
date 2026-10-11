@@ -2,11 +2,13 @@
  * The properties panel (specs/workbench): what opens on the right, on Haute's side panel,
  * when a component on the sheet is selected. Its title, when it shows, its layout (a
  * Table's rows and whether they are fixed, a Collection's columns), a Table's look (its
- * density, gridlines, row numbers and stripes), the order of the fields it shows, and the
- * fields themselves, ticked from the schema tables of its kind: many-row tables for a
- * Table, one-row tables for a Collection. A grid holds one kind of row, so once a Table
- * shows a field, tables whose rows do not line up with it are greyed out. Opened from the
- * showing sheet's tab instead, it is the sheet's panel: its title and when it shows.
+ * density, gridlines, row numbers and stripes), a Chart's chart (`ChartSettings`), the
+ * order of the fields it shows, and the fields themselves, ticked from the schema tables
+ * of its kind: many-row tables for a Table, one-row tables for a Collection, any table for
+ * a Chart, which plots number columns alone. A grid holds one kind of row, so once a Table
+ * or a Chart shows a field, tables whose rows do not line up with it are greyed out.
+ * Opened from the showing sheet's tab instead, it is the sheet's panel: its title and
+ * when it shows.
  */
 import { ChevronDown, ChevronRight, GripVertical, Sheet, X } from "lucide-react"
 import { useState, type KeyboardEvent, type ReactNode } from "react"
@@ -18,9 +20,11 @@ import { INPUT_STYLE } from "../panels/editors/_shared"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore, { activePage } from "../stores/useWorkbenchViewStore"
 import {
+  chartGrain,
   fieldColumn,
   findWidget,
   moveField,
+  plottable,
   readableName,
   renamePage,
   rowsShown,
@@ -31,6 +35,7 @@ import {
   type TableOptions,
   type Widget,
 } from "../utils/workbenchForm"
+import ChartSettings from "./ChartSettings"
 import { COLUMN_TYPES } from "./columnTypes"
 import { ShowWhenEditor } from "./ShowWhenEditor"
 import { COMPONENT_COLOR, WIDGET_KINDS } from "./widgetKinds"
@@ -70,10 +75,10 @@ export default function PropertiesPanel() {
     )
   }
   if (found === null) return null
-  const { label, icon: Icon } = WIDGET_KINDS[found.widget.type]
+  const { label, icon: Icon, color } = WIDGET_KINDS[found.widget.type]
 
   return (
-    <SidePanel {...panel} title={label} icon={<Icon size={14} style={{ color: COMPONENT_COLOR }} />}>
+    <SidePanel {...panel} title={label} icon={<Icon size={14} style={{ color }} />}>
       <FieldsSettings form={form} widget={found.widget} />
     </SidePanel>
   )
@@ -127,12 +132,13 @@ function FieldsSettings({ form, widget }: { form: FormSpec; widget: Widget }) {
   const change = useWorkbenchFormStore((s) => s.change)
   const showSection = useWorkbenchViewStore((s) => s.showSection)
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
-  const rows = rowsShown(widget)
-  const tables = form.schema.tables.filter((table) => table.rows === rows)
+  // A Chart plots either kind of table; a Table and a Collection each show one.
+  const rows = widget.type === "chart" ? null : rowsShown(widget)
+  const tables = rows === null ? form.schema.tables : form.schema.tables.filter((table) => table.rows === rows)
   // The rows the fields already chosen fill: columns of tables that fill other rows cannot
   // share the grid. A key-less many-row table, for one, lines up with nothing else.
   const first = widget.fields.map((field) => fieldColumn(form, field)).find((shown) => shown?.table.rows === rows)
-  const grain = first ? tableGrain(first.table) : null
+  const grain = widget.type === "chart" ? chartGrain(form, widget) : first ? tableGrain(first.table) : null
   const toggleCollapsed = (id: string) =>
     setCollapsed((current) => {
       const next = new Set(current)
@@ -162,7 +168,7 @@ function FieldsSettings({ form, widget }: { form: FormSpec; widget: Widget }) {
           onChange={(next) => change((spec) => updateWidget(spec, widget.id, { show_when: next }))}
         />
       </Section>
-      {widget.fields.length > 0 && (
+      {widget.type !== "chart" && widget.fields.length > 0 && (
         <Section title="Layout">
           <label className="flex items-center gap-2">
             <span className="w-14" style={{ color: "var(--text-muted)" }}>
@@ -261,6 +267,11 @@ function FieldsSettings({ form, widget }: { form: FormSpec; widget: Widget }) {
           </div>
         </Section>
       )}
+      {widget.type === "chart" && widget.fields.length > 0 && (
+        <Section title="Chart">
+          <ChartSettings form={form} widget={widget} />
+        </Section>
+      )}
       {widget.fields.length > 0 && (
         <Section title="Order" aside="drag, or Alt+Up and Alt+Down">
           <FieldOrder form={form} widget={widget} />
@@ -269,7 +280,7 @@ function FieldsSettings({ form, widget }: { form: FormSpec; widget: Widget }) {
       <Section title="Fields" aside={`${widget.fields.length} shown`}>
         {tables.length === 0 ? (
           <p style={{ color: "var(--text-muted)" }}>
-            The schema has no {rows === "one" ? "one-row" : "many-row"} tables yet.{" "}
+            The schema has no {rows === null ? "" : rows === "one" ? "one-row " : "many-row "}tables yet.{" "}
             <button type="button" onClick={() => showSection("schema")} className="quiet-action focus-ring rounded">
               Open the schema
             </button>
@@ -281,6 +292,7 @@ function FieldsSettings({ form, widget }: { form: FormSpec; widget: Widget }) {
               widget={widget}
               table={table}
               usable={grain === null || tableGrain(table) === grain}
+              plots={widget.type === "chart"}
               collapsed={collapsed.has(table.id)}
               onToggle={() => toggleCollapsed(table.id)}
             />
@@ -365,6 +377,7 @@ function TableFields({
   widget,
   table,
   usable,
+  plots,
   collapsed,
   onToggle,
 }: {
@@ -372,6 +385,8 @@ function TableFields({
   table: SchemaTable
   /** Whether its rows line up with the fields already chosen. */
   usable: boolean
+  /** A Chart's: only the columns it can plot can be ticked. */
+  plots: boolean
   collapsed: boolean
   onToggle: () => void
 }) {
@@ -413,16 +428,18 @@ function TableFields({
           {table.columns.map((column) => {
             const { label, icon: Icon, color } = COLUMN_TYPES[column.type]
             const checked = isShown(column.id)
+            const tickable = checked || (usable && (!plots || plottable(column)))
             return (
               <label
                 key={column.id}
-                className={`flex items-center gap-1.5 rounded px-1.5 py-0.5 ${usable || checked ? "cursor-pointer hover-bg" : "cursor-not-allowed"}`}
+                title={plots && !plottable(column) ? "A Chart plots number columns other than an index" : undefined}
+                className={`flex items-center gap-1.5 rounded px-1.5 py-0.5 ${tickable ? "cursor-pointer hover-bg" : "cursor-not-allowed"}`}
               >
                 <input
                   type="checkbox"
                   aria-label={`Show ${table.name} ${column.name}`}
                   checked={checked}
-                  disabled={!usable && !checked}
+                  disabled={!tickable}
                   onChange={() => change((spec) => toggleField(spec, widget.id, { table: table.id, column: column.id }))}
                   style={{ accentColor: "var(--accent)" }}
                 />
