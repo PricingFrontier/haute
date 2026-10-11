@@ -137,6 +137,24 @@ describe("useWorkbenchShortcuts on the sheets", () => {
     expect(widgets()[0]).toMatchObject({ x: 23, y: 24 })
   })
 
+  it("finishes a drag under way before a nudge, inside a burst too, so the drag never writes over it", () => {
+    vi.useFakeTimers()
+    const forms = useWorkbenchFormStore.getState
+    key({ key: "ArrowRight" })
+    expect(widgets()[0]).toMatchObject({ x: 24 })
+
+    // The component pressed, as a drag begins, then nudged again within the burst.
+    const stop = vi.fn()
+    forms().beginGesture(forms().form!, stop)
+    key({ key: "ArrowRight" })
+    expect(stop).toHaveBeenCalledTimes(1)
+    expect(widgets()[0]).toMatchObject({ x: 32 })
+    // The press moved nothing, so the burst is still one undo step.
+    expect(forms().undoStack).toHaveLength(1)
+    key({ key: "z", ctrlKey: true })
+    expect(widgets()[0]).toMatchObject({ x: 16 })
+  })
+
   it("nudges a component no higher than its section's top and no lower than its bottom, never growing the section", () => {
     vi.useFakeTimers()
     loadForm(sectionedForm())

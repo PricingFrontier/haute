@@ -88,6 +88,9 @@ export default function useWorkbenchShortcuts(onSave: () => void): void {
           e.preventDefault()
           return
         }
+        // A drag under way is finished first, as any edit finishes it, even inside a burst,
+        // so its later steps never write over the nudge.
+        forms.endGesture()
         const now = Date.now()
         const burst = nudging.current
         if (burst === null || burst.id !== selected.id || now > burst.until || burst.form !== forms.form) {
