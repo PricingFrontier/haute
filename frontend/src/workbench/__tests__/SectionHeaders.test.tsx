@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, renderHook, screen, within } from "@testing-library/react"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
-import { findSection, findWidget, withSampleCell } from "../../utils/workbenchForm"
+import { findSection, findWidget, renameSection, withSampleCell } from "../../utils/workbenchForm"
 import SheetCanvas from "../SheetCanvas"
 import useWorkbenchShortcuts from "../useWorkbenchShortcuts"
 import { currentForm, drag, loadForm, releasePointer, sectionedForm, stubLayout } from "./fixtures"
@@ -327,6 +327,50 @@ describe("SectionHeaders", () => {
     fireEvent.doubleClick(edge("s_notes"))
     expect(heightOf("s_notes")).toBe(48)
     expect(undoSteps()).toBe(2)
+  })
+
+  it("finishes a handle's drag as Ctrl+Z is pressed during it, recording it and undoing it, so undo and redo keep their direction", () => {
+    renderHook(() => useWorkbenchShortcuts(() => {}))
+    render(<SheetCanvas />)
+    const titleOf = (id: string) => findSection(currentForm(), id)?.section.title
+    const ctrl = (key: string, shiftKey = false) => fireEvent.keyDown(window, { key, ctrlKey: true, shiftKey })
+    act(() => useWorkbenchFormStore.getState().change((spec) => renameSection(spec, "s_notes", "Cover")))
+    fireEvent.click(bar("s_notes"))
+
+    // Notes, 456 to 528, its handle under its bottom: pressed and dragged 16 down, then Ctrl+Z.
+    pointer("pointerdown", 500, 528, edge("s_notes"))
+    pointer("pointermove", 500, 544)
+    expect(heightOf("s_notes")).toBe(88)
+    ctrl("z")
+    // The drag is undone, the title kept, and the pointer no longer followed.
+    expect([heightOf("s_notes"), titleOf("s_notes")]).toEqual([72, "Cover"])
+    pointer("pointermove", 500, 600)
+    pointer("pointerup", 500, 600)
+    expect(heightOf("s_notes")).toBe(72)
+
+    // Undo goes on back, to the title, and redo forward, to the drag.
+    ctrl("z")
+    expect([heightOf("s_notes"), titleOf("s_notes")]).toEqual([72, "Notes"])
+    ctrl("z", true)
+    ctrl("z", true)
+    expect([heightOf("s_notes"), titleOf("s_notes")]).toEqual([88, "Cover"])
+  })
+
+  it("ends a bar's drag as Ctrl+Z is pressed during it, moving nothing on its release", () => {
+    renderHook(() => useWorkbenchShortcuts(() => {}))
+    render(<SheetCanvas />)
+    act(() => useWorkbenchFormStore.getState().change((spec) => renameSection(spec, "s_notes", "Cover")))
+
+    // Policy's bar dragged past Flood's middle, then Ctrl+Z: the line goes and nothing moves.
+    pointer("pointerdown", 500, 12, bar("s_policy"))
+    pointer("pointermove", 500, 330)
+    expect(view().movingSection).toEqual({ id: "s_policy", to: 1 })
+    fireEvent.keyDown(window, { key: "z", ctrlKey: true })
+    expect(view().movingSection).toBeNull()
+    expect(movingLine()).not.toBeInTheDocument()
+    pointer("pointerup", 500, 330)
+    expect(order()).toEqual(SECTIONS)
+    expect(findSection(currentForm(), "s_notes")?.section.title).toBe("Notes")
   })
 
   it("drags a bar and a handle at the zoom, wherever the sheet sits on the screen", () => {

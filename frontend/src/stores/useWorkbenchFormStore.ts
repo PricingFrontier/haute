@@ -73,12 +73,19 @@ interface WorkbenchFormState {
   /** Replace the form without recording history, for each step of a gesture. */
   setFormRaw: (form: FormSpec) => void
   /**
-   * Record `before`, the form as a gesture found it, for undo once the gesture's
-   * `setFormRaw` steps are done, so the whole gesture is one undo step; a gesture that
-   * leaves the form as it found it (held at a limit, or back where it began) records
-   * nothing and keeps redo.
+   * Start a gesture on `before`, the form as pressed, its steps through `setFormRaw`;
+   * `stop` stops it following the pointer. Any edit or history command made while it is
+   * under way (`change`, `pushSnapshot`, `undo`, `redo`) finishes it first, so its later
+   * steps never write over that edit and its undo step comes before it; a form read anew
+   * drops it.
    */
-  commitGesture: (before: FormSpec) => void
+  beginGesture: (before: FormSpec, stop: () => void) => void
+  /**
+   * Finish the gesture under way: the form as it found it recorded for undo, so the whole
+   * gesture is one undo step, and nothing, redo kept, while the form is as it found it
+   * (held at a limit, or back where it began).
+   */
+  endGesture: () => void
   undo: () => void
   redo: () => void
   /**
@@ -104,6 +111,9 @@ const isStaleRevision = (error: unknown): boolean =>
   && typeof error.detail === "string"
   && error.detail.startsWith("stale_document_revision")
 
+/** The gesture under way: the form as it found it, and what stops it following the pointer. */
+let gesture: { before: FormSpec; stop: () => void } | null = null
+
 /** Saves and syncs take turns, each acting on the form as it is when its turn comes. */
 let turns: Promise<unknown> = Promise.resolve()
 
@@ -114,6 +124,21 @@ const takeTurn = <T>(act: () => Promise<T>): Promise<T> => {
 }
 
 const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
+  const finishGesture = (): void => {
+    const active = gesture
+    if (active === null) return
+    gesture = null
+    active.stop()
+    const { form, undoStack } = get()
+    if (form === null || serialise(form) === serialise(active.before)) return
+    set({ undoStack: appendHistoryEntry(undoStack, active.before), redoStack: [] })
+  }
+  // A form read anew drops the history a gesture under way would join, and the gesture.
+  const dropGesture = (): void => {
+    gesture?.stop()
+    gesture = null
+  }
+
   // A read takes a turn like a save or a sync: a sync queued behind it, as a document
   // adopted while the file is being read queues one, reads the file again after it, so
   // the form never ends on the branch the read began on.
@@ -122,6 +147,7 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
     return takeTurn(async () => {
       try {
         const { form, revision } = await fetchWorkbenchForm()
+        dropGesture()
         set({
           form,
           revision,
@@ -166,6 +192,7 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
             set({ stale: true })
             return
           }
+          dropGesture()
           set({
             form,
             revision,
@@ -180,6 +207,7 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
         }
       }),
     change: (update) => {
+      finishGesture()
       const { form, undoStack, savedForm } = get()
       if (form === null) throw new Error("The workbench's form is not loaded")
       const next = update(form)
@@ -192,6 +220,7 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
       })
     },
     pushSnapshot: () => {
+      finishGesture()
       const { form, undoStack } = get()
       if (form === null) throw new Error("The workbench's form is not loaded")
       set({ undoStack: appendHistoryEntry(undoStack, form), redoStack: [] })
@@ -199,12 +228,13 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
     setFormRaw: (form) => {
       set({ form, dirty: serialise(form) !== get().savedForm })
     },
-    commitGesture: (before) => {
-      const { form, undoStack } = get()
-      if (form === null || serialise(form) === serialise(before)) return
-      set({ undoStack: appendHistoryEntry(undoStack, before), redoStack: [] })
+    beginGesture: (before, stop) => {
+      finishGesture()
+      gesture = { before, stop }
     },
+    endGesture: finishGesture,
     undo: () => {
+      finishGesture()
       const { form, undoStack, redoStack, savedForm } = get()
       const previous = undoStack.at(-1)
       if (form === null || previous === undefined) return
@@ -216,6 +246,7 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
       })
     },
     redo: () => {
+      finishGesture()
       const { form, undoStack, redoStack, savedForm } = get()
       const next = redoStack.at(-1)
       if (form === null || next === undefined) return

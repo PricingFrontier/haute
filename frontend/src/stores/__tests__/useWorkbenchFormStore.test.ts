@@ -196,16 +196,55 @@ describe("useWorkbenchFormStore", () => {
 
     // Out and back: nothing recorded, so the redo stands.
     const pressed = store().form!
+    const stop = vi.fn()
+    store().beginGesture(pressed, stop)
     store().setFormRaw({ ...pressed, name: "a" })
     store().setFormRaw(structuredClone(pressed))
-    store().commitGesture(pressed)
+    store().endGesture()
+    expect(stop).toHaveBeenCalledTimes(1)
     expect(store()).toMatchObject({ undoStack: [], dirty: false })
     expect(store().redoStack.map((form) => form.name)).toEqual(["kept"])
 
+    store().beginGesture(pressed, stop)
     store().setFormRaw({ ...pressed, name: "ab" })
-    store().commitGesture(pressed)
+    store().endGesture()
     expect(store()).toMatchObject({ form: named("ab"), dirty: true, redoStack: [] })
     expect(store().undoStack).toEqual([pressed])
+    // Ended already: ending again records nothing more.
+    store().endGesture()
+    expect(store().undoStack).toEqual([pressed])
+  })
+
+  it("finishes a gesture under way before an edit, an undo or a redo, so its steps never write over them and its undo step comes first", async () => {
+    server({ form: blank, revision: "rev-0" })
+    const store = useWorkbenchFormStore.getState
+    await store().load()
+    store().change((form) => ({ ...form, name: "titled" }))
+
+    // An undo while a gesture is under way: the gesture is recorded and stopped, then undone.
+    const stop = vi.fn()
+    store().beginGesture(store().form!, stop)
+    store().setFormRaw({ ...store().form!, name: "dragged" })
+    store().undo()
+    expect(stop).toHaveBeenCalledTimes(1)
+    expect(store().form?.name).toBe("titled")
+    store().endGesture()
+    store().undo()
+    expect(store().form?.name).toBe("motor")
+    store().redo()
+    store().redo()
+    expect(store().form?.name).toBe("dragged")
+
+    // An edit while one is under way comes after it, and nothing is recorded for it twice.
+    const pressed = store().form!
+    store().beginGesture(pressed, stop)
+    store().setFormRaw({ ...pressed, name: "moved" })
+    store().change((form) => ({ ...form, name: `${form.name} and named` }))
+    expect(stop).toHaveBeenCalledTimes(2)
+    expect(store().undoStack.slice(-2).map((form) => form.name)).toEqual(["dragged", "moved"])
+    store().endGesture()
+    expect(store().form?.name).toBe("moved and named")
+    expect(store().undoStack.slice(-2).map((form) => form.name)).toEqual(["dragged", "moved"])
   })
 
   it("keeps the sample typed while building as part of the form: unsaved until saved, undone like any edit", async () => {

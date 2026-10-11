@@ -835,7 +835,9 @@ Out of scope:
   the graph store's raw setters do for the canvas, and records the form as pressed once
   it is released, so undo reverses the whole drag, and a drag that changed nothing, held
   at a limit or brought back, records nothing and leaves redo standing; a burst of nudges
-  is grouped the same way.
+  is grouped the same way. An undo, a redo or another edit made during a drag finishes the
+  drag first, so undo and redo never change direction: Ctrl+Z during a drag undoes the
+  drag, and the release does nothing more.
 - **One reorder.** The step editor's cards, a component's fields and the sheets' tabs are
   dragged into order through one hook, a row dropped on another put there, rather than a
   second drag model with markers of its own.

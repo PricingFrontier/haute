@@ -444,6 +444,27 @@ describe("SheetCanvas", () => {
     expect(widget("w_boxes")).toMatchObject({ title: "Cover" })
   })
 
+  it("finishes a component's drag when an undo comes during it, recording and undoing it, the pointer no longer followed", () => {
+    render(<SheetCanvas />)
+    const forms = useWorkbenchFormStore.getState
+    act(() => forms().change((spec) => updateWidget(spec, "w_boxes", { title: "Cover" })))
+
+    pointer("pointerdown", 100, 100, frame("w_boxes"))
+    pointer("pointermove", 180, 180)
+    expect(widget("w_boxes")).toMatchObject({ x: 96, y: 96 })
+    act(() => forms().undo())
+    expect(widget("w_boxes")).toMatchObject({ title: "Cover", x: 16, y: 16 })
+    pointer("pointermove", 260, 260)
+    pointer("pointerup", 260, 260)
+    expect(widget("w_boxes")).toMatchObject({ x: 16, y: 16 })
+
+    act(() => forms().undo())
+    expect(widget("w_boxes")).toMatchObject({ title: "Policy", x: 16, y: 16 })
+    act(() => forms().redo())
+    act(() => forms().redo())
+    expect(widget("w_boxes")).toMatchObject({ title: "Cover", x: 96, y: 96 })
+  })
+
   it("adds a component dragged out of the palette where it is dropped, selecting it; a click adds nothing", () => {
     render(
       <>

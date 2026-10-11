@@ -131,7 +131,7 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // 2 KiB.
 // The sheets' sections (their operations and rules, the section gutter, the section's
 // panel, their bars and the palette's Section, and Preview held steady, in the lazy
-// workbench chunks) bring it to 1,656.2 KiB; 1,657 KiB restores about 0.8 KiB.
+// workbench chunks) bring it to 1,656.3 KiB; 1,657 KiB restores about 0.7 KiB.
 const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1657
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205

@@ -135,13 +135,16 @@ export function sectionDropAt(clientX: number, clientY: number): SectionDrop | n
   return { line: target.top + at, place: { split: target.section.id, at } }
 }
 
-/** Follow the pointer until it is released, calling `onMove` with the distance travelled. */
+/**
+ * Follow the pointer until it is released, calling `onMove` with the distance travelled;
+ * what it returns stops following it at once, without `onEnd`.
+ */
 function track(
   e: ReactPointerEvent,
   cursor: string,
   onMove: (dx: number, dy: number, event: PointerEvent) => void,
   onEnd: (moved: boolean, event: PointerEvent) => void,
-): void {
+): () => void {
   const start = { x: e.clientX, y: e.clientY }
   let moved = false
   const move = (event: PointerEvent) => {
@@ -152,16 +155,20 @@ function track(
     moved = true
     onMove(dx, dy, event)
   }
-  const end = (event: PointerEvent) => {
+  const stop = () => {
     window.removeEventListener("pointermove", move)
     window.removeEventListener("pointerup", end)
     window.removeEventListener("pointercancel", end)
     document.body.style.cursor = ""
+  }
+  const end = (event: PointerEvent) => {
+    stop()
     onEnd(moved && event.type === "pointerup", event)
   }
   window.addEventListener("pointermove", move)
   window.addEventListener("pointerup", end)
   window.addEventListener("pointercancel", end)
+  return stop
 }
 
 /**
@@ -239,7 +246,7 @@ export function startTransform(e: ReactPointerEvent, id: string, handle?: Handle
   const { min } = WIDGET_KINDS[found.widget.type]
   const stack = buildStack(found.page)
   const top = stack.find((stacked) => stacked.section.id === found.section.id)?.top ?? 0
-  track(
+  const stop = track(
     e,
     handle ? `${handle}-resize` : "grabbing",
     (dx, dy) => {
@@ -253,8 +260,9 @@ export function startTransform(e: ReactPointerEvent, id: string, handle?: Handle
       if (landed !== null) store.setFormRaw(placeWidget(pressed, id, landed.section.section.id, landed.rect))
     },
     // Released or cancelled where it is: one undo step, none for a gesture that changed nothing.
-    () => useWorkbenchFormStore.getState().commitGesture(pressed),
+    () => useWorkbenchFormStore.getState().endGesture(),
   )
+  useWorkbenchFormStore.getState().beginGesture(pressed, stop)
 }
 
 /**
@@ -272,7 +280,7 @@ export function startSectionResize(e: ReactPointerEvent, sectionId: string): voi
   if (form === null || found === null) return
   const pressed = form
   const { height } = found.section
-  track(
+  const stop = track(
     e,
     "row-resize",
     (_dx, dy) => {
@@ -280,8 +288,9 @@ export function startSectionResize(e: ReactPointerEvent, sectionId: string): voi
       if (store.form === null) return
       store.setFormRaw(setSectionHeight(pressed, sectionId, snap(height + dy / zoom)))
     },
-    () => useWorkbenchFormStore.getState().commitGesture(pressed),
+    () => useWorkbenchFormStore.getState().endGesture(),
   )
+  useWorkbenchFormStore.getState().beginGesture(pressed, stop)
 }
 
 /**
@@ -293,7 +302,8 @@ export const sectionPlace = (stack: readonly Stacked<{ height: number }>[], from
 
 /**
  * Drag a section's header up or down past others to move the section there, one undo step
- * on release; `movingSection` follows the pointer meanwhile. A click moves nothing.
+ * on release; `movingSection` follows the pointer meanwhile. A click moves nothing, and an
+ * edit or an undo made meanwhile ends the drag, moving nothing.
  */
 export function startSectionMove(e: ReactPointerEvent, sectionId: string): void {
   if (e.button !== 0) return
@@ -303,7 +313,7 @@ export function startSectionMove(e: ReactPointerEvent, sectionId: string): void 
   if (form === null || found === null) return
   const { page, index } = found
   const stack = buildStack(page)
-  track(
+  const stop = track(
     e,
     "grabbing",
     (_dx, _dy, event) => {
@@ -312,12 +322,18 @@ export function startSectionMove(e: ReactPointerEvent, sectionId: string): void 
       setMovingSection({ id: sectionId, to: sectionPlace(stack, index, (event.clientY - sheet.getBoundingClientRect().top) / zoom) })
     },
     (moved) => {
-      const { movingSection, setMovingSection } = useWorkbenchViewStore.getState()
-      setMovingSection(null)
+      const { movingSection } = useWorkbenchViewStore.getState()
+      useWorkbenchFormStore.getState().endGesture()
       if (!moved || movingSection === null || movingSection.to === index) return
       useWorkbenchFormStore.getState().change((spec) => moveSection(spec, page.id, index, movingSection.to))
     },
   )
+  // A gesture that changes nothing until its release, so an edit or an undo meanwhile, which
+  // could move the section at `index`, ends it.
+  useWorkbenchFormStore.getState().beginGesture(form, () => {
+    stop()
+    useWorkbenchViewStore.getState().setMovingSection(null)
+  })
 }
 
 /**
