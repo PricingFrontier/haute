@@ -242,9 +242,12 @@ Out of scope:
 - **The sheets.** A sheet is a canvas on an 8px snap grid that fills its viewport across
   at the zoom and, like a spreadsheet, has no right or bottom edge: it widens and
   lengthens to hold what is on it. Its tabs run along the top: the sheet showing is
-  marked, a plus adds a sheet named in turn, double-click renames one, and the showing
-  sheet's cross deletes it, asking first when components are on it, while another sheet
-  remains; the schema and the sample are untouched. A component is drawn where the form
+  marked, a plus adds a sheet named in turn, double-click renames one, a tab dragged onto
+  another moves its sheet there, as Alt+Left and Alt+Right move the focused tab's sheet a
+  place, the tab keeping the focus, each move one undo step and the sheet showing still
+  the one that shows, and the showing sheet's cross
+  deletes it, asking first when components are on it, while another sheet remains; the
+  schema and the sample are untouched. A component is drawn where the form
   places it: a Table as a grid of its rows with a column per field it shows, the index
   column numbering the rows, under a header of its labels in capitals that stays in view as
   the rows scroll and is ruled off from them whatever the gridlines, drawn as its options
@@ -688,9 +691,9 @@ Out of scope:
 - **A gesture is one step.** A drag records the form when the pointer first moves and
   replaces it on each move without history, as the graph store's raw setters do for the
   canvas, so undo reverses the whole drag; a burst of nudges is grouped the same way.
-- **One reorder.** The step editor's cards and a component's fields are dragged into
-  order through one hook, a row dropped on another put there, rather than a second drag
-  model with markers of its own.
+- **One reorder.** The step editor's cards, a component's fields and the sheets' tabs are
+  dragged into order through one hook, a row dropped on another put there, rather than a
+  second drag model with markers of its own.
 - **A pause in typing.** The sample is priced 300ms after the last change rather than on
   each commit: the pause is the sign that a value is complete, a heuristic about the typist,
   not a rule about what an edit is, and undo never depends on it.
@@ -825,8 +828,8 @@ Out of scope:
   toolbar ends with; its palette is the kit's palette shell, whose reveal strip takes a
   label; its properties panel is the kit's side panel; the schema editor's and the panel's
   fields are the shared form primitives (the committed and validated text fields, the
-  checkbox and the icon select); and the fields' order uses the list-reorder hook the step
-  editor's cards use.
+  checkbox and the icon select); and the fields' order and the sheets' tabs use the
+  list-reorder hook the step editor's cards use.
 - [engineering-quality](../engineering-quality/high-level.md): the generated contract bundle
   carries the `workbench` response group.
 - [json-shredding](../json-shredding/high-level.md): the Quote Input's reader, which the

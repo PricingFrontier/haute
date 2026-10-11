@@ -266,6 +266,18 @@ export const renamePage = (spec: FormSpec, id: string, title: string): FormSpec 
     pageOf(draft, id).title = title
   })
 
+/** Move the sheet at `from` in the tabs' order to `to`; a move to where it is changes nothing. */
+export function movePage(spec: FormSpec, from: number, to: number): FormSpec {
+  if (from === to) return spec
+  if (spec.pages[from] === undefined || spec.pages[to] === undefined) {
+    throw new Error(`Cannot move the sheet at ${from} to ${to}: the form has ${spec.pages.length} sheets`)
+  }
+  return edit(spec, (draft) => {
+    const [page] = draft.pages.splice(from, 1)
+    draft.pages.splice(to, 0, page)
+  })
+}
+
 export const setPageShowWhen = (spec: FormSpec, id: string, showWhen: ShowWhen): FormSpec =>
   edit(spec, (draft) => {
     pageOf(draft, id).show_when = structuredClone(showWhen)

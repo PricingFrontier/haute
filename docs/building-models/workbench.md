@@ -102,7 +102,8 @@ deselects it; Ctrl+Z and Ctrl+Y undo and redo. Ctrl+1 fits the sheet to the wind
 the zoom runs from 25% to 200%. A component with a problem — no fields, a column no longer in the schema, a table
 of the other kind — gets a dashed frame that names the problem.
 
-Sheets have tabs along the top: **+** adds one, double-click (or F2) renames one, the
+Sheets have tabs along the top: **+** adds one, double-click (or F2) renames one, dragging
+a tab onto another moves its sheet there (or press Alt+Left and Alt+Right on a tab), the
 settings mark on the showing tab opens the sheet's own panel (its title and when it shows),
 and the cross beside it deletes it (asking first when components are on it; the schema and
 the sample stay).

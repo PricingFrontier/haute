@@ -95,6 +95,44 @@ describe("PageTabs", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "Sheet 2" }))
     expect(useWorkbenchViewStore.getState()).toMatchObject({ pageId: "p2", section: "preview" })
+
+    // Nor are the sheets moved there.
+    expect(screen.getByTestId("sheet-tab-p1")).toHaveAttribute("draggable", "false")
+    fireEvent.keyDown(screen.getByRole("tab", { name: "Sheet 1" }), { key: "ArrowRight", altKey: true })
+    expect(currentForm().pages.map((page) => page.id)).toEqual(["p1", "p2"])
+  })
+
+  it("moves a sheet by dragging its tab onto another, as one undo step", () => {
+    render(<PageTabs />)
+
+    fireEvent.dragStart(screen.getByTestId("sheet-tab-p1"))
+    fireEvent.dragOver(screen.getByTestId("sheet-tab-p2"))
+    expect(screen.getByTestId("sheet-tab-p2")).toHaveAttribute("data-drop-target", "true")
+    fireEvent.drop(screen.getByTestId("sheet-tab-p2"))
+
+    expect(currentForm().pages.map((page) => page.id)).toEqual(["p2", "p1"])
+    // The sheet that showed, the first while none was chosen, still shows.
+    expect(tabs()).toEqual([["Sheet 2", "false"], ["Sheet 1", "true"]])
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
+  })
+
+  it("moves the focused tab's sheet with Alt+Left and Alt+Right, keeping the focus and never past either end", () => {
+    render(<PageTabs />)
+    const first = () => screen.getByRole("tab", { name: "Sheet 1" })
+    act(() => first().focus())
+
+    fireEvent.keyDown(first(), { key: "ArrowRight", altKey: true })
+    expect(currentForm().pages.map((page) => page.id)).toEqual(["p2", "p1"])
+    expect(document.activeElement).toBe(first())
+
+    fireEvent.keyDown(first(), { key: "ArrowRight", altKey: true })
+    fireEvent.keyDown(first(), { key: "ArrowLeft" })
+    expect(currentForm().pages.map((page) => page.id)).toEqual(["p2", "p1"])
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
+
+    fireEvent.keyDown(first(), { key: "ArrowLeft", altKey: true })
+    expect(currentForm().pages.map((page) => page.id)).toEqual(["p1", "p2"])
+    expect(document.activeElement).toBe(first())
   })
 
   it("marks a sheet with conditions with an eye, struck through and its tab faded while the sample hides it", () => {

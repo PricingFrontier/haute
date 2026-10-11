@@ -15,7 +15,7 @@ export interface RowDrag {
 /**
  * Drag a list's rows into a new order: a row picked up and dropped on another row is put
  * there. `move` gets the dragged row's index and the index it moves to. The step editor's
- * cards and the workbench's field order share it.
+ * cards, the workbench's field order and its sheets' tabs share it.
  */
 export default function useListReorder(move: (from: number, to: number) => void): (index: number) => RowDrag {
   const [dragIndex, setDragIndex] = useState<number | null>(null)

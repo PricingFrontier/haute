@@ -23,6 +23,7 @@ import {
   fieldUses,
   findWidget,
   moveField,
+  movePage,
   moveSchemaColumn,
   pageProblems,
   pricingBasis,
@@ -349,6 +350,18 @@ describe("what the sheets show", () => {
     spec = removePage(spec, "p")
     expect(spec.pages.map((page) => page.id)).toEqual([second.id])
     expect(() => removePage(spec, second.id)).toThrow("The last sheet cannot be removed")
+  })
+
+  it("moves a sheet to another place in the tabs' order, a move to where it is changing nothing", () => {
+    const spec = [createPage, createPage].reduce((current, create) => addPage(current, create(current)), blank())
+    const titles = (form: FormSpec) => form.pages.map((page) => page.title)
+    expect(titles(spec)).toEqual(["Sheet 1", "Sheet 2", "Sheet 3"])
+
+    expect(titles(movePage(spec, 0, 2))).toEqual(["Sheet 2", "Sheet 3", "Sheet 1"])
+    expect(titles(movePage(spec, 2, 0))).toEqual(["Sheet 3", "Sheet 1", "Sheet 2"])
+    expect(titles(spec)).toEqual(["Sheet 1", "Sheet 2", "Sheet 3"])
+    expect(movePage(spec, 1, 1)).toBe(spec)
+    expect(() => movePage(spec, 0, 3)).toThrow("Cannot move the sheet at 0 to 3: the form has 3 sheets")
   })
 
   it("adds, updates, duplicates and removes components, each kind with its own layout setting", () => {
