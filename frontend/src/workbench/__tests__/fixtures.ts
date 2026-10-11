@@ -4,10 +4,10 @@
  * rows, keyed by item, an output), on one sheet, with a second, empty sheet.
  */
 import { vi } from "vitest"
-import type { ChartWidget, FieldRef, FormSpec, SchemaColumn, SchemaTable } from "../../api/types"
+import type { ChartWidget, FieldRef, FormSpec, HeadingWidget, SchemaColumn, SchemaTable } from "../../api/types"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
-import { CHART_OPTIONS, TABLE_OPTIONS } from "../../utils/workbenchForm"
+import { CHART_OPTIONS, findWidget, HEADING_OPTIONS, showsFields, TABLE_OPTIONS, type FieldsWidget } from "../../utils/workbenchForm"
 
 export const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {}): SchemaColumn => ({
   id,
@@ -96,6 +96,21 @@ export const chartWidget = (id: string, fields: FieldRef[], overrides: Partial<C
   ...overrides,
 })
 
+/** A Heading of `text`, with no description and a new Heading's options unless `overrides` says otherwise, always shown. */
+export const headingWidget = (id: string, text: string, overrides: Partial<HeadingWidget> = {}): HeadingWidget => ({
+  id,
+  type: "heading",
+  x: 16,
+  y: 380,
+  w: 480,
+  h: 40,
+  text,
+  description: "",
+  show_when: { match: "all", conditions: [] },
+  ...HEADING_OPTIONS,
+  ...overrides,
+})
+
 /**
  * `sheetForm` with a tick box, cover, among the policy's boxes, and its second sheet,
  * "Cover", holding a Collection of the policy's year and shown only while cover is ticked.
@@ -103,7 +118,7 @@ export const chartWidget = (id: string, fields: FieldRef[], overrides: Partial<C
 export const coverForm = (): FormSpec => {
   const form = sheetForm()
   form.schema.tables[0].columns.push(column("policy.cover", "cover", { type: "bool" }))
-  form.pages[0].widgets[0].fields.push({ table: "policy", column: "policy.cover" })
+  fieldsWidget(form, "w_boxes").fields.push({ table: "policy", column: "policy.cover" })
   form.pages[1] = {
     id: "p2",
     title: "Cover",
@@ -147,6 +162,13 @@ export const currentForm = (): FormSpec => {
   const { form } = useWorkbenchFormStore.getState()
   if (form === null) throw new Error("no form")
   return form
+}
+
+/** The form's component `id`, one that shows fields: a Table, a Collection or a Chart. */
+export function fieldsWidget(form: FormSpec, id: string): FieldsWidget {
+  const widget = findWidget(form, id)?.widget
+  if (widget === undefined || !showsFields(widget)) throw new Error(`The form has no component ${id} that shows fields`)
+  return widget
 }
 
 class MockResizeObserver {

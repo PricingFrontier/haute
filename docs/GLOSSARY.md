@@ -68,13 +68,15 @@ Two naming notes:
 
 - **sheet** — one page of the workbench: a canvas the components are laid out on. `pages` in the file.
 
-- **component** — a Table, a Collection or a Chart on a sheet. `widgets` in the file; say "component" in prose and in UI copy, never "widget".
+- **component** — a Table, a Collection, a Chart or a Heading on a sheet. `widgets` in the file; say "component" in prose and in UI copy, never "widget".
 
 - **Table (component)** — a grid of rows showing columns of the schema's many-row tables (`tableInput` in the file). Not a schema table.
 
 - **Collection** — boxes showing columns of the schema's one-row tables (`collection` in the file).
 
 - **Chart (component)** — a chart plotting number columns of the schema's tables, typed or priced (`chart` in the file): a point per field of one-row tables, or a series per field over the rows of many-row tables.
+
+- **Heading (component)** — text naming a section of a sheet, or the sheet itself, large, medium or small, with an optional description under it (`heading` in the file). It shows no schema columns and takes nothing typed. Not a column's label.
 
 - **schema table** — a table of the workbench's schema: a name, a role (input, sent to the pricing engine, or output, returned by it), one row per quote or many, and typed columns. The input tables are the Workbench Input's ports and the output tables the Workbench Output's.
 

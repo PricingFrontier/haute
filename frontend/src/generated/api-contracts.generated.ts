@@ -2439,7 +2439,7 @@ export interface Page {
   id: string;
   show_when: ShowWhen;
   title: string;
-  widgets: (TableInputWidget | CollectionWidget | ChartWidget)[];
+  widgets: (TableInputWidget | CollectionWidget | ChartWidget | HeadingWidget)[];
 }
 /**
  * When a sheet or a widget shows: always, without conditions; else while all of them
@@ -2533,6 +2533,23 @@ export interface ChartWidget {
   stacked: boolean;
   title: string;
   type: 'chart';
+  w: number;
+  x: number;
+  y: number;
+}
+/**
+ * A Heading: text naming a section of the sheet, or the sheet itself, with a line under
+ * it saying what the section is for. It shows no schema columns and takes nothing typed.
+ */
+export interface HeadingWidget {
+  align: 'left' | 'center' | 'right';
+  description: string;
+  h: number;
+  id: string;
+  show_when: ShowWhen;
+  size: 'large' | 'medium' | 'small';
+  text: string;
+  type: 'heading';
   w: number;
   x: number;
   y: number;

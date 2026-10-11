@@ -1,7 +1,7 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore, { activePage, shownPage } from "../stores/useWorkbenchViewStore"
-import { GRID, SHEET_PADDING, sheetHeight, sheetWidth } from "../utils/sheetGeometry"
+import { GRID, readingOrder, SHEET_PADDING, sheetHeight, sheetWidth } from "../utils/sheetGeometry"
 import { showWhenText, shownFields, widgetProblems } from "../utils/workbenchForm"
 import { dropAt } from "./sheetInteractions"
 import SheetWidget from "./SheetWidget"
@@ -15,7 +15,10 @@ import { WIDGET_KINDS } from "./widgetKinds"
  * Preview), with, while building, a ghost where a component dragged out of the palette
  * would land. While building every component is drawn, those the sample hides faded; in
  * Preview only the components the quote shows, on the first sheet that shows when the
- * chosen one does not. Pressing the empty sheet deselects. The sheet and its viewport are
+ * chosen one does not. They are drawn in the order they are read, row by row and left to
+ * right along each row (`readingOrder`), so a screen reader and Tab follow the layout, and
+ * stacked in the form's order, so where two overlap the one added later covers the other
+ * (a copy its original), the selected one covers both and the ghost covers all. Pressing the empty sheet deselects. The sheet and its viewport are
  * registered with the view store, which places drops on them and fits the zoom to them;
  * what is on the sheet is fitted to the viewport when the sheets first show for a form,
  * and a zoom chosen since is kept across a trip to the schema or the pipeline editor.
@@ -64,6 +67,9 @@ export default function SheetCanvas() {
   const widgets = page === null ? [] : previewing ? page.widgets.filter((widget) => visibility.widgets.has(widget.id)) : page.widgets
   const width = sheetWidth(viewportWidth - SHEET_PADDING * 2, zoom, widgets)
   const height = sheetHeight(widgets)
+  // Each component's place in the stack, the form's order, and above them all the selected one, then the ghost.
+  const layers = new Map((page?.widgets ?? []).map((widget, index) => [widget.id, index + 1] as const))
+  const top = layers.size + 1
 
   return (
     <div
@@ -98,20 +104,24 @@ export default function SheetCanvas() {
             }}
           >
             <SheetValuesContext value={values}>
-              {widgets.map((widget) => (
-                <SheetWidget
-                  key={widget.id}
-                  widget={widget}
-                  fields={shownFields(form, widget)}
-                  selected={!previewing && selectedId === widget.id}
-                  problem={problems.get(widget.id) ?? null}
-                  editable={!previewing}
-                  hidden={!visibility.widgets.has(widget.id)}
-                  conditions={previewing || widget.show_when.conditions.length === 0 ? null : showWhenText(form, widget.show_when)}
-                />
-              ))}
+              {readingOrder(widgets).map((widget) => {
+                const selected = !previewing && selectedId === widget.id
+                return (
+                  <SheetWidget
+                    key={widget.id}
+                    widget={widget}
+                    fields={shownFields(form, widget)}
+                    selected={selected}
+                    problem={problems.get(widget.id) ?? null}
+                    editable={!previewing}
+                    hidden={!visibility.widgets.has(widget.id)}
+                    conditions={previewing || widget.show_when.conditions.length === 0 ? null : showWhenText(form, widget.show_when)}
+                    layer={selected ? top : (layers.get(widget.id) ?? top)}
+                  />
+                )
+              })}
             </SheetValuesContext>
-            {!previewing && <DropGhost />}
+            {!previewing && <DropGhost layer={top + 1} />}
           </div>
         </div>
       )}
@@ -119,8 +129,8 @@ export default function SheetCanvas() {
   )
 }
 
-/** Where a component being dragged out of the palette would land. */
-function DropGhost() {
+/** Where a component being dragged out of the palette would land, at `layer`, above every component. */
+function DropGhost({ layer }: { layer: number }) {
   const creating = useWorkbenchViewStore((s) => s.creating)
   if (creating === null) return null
   const rect = dropAt(creating.type, creating.clientX, creating.clientY)
@@ -128,8 +138,8 @@ function DropGhost() {
   return (
     <div
       data-testid="drop-ghost"
-      className="pointer-events-none absolute z-20 grid place-items-center rounded-md border-2 border-dashed text-xs"
-      style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h, borderColor: "var(--accent)", background: "var(--accent-soft)", color: "var(--text-accent)" }}
+      className="pointer-events-none absolute grid place-items-center rounded-md border-2 border-dashed text-xs"
+      style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h, zIndex: layer, borderColor: "var(--accent)", background: "var(--accent-soft)", color: "var(--text-accent)" }}
     >
       {WIDGET_KINDS[creating.type].label}
     </div>

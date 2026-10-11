@@ -6,14 +6,16 @@
  * order of the fields it shows, and the fields themselves, ticked from the schema tables
  * of its kind: many-row tables for a Table, one-row tables for a Collection, any table for
  * a Chart, which plots number columns alone. A grid holds one kind of row, so once a Table
- * or a Chart shows a field, tables whose rows do not line up with it are greyed out.
- * Opened from the showing sheet's tab instead, it is the sheet's panel: its title and
- * when it shows.
+ * or a Chart shows a field, tables whose rows do not line up with it are greyed out. A
+ * Heading's panel is its text and description, when it shows, and its size and alignment.
+ * Opened from the showing sheet's tab instead, it is the sheet's panel: its title and when
+ * it shows.
  */
-import { ChevronDown, ChevronRight, GripVertical, Sheet, X } from "lucide-react"
+import { ChevronDown, ChevronRight, GripVertical, Sheet, TextAlignCenter, TextAlignEnd, TextAlignStart, X, type LucideIcon } from "lucide-react"
 import { useState, type KeyboardEvent, type ReactNode } from "react"
-import type { FieldRef, FormSpec, Page, SchemaTable } from "../api/types"
+import type { FieldRef, FormSpec, HeadingWidget, Page, SchemaTable } from "../api/types"
 import { CommittedTextField, ConfigCheckbox, EditorLabel, ValidatedTextField } from "../components/form"
+import ToggleButtonGroup from "../components/ToggleButtonGroup"
 import { SidePanel } from "../haute-ui"
 import useListReorder, { type RowDrag } from "../hooks/useListReorder"
 import { INPUT_STYLE } from "../panels/editors/_shared"
@@ -32,8 +34,8 @@ import {
   tableGrain,
   toggleField,
   updateWidget,
+  type FieldsWidget,
   type TableOptions,
-  type Widget,
 } from "../utils/workbenchForm"
 import ChartSettings from "./ChartSettings"
 import { COLUMN_TYPES } from "./columnTypes"
@@ -52,6 +54,16 @@ const GRIDLINES: ReadonlyArray<{ value: TableOptions["gridlines"]; label: string
   { value: "rows", label: "Between rows" },
   { value: "all", label: "Full grid" },
   { value: "none", label: "None" },
+]
+const HEADING_SIZES: ReadonlyArray<{ value: HeadingWidget["size"]; label: string }> = [
+  { value: "large", label: "Large" },
+  { value: "medium", label: "Medium" },
+  { value: "small", label: "Small" },
+]
+const HEADING_ALIGNS: ReadonlyArray<{ value: HeadingWidget["align"]; label: string; icon: LucideIcon }> = [
+  { value: "left", label: "Left", icon: TextAlignStart },
+  { value: "center", label: "Centre", icon: TextAlignCenter },
+  { value: "right", label: "Right", icon: TextAlignEnd },
 ]
 
 const fieldKey = (field: FieldRef) => `${field.table}:${field.column}`
@@ -79,7 +91,7 @@ export default function PropertiesPanel() {
 
   return (
     <SidePanel {...panel} title={label} icon={<Icon size={14} style={{ color }} />}>
-      <FieldsSettings form={form} widget={found.widget} />
+      {found.widget.type === "heading" ? <HeadingSettings form={form} widget={found.widget} /> : <FieldsSettings form={form} widget={found.widget} />}
     </SidePanel>
   )
 }
@@ -112,6 +124,78 @@ function SheetSettings({ form, page }: { form: FormSpec; page: Page }) {
   )
 }
 
+/** A Heading's panel: its text and description, when it shows, and its size and alignment. */
+function HeadingSettings({ form, widget }: { form: FormSpec; widget: HeadingWidget }) {
+  const change = useWorkbenchFormStore((s) => s.change)
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto px-3 py-3 text-xs">
+      <Section title="Text">
+        <CommittedTextField
+          aria-label="Heading text"
+          value={widget.text}
+          placeholder="Name a section of the sheet"
+          onCommit={(text) => change((spec) => updateWidget(spec, widget.id, { text }))}
+          className={`${FIELD_CLASS} w-full`}
+          style={INPUT_STYLE}
+        />
+      </Section>
+      <Section title="Description">
+        <CommittedTextField
+          aria-label="Heading description"
+          value={widget.description}
+          placeholder="None"
+          onCommit={(description) => change((spec) => updateWidget(spec, widget.id, { description }))}
+          className={`${FIELD_CLASS} w-full`}
+          style={INPUT_STYLE}
+        />
+      </Section>
+      <Section title="Show when">
+        <ShowWhenEditor
+          form={form}
+          showWhen={widget.show_when}
+          onChange={(next) => change((spec) => updateWidget(spec, widget.id, { show_when: next }))}
+        />
+      </Section>
+      <Section title="Look">
+        <label className="flex items-center gap-2">
+          <span className="w-14" style={{ color: "var(--text-muted)" }}>
+            Size
+          </span>
+          <select
+            aria-label="Size"
+            value={widget.size}
+            onChange={(event) => change((spec) => updateWidget(spec, widget.id, { size: event.target.value as HeadingWidget["size"] }))}
+            className={FIELD_CLASS}
+            style={INPUT_STYLE}
+          >
+            {HEADING_SIZES.map(({ value, label }) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="flex items-center gap-2">
+          <span className="w-14 shrink-0" style={{ color: "var(--text-muted)" }}>
+            Align
+          </span>
+          <div className="min-w-0 flex-1">
+            <ToggleButtonGroup
+              ariaLabel="Align"
+              value={widget.align}
+              accentColor={WIDGET_KINDS.heading.color}
+              options={HEADING_ALIGNS.map(({ value, label, icon: Icon }) => ({ key: value, label, icon: <Icon size={13} aria-hidden="true" /> }))}
+              onChange={(align) => {
+                if (align !== widget.align) change((spec) => updateWidget(spec, widget.id, { align }))
+              }}
+            />
+          </div>
+        </div>
+      </Section>
+    </div>
+  )
+}
+
 function Section({ title, aside, children }: { title: string; aside?: string; children: ReactNode }) {
   return (
     <section className="flex flex-col gap-1.5" aria-label={title}>
@@ -128,7 +212,7 @@ function Section({ title, aside, children }: { title: string; aside?: string; ch
   )
 }
 
-function FieldsSettings({ form, widget }: { form: FormSpec; widget: Widget }) {
+function FieldsSettings({ form, widget }: { form: FormSpec; widget: FieldsWidget }) {
   const change = useWorkbenchFormStore((s) => s.change)
   const showSection = useWorkbenchViewStore((s) => s.showSection)
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
@@ -304,7 +388,7 @@ function FieldsSettings({ form, widget }: { form: FormSpec; widget: Widget }) {
 }
 
 /** The fields a component shows, in order: drag one, or Alt+Up and Alt+Down on it, to move it. */
-function FieldOrder({ form, widget }: { form: FormSpec; widget: Widget }) {
+function FieldOrder({ form, widget }: { form: FormSpec; widget: FieldsWidget }) {
   const change = useWorkbenchFormStore((s) => s.change)
   const dragFor = useListReorder((from, to) => change((spec) => moveField(spec, widget.id, from, to)))
   return (
@@ -316,7 +400,7 @@ function FieldOrder({ form, widget }: { form: FormSpec; widget: Widget }) {
   )
 }
 
-function OrderRow({ form, widget, field, index, drag }: { form: FormSpec; widget: Widget; field: FieldRef; index: number; drag: RowDrag }) {
+function OrderRow({ form, widget, field, index, drag }: { form: FormSpec; widget: FieldsWidget; field: FieldRef; index: number; drag: RowDrag }) {
   const change = useWorkbenchFormStore((s) => s.change)
   const found = fieldColumn(form, field)
   const label = found ? found.column.label || readableName(found.column.name) : "Missing column"
@@ -381,7 +465,7 @@ function TableFields({
   collapsed,
   onToggle,
 }: {
-  widget: Widget
+  widget: FieldsWidget
   table: SchemaTable
   /** Whether its rows line up with the fields already chosen. */
   usable: boolean

@@ -245,7 +245,7 @@ describe("SchemaEditor", () => {
     fireEvent.click(screen.getByRole("button", { name: "Remove column state" }))
     fireEvent.click(screen.getByRole("button", { name: "Remove" }))
     expect(columnNames("policy_details")).toEqual([])
-    expect(current().pages[0].widgets[0].fields).toEqual([])
+    expect(current().pages[0].widgets[0]).toMatchObject({ fields: [] })
 
     fireEvent.click(screen.getByRole("button", { name: "Delete table layers" }))
     expect(screen.queryByRole("region", { name: "Table layers" })).not.toBeInTheDocument()

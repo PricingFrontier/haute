@@ -4,7 +4,7 @@
 
 The workbench is where a pricing team lays out the quote an underwriter keys in: a schema
 of typed tables, the sheets of Tables and Collections that show those tables' columns and
-of Charts that plot them, and the sample quote typed into them while building. It is part of Haute, switched on per
+of Charts that plot them and of Headings that name their sections, and the sample quote typed into them while building. It is part of Haute, switched on per
 project in `haute.toml`, and its form is a file in the project, `forms/form.json`, versioned
 beside the pipeline.
 
@@ -42,7 +42,7 @@ In scope:
   `PUT /api/workbench/form`, which writes the form unless the file changed since it was read.
 - The Workbench view: how it is shown beside the pipeline editor and what the pipeline
   editor does meanwhile, its toolbar and keyboard shortcuts, its schema editor, its sheets
-  (the canvas, the Table, the Collection and the Chart, their palette and properties panel,
+  (the canvas, the Table, the Collection, the Chart and the Heading, their palette and properties panel,
   and the sheet tabs), the sample typed into the components and priced live on the pipeline,
   Preview, where an underwriter's quote is keyed into the sheets, checked against the
   columns' rules and priced, and how the form is read into it and saved from it.
@@ -101,14 +101,16 @@ Out of scope:
   least `rows` rows showing columns of many-row tables, with its look and whether its rows
   are fixed: `row_numbers`, `density` (`compact` or `comfortable`), `gridlines` (`rows`,
   `all` or `none`), `striped` and `fixed_rows`), a Collection (`collection`, boxes
-  showing columns of one-row tables, `columns` across) or a Chart (`chart`, plotting number
+  showing columns of one-row tables, `columns` across), a Chart (`chart`, plotting number
   columns, with what labels the rows of its many-row tables, `category`, a schema column
   named as a field is or null to number them, and how it draws: `chart_type` (`column`,
   `line`, `area` or `pie`), `orientation` (`vertical` or `horizontal`), `stacked`, `legend`
-  (`bottom`, `top`, `left`, `right` or `none`) and `data_labels`), each placed by its `x`,
-  `y`, `w`, `h`,
-  showing its `fields`, schema columns named by table id and column id so a rename keeps
-  them, and with a `show_when` of its own. A `show_when` holds `conditions` and whether `all`
+  (`bottom`, `top`, `left`, `right` or `none`) and `data_labels`) or a Heading (`heading`,
+  its `text`, naming a section of the sheet, the `description` under it, its `size`,
+  `large`, `medium` or `small`, and its `align`, `left`, `center` or `right`),
+  each placed by its `x`, `y`, `w`, `h` and with a `show_when` of its own, and each but a
+  Heading with a `title` and showing its `fields`, schema columns named by table id and
+  column id so a rename keeps them. A `show_when` holds `conditions` and whether `all`
   of them must hold or `any` (`match`); with none, the sheet or component always shows. A
   condition names a column by table id and column id, a test (`op`) and the test's `values`,
   as text: `ticked` or `not_ticked`, with no value, for a True/false column; `filled` or
@@ -261,7 +263,8 @@ Out of scope:
   (`rows`), between every column too (`all`) or none at all (`none`), every other row
   shaded unless `striped` is off, and Add row under the last row and a delete on each row
   unless its rows are fixed; a Collection as boxes with their labels above, its columns
-  across; a Chart as its type draws the values it plots (Charts, below). Each field of a
+  across; a Chart as its type draws the values it plots (Charts, below); a Heading as its
+  text (Headings, below). Each field of a
   Table or a Collection shows its label (its column's, or the name made readable), a star for
   a required input, a mark showing its help when it has some, a hint at its type (a
   dropdown's chevron, a date's calendar), an empty cell blank or showing its column's
@@ -274,7 +277,12 @@ Out of scope:
   divided by the zoom, and a move or a resize is one undo step, a click that does not
   move recording nothing. Pressing the empty sheet deselects. A component takes the
   keyboard's focus too: reached by Tab, it is selected, so the sheet's keys work without a
-  pointer. A component with a problem (no fields, a column no longer in the schema, a table
+  pointer. The components are read, and reached by Tab, in the order they sit on the sheet,
+  row by row from the top and left to right along each row, whatever order they were added
+  in: a row is the topmost component not yet read and every one beside it, starting above
+  its middle, so a Heading placed above a section is read before it and a label a little
+  lower than the box beside it is read with it. Where two overlap, the one added later is
+  drawn over the other (a copy just over its original) and the selected one over both. A component with a problem (no fields, a Heading with no text, a column no longer in the schema, a table
   of the other kind, tables whose rows do not line up, a Chart's field that is not a number
   or is an index, a pie of many rows with more than one field, or one of its conditions',
   Shown when below) gets a dashed frame in the warning colour naming the problem, on hover and to
@@ -283,12 +291,13 @@ Out of scope:
   when the sheets first show for a form read (a zoom chosen since is kept across a trip to
   the schema or the pipeline editor) and on Ctrl/Cmd+1.
 - **The palette.** The view's left column is Haute's palette shell with a Table and a
-  Collection, in the entry colour, a Chart, in Explore's colour, and the switcher under
-  them. A component is dragged out of it onto the sheet: a chip follows the pointer until
-  the sheet shows a ghost where the component would land; released there, it is added (a
-  Table 720 by 200 with 3 rows, numbered, compact, lined between rows, striped and not
-  fixed, a Collection 720 by 120 with 3 columns across, a Chart 480 by 280 of columns,
-  upright, unstacked, its rows numbered, its legend at the bottom and no data labels),
+  Collection, in the entry colour, a Chart, in Explore's colour, a Heading, in the
+  structure colour, and the switcher under them. A component is dragged out of it onto the
+  sheet: a chip follows the pointer until the sheet shows a ghost where the component would
+  land; released there, it is added (a Table 720 by 200 with 3 rows, numbered, compact,
+  lined between rows, striped and not fixed, a Collection 720 by 120 with 3 columns
+  across, a Chart 480 by 280 of columns, upright, unstacked, its rows numbered, its legend
+  at the bottom and no data labels, a Heading 480 by 48 of medium size, aligned left),
   showing nothing yet, and selected.
   A click adds nothing. The palette shares the node palette's open state, so collapsing it
   in either view collapses both; collapsed, it is the reveal strip with the compact
@@ -318,7 +327,10 @@ Out of scope:
   keyed alike line up. A Chart's fields and the column labelling its rows line up the
   same way, the first of them deciding, and one-row tables all line up with one another.
   With no table of the component's kind in the schema, the panel says so and offers the
-  schema. While building, the showing sheet's tab has a settings
+  schema. A Heading's panel has its text in the title's place and its description under
+  it, each committed on blur or Enter, its Show when, and its look: its size, Large, Medium
+  or Small, and its alignment, Left, Centre or Right, one of three toggles the arrow keys
+  also move between. While building, the showing sheet's tab has a settings
   mark beside its cross that opens the sheet's own panel in the same place, with its
   title and its Show when; pressing the empty sheet, Escape, the panel's close, or
   selecting a component closes it. Show when reads "Always" while there are no
@@ -400,8 +412,20 @@ Out of scope:
   a pie. A Chart with nothing to plot says "Nothing to chart yet". While building, a Chart
   is laid out like any component; in Preview pointing at a column, a point or a slice names
   it and its value.
+- **Headings.** A Heading is text placed on a sheet to name a section of it, or the sheet
+  itself: large (20px) for a title, medium (16px) for a section's heading and small (12px,
+  in the secondary text colour) for a label, each semibold, with its description, while it
+  has one, under it in 12px regular type in the secondary text colour, to say what the
+  section is for. It is drawn as its text alone, with no frame or background of its own,
+  aligned left, centred or right as its `align` says, the description with it, wrapping
+  within its width and centred in its height, and is a heading to a screen reader, its
+  size giving the level. It holds no values: it shows no schema columns and takes nothing
+  typed. While building, a Heading with no text says "Type its text in the panel on the
+  right", its description not drawn; in Preview it shows no text, only the dashed frame
+  any component with a problem has.
 - **Preview.** The toolbar's Build over Preview switches the view between building and
-  the sheets as an underwriter uses them: the same sheets at the same positions, their
+  the sheets as an underwriter uses them: the same sheets at the same positions, read and
+  tabbed through in the order they sit, their
   tabs only switching sheets, the components neither selected nor moved, the palette's
   components disabled, no properties panel, no Undo or Redo, and the zoom. An
   underwriter's quote is keyed into the components' input cells as the sample is, through
@@ -457,7 +481,9 @@ Out of scope:
     is; the index, which nothing is typed into, is never left out; and a column on no Table
     or Collection is not left out. A Chart takes nothing typed, so the columns it plots
     count for nothing here: a value only hidden components take is left out however a Chart
-    that shows plots it, and a condition on a column only a Chart plots never holds. The
+    that shows plots it, and a condition on a column only a Chart plots never holds. A
+    Heading shows no columns, so it counts for nothing here either, while it hides and
+    shows by its own conditions and its sheet's as any component does. The
     values are kept, not cleared: they stay in the sample and the
     quote as typed, the sample saved with them, and are in the quote again once their
     column shows. The server leaves them out where it makes a quote of the form's values,
@@ -792,6 +818,28 @@ Out of scope:
   Chart, so the editor pays nothing for charts until then; it builds its own options,
   since it plots a sheet's values rather than a pivot's result. The runtime registers Pie
   beside Bar and Line for it.
+- **A Heading names a section.** A section of a sheet is often several components, the
+  cover's details in a Collection beside its schedule in a Table, so the name above them is
+  a component of its own rather than one of their titles, placed, hidden and shown as they
+  are, so a section's heading can hide with it. It is drawn as text on the sheet, not in a
+  frame, so it reads as the sheet's structure rather than something to fill in, and it
+  takes one of three sizes, a title, a heading and a label, and one of three alignments,
+  rather than a free font size or position of its text, so the sheets look alike however
+  many hands lay them out. Its description is the line a section often needs under its
+  name, what to enter there or what it covers, kept with the name so the two move, align
+  and hide together; it is the Heading's, never a heading of its own, so a Heading without
+  text is a problem whatever its description says.
+- **Read as laid out.** A screen reader reads the sheet, and Tab moves through its
+  components and cells, in the order the page holds them, while a builder adds components
+  in whatever order the work goes. Holding them in the order they sit, row by row and left
+  to right along each row, as other canvas builders order theirs, means a Heading placed
+  above a section is read before it and an underwriter tabbing through a quote moves down
+  the sheet. Rows rather than a strict top-to-bottom sort, because components laid side by
+  side are rarely snapped to one top: a Table a grid step higher than the Collection to its
+  left would otherwise be read first. Which component is drawn over another where two
+  overlap stays the form's order, the order they were added in but for a copy, just over
+  its original, set apart from the reading order, so laying a sheet out never changes what
+  covers what.
 - **Problems, not refusals.** A condition is written against the schema, which changes
   under it as columns are retyped, given other allowed values or their table moved between
   one row and many, so a condition that no longer fits is reported where it is, as a field
@@ -962,6 +1010,9 @@ Out of scope:
   leaves them numbered; a pie of many rows plots its first field. A Chart that cannot be
   drawn, its runtime failing to load or its options refused, says why in its place, and the
   rest of the sheet is drawn as ever.
+- A Heading with no text (none, or only spaces) is a problem refused nowhere either: the
+  form reads and saves with it, the view names it on the dashed frame, and Preview draws
+  no text in its place, only that frame.
 - `POST /api/workbench/tables` answers 404 while the workbench is not enabled, the
   structured 422 for tables the Quote Input's rules refuse and FastAPI's 422 for a body
   that is not a form; it writes nothing. A pricing that fails for any reason, a pipeline

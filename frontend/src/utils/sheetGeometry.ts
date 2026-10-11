@@ -71,3 +71,20 @@ export function fitZoom(viewportWidth: number, rects: readonly Rect[]): number {
   if (right === 0) return 1
   return Math.min(1, Math.floor((viewportWidth / (right + SHEET_EDGE)) * 20) / 20)
 }
+
+/**
+ * Components in the order they are read: row by row from the top, each row left to right,
+ * a tie kept in the order given. A row is the topmost component not yet read and every
+ * component beside it, one whose top is above its middle, so a label a little lower than
+ * the box it names, or a Table a little higher than the Collection to its left, is read
+ * in its row. A new array; the input is untouched.
+ */
+export function readingOrder<T extends Rect>(rects: readonly T[]): T[] {
+  const rows: T[][] = []
+  for (const rect of [...rects].sort((a, b) => a.y - b.y)) {
+    const row = rows.at(-1)
+    if (row !== undefined && rect.y < row[0].y + row[0].h / 2) row.push(rect)
+    else rows.push([rect])
+  }
+  return rows.flatMap((row) => row.sort((a, b) => a.x - b.x))
+}

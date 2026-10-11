@@ -1,6 +1,6 @@
 /**
  * Placing components on a sheet (specs/workbench): the snap grid, moves kept on the sheet,
- * resizes from each handle, and the sheet's size and fit.
+ * resizes from each handle, the sheet's size and fit, and the order components are read in.
  */
 import { describe, expect, it } from "vitest"
 import {
@@ -11,6 +11,7 @@ import {
   fitZoom,
   moveRect,
   placeAt,
+  readingOrder,
   resizeRect,
   sheetHeight,
   sheetWidth,
@@ -62,5 +63,19 @@ describe("sheetGeometry", () => {
     expect(fitZoom(1000, [{ x: 0, y: 0, w: 400, h: 10 }])).toBe(1)
     expect(fitZoom(1000, [{ x: 0, y: 0, w: 1968, h: 10 }])).toBe(0.5)
     expect(fitZoom(1000, [{ x: 0, y: 0, w: 3000, h: 10 }])).toBe(0.3)
+  })
+
+  it("reads components row by row from the top, each row left to right, a tie in the order given, leaving its input as it was", () => {
+    const at = (id: string, x: number, y: number, h = 40) => ({ id, x, y, w: 100, h })
+    // A title; a label a little lower than the box it names; a Table a grid step higher than the
+    // Collection to its left, as on a sheet laid out by hand; and a note exactly over the Table.
+    const added = [at("table", 864, 592, 200), at("title", 0, 0), at("box", 300, 200, 120), at("collection", 8, 608, 96), at("label", 16, 216, 24), at("note", 864, 592, 200)]
+
+    expect(readingOrder(added).map((item) => item.id)).toEqual(["title", "label", "box", "collection", "table", "note"])
+    expect(added.map((item) => item.id)).toEqual(["table", "title", "box", "collection", "label", "note"])
+    // A component starting at or below the middle of the row's topmost one starts the next row.
+    expect(readingOrder([at("upper", 400, 0), at("lower", 0, 20)]).map((item) => item.id)).toEqual(["upper", "lower"])
+    expect(readingOrder([at("upper", 400, 0), at("beside", 0, 19)]).map((item) => item.id)).toEqual(["beside", "upper"])
+    expect(readingOrder([])).toEqual([])
   })
 })

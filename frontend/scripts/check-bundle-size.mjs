@@ -126,7 +126,10 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // lazy workbench chunks, and the pie the shared chart runtime registers for it, 7.1 KiB
 // of the lazy vendor-charts chunk) brings it to 1,649.2 KiB; 1,651 KiB restores about
 // 1.8 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1651
+// The workbench's Heading (its body, its panel and its options, in the lazy workbench
+// chunks) and the sheet's reading order bring it to 1,651.0 KiB; 1,653 KiB restores about
+// 2 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1653
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All
@@ -251,7 +254,11 @@ const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // hooks share. The view, its toolbar, the schema editor, the form store and
 // the form's generated validator stay lazy (App.workbenchLazy.test.ts). The
 // merged initial bundle is 291.4 KiB; 293 KiB restores ~1.6 KiB of headroom.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 293
+// The workbench's Heading adds four of lucide's icons (its palette mark and its three
+// alignment toggles), which land in the eager vendor-ui chunk as every lucide icon does;
+// the Heading itself stays in the lazy workbench chunks. The merged initial bundle is
+// 293.0 KiB; 295 KiB restores ~2 KiB of headroom.
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 295
 
 // Chunks that should only be fetched when their preview or editor is needed.
 // If one appears as a startup modulepreload, the app has likely

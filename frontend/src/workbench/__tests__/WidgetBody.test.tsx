@@ -3,22 +3,23 @@
  * Table's grid while building, rows added and deleted across the tables a grid shows, a
  * grid drawn as its Table's options say,
  * an output box showing what pricing the sample gave, dimmed once the sample has moved
- * on, a Table's output columns matched to its rows by key, and in Preview the quote
- * typed apart from the sample with the cells that break their column's rules marked.
+ * on, a Table's output columns matched to its rows by key, in Preview the quote
+ * typed apart from the sample with the cells that break their column's rules marked, and
+ * a Heading drawn as its text.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import type { ReactNode } from "react"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore from "../../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { valuesBasis } from "../../utils/sheetValues"
-import { pricingBasis, shownFields, toggleField, updateSchemaColumn, updateWidget } from "../../utils/workbenchForm"
+import { pricingBasis, shownFields, toggleField, updateSchemaColumn, updateWidget, type WidgetPatch } from "../../utils/workbenchForm"
 import SheetCanvas from "../SheetCanvas"
 import { SheetValuesContext, usePreviewValues, useSampleValues } from "../useSheetValues"
 import WidgetBody from "../WidgetBody"
-import { column, currentForm, loadForm, releasePointer, sheetForm, stubLayout } from "./fixtures"
+import { column, currentForm, headingWidget, loadForm, releasePointer, sheetForm, stubLayout } from "./fixtures"
 
 const widget = (id: string) => {
   const found = currentForm().pages[0].widgets.find((candidate) => candidate.id === id)
@@ -324,5 +325,83 @@ describe("WidgetBody", () => {
     expect(useWorkbenchViewStore.getState().selectedId).toBe("w_boxes")
     expect(widget("w_boxes")).toMatchObject({ x: 16, y: 16 })
     expect(useWorkbenchFormStore.getState().undoStack).toEqual([])
+  })
+
+  it("draws a Heading as its text alone, a heading of its size's level, and without text asks for some while building and shows nothing in Preview", () => {
+    const form = sheetForm()
+    form.pages[0].widgets.push(headingWidget("w_head", "Equipment schedule"))
+    loadForm(form)
+    const resize = (size: "large" | "small") => act(() => useWorkbenchFormStore.getState().change((spec) => updateWidget(spec, "w_head", { size })))
+    const preview = (on: boolean) => act(() => useWorkbenchViewStore.setState({ section: on ? "preview" : "sheets" }))
+    const heading = (level: number) => screen.getByRole("heading", { level, name: "Equipment schedule" })
+    const { container, rerender } = renderBody("w_head")
+
+    // A section's heading: its text on the sheet itself, with no frame or background of its own.
+    expect(heading(3)).toHaveClass("text-base", "font-semibold")
+    expect(heading(3)).toHaveStyle({ color: "var(--text-primary)" })
+    expect(container.querySelector("[style*='border'], [style*='background'], [class*='border'], [class*='bg-']")).toBeNull()
+    // A title a level up, a label a level down in the secondary colour, each semibold.
+    resize("large")
+    rerender(body("w_head"))
+    expect(heading(2)).toHaveClass("text-xl", "font-semibold")
+    expect(heading(2)).toHaveStyle({ color: "var(--text-primary)" })
+    resize("small")
+    rerender(body("w_head"))
+    expect(heading(4)).toHaveClass("text-xs", "font-semibold")
+    expect(heading(4)).toHaveStyle({ color: "var(--text-secondary)" })
+    // The same in Preview, where an underwriter reads it.
+    preview(true)
+    rerender(body("w_head", true))
+    expect(heading(4)).toBeInTheDocument()
+    preview(false)
+
+    // Only spaces are no text: it asks for some on one line while building, and is nothing in Preview.
+    act(() => useWorkbenchFormStore.getState().change((spec) => updateWidget(spec, "w_head", { text: "  " })))
+    rerender(body("w_head"))
+    expect(screen.queryByRole("heading")).not.toBeInTheDocument()
+    expect(screen.getByText("Type its text in the panel on the right")).toHaveClass("truncate")
+    preview(true)
+    rerender(body("w_head", true))
+    expect(container).toBeEmptyDOMElement()
+  })
+
+  it("draws a Heading's description under it, both aligned as it says, and no description while it has no text", () => {
+    const form = sheetForm()
+    form.pages[0].widgets.push(headingWidget("w_head", "Equipment schedule", { description: "Each item insured, with its value" }))
+    loadForm(form)
+    const change = (patch: WidgetPatch) => act(() => useWorkbenchFormStore.getState().change((spec) => updateWidget(spec, "w_head", patch)))
+    const { container, rerender } = renderBody("w_head")
+
+    // Under the heading in regular type and the secondary colour, read after it.
+    const heading = screen.getByRole("heading", { level: 3, name: "Equipment schedule" })
+    const description = screen.getByText("Each item insured, with its value")
+    expect(description.tagName).toBe("P")
+    expect(description).toHaveClass("text-xs")
+    expect(description).not.toHaveClass("font-semibold")
+    expect(description).toHaveStyle({ color: "var(--text-secondary)" })
+    expect(heading.compareDocumentPosition(description) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // Both aligned left, centred or right, as one.
+    expect(heading.parentElement).toBe(description.parentElement)
+    expect(heading.parentElement).toHaveClass("text-left")
+    for (const [align, className] of [["center", "text-center"], ["right", "text-right"]] as const) {
+      change({ align })
+      rerender(body("w_head"))
+      expect(screen.getByRole("heading", { name: "Equipment schedule" }).parentElement).toHaveClass(className)
+    }
+    // The same for the underwriter in Preview.
+    act(() => useWorkbenchViewStore.setState({ section: "preview" }))
+    rerender(body("w_head", true))
+    expect(screen.getByText("Each item insured, with its value").parentElement).toHaveClass("text-right")
+    act(() => useWorkbenchViewStore.setState({ section: "sheets" }))
+    rerender(body("w_head"))
+
+    // Only spaces are no description; and a Heading with no text shows its hint alone.
+    change({ description: "   " })
+    rerender(body("w_head"))
+    expect(container.querySelector("p")).toBeNull()
+    change({ text: " ", description: "Each item insured, with its value" })
+    rerender(body("w_head"))
+    expect(screen.queryByText("Each item insured, with its value")).not.toBeInTheDocument()
+    expect(screen.getByText("Type its text in the panel on the right")).toBeInTheDocument()
   })
 })

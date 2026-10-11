@@ -7182,6 +7182,89 @@
       "title": "GpuFamilyStatus",
       "type": "object"
     },
+    "HeadingWidget": {
+      "additionalProperties": false,
+      "description": "A Heading: text naming a section of the sheet, or the sheet itself, with a line under\nit saying what the section is for. It shows no schema columns and takes nothing typed.",
+      "properties": {
+        "align": {
+          "default": "left",
+          "enum": [
+            "left",
+            "center",
+            "right"
+          ],
+          "title": "Align",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "h": {
+          "exclusiveMinimum": 0,
+          "title": "H",
+          "type": "integer"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "show_when": {
+          "$ref": "#/$defs/ShowWhen"
+        },
+        "size": {
+          "default": "medium",
+          "enum": [
+            "large",
+            "medium",
+            "small"
+          ],
+          "title": "Size",
+          "type": "string"
+        },
+        "text": {
+          "default": "",
+          "title": "Text",
+          "type": "string"
+        },
+        "type": {
+          "const": "heading",
+          "title": "Type",
+          "type": "string"
+        },
+        "w": {
+          "exclusiveMinimum": 0,
+          "title": "W",
+          "type": "integer"
+        },
+        "x": {
+          "minimum": 0,
+          "title": "X",
+          "type": "integer"
+        },
+        "y": {
+          "minimum": 0,
+          "title": "Y",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "x",
+        "y",
+        "w",
+        "h",
+        "type",
+        "text",
+        "description",
+        "show_when",
+        "size",
+        "align"
+      ],
+      "title": "HeadingWidget",
+      "type": "object"
+    },
     "InputPreparationRecordPayload": {
       "description": "One Data Input's automatic preparation record: digests and counts only.",
       "properties": {
@@ -11502,6 +11585,9 @@
               },
               {
                 "$ref": "#/$defs/ChartWidget"
+              },
+              {
+                "$ref": "#/$defs/HeadingWidget"
               }
             ]
           },

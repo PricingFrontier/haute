@@ -4,12 +4,13 @@ columns a quote leaves out (specs/workbench).
 A sheet or a component with conditions shows only while they hold on the values typed
 into the sheets, and a component on a sheet that does not show does not show either. A
 condition holds while it fits (``condition_fits``), its column is on a Table or a
-Collection that shows (a Chart takes nothing typed, so its columns never count), and the
-value typed into the column's first row passes its test, read as the sample's values are
-typed. Everything starts shown and anything whose conditions fail is hidden, round after
-round, until a round hides nothing: hiding never shows anything, so the answer does not
-depend on the order of the sheets, components or conditions. A condition that does not
-fit never holds; it is a problem the view reports, never an error here.
+Collection that shows (a Chart takes nothing typed, so its columns never count, and a
+Heading has none), and the value typed into the column's first row passes its test, read
+as the sample's values are typed. Everything starts shown and anything whose conditions
+fail is hidden, round after round, until a round hides nothing: hiding never shows
+anything, so the answer does not depend on the order of the sheets, components or
+conditions. A condition that does not fit never holds; it is a problem the view reports,
+never an error here.
 
 The view applies the same rules in ``frontend/src/utils/sheetVisibility.ts``; both are
 held to the cases in ``frontend/src/utils/__tests__/fixtures/sheetVisibility.json``.
@@ -25,7 +26,7 @@ from datetime import date
 from typing import Any
 
 from haute._workbench_form import (
-    ChartWidget,
+    CollectionWidget,
     ColumnType,
     Condition,
     ConditionTest,
@@ -33,6 +34,7 @@ from haute._workbench_form import (
     FormSpec,
     SchemaColumn,
     ShowWhen,
+    TableInputWidget,
     Widget,
 )
 from haute._workbench_tables import _filled, _typed
@@ -129,9 +131,9 @@ def visibility(spec: FormSpec, rows: Rows) -> Visibility:
 
 
 def _entered(widget: Widget) -> list[FieldRef]:
-    """The columns a component has values typed into: a Table's and a Collection's fields, and
-    none of a Chart's, which it only plots."""
-    return [] if isinstance(widget, ChartWidget) else widget.fields
+    """The columns a component has values typed into: a Table's and a Collection's fields,
+    none of a Chart's, which it only plots, and none of a Heading, which has no fields."""
+    return widget.fields if isinstance(widget, TableInputWidget | CollectionWidget) else []
 
 
 def condition_fits(spec: FormSpec, condition: Condition) -> bool:

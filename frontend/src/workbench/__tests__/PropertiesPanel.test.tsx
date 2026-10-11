@@ -2,8 +2,9 @@
  * The properties panel (specs/workbench): the selected component's title, Show when and
  * layout, a Table's fixed rows and look, a Chart's chart, the order of its fields, and the
  * fields ticked from the schema tables of its kind (a Chart's from every table, the columns
- * it cannot plot disabled), with tables whose rows do not line up greyed out; and the
- * showing sheet's own panel, its title and its Show when.
+ * it cannot plot disabled), with tables whose rows do not line up greyed out; a Heading's
+ * text, description, size, alignment and Show when; and the showing sheet's own panel, its
+ * title and its Show when.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
@@ -11,11 +12,11 @@ import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import PropertiesPanel from "../PropertiesPanel"
 import type { FieldRef, FormSpec } from "../../api/types"
-import { chartWidget, column, coverForm, currentForm, loadForm, sheetForm, table } from "./fixtures"
+import { chartWidget, column, coverForm, currentForm, fieldsWidget, headingWidget, loadForm, sheetForm, table } from "./fixtures"
 
-const grid = () => currentForm().pages[0].widgets[1]
+const grid = () => fieldsWidget(currentForm(), "w_grid")
 const select = (id: string | null) => useWorkbenchViewStore.setState({ selectedId: id })
-const chart = () => currentForm().pages[0].widgets[2]
+const chart = () => fieldsWidget(currentForm(), "w_chart")
 
 /** `sheetForm` with a row-number index on equipment and a Chart, w_chart, plotting `fields`. */
 function chartForm(fields: FieldRef[]): FormSpec {
@@ -219,6 +220,79 @@ describe("PropertiesPanel", () => {
 
     expect(grid().show_when).toEqual({ match: "all", conditions: [{ table: "policy", column: "policy.state", op: "equals", values: ["NY"] }] })
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(2)
+  })
+
+  it("edits a Heading's text and description as typed, its size, alignment and when it shows, each one undo step, with no title, layout or fields", () => {
+    const form = sheetForm()
+    form.pages[0].widgets.push(headingWidget("w_head", "Cover"))
+    loadForm(form)
+    select("w_head")
+    render(<PropertiesPanel />)
+    const heading = () => currentForm().pages[0].widgets[2]
+    const undoSteps = () => useWorkbenchFormStore.getState().undoStack.length
+
+    expect(screen.getByTestId("workbench-properties")).toHaveTextContent("Heading")
+    expect(screen.queryByRole("textbox", { name: "Title" })).not.toBeInTheDocument()
+    for (const section of ["Layout", "Order", "Fields"]) expect(screen.queryByRole("region", { name: section })).not.toBeInTheDocument()
+
+    // Its text as typed, spaces and all, and cleared when emptied: a blank Heading is a problem, not refused.
+    const text = screen.getByRole("textbox", { name: "Heading text" })
+    expect(text).toHaveValue("Cover")
+    expect(text).toHaveAttribute("placeholder", "Name a section of the sheet")
+    fireEvent.change(text, { target: { value: " Equipment schedule " } })
+    fireEvent.keyDown(text, { key: "Enter" })
+    expect(heading()).toMatchObject({ text: " Equipment schedule ", size: "medium" })
+    fireEvent.change(text, { target: { value: "" } })
+    fireEvent.blur(text)
+    expect(heading()).toMatchObject({ text: "" })
+    expect(text).toHaveValue("")
+    expect(undoSteps()).toBe(2)
+
+    // Its description, as typed, under it: none until one is typed.
+    const description = within(screen.getByRole("region", { name: "Description" })).getByRole("textbox", { name: "Heading description" })
+    expect(description).toHaveValue("")
+    expect(description).toHaveAttribute("placeholder", "None")
+    fireEvent.change(description, { target: { value: " Each item insured " } })
+    fireEvent.keyDown(description, { key: "Enter" })
+    expect(heading()).toMatchObject({ description: " Each item insured " })
+    expect(undoSteps()).toBe(3)
+
+    // Large, Medium or Small, each the size it names.
+    const look = screen.getByRole("region", { name: "Look" })
+    const size = within(look).getByRole("combobox", { name: "Size" })
+    expect([...size.querySelectorAll("option")].map((option) => [option.value, option.textContent])).toEqual([
+      ["large", "Large"],
+      ["medium", "Medium"],
+      ["small", "Small"],
+    ])
+    expect(size).toHaveValue("medium")
+    fireEvent.change(size, { target: { value: "large" } })
+    expect(heading()).toMatchObject({ size: "large" })
+    expect(size).toHaveValue("large")
+    expect(undoSteps()).toBe(4)
+
+    // Left, Centre or Right, one chosen, as a radio group; choosing it again changes nothing.
+    const align = within(look).getByRole("radiogroup", { name: "Align" })
+    const chosen = () => within(align).getAllByRole("radio").filter((radio) => radio.getAttribute("aria-checked") === "true").map((radio) => radio.textContent)
+    expect(within(align).getAllByRole("radio").map((radio) => radio.textContent)).toEqual(["Left", "Centre", "Right"])
+    expect(chosen()).toEqual(["Left"])
+    fireEvent.click(within(align).getByRole("radio", { name: "Centre" }))
+    expect(heading()).toMatchObject({ align: "center" })
+    expect(chosen()).toEqual(["Centre"])
+    fireEvent.click(within(align).getByRole("radio", { name: "Centre" }))
+    // The arrow keys choose the next, the key kept from the sheet's own keys, which would move the Heading.
+    expect(fireEvent.keyDown(within(align).getByRole("radio", { name: "Centre" }), { key: "ArrowRight" })).toBe(false)
+    expect(heading()).toMatchObject({ align: "right", x: 16 })
+    expect(chosen()).toEqual(["Right"])
+    expect(undoSteps()).toBe(6)
+
+    // When it shows, so a section's Heading can hide with the section.
+    const showWhen = screen.getByRole("region", { name: "Show when" })
+    expect(within(showWhen).getByText("Always")).toBeInTheDocument()
+    fireEvent.click(within(showWhen).getByRole("button", { name: "Add condition" }))
+    fireEvent.change(within(showWhen).getByRole("combobox", { name: "Condition 1 value" }), { target: { value: "NY" } })
+    expect(heading().show_when).toEqual({ match: "all", conditions: [{ table: "policy", column: "policy.state", op: "equals", values: ["NY"] }] })
+    expect(undoSteps()).toBe(8)
   })
 
   it("is the showing sheet's own panel while the sheet is selected: its title and when it shows", () => {

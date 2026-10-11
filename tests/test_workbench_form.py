@@ -15,6 +15,7 @@ from haute._workbench_form import (
     ColumnFormat,
     FormDocument,
     FormSpec,
+    HeadingWidget,
     WorkbenchFormError,
     blank_form,
     form_file_revision,
@@ -47,8 +48,8 @@ def column(name: str, type_: str = "str", **rest: Any) -> dict[str, Any]:
 
 
 # The test project's shape: one-row and many-row input tables, an index column, an output
-# table, a Collection, a Table and a Chart, the Table shown while a condition holds, and a
-# sample typed into the Collection.
+# table, a Collection, a Table, a Chart and a Heading, the Table shown while a condition
+# holds, and a sample typed into the Collection.
 ALWAYS: dict[str, Any] = {"match": "all", "conditions": []}
 FORM: dict[str, Any] = {
     "version": 1,
@@ -161,6 +162,21 @@ FORM: dict[str, Any] = {
                     "legend": "right",
                     "data_labels": True,
                 },
+                {
+                    "id": "w_title",
+                    "type": "heading",
+                    "x": 16,
+                    "y": 384,
+                    "w": 480,
+                    "h": 40,
+                    # Named as typed, outside ASCII too, large and centred: the sheet's title,
+                    # with a line under it.
+                    "text": "Équipement des entrepreneurs",
+                    "description": "Plant and equipment, by layer",
+                    "show_when": ALWAYS,
+                    "size": "large",
+                    "align": "center",
+                },
             ],
         }
     ],
@@ -221,10 +237,29 @@ def test_the_file_keeps_text_as_typed(tmp_path: Path) -> None:
     assert "\\u00fc" not in text
 
 
+@pytest.mark.parametrize("text", ["", "   ", "  Cover  "])
+def test_a_heading_s_text_reads_and_writes_as_typed_blank_or_not(tmp_path: Path, text: str) -> None:
+    # A Heading with no text is a problem the view names, never a refusal, and the spaces
+    # around its text and its description are the builder's: the file keeps what was typed.
+    form = json.loads(json.dumps(FORM))
+    form["pages"][0]["widgets"][3].update(text=text, description=text)
+    (tmp_path / "forms").mkdir()
+    (tmp_path / "forms" / "form.json").write_text(json.dumps(form), encoding="utf-8")
+
+    spec = read_form_document(config(tmp_path)).spec
+
+    heading = spec.pages[0].widgets[3]
+    assert isinstance(heading, HeadingWidget)
+    assert (heading.text, heading.description) == (text, text)
+    written = json.loads(render_form(spec))["pages"][0]["widgets"][3]
+    assert (written["text"], written["description"]) == (text, text)
+
+
 def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> None:
     # A file written without the index flags, the columns' display, the Table's and the
-    # Chart's options, the sheet's and the Collection's show_when and the sample, as a builder
-    # that leaves defaults out would write it.
+    # Chart's options, the Heading's text, description, size and alignment, the sheet's, the
+    # Collection's and the Heading's show_when and the sample, as a builder that leaves
+    # defaults out would write it.
     display = ("help", "placeholder", "number_format", "decimal_places", "use_grouping")
     options = ("row_numbers", "density", "gridlines", "striped", "fixed_rows")
     chart_options = ("category", "chart_type", "orientation", "stacked", "legend", "data_labels")
@@ -240,6 +275,8 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         del sparse["pages"][0]["widgets"][1][field]
     for field in chart_options:
         del sparse["pages"][0]["widgets"][2][field]
+    for field in ("text", "description", "show_when", "size", "align"):
+        del sparse["pages"][0]["widgets"][3][field]
     del sparse["pages"][0]["show_when"]
     del sparse["pages"][0]["widgets"][0]["show_when"]
     (tmp_path / "forms").mkdir()
@@ -272,9 +309,19 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         "legend": "bottom",
         "data_labels": False,
     }
+    # No text or description yet, of medium size and aligned left, in the file's order.
+    heading = written["pages"][0]["widgets"][3]
+    assert list(heading) == "id x y w h type text description show_when size align".split()
+    assert [heading[field] for field in ("text", "description", "size", "align")] == [
+        "",
+        "",
+        "medium",
+        "left",
+    ]
     # Always shown.
     assert written["pages"][0]["show_when"] == ALWAYS
     assert written["pages"][0]["widgets"][0]["show_when"] == ALWAYS
+    assert heading["show_when"] == ALWAYS
 
 
 @pytest.mark.parametrize(
@@ -296,6 +343,16 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         (lambda f: f["pages"][0]["widgets"][0].update(legend="top"), "legend"),
         # What labels a Chart's rows is held as a field is: a table and a column.
         (lambda f: f["pages"][0]["widgets"][2].update(category={"table": "t_layers"}), "category"),
+        (lambda f: f["pages"][0]["widgets"][3].update(size="huge"), "size"),
+        (lambda f: f["pages"][0]["widgets"][3].update(align="justify"), "align"),
+        # A Heading is its text: it has no title and shows no fields, and no other
+        # component has its text, its description, its size or its alignment.
+        (lambda f: f["pages"][0]["widgets"][3].update(title="Cover"), "title"),
+        (lambda f: f["pages"][0]["widgets"][3].update(fields=[]), "fields"),
+        (lambda f: f["pages"][0]["widgets"][1].update(text="Layers"), "text"),
+        (lambda f: f["pages"][0]["widgets"][1].update(description="By layer"), "description"),
+        (lambda f: f["pages"][0]["widgets"][2].update(size="large"), "size"),
+        (lambda f: f["pages"][0]["widgets"][2].update(align="center"), "align"),
         (lambda f: f["schema"]["tables"][0]["columns"][0].update(type="money"), "type"),
         (
             lambda f: f["schema"]["tables"][0]["columns"][1].update(number_format="yen"),

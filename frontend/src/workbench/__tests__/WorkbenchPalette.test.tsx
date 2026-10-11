@@ -1,7 +1,7 @@
 /**
- * The workbench's palette (specs/workbench): Table, Collection and Chart in Haute's palette
- * shell with the switcher under them, collapsing with the node palette, and disabled in
- * Preview.
+ * The workbench's palette (specs/workbench): Table, Collection, Chart and Heading in Haute's
+ * palette shell with the switcher under them, collapsing with the node palette, and
+ * disabled in Preview.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
@@ -23,13 +23,15 @@ describe("WorkbenchPalette", () => {
     useWorkbenchViewStore.setState({ section: "sheets", creating: null })
   })
 
-  it("offers a Table, a Collection and a Chart, with the switcher at the bottom", () => {
+  it("offers a Table, a Collection, a Chart and a Heading, with the switcher at the bottom", () => {
     render(<WorkbenchPalette />)
 
     expect(screen.getByRole("heading", { name: "Components" })).toBeInTheDocument()
     expect(screen.getByTestId("palette-item-tableInput")).toHaveTextContent("Table")
     expect(screen.getByTestId("palette-item-collection")).toHaveTextContent("Collection")
     expect(screen.getByTestId("palette-item-chart")).toHaveTextContent("Chart")
+    expect(screen.getByTestId("palette-item-heading")).toHaveTextContent("Heading")
+    expect(screen.getByTestId("palette-item-heading")).toHaveAttribute("title", "Text naming a section of the sheet: a title, a heading or a label")
     expect(within(screen.getByRole("group", { name: "Views" })).getByRole("button", { name: "Workbench" })).toHaveAttribute("aria-pressed", "true")
   })
 

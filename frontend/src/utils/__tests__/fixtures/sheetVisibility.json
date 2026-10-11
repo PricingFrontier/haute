@@ -320,6 +320,19 @@
               "stacked": false,
               "legend": "bottom",
               "data_labels": false
+            },
+            {
+              "id": "w_heading",
+              "x": 0,
+              "y": 616,
+              "w": 480,
+              "h": 40,
+              "type": "heading",
+              "text": "Business interruption",
+              "description": "",
+              "show_when": {"match": "all", "conditions": []},
+              "size": "medium",
+              "align": "left"
             }
           ]
         },
@@ -1901,6 +1914,64 @@
       "hidden_pages": ["p_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a Heading hides while its own conditions fail, as any component does",
+      "form": "quote",
+      "show_when": {
+        "w_heading": {
+          "match": "all",
+          "conditions": [{"table": "t_policy", "column": "c_bi", "op": "ticked", "values": []}]
+        }
+      },
+      "values": {"t_policy": [{"c_bi": false}]},
+      "hidden_pages": ["p_bi", "p_ext"],
+      "hidden_widgets": ["w_bi", "w_ext", "w_fleet", "w_heading", "w_items"],
+      "hidden_columns": [
+        ["t_bi", "c_bi_more"],
+        ["t_bi", "c_bi_si"],
+        ["t_ext", "c_ext_days"],
+        ["t_items", "c_item"],
+        ["t_items", "c_value"]
+      ]
+    },
+    {
+      "name": "a Heading shows while its own conditions hold",
+      "form": "quote",
+      "show_when": {
+        "w_heading": {
+          "match": "all",
+          "conditions": [{"table": "t_policy", "column": "c_bi", "op": "ticked", "values": []}]
+        }
+      },
+      "values": {"t_policy": [{"c_bi": true}]},
+      "hidden_pages": ["p_ext"],
+      "hidden_widgets": ["w_ext", "w_fleet", "w_items"],
+      "hidden_columns": [["t_ext", "c_ext_days"], ["t_items", "c_item"], ["t_items", "c_value"]]
+    },
+    {
+      "name": "a Heading on a hidden sheet hides with it, and takes nothing typed",
+      "form": "quote",
+      "show_when": {
+        "p_main": {
+          "match": "all",
+          "conditions": [{"table": "t_policy", "column": "c_bi", "op": "ticked", "values": []}]
+        }
+      },
+      "values": {"t_policy": [{"c_bi": false}]},
+      "hidden_pages": ["p_bi", "p_ext", "p_main"],
+      "hidden_widgets": ["w_bi", "w_chart", "w_ext", "w_fleet", "w_heading", "w_items", "w_policy", "w_premium"],
+      "hidden_columns": [
+        ["t_bi", "c_bi_more"],
+        ["t_bi", "c_bi_si"],
+        ["t_ext", "c_ext_days"],
+        ["t_items", "c_item"],
+        ["t_items", "c_value"],
+        ["t_policy", "c_bi"],
+        ["t_policy", "c_class"],
+        ["t_policy", "c_name"],
+        ["t_policy", "c_si"]
+      ]
     }
   ]
 }

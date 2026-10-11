@@ -524,6 +524,7 @@ export type {
   FieldRef,
   FormSchema,
   FormSpec,
+  HeadingWidget,
   Page,
   SchemaColumn,
   SchemaTable,

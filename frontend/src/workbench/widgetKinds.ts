@@ -1,4 +1,4 @@
-import { ChartColumn, LayoutGrid, Table2, type LucideIcon } from "lucide-react"
+import { ChartColumn, Heading, LayoutGrid, Table2, type LucideIcon } from "lucide-react"
 import { NODE_GROUP_COLORS } from "../theme/colors"
 import type { Size } from "../utils/sheetGeometry"
 import type { WidgetType } from "../utils/workbenchForm"
@@ -44,7 +44,17 @@ export const WIDGET_KINDS: Record<WidgetType, WidgetKind> = {
     size: { w: 480, h: 280 },
     min: { w: 240, h: 160 },
   },
+  heading: {
+    label: "Heading",
+    icon: Heading,
+    // The structure colour: a Heading names a section of the sheet and holds no values.
+    color: NODE_GROUP_COLORS.structure,
+    hint: "Text naming a section of the sheet: a title, a heading or a label",
+    // Tall enough for a large heading and a line of description under it.
+    size: { w: 480, h: 48 },
+    min: { w: 80, h: 24 },
+  },
 }
 
 /** What the palette offers, in order. */
-export const PALETTE_KINDS: readonly WidgetType[] = ["tableInput", "collection", "chart"]
+export const PALETTE_KINDS: readonly WidgetType[] = ["tableInput", "collection", "chart", "heading"]

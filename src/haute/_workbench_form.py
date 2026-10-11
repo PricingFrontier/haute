@@ -2,8 +2,9 @@
 (specs/workbench).
 
 ``forms/form.json`` is the file the workbench edits: the schema of typed tables the quote is
-keyed into, the sheets of Tables and Collections that show those tables' columns and of
-Charts that plot them, and the sample quote typed into them while building. It is one JSON
+keyed into, the sheets of Tables and Collections that show those tables' columns, of Charts
+that plot them and of Headings that name their sections, and the sample quote typed into
+them while building. It is one JSON
 document with one spelling: every field is written, defaults included, and an unknown
 field is refused by name. Nothing migrates an older spelling.
 
@@ -46,6 +47,12 @@ ChartType = Literal["column", "line", "area", "pie"]
 
 #: Where a Chart's legend sits, or none.
 ChartLegend = Literal["bottom", "top", "left", "right", "none"]
+
+#: How large a Heading's text is: a sheet's title, a section's heading, or a label.
+HeadingSize = Literal["large", "medium", "small"]
+
+#: Where a Heading's text sits across its width.
+HeadingAlign = Literal["left", "center", "right"]
 
 #: What a condition tests its column's value for: a tick box ticked or not; any other
 #: column filled or empty, or equal to a value or not; a Text or number column one of some
@@ -165,7 +172,22 @@ class ChartWidget(_Placed):
     data_labels: bool = False
 
 
-Widget = Annotated[TableInputWidget | CollectionWidget | ChartWidget, Field(discriminator="type")]
+class HeadingWidget(_Placed):
+    """A Heading: text naming a section of the sheet, or the sheet itself, with a line under
+    it saying what the section is for. It shows no schema columns and takes nothing typed."""
+
+    type: Literal["heading"]
+    text: str = ""
+    #: Under the text; empty for none.
+    description: str = ""
+    show_when: ShowWhen = Field(default_factory=ShowWhen)
+    size: HeadingSize = "medium"
+    align: HeadingAlign = "left"
+
+
+Widget = Annotated[
+    TableInputWidget | CollectionWidget | ChartWidget | HeadingWidget, Field(discriminator="type")
+]
 
 
 class Page(_Strict):

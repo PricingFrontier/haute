@@ -24,6 +24,7 @@ import {
   fieldColumn,
   fieldUses,
   findWidget,
+  HEADING_OPTIONS,
   labelColumns,
   linedUpOutputs,
   moveField,
@@ -42,6 +43,8 @@ import {
   schemaProblems,
   setPageShowWhen,
   setSchemaTableRows,
+  shownFields,
+  showsFields,
   showWhenText,
   TABLE_OPTIONS,
   tableGrain,
@@ -171,7 +174,7 @@ describe("problems", () => {
 
     spec = setSchemaTableRows(spec, "t", "one")
     expect(spec.schema.tables[0].columns.map((c) => [c.name, c.key])).toEqual([["item", false], ["value", false]])
-    expect(spec.pages[0].widgets[0].fields).toEqual([])
+    expect(spec.pages[0].widgets[0]).toMatchObject({ fields: [] })
     expect(spec.sample).toEqual({ t: [{ a: "x" }] })
   })
 
@@ -306,7 +309,7 @@ describe("what the sheets show", () => {
     return spec
   }
   const fields = (spec: FormSpec, widgetId: string) =>
-    spec.pages[0].widgets.find((widget) => widget.id === widgetId)?.fields.map((field) => field.column)
+    spec.pages[0].widgets.filter(showsFields).find((widget) => widget.id === widgetId)?.fields.map((field) => field.column)
 
   it("finds the widgets showing a table or a column, and the column a field names", () => {
     const spec = sheet()
@@ -424,6 +427,52 @@ describe("what the sheets show", () => {
     expect(findWidget(copied.spec, copied.id)).toMatchObject({ index: 1, widget: { type: "chart", title: "Premiums", x: 16, y: 16, ...options } })
   })
 
+  it("creates a Heading of its text, description, size and alignment alone, which only a Heading takes, showing no fields", () => {
+    const heading = createWidget("heading", { x: 0, y: 0, w: 480, h: 40 })
+    const grid = createWidget("tableInput", { x: 0, y: 80, w: 720, h: 200 })
+    // Medium and aligned left, with no text or description yet, and no title or fields, in the file's order.
+    expect(HEADING_OPTIONS).toEqual({ size: "medium", align: "left" })
+    expect(heading).toMatchObject({ type: "heading", text: "", description: "", ...HEADING_OPTIONS })
+    expect(Object.keys(heading)).toEqual(["id", "x", "y", "w", "h", "type", "text", "description", "show_when", "size", "align"])
+    expect([showsFields(heading), showsFields(grid)]).toEqual([false, true])
+
+    let spec = [heading, grid].reduce((current, widget) => addWidget(current, "p", widget), blank())
+    const look = { text: "Property", description: " Buildings and contents ", size: "large", align: "center" } as const
+    spec = updateWidget(spec, heading.id, { ...look, x: 16 })
+    expect(findWidget(spec, heading.id)?.widget).toMatchObject({ ...look, x: 16 })
+    expect(() => updateWidget(spec, grid.id, { text: "Equipment" })).toThrow("Only a Heading has text")
+    expect(() => updateWidget(spec, grid.id, { description: "By item" })).toThrow("Only a Heading has description")
+    expect(() => updateWidget(spec, grid.id, { size: "small" })).toThrow("Only a Heading has size")
+    expect(() => updateWidget(spec, grid.id, { align: "right" })).toThrow("Only a Heading has align")
+    expect(() => updateWidget(spec, heading.id, { title: "Property" })).toThrow("A Heading has no title")
+    expect(() => updateWidget(spec, heading.id, { fields: [] })).toThrow("A Heading has no fields")
+    expect(() => updateWidget(spec, heading.id, { rows: 2 })).toThrow("Only a Table has rows")
+    expect(() => toggleField(spec, heading.id, { table: "t", column: "c" })).toThrow("A Heading shows no fields")
+    expect(() => moveField(spec, heading.id, 0, 1)).toThrow("A Heading shows no fields")
+    expect(shownFields(spec, heading)).toEqual([])
+
+    const copied = duplicateWidget(spec, heading.id)
+    expect(findWidget(copied.spec, copied.id)).toMatchObject({ index: 1, widget: { type: "heading", ...look, x: 32, y: 16 } })
+  })
+
+  it("names a Heading by its text, says when it has none, and passes it by when a column goes", () => {
+    let spec = addWidget(sheet(), "p", { ...createWidget("heading", { x: 0, y: 400, w: 480, h: 40 }), id: "w_head" })
+    const head = (form: FormSpec) => form.pages[0].widgets[2]
+    expect(widgetName(head(spec))).toBe("A Heading")
+    expect(widgetProblems(spec)).toEqual([{ widgetId: "w_head", message: "A Heading has no text" }])
+    expect(widgetProblems(updateWidget(spec, "w_head", { text: "   " })).map((p) => p.message)).toEqual(["A Heading has no text"])
+
+    spec = updateWidget(spec, "w_head", { text: " Equipment schedule " })
+    expect(widgetName(head(spec))).toBe('Heading "Equipment schedule"')
+    expect(widgetProblems(spec)).toEqual([])
+    // Kept as typed: only its name reads it without the spaces around it.
+    expect(head(spec)).toMatchObject({ text: " Equipment schedule " })
+
+    // A Heading shows no column, so it is no column's use, and removing one passes it by.
+    expect(fieldUses(spec, "equipment").map((widget) => widget.id)).toEqual(["w_grid"])
+    expect(head(removeSchemaTable(removeSchemaColumn(spec, "equipment", "equipment.value"), "policy"))).toEqual(head(spec))
+  })
+
   it("shows a column in a component, stops showing it, and moves fields in order", () => {
     let spec = sheet()
     spec = toggleField(spec, "w_boxes", { table: "policy", column: "policy.state" })
@@ -464,7 +513,7 @@ describe("what the sheets show", () => {
     let spec = sheet()
     expect(widgetProblems(spec)).toEqual([])
     expect(widgetName(spec.pages[0].widgets[0])).toBe('Collection "Policy"')
-    expect(widgetName({ ...spec.pages[0].widgets[1], title: "" })).toBe("A Table")
+    expect(widgetName(updateWidget(spec, "w_grid", { title: "" }).pages[0].widgets[1])).toBe("A Table")
     expect([rowsShown({ type: "collection" }), rowsShown({ type: "tableInput" })]).toEqual(["one", "many"])
     expect(spec.schema.tables.map(tableGrain)).toEqual(["one", "many:item"])
 
@@ -537,7 +586,8 @@ describe("when sheets and components show", () => {
     expect(createPage(spec).show_when).toEqual(always())
     const first = createWidget("collection", { x: 0, y: 0, w: 200, h: 100 })
     const second = createWidget("tableInput", { x: 0, y: 0, w: 200, h: 100 })
-    expect([first.show_when, second.show_when]).toEqual([always(), always()])
+    const third = createWidget("heading", { x: 0, y: 0, w: 200, h: 40 })
+    expect([first.show_when, second.show_when, third.show_when]).toEqual([always(), always(), always()])
     expect(first.show_when).not.toBe(second.show_when)
   })
 
@@ -569,6 +619,17 @@ describe("when sheets and components show", () => {
     expect(findWidget(withoutPolicy, "w_bi")?.widget.show_when.conditions).toEqual([])
   })
 
+  it("counts a Heading's conditions as any component's, and takes them out with their column or table", () => {
+    const onClass: Condition = { table: "policy", column: "policy.class", op: "equals", values: ["Fleet"] }
+    const heading = { ...createWidget("heading", { x: 0, y: 0, w: 480, h: 40 }), id: "w_head", text: "Fleet", show_when: { match: "all" as const, conditions: [onClass] } }
+    const spec = addWidget(covered(), "p", heading)
+    expect(conditionUses(spec, "policy", "policy.class").map((holder) => holder.id)).toEqual(["w_head"])
+
+    expect(findWidget(removeSchemaColumn(spec, "policy", "policy.class"), "w_head")?.widget.show_when.conditions).toEqual([])
+    expect(findWidget(removeSchemaTable(spec, "policy"), "w_head")?.widget.show_when.conditions).toEqual([])
+    expect(findWidget(removeSchemaColumn(spec, "policy", "policy.bi"), "w_head")?.widget.show_when.conditions).toEqual([onClass])
+  })
+
   it("says what stops a sheet's or a component's conditions doing what they say", () => {
     const spec = covered()
     expect([...pageProblems(spec), ...widgetProblems(spec)]).toEqual([])
@@ -597,6 +658,13 @@ describe("when sheets and components show", () => {
     expect(pageProblems(setPageShowWhen(plotted, "p_bi", { match: "all", conditions: [{ table: "policy", column: "policy.extra", op: "filled", values: [] }] })).map((p) => p.message)).toEqual([
       'Sheet "BI" waits on extra, which is on no Table or Collection',
     ])
+    // A Heading's conditions are checked as any component's, and it is named by its text.
+    const headed = addWidget(spec, "p_bi", {
+      ...createWidget("heading", { x: 0, y: 160, w: 480, h: 40 }),
+      text: "Business interruption",
+      show_when: { match: "all", conditions: [{ table: "policy", column: "policy.gone", op: "filled", values: [] }] },
+    })
+    expect(widgetProblems(headed).map((p) => p.message)).toEqual(['Heading "Business interruption" tests a column that is no longer in the schema'])
   })
 
   it("reads conditions as sentences by their columns' labels", () => {

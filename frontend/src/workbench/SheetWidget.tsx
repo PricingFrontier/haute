@@ -23,7 +23,8 @@ const HANDLE_CLASS: Record<Handle, string> = {
  * does nothing: the sheet is an underwriter's, the picture scrolls and only the cells
  * respond. A problem with what it shows draws the frame dashed in the warning colour,
  * naming the problem on hover and to a screen reader. While building, a component with
- * conditions carries an eye naming them, and one the sample hides is drawn faded and its
+ * conditions carries an eye naming them, top right, or top left on a right-aligned Heading
+ * so it never covers the end of the text, and one the sample hides is drawn faded and its
  * eye struck through.
  */
 export default function SheetWidget({
@@ -34,6 +35,7 @@ export default function SheetWidget({
   editable,
   hidden,
   conditions,
+  layer,
 }: {
   widget: Widget
   fields: ShownField[]
@@ -46,6 +48,11 @@ export default function SheetWidget({
   hidden: boolean
   /** Its conditions as a sentence, for its eye while building; null for none, or in Preview. */
   conditions: string | null
+  /**
+   * Its place in the stack: what it covers where it overlaps another, the form's order of
+   * the components and the selected one above them, apart from the order they are read in.
+   */
+  layer: number
 }) {
   const frame = selected
     ? "border-[var(--accent)]"
@@ -66,7 +73,7 @@ export default function SheetWidget({
       data-testid={`sheet-widget-${widget.id}`}
       data-selected={selected ? "true" : undefined}
       className={`group focus-ring absolute ${editable ? "cursor-move" : ""}`}
-      style={{ left: widget.x, top: widget.y, width: widget.w, height: widget.h, zIndex: selected ? 5 : 1 }}
+      style={{ left: widget.x, top: widget.y, width: widget.w, height: widget.h, zIndex: layer }}
       onPointerDown={editable ? (event) => startTransform(event, widget.id) : undefined}
       onFocus={editable ? (event) => { if (event.target === event.currentTarget) select(widget.id) } : undefined}
     >
@@ -82,7 +89,7 @@ export default function SheetWidget({
         <ShowWhenMark
           hidden={hidden}
           title={conditions}
-          className="absolute top-1 right-1 z-10 rounded p-0.5"
+          className={`absolute top-1 ${widget.type === "heading" && widget.align === "right" ? "left-1" : "right-1"} z-10 rounded p-0.5`}
           style={{ background: "var(--bg-elevated)", boxShadow: "0 0 0 1px var(--border)" }}
         />
       )}
