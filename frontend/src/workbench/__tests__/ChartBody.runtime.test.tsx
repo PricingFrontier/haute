@@ -12,7 +12,7 @@ import useWorkbenchPricingStore from "../../stores/useWorkbenchPricingStore"
 import { shownFields, withSampleCell } from "../../utils/workbenchForm"
 import { SheetValuesContext, useSampleValues } from "../useSheetValues"
 import WidgetBody from "../WidgetBody"
-import { chartWidget, currentForm, loadForm, sheetForm } from "./fixtures"
+import { addTo, chartWidget, currentForm, loadForm, sheetForm, widgetsOf } from "./fixtures"
 
 const runtime = vi.hoisted(() => ({ imports: 0, setOption: (() => undefined) as (option: Record<string, unknown>) => void }))
 
@@ -49,12 +49,12 @@ describe("ChartBody's runtime", () => {
 
   it("shows a runtime that fails to load as an alert, and imports it again on the next draw", async () => {
     const form = sheetForm()
-    form.pages[0].widgets.push(chartWidget("w_chart", [{ table: "equipment", column: "equipment.value" }]))
+    addTo(form, chartWidget("w_chart", [{ table: "equipment", column: "equipment.value" }]))
     form.sample = { equipment: [{ "equipment.item": "Crane", "equipment.value": "100" }] }
     loadForm(form)
     const plotted: unknown[] = []
     runtime.setOption = (option) => plotted.push((option as { series: { data: unknown[] }[] }).series.map((series) => series.data))
-    const chart = currentForm().pages[0].widgets[2]
+    const chart = widgetsOf(currentForm())[2]
     render(
       <OnSheet>
         <WidgetBody widget={chart} fields={shownFields(currentForm(), chart)} />

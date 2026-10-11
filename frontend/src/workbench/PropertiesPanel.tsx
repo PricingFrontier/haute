@@ -9,11 +9,12 @@
  * or a Chart shows a field, tables whose rows do not line up with it are greyed out. A
  * Heading's panel is its text and description, when it shows, and its size and alignment.
  * Opened from the showing sheet's tab instead, it is the sheet's panel: its title and when
- * it shows.
+ * it shows; opened from a section's header, the section's: its title, when it shows, its
+ * height, and adding a section under it or deleting it.
  */
-import { ChevronDown, ChevronRight, GripVertical, Sheet, TextAlignCenter, TextAlignEnd, TextAlignStart, X, type LucideIcon } from "lucide-react"
+import { ChevronDown, ChevronRight, GripVertical, Plus, Rows3, Sheet, TextAlignCenter, TextAlignEnd, TextAlignStart, Trash2, X, type LucideIcon } from "lucide-react"
 import { useState, type KeyboardEvent, type ReactNode } from "react"
-import type { FieldRef, FormSpec, HeadingWidget, Page, SchemaTable } from "../api/types"
+import type { FieldRef, FormSpec, HeadingWidget, Page, SchemaTable, Section as SheetSection } from "../api/types"
 import { CommittedTextField, ConfigCheckbox, EditorLabel, ValidatedTextField } from "../components/form"
 import ToggleButtonGroup from "../components/ToggleButtonGroup"
 import { SidePanel } from "../haute-ui"
@@ -21,16 +22,24 @@ import useListReorder, { type RowDrag } from "../hooks/useListReorder"
 import { INPUT_STYLE } from "../panels/editors/_shared"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore, { activePage } from "../stores/useWorkbenchViewStore"
+import { leastSectionHeight } from "../utils/sheetGeometry"
 import {
+  addSection,
   chartGrain,
+  createSection,
   fieldColumn,
+  findSection,
   findWidget,
+  fitSection,
   moveField,
   plottable,
   readableName,
   renamePage,
+  renameSection,
   rowsShown,
   setPageShowWhen,
+  setSectionHeight,
+  setSectionShowWhen,
   tableGrain,
   toggleField,
   updateWidget,
@@ -39,6 +48,7 @@ import {
 } from "../utils/workbenchForm"
 import ChartSettings from "./ChartSettings"
 import { COLUMN_TYPES } from "./columnTypes"
+import { deleteSection } from "./sheetInteractions"
 import { ShowWhenEditor } from "./ShowWhenEditor"
 import { COMPONENT_COLOR, WIDGET_KINDS } from "./widgetKinds"
 
@@ -72,6 +82,7 @@ export default function PropertiesPanel() {
   const form = useWorkbenchFormStore((s) => s.form)
   const selectedId = useWorkbenchViewStore((s) => s.selectedId)
   const sheetSelected = useWorkbenchViewStore((s) => s.sheetSelected)
+  const sectionId = useWorkbenchViewStore((s) => s.sectionId)
   const pageId = useWorkbenchViewStore((s) => s.pageId)
   const select = useWorkbenchViewStore((s) => s.select)
   const panelWidth = useWorkbenchViewStore((s) => s.panelWidth)
@@ -83,6 +94,15 @@ export default function PropertiesPanel() {
     return (
       <SidePanel {...panel} title="Sheet" icon={<Sheet size={14} style={{ color: COMPONENT_COLOR }} />}>
         <SheetSettings form={form} page={activePage(form, pageId)} />
+      </SidePanel>
+    )
+  }
+  const section = sectionId !== null ? findSection(form, sectionId) : null
+  if (section !== null) {
+    return (
+      <SidePanel {...panel} title="Section" icon={<Rows3 size={14} style={{ color: COMPONENT_COLOR }} />}>
+        {/* Keyed by the section, so a height refused for one is never shown, or saved, for the next. */}
+        <SectionSettings key={section.section.id} form={form} page={section.page} section={section.section} index={section.index} />
       </SidePanel>
     )
   }
@@ -120,6 +140,91 @@ function SheetSettings({ form, page }: { form: FormSpec; page: Page }) {
           onChange={(next) => change((spec) => setPageShowWhen(spec, page.id, next))}
         />
       </Section>
+    </div>
+  )
+}
+
+/**
+ * A section's panel: its title (a blank one kept out), when it shows, its height in whole
+ * pixels, never under what its components reach, with Fit, and adding a section under it
+ * or deleting it, asking first when components are in it, while it is not the sheet's only
+ * section.
+ */
+function SectionSettings({ form, page, section, index }: { form: FormSpec; page: Page; section: SheetSection; index: number }) {
+  const change = useWorkbenchFormStore((s) => s.change)
+  const selectSection = useWorkbenchViewStore((s) => s.selectSection)
+  const least = leastSectionHeight(section.widgets)
+  const height = (text: string) =>
+    /^\d+$/.test(text.trim()) && Number.isSafeInteger(Number(text)) && Number(text) >= least ? null : `Enter a whole number of pixels, ${least} or more.`
+  const addBelow = () => {
+    const added = createSection(page)
+    change((spec) => addSection(spec, page.id, added, index + 1))
+    selectSection(added.id)
+  }
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto px-3 py-3 text-xs">
+      <Section title="Title">
+        <CommittedTextField
+          aria-label="Section title"
+          value={section.title}
+          onCommit={(title) => {
+            const trimmed = title.trim()
+            if (trimmed) change((spec) => renameSection(spec, section.id, trimmed))
+          }}
+          className={`${FIELD_CLASS} w-full`}
+          style={INPUT_STYLE}
+        />
+      </Section>
+      <Section title="Show when">
+        <ShowWhenEditor
+          form={form}
+          showWhen={section.show_when}
+          onChange={(next) => change((spec) => setSectionShowWhen(spec, section.id, next))}
+        />
+      </Section>
+      <Section title="Layout">
+        <div className="flex items-start gap-2">
+          <label className="flex items-center gap-2">
+            <span className="w-14" style={{ color: "var(--text-muted)" }}>
+              Height
+            </span>
+            <ValidatedTextField
+              dataTestId="section-height"
+              value={String(section.height)}
+              onCommit={(text) => change((spec) => setSectionHeight(spec, section.id, Number(text)))}
+              validate={height}
+              containerClassName="w-20"
+              className={`${FIELD_CLASS} w-full tabular-nums`}
+              style={INPUT_STYLE}
+            />
+          </label>
+          <button
+            type="button"
+            onClick={() => change((spec) => fitSection(spec, section.id))}
+            title="Fit the section to its components"
+            className="quiet-action focus-ring rounded px-1.5 py-1 text-[11px] font-medium"
+          >
+            Fit
+          </button>
+        </div>
+      </Section>
+      <div className="flex flex-col items-start gap-1">
+        <button type="button" onClick={addBelow} className="quiet-action focus-ring inline-flex items-center gap-1 rounded px-1 py-0.5 -ml-1 text-[11px] font-medium">
+          <Plus size={11} aria-hidden="true" />
+          Add section below
+        </button>
+        <button
+          type="button"
+          disabled={page.sections.length === 1}
+          title={page.sections.length === 1 ? "A sheet keeps at least one section" : undefined}
+          onClick={() => deleteSection(page, section)}
+          className="focus-ring inline-flex items-center gap-1 rounded px-1 py-0.5 -ml-1 text-[11px] font-medium hover-bg disabled:opacity-50"
+          style={{ color: "var(--danger)" }}
+        >
+          <Trash2 size={11} aria-hidden="true" />
+          Delete section
+        </button>
+      </div>
     </div>
   )
 }

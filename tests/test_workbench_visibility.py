@@ -1,5 +1,5 @@
-"""Which sheets and components show for the values typed into the sheets, and which input
-columns a quote leaves out (specs/workbench), held to the cases the view is held to."""
+"""Which sheets, sections and components show for the values typed into the sheets, and which
+input columns a quote leaves out (specs/workbench), held to the cases the view is held to."""
 
 from __future__ import annotations
 
@@ -30,9 +30,14 @@ def test_what_shows_is_what_the_shared_cases_say(case: dict[str, Any]) -> None:
     form = copy.deepcopy(CASES["forms"][case["form"]])
     replaced = case.get("show_when", {})
     shown_by: dict[str, dict[str, Any]] = {
-        item["id"]: item for page in form["pages"] for item in (page, *page["widgets"])
+        item["id"]: item
+        for page in form["pages"]
+        for section in page["sections"]
+        for item in (page, section, *section["widgets"])
     }
-    assert set(replaced) <= set(shown_by), "the case names a sheet or component the form lacks"
+    assert set(replaced) <= set(shown_by), (
+        "the case names a sheet, section or component the form lacks"
+    )
     for item_id, show_when in replaced.items():
         shown_by[item_id]["show_when"] = show_when
     spec = FormSpec.model_validate(form)
@@ -40,8 +45,12 @@ def test_what_shows_is_what_the_shared_cases_say(case: dict[str, Any]) -> None:
     result = visibility(spec, case["values"])
 
     pages = {page.id for page in spec.pages}
-    widgets = {widget.id for page in spec.pages for widget in page.widgets}
+    sections = {section.id for page in spec.pages for section in page.sections}
+    widgets = {
+        widget.id for page in spec.pages for section in page.sections for widget in section.widgets
+    }
     assert sorted(pages - result.pages) == case["hidden_pages"]
+    assert sorted(sections - result.sections) == case["hidden_sections"]
     assert sorted(widgets - result.widgets) == case["hidden_widgets"]
     assert sorted([list(pair) for pair in result.hidden]) == case["hidden_columns"]
 

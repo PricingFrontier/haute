@@ -16,7 +16,7 @@ import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { pricingBasis, shownFields, updateSchemaColumn, withSampleCell, type ChartOptions } from "../../utils/workbenchForm"
 import { SheetValuesContext, usePreviewValues, useSampleValues } from "../useSheetValues"
 import WidgetBody from "../WidgetBody"
-import { chartWidget, currentForm, loadForm, sheetForm } from "./fixtures"
+import { addTo, chartWidget, currentForm, loadForm, sheetForm, widgetsOf } from "./fixtures"
 
 const setOption = vi.fn<(option: Record<string, unknown>, settings?: { replaceMerge?: string[] }) => void>()
 const resize = vi.fn()
@@ -50,15 +50,15 @@ const REPLACED = ["series", "xAxis", "yAxis", "grid", "legend"]
 const VALUE: FieldRef = { table: "equipment", column: "equipment.value" }
 const PREMIUM: FieldRef = { table: "premiums", column: "premiums.premium" }
 
-/** `sheetForm` with a Chart, w_chart, plotting `fields` on its first sheet. */
+/** `sheetForm` with a Chart, w_chart, plotting `fields` in its first sheet's section. */
 function chartForm(fields: FieldRef[], options: Partial<ChartOptions> & { title?: string } = {}): FormSpec {
   const form = sheetForm()
-  form.pages[0].widgets.push(chartWidget("w_chart", fields, options))
+  addTo(form, chartWidget("w_chart", fields, options))
   return form
 }
 
 const chart = () => {
-  const found = currentForm().pages[0].widgets.find((candidate) => candidate.id === "w_chart")
+  const found = widgetsOf(currentForm()).find((candidate) => candidate.id === "w_chart")
   if (found === undefined) throw new Error("no w_chart")
   return found
 }

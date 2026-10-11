@@ -1,21 +1,21 @@
 /**
- * A sheet's or a component's Show when (specs/workbench): "Always" without conditions; a
- * condition added on the first one-row input column; its column, test and value chosen,
- * the value the control its column's cell is; conditions removed; all or any of two or
- * more; a condition whose column is gone; each change one undo step.
+ * A sheet's, a section's or a component's Show when (specs/workbench): "Always" without
+ * conditions; a condition added on the first one-row input column; its column, test and
+ * value chosen, the value the control its column's cell is; conditions removed; all or any
+ * of two or more; a condition whose column is gone; each change one undo step.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import { updateWidget } from "../../utils/workbenchForm"
 import { ShowWhenEditor } from "../ShowWhenEditor"
-import { column, coverForm, currentForm, loadForm, table } from "./fixtures"
+import { column, coverForm, currentForm, loadForm, table, widgetsOf } from "./fixtures"
 
 /** The Collection on the first sheet, whose Show when the editor edits through the store. */
 function Editor() {
   const form = useWorkbenchFormStore((s) => s.form)
   if (form === null) throw new Error("no form")
-  const widget = form.pages[0].widgets[0]
+  const widget = widgetsOf(form)[0]
   return (
     <ShowWhenEditor
       form={form}
@@ -25,7 +25,7 @@ function Editor() {
   )
 }
 
-const showWhen = () => currentForm().pages[0].widgets[0].show_when
+const showWhen = () => widgetsOf(currentForm())[0].show_when
 const undoSteps = () => useWorkbenchFormStore.getState().undoStack.length
 const condition = (n: number) => screen.getByRole("group", { name: `Condition ${n}` })
 
@@ -122,7 +122,7 @@ describe("ShowWhenEditor", () => {
 
   it("keeps a condition whose column is gone, saying so", () => {
     const form = currentForm()
-    form.pages[0].widgets[0].show_when = { match: "all", conditions: [{ table: "policy", column: "policy.gone", op: "filled", values: [] }] }
+    widgetsOf(form)[0].show_when = { match: "all", conditions: [{ table: "policy", column: "policy.gone", op: "filled", values: [] }] }
     loadForm(form)
     render(<Editor />)
 

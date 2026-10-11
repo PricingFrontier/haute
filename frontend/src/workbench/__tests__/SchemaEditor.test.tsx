@@ -42,7 +42,14 @@ const form = (...tables: SchemaTable[]): FormSpec => ({
   version: 1,
   name: "motor",
   schema: { tables },
-  pages: [{ id: "page_1", title: "Sheet 1", show_when: { match: "all", conditions: [] }, widgets: [] }],
+  pages: [
+    {
+      id: "page_1",
+      title: "Sheet 1",
+      show_when: { match: "all", conditions: [] },
+      sections: [{ id: "section_1", title: "Section 1", height: 560, show_when: { match: "all", conditions: [] }, widgets: [] }],
+    },
+  ],
   sample: {},
 })
 
@@ -229,7 +236,7 @@ describe("SchemaEditor", () => {
 
   it("asks before removing a column or a table a sheet shows, and takes it off the sheet", () => {
     const shown = form(POLICY, LAYERS)
-    shown.pages[0].widgets = [
+    shown.pages[0].sections[0].widgets = [
       { id: "w", type: "collection", x: 0, y: 0, w: 400, h: 100, title: "Policy", columns: 2, fields: [{ table: "t_policy", column: "c_state" }], show_when: { match: "all", conditions: [] } },
     ]
     load(shown)
@@ -245,7 +252,7 @@ describe("SchemaEditor", () => {
     fireEvent.click(screen.getByRole("button", { name: "Remove column state" }))
     fireEvent.click(screen.getByRole("button", { name: "Remove" }))
     expect(columnNames("policy_details")).toEqual([])
-    expect(current().pages[0].widgets[0]).toMatchObject({ fields: [] })
+    expect(current().pages[0].sections[0].widgets[0]).toMatchObject({ fields: [] })
 
     fireEvent.click(screen.getByRole("button", { name: "Delete table layers" }))
     expect(screen.queryByRole("region", { name: "Table layers" })).not.toBeInTheDocument()
@@ -255,7 +262,7 @@ describe("SchemaEditor", () => {
     const tested = form(POLICY, LAYERS)
     const condition = { table: "t_policy", column: "c_state", op: "filled" as const, values: [] }
     tested.pages[0].show_when = { match: "all", conditions: [condition] }
-    tested.pages[0].widgets = [
+    tested.pages[0].sections[0].widgets = [
       { id: "w", type: "collection", x: 0, y: 0, w: 400, h: 100, title: "Policy", columns: 2, fields: [{ table: "t_policy", column: "c_state" }], show_when: { match: "all", conditions: [] } },
     ]
     load(tested)
@@ -263,15 +270,40 @@ describe("SchemaEditor", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Remove column state" }))
     expect(screen.getByRole("alert")).toHaveTextContent(
-      "Shown in 1 component and tested by the conditions of 1 sheet or component; removing it takes it out of them too.",
+      "Shown in 1 component and tested by the conditions of 1 sheet, section or component; removing it takes it out of them too.",
     )
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
     fireEvent.click(screen.getByRole("button", { name: "Delete table policy_details" }))
     expect(screen.getByRole("alert")).toHaveTextContent(
-      "Its columns are shown in 1 component and tested by the conditions of 1 sheet or component; deleting it takes them out of them too.",
+      "Its columns are shown in 1 component and tested by the conditions of 1 sheet, section or component; deleting it takes them out of them too.",
     )
     fireEvent.click(screen.getByRole("button", { name: "Delete" }))
     expect(current().pages[0].show_when.conditions).toEqual([])
+  })
+
+  it("counts a section whose conditions test a column or a table in the confirmation, and takes those conditions out of it", () => {
+    const tested = form(POLICY, LAYERS)
+    const state = { table: "t_policy", column: "c_state", op: "filled" as const, values: [] }
+    const exposure = { table: "t_policy", column: "c_exposure", op: "above" as const, values: ["100"] }
+    tested.pages[0].show_when = { match: "all", conditions: [state] }
+    tested.pages[0].sections.push({ id: "section_2", title: "Section 2", height: 160, show_when: { match: "all", conditions: [state, exposure] }, widgets: [] })
+    load(tested)
+    render(<SchemaEditor />)
+    const sectionConditions = () => current().pages[0].sections[1].show_when.conditions
+
+    // The state is tested by the sheet's conditions and the section's.
+    fireEvent.click(screen.getByRole("button", { name: "Remove column state" }))
+    expect(screen.getByRole("alert")).toHaveTextContent("Tested by the conditions of 2 sheets, sections or components; removing it takes it out of them too.")
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }))
+    expect(current().pages[0].show_when.conditions).toEqual([])
+    expect(sectionConditions()).toEqual([exposure])
+
+    // What is left of the table is tested by the section's alone.
+    fireEvent.click(screen.getByRole("button", { name: "Delete table policy_details" }))
+    expect(screen.getByRole("alert")).toHaveTextContent("Its columns are tested by the conditions of 1 sheet, section or component; deleting it takes them out of it too.")
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }))
+    expect(sectionConditions()).toEqual([])
+    expect(current().pages[0].sections.map((section) => section.id)).toEqual(["section_1", "section_2"])
   })
 
   it("adds a many-row table's index first, an Integer whose type cannot change", () => {

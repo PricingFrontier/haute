@@ -51,7 +51,7 @@ const FORM = {
       },
     ],
   },
-  pages: [{ id: "page_1", title: "Sheet 1", widgets: [] }],
+  pages: [{ id: "page_1", title: "Sheet 1", sections: [{ id: "section_1", title: "Section 1", height: 560, widgets: [] }] }],
   sample: {},
 }
 
@@ -250,8 +250,8 @@ test.describe("workbench", () => {
     expect(copy.tables).toEqual([
       { name: "policy", rows: "one", columns: [{ name: "limit", type: "int" }, { name: "region", type: "str" }, { name: "excess", type: "str" }] },
     ])
-    expect(saved.pages[0].widgets).toHaveLength(1)
-    expect(saved.pages[0].widgets[0]).toMatchObject({
+    expect(saved.pages[0].sections[0].widgets).toHaveLength(1)
+    expect(saved.pages[0].sections[0].widgets[0]).toMatchObject({
       type: "collection",
       fields: [
         { table: "t_policy", column: "c_limit" },

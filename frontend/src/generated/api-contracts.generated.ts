@@ -2433,17 +2433,32 @@ export interface FormSpec {
   version: 1;
 }
 /**
- * A sheet: when it shows, and its widgets, each placed freely on the canvas.
+ * A sheet: when it shows, and its sections, stacked one under the next.
  */
 export interface Page {
+  id: string;
+  /**
+   * @minItems 1
+   */
+  sections: Section[];
+  show_when: ShowWhen;
+  title: string;
+}
+/**
+ * A section of a sheet: a strip across the sheet's whole width, ``height`` pixels tall,
+ * under the sections before it; when it shows; and its widgets, each placed freely inside
+ * it.
+ */
+export interface Section {
+  height: number;
   id: string;
   show_when: ShowWhen;
   title: string;
   widgets: (TableInputWidget | CollectionWidget | ChartWidget | HeadingWidget)[];
 }
 /**
- * When a sheet or a widget shows: always, without conditions; else while all of them
- * hold, or any, as ``match`` says.
+ * When a sheet, a section or a widget shows: always, without conditions; else while all
+ * of them hold, or any, as ``match`` says.
  */
 export interface ShowWhen {
   conditions: Condition[];

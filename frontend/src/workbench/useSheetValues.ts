@@ -45,7 +45,7 @@ export function useSheetValues(): SheetValues {
 const NO_PROBLEMS: Readonly<Record<string, string>> = {}
 const NO_ROWS: RowsByTable = {}
 // Before the form is read nothing draws a sheet; these only fill the shape.
-const NO_VISIBILITY: SheetVisibility = { pages: new Set(), widgets: new Set(), hidden: new Set() }
+const NO_VISIBILITY: SheetVisibility = { pages: new Set(), sections: new Set(), widgets: new Set(), hidden: new Set() }
 const NO_SCHEMA: FormSchema = { tables: [] }
 
 /** The sample while building: the form's, each edit undone like any other, priced live. */

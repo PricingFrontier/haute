@@ -1,13 +1,45 @@
 /**
  * A form for the sheet tests (specs/workbench): policy details (one row) shown by a
  * Collection, equipment (many rows, keyed by item) shown by a Table, and premiums (many
- * rows, keyed by item, an output), on one sheet, with a second, empty sheet.
+ * rows, keyed by item, an output), in the one section of one sheet, with a second sheet
+ * whose one section is empty.
  */
 import { vi } from "vitest"
-import type { ChartWidget, FieldRef, FormSpec, HeadingWidget, SchemaColumn, SchemaTable } from "../../api/types"
+import type { ChartWidget, FieldRef, FormSpec, HeadingWidget, Page, SchemaColumn, SchemaTable, Section, ShowWhen } from "../../api/types"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
-import { CHART_OPTIONS, findWidget, HEADING_OPTIONS, showsFields, TABLE_OPTIONS, type FieldsWidget } from "../../utils/workbenchForm"
+import { BLANK_SECTION_HEIGHT } from "../../utils/sheetGeometry"
+import { CHART_OPTIONS, findWidget, HEADING_OPTIONS, showsFields, TABLE_OPTIONS, type FieldsWidget, type Widget } from "../../utils/workbenchForm"
+
+const ALWAYS: ShowWhen = { match: "all", conditions: [] }
+
+/** A section holding `widgets`, always shown unless `overrides` says otherwise, as tall as a new sheet's or as they reach. */
+export const section = (id: string, widgets: Widget[] = [], overrides: Partial<Section> = {}): Section => ({
+  id,
+  title: id,
+  height: Math.max(BLANK_SECTION_HEIGHT, ...widgets.map((widget) => widget.y + widget.h)),
+  show_when: ALWAYS,
+  widgets,
+  ...overrides,
+})
+
+/** A sheet of one section, `s_` and its id, holding `widgets`, always shown unless `showWhen` says otherwise. */
+export const sheet = (id: string, title: string, widgets: Widget[] = [], showWhen: ShowWhen = ALWAYS): Page => ({
+  id,
+  title,
+  show_when: showWhen,
+  sections: [section(`s_${id}`, widgets)],
+})
+
+/** Put `widget` in a sheet's section, the first of the first sheet unless said otherwise, which grows to hold it. */
+export function addTo(form: FormSpec, widget: Widget, page = 0, at = 0): void {
+  const target = form.pages[page].sections[at]
+  target.widgets.push(widget)
+  target.height = Math.max(target.height, widget.y + widget.h)
+}
+
+/** The components of a sheet's section, the first of the first sheet unless said otherwise. */
+export const widgetsOf = (form: FormSpec, page = 0, at = 0): Widget[] => form.pages[page].sections[at].widgets
 
 export const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {}): SchemaColumn => ({
   id,
@@ -55,28 +87,23 @@ export const sheetForm = (): FormSpec => ({
     ],
   },
   pages: [
-    {
-      id: "p1",
-      title: "Sheet 1",
-      show_when: { match: "all", conditions: [] },
-      widgets: [
-        { id: "w_boxes", type: "collection", x: 16, y: 16, w: 400, h: 120, title: "Policy", columns: 2, fields: [{ table: "policy", column: "policy.state" }], show_when: { match: "all", conditions: [] } },
-        {
-          id: "w_grid",
-          type: "tableInput",
-          x: 16,
-          y: 160,
-          w: 720,
-          h: 200,
-          title: "Equipment",
-          rows: 3,
-          ...TABLE_OPTIONS,
-          fields: [{ table: "equipment", column: "equipment.item" }, { table: "equipment", column: "equipment.value" }],
-          show_when: { match: "all", conditions: [] },
-        },
-      ],
-    },
-    { id: "p2", title: "Sheet 2", show_when: { match: "all", conditions: [] }, widgets: [] },
+    sheet("p1", "Sheet 1", [
+      { id: "w_boxes", type: "collection", x: 16, y: 16, w: 400, h: 120, title: "Policy", columns: 2, fields: [{ table: "policy", column: "policy.state" }], show_when: { match: "all", conditions: [] } },
+      {
+        id: "w_grid",
+        type: "tableInput",
+        x: 16,
+        y: 160,
+        w: 720,
+        h: 200,
+        title: "Equipment",
+        rows: 3,
+        ...TABLE_OPTIONS,
+        fields: [{ table: "equipment", column: "equipment.item" }, { table: "equipment", column: "equipment.value" }],
+        show_when: { match: "all", conditions: [] },
+      },
+    ]),
+    sheet("p2", "Sheet 2"),
   ],
   sample: {},
 })
@@ -119,11 +146,10 @@ export const coverForm = (): FormSpec => {
   const form = sheetForm()
   form.schema.tables[0].columns.push(column("policy.cover", "cover", { type: "bool" }))
   fieldsWidget(form, "w_boxes").fields.push({ table: "policy", column: "policy.cover" })
-  form.pages[1] = {
-    id: "p2",
-    title: "Cover",
-    show_when: { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [] }] },
-    widgets: [
+  form.pages[1] = sheet(
+    "p2",
+    "Cover",
+    [
       {
         id: "w_year",
         type: "collection",
@@ -137,7 +163,29 @@ export const coverForm = (): FormSpec => {
         columns: 2,
       },
     ],
-  }
+    { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [] }] },
+  )
+  return form
+}
+
+/**
+ * `coverForm`'s first sheet in three sections: the policy's boxes, then "Flood", holding
+ * the equipment's Table and shown only while cover is ticked, then "Notes", holding a
+ * Heading; each section 16 below what it holds.
+ */
+export const sectionedForm = (): FormSpec => {
+  const form = coverForm()
+  const [boxes, grid] = form.pages[0].sections[0].widgets
+  const note = headingWidget("w_note", "Notes", { y: 16 })
+  form.pages[0].sections = [
+    section("s_policy", [boxes], { title: "Policy", height: 152 }),
+    section("s_flood", [{ ...grid, y: 16 }], {
+      title: "Flood",
+      height: 232,
+      show_when: { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [] }] },
+    }),
+    section("s_notes", [note], { title: "Notes", height: 72 }),
+  ]
   return form
 }
 
@@ -155,7 +203,19 @@ export function loadForm(form: FormSpec = sheetForm()): void {
     stale: false,
     saving: false,
   })
-  useWorkbenchViewStore.setState({ section: "sheets", pageId: null, selectedId: null, sheetSelected: false, zoom: 1, fitted: false, creating: null, sheet: null, viewport: null })
+  useWorkbenchViewStore.setState({
+    section: "sheets",
+    pageId: null,
+    selectedId: null,
+    sheetSelected: false,
+    sectionId: null,
+    zoom: 1,
+    fitted: false,
+    creating: null,
+    movingSection: null,
+    sheet: null,
+    viewport: null,
+  })
 }
 
 export const currentForm = (): FormSpec => {

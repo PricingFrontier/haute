@@ -66,9 +66,11 @@ Two naming notes:
 
 - **workbench** — the project's view where a pricing team lays out the sheets an underwriter keys a quote into, enabled by `[workbench]` in `haute.toml`, with its sheets saved in `forms/form.json`. In user-facing text say "the workbench" (lower case) and "the sheets" or `forms/form.json`, never "the form".
 
-- **sheet** — one page of the workbench: a canvas the components are laid out on. `pages` in the file.
+- **sheet** — one page of the workbench: a canvas of sections the components are laid out in. `pages` in the file.
 
-- **component** — a Table, a Collection, a Chart or a Heading on a sheet. `widgets` in the file; say "component" in prose and in UI copy, never "widget".
+- **section (of a sheet)** — a strip across a sheet's whole width, one of the sheet's stack, holding components placed freely in it, with a height and its own Show when; hidden, it closes up in Preview. `sections` in the file. Not the view's sections (the sheets, the schema, Preview).
+
+- **component** — a Table, a Collection, a Chart or a Heading in a sheet's section. `widgets` in the file; say "component" in prose and in UI copy, never "widget".
 
 - **Table (component)** — a grid of rows showing columns of the schema's many-row tables (`tableInput` in the file). Not a schema table.
 

@@ -1,17 +1,29 @@
-import { ChartColumn, Heading, LayoutGrid, Table2, type LucideIcon } from "lucide-react"
+import { ChartColumn, Heading, LayoutGrid, Rows3, Table2, type LucideIcon } from "lucide-react"
 import { NODE_GROUP_COLORS } from "../theme/colors"
 import type { Size } from "../utils/sheetGeometry"
-import type { WidgetType } from "../utils/workbenchForm"
+import type { PaletteType, WidgetType } from "../utils/workbenchForm"
 
-export interface WidgetKind {
+/** A palette entry: its label, its icon, its colour in the palette and its panel, and its hint. */
+export interface PaletteKind {
   label: string
   icon: LucideIcon
-  /** Its colour in the palette and its panel. */
   color: string
   hint: string
+}
+
+export interface WidgetKind extends PaletteKind {
   /** The size a component starts with, and the smallest it can be resized to. */
   size: Size
   min: Size
+}
+
+/** A section: a strip across the sheet, dropped where it should start. */
+export const SECTION_KIND: PaletteKind = {
+  label: "Section",
+  icon: Rows3,
+  // The structure colour, as a Heading's: a section shapes the sheet and holds no values.
+  color: NODE_GROUP_COLORS.structure,
+  hint: "A strip across the sheet that hides and shows as one; drop it where a section should start",
 }
 
 /** Haute's entry colour, quote data coming in, which the Table and the Collection share. */
@@ -56,5 +68,8 @@ export const WIDGET_KINDS: Record<WidgetType, WidgetKind> = {
   },
 }
 
-/** What the palette offers, in order. */
-export const PALETTE_KINDS: readonly WidgetType[] = ["tableInput", "collection", "chart", "heading"]
+/** What the palette offers, in order: the components, then a section. */
+export const PALETTE_KINDS: readonly PaletteType[] = ["tableInput", "collection", "chart", "heading", "section"]
+
+/** A palette entry by what it adds. */
+export const paletteKind = (type: PaletteType): PaletteKind => (type === "section" ? SECTION_KIND : WIDGET_KINDS[type])

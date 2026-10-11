@@ -1,5 +1,5 @@
 {
-  "description": "The cases the workbench's visibility rules are held to, on the server (src/haute/_workbench_visibility.py, tests/test_workbench_visibility.py) and in the view (frontend/src/utils/sheetVisibility.ts, sheetVisibility.test.ts) alike (specs/workbench). Each case names a form, replaces the show_when of the sheets and components it lists, and says, for the values typed (rows by table id, cells by column id), which sheets, components and input columns are hidden; a component on a hidden sheet is hidden too.",
+  "description": "The cases the workbench's visibility rules are held to, on the server (src/haute/_workbench_visibility.py, tests/test_workbench_visibility.py) and in the view (frontend/src/utils/sheetVisibility.ts, sheetVisibility.test.ts) alike (specs/workbench). Each case names a form, replaces the show_when of the sheets, sections and components it lists, and says, for the values typed (rows by table id, cells by column id), which sheets, sections, components and input columns are hidden; a section on a hidden sheet is hidden too, as is a component in a hidden section.",
   "forms": {
     "quote": {
       "version": 1,
@@ -274,65 +274,73 @@
           "id": "p_main",
           "title": "Main",
           "show_when": {"match": "all", "conditions": []},
-          "widgets": [
+          "sections": [
             {
-              "id": "w_policy",
-              "x": 0,
-              "y": 0,
-              "w": 720,
-              "h": 120,
-              "type": "collection",
-              "title": "",
-              "fields": [
-                {"table": "t_policy", "column": "c_bi"},
-                {"table": "t_policy", "column": "c_class"},
-                {"table": "t_policy", "column": "c_name"},
-                {"table": "t_policy", "column": "c_si"}
-              ],
+              "id": "s_main",
+              "title": "Section 1",
+              "height": 656,
               "show_when": {"match": "all", "conditions": []},
-              "columns": 3
-            },
-            {
-              "id": "w_premium",
-              "x": 0,
-              "y": 160,
-              "w": 720,
-              "h": 120,
-              "type": "collection",
-              "title": "",
-              "fields": [{"table": "t_out", "column": "c_premium"}],
-              "show_when": {"match": "all", "conditions": []},
-              "columns": 3
-            },
-            {
-              "id": "w_chart",
-              "x": 0,
-              "y": 320,
-              "w": 480,
-              "h": 280,
-              "type": "chart",
-              "title": "",
-              "fields": [{"table": "t_bi", "column": "c_bi_si"}, {"table": "t_policy", "column": "c_rate"}],
-              "show_when": {"match": "all", "conditions": []},
-              "category": null,
-              "chart_type": "column",
-              "orientation": "vertical",
-              "stacked": false,
-              "legend": "bottom",
-              "data_labels": false
-            },
-            {
-              "id": "w_heading",
-              "x": 0,
-              "y": 616,
-              "w": 480,
-              "h": 40,
-              "type": "heading",
-              "text": "Business interruption",
-              "description": "",
-              "show_when": {"match": "all", "conditions": []},
-              "size": "medium",
-              "align": "left"
+              "widgets": [
+                {
+                  "id": "w_policy",
+                  "x": 0,
+                  "y": 0,
+                  "w": 720,
+                  "h": 120,
+                  "type": "collection",
+                  "title": "",
+                  "fields": [
+                    {"table": "t_policy", "column": "c_bi"},
+                    {"table": "t_policy", "column": "c_class"},
+                    {"table": "t_policy", "column": "c_name"},
+                    {"table": "t_policy", "column": "c_si"}
+                  ],
+                  "show_when": {"match": "all", "conditions": []},
+                  "columns": 3
+                },
+                {
+                  "id": "w_premium",
+                  "x": 0,
+                  "y": 160,
+                  "w": 720,
+                  "h": 120,
+                  "type": "collection",
+                  "title": "",
+                  "fields": [{"table": "t_out", "column": "c_premium"}],
+                  "show_when": {"match": "all", "conditions": []},
+                  "columns": 3
+                },
+                {
+                  "id": "w_chart",
+                  "x": 0,
+                  "y": 320,
+                  "w": 480,
+                  "h": 280,
+                  "type": "chart",
+                  "title": "",
+                  "fields": [{"table": "t_bi", "column": "c_bi_si"}, {"table": "t_policy", "column": "c_rate"}],
+                  "show_when": {"match": "all", "conditions": []},
+                  "category": null,
+                  "chart_type": "column",
+                  "orientation": "vertical",
+                  "stacked": false,
+                  "legend": "bottom",
+                  "data_labels": false
+                },
+                {
+                  "id": "w_heading",
+                  "x": 0,
+                  "y": 616,
+                  "w": 480,
+                  "h": 40,
+                  "type": "heading",
+                  "text": "Business interruption",
+                  "description": "",
+                  "show_when": {"match": "all", "conditions": []},
+                  "size": "medium",
+                  "align": "left"
+                }
+              ]
             }
           ]
         },
@@ -343,18 +351,26 @@
             "match": "all",
             "conditions": [{"table": "t_policy", "column": "c_bi", "op": "ticked", "values": []}]
           },
-          "widgets": [
+          "sections": [
             {
-              "id": "w_bi",
-              "x": 0,
-              "y": 0,
-              "w": 720,
-              "h": 120,
-              "type": "collection",
-              "title": "",
-              "fields": [{"table": "t_bi", "column": "c_bi_si"}, {"table": "t_bi", "column": "c_bi_more"}],
+              "id": "s_bi",
+              "title": "Section 1",
+              "height": 120,
               "show_when": {"match": "all", "conditions": []},
-              "columns": 3
+              "widgets": [
+                {
+                  "id": "w_bi",
+                  "x": 0,
+                  "y": 0,
+                  "w": 720,
+                  "h": 120,
+                  "type": "collection",
+                  "title": "",
+                  "fields": [{"table": "t_bi", "column": "c_bi_si"}, {"table": "t_bi", "column": "c_bi_more"}],
+                  "show_when": {"match": "all", "conditions": []},
+                  "columns": 3
+                }
+              ]
             }
           ]
         },
@@ -365,18 +381,26 @@
             "match": "all",
             "conditions": [{"table": "t_bi", "column": "c_bi_more", "op": "ticked", "values": []}]
           },
-          "widgets": [
+          "sections": [
             {
-              "id": "w_ext",
-              "x": 0,
-              "y": 0,
-              "w": 720,
-              "h": 120,
-              "type": "collection",
-              "title": "",
-              "fields": [{"table": "t_ext", "column": "c_ext_days"}],
+              "id": "s_ext",
+              "title": "Section 1",
+              "height": 120,
               "show_when": {"match": "all", "conditions": []},
-              "columns": 3
+              "widgets": [
+                {
+                  "id": "w_ext",
+                  "x": 0,
+                  "y": 0,
+                  "w": 720,
+                  "h": 120,
+                  "type": "collection",
+                  "title": "",
+                  "fields": [{"table": "t_ext", "column": "c_ext_days"}],
+                  "show_when": {"match": "all", "conditions": []},
+                  "columns": 3
+                }
+              ]
             }
           ]
         },
@@ -384,45 +408,53 @@
           "id": "p_items",
           "title": "Items",
           "show_when": {"match": "all", "conditions": []},
-          "widgets": [
+          "sections": [
             {
-              "id": "w_items",
-              "x": 0,
-              "y": 0,
-              "w": 720,
-              "h": 200,
-              "type": "tableInput",
-              "title": "",
-              "fields": [
-                {"table": "t_items", "column": "c_row"},
-                {"table": "t_items", "column": "c_item"},
-                {"table": "t_items", "column": "c_value"}
-              ],
-              "show_when": {
-                "match": "all",
-                "conditions": [{"table": "t_policy", "column": "c_class", "op": "one_of", "values": ["Property"]}]
-              },
-              "rows": 3,
-              "row_numbers": true,
-              "density": "compact",
-              "gridlines": "rows",
-              "striped": true,
-              "fixed_rows": false
-            },
-            {
-              "id": "w_fleet",
-              "x": 0,
-              "y": 240,
-              "w": 720,
-              "h": 120,
-              "type": "collection",
-              "title": "",
-              "fields": [{"table": "t_policy", "column": "c_name"}],
-              "show_when": {
-                "match": "all",
-                "conditions": [{"table": "t_policy", "column": "c_class", "op": "equals", "values": ["Fleet"]}]
-              },
-              "columns": 3
+              "id": "s_items",
+              "title": "Section 1",
+              "height": 360,
+              "show_when": {"match": "all", "conditions": []},
+              "widgets": [
+                {
+                  "id": "w_items",
+                  "x": 0,
+                  "y": 0,
+                  "w": 720,
+                  "h": 200,
+                  "type": "tableInput",
+                  "title": "",
+                  "fields": [
+                    {"table": "t_items", "column": "c_row"},
+                    {"table": "t_items", "column": "c_item"},
+                    {"table": "t_items", "column": "c_value"}
+                  ],
+                  "show_when": {
+                    "match": "all",
+                    "conditions": [{"table": "t_policy", "column": "c_class", "op": "one_of", "values": ["Property"]}]
+                  },
+                  "rows": 3,
+                  "row_numbers": true,
+                  "density": "compact",
+                  "gridlines": "rows",
+                  "striped": true,
+                  "fixed_rows": false
+                },
+                {
+                  "id": "w_fleet",
+                  "x": 0,
+                  "y": 240,
+                  "w": 720,
+                  "h": 120,
+                  "type": "collection",
+                  "title": "",
+                  "fields": [{"table": "t_policy", "column": "c_name"}],
+                  "show_when": {
+                    "match": "all",
+                    "conditions": [{"table": "t_policy", "column": "c_class", "op": "equals", "values": ["Fleet"]}]
+                  },
+                  "columns": 3
+                }
+              ]
             }
           ]
         }
@@ -643,54 +675,62 @@
           "id": "p_main",
           "title": "Main",
           "show_when": {"match": "all", "conditions": []},
-          "widgets": [
+          "sections": [
             {
-              "id": "w_in",
-              "x": 0,
-              "y": 0,
-              "w": 720,
-              "h": 120,
-              "type": "collection",
-              "title": "",
-              "fields": [
-                {"table": "t_in", "column": "c_tick"},
-                {"table": "t_in", "column": "c_text"},
-                {"table": "t_in", "column": "c_choice"},
-                {"table": "t_in", "column": "c_int"},
-                {"table": "t_in", "column": "c_num"},
-                {"table": "t_in", "column": "c_day"}
-              ],
+              "id": "s_main",
+              "title": "Section 1",
+              "height": 520,
               "show_when": {"match": "all", "conditions": []},
-              "columns": 3
-            },
-            {
-              "id": "w_many",
-              "x": 0,
-              "y": 160,
-              "w": 720,
-              "h": 200,
-              "type": "tableInput",
-              "title": "",
-              "fields": [{"table": "t_many", "column": "c_key"}, {"table": "t_many", "column": "c_v"}],
-              "show_when": {"match": "all", "conditions": []},
-              "rows": 3,
-              "row_numbers": true,
-              "density": "compact",
-              "gridlines": "rows",
-              "striped": true,
-              "fixed_rows": false
-            },
-            {
-              "id": "w_out",
-              "x": 0,
-              "y": 400,
-              "w": 720,
-              "h": 120,
-              "type": "collection",
-              "title": "",
-              "fields": [{"table": "t_out", "column": "c_o"}],
-              "show_when": {"match": "all", "conditions": []},
-              "columns": 3
+              "widgets": [
+                {
+                  "id": "w_in",
+                  "x": 0,
+                  "y": 0,
+                  "w": 720,
+                  "h": 120,
+                  "type": "collection",
+                  "title": "",
+                  "fields": [
+                    {"table": "t_in", "column": "c_tick"},
+                    {"table": "t_in", "column": "c_text"},
+                    {"table": "t_in", "column": "c_choice"},
+                    {"table": "t_in", "column": "c_int"},
+                    {"table": "t_in", "column": "c_num"},
+                    {"table": "t_in", "column": "c_day"}
+                  ],
+                  "show_when": {"match": "all", "conditions": []},
+                  "columns": 3
+                },
+                {
+                  "id": "w_many",
+                  "x": 0,
+                  "y": 160,
+                  "w": 720,
+                  "h": 200,
+                  "type": "tableInput",
+                  "title": "",
+                  "fields": [{"table": "t_many", "column": "c_key"}, {"table": "t_many", "column": "c_v"}],
+                  "show_when": {"match": "all", "conditions": []},
+                  "rows": 3,
+                  "row_numbers": true,
+                  "density": "compact",
+                  "gridlines": "rows",
+                  "striped": true,
+                  "fixed_rows": false
+                },
+                {
+                  "id": "w_out",
+                  "x": 0,
+                  "y": 400,
+                  "w": 720,
+                  "h": 120,
+                  "type": "collection",
+                  "title": "",
+                  "fields": [{"table": "t_out", "column": "c_o"}],
+                  "show_when": {"match": "all", "conditions": []},
+                  "columns": 3
+                }
+              ]
             }
           ]
         },
@@ -698,18 +738,423 @@
           "id": "p_target",
           "title": "Target",
           "show_when": {"match": "all", "conditions": []},
-          "widgets": [
+          "sections": [
             {
-              "id": "w_target",
-              "x": 0,
-              "y": 0,
-              "w": 720,
-              "h": 120,
-              "type": "collection",
-              "title": "",
-              "fields": [{"table": "t_target", "column": "c_x"}],
+              "id": "s_target",
+              "title": "Section 1",
+              "height": 120,
               "show_when": {"match": "all", "conditions": []},
-              "columns": 3
+              "widgets": [
+                {
+                  "id": "w_target",
+                  "x": 0,
+                  "y": 0,
+                  "w": 720,
+                  "h": 120,
+                  "type": "collection",
+                  "title": "",
+                  "fields": [{"table": "t_target", "column": "c_x"}],
+                  "show_when": {"match": "all", "conditions": []},
+                  "columns": 3
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "sample": {}
+    },
+    "sections": {
+      "version": 1,
+      "name": "sections",
+      "schema": {
+        "tables": [
+          {
+            "id": "t_policy",
+            "name": "policy",
+            "role": "input",
+            "rows": "one",
+            "columns": [
+              {
+                "id": "c_cover",
+                "name": "cover",
+                "type": "bool",
+                "label": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_flood",
+                "name": "flood",
+                "type": "bool",
+                "label": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_class",
+                "name": "class",
+                "type": "str",
+                "label": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_name",
+                "name": "name",
+                "type": "str",
+                "label": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_area",
+                "name": "area",
+                "type": "float",
+                "label": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_note",
+                "name": "note",
+                "type": "str",
+                "label": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_rate",
+                "name": "rate",
+                "type": "float",
+                "label": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              }
+            ]
+          },
+          {
+            "id": "t_flood",
+            "name": "flood",
+            "role": "input",
+            "rows": "one",
+            "columns": [
+              {
+                "id": "c_depth",
+                "name": "depth",
+                "type": "float",
+                "label": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_barrier",
+                "name": "barrier",
+                "type": "bool",
+                "label": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              }
+            ]
+          },
+          {
+            "id": "t_out",
+            "name": "out",
+            "role": "output",
+            "rows": "one",
+            "columns": [
+              {
+                "id": "c_premium",
+                "name": "premium",
+                "type": "float",
+                "label": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              }
+            ]
+          }
+        ]
+      },
+      "pages": [
+        {
+          "id": "p_quote",
+          "title": "Quote",
+          "show_when": {"match": "all", "conditions": []},
+          "sections": [
+            {
+              "id": "s_policy",
+              "title": "Policy",
+              "height": 256,
+              "show_when": {"match": "all", "conditions": []},
+              "widgets": [
+                {
+                  "id": "w_policy",
+                  "type": "collection",
+                  "x": 0,
+                  "y": 0,
+                  "w": 720,
+                  "h": 120,
+                  "title": "",
+                  "fields": [
+                    {"table": "t_policy", "column": "c_cover"},
+                    {"table": "t_policy", "column": "c_flood"},
+                    {"table": "t_policy", "column": "c_class"},
+                    {"table": "t_policy", "column": "c_name"}
+                  ],
+                  "show_when": {"match": "all", "conditions": []},
+                  "columns": 3
+                },
+                {
+                  "id": "w_premium",
+                  "type": "collection",
+                  "x": 0,
+                  "y": 136,
+                  "w": 720,
+                  "h": 120,
+                  "title": "",
+                  "fields": [{"table": "t_out", "column": "c_premium"}],
+                  "show_when": {"match": "all", "conditions": []},
+                  "columns": 3
+                }
+              ]
+            },
+            {
+              "id": "s_flood",
+              "title": "Flood",
+              "height": 312,
+              "show_when": {
+                "match": "all",
+                "conditions": [
+                  {"table": "t_policy", "column": "c_flood", "op": "ticked", "values": []}
+                ]
+              },
+              "widgets": [
+                {
+                  "id": "w_flood_heading",
+                  "type": "heading",
+                  "x": 0,
+                  "y": 0,
+                  "w": 480,
+                  "h": 48,
+                  "text": "Flood",
+                  "description": "",
+                  "show_when": {"match": "all", "conditions": []},
+                  "size": "medium",
+                  "align": "left"
+                },
+                {
+                  "id": "w_flood",
+                  "type": "collection",
+                  "x": 0,
+                  "y": 56,
+                  "w": 720,
+                  "h": 120,
+                  "title": "",
+                  "fields": [
+                    {"table": "t_flood", "column": "c_depth"},
+                    {"table": "t_flood", "column": "c_barrier"}
+                  ],
+                  "show_when": {"match": "all", "conditions": []},
+                  "columns": 3
+                },
+                {
+                  "id": "w_flood_extra",
+                  "type": "collection",
+                  "x": 0,
+                  "y": 192,
+                  "w": 720,
+                  "h": 120,
+                  "title": "",
+                  "fields": [{"table": "t_policy", "column": "c_rate"}],
+                  "show_when": {
+                    "match": "all",
+                    "conditions": [
+                      {
+                        "table": "t_policy",
+                        "column": "c_class",
+                        "op": "equals",
+                        "values": ["Marine"]
+                      }
+                    ]
+                  },
+                  "columns": 3
+                }
+              ]
+            },
+            {
+              "id": "s_barrier",
+              "title": "Barrier",
+              "height": 120,
+              "show_when": {
+                "match": "all",
+                "conditions": [
+                  {"table": "t_flood", "column": "c_barrier", "op": "ticked", "values": []}
+                ]
+              },
+              "widgets": [
+                {
+                  "id": "w_barrier",
+                  "type": "collection",
+                  "x": 0,
+                  "y": 0,
+                  "w": 720,
+                  "h": 120,
+                  "title": "",
+                  "fields": [
+                    {"table": "t_policy", "column": "c_area"},
+                    {"table": "t_policy", "column": "c_name"}
+                  ],
+                  "show_when": {"match": "all", "conditions": []},
+                  "columns": 3
+                }
+              ]
+            },
+            {
+              "id": "s_note",
+              "title": "Note",
+              "height": 120,
+              "show_when": {
+                "match": "all",
+                "conditions": [
+                  {"table": "t_policy", "column": "c_note", "op": "filled", "values": []}
+                ]
+              },
+              "widgets": [
+                {
+                  "id": "w_note",
+                  "type": "collection",
+                  "x": 0,
+                  "y": 0,
+                  "w": 720,
+                  "h": 120,
+                  "title": "",
+                  "fields": [{"table": "t_policy", "column": "c_note"}],
+                  "show_when": {"match": "all", "conditions": []},
+                  "columns": 3
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "p_other",
+          "title": "Other",
+          "show_when": {
+            "match": "all",
+            "conditions": [
+              {"table": "t_policy", "column": "c_cover", "op": "ticked", "values": []}
+            ]
+          },
+          "sections": [
+            {
+              "id": "s_other",
+              "title": "Other",
+              "height": 120,
+              "show_when": {"match": "all", "conditions": []},
+              "widgets": [
+                {
+                  "id": "w_other",
+                  "type": "collection",
+                  "x": 0,
+                  "y": 0,
+                  "w": 720,
+                  "h": 120,
+                  "title": "",
+                  "fields": [{"table": "t_policy", "column": "c_class"}],
+                  "show_when": {"match": "all", "conditions": []},
+                  "columns": 3
+                }
+              ]
             }
           ]
         }
@@ -723,6 +1168,7 @@
       "form": "quote",
       "values": {},
       "hidden_pages": ["p_bi", "p_ext"],
+      "hidden_sections": ["s_bi", "s_ext"],
       "hidden_widgets": ["w_bi", "w_ext", "w_fleet", "w_items"],
       "hidden_columns": [
         ["t_bi", "c_bi_more"],
@@ -737,6 +1183,7 @@
       "form": "quote",
       "values": {"t_policy": [{"c_bi": true}]},
       "hidden_pages": ["p_ext"],
+      "hidden_sections": ["s_ext"],
       "hidden_widgets": ["w_ext", "w_fleet", "w_items"],
       "hidden_columns": [["t_ext", "c_ext_days"], ["t_items", "c_item"], ["t_items", "c_value"]]
     },
@@ -745,6 +1192,7 @@
       "form": "quote",
       "values": {"t_policy": [{"c_bi": false}]},
       "hidden_pages": ["p_bi", "p_ext"],
+      "hidden_sections": ["s_bi", "s_ext"],
       "hidden_widgets": ["w_bi", "w_ext", "w_fleet", "w_items"],
       "hidden_columns": [
         ["t_bi", "c_bi_more"],
@@ -759,6 +1207,7 @@
       "form": "quote",
       "values": {"t_policy": [{"c_bi": true}], "t_bi": [{"c_bi_more": true}]},
       "hidden_pages": [],
+      "hidden_sections": [],
       "hidden_widgets": ["w_fleet", "w_items"],
       "hidden_columns": [["t_items", "c_item"], ["t_items", "c_value"]]
     },
@@ -767,6 +1216,7 @@
       "form": "quote",
       "values": {"t_policy": [{"c_bi": false}], "t_bi": [{"c_bi_more": true}]},
       "hidden_pages": ["p_bi", "p_ext"],
+      "hidden_sections": ["s_bi", "s_ext"],
       "hidden_widgets": ["w_bi", "w_ext", "w_fleet", "w_items"],
       "hidden_columns": [
         ["t_bi", "c_bi_more"],
@@ -781,6 +1231,7 @@
       "form": "quote",
       "values": {"t_policy": [{"c_class": "Motor", "c_name": "Acme"}]},
       "hidden_pages": ["p_bi", "p_ext"],
+      "hidden_sections": ["s_bi", "s_ext"],
       "hidden_widgets": ["w_bi", "w_ext", "w_fleet", "w_items"],
       "hidden_columns": [
         ["t_bi", "c_bi_more"],
@@ -795,6 +1246,7 @@
       "form": "quote",
       "values": {"t_policy": [{"c_class": "Property"}]},
       "hidden_pages": ["p_bi", "p_ext"],
+      "hidden_sections": ["s_bi", "s_ext"],
       "hidden_widgets": ["w_bi", "w_ext", "w_fleet"],
       "hidden_columns": [["t_bi", "c_bi_more"], ["t_bi", "c_bi_si"], ["t_ext", "c_ext_days"]]
     },
@@ -809,6 +1261,7 @@
       },
       "values": {"t_policy": [{"c_class": "Motor"}]},
       "hidden_pages": ["p_bi", "p_ext"],
+      "hidden_sections": ["s_bi", "s_ext"],
       "hidden_widgets": ["w_bi", "w_ext", "w_fleet", "w_items"],
       "hidden_columns": [
         ["t_bi", "c_bi_more"],
@@ -829,6 +1282,7 @@
       },
       "values": {"t_policy": [{"c_ref": "Q-1", "c_class": "Property"}]},
       "hidden_pages": ["p_bi", "p_ext", "p_items"],
+      "hidden_sections": ["s_bi", "s_ext", "s_items"],
       "hidden_widgets": ["w_bi", "w_ext", "w_fleet", "w_items"],
       "hidden_columns": [
         ["t_bi", "c_bi_more"],
@@ -843,6 +1297,7 @@
       "form": "quote",
       "values": {"t_policy": [{"c_bi": false}], "t_bi": [{"c_bi_si": "100000"}]},
       "hidden_pages": ["p_bi", "p_ext"],
+      "hidden_sections": ["s_bi", "s_ext"],
       "hidden_widgets": ["w_bi", "w_ext", "w_fleet", "w_items"],
       "hidden_columns": [
         ["t_bi", "c_bi_more"],
@@ -863,6 +1318,7 @@
       },
       "values": {"t_policy": [{"c_rate": "0.5"}]},
       "hidden_pages": ["p_bi", "p_ext"],
+      "hidden_sections": ["s_bi", "s_ext"],
       "hidden_widgets": ["w_bi", "w_chart", "w_ext", "w_fleet", "w_items"],
       "hidden_columns": [
         ["t_bi", "c_bi_more"],
@@ -883,6 +1339,7 @@
       },
       "values": {"t_policy": [{"c_rate": "0.5", "c_class": "Property"}]},
       "hidden_pages": ["p_bi", "p_ext", "p_items"],
+      "hidden_sections": ["s_bi", "s_ext", "s_items"],
       "hidden_widgets": ["w_bi", "w_ext", "w_fleet", "w_items"],
       "hidden_columns": [
         ["t_bi", "c_bi_more"],
@@ -903,6 +1360,7 @@
       },
       "values": {"t_bi": [{"c_bi_more": true}]},
       "hidden_pages": [],
+      "hidden_sections": [],
       "hidden_widgets": ["w_fleet", "w_items"],
       "hidden_columns": [["t_items", "c_item"], ["t_items", "c_value"]]
     },
@@ -917,6 +1375,7 @@
       },
       "values": {},
       "hidden_pages": ["p_bi", "p_ext"],
+      "hidden_sections": ["s_bi", "s_ext"],
       "hidden_widgets": ["w_bi", "w_ext", "w_fleet", "w_items"],
       "hidden_columns": [
         ["t_bi", "c_bi_more"],
@@ -940,6 +1399,7 @@
       },
       "values": {"t_policy": [{"c_class": "Fleet"}]},
       "hidden_pages": ["p_bi"],
+      "hidden_sections": ["s_bi"],
       "hidden_widgets": ["w_bi", "w_items"],
       "hidden_columns": [["t_bi", "c_bi_more"], ["t_bi", "c_bi_si"], ["t_items", "c_item"], ["t_items", "c_value"]]
     },
@@ -957,6 +1417,7 @@
       },
       "values": {"t_policy": [{"c_bi": true, "c_class": "Fleet"}]},
       "hidden_pages": [],
+      "hidden_sections": [],
       "hidden_widgets": ["w_items"],
       "hidden_columns": [["t_items", "c_item"], ["t_items", "c_value"]]
     },
@@ -974,6 +1435,7 @@
       },
       "values": {"t_policy": [{"c_bi": true, "c_class": "Motor"}]},
       "hidden_pages": ["p_ext"],
+      "hidden_sections": ["s_ext"],
       "hidden_widgets": ["w_ext", "w_fleet", "w_items"],
       "hidden_columns": [["t_ext", "c_ext_days"], ["t_items", "c_item"], ["t_items", "c_value"]]
     },
@@ -983,6 +1445,7 @@
       "show_when": {"p_bi": {"match": "any", "conditions": []}},
       "values": {},
       "hidden_pages": ["p_ext"],
+      "hidden_sections": ["s_ext"],
       "hidden_widgets": ["w_ext", "w_fleet", "w_items"],
       "hidden_columns": [["t_ext", "c_ext_days"], ["t_items", "c_item"], ["t_items", "c_value"]]
     },
@@ -994,6 +1457,7 @@
       },
       "values": {"t_in": [{"c_tick": true}]},
       "hidden_pages": [],
+      "hidden_sections": [],
       "hidden_widgets": [],
       "hidden_columns": []
     },
@@ -1005,6 +1469,7 @@
       },
       "values": {"t_in": [{}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1016,6 +1481,7 @@
       },
       "values": {"t_in": [{"c_tick": false}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1030,6 +1496,7 @@
       },
       "values": {},
       "hidden_pages": [],
+      "hidden_sections": [],
       "hidden_widgets": [],
       "hidden_columns": []
     },
@@ -1044,6 +1511,7 @@
       },
       "values": {"t_in": [{"c_tick": true}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1055,6 +1523,7 @@
       },
       "values": {"t_in": [{"c_text": "x"}]},
       "hidden_pages": [],
+      "hidden_sections": [],
       "hidden_widgets": [],
       "hidden_columns": []
     },
@@ -1066,6 +1535,7 @@
       },
       "values": {"t_in": [{"c_text": "   "}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1077,6 +1547,7 @@
       },
       "values": {"t_in": [{"c_num": "abc"}]},
       "hidden_pages": [],
+      "hidden_sections": [],
       "hidden_widgets": [],
       "hidden_columns": []
     },
@@ -1088,6 +1559,7 @@
       },
       "values": {"t_in": [{"c_text": "   "}]},
       "hidden_pages": [],
+      "hidden_sections": [],
       "hidden_widgets": [],
       "hidden_columns": []
     },
@@ -1099,6 +1571,7 @@
       },
       "values": {"t_in": [{}]},
       "hidden_pages": [],
+      "hidden_sections": [],
       "hidden_widgets": [],
       "hidden_columns": []
     },
@@ -1110,6 +1583,7 @@
       },
       "values": {"t_in": [{"c_text": "x"}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1124,6 +1598,7 @@
       },
       "values": {"t_in": [{"c_text": "  Motor "}]},
       "hidden_pages": [],
+      "hidden_sections": [],
       "hidden_widgets": [],
       "hidden_columns": []
     },
@@ -1138,6 +1613,7 @@
       },
       "values": {"t_in": [{"c_text": "motor"}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1152,6 +1628,7 @@
       },
       "values": {"t_in": [{}]},
       "hidden_pages": [],
+      "hidden_sections": [],
       "hidden_widgets": [],
       "hidden_columns": []
     },
@@ -1166,6 +1643,7 @@
       },
       "values": {"t_in": [{"c_text": "Motor"}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1180,6 +1658,7 @@
       },
       "values": {"t_in": [{"c_choice": "B"}]},
       "hidden_pages": [],
+      "hidden_sections": [],
       "hidden_widgets": [],
       "hidden_columns": []
     },
@@ -1194,6 +1673,7 @@
       },
       "values": {"t_in": [{"c_choice": "C"}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1208,6 +1688,7 @@
       },
       "values": {"t_in": [{}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1222,6 +1703,7 @@
       },
       "values": {"t_in": [{}]},
       "hidden_pages": [],
+      "hidden_sections": [],
       "hidden_widgets": [],
       "hidden_columns": []
     },
@@ -1236,6 +1718,7 @@
       },
       "values": {"t_in": [{"c_choice": "A"}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1250,6 +1733,7 @@
       },
       "values": {"t_in": [{"c_choice": "Z"}]},
       "hidden_pages": [],
+      "hidden_sections": [],
       "hidden_widgets": [],
       "hidden_columns": []
     },
@@ -1264,6 +1748,7 @@
       },
       "values": {"t_in": [{"c_num": "£1,000.00"}]},
       "hidden_pages": [],
+      "hidden_sections": [],
       "hidden_widgets": [],
       "hidden_columns": []
     },
@@ -1278,6 +1763,7 @@
       },
       "values": {"t_in": [{"c_num": "1000"}]},
       "hidden_pages": [],
+      "hidden_sections": [],
       "hidden_widgets": [],
       "hidden_columns": []
     },
@@ -1292,6 +1778,7 @@
       },
       "values": {"t_in": [{"c_num": "abc"}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1306,6 +1793,7 @@
       },
       "values": {"t_in": [{"c_num": "abc"}]},
       "hidden_pages": [],
+      "hidden_sections": [],
       "hidden_widgets": [],
       "hidden_columns": []
     },
@@ -1320,6 +1808,7 @@
       },
       "values": {"t_in": [{"c_num": "1500"}]},
       "hidden_pages": [],
+      "hidden_sections": [],
       "hidden_widgets": [],
       "hidden_columns": []
     },
@@ -1334,6 +1823,7 @@
       },
       "values": {"t_in": [{"c_num": "1000"}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1348,6 +1838,7 @@
       },
       "values": {"t_in": [{"c_num": "1000"}]},
       "hidden_pages": [],
+      "hidden_sections": [],
       "hidden_widgets": [],
       "hidden_columns": []
     },
@@ -1362,6 +1853,7 @@
       },
       "values": {"t_in": [{"c_num": "999.5"}]},
       "hidden_pages": [],
+      "hidden_sections": [],
       "hidden_widgets": [],
       "hidden_columns": []
     },
@@ -1376,6 +1868,7 @@
       },
       "values": {"t_in": [{"c_num": "1000.5"}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1390,6 +1883,7 @@
       },
       "values": {"t_in": [{"c_num": "abc"}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1404,6 +1898,7 @@
       },
       "values": {"t_in": [{}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1418,6 +1913,7 @@
       },
       "values": {"t_in": [{}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1432,6 +1928,7 @@
       },
       "values": {"t_in": [{"c_num": "1001"}]},
       "hidden_pages": [],
+      "hidden_sections": [],
       "hidden_widgets": [],
       "hidden_columns": []
     },
@@ -1443,6 +1940,7 @@
       },
       "values": {"t_in": [{"c_int": "3"}]},
       "hidden_pages": [],
+      "hidden_sections": [],
       "hidden_widgets": [],
       "hidden_columns": []
     },
@@ -1457,6 +1955,7 @@
       },
       "values": {"t_in": [{"c_int": "2.0"}]},
       "hidden_pages": [],
+      "hidden_sections": [],
       "hidden_widgets": [],
       "hidden_columns": []
     },
@@ -1471,6 +1970,7 @@
       },
       "values": {"t_in": [{"c_num": "5"}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1482,6 +1982,7 @@
       },
       "values": {"t_in": [{"c_num": "1e999"}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1496,6 +1997,7 @@
       },
       "values": {"t_in": [{"c_day": "2026-05-01"}]},
       "hidden_pages": [],
+      "hidden_sections": [],
       "hidden_widgets": [],
       "hidden_columns": []
     },
@@ -1510,6 +2012,7 @@
       },
       "values": {"t_in": [{"c_day": "2026-05-01"}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1524,6 +2027,7 @@
       },
       "values": {"t_in": [{"c_day": " 2026-05-01 "}]},
       "hidden_pages": [],
+      "hidden_sections": [],
       "hidden_widgets": [],
       "hidden_columns": []
     },
@@ -1538,6 +2042,7 @@
       },
       "values": {"t_in": [{"c_day": "2026-05-01"}]},
       "hidden_pages": [],
+      "hidden_sections": [],
       "hidden_widgets": [],
       "hidden_columns": []
     },
@@ -1552,6 +2057,7 @@
       },
       "values": {"t_in": [{"c_day": "01/05/2026"}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1566,6 +2072,7 @@
       },
       "values": {"t_in": [{"c_day": "01/05/2026"}]},
       "hidden_pages": [],
+      "hidden_sections": [],
       "hidden_widgets": [],
       "hidden_columns": []
     },
@@ -1577,6 +2084,7 @@
       },
       "values": {"t_in": [{}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1588,6 +2096,7 @@
       },
       "values": {"t_in": [{}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1599,6 +2108,7 @@
       },
       "values": {"t_in": [{}], "t_many": [{"c_key": "a", "c_v": "1"}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1610,6 +2120,7 @@
       },
       "values": {"t_in": [{}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1624,6 +2135,7 @@
       },
       "values": {"t_in": [{"c_tick": true}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1635,6 +2147,7 @@
       },
       "values": {"t_in": [{"c_text": "x"}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1649,6 +2162,7 @@
       },
       "values": {"t_in": [{"c_day": "2026-01-01"}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1660,6 +2174,7 @@
       },
       "values": {"t_in": [{"c_tick": true}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1674,6 +2189,7 @@
       },
       "values": {"t_in": [{"c_text": "b"}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1685,6 +2201,7 @@
       },
       "values": {"t_in": [{}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1699,6 +2216,7 @@
       },
       "values": {"t_in": [{"c_choice": "A"}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1713,6 +2231,7 @@
       },
       "values": {"t_in": [{"c_tick": true}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1727,6 +2246,7 @@
       },
       "values": {"t_in": [{"c_num": "5"}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1741,6 +2261,7 @@
       },
       "values": {"t_in": [{"c_text": "x"}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1755,6 +2276,7 @@
       },
       "values": {"t_in": [{}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1769,6 +2291,7 @@
       },
       "values": {"t_in": [{"c_num": "5"}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1783,6 +2306,7 @@
       },
       "values": {"t_in": [{"c_int": "3"}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1797,6 +2321,7 @@
       },
       "values": {"t_in": [{"c_day": "2026-02-30"}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1811,6 +2336,7 @@
       },
       "values": {"t_in": [{"c_day": "2026-05-01"}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1825,6 +2351,7 @@
       },
       "values": {"t_in": [{"c_day": "2026-05-01"}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1836,6 +2363,7 @@
       },
       "values": {"t_in": [{"c_int": true}]},
       "hidden_pages": [],
+      "hidden_sections": [],
       "hidden_widgets": [],
       "hidden_columns": []
     },
@@ -1850,6 +2378,7 @@
       },
       "values": {"t_in": [{"c_int": true}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1864,6 +2393,7 @@
       },
       "values": {"t_in": [{"c_int": true}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1878,6 +2408,7 @@
       },
       "values": {"t_in": [{"c_int": true}]},
       "hidden_pages": [],
+      "hidden_sections": [],
       "hidden_widgets": [],
       "hidden_columns": []
     },
@@ -1895,6 +2426,7 @@
       },
       "values": {"t_in": [{"c_tick": true}]},
       "hidden_pages": [],
+      "hidden_sections": [],
       "hidden_widgets": [],
       "hidden_columns": []
     },
@@ -1912,6 +2444,7 @@
       },
       "values": {"t_in": [{}]},
       "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
     },
@@ -1926,6 +2459,7 @@
       },
       "values": {"t_policy": [{"c_bi": false}]},
       "hidden_pages": ["p_bi", "p_ext"],
+      "hidden_sections": ["s_bi", "s_ext"],
       "hidden_widgets": ["w_bi", "w_ext", "w_fleet", "w_heading", "w_items"],
       "hidden_columns": [
         ["t_bi", "c_bi_more"],
@@ -1946,6 +2480,7 @@
       },
       "values": {"t_policy": [{"c_bi": true}]},
       "hidden_pages": ["p_ext"],
+      "hidden_sections": ["s_ext"],
       "hidden_widgets": ["w_ext", "w_fleet", "w_items"],
       "hidden_columns": [["t_ext", "c_ext_days"], ["t_items", "c_item"], ["t_items", "c_value"]]
     },
@@ -1960,6 +2495,7 @@
       },
       "values": {"t_policy": [{"c_bi": false}]},
       "hidden_pages": ["p_bi", "p_ext", "p_main"],
+      "hidden_sections": ["s_bi", "s_ext", "s_main"],
       "hidden_widgets": ["w_bi", "w_chart", "w_ext", "w_fleet", "w_heading", "w_items", "w_policy", "w_premium"],
       "hidden_columns": [
         ["t_bi", "c_bi_more"],
@@ -1971,6 +2507,164 @@
         ["t_policy", "c_class"],
         ["t_policy", "c_name"],
         ["t_policy", "c_si"]
+      ]
+    },
+    {
+      "name": "nothing typed hides the sections waiting on a value, their components and the values only they take, but not a column a component that shows also has",
+      "form": "sections",
+      "values": {},
+      "hidden_pages": ["p_other"],
+      "hidden_sections": ["s_barrier", "s_flood", "s_note", "s_other"],
+      "hidden_widgets": [
+        "w_barrier",
+        "w_flood",
+        "w_flood_extra",
+        "w_flood_heading",
+        "w_note",
+        "w_other"
+      ],
+      "hidden_columns": [
+        ["t_flood", "c_barrier"],
+        ["t_flood", "c_depth"],
+        ["t_policy", "c_area"],
+        ["t_policy", "c_note"],
+        ["t_policy", "c_rate"]
+      ]
+    },
+    {
+      "name": "a section shows while its conditions hold, its heading and its components with it",
+      "form": "sections",
+      "values": {"t_policy": [{"c_flood": true}]},
+      "hidden_pages": ["p_other"],
+      "hidden_sections": ["s_barrier", "s_note", "s_other"],
+      "hidden_widgets": ["w_barrier", "w_flood_extra", "w_note", "w_other"],
+      "hidden_columns": [["t_policy", "c_area"], ["t_policy", "c_note"], ["t_policy", "c_rate"]]
+    },
+    {
+      "name": "a component in a section that shows needs its own conditions too",
+      "form": "sections",
+      "values": {"t_policy": [{"c_flood": true, "c_class": "Marine"}]},
+      "hidden_pages": ["p_other"],
+      "hidden_sections": ["s_barrier", "s_note", "s_other"],
+      "hidden_widgets": ["w_barrier", "w_note", "w_other"],
+      "hidden_columns": [["t_policy", "c_area"], ["t_policy", "c_note"]]
+    },
+    {
+      "name": "a component whose conditions hold is hidden with its section",
+      "form": "sections",
+      "values": {"t_policy": [{"c_flood": false, "c_class": "Marine"}]},
+      "hidden_pages": ["p_other"],
+      "hidden_sections": ["s_barrier", "s_flood", "s_note", "s_other"],
+      "hidden_widgets": [
+        "w_barrier",
+        "w_flood",
+        "w_flood_extra",
+        "w_flood_heading",
+        "w_note",
+        "w_other"
+      ],
+      "hidden_columns": [
+        ["t_flood", "c_barrier"],
+        ["t_flood", "c_depth"],
+        ["t_policy", "c_area"],
+        ["t_policy", "c_note"],
+        ["t_policy", "c_rate"]
+      ]
+    },
+    {
+      "name": "a box ticked in a hidden section shows nothing waiting on it",
+      "form": "sections",
+      "values": {"t_policy": [{"c_flood": false}], "t_flood": [{"c_barrier": true}]},
+      "hidden_pages": ["p_other"],
+      "hidden_sections": ["s_barrier", "s_flood", "s_note", "s_other"],
+      "hidden_widgets": [
+        "w_barrier",
+        "w_flood",
+        "w_flood_extra",
+        "w_flood_heading",
+        "w_note",
+        "w_other"
+      ],
+      "hidden_columns": [
+        ["t_flood", "c_barrier"],
+        ["t_flood", "c_depth"],
+        ["t_policy", "c_area"],
+        ["t_policy", "c_note"],
+        ["t_policy", "c_rate"]
+      ]
+    },
+    {
+      "name": "a chain through a section is followed once the section shows",
+      "form": "sections",
+      "values": {"t_policy": [{"c_flood": true}], "t_flood": [{"c_barrier": true}]},
+      "hidden_pages": ["p_other"],
+      "hidden_sections": ["s_note", "s_other"],
+      "hidden_widgets": ["w_flood_extra", "w_note", "w_other"],
+      "hidden_columns": [["t_policy", "c_note"], ["t_policy", "c_rate"]]
+    },
+    {
+      "name": "a section testing a column only inside itself shows while the value typed there passes",
+      "form": "sections",
+      "values": {"t_policy": [{"c_note": "See the survey"}]},
+      "hidden_pages": ["p_other"],
+      "hidden_sections": ["s_barrier", "s_flood", "s_other"],
+      "hidden_widgets": ["w_barrier", "w_flood", "w_flood_extra", "w_flood_heading", "w_other"],
+      "hidden_columns": [
+        ["t_flood", "c_barrier"],
+        ["t_flood", "c_depth"],
+        ["t_policy", "c_area"],
+        ["t_policy", "c_rate"]
+      ]
+    },
+    {
+      "name": "a section on a sheet that shows shows with it, and is hidden with it otherwise",
+      "form": "sections",
+      "values": {"t_policy": [{"c_cover": true}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_barrier", "s_flood", "s_note"],
+      "hidden_widgets": ["w_barrier", "w_flood", "w_flood_extra", "w_flood_heading", "w_note"],
+      "hidden_columns": [
+        ["t_flood", "c_barrier"],
+        ["t_flood", "c_depth"],
+        ["t_policy", "c_area"],
+        ["t_policy", "c_note"],
+        ["t_policy", "c_rate"]
+      ]
+    },
+    {
+      "name": "a section's own show_when is replaced by a case as a sheet's or a component's is",
+      "form": "sections",
+      "values": {"t_policy": [{"c_class": "Motor"}]},
+      "show_when": {
+        "s_policy": {
+          "match": "all",
+          "conditions": [
+            {"table": "t_policy", "column": "c_class", "op": "equals", "values": ["Fleet"]}
+          ]
+        }
+      },
+      "hidden_pages": ["p_other"],
+      "hidden_sections": ["s_barrier", "s_flood", "s_note", "s_other", "s_policy"],
+      "hidden_widgets": [
+        "w_barrier",
+        "w_flood",
+        "w_flood_extra",
+        "w_flood_heading",
+        "w_note",
+        "w_other",
+        "w_policy",
+        "w_premium"
+      ],
+      "hidden_columns": [
+        ["t_flood", "c_barrier"],
+        ["t_flood", "c_depth"],
+        ["t_policy", "c_area"],
+        ["t_policy", "c_class"],
+        ["t_policy", "c_cover"],
+        ["t_policy", "c_flood"],
+        ["t_policy", "c_name"],
+        ["t_policy", "c_note"],
+        ["t_policy", "c_rate"]
       ]
     }
   ]

@@ -1,8 +1,8 @@
 /**
  * The sheets' tabs (specs/workbench): one per sheet, the showing one marked; a sheet
- * added, renamed by double-click, and deleted with a confirmation when components are on
- * it; a sheet's eye, its settings and its problems; and, read only in Preview, only
- * switching between the sheets that show.
+ * added, renamed by double-click, and deleted with a confirmation when components are in
+ * any of its sections; a sheet's eye, its settings and its problems; and, read only in
+ * Preview, only switching between the sheets that show.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
@@ -11,7 +11,7 @@ import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { withSampleCell } from "../../utils/workbenchForm"
 import PageTabs from "../PageTabs"
-import { coverForm, currentForm, loadForm } from "./fixtures"
+import { coverForm, currentForm, loadForm, sectionedForm } from "./fixtures"
 
 const tabs = () => screen.getAllByRole("tab").map((tab) => [tab.textContent, tab.getAttribute("aria-selected")])
 
@@ -82,6 +82,16 @@ describe("PageTabs", () => {
     expect(currentForm().schema.tables).toHaveLength(3)
     expect(useWorkbenchViewStore.getState().pageId).toBe("p2")
     expect(screen.queryByRole("button", { name: /Delete sheet/ })).not.toBeInTheDocument()
+  })
+
+  it("counts the components in every section of a sheet in the confirmation of its deletion", () => {
+    loadForm(sectionedForm())
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true)
+    render(<PageTabs />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete sheet Sheet 1" }))
+    expect(confirm).toHaveBeenCalledWith('Delete "Sheet 1" and the 3 components on it? The schema and the sample stay.')
+    expect(currentForm().pages.map((page) => page.id)).toEqual(["p2"])
   })
 
   it("read only, in Preview, only switches sheets, staying in Preview", () => {

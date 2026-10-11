@@ -1,9 +1,9 @@
 # Workbench
 
 The workbench is where a pricing team lays out the quote an underwriter keys in: the
-**schema** of typed tables the pipeline reads, and the **sheets** of Tables and Collections
-that show those tables' columns and Charts that plot them, with Headings naming their
-sections. It is part of Haute, switched
+**schema** of typed tables the pipeline reads, and the **sheets**, each a stack of
+**sections** holding Tables and Collections that show those tables' columns, Charts that
+plot them and Headings that name them. It is part of Haute, switched
 on per project, and what it holds lives in a file in the project, `forms/form.json`,
 versioned beside the pipeline.
 
@@ -80,8 +80,13 @@ the pipeline is saved with them in the same save. Until then it is on the sheets
 ## Sheets
 
 A sheet is a canvas on a snap grid that fills its width and grows to hold what is on it.
-The palette on the left offers four components; drag one onto the sheet (a ghost shows
-where it lands):
+It is a stack of **sections**: strips across its whole width, one under the next, each
+holding the components placed in it. A new sheet is one section; hide a section and, in
+Preview, the sections under it move up to close the gap (see
+[Showing sheets, sections and components conditionally](#showing-sheets-sections-and-components-conditionally)).
+The palette on the left offers four components and a section; drag a component onto the
+sheet (a ghost shows where it lands) and it goes into the section under the top of the
+ghost:
 
 - A **Table** shows columns of many-row tables as a grid of at least its number of rows.
 - A **Collection** shows columns of one-row tables as boxes with their labels above, its
@@ -96,7 +101,7 @@ where it lands):
   with it.
 
 Select a component to open its properties on the right: its title, when it shows (see
-[Showing sheets and components conditionally](#showing-sheets-and-components-conditionally)), its layout (a Table's
+[Showing sheets, sections and components conditionally](#showing-sheets-sections-and-components-conditionally)), its layout (a Table's
 rows and whether they are **fixed**, with no Add row or delete, or a Collection's columns
 across), a Table's **look** (compact or comfortable rows; gridlines between the rows, a full
 grid or none; row numbers; striped rows), the **order** of the fields it shows (drag, or
@@ -110,16 +115,33 @@ input table and an output table with the same key line up, so each row can show 
 premium. Output columns are shaded. A Heading's properties are its **Text** and
 **Description**, when it shows, its **Size** and its **Align**ment.
 
-Drag a component to move it and any of its eight handles to resize it; everything snaps to
-the grid. With a component selected (click it, or Tab to it), the arrow keys nudge it
-(Shift for a pixel), Ctrl+D duplicates it, Delete or Backspace removes it and Escape
-deselects it; Ctrl+Z and Ctrl+Y undo and redo. Ctrl+1 fits the sheet to the window, and
-the zoom runs from 25% to 200%. A component with a problem — no fields, a Heading with no text, a column no longer in the schema, a table
-of the other kind, a Chart's field that is not a number or is an index, tables whose rows
-do not line up, a pie of many rows with more than one field — gets a dashed frame that
-names the problem. Tab, and a screen reader, go through the components as they sit on the
-sheet, row by row from the top and left to right along each row, whatever order you added
-them in.
+Drag a component to move it and any of its eight handles to resize it; everything snaps
+to the grid. A component stays inside its section: it stops at the section's edges, and
+moves into another section only once its top is over it. Resizing a component past its
+section's bottom pushes the section's border down. With a component selected (click it, or Tab to it), the
+arrow keys nudge it (Shift for a pixel), Ctrl+D duplicates it, Delete or Backspace removes
+it and Escape deselects it; Ctrl+Z and Ctrl+Y undo and redo. Ctrl+1 fits the sheet to the
+window, and the zoom runs from 25% to 200%. A component with a problem — no fields, a
+Heading with no text, a column no longer in the schema, a table of the other kind, a
+Chart's field that is not a number or is an index, tables whose rows do not line up, a pie
+of many rows with more than one field — gets a dashed frame that names the problem. Tab,
+and a screen reader, go through the components as they sit on the sheet, section by
+section, then row by row from the top and left to right along each row, whatever order you
+added them in.
+
+To add a section, drag **Section** from the palette onto the sheet: a line shows where it
+will start, never through a component (it moves to the nearer edge of one). Dropped
+inside a section, it splits it there, and what sits below the line moves into the new
+section, keeping its place; dropped on a section's bar it goes in above
+that section, and below the last section it adds an empty one at the end. While building,
+each section sits under a slim bar with its title, so the sheet is a little taller than in
+Preview. Click a bar to open the section's panel: its **Title** (yours, for finding your
+way; put a Heading in the section for what the underwriter reads), when it **shows**, its
+**Height** with **Fit**, **Add section below** and **Delete section**. Drag a bar up or
+down, or press Alt+Up and Alt+Down on it, to move its section; Delete removes it (asking
+first when components are in it; a sheet keeps at least one section). A selected section
+has a handle under the middle of its bottom: drag it to set the section's height, and
+double-click it to fit the section to what it holds. A section never shrinks by itself.
 
 Sheets have tabs along the top: **+** adds one, double-click (or F2) renames one, dragging
 a tab onto another moves its sheet there (or press Alt+Left and Alt+Right on a tab), the
@@ -127,13 +149,13 @@ settings mark on the showing tab opens the sheet's own panel (its title and when
 and the cross beside it deletes it (asking first when components are on it; the schema and
 the sample stay).
 
-## Showing sheets and components conditionally
+## Showing sheets, sections and components conditionally
 
-A sheet or a component can show only when the quote calls for it: a business interruption
-sheet only while its cover is ticked, a fleet schedule only while the class of business is
-Fleet, a referral note only while the sum insured is above a limit. Set it under **Show
-when**, in a component's properties or in a sheet's own panel. **Add condition** tests a
-column of a one-row input table:
+A sheet, a section or a component can show only when the quote calls for it: a business
+interruption sheet only while its cover is ticked, a flood section only while flood is
+ticked, a referral note only while the sum insured is above a limit. Set it under **Show
+when**, in a component's properties or in a sheet's or a section's own panel. **Add
+condition** tests a column of a one-row input table:
 
 - a tick box **is ticked** or **is not ticked**;
 - any other column **is filled** or **is empty**, and **equals** or **does not equal** a
@@ -145,13 +167,20 @@ column of a one-row input table:
   one.
 
 With two or more conditions, choose whether **all** or **any** of them must hold. A
-component on a hidden sheet is hidden too, and a sheet waiting on a box that sits on a
-hidden sheet is hidden with it, so a cover and its extensions hide and show in a chain.
+section on a hidden sheet is hidden too, as is a component in a hidden section, and a sheet
+or a section waiting on a box that sits somewhere hidden is hidden with it, so a cover and
+its extensions hide and show in a chain.
 
-While building, the sample decides: a hidden sheet's tab and a hidden component are faded,
-their eye struck through (hover it to read the conditions), and you can still select and
-edit them. In Preview the quote decides as it is typed: a hidden sheet has no tab, and a
-hidden component is not drawn; its space stays empty, since components are placed freely.
+While building, the sample decides: a hidden sheet's tab, a hidden section and a hidden
+component are faded, their eye struck through (hover it to read the conditions), and you
+can still select and edit them; every section keeps its place. In Preview the quote
+decides as it is typed: a hidden sheet has no tab; a hidden section is not drawn and the
+sections under it move up to close the gap; and a hidden component is not drawn, its space
+in its section left empty, since components are placed freely. So give what should close
+up a section of its own, with its Heading in it, and put the tick box that controls it
+just above it, where the underwriter is working. While the underwriter holds a mouse
+button down on the sheet nothing moves, so a click is never pulled from under them, and
+when a section above them opens or closes the sheet scrolls to keep their place.
 
 A quote is what the sheets show. Values typed into hidden cells are left out of what is
 priced, as if they had never been typed, for the sample priced live (and the Workbench
@@ -160,9 +189,9 @@ Input's copy of it) and for the quote in Preview, and a hidden required cell nev
 nothing typed, so a column only a Chart plots never hides and a condition on it never
 holds, and a value only a hidden component takes is left out even when a Chart that shows
 plots it. A Heading takes nothing either; it just hides and shows. A condition
-that cannot work (its column gone or retyped, a missing value) and a sheet nothing could
-show again once hidden (its tick box only on that very sheet) are named on the sheet's tab
-or the component's dashed frame.
+that cannot work (its column gone or retyped, a missing value) and a sheet or a section
+nothing could show again once hidden (its tick box only inside it) are named on the
+sheet's tab, the section's header or the component's dashed frame.
 
 ## The sample
 
@@ -185,8 +214,9 @@ the sample, with what pricing it gave.
 
 ## Preview
 
-**Preview** shows the sheets as an underwriter uses them: the same components at the same
-positions, with nothing to move or lay out. Type a quote into the cells, kept apart from
+**Preview** shows the sheets as an underwriter uses them: the sections that show stacked
+one under the next and each component where it sits in its section, with no section bars
+and nothing to move or lay out. Type a quote into the cells, kept apart from
 the sample (it is never saved, and stays while you switch to Build and back), and press
 **Price**, enabled once something is typed into the tables the schema has, in cells the
 sheets show. Haute first checks every cell the sheets show against its column's rules: a required cell left

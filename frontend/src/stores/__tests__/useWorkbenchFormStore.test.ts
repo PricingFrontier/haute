@@ -21,7 +21,14 @@ const blank: FormSpec = {
   version: 1,
   name: "motor",
   schema: { tables: [] },
-  pages: [{ id: "page_1", title: "Sheet 1", show_when: { match: "all", conditions: [] }, widgets: [] }],
+  pages: [
+    {
+      id: "page_1",
+      title: "Sheet 1",
+      show_when: { match: "all", conditions: [] },
+      sections: [{ id: "section_1", title: "Section 1", height: 560, show_when: { match: "all", conditions: [] }, widgets: [] }],
+    },
+  ],
   sample: {},
 }
 
@@ -428,12 +435,15 @@ describe("useWorkbenchFormStore", () => {
     api.refusePut(() => {
       const body = JSON.parse(String(vi.mocked(fetch).mock.calls.at(-1)?.[1]?.body)) as { form: FormSpec }
       const page = body.form.pages[0]
-      const reordered = page.widgets.map((widget) => Object.fromEntries(Object.entries(widget).reverse()))
-      return saved({ ...body.form, pages: [{ ...page, widgets: reordered as typeof page.widgets }] }, "rev-1")
+      const sections = page.sections.map((section) => ({
+        ...section,
+        widgets: section.widgets.map((widget) => Object.fromEntries(Object.entries(widget).reverse())) as typeof section.widgets,
+      }))
+      return saved({ ...body.form, pages: [{ ...page, sections }] }, "rev-1")
     })
     const store = useWorkbenchFormStore.getState
     await store().load()
-    store().change((form) => addWidget(form, "page_1", createWidget("collection", { x: 0, y: 0, w: 720, h: 120 })))
+    store().change((form) => addWidget(form, "section_1", createWidget("collection", { x: 0, y: 0, w: 720, h: 120 })))
     expect(store().dirty).toBe(true)
 
     await expect(store().save()).resolves.toBe(true)

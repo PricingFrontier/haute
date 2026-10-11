@@ -1,17 +1,17 @@
 /**
- * The conditions on the sheets and components (specs/workbench): the tests each column's
- * type takes and their words, what stops a condition holding as written, and which sheets
- * and components show for values typed into the sheets, the sample while building or an
- * underwriter's quote in Preview, and so which input columns a quote leaves out. The
- * server applies the same rules in src/haute/_workbench_visibility.py, and both are held
- * to the cases in __tests__/fixtures/sheetVisibility.json.
+ * The conditions on the sheets, sections and components (specs/workbench): the tests each
+ * column's type takes and their words, what stops a condition holding as written, and which
+ * sheets, sections and components show for values typed into the sheets, the sample while
+ * building or an underwriter's quote in Preview, and so which input columns a quote leaves
+ * out. The server applies the same rules in src/haute/_workbench_visibility.py, and both
+ * are held to the cases in __tests__/fixtures/sheetVisibility.json.
  */
-import type { Condition, FormSchema, FormSpec, Page, SchemaColumn, SchemaTable, ShowWhen } from "../api/types"
+import type { Condition, FormSchema, FormSpec, SchemaColumn, SchemaTable, Section, ShowWhen } from "../api/types"
 import { filled, parseTypedNumber, type RowsByTable } from "./sheetValues"
 
 export type ConditionTest = Condition["op"]
 type ColumnType = SchemaColumn["type"]
-type Widget = Page["widgets"][number]
+type Widget = Section["widgets"][number]
 type Cell = RowsByTable[string][number][string]
 
 /** A column's key in a set of columns: its table id and column id. */
@@ -224,11 +224,13 @@ function passes(type: ColumnType, condition: Condition, cell: Cell | undefined):
   }
 }
 
-/** Which sheets and components show for the values, and the input columns a quote leaves out. */
+/** Which sheets, sections and components show for the values, and the input columns a quote leaves out. */
 export interface SheetVisibility {
   /** The ids of the sheets that show. */
   pages: ReadonlySet<string>
-  /** The ids of the components that show, each on a sheet that shows. */
+  /** The ids of the sections that show, each on a sheet that shows. */
+  sections: ReadonlySet<string>
+  /** The ids of the components that show, each in a section that shows. */
   widgets: ReadonlySet<string>
   /** The input columns left out of the quote, by `columnKey`. */
   hidden: ReadonlySet<string>
@@ -258,10 +260,13 @@ function decide(spec: FormSpec, rows: RowsByTable): SheetVisibility {
     return column
   }
 
+  const placed = spec.pages.flatMap((page) => page.sections.flatMap((section) => section.widgets.map((widget) => ({ section, widget }))))
   let pages = new Set(spec.pages.map((page) => page.id))
-  let widgets = new Set(spec.pages.flatMap((page) => page.widgets.map((widget) => widget.id)))
-  const shownColumns = (): Set<string> =>
-    new Set(spec.pages.flatMap((page) => page.widgets.filter((widget) => widgets.has(widget.id)).flatMap(fieldKeys)))
+  let sections = new Set(spec.pages.flatMap((page) => page.sections.map((section) => section.id)))
+  let widgets = new Set(placed.map(({ widget }) => widget.id))
+  // A component still shown is in a section and on a sheet still shown: each round hides a
+  // sheet's sections and a section's components with it.
+  const shownColumns = (): Set<string> => new Set(placed.filter(({ widget }) => widgets.has(widget.id)).flatMap(({ widget }) => fieldKeys(widget)))
 
   // Hiding only ever hides more, so a condition that fails stays failed and the rounds end.
   let hiding = true
@@ -273,20 +278,26 @@ function decide(spec: FormSpec, rows: RowsByTable): SheetVisibility {
       return passes(column.type, condition, rows[condition.table]?.[0]?.[condition.column])
     }
     const nextPages = new Set(spec.pages.filter((page) => pages.has(page.id) && showWhenPasses(page.show_when, holds)).map((page) => page.id))
-    const nextWidgets = new Set(
+    const nextSections = new Set(
       spec.pages.flatMap((page) =>
         nextPages.has(page.id)
-          ? page.widgets.filter((widget) => widgets.has(widget.id) && showWhenPasses(widget.show_when, holds)).map((widget) => widget.id)
+          ? page.sections.filter((section) => sections.has(section.id) && showWhenPasses(section.show_when, holds)).map((section) => section.id)
           : [],
       ),
     )
-    hiding = nextPages.size < pages.size || nextWidgets.size < widgets.size
+    const nextWidgets = new Set(
+      placed
+        .filter(({ section, widget }) => nextSections.has(section.id) && widgets.has(widget.id) && showWhenPasses(widget.show_when, holds))
+        .map(({ widget }) => widget.id),
+    )
+    hiding = nextPages.size < pages.size || nextSections.size < sections.size || nextWidgets.size < widgets.size
     pages = nextPages
+    sections = nextSections
     widgets = nextWidgets
   }
 
   const shown = shownColumns()
-  const onWidgets = new Set(spec.pages.flatMap((page) => page.widgets.flatMap(fieldKeys)))
+  const onWidgets = new Set(placed.flatMap(({ widget }) => fieldKeys(widget)))
   const hidden = new Set<string>()
   for (const table of spec.schema.tables) {
     if (table.role !== "input") continue
@@ -295,7 +306,7 @@ function decide(spec: FormSpec, rows: RowsByTable): SheetVisibility {
       if (!column.index && onWidgets.has(key) && !shown.has(key)) hidden.add(key)
     }
   }
-  return { pages, widgets, hidden }
+  return { pages, sections, widgets, hidden }
 }
 
 const decided = new WeakMap<FormSpec, WeakMap<RowsByTable, SheetVisibility>>()
@@ -334,59 +345,72 @@ export function quotedSchema(schema: FormSchema, hidden: ReadonlySet<string>): F
 }
 
 /**
- * The sheets and components that nothing could show again once hidden, each with the
- * first condition it waits on that nothing could make hold. Which could show again is a
- * least fixed point: a sheet or component can when its conditions pass counting only
- * those that fit and whose column is on a component that can show again other than
- * itself (and, for a sheet, not one of its own components); a component needs its sheet
- * too. A component on a sheet that can never show is left to its sheet, and one with a
- * condition that does not fit is left out, as that fault is reported already.
+ * The sheets, sections and components that nothing could show again once hidden, each
+ * with the first condition it waits on that nothing could make hold. Which could show
+ * again is a least fixed point: a sheet, section or component can when its conditions pass
+ * counting only those that fit and whose column is on a component that can show again
+ * other than itself (and, for a sheet or a section, not one of its own components); a
+ * section needs its sheet too, and a component its section. One in a sheet or section that
+ * can never show is left to it, and one with a condition that does not fit is left out, as
+ * that fault is reported already.
  */
 export function neverShown(spec: FormSpec): ReadonlyMap<string, Condition> {
   const canShow = new Set<string>()
   const fits = (condition: Condition): boolean => conditionFault(spec, condition) === null
+  const widgets = spec.pages.flatMap((page) => page.sections.flatMap((section) => section.widgets))
   const reachable = (condition: Condition, holder: string, own: ReadonlySet<string>): boolean => {
     if (!fits(condition)) return false
     const key = columnKey(condition.table, condition.column)
-    return spec.pages.some((page) =>
-      page.widgets.some((widget) => canShow.has(widget.id) && widget.id !== holder && !own.has(widget.id) && fieldKeys(widget).includes(key)),
-    )
+    return widgets.some((widget) => canShow.has(widget.id) && widget.id !== holder && !own.has(widget.id) && fieldKeys(widget).includes(key))
   }
-  const ownWidgets = new Map(spec.pages.map((page) => [page.id, new Set(page.widgets.map((widget) => widget.id))]))
+  // A sheet's own components are those in all its sections; a section's, those in it.
+  const owned = new Map<string, ReadonlySet<string>>()
+  for (const page of spec.pages) {
+    owned.set(page.id, new Set(page.sections.flatMap((section) => section.widgets.map((widget) => widget.id))))
+    for (const section of page.sections) owned.set(section.id, new Set(section.widgets.map((widget) => widget.id)))
+  }
   const none: ReadonlySet<string> = new Set()
-  const pageOwn = (page: Page): ReadonlySet<string> => ownWidgets.get(page.id) ?? none
-
+  const own = (id: string): ReadonlySet<string> => owned.get(id) ?? none
   let grew = true
+  const shownAgain = (id: string, showWhen: ShowWhen, mine: ReadonlySet<string>): void => {
+    if (!canShow.has(id) && showWhenPasses(showWhen, (condition) => reachable(condition, id, mine))) {
+      canShow.add(id)
+      grew = true
+    }
+  }
+
   while (grew) {
     grew = false
     for (const page of spec.pages) {
-      if (!canShow.has(page.id) && showWhenPasses(page.show_when, (condition) => reachable(condition, page.id, pageOwn(page)))) {
-        canShow.add(page.id)
-        grew = true
-      }
+      shownAgain(page.id, page.show_when, own(page.id))
       if (!canShow.has(page.id)) continue
-      for (const widget of page.widgets) {
-        if (!canShow.has(widget.id) && showWhenPasses(widget.show_when, (condition) => reachable(condition, widget.id, none))) {
-          canShow.add(widget.id)
-          grew = true
-        }
+      for (const section of page.sections) {
+        shownAgain(section.id, section.show_when, own(section.id))
+        if (!canShow.has(section.id)) continue
+        for (const widget of section.widgets) shownAgain(widget.id, widget.show_when, none)
       }
     }
   }
 
   const causes = new Map<string, Condition>()
-  const report = (id: string, showWhen: ShowWhen, own: ReadonlySet<string>): void => {
+  const report = (id: string, showWhen: ShowWhen, mine: ReadonlySet<string>): void => {
     if (showWhen.conditions.some((condition) => !fits(condition))) return
-    const waiting = showWhen.conditions.find((condition) => !reachable(condition, id, own))
+    const waiting = showWhen.conditions.find((condition) => !reachable(condition, id, mine))
     if (waiting !== undefined) causes.set(id, waiting)
   }
   for (const page of spec.pages) {
     if (!canShow.has(page.id)) {
-      report(page.id, page.show_when, pageOwn(page))
+      report(page.id, page.show_when, own(page.id))
       continue
     }
-    for (const widget of page.widgets) {
-      if (!canShow.has(widget.id)) report(widget.id, widget.show_when, none)
+    for (const section of page.sections) {
+      if (!canShow.has(section.id)) {
+        report(section.id, section.show_when, own(section.id))
+        continue
+      }
+      for (const widget of section.widgets) {
+        if (!canShow.has(widget.id)) report(widget.id, widget.show_when, none)
+      }
     }
   }
   return causes

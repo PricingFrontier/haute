@@ -171,7 +171,14 @@ describe("WorkbenchView", () => {
       version: 1 as const,
       name: "motor",
       schema: { tables: [] },
-      pages: [{ id: "p", title: "Sheet 1", show_when: { match: "all" as const, conditions: [] }, widgets: [] }],
+      pages: [
+        {
+          id: "p",
+          title: "Sheet 1",
+          show_when: { match: "all" as const, conditions: [] },
+          sections: [{ id: "section_1", title: "Section 1", height: 560, show_when: { match: "all" as const, conditions: [] }, widgets: [] }],
+        },
+      ],
       sample: {},
     }
     useWorkbenchFormStore.setState({ form })

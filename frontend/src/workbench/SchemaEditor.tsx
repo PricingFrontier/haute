@@ -75,7 +75,7 @@ const components = (n: number) => `${n} ${n === 1 ? "component" : "components"}`
 /** What removing a column or a table takes with it: the components showing it and the conditions testing it. */
 function usedBy(shown: number, tested: number): string {
   const parts = shown > 0 ? [`shown in ${components(shown)}`] : []
-  if (tested > 0) parts.push(`tested by the conditions of ${tested} ${tested === 1 ? "sheet or component" : "sheets or components"}`)
+  if (tested > 0) parts.push(`tested by the conditions of ${tested} ${tested === 1 ? "sheet, section or component" : "sheets, sections or components"}`)
   return parts.join(" and ")
 }
 

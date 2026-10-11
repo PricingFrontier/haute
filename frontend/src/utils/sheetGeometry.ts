@@ -1,7 +1,9 @@
 /**
- * Placing components on a sheet (specs/workbench): a snap grid on a sheet that fills the
- * width it is shown in and, like a spreadsheet, has no right or bottom edge: it widens and
- * lengthens to hold what is on it. Positions and sizes are in unzoomed pixels.
+ * Placing sections and components on a sheet (specs/workbench): a snap grid on a sheet
+ * that fills the width it is shown in and, like a spreadsheet, has no right or bottom edge:
+ * it widens and lengthens to hold what is on it. Its sections are strips across it stacked
+ * one under the next, and a component sits in one, placed from its top-left corner.
+ * Positions and sizes are in unzoomed pixels.
  */
 
 export interface Rect {
@@ -22,8 +24,22 @@ export const MIN_SHEET_HEIGHT = 800
 export const SHEET_PADDING = 32
 /** The sheet reaches at least this far past its rightmost component. */
 export const SHEET_EDGE = GRID * 4
-/** Past the sheet's lowest component, so it has room to grow. */
+/** Past the sheet's last section, so it has room to grow. */
 const ROOM_BELOW = 240
+/** The least a section can be, holding components or none. */
+export const MIN_SECTION_HEIGHT = 48
+/** What Fit leaves under a section's lowest component. */
+export const SECTION_FIT_GAP = GRID * 2
+/** A section added to a sheet. */
+export const NEW_SECTION_HEIGHT = 160
+/** The bar above each section while building, naming it; Preview has none. */
+export const SECTION_HEADER = 24
+/**
+ * A new sheet's one section: the least sheet height less the room below, so the whole
+ * sheet is one section until another is added, as the server's blank form has it
+ * (`BLANK_SECTION_HEIGHT` in `src/haute/_workbench_form.py`).
+ */
+export const BLANK_SECTION_HEIGHT = MIN_SHEET_HEIGHT - ROOM_BELOW
 
 export const snap = (value: number): number => Math.round(value / GRID) * GRID
 const clamp = (value: number, low: number, high: number): number => Math.min(Math.max(value, low), Math.max(low, high))
@@ -57,9 +73,75 @@ export function placeAt(px: number, py: number, size: Size): Rect {
 /** How far right the sheet's components reach. */
 export const contentRight = (rects: readonly Rect[]): number => rects.reduce((max, rect) => Math.max(max, rect.x + rect.w), 0)
 
-/** The sheet's height: at least `MIN_SHEET_HEIGHT`, and room below its lowest component. */
-export const sheetHeight = (rects: readonly Rect[]): number =>
-  Math.max(MIN_SHEET_HEIGHT, rects.reduce((max, rect) => Math.max(max, rect.y + rect.h), 0) + ROOM_BELOW)
+/** How far down components reach: the lowest one's bottom, 0 for none. */
+export const contentBottom = (rects: readonly Rect[]): number => rects.reduce((max, rect) => Math.max(max, rect.y + rect.h), 0)
+
+/** The least a section holding `rects` can be: as far down as they reach, and never under `MIN_SECTION_HEIGHT`. */
+export const leastSectionHeight = (rects: readonly Rect[]): number => Math.max(MIN_SECTION_HEIGHT, contentBottom(rects))
+
+/** A section fitted to `rects`: `SECTION_FIT_GAP` under the lowest, never under `MIN_SECTION_HEIGHT`, which an empty one is. */
+export const fittedSectionHeight = (rects: readonly Rect[]): number =>
+  rects.length === 0 ? MIN_SECTION_HEIGHT : Math.max(MIN_SECTION_HEIGHT, contentBottom(rects) + SECTION_FIT_GAP)
+
+/** A section with its top on the sheet. */
+export interface Stacked<T> {
+  section: T
+  top: number
+}
+
+/**
+ * Sections one under the next, each with its top on the sheet: the heights above it summed,
+ * with a `header` above each, the bar that names it while building (none in Preview).
+ */
+export function stackSections<T extends { height: number }>(sections: readonly T[], header = 0): Stacked<T>[] {
+  let top = 0
+  return sections.map((section) => {
+    top += header
+    const stacked = { section, top }
+    top += section.height
+    return stacked
+  })
+}
+
+/**
+ * The line across a section nearest `y` that cuts through none of `rects`, the section's
+ * components: `y` itself when it is clear, else the nearer edge, the top on a tie, of the run
+ * of overlapping components it would cut through. A line along a component's edge is clear.
+ */
+export function clearLine(rects: readonly Rect[], y: number): number {
+  let top = y
+  let bottom = y
+  // Widen the run until no component reaches across either of its edges.
+  for (let grew = true; grew; ) {
+    grew = false
+    for (const rect of rects) {
+      if (rect.y < bottom && rect.y + rect.h > top && (rect.y < top || rect.y + rect.h > bottom)) {
+        top = Math.min(top, rect.y)
+        bottom = Math.max(bottom, rect.y + rect.h)
+        grew = true
+      }
+    }
+  }
+  if (top === y || bottom === y) return y
+  return y - top <= bottom - y ? top : bottom
+}
+
+/** Where a stack of sections ends: its heights summed. */
+export const stackBottom = (stack: readonly Stacked<{ height: number }>[]): number => {
+  const last = stack.at(-1)
+  return last === undefined ? 0 : last.top + last.section.height
+}
+
+/**
+ * The stacked section whose band holds `y` on the sheet: the first while `y` is above them
+ * all, the last while it is below them all; null for no sections.
+ */
+export function sectionAt<T extends { height: number }>(stack: readonly Stacked<T>[], y: number): Stacked<T> | null {
+  return stack.find(({ section, top }) => y < top + section.height) ?? stack.at(-1) ?? null
+}
+
+/** The sheet's height: at least `MIN_SHEET_HEIGHT`, and room below the bottom of its sections. */
+export const sheetHeight = (bottom: number): number => Math.max(MIN_SHEET_HEIGHT, bottom + ROOM_BELOW)
 
 /** The sheet's width: the viewport's at this zoom, or wider to hold its components. */
 export const sheetWidth = (viewportWidth: number, zoom: number, rects: readonly Rect[]): number =>

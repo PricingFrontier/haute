@@ -19,10 +19,10 @@ import { pricingBasis, shownFields, toggleField, updateSchemaColumn, updateWidge
 import SheetCanvas from "../SheetCanvas"
 import { SheetValuesContext, usePreviewValues, useSampleValues } from "../useSheetValues"
 import WidgetBody from "../WidgetBody"
-import { column, currentForm, headingWidget, loadForm, releasePointer, sheetForm, stubLayout } from "./fixtures"
+import { addTo, column, currentForm, headingWidget, loadForm, releasePointer, sheetForm, stubLayout, widgetsOf } from "./fixtures"
 
 const widget = (id: string) => {
-  const found = currentForm().pages[0].widgets.find((candidate) => candidate.id === id)
+  const found = widgetsOf(currentForm()).find((candidate) => candidate.id === id)
   if (found === undefined) throw new Error(`no ${id}`)
   return found
 }
@@ -329,7 +329,7 @@ describe("WidgetBody", () => {
 
   it("draws a Heading as its text alone, a heading of its size's level, and without text asks for some while building and shows nothing in Preview", () => {
     const form = sheetForm()
-    form.pages[0].widgets.push(headingWidget("w_head", "Equipment schedule"))
+    addTo(form, headingWidget("w_head", "Equipment schedule"))
     loadForm(form)
     const resize = (size: "large" | "small") => act(() => useWorkbenchFormStore.getState().change((spec) => updateWidget(spec, "w_head", { size })))
     const preview = (on: boolean) => act(() => useWorkbenchViewStore.setState({ section: on ? "preview" : "sheets" }))
@@ -367,7 +367,7 @@ describe("WidgetBody", () => {
 
   it("draws a Heading's description under it, both aligned as it says, and no description while it has no text", () => {
     const form = sheetForm()
-    form.pages[0].widgets.push(headingWidget("w_head", "Equipment schedule", { description: "Each item insured, with its value" }))
+    addTo(form, headingWidget("w_head", "Equipment schedule", { description: "Each item insured, with its value" }))
     loadForm(form)
     const change = (patch: WidgetPatch) => act(() => useWorkbenchFormStore.getState().change((spec) => updateWidget(spec, "w_head", patch)))
     const { container, rerender } = renderBody("w_head")

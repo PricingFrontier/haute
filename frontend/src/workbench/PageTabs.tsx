@@ -5,7 +5,7 @@ import useListReorder from "../hooks/useListReorder"
 import { INPUT_STYLE } from "../panels/editors/_shared"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore, { activePage, shownPage } from "../stores/useWorkbenchViewStore"
-import { addPage, createPage, movePage, pageProblems, removePage, renamePage, showWhenText } from "../utils/workbenchForm"
+import { addPage, createPage, movePage, pageProblems, pageWidgets, removePage, renamePage, showWhenText } from "../utils/workbenchForm"
 import { ShowWhenMark } from "./ShowWhenEditor"
 import { useSheetVisibility } from "./useSheetValues"
 
@@ -65,7 +65,7 @@ export default function PageTabs({ readOnly = false }: { readOnly?: boolean }) {
     showPage(sheet.id)
   }
   const deleteSheet = () => {
-    const count = page.widgets.length
+    const count = pageWidgets(page).length
     if (
       count > 0
       && !window.confirm(

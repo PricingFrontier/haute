@@ -40,7 +40,14 @@ const form: FormSpec = {
   version: 1,
   name: "t",
   schema: { tables: [policy, pricing] },
-  pages: [{ id: "p", title: "Sheet 1", show_when: { match: "all", conditions: [] }, widgets: [] }],
+  pages: [
+    {
+      id: "p",
+      title: "Sheet 1",
+      show_when: { match: "all", conditions: [] },
+      sections: [{ id: "section_1", title: "Section 1", height: 560, show_when: { match: "all", conditions: [] }, widgets: [] }],
+    },
+  ],
   sample: { t1: [{ c1: "100000" }] },
 }
 

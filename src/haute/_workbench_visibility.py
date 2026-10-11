@@ -1,15 +1,16 @@
-"""Which sheets and components show for values typed into the sheets, and so which input
-columns a quote leaves out (specs/workbench).
+"""Which sheets, sections and components show for values typed into the sheets, and so
+which input columns a quote leaves out (specs/workbench).
 
-A sheet or a component with conditions shows only while they hold on the values typed
-into the sheets, and a component on a sheet that does not show does not show either. A
+A sheet, a section or a component with conditions shows only while they hold on the values
+typed into the sheets; a section on a sheet that does not show does not show either, nor
+does a component in a section that does not show. A
 condition holds while it fits (``condition_fits``), its column is on a Table or a
 Collection that shows (a Chart takes nothing typed, so its columns never count, and a
 Heading has none), and the value typed into the column's first row passes its test, read
 as the sample's values are typed. Everything starts shown and anything whose conditions
 fail is hidden, round after round, until a round hides nothing: hiding never shows
-anything, so the answer does not depend on the order of the sheets, components or
-conditions. A condition that does not fit never holds; it is a problem the view reports,
+anything, so the answer does not depend on the order of the sheets, sections, components
+or conditions. A condition that does not fit never holds; it is a problem the view reports,
 never an error here.
 
 The view applies the same rules in ``frontend/src/utils/sheetVisibility.ts``; both are
@@ -77,7 +78,9 @@ class Visibility:
 
     #: The ids of the sheets that show.
     pages: frozenset[str]
-    #: The ids of the components that show, each on a sheet that shows.
+    #: The ids of the sections that show, each on a sheet that shows.
+    sections: frozenset[str]
+    #: The ids of the components that show, each in a section that shows.
     widgets: frozenset[str]
     #: The input columns left out of the quote, each a table id and a column id: columns
     #: other than the index on at least one Table or Collection, none of which shows.
@@ -85,15 +88,23 @@ class Visibility:
 
 
 def visibility(spec: FormSpec, rows: Rows) -> Visibility:
-    """Which of *spec*'s sheets and components show for *rows*, and which columns hide."""
+    """Which of *spec*'s sheets, sections and components show for *rows*, and which columns
+    hide."""
+    placed = [
+        (page, section, widget)
+        for page in spec.pages
+        for section in page.sections
+        for widget in section.widgets
+    ]
     pages = {page.id for page in spec.pages}
-    widgets = {widget.id for page in spec.pages for widget in page.widgets}
+    sections = {section.id for page in spec.pages for section in page.sections}
+    widgets = {widget.id for _, _, widget in placed}
     while True:
+        # A component still shown is in a section and on a sheet still shown: each round
+        # hides a sheet's sections and a section's components with it.
         shown = {
             (field.table, field.column)
-            for page in spec.pages
-            if page.id in pages
-            for widget in page.widgets
+            for _, _, widget in placed
             if widget.id in widgets
             for field in _entered(widget)
         }
@@ -102,22 +113,26 @@ def visibility(spec: FormSpec, rows: Rows) -> Visibility:
             for page in spec.pages
             if page.id in pages and not _shows(spec, page.show_when, rows, shown)
         }
+        hiding_sections = {
+            section.id
+            for page in spec.pages
+            for section in page.sections
+            if section.id in sections
+            and (page.id in hiding_pages or not _shows(spec, section.show_when, rows, shown))
+        }
         hiding_widgets = {
             widget.id
-            for page in spec.pages
-            for widget in page.widgets
+            for _, section, widget in placed
             if widget.id in widgets
-            and (page.id in hiding_pages or not _shows(spec, widget.show_when, rows, shown))
+            and (section.id in hiding_sections or not _shows(spec, widget.show_when, rows, shown))
         }
-        if not hiding_pages and not hiding_widgets:
+        if not hiding_pages and not hiding_sections and not hiding_widgets:
             break
         pages -= hiding_pages
+        sections -= hiding_sections
         widgets -= hiding_widgets
     on_widgets = {
-        (field.table, field.column)
-        for page in spec.pages
-        for widget in page.widgets
-        for field in _entered(widget)
+        (field.table, field.column) for _, _, widget in placed for field in _entered(widget)
     }
     inputs = {
         (table.id, column.id)
@@ -127,7 +142,7 @@ def visibility(spec: FormSpec, rows: Rows) -> Visibility:
         if not column.index
     }
     hidden = (on_widgets - shown) & inputs
-    return Visibility(frozenset(pages), frozenset(widgets), frozenset(hidden))
+    return Visibility(frozenset(pages), frozenset(sections), frozenset(widgets), frozenset(hidden))
 
 
 def _entered(widget: Widget) -> list[FieldRef]:

@@ -3,7 +3,7 @@ import { hasModifier, inModalDialog, isFormControl, isTypingTarget, saveCommitti
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
 import { GRID } from "../utils/sheetGeometry"
-import { duplicateWidget, findWidget, removeWidget, updateWidget } from "../utils/workbenchForm"
+import { duplicateWidget, findWidget, moveWidget, removeWidget } from "../utils/workbenchForm"
 
 /** Arrow presses this close together nudge as one undo step, as a drag is one. */
 const NUDGE_BURST_MS = 800
@@ -14,11 +14,12 @@ const NUDGE_BURST_MS = 800
  * field's edit included; while building, Ctrl+Z and Ctrl+Shift+Z (or Ctrl+Y) undo and
  * redo an edit outside a text field. While the sheets show, building or in Preview,
  * Ctrl+1 fits the sheet to its viewport; while building, Escape closes the sheet's own
- * panel and, with a component selected, Escape deselects it, Delete or Backspace removes
- * it, Ctrl+D duplicates it and the arrow keys nudge it by a grid step (Shift: a pixel),
- * a burst of nudges being one undo step; none of that from a control, whose own keys
- * pick an option. Keys in a modal dialog are the dialog's, as they are for the pipeline
- * editor's shortcuts.
+ * panel or the section's and, with a component selected, Escape deselects it, Delete or
+ * Backspace removes it, Ctrl+D duplicates it and the arrow keys nudge it by a grid step
+ * (Shift: a pixel), kept inside its section,
+ * a burst of nudges being one undo step; none of that from a control, whose own keys pick
+ * an option. A section header's own keys are its own. Keys in a modal dialog are the
+ * dialog's, as they are for the pipeline editor's shortcuts.
  */
 export default function useWorkbenchShortcuts(onSave: () => void): void {
   // The component being nudged, when its burst ends, and the form the last nudge made:
@@ -55,7 +56,7 @@ export default function useWorkbenchShortcuts(onSave: () => void): void {
         return
       }
       if (previewing) return
-      if (view.sheetSelected && e.key === "Escape") {
+      if ((view.sheetSelected || view.sectionId !== null) && e.key === "Escape") {
         e.preventDefault()
         view.select(null)
         return
@@ -85,7 +86,7 @@ export default function useWorkbenchShortcuts(onSave: () => void): void {
         if (burst === null || burst.id !== selected.id || now > burst.until || burst.form !== forms.form) {
           forms.pushSnapshot()
         }
-        const nudged = updateWidget(forms.form, selected.id, { x: Math.max(0, selected.x + dx), y: Math.max(0, selected.y + dy) })
+        const nudged = moveWidget(forms.form, selected.id, { x: selected.x + dx, y: selected.y + dy })
         nudging.current = { id: selected.id, until: now + NUDGE_BURST_MS, form: nudged }
         forms.setFormRaw(nudged)
       } else {

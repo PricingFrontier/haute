@@ -3,12 +3,12 @@ import useUIStore from "../stores/useUIStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
 import { startCreate } from "./sheetInteractions"
 import ViewSwitcher from "./ViewSwitcher"
-import { PALETTE_KINDS, WIDGET_KINDS } from "./widgetKinds"
+import { PALETTE_KINDS, paletteKind } from "./widgetKinds"
 
 /**
  * The workbench's left column (specs/workbench), in Haute's palette shell: the components
- * a sheet can hold, dragged onto it while building and disabled in Preview, and the view
- * switcher at the bottom. It shares the node palette's open state, so collapsing it in
+ * a sheet can hold and a section, dragged onto it while building and disabled in Preview,
+ * and the view switcher at the bottom. It shares the node palette's open state, so collapsing it in
  * either view collapses both; collapsed, it is the reveal strip with the compact switcher
  * under it.
  */
@@ -31,7 +31,7 @@ export default function WorkbenchPalette() {
       <PaletteHeader title="Components" onCollapse={() => setPaletteOpen(false)} />
       <PaletteItems>
         {PALETTE_KINDS.map((type) => {
-          const kind = WIDGET_KINDS[type]
+          const kind = paletteKind(type)
           return (
             <PaletteItem
               key={type}

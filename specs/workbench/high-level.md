@@ -3,8 +3,9 @@
 ## Purpose
 
 The workbench is where a pricing team lays out the quote an underwriter keys in: a schema
-of typed tables, the sheets of Tables and Collections that show those tables' columns and
-of Charts that plot them and of Headings that name their sections, and the sample quote typed into them while building. It is part of Haute, switched on per
+of typed tables, the sheets, each a stack of sections holding Tables and Collections that
+show those tables' columns, Charts that plot them and Headings that name them, and the
+sample quote typed into them while building. It is part of Haute, switched on per
 project in `haute.toml`, and its form is a file in the project, `forms/form.json`, versioned
 beside the pipeline.
 
@@ -42,8 +43,9 @@ In scope:
   `PUT /api/workbench/form`, which writes the form unless the file changed since it was read.
 - The Workbench view: how it is shown beside the pipeline editor and what the pipeline
   editor does meanwhile, its toolbar and keyboard shortcuts, its schema editor, its sheets
-  (the canvas, the Table, the Collection, the Chart and the Heading, their palette and properties panel,
-  and the sheet tabs), the sample typed into the components and priced live on the pipeline,
+  (the canvas and its sections, the Table, the Collection, the Chart and the Heading, their
+  palette and properties panel, and the sheet tabs), the sample typed into the components and
+  priced live on the pipeline,
   Preview, where an underwriter's quote is keyed into the sheets, checked against the
   columns' rules and priced, and how the form is read into it and saved from it.
 - The Workbench Input, the node type that holds a copy of the tables and sample, which the
@@ -97,7 +99,10 @@ Out of scope:
   `placeholder`, what an empty input cell shows, and a number's format as an Explore
   pivot's values take one, `number_format` (`general`, `number`, `percent`,
   `currency_gbp`, `currency_usd`, `currency_eur`), `decimal_places` (0 to 10, or null for
-  automatic) and `use_grouping`. A sheet has an id, a title, when it shows (`show_when`) and its components (`widgets` in the file): a Table (`tableInput`, a grid of at
+  automatic) and `use_grouping`. A sheet has an id, a title, when it shows (`show_when`) and
+  its sections (`sections`, at least one): strips across the sheet's whole width, stacked in
+  their order, each with an id, a `title`, its `height` in pixels, when it shows
+  (`show_when`) and its components (`widgets` in the file): a Table (`tableInput`, a grid of at
   least `rows` rows showing columns of many-row tables, with its look and whether its rows
   are fixed: `row_numbers`, `density` (`compact` or `comfortable`), `gridlines` (`rows`,
   `all` or `none`), `striped` and `fixed_rows`), a Collection (`collection`, boxes
@@ -108,10 +113,12 @@ Out of scope:
   (`bottom`, `top`, `left`, `right` or `none`) and `data_labels`) or a Heading (`heading`,
   its `text`, naming a section of the sheet, the `description` under it, its `size`,
   `large`, `medium` or `small`, and its `align`, `left`, `center` or `right`),
-  each placed by its `x`, `y`, `w`, `h` and with a `show_when` of its own, and each but a
+  each placed in its section by its `x`, `y`, `w`, `h`, measured from the section's top-left
+  corner and inside it, its `y` plus its `h` at most the section's `height`, and with a
+  `show_when` of its own, and each but a
   Heading with a `title` and showing its `fields`, schema columns named by table id and
   column id so a rename keeps them. A `show_when` holds `conditions` and whether `all`
-  of them must hold or `any` (`match`); with none, the sheet or component always shows. A
+  of them must hold or `any` (`match`); with none, the sheet, section or component always shows. A
   condition names a column by table id and column id, a test (`op`) and the test's `values`,
   as text: `ticked` or `not_ticked`, with no value, for a True/false column; `filled` or
   `empty`, with no value, and `equals` or `not_equals`, with one, for any other; `one_of` or
@@ -119,7 +126,9 @@ Out of scope:
   `below` or `at_most`, with one, for a number or a Date column. The sample holds, by table
   id, rows keyed by column id, each value as typed: text or a tick. Haute reads the file whole whenever it needs it and never keeps it in memory, so an
   edit made outside the view reaches the next request. A file that does not exist is the
-  blank form, never saved: one sheet, no tables, no sample.
+  blank form, never saved: one sheet holding one section 560 tall, no tables, no sample. A
+  sheet holding `widgets` of its own, as sheets did before sections, is refused by name
+  (Failure model).
 - **Status.** `GET /api/workbench` answers `enabled` and, while enabled, `form`, the path as
   `haute.toml` names it. The editor reads it once when it starts. While the workbench is not
   enabled nothing in the editor changes on its account.
@@ -238,8 +247,8 @@ Out of scope:
   until renamed, an Integer whose type cannot change, numbering the rows from 1, which
   Alt+Up and Alt+Down neither move nor pass; switching a table to one row clears its keys
   and drops its index, with what shows it. Removing a column or a table a sheet shows, or a
-  sheet's or component's condition tests, asks first, and takes it off the sheet, out of
-  those conditions and out of the sample. The editor says what would stop
+  sheet's, a section's or a component's condition tests, asks first, and takes it off the
+  sheet, out of those conditions and out of the sample. The editor says what would stop
   the schema being the pipeline's tables: a table's name is held to the port rules the
   Quote Input's labels are held to (an identifier, none of the document's reserved labels,
   unique whatever its case), a column's name is an identifier that is not a Python keyword,
@@ -254,8 +263,27 @@ Out of scope:
   place, the tab keeping the focus, each move one undo step and the sheet showing still
   the one that shows, and the showing sheet's cross
   deletes it, asking first when components are on it, while another sheet remains; the
-  schema and the sample are untouched. A component is drawn where the form
-  places it: a Table as a grid of its rows with a column per field it shows, the index
+  schema and the sample are untouched. A sheet is a stack of its sections, each a strip
+  across its whole width as tall as its height, one under the next in their order; a new
+  sheet holds one, 560 tall, so the whole sheet is one section until another is added. A
+  section is added from the palette (below) like a component, and drawn on the sheet:
+  while building, each section sits under a bar 24 tall across the sheet that names it,
+  with a grip, its title, an eye while it has conditions (Shown when, below) and a mark in
+  the warning colour while it has a problem, so the sheet is 24 taller per section while
+  building than in Preview. Pressing a bar, or Enter or Space on it, selects its section
+  and opens the section's panel, the section outlined in the accent colour; a bar dragged
+  up or down past others moves its section there, a line marking where it would go, as
+  Alt+Up and Alt+Down move the focused bar's section a place, the bar keeping the focus;
+  the selected section has a handle under the middle of its bottom whose drag sets its
+  height, on the grid, never less than its components reach nor than 48, and a
+  double-click on it fits the section, 16 below its lowest component, or 48 with none.
+  Each is one undo step. A component stays inside its section: dragged, nudged, dropped
+  or copied, it stops at the section's top and bottom, never lying across a border, and
+  moves into another section only as its top edge goes over that one; resized past the
+  bottom, it grows the section, pushing the sections under it down, as does a component
+  dropped or moved into a section shorter than itself. A section never shrinks of its own
+  accord. A component is drawn in its
+  section where the form places it: a Table as a grid of its rows with a column per field it shows, the index
   column numbering the rows, under a header of its labels in capitals that stays in view as
   the rows scroll and is ruled off from them whatever the gridlines, drawn as its options
   say: its rows numbered in a column of their own unless `row_numbers` is off, compact rows
@@ -272,13 +300,16 @@ Out of scope:
   fraction typed into an input, 0.125, shows as 12.5%; an input as typed while it is typed
   into), an output column shaded, and "Missing column" when its
   column is gone.
-  Dragging a component moves it; selected, it has eight handles that resize it, no
-  smaller than its kind's minimum. Positions snap to the grid, pointer movement is
+  Dragging a component moves it, into the section its top edge is over (the first while
+  above them all, the last while below them all), kept inside that section; selected, it
+  has eight handles that resize it, no smaller than its kind's minimum and never above its
+  section's top, a resize past its bottom growing the section. Positions snap to the grid, pointer movement is
   divided by the zoom, and a move or a resize is one undo step, a click that does not
   move recording nothing. Pressing the empty sheet deselects. A component takes the
   keyboard's focus too: reached by Tab, it is selected, so the sheet's keys work without a
   pointer. The components are read, and reached by Tab, in the order they sit on the sheet,
-  row by row from the top and left to right along each row, whatever order they were added
+  section by section and, within a section, row by row from the top and left to right along
+  each row, whatever order they were added
   in: a row is the topmost component not yet read and every one beside it, starting above
   its middle, so a Heading placed above a section is read before it and a label a little
   lower than the box beside it is read with it. Where two overlap, the one added later is
@@ -291,10 +322,19 @@ Out of scope:
   when the sheets first show for a form read (a zoom chosen since is kept across a trip to
   the schema or the pipeline editor) and on Ctrl/Cmd+1.
 - **The palette.** The view's left column is Haute's palette shell with a Table and a
-  Collection, in the entry colour, a Chart, in Explore's colour, a Heading, in the
-  structure colour, and the switcher under them. A component is dragged out of it onto the
+  Collection, in the entry colour, a Chart, in Explore's colour, a Heading and a Section,
+  in the structure colour, and the switcher under them. A Section dragged onto the sheet
+  shows a line across it where the new section would start, and released there starts it:
+  inside a section, at the grid line nearest the pointer, moved to the nearer edge of any
+  component the line would cut through, so it never runs through one, it splits that
+  section there, the components below the line moving into the new one and keeping their
+  places on the sheet, the section above keeping the height above the line; on a
+  section's bar or at its very top it goes in before it, at its very bottom after it, and
+  below the last section at the end, empty and 160 tall. Either way it is named in turn,
+  "Section N", always shown, selected and one undo step. A component is dragged out of it onto the
   sheet: a chip follows the pointer until the sheet shows a ghost where the component would
-  land; released there, it is added (a Table 720 by 200 with 3 rows, numbered, compact,
+  land; released there, it is added to the section the ghost's top edge is over, as a
+  dragged component moves (a Table 720 by 200 with 3 rows, numbered, compact,
   lined between rows, striped and not fixed, a Collection 720 by 120 with 3 columns
   across, a Chart 480 by 280 of columns, upright, unstacked, its rows numbered, its legend
   at the bottom and no data labels, a Heading 480 by 48 of medium size, aligned left),
@@ -332,8 +372,13 @@ Out of scope:
   or Small, and its alignment, Left, Centre or Right, one of three toggles the arrow keys
   also move between. While building, the showing sheet's tab has a settings
   mark beside its cross that opens the sheet's own panel in the same place, with its
-  title and its Show when; pressing the empty sheet, Escape, the panel's close, or
-  selecting a component closes it. Show when reads "Always" while there are no
+  title and its Show when, and a section's bar opens the section's panel there: its
+  title, committed on blur or Enter (a blank one kept out), its Show when, and its layout,
+  its height in whole pixels (no less than 48 or than its components reach, a value below
+  that refused at the field) with Fit beside it, Add section below, adding a section 160 tall
+  under it, selected, and Delete section, asking first when components are in it, disabled
+  while it is the sheet's only section. Pressing the empty sheet, Escape, the panel's close,
+  or selecting a component or another section closes either. Show when reads "Always" while there are no
   conditions, and Add condition adds one on the first column of a one-row input table,
   with the first test its type takes and no value yet; each condition is a row of its
   column (a select of the one-row input tables' columns, by table, each by its label), its
@@ -351,7 +396,10 @@ Out of scope:
 - **The sheet's keyboard.** While the sheets show and a component is selected: Escape
   deselects it, Delete or Backspace removes it, Ctrl/Cmd+D duplicates it (16px below and
   to the right, selected), and the arrow keys nudge it by a grid step, or a pixel with
-  Shift, a burst of nudges within 800ms being one undo step. None of that from a text
+  Shift, a burst of nudges within 800ms being one undo step, kept inside its section. With a section's bar focused: Enter or Space
+  opens its panel, Alt+Up and Alt+Down move the section, and Delete or Backspace deletes it,
+  asking first when components are in it, while another section remains on the sheet; with
+  the section's panel open, Escape closes it. None of that from a text
   field or a select, whose own keys pick an option.
 - **The sample.** Typing into a component's input columns while building types the form's
   sample. A Collection's boxes hold its one-row tables' one row; a Table's grid holds its
@@ -424,8 +472,9 @@ Out of scope:
   right", its description not drawn; in Preview it shows no text, only the dashed frame
   any component with a problem has.
 - **Preview.** The toolbar's Build over Preview switches the view between building and
-  the sheets as an underwriter uses them: the same sheets at the same positions, read and
-  tabbed through in the order they sit, their
+  the sheets as an underwriter uses them: the same sheets, their sections that show stacked
+  one under the next and each component where it sits in its section, read and
+  tabbed through in the order they sit, no section bars, their
   tabs only switching sheets, the components neither selected nor moved, the palette's
   components disabled, no properties panel, no Undo or Redo, and the zoom. An
   underwriter's quote is keyed into the components' input cells as the sample is, through
@@ -453,9 +502,10 @@ Out of scope:
   answer to a pricing still on its way is dropped, as one is once the view has left.
   Ctrl/Cmd+S still saves the project in Preview and Ctrl/Cmd+1 fits the sheet; the sheet's
   editing keys and undo do nothing.
-- **Shown when.** A sheet or a component with conditions shows only while they hold on the
-  values typed into the sheets, the sample while building and the quote in Preview, and a
-  component on a sheet that does not show does not show either.
+- **Shown when.** A sheet, a section or a component with conditions shows only while they
+  hold on the values typed into the sheets, the sample while building and the quote in
+  Preview; a section on a sheet that does not show does not show either, nor does a
+  component in a section that does not show.
   - **A condition holds** while its column is in a one-row input table and on a Table or a
     Collection that shows, and the value typed into it passes the test, read as the server types it:
     text without the spaces around it, compared exactly; a tick box ticked or not, one
@@ -473,8 +523,9 @@ Out of scope:
   - **Decided at once.** What shows is decided for the whole form together: everything
     starts shown and anything whose conditions fail is hidden, which may hide a column another
     condition tests, until nothing more hides. So a sheet that shows when a box on a
-    hidden sheet is ticked is hidden too, whatever the box holds, and the order of the
-    sheets and components decides nothing.
+    hidden sheet is ticked is hidden too, whatever the box holds, as is a section that
+    shows when a box in a hidden section is ticked, and the order of the sheets, sections
+    and components decides nothing.
   - **A quote is what the sheets show.** A value typed into an input column that is on
     Tables or Collections, none of which shows, is left out of the quote, as if it had never
     been typed: a row with nothing typed in it but such values is left out as an empty row
@@ -483,29 +534,38 @@ Out of scope:
     count for nothing here: a value only hidden components take is left out however a Chart
     that shows plots it, and a condition on a column only a Chart plots never holds. A
     Heading shows no columns, so it counts for nothing here either, while it hides and
-    shows by its own conditions and its sheet's as any component does. The
+    shows by its own conditions, its section's and its sheet's as any component does. The
     values are kept, not cleared: they stay in the sample and the
     quote as typed, the sample saved with them, and are in the quote again once their
     column shows. The server leaves them out where it makes a quote of the form's values,
     so the sample priced live, the sample the Workbench Input's copy holds and the quote
     priced in Preview leave out the same values.
-  - **While building** the sample decides: a hidden sheet's tab and a hidden component are
-    drawn faded, still shown, selected and edited like any other, and a sheet or a
-    component with conditions carries an eye, struck through while it is hidden, that
-    names its conditions on hover.
-  - **In Preview** the quote decides, as it is typed: a hidden sheet has no tab and a
-    hidden component is not drawn, its place left empty, since the components are placed
-    freely; while the sheet chosen is hidden, the first sheet that shows is shown in its
-    place, and while none shows the view says "No sheet shows for this quote." Fitting
-    takes the components that show.
-  - **Problems.** The view names, on the dashed frame of a component and in the warning
-    colour on a sheet's tab, on hover and to a screen reader, what stops a sheet's or a
-    component's conditions doing what they say: a condition that cannot hold as written,
-    saying why; a value that is not one of its column's allowed values; and a sheet or
-    component that nothing could show again once hidden, since each column its conditions
-    need is on no Table or Collection, or only on itself, on its own components or on
-    components that cannot show without it, as a tick box on the very sheet it shows is.
-    None is refused: the form is saved as it is.
+  - **While building** the sample decides: a hidden sheet's tab, a hidden section and a
+    hidden component are drawn faded, still shown, selected and edited like any other, the
+    sheet's sections keeping their places, and a sheet, a section or a component with
+    conditions carries an eye (a section's in its bar), struck through while it is
+    hidden, that names its conditions on hover.
+  - **In Preview** the quote decides, as it is typed: a hidden sheet has no tab; a hidden
+    section is not drawn and the sections under it move up to close the space it took; and
+    a hidden component is not drawn, its place in its section left empty, since the
+    components are placed freely in it. While the sheet chosen is hidden, the first sheet
+    that shows is shown in its place, and while none shows the view says "No sheet shows
+    for this quote." Fitting takes the components that show. While a pointer's primary
+    button is pressed on the sheet, what shows and where, the sheet showing included, stays
+    as it was when it was pressed, and changes once the press ends (released, cancelled, or
+    taken by a context menu or another window), so a value committed by the press (a text
+    cell left for a tick box) never moves the press's target from under it. When what shows
+    changes above the section holding the focus, or else above the first section reaching
+    into view, the sheet scrolls by as much as that section moved, so the underwriter's
+    place stays where it was; nothing scrolls when that section itself closes.
+  - **Problems.** The view names, on the dashed frame of a component, on a section's bar
+    and in the warning colour on a sheet's tab, on hover and to a screen reader, what stops
+    a sheet's, a section's or a component's conditions doing what they say: a condition
+    that cannot hold as written, saying why; a value that is not one of its column's
+    allowed values; and a sheet, section or component that nothing could show again once
+    hidden, since each column its conditions need is on no Table or Collection, or only on
+    itself, on its own components or on components that cannot show without it, as a tick
+    box in the very section it shows is. None is refused: the form is saved as it is.
 - **Saved.** A successful save of the form adopts the file's new revision; the project
   save then fetches the tables afresh, so the Workbench Input's and Workbench Output's
   copies follow the schema, as after any fetch, and saves the pipeline with them. A save refused
@@ -828,11 +888,44 @@ Out of scope:
   many hands lay them out. Its description is the line a section often needs under its
   name, what to enter there or what it covers, kept with the name so the two move, align
   and hide together; it is the Heading's, never a heading of its own, so a Heading without
-  text is a problem whatever its description says.
+  text is a problem whatever its description says. A section's own title is the builder's,
+  for its bar and its panel; what the underwriter reads at its top is a Heading in it,
+  which hides with it.
+- **Sections close up, components keep their place.** A component hidden in the middle of
+  a freely laid out sheet leaves a hole. Working out from free positions what may close up
+  fails somewhere in every rule tried: a hole stays beside a tall component that still
+  shows, a component moves because of what hid in another column, or the reading order
+  changes. Other free canvases show the same: Retool and Appsmith close up a hidden
+  component column by column, and components laid side by side drift apart, while
+  Grafana refuses show/hide rules on its free layout to avoid the gaps. A section is a
+  strip the builder draws across the whole sheet, so closing one moves everything under it
+  by the same amount: rows stay aligned, the reading order stays and nothing comes to
+  overlap, and the underwriter never sees a layout the builder did not make. One Show when
+  on a section hides its heading, its fields and its chart together, rather than the same
+  conditions written on each. A hidden component keeps its place within its section, which
+  suits one beside another that stays; the builder gives what should close up a section of
+  its own. A section is added from the palette like any component and dropped where it
+  should start, its line never cutting through a component, so cutting an existing sheet
+  into sections is one drag per cut, and it is named, selected, moved and sized on the
+  sheet itself, by its bar and its handle, not by controls beside the sheet. A component
+  moved stays inside its section, so a move never lays one across a border or moves a
+  border; a component that grows, resized, pushes its section's border down, and a section
+  never shrinks of its own accord. While building, every section keeps its place under its
+  bar, faded while hidden, so it can be edited; Preview stacks those that show, with no
+  bars.
+- **Nothing moves under the underwriter.** A section that opens or closes moves what is
+  under it while the underwriter works. A text cell commits as it is left, and pressing a
+  tick box or a button leaves it, so the commit could move the press's target between
+  press and release and the browser would drop the click: the layout holds while the
+  pointer is pressed. A section opening or closing above the place being worked on would
+  move it off the screen, and the browser's own scroll anchoring does nothing for
+  components placed by position, so the view scrolls by as much itself. Neither animates,
+  as a target moving under the pointer is easier to miss.
 - **Read as laid out.** A screen reader reads the sheet, and Tab moves through its
   components and cells, in the order the page holds them, while a builder adds components
-  in whatever order the work goes. Holding them in the order they sit, row by row and left
-  to right along each row, as other canvas builders order theirs, means a Heading placed
+  in whatever order the work goes. Holding them in the order they sit, section by section,
+  then row by row and left to right along each row, as other canvas builders order theirs,
+  means a Heading placed
   above a section is read before it and an underwriter tabbing through a quote moves down
   the sheet. Rows rather than a strict top-to-bottom sort, because components laid side by
   side are rarely snapped to one top: a Table a grid step higher than the Collection to its
@@ -847,10 +940,12 @@ Out of scope:
   refusing the form or quietly dropping the condition and showing what it hid. Removing a
   column is the one change that takes its conditions with it, as it takes its fields,
   after the schema editor has asked.
-- **The view's state is the view's.** Which sheet and section show, the selection, the
-  zoom and the panel's width are neither saved with the form nor undone with it: they
-  live in a store of their own, read against the form, so a sheet or a component that
-  disappears from the form is simply no longer the one showing or selected.
+- **The view's state is the view's.** Which sheet shows and which of the view's own
+  sections (the sheets, the schema or Preview), the selection (a component, a sheet's
+  section or the sheet's own panel), the zoom and the panel's width are neither saved with
+  the form nor undone with it: they live in a store of their own, read against the form, so
+  a sheet, a section or a component that disappears from the form is simply no longer the
+  one showing or selected.
 - **Canonical only.** The form has one shape. A field is always written, so a file never says
   one thing by presence and another by absence, and an unknown field is refused by name rather
   than carried or dropped; nothing migrates an older spelling, as the repository's
@@ -977,7 +1072,11 @@ Out of scope:
 - While the workbench is enabled, a form file that cannot be read, is not UTF-8 text, is
   not JSON or does not fit the form's shape fails `GET /api/workbench/tables` and
   `GET /api/workbench/form` with 409 naming the file and the first thing wrong with it; a
-  file that does not exist is the blank form. A fetch of the tables that fails shows one
+  file that does not exist is the blank form. A sheet holding `widgets` of its own is not
+  a form: "<form> is not a workbench form: pages.N.widgets was removed; a sheet's
+  components now sit in its sections (pages.N.sections[].widgets)", N the sheet's place.
+  Nor is a section that a component reaches below (its `y` plus its `h` above the section's
+  `height`): the message names the section's place and the component. A fetch of the tables that fails shows one
   error toast and changes no Workbench Input or Workbench Output; a fetch made for an
   earlier document never changes the current one, and an update it started that is still
   waiting on identity resolution is dropped with the commit controller's usual message. A
@@ -999,8 +1098,11 @@ Out of scope:
   on one. A file that could not be read again after the pipeline's document was adopted
   leaves the form as it is, said in one error toast.
 - A sheet's components are deleted with it, after a confirmation; the last sheet cannot
-  be removed, and the view never offers to. A layout value outside its range (a Table's
-  rows 1 to 50, a Collection's columns 1 to 12) is refused at the field, which says the
+  be removed, and the view never offers to. A section's components are deleted with it
+  too, after a confirmation; a sheet's last section cannot be removed, and the view never
+  offers to. A layout value outside its range (a Table's
+  rows 1 to 50, a Collection's columns 1 to 12, a section's height below 48 or below what
+  its components reach) is refused at the field, which says the
   range. A component dropped outside the sheet's viewport is not added. Fit never takes
   the zoom below its minimum: a sheet too wide to fit at 25% fits at 25%.
 - A Chart's problems are refused nowhere: the form reads and saves with them, and the view

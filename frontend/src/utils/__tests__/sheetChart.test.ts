@@ -43,8 +43,9 @@ const field = (tableId: string, columnId: string): FieldRef => ({ table: tableId
 /**
  * A motor form: the policy (one row) and its quote (an output, one row); equipment (many
  * rows, keyed by item) priced into premiums and fees (outputs keyed alike); vehicles (many
- * rows keyed by reg, out of line with equipment). The policy's excess and the equipment's
- * notes are typed only into components shown while cover is ticked.
+ * rows keyed by reg, out of line with equipment). Its components are in the one section of
+ * one sheet, and the policy's excess and the equipment's notes are typed only into those
+ * shown while cover is ticked.
  */
 const motorForm = (): FormSpec => ({
   version: 1,
@@ -95,33 +96,41 @@ const motorForm = (): FormSpec => ({
       id: "p1",
       title: "Sheet 1",
       show_when: always,
-      widgets: [
-        { id: "w_policy", type: "collection", x: 0, y: 0, w: 400, h: 120, title: "Policy", columns: 3, fields: [field("policy", "state"), field("policy", "sum_insured"), field("policy", "cover")], show_when: always },
-        { id: "w_excess", type: "collection", x: 0, y: 140, w: 400, h: 120, title: "Excess", columns: 1, fields: [field("policy", "excess")], show_when: whileCovered },
+      sections: [
         {
-          id: "w_equipment",
-          type: "tableInput",
-          x: 0,
-          y: 280,
-          w: 720,
-          h: 200,
-          title: "Equipment",
-          rows: 3,
-          ...TABLE_OPTIONS,
-          fields: [field("equipment", "row"), field("equipment", "item"), field("equipment", "value"), field("equipment", "count"), field("equipment", "new")],
+          id: "s1",
+          title: "Section 1",
+          height: 700,
           show_when: always,
+          widgets: [
+            { id: "w_policy", type: "collection", x: 0, y: 0, w: 400, h: 120, title: "Policy", columns: 3, fields: [field("policy", "state"), field("policy", "sum_insured"), field("policy", "cover")], show_when: always },
+            { id: "w_excess", type: "collection", x: 0, y: 140, w: 400, h: 120, title: "Excess", columns: 1, fields: [field("policy", "excess")], show_when: whileCovered },
+            {
+              id: "w_equipment",
+              type: "tableInput",
+              x: 0,
+              y: 280,
+              w: 720,
+              h: 200,
+              title: "Equipment",
+              rows: 3,
+              ...TABLE_OPTIONS,
+              fields: [field("equipment", "row"), field("equipment", "item"), field("equipment", "value"), field("equipment", "count"), field("equipment", "new")],
+              show_when: always,
+            },
+            { id: "w_notes", type: "tableInput", x: 0, y: 500, w: 720, h: 200, title: "Notes", rows: 3, ...TABLE_OPTIONS, fields: [field("equipment", "note")], show_when: whileCovered },
+          ],
         },
-        { id: "w_notes", type: "tableInput", x: 0, y: 500, w: 720, h: 200, title: "Notes", rows: 3, ...TABLE_OPTIONS, fields: [field("equipment", "note")], show_when: whileCovered },
       ],
     },
   ],
   sample: {},
 })
 
-/** A Chart of `fields`, with `options`, placed on the motor form's sheet beside its other components. */
+/** A Chart of `fields`, with `options`, placed in the motor form's section beside its other components. */
 function charted(fields: FieldRef[], options: Partial<ChartWidget> = {}): { spec: FormSpec; widget: ChartWidget } {
   const widget = { ...(createWidget("chart", { x: 760, y: 0, w: 480, h: 280 }) as ChartWidget), title: "Chart", fields, ...options }
-  return { spec: addWidget(motorForm(), "p1", widget), widget }
+  return { spec: addWidget(motorForm(), "s1", widget), widget }
 }
 
 type Price = NonNullable<ChartValues["price"]>
@@ -189,7 +198,7 @@ describe("a Chart of many-row tables", () => {
     const form = motorForm()
     form.schema.tables.push(table("cover", { rows: "many", columns: [column("item", "item", { key: true }), column("excess", "excess", pounds)] }))
     const widget = { ...(createWidget("chart", { x: 760, y: 0, w: 480, h: 280 }) as ChartWidget), title: "Chart", fields: [field("equipment", "value"), field("cover", "excess")] }
-    const spec = addWidget(form, "p1", widget)
+    const spec = addWidget(form, "s1", widget)
     // Row 1 is typed into equipment alone, row 2 into cover alone, side by side as a Table's grid has them.
     const data = sheetChartData(spec, widget, valuesOf(spec, { equipment: [{ item: "Crane", value: "5" }, {}], cover: [{}, { item: "Crane", excess: "250" }] }))
     expect(data.categories).toEqual(["1", "2"])

@@ -4,6 +4,7 @@ file's revision and written atomically, with what is wrong named when it cannot 
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, get_args
 
@@ -48,8 +49,9 @@ def column(name: str, type_: str = "str", **rest: Any) -> dict[str, Any]:
 
 
 # The test project's shape: one-row and many-row input tables, an index column, an output
-# table, a Collection, a Table, a Chart and a Heading, the Table shown while a condition
-# holds, and a sample typed into the Collection.
+# table, a Collection, a Table and a Chart in one section and a Heading in a second, the
+# Table and the second section each shown while a condition holds, and a sample typed into
+# the Collection.
 ALWAYS: dict[str, Any] = {"match": "all", "conditions": []}
 FORM: dict[str, Any] = {
     "version": 1,
@@ -99,89 +101,122 @@ FORM: dict[str, Any] = {
             "id": "page_1",
             "title": "Sheet 1",
             "show_when": ALWAYS,
-            "widgets": [
+            "sections": [
                 {
-                    "id": "w_policy",
-                    "type": "collection",
-                    "x": 16,
-                    "y": 16,
-                    "w": 720,
-                    "h": 120,
-                    "title": "Policy",
-                    "fields": [
-                        {"table": "t_policy", "column": "c_state"},
-                        {"table": "t_pricing", "column": "c_premium"},
-                    ],
+                    "id": "s_cover",
+                    "title": "Cover",
+                    "height": 376,
                     "show_when": ALWAYS,
-                    "columns": 2,
+                    "widgets": [
+                        {
+                            "id": "w_policy",
+                            "type": "collection",
+                            "x": 16,
+                            "y": 16,
+                            "w": 720,
+                            "h": 120,
+                            "title": "Policy",
+                            "fields": [
+                                {"table": "t_policy", "column": "c_state"},
+                                {"table": "t_pricing", "column": "c_premium"},
+                            ],
+                            "show_when": ALWAYS,
+                            "columns": 2,
+                        },
+                        {
+                            "id": "w_layers",
+                            "type": "tableInput",
+                            "x": 16,
+                            "y": 160,
+                            "w": 720,
+                            "h": 200,
+                            "title": "Layers",
+                            "fields": [{"table": "t_layers", "column": "c_limit"}],
+                            "show_when": {
+                                "match": "any",
+                                "conditions": [
+                                    {
+                                        "table": "t_policy",
+                                        "column": "c_state",
+                                        "op": "one_of",
+                                        "values": ["CA", "NY"],
+                                    }
+                                ],
+                            },
+                            "rows": 5,
+                            # The layer index numbers the rows, and the layers are a set structure.
+                            "row_numbers": False,
+                            "density": "comfortable",
+                            "gridlines": "all",
+                            "striped": False,
+                            "fixed_rows": True,
+                        },
+                        {
+                            "id": "w_limits",
+                            "type": "chart",
+                            "x": 760,
+                            "y": 16,
+                            "w": 480,
+                            "h": 280,
+                            "title": "Limits",
+                            "fields": [{"table": "t_layers", "column": "c_limit"}],
+                            "show_when": ALWAYS,
+                            # The layers' names label the rows, drawn as lines across, stacked, the
+                            # legend on the right and each value labelled.
+                            "category": {"table": "t_layers", "column": "c_layer_name"},
+                            "chart_type": "line",
+                            "orientation": "horizontal",
+                            "stacked": True,
+                            "legend": "right",
+                            "data_labels": True,
+                        },
+                    ],
                 },
                 {
-                    "id": "w_layers",
-                    "type": "tableInput",
-                    "x": 16,
-                    "y": 160,
-                    "w": 720,
-                    "h": 200,
-                    "title": "Layers",
-                    "fields": [{"table": "t_layers", "column": "c_limit"}],
+                    "id": "s_equipment",
+                    "title": "Equipment",
+                    "height": 64,
+                    # Only for New York: its Heading hides with it.
                     "show_when": {
-                        "match": "any",
+                        "match": "all",
                         "conditions": [
                             {
                                 "table": "t_policy",
                                 "column": "c_state",
-                                "op": "one_of",
-                                "values": ["CA", "NY"],
+                                "op": "equals",
+                                "values": ["NY"],
                             }
                         ],
                     },
-                    "rows": 5,
-                    # The layer index numbers the rows, and the layers are a set structure.
-                    "row_numbers": False,
-                    "density": "comfortable",
-                    "gridlines": "all",
-                    "striped": False,
-                    "fixed_rows": True,
-                },
-                {
-                    "id": "w_limits",
-                    "type": "chart",
-                    "x": 760,
-                    "y": 16,
-                    "w": 480,
-                    "h": 280,
-                    "title": "Limits",
-                    "fields": [{"table": "t_layers", "column": "c_limit"}],
-                    "show_when": ALWAYS,
-                    # The layers' names label the rows, drawn as lines across, stacked, the
-                    # legend on the right and each value labelled.
-                    "category": {"table": "t_layers", "column": "c_layer_name"},
-                    "chart_type": "line",
-                    "orientation": "horizontal",
-                    "stacked": True,
-                    "legend": "right",
-                    "data_labels": True,
-                },
-                {
-                    "id": "w_title",
-                    "type": "heading",
-                    "x": 16,
-                    "y": 384,
-                    "w": 480,
-                    "h": 40,
-                    # Named as typed, outside ASCII too, large and centred: the sheet's title,
-                    # with a line under it.
-                    "text": "Équipement des entrepreneurs",
-                    "description": "Plant and equipment, by layer",
-                    "show_when": ALWAYS,
-                    "size": "large",
-                    "align": "center",
+                    "widgets": [
+                        {
+                            "id": "w_title",
+                            "type": "heading",
+                            "x": 16,
+                            "y": 8,
+                            "w": 480,
+                            "h": 40,
+                            # Named as typed, outside ASCII too, large and centred: the
+                            # section's title, with a line under it.
+                            "text": "Équipement des entrepreneurs",
+                            "description": "Plant and equipment, by layer",
+                            "show_when": ALWAYS,
+                            "size": "large",
+                            "align": "center",
+                        },
+                    ],
                 },
             ],
         }
     ],
     "sample": {"t_policy": [{"c_state": "NY", "c_exposure": "$100,000"}]},
 }
+
+
+def widgets(form: dict[str, Any]) -> list[dict[str, Any]]:
+    """The test form's components, section by section: the Collection, the Table, the Chart
+    and the Heading."""
+    return [widget for section in form["pages"][0]["sections"] for widget in section["widgets"]]
 
 
 def config(project: Path, form: str = "forms/form.json") -> WorkbenchConfig:
@@ -191,11 +226,21 @@ def config(project: Path, form: str = "forms/form.json") -> WorkbenchConfig:
 def test_the_blank_form_is_one_empty_sheet_named_after_the_project() -> None:
     text = render_form(blank_form("motor"))
 
+    # The whole sheet is one section until another is added, as tall as the view's least
+    # sheet height less the room it leaves below the sections.
+    section = {"id": "section_1", "title": "Section 1", "height": 560}
     assert json.loads(text) == {
         "version": 1,
         "name": "motor",
         "schema": {"tables": []},
-        "pages": [{"id": "page_1", "title": "Sheet 1", "show_when": ALWAYS, "widgets": []}],
+        "pages": [
+            {
+                "id": "page_1",
+                "title": "Sheet 1",
+                "show_when": ALWAYS,
+                "sections": [{**section, "show_when": ALWAYS, "widgets": []}],
+            }
+        ],
         "sample": {},
     }
     assert text.endswith("}\n")
@@ -242,16 +287,16 @@ def test_a_heading_s_text_reads_and_writes_as_typed_blank_or_not(tmp_path: Path,
     # A Heading with no text is a problem the view names, never a refusal, and the spaces
     # around its text and its description are the builder's: the file keeps what was typed.
     form = json.loads(json.dumps(FORM))
-    form["pages"][0]["widgets"][3].update(text=text, description=text)
+    widgets(form)[3].update(text=text, description=text)
     (tmp_path / "forms").mkdir()
     (tmp_path / "forms" / "form.json").write_text(json.dumps(form), encoding="utf-8")
 
     spec = read_form_document(config(tmp_path)).spec
 
-    heading = spec.pages[0].widgets[3]
+    heading = spec.pages[0].sections[1].widgets[0]
     assert isinstance(heading, HeadingWidget)
     assert (heading.text, heading.description) == (text, text)
-    written = json.loads(render_form(spec))["pages"][0]["widgets"][3]
+    written = widgets(json.loads(render_form(spec)))[3]
     assert (written["text"], written["description"]) == (text, text)
 
 
@@ -272,13 +317,14 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
                 del col[field]
     sparse["schema"]["tables"][1]["columns"][0]["index"] = True
     for field in options:
-        del sparse["pages"][0]["widgets"][1][field]
+        del widgets(sparse)[1][field]
     for field in chart_options:
-        del sparse["pages"][0]["widgets"][2][field]
+        del widgets(sparse)[2][field]
     for field in ("text", "description", "show_when", "size", "align"):
-        del sparse["pages"][0]["widgets"][3][field]
+        del widgets(sparse)[3][field]
     del sparse["pages"][0]["show_when"]
-    del sparse["pages"][0]["widgets"][0]["show_when"]
+    del sparse["pages"][0]["sections"][0]["show_when"]
+    del widgets(sparse)[0]["show_when"]
     (tmp_path / "forms").mkdir()
     (tmp_path / "forms" / "form.json").write_text(json.dumps(sparse), encoding="utf-8")
 
@@ -290,7 +336,7 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
     assert written["sample"] == {}
     assert all("index" in c for t in written["schema"]["tables"] for c in t["columns"])
     assert written["schema"]["tables"][0]["columns"][1] == column("exposure", "float", min=0.0)
-    grid = written["pages"][0]["widgets"][1]
+    grid = widgets(written)[1]
     assert {field: grid[field] for field in options} == {
         "row_numbers": True,
         "density": "compact",
@@ -298,7 +344,7 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         "striped": True,
         "fixed_rows": False,
     }
-    chart = written["pages"][0]["widgets"][2]
+    chart = widgets(written)[2]
     # Its rows numbered, drawn as upright columns, unstacked, the legend at the bottom and
     # no data labels.
     assert {field: chart[field] for field in chart_options} == {
@@ -310,7 +356,7 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         "data_labels": False,
     }
     # No text or description yet, of medium size and aligned left, in the file's order.
-    heading = written["pages"][0]["widgets"][3]
+    heading = widgets(written)[3]
     assert list(heading) == "id x y w h type text description show_when size align".split()
     assert [heading[field] for field in ("text", "description", "size", "align")] == [
         "",
@@ -320,7 +366,8 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
     ]
     # Always shown.
     assert written["pages"][0]["show_when"] == ALWAYS
-    assert written["pages"][0]["widgets"][0]["show_when"] == ALWAYS
+    assert written["pages"][0]["sections"][0]["show_when"] == ALWAYS
+    assert widgets(written)[0]["show_when"] == ALWAYS
     assert heading["show_when"] == ALWAYS
 
 
@@ -328,31 +375,31 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
     ("change", "where"),
     [
         (lambda f: f.update(colour="red"), "colour"),
-        (lambda f: f["pages"][0]["widgets"][0].update(rows=3), "rows"),
-        (lambda f: f["pages"][0]["widgets"][1].update(rows=51), "rows"),
-        (lambda f: f["pages"][0]["widgets"][1].update(density="roomy"), "density"),
-        (lambda f: f["pages"][0]["widgets"][1].update(gridlines="dotted"), "gridlines"),
+        (lambda f: widgets(f)[0].update(rows=3), "rows"),
+        (lambda f: widgets(f)[1].update(rows=51), "rows"),
+        (lambda f: widgets(f)[1].update(density="roomy"), "density"),
+        (lambda f: widgets(f)[1].update(gridlines="dotted"), "gridlines"),
         # A Collection has none of a Table's options.
-        (lambda f: f["pages"][0]["widgets"][0].update(striped=True), "striped"),
-        (lambda f: f["pages"][0]["widgets"][2].update(chart_type="bar"), "chart_type"),
-        (lambda f: f["pages"][0]["widgets"][2].update(legend="inside"), "legend"),
+        (lambda f: widgets(f)[0].update(striped=True), "striped"),
+        (lambda f: widgets(f)[2].update(chart_type="bar"), "chart_type"),
+        (lambda f: widgets(f)[2].update(legend="inside"), "legend"),
         # A Chart has none of a Table's options, and a Table and a Collection none of a
         # Chart's.
-        (lambda f: f["pages"][0]["widgets"][2].update(striped=True), "striped"),
-        (lambda f: f["pages"][0]["widgets"][1].update(chart_type="line"), "chart_type"),
-        (lambda f: f["pages"][0]["widgets"][0].update(legend="top"), "legend"),
+        (lambda f: widgets(f)[2].update(striped=True), "striped"),
+        (lambda f: widgets(f)[1].update(chart_type="line"), "chart_type"),
+        (lambda f: widgets(f)[0].update(legend="top"), "legend"),
         # What labels a Chart's rows is held as a field is: a table and a column.
-        (lambda f: f["pages"][0]["widgets"][2].update(category={"table": "t_layers"}), "category"),
-        (lambda f: f["pages"][0]["widgets"][3].update(size="huge"), "size"),
-        (lambda f: f["pages"][0]["widgets"][3].update(align="justify"), "align"),
+        (lambda f: widgets(f)[2].update(category={"table": "t_layers"}), "category"),
+        (lambda f: widgets(f)[3].update(size="huge"), "size"),
+        (lambda f: widgets(f)[3].update(align="justify"), "align"),
         # A Heading is its text: it has no title and shows no fields, and no other
         # component has its text, its description, its size or its alignment.
-        (lambda f: f["pages"][0]["widgets"][3].update(title="Cover"), "title"),
-        (lambda f: f["pages"][0]["widgets"][3].update(fields=[]), "fields"),
-        (lambda f: f["pages"][0]["widgets"][1].update(text="Layers"), "text"),
-        (lambda f: f["pages"][0]["widgets"][1].update(description="By layer"), "description"),
-        (lambda f: f["pages"][0]["widgets"][2].update(size="large"), "size"),
-        (lambda f: f["pages"][0]["widgets"][2].update(align="center"), "align"),
+        (lambda f: widgets(f)[3].update(title="Cover"), "title"),
+        (lambda f: widgets(f)[3].update(fields=[]), "fields"),
+        (lambda f: widgets(f)[1].update(text="Layers"), "text"),
+        (lambda f: widgets(f)[1].update(description="By layer"), "description"),
+        (lambda f: widgets(f)[2].update(size="large"), "size"),
+        (lambda f: widgets(f)[2].update(align="center"), "align"),
         (lambda f: f["schema"]["tables"][0]["columns"][0].update(type="money"), "type"),
         (
             lambda f: f["schema"]["tables"][0]["columns"][1].update(number_format="yen"),
@@ -363,15 +410,31 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
             "decimal_places",
         ),
         (lambda f: f.update(pages=[]), "pages"),
-        (lambda f: f["pages"][0]["widgets"][0].update(type="slider"), "type"),
+        # A sheet is its sections, at least one, each at least a pixel tall, empty or not, and
+        # holding its components inside it: a Heading 8px down and 40px tall needs 48px.
+        (lambda f: f["pages"][0].update(sections=[]), "pages.0.sections"),
+        (lambda f: f["pages"][0]["sections"][1].update(height=0), "pages.0.sections.1.height"),
+        (
+            lambda f: f["pages"][0]["sections"][1].update(widgets=[], height=0),
+            "pages.0.sections.1.height",
+        ),
+        (
+            lambda f: f["pages"][0]["sections"][1].update(widgets=[], height=-48),
+            "pages.0.sections.1.height",
+        ),
+        (lambda f: f["pages"][0]["sections"][1].update(height=47), "pages.0.sections.1"),
+        (lambda f: f["pages"][0]["sections"][1].update(height=47), "widget w_title reaches"),
+        (lambda f: f["pages"][0]["sections"][0].update(colour="red"), "colour"),
+        (lambda f: f["pages"][0]["sections"][1]["show_when"].update(match="most"), "match"),
+        (lambda f: widgets(f)[0].update(type="slider"), "type"),
         (lambda f: f["pages"][0]["show_when"].update(match="none"), "match"),
         (
-            lambda f: f["pages"][0]["widgets"][1]["show_when"]["conditions"][0].update(op="has"),
+            lambda f: widgets(f)[1]["show_when"]["conditions"][0].update(op="has"),
             "op",
         ),
         # A condition's values are text as typed, as the sample's cells are.
         (
-            lambda f: f["pages"][0]["widgets"][1]["show_when"]["conditions"][0].update(values=[1]),
+            lambda f: widgets(f)[1]["show_when"]["conditions"][0].update(values=[1]),
             "values",
         ),
         # A cell is held as typed, text or a tick: a number is another client's shape.
@@ -392,6 +455,33 @@ def test_an_unknown_field_or_a_value_outside_the_shape_is_refused(
     ) as caught:
         read_form_document(config(tmp_path))
     assert where in str(caught.value)
+
+
+def test_a_section_as_tall_as_its_components_reach_holds_them(tmp_path: Path) -> None:
+    exact = json.loads(json.dumps(FORM))
+    exact["pages"][0]["sections"][1]["height"] = 48
+    (tmp_path / "forms").mkdir()
+    (tmp_path / "forms" / "form.json").write_text(json.dumps(exact), encoding="utf-8")
+
+    assert read_form_document(config(tmp_path)).spec.pages[0].sections[1].height == 48
+
+
+def test_a_sheet_holding_its_own_components_is_refused_with_what_replaced_them(
+    tmp_path: Path,
+) -> None:
+    # As sheets were written before sections: refused by name, never read as one section.
+    old = json.loads(json.dumps(FORM))
+    old["pages"][0]["widgets"] = widgets(old)
+    del old["pages"][0]["sections"]
+    (tmp_path / "forms").mkdir()
+    (tmp_path / "forms" / "form.json").write_text(json.dumps(old), encoding="utf-8")
+
+    message = (
+        "forms/form.json is not a workbench form: pages.0.widgets was removed; a sheet's "
+        "components now sit in its sections (pages.0.sections[].widgets)"
+    )
+    with pytest.raises(WorkbenchFormError, match=f"^{re.escape(message)}"):
+        read_form_document(config(tmp_path))
 
 
 def test_a_column_takes_the_explore_pivot_s_number_formats() -> None:

@@ -528,6 +528,7 @@ export type {
   Page,
   SchemaColumn,
   SchemaTable,
+  Section,
   ShowWhen,
   TableInputWidget,
   WorkbenchColumn,

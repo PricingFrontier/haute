@@ -11561,11 +11561,19 @@
     },
     "Page": {
       "additionalProperties": false,
-      "description": "A sheet: when it shows, and its widgets, each placed freely on the canvas.",
+      "description": "A sheet: when it shows, and its sections, stacked one under the next.",
       "properties": {
         "id": {
           "title": "Id",
           "type": "string"
+        },
+        "sections": {
+          "items": {
+            "$ref": "#/$defs/Section"
+          },
+          "minItems": 1,
+          "title": "Sections",
+          "type": "array"
         },
         "show_when": {
           "$ref": "#/$defs/ShowWhen"
@@ -11573,33 +11581,13 @@
         "title": {
           "title": "Title",
           "type": "string"
-        },
-        "widgets": {
-          "items": {
-            "oneOf": [
-              {
-                "$ref": "#/$defs/TableInputWidget"
-              },
-              {
-                "$ref": "#/$defs/CollectionWidget"
-              },
-              {
-                "$ref": "#/$defs/ChartWidget"
-              },
-              {
-                "$ref": "#/$defs/HeadingWidget"
-              }
-            ]
-          },
-          "title": "Widgets",
-          "type": "array"
         }
       },
       "required": [
         "id",
         "title",
         "show_when",
-        "widgets"
+        "sections"
       ],
       "title": "Page",
       "type": "object"
@@ -12302,6 +12290,57 @@
       "title": "SchemaTable",
       "type": "object"
     },
+    "Section": {
+      "additionalProperties": false,
+      "description": "A section of a sheet: a strip across the sheet's whole width, ``height`` pixels tall,\nunder the sections before it; when it shows; and its widgets, each placed freely inside\nit.",
+      "properties": {
+        "height": {
+          "exclusiveMinimum": 0,
+          "title": "Height",
+          "type": "integer"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "show_when": {
+          "$ref": "#/$defs/ShowWhen"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "widgets": {
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/TableInputWidget"
+              },
+              {
+                "$ref": "#/$defs/CollectionWidget"
+              },
+              {
+                "$ref": "#/$defs/ChartWidget"
+              },
+              {
+                "$ref": "#/$defs/HeadingWidget"
+              }
+            ]
+          },
+          "title": "Widgets",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "height",
+        "show_when",
+        "widgets"
+      ],
+      "title": "Section",
+      "type": "object"
+    },
     "SessionStatusResponse": {
       "properties": {
         "ok": {
@@ -12551,7 +12590,7 @@
     },
     "ShowWhen": {
       "additionalProperties": false,
-      "description": "When a sheet or a widget shows: always, without conditions; else while all of them\nhold, or any, as ``match`` says.",
+      "description": "When a sheet, a section or a widget shows: always, without conditions; else while all\nof them hold, or any, as ``match`` says.",
       "properties": {
         "conditions": {
           "items": {

@@ -2,11 +2,12 @@
 (specs/workbench).
 
 ``forms/form.json`` is the file the workbench edits: the schema of typed tables the quote is
-keyed into, the sheets of Tables and Collections that show those tables' columns, of Charts
-that plot them and of Headings that name their sections, and the sample quote typed into
-them while building. It is one JSON
+keyed into, the sheets, each a stack of sections holding Tables and Collections that show
+those tables' columns, Charts that plot them and Headings that name them, and the sample
+quote typed into them while building. It is one JSON
 document with one spelling: every field is written, defaults included, and an unknown
-field is refused by name. Nothing migrates an older spelling.
+field is refused by name. Nothing migrates an older spelling: a sheet holding its
+components itself, as sheets did before sections, is refused with what replaced it.
 
 A file that does not exist is the blank form that has never been saved. A file's revision
 is its content hash, which a save quotes so a form that changed on disk since it was read
@@ -20,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, Strict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, Strict, ValidationError, model_validator
 
 from haute._file_ops import atomic_write_bytes
 from haute._hashing import content_hash_bytes
@@ -76,6 +77,11 @@ ConditionTest = Literal[
 #: A sample cell as typed: text, or a tick. Strict, so a number or a null is refused.
 Cell = Annotated[str, Strict()] | Annotated[bool, Strict()]
 
+#: How tall a new sheet's one section is: the view's least sheet height less the room it
+#: leaves below the sections (``frontend/src/utils/sheetGeometry.ts``), so the whole sheet
+#: is one section until another is added.
+BLANK_SECTION_HEIGHT = 560
+
 
 class WorkbenchFormError(WorkbenchError):
     """The form file cannot be read as a form: unreadable, not JSON or misshapen."""
@@ -86,7 +92,7 @@ class _Strict(BaseModel):
 
 
 class _Placed(_Strict):
-    """A widget's place on its sheet, in pixels."""
+    """A widget's place in its section, in pixels from the section's top-left corner."""
 
     id: str
     x: int = Field(ge=0)
@@ -119,8 +125,8 @@ class Condition(_Strict):
 
 
 class ShowWhen(_Strict):
-    """When a sheet or a widget shows: always, without conditions; else while all of them
-    hold, or any, as ``match`` says."""
+    """When a sheet, a section or a widget shows: always, without conditions; else while all
+    of them hold, or any, as ``match`` says."""
 
     match: Literal["all", "any"] = "all"
     conditions: list[Condition] = Field(default_factory=list)
@@ -190,13 +196,36 @@ Widget = Annotated[
 ]
 
 
+class Section(_Strict):
+    """A section of a sheet: a strip across the sheet's whole width, ``height`` pixels tall,
+    under the sections before it; when it shows; and its widgets, each placed freely inside
+    it."""
+
+    id: str
+    #: The builder's name for it; what an underwriter reads at its top is a Heading in it.
+    title: str
+    height: int = Field(gt=0)
+    show_when: ShowWhen = Field(default_factory=ShowWhen)
+    widgets: list[Widget] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _holds_its_widgets(self) -> Section:
+        for widget in self.widgets:
+            if widget.y + widget.h > self.height:
+                raise ValueError(
+                    f"widget {widget.id} reaches {widget.y + widget.h}px down, below the "
+                    f"section's height of {self.height}px"
+                )
+        return self
+
+
 class Page(_Strict):
-    """A sheet: when it shows, and its widgets, each placed freely on the canvas."""
+    """A sheet: when it shows, and its sections, stacked one under the next."""
 
     id: str
     title: str
     show_when: ShowWhen = Field(default_factory=ShowWhen)
-    widgets: list[Widget] = Field(default_factory=list)
+    sections: list[Section] = Field(min_length=1)
 
 
 class SchemaColumn(_Strict):
@@ -271,8 +300,10 @@ class FormDocument:
 
 
 def blank_form(name: str) -> FormSpec:
-    """The form a project starts with: one blank sheet, no tables, no sample."""
-    return FormSpec(name=name, pages=[Page(id="page_1", title="Sheet 1")])
+    """The form a project starts with: one blank sheet holding one section, no tables, no
+    sample."""
+    section = Section(id="section_1", title="Section 1", height=BLANK_SECTION_HEIGHT)
+    return FormSpec(name=name, pages=[Page(id="page_1", title="Sheet 1", sections=[section])])
 
 
 def render_form(spec: FormSpec) -> str:
@@ -315,13 +346,26 @@ def form_file_revision(config: WorkbenchConfig) -> str | None:
     return None if data is None else form_revision(data)
 
 
+def _refuse_page_widgets(config: WorkbenchConfig, parsed: object) -> None:
+    """Refuse a sheet holding widgets of its own, as sheets did before sections, naming
+    what replaced them rather than reporting an unknown field."""
+    pages = parsed.get("pages") if isinstance(parsed, dict) else None
+    for index, page in enumerate(pages if isinstance(pages, list) else []):
+        if isinstance(page, dict) and "widgets" in page:
+            raise WorkbenchFormError(
+                f"{config.form} is not a workbench form: pages.{index}.widgets was removed; "
+                f"a sheet's components now sit in its sections (pages.{index}.sections[].widgets)",
+                path=str(config.form_path),
+            )
+
+
 def read_form_document(config: WorkbenchConfig) -> FormDocument:
     """The form at ``config.form_path``, read whole and checked, with the file's revision.
 
     A file that does not exist is the blank form, named after the project, with no
     revision. Raises :class:`WorkbenchFormError`, naming the file as ``haute.toml`` names it
     and what is wrong, when the file cannot be read, is not UTF-8 text, is not JSON or does
-    not fit the shape.
+    not fit the shape, a sheet holding widgets of its own named with what replaced them.
     """
     path = config.form_path
     data = _read_form_bytes(config)
@@ -335,6 +379,7 @@ def read_form_document(config: WorkbenchConfig) -> FormDocument:
         parsed = json.loads(text)
     except json.JSONDecodeError as exc:
         raise WorkbenchFormError(f"{config.form} is not JSON: {exc}", path=str(path)) from exc
+    _refuse_page_widgets(config, parsed)
     try:
         spec = FormSpec.model_validate(parsed)
     except ValidationError as exc:

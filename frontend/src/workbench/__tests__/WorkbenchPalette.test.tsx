@@ -1,7 +1,7 @@
 /**
- * The workbench's palette (specs/workbench): Table, Collection, Chart and Heading in Haute's
- * palette shell with the switcher under them, collapsing with the node palette, and
- * disabled in Preview.
+ * The workbench's palette (specs/workbench): Table, Collection, Chart and Heading, then a
+ * Section, in Haute's palette shell with the switcher under them, collapsing with the node
+ * palette, and disabled in Preview.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
@@ -23,15 +23,24 @@ describe("WorkbenchPalette", () => {
     useWorkbenchViewStore.setState({ section: "sheets", creating: null })
   })
 
-  it("offers a Table, a Collection, a Chart and a Heading, with the switcher at the bottom", () => {
+  it("offers a Table, a Collection, a Chart and a Heading, then a Section, with the switcher at the bottom", () => {
     render(<WorkbenchPalette />)
 
     expect(screen.getByRole("heading", { name: "Components" })).toBeInTheDocument()
+    expect(screen.getAllByTestId(/^palette-item-/).map((item) => item.dataset.testid)).toEqual([
+      "palette-item-tableInput",
+      "palette-item-collection",
+      "palette-item-chart",
+      "palette-item-heading",
+      "palette-item-section",
+    ])
     expect(screen.getByTestId("palette-item-tableInput")).toHaveTextContent("Table")
     expect(screen.getByTestId("palette-item-collection")).toHaveTextContent("Collection")
     expect(screen.getByTestId("palette-item-chart")).toHaveTextContent("Chart")
     expect(screen.getByTestId("palette-item-heading")).toHaveTextContent("Heading")
     expect(screen.getByTestId("palette-item-heading")).toHaveAttribute("title", "Text naming a section of the sheet: a title, a heading or a label")
+    expect(screen.getByTestId("palette-item-section")).toHaveTextContent("Section")
+    expect(screen.getByTestId("palette-item-section")).toHaveAttribute("title", "A strip across the sheet that hides and shows as one; drop it where a section should start")
     expect(within(screen.getByRole("group", { name: "Views" })).getByRole("button", { name: "Workbench" })).toHaveAttribute("aria-pressed", "true")
   })
 
@@ -48,14 +57,16 @@ describe("WorkbenchPalette", () => {
     expect(screen.getByTestId("palette-item-tableInput")).toBeInTheDocument()
   })
 
-  it("disables the components in Preview, saying where to lay out the sheets", () => {
+  it("disables the components and the Section in Preview, saying where to lay out the sheets", () => {
     useWorkbenchViewStore.setState({ section: "preview" })
     render(<WorkbenchPalette />)
 
-    const item = screen.getByTestId("palette-item-tableInput")
-    expect(item).toHaveAttribute("aria-disabled", "true")
-    expect(item).toHaveAttribute("title", "Build to lay out the sheets")
-    fireEvent.pointerDown(item, { button: 0, clientX: 10, clientY: 10 })
-    expect(useWorkbenchViewStore.getState().creating).toBeNull()
+    for (const id of ["palette-item-tableInput", "palette-item-section"]) {
+      const item = screen.getByTestId(id)
+      expect(item).toHaveAttribute("aria-disabled", "true")
+      expect(item).toHaveAttribute("title", "Build to lay out the sheets")
+      fireEvent.pointerDown(item, { button: 0, clientX: 10, clientY: 10 })
+      expect(useWorkbenchViewStore.getState().creating).toBeNull()
+    }
   })
 })

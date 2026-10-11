@@ -33,9 +33,14 @@ def form(*tables: dict[str, Any], pages: list[dict[str, Any]] | None = None) -> 
         {
             "name": "x",
             "schema": {"tables": list(tables)},
-            "pages": pages or [{"id": "p", "title": "Sheet 1"}],
+            "pages": pages or [{"id": "p", "title": "Sheet 1", "sections": [section("s")]}],
         }
     )
+
+
+def section(id_: str, *widgets: dict[str, Any]) -> dict[str, Any]:
+    """A section holding *widgets*, each 120px tall at its top."""
+    return {"id": id_, "title": id_, "height": 120, "widgets": list(widgets)}
 
 
 def column(name: str, type_: str = "str", **rules: object) -> dict[str, Any]:
@@ -400,9 +405,12 @@ def test_a_value_in_a_column_the_sheets_hide_is_left_out_of_the_sample() -> None
             {
                 "id": "p_main",
                 "title": "Main",
-                "widgets": [
-                    widget("w_policy", "collection", "t1.c_bi_cover", "t1.c_assured"),
-                    widget("w_items", "tableInput", "t3.c_line", "t3.c_item_id"),
+                "sections": [
+                    section(
+                        "s_main",
+                        widget("w_policy", "collection", "t1.c_bi_cover", "t1.c_assured"),
+                        widget("w_items", "tableInput", "t3.c_line", "t3.c_item_id"),
+                    )
                 ],
             },
             {
@@ -411,9 +419,12 @@ def test_a_value_in_a_column_the_sheets_hide_is_left_out_of_the_sample() -> None
                 "show_when": {
                     "conditions": [{"table": "t1", "column": "c_bi_cover", "op": "ticked"}]
                 },
-                "widgets": [
-                    widget("w_bi", "collection", "t2.c_bi_limit", "t2.c_extended"),
-                    widget("w_values", "tableInput", "t3.c_value", "t3.c_leased"),
+                "sections": [
+                    section(
+                        "s_bi",
+                        widget("w_bi", "collection", "t2.c_bi_limit", "t2.c_extended"),
+                        widget("w_values", "tableInput", "t3.c_value", "t3.c_leased"),
+                    )
                 ],
             },
         ],
@@ -460,9 +471,12 @@ def test_a_value_a_chart_that_shows_plots_is_left_out_while_the_collection_takin
             {
                 "id": "p_main",
                 "title": "Main",
-                "widgets": [
-                    widget("w_policy", "collection", "t1.c_bi_cover", "t1.c_assured"),
-                    widget("w_chart", "chart", "t1.c_bi_limit"),
+                "sections": [
+                    section(
+                        "s_main",
+                        widget("w_policy", "collection", "t1.c_bi_cover", "t1.c_assured"),
+                        widget("w_chart", "chart", "t1.c_bi_limit"),
+                    )
                 ],
             },
             {
@@ -471,7 +485,7 @@ def test_a_value_a_chart_that_shows_plots_is_left_out_while_the_collection_takin
                 "show_when": {
                     "conditions": [{"table": "t1", "column": "c_bi_cover", "op": "ticked"}]
                 },
-                "widgets": [widget("w_bi", "collection", "t1.c_bi_limit")],
+                "sections": [section("s_bi", widget("w_bi", "collection", "t1.c_bi_limit"))],
             },
         ],
     )
@@ -485,6 +499,42 @@ def test_a_value_a_chart_that_shows_plots_is_left_out_while_the_collection_takin
     assert sample_quote(spec) == {
         "policy": {"bi_cover": True, "assured": "Acme", "bi_limit": 500000.0}
     }
+
+
+def test_a_value_in_a_hidden_section_is_left_out_and_back_once_the_section_shows() -> None:
+    flood = {"conditions": [{"table": "t1", "column": "c_flood", "op": "ticked"}]}
+    spec = form(
+        {
+            "id": "t1",
+            "name": "policy",
+            "role": "input",
+            "rows": "one",
+            "columns": [column("flood", "bool"), column("assured"), column("depth", "float")],
+        },
+        pages=[
+            {
+                "id": "p_main",
+                "title": "Main",
+                "sections": [
+                    section(
+                        "s_main", widget("w_policy", "collection", "t1.c_flood", "t1.c_assured")
+                    ),
+                    {
+                        **section("s_flood", widget("w_flood", "collection", "t1.c_depth")),
+                        "show_when": flood,
+                    },
+                ],
+            }
+        ],
+    )
+    spec.sample = {"t1": [{"c_flood": False, "c_assured": "Acme", "c_depth": "2.5"}]}
+    typed = copy.deepcopy(spec.sample)
+
+    # The section hides on a sheet that shows, and takes the depth typed into it with it.
+    assert sample_quote(spec) == {"policy": {"flood": False, "assured": "Acme"}}
+    assert spec.sample == typed
+    spec.sample["t1"][0]["c_flood"] = True
+    assert sample_quote(spec) == {"policy": {"flood": True, "assured": "Acme", "depth": 2.5}}
 
 
 def test_output_tables_become_the_workbench_outputs_tables_in_schema_order() -> None:

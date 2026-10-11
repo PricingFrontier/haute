@@ -13,9 +13,9 @@ import { priceSample } from "./priceSample"
 import PropertiesPanel from "./PropertiesPanel"
 import SchemaEditor from "./SchemaEditor"
 import SheetCanvas from "./SheetCanvas"
-import { dropAt } from "./sheetInteractions"
+import { dropAt, sectionDropAt } from "./sheetInteractions"
 import useWorkbenchShortcuts from "./useWorkbenchShortcuts"
-import { WIDGET_KINDS } from "./widgetKinds"
+import { paletteKind } from "./widgetKinds"
 import WorkbenchPalette from "./WorkbenchPalette"
 
 const GitPanel = lazy(() => import("../panels/GitPanel"))
@@ -151,11 +151,13 @@ export default function WorkbenchView({ onSave, onSaveShortcut, isInsideSubmodel
   )
 }
 
-/** Follows the pointer while a component is dragged out of the palette, until the sheet's ghost takes over. */
+/** Follows the pointer while a component or a section is dragged out of the palette, until the sheet's ghost takes over. */
 function DragChip() {
   const creating = useWorkbenchViewStore((s) => s.creating)
-  if (creating === null || dropAt(creating.type, creating.clientX, creating.clientY) !== null) return null
-  const { icon: Icon, label } = WIDGET_KINDS[creating.type]
+  if (creating === null) return null
+  const { type, clientX, clientY } = creating
+  if ((type === "section" ? sectionDropAt(clientX, clientY) : dropAt(type, clientX, clientY)) !== null) return null
+  const { icon: Icon, label } = paletteKind(type)
   return (
     <div
       data-testid="drag-chip"

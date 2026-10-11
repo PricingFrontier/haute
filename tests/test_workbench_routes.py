@@ -31,9 +31,14 @@ def form(*tables: dict[str, Any], sample: dict[str, Any] | None = None) -> dict[
         "version": 1,
         "name": "x",
         "schema": {"tables": list(tables)},
-        "pages": [{"id": "p", "title": "Sheet 1", "widgets": []}],
+        "pages": [{"id": "p", "title": "Sheet 1", "sections": [section("s")]}],
         "sample": sample or {},
     }
+
+
+def section(id_: str, *widgets: dict[str, Any]) -> dict[str, Any]:
+    """A section holding *widgets*, each 120px tall at its top."""
+    return {"id": id_, "title": id_, "height": 120, "widgets": list(widgets)}
 
 
 POLICY = {
@@ -457,14 +462,17 @@ def test_a_value_typed_on_a_sheet_that_does_not_show_is_left_out_of_the_sample(
             {
                 "id": "p_main",
                 "title": "Main",
-                "widgets": [
-                    {
-                        **shown,
-                        "fields": [
-                            {"table": "t1", "column": "c_state"},
-                            {"table": "t1", "column": "c_bi_cover"},
-                        ],
-                    }
+                "sections": [
+                    section(
+                        "s_main",
+                        {
+                            **shown,
+                            "fields": [
+                                {"table": "t1", "column": "c_state"},
+                                {"table": "t1", "column": "c_bi_cover"},
+                            ],
+                        },
+                    )
                 ],
             },
             {
@@ -473,8 +481,15 @@ def test_a_value_typed_on_a_sheet_that_does_not_show_is_left_out_of_the_sample(
                 "show_when": {
                     "conditions": [{"table": "t1", "column": "c_bi_cover", "op": "ticked"}]
                 },
-                "widgets": [
-                    {**shown, "id": "w_bi", "fields": [{"table": "t1", "column": "c_exposure"}]}
+                "sections": [
+                    section(
+                        "s_bi",
+                        {
+                            **shown,
+                            "id": "w_bi",
+                            "fields": [{"table": "t1", "column": "c_exposure"}],
+                        },
+                    )
                 ],
             },
         ],

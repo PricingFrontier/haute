@@ -1,12 +1,12 @@
 /**
- * The conditions on the sheets and components (specs/workbench): which show for the values
- * typed, held to the cases the server's visibility is held to too, the schema a quote reads,
- * the tests each type takes, what stops a condition holding, what nothing could show again,
- * and the editor's steps.
+ * The conditions on the sheets, sections and components (specs/workbench): which show for
+ * the values typed, held to the cases the server's visibility is held to too, the schema a
+ * quote reads, the tests each type takes, what stops a condition holding, what nothing could
+ * show again, and the editor's steps.
  */
 import { describe, expect, it } from "vitest"
 import fixture from "./fixtures/sheetVisibility.json"
-import type { Condition, FormSpec, Page, SchemaColumn, SchemaTable, ShowWhen } from "../../api/types"
+import type { Condition, FormSpec, Page, SchemaColumn, SchemaTable, Section, ShowWhen } from "../../api/types"
 import type { RowsByTable } from "../sheetValues"
 import {
   CONDITION_TESTS,
@@ -23,12 +23,15 @@ import {
   withConditionTest,
 } from "../sheetVisibility"
 
+type Widget = Section["widgets"][number]
+
 interface VisibilityCase {
   name: string
   form: string
   show_when?: Record<string, ShowWhen>
   values: RowsByTable
   hidden_pages: string[]
+  hidden_sections: string[]
   hidden_widgets: string[]
   hidden_columns: [string, string][]
 }
@@ -43,16 +46,20 @@ const byPair = (a: readonly [string, string], b: readonly [string, string]): num
 describe("sheetVisibility, held to the shared cases", () => {
   it.each(cases.map((testCase) => [testCase.name, testCase] as const))("%s", (_name, testCase) => {
     const form = structuredClone(forms[testCase.form])
+    const sections = form.pages.flatMap((page) => page.sections)
+    const widgets = sections.flatMap((section) => section.widgets)
+    const holders: (Page | Section | Widget)[] = [...form.pages, ...sections, ...widgets]
     for (const [id, showWhen] of Object.entries(testCase.show_when ?? {})) {
-      const holder = form.pages.find((page) => page.id === id) ?? form.pages.flatMap((page) => page.widgets).find((widget) => widget.id === id)
-      if (holder === undefined) throw new Error(`Case "${testCase.name}" names "${id}", which is no sheet or component`)
+      const holder = holders.find((candidate) => candidate.id === id)
+      if (holder === undefined) throw new Error(`Case "${testCase.name}" names "${id}", which is no sheet, section or component of the form`)
       holder.show_when = showWhen
     }
 
     const visibility = sheetVisibility(form, testCase.values)
 
     expect(form.pages.map((page) => page.id).filter((id) => !visibility.pages.has(id)).sort(byText)).toEqual(testCase.hidden_pages)
-    expect(form.pages.flatMap((page) => page.widgets.map((widget) => widget.id)).filter((id) => !visibility.widgets.has(id)).sort(byText)).toEqual(testCase.hidden_widgets)
+    expect(sections.map((section) => section.id).filter((id) => !visibility.sections.has(id)).sort(byText)).toEqual(testCase.hidden_sections)
+    expect(widgets.map((widget) => widget.id).filter((id) => !visibility.widgets.has(id)).sort(byText)).toEqual(testCase.hidden_widgets)
     const hidden = [...visibility.hidden].map((key): [string, string] => {
       const [table, column] = key.split(":")
       return [table, column]
@@ -101,7 +108,7 @@ const policy: SchemaTable = {
 const items: SchemaTable = { id: "t_items", name: "items", role: "input", rows: "many", columns: [column("c_item", "item")] }
 const premium: SchemaTable = { id: "t_out", name: "premium", role: "output", rows: "one", columns: [column("c_premium", "premium", { type: "float" })] }
 
-const collection = (id: string, fields: [string, string][], showWhen: ShowWhen = ALWAYS): Page["widgets"][number] => ({
+const collection = (id: string, fields: [string, string][], showWhen: ShowWhen = ALWAYS): Widget => ({
   id,
   type: "collection",
   title: id,
@@ -113,7 +120,18 @@ const collection = (id: string, fields: [string, string][], showWhen: ShowWhen =
   fields: fields.map(([table, columnId]) => ({ table, column: columnId })),
   show_when: showWhen,
 })
-const page = (id: string, widgets: Page["widgets"], showWhen: ShowWhen = ALWAYS): Page => ({ id, title: id, show_when: showWhen, widgets })
+/** A section holding `widgets`, as tall as they reach. */
+const section = (id: string, widgets: Widget[], showWhen: ShowWhen = ALWAYS): Section => ({
+  id,
+  title: id,
+  height: Math.max(48, ...widgets.map((widget) => widget.y + widget.h)),
+  show_when: showWhen,
+  widgets,
+})
+/** A sheet of `sections`. */
+const sectioned = (id: string, sections: Section[], showWhen: ShowWhen = ALWAYS): Page => ({ id, title: id, show_when: showWhen, sections })
+/** A sheet of one section, `s_` and its id, holding `widgets`. */
+const page = (id: string, widgets: Widget[], showWhen: ShowWhen = ALWAYS): Page => sectioned(id, [section(`s_${id}`, widgets)], showWhen)
 const formOf = (pages: Page[], tables: SchemaTable[] = [policy, items, premium]): FormSpec => ({
   version: 1,
   name: "form",
@@ -134,11 +152,12 @@ describe("sheetVisibility", () => {
     expect(sheetVisibility(form, rows)).toBe(first)
     // Values are told apart by object, as each edit makes new ones: alike but new is decided afresh.
     expect(sheetVisibility(form, { ...rows })).not.toBe(first)
-    expect(first.pages.has("p_bi")).toBe(true)
+    expect([first.pages.has("p_bi"), first.sections.has("s_p_bi"), first.widgets.has("w_bi")]).toEqual([true, true, true])
 
     const unticked = sheetVisibility(form, { t_policy: [{ c_bi: false }] })
     expect(unticked).not.toBe(first)
-    expect(unticked.pages.has("p_bi")).toBe(false)
+    // The sheet's section and the component in it are hidden with it.
+    expect([unticked.pages.has("p_bi"), unticked.sections.has("s_p_bi"), unticked.widgets.has("w_bi")]).toEqual([false, false, false])
     expect([...unticked.hidden]).toEqual([columnKey("t_policy", "c_class")])
   })
 })
@@ -247,10 +266,21 @@ describe("conditionFault", () => {
 describe("neverShown", () => {
   const motorBox = collection("w_motor", [["t_policy", "c_motor"]])
 
-  it("reports a sheet shown by a box on the very sheet, with the condition it waits on", () => {
+  it("reports a sheet shown by a box on the very sheet, in any of its sections, with the condition it waits on", () => {
     const waits = ticked("t_policy", "c_bi")
-    const form = formOf([page("p_main", []), page("p_bi", [collection("w_bi", [["t_policy", "c_bi"]])], when(waits))])
+    const form = formOf([page("p_main", []), sectioned("p_bi", [section("s_limits", []), section("s_bi", [collection("w_bi", [["t_policy", "c_bi"]])])], when(waits))])
     expect([...neverShown(form)]).toEqual([["p_bi", waits]])
+  })
+
+  it("reports a section shown by a box in the very section, but not one shown by a box in another section of its sheet", () => {
+    const waits = ticked("t_policy", "c_bi")
+    const own = formOf([sectioned("p_main", [section("s_main", [motorBox]), section("s_bi", [collection("w_bi", [["t_policy", "c_bi"]])], when(waits))])])
+    expect([...neverShown(own)]).toEqual([["s_bi", waits]])
+
+    const elsewhere = formOf([
+      sectioned("p_main", [section("s_main", [collection("w_main", [["t_policy", "c_bi"]])]), section("s_bi", [collection("w_bi", [["t_policy", "c_class"]])], when(waits))]),
+    ])
+    expect(neverShown(elsewhere).size).toBe(0)
   })
 
   it("reports two sheets each waiting on a box on the other", () => {
@@ -283,6 +313,23 @@ describe("neverShown", () => {
       ["w_self", own],
       ["p_never", ticked("t_policy", "c_motor")],
     ])
+  })
+
+  it("leaves a component in a section that can never show to its section, and a section on a sheet that can never show to its sheet", () => {
+    const own = ticked("t_policy", "c_bi")
+    const inSection = formOf([
+      sectioned("p_main", [
+        section("s_main", [collection("w_self", [["t_policy", "c_bi"]], when(own))]),
+        section("s_never", [collection("w_never", [["t_policy", "c_class"]], when(own))], when(ticked("t_policy", "c_motor"))),
+      ]),
+    ])
+    expect([...neverShown(inSection)]).toEqual([
+      ["w_self", own],
+      ["s_never", ticked("t_policy", "c_motor")],
+    ])
+
+    const onSheet = formOf([page("p_main", []), sectioned("p_never", [section("s_waiting", [], when(own))], when(ticked("t_policy", "c_motor")))])
+    expect([...neverShown(onSheet)]).toEqual([["p_never", ticked("t_policy", "c_motor")]])
   })
 
   it("leaves out a sheet whose condition does not fit, as that is reported already", () => {

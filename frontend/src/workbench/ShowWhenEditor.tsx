@@ -1,6 +1,6 @@
 /**
- * When a sheet or a component shows (specs/workbench): the conditions in its panel, and
- * the eye it carries on the sheet while building. Conditions test the values typed into
+ * When a sheet, a section or a component shows (specs/workbench): the conditions in its
+ * panel, and the eye it carries on the sheet while building. Conditions test the values typed into
  * one-row input tables, each a row of its column, its test and its value, the control the
  * column's cell is; with two or more, all of them must hold or any. Every change is handed
  * up whole, so the panel commits it as one undo step.
@@ -269,8 +269,9 @@ function ConditionValue({
 }
 
 /**
- * The eye a sheet's tab and a component carry while building: open while the sample shows
- * them, struck through while it hides them, naming their conditions on hover.
+ * The eye a sheet's tab, a section's header and a component carry while building: open
+ * while the sample shows them, struck through while it hides them, naming their conditions
+ * on hover.
  */
 export function ShowWhenMark({
   hidden,
