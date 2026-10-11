@@ -92,13 +92,25 @@ Out of scope:
   such as an equipment schedule) and its columns, each with an id, a name, a `type` of the
   Quote Input's column types (`str`, `int`, `float`, `bool`, `date`), a `label`, whether it
   is a `key` (a many-row table's keys say which row is which), its rules (`required`, `min`,
-  `max`, `options`), and whether it is the table's `index`, the column numbering its rows
-  from 1. A sheet has an id, a title and its components (`widgets` in the file): a Table (`tableInput`, a grid of at
-  least `rows` rows showing columns of many-row tables) or a Collection (`collection`, boxes
-  showing columns of one-row tables, `columns` across), each placed by its `x`, `y`, `w`, `h`
-  and showing its `fields`, schema columns named by table id and column id so a rename keeps
-  them. The sample holds, by table id, rows keyed by column id, each value as typed: text or
-  a tick. Haute reads the file whole whenever it needs it and never keeps it in memory, so an
+  `max`, `options`), whether it is the table's `index`, the column numbering its rows
+  from 1, and how the sheets show it: its `help`, shown beside its label, its
+  `placeholder`, what an empty input cell shows, and a number's format as an Explore
+  pivot's values take one, `number_format` (`general`, `number`, `percent`,
+  `currency_gbp`, `currency_usd`, `currency_eur`), `decimal_places` (0 to 10, or null for
+  automatic) and `use_grouping`. A sheet has an id, a title, when it shows (`show_when`) and its components (`widgets` in the file): a Table (`tableInput`, a grid of at
+  least `rows` rows showing columns of many-row tables, with its look and whether its rows
+  are fixed: `row_numbers`, `density` (`compact` or `comfortable`), `gridlines` (`rows`,
+  `all` or `none`), `striped` and `fixed_rows`) or a Collection (`collection`, boxes
+  showing columns of one-row tables, `columns` across), each placed by its `x`, `y`, `w`, `h`,
+  showing its `fields`, schema columns named by table id and column id so a rename keeps
+  them, and with a `show_when` of its own. A `show_when` holds `conditions` and whether `all`
+  of them must hold or `any` (`match`); with none, the sheet or component always shows. A
+  condition names a column by table id and column id, a test (`op`) and the test's `values`,
+  as text: `ticked` or `not_ticked`, with no value, for a True/false column; `filled` or
+  `empty`, with no value, and `equals` or `not_equals`, with one, for any other; `one_of` or
+  `not_one_of`, with one or more, for a Text or number column; and `above`, `at_least`,
+  `below` or `at_most`, with one, for a number or a Date column. The sample holds, by table
+  id, rows keyed by column id, each value as typed: text or a tick. Haute reads the file whole whenever it needs it and never keeps it in memory, so an
   edit made outside the view reaches the next request. A file that does not exist is the
   blank form, never saved: one sheet, no tables, no sample.
 - **Status.** `GET /api/workbench` answers `enabled` and, while enabled, `form`, the path as
@@ -206,17 +218,21 @@ Out of scope:
   the pricing engine, or Output, returned by it), its rows (One row per quote, or Many
   rows) and its columns; each column with its type, drawn as the step editor's marker for
   the kind (a number, text, true/false, a date) in the data preview's colour and changed
-  from it, its name and, in a many-row table, whether it is a key. A column's label and, in
-  an input table, its rules open beside it: required, a range for an Integer or a Decimal,
-  and the allowed values, typed comma-separated, for any type but True/false and Date.
-  Changing a column's type drops the rules the new type cannot have. Every text field
+  from it, its name and, in a many-row table, whether it is a key. A column's label and help
+  open beside it; for an Integer or a Decimal other than the index, its format, decimal
+  places and thousands separators, separators ticked under General making it a Number as
+  an Explore pivot does; and, in an input table, its placeholder for any type but
+  True/false and Date and its rules: required, a range for an Integer or a Decimal, and the
+  allowed values, typed comma-separated, for any type but True/false and Date. Changing a
+  column's type drops the rules and the format the new type cannot have. Every text field
   commits on blur or Enter, so an edit is one undo step; Enter in a column's name adds the
   next column, Alt+Up and Alt+Down move one, and a new table's or column's name takes the
   focus. A many-row table can have an index: a column first in the table, `row_number`
   until renamed, an Integer whose type cannot change, numbering the rows from 1, which
   Alt+Up and Alt+Down neither move nor pass; switching a table to one row clears its keys
-  and drops its index, with what shows it. Removing a column or a table a sheet shows asks
-  first, and takes it off the sheet and out of the sample. The editor says what would stop
+  and drops its index, with what shows it. Removing a column or a table a sheet shows, or a
+  sheet's or component's condition tests, asks first, and takes it off the sheet, out of
+  those conditions and out of the sample. The editor says what would stop
   the schema being the pipeline's tables: a table's name is held to the port rules the
   Quote Input's labels are held to (an identifier, none of the document's reserved labels,
   unique whatever its case), a column's name is an identifier that is not a Python keyword,
@@ -230,18 +246,29 @@ Out of scope:
   sheet's cross deletes it, asking first when components are on it, while another sheet
   remains; the schema and the sample are untouched. A component is drawn where the form
   places it: a Table as a grid of its rows with a column per field it shows, the index
-  column numbering the rows; a Collection as boxes with their labels above, its columns
+  column numbering the rows, under a header of its labels in capitals that stays in view as
+  the rows scroll and is ruled off from them whatever the gridlines, drawn as its options
+  say: its rows numbered in a column of their own unless `row_numbers` is off, compact rows
+  (28px) or comfortable ones (36px), a line between rows and before each output column
+  (`rows`), between every column too (`all`) or none at all (`none`), every other row
+  shaded unless `striped` is off, and Add row under the last row and a delete on each row
+  unless its rows are fixed; a Collection as boxes with their labels above, its columns
   across. Each field shows its label (its column's, or the name made readable), a star for
-  a required input, a hint at its type (a dropdown's chevron, a date's calendar, a
-  number's 0), an output column shaded, and "Missing column" when its column is gone.
+  a required input, a mark showing its help when it has some, a hint at its type (a
+  dropdown's chevron, a date's calendar), an empty cell blank or showing its column's
+  placeholder, a number in its column's format (a percent the value times 100, so a
+  fraction typed into an input, 0.125, shows as 12.5%; an input as typed while it is typed
+  into), an output column shaded, and "Missing column" when its
+  column is gone.
   Dragging a component moves it; selected, it has eight handles that resize it, no
   smaller than its kind's minimum. Positions snap to the grid, pointer movement is
   divided by the zoom, and a move or a resize is one undo step, a click that does not
   move recording nothing. Pressing the empty sheet deselects. A component takes the
   keyboard's focus too: reached by Tab, it is selected, so the sheet's keys work without a
   pointer. A component with a problem (no fields, a column no longer in the schema, a table
-  of the other kind, tables whose rows do not line up) gets a dashed frame in the warning
-  colour naming the problem, on hover and to a screen reader. The zoom runs from 25% to
+  of the other kind, tables whose rows do not line up, or one of its conditions', Shown
+  when below) gets a dashed frame in the warning colour naming the problem, on hover and to
+  a screen reader. The zoom runs from 25% to
   200% in steps of 10%; what is on the sheet is fitted to the viewport, never past 100%,
   when the sheets first show for a form read (a zoom chosen since is kept across a trip to
   the schema or the pipeline editor) and on Ctrl/Cmd+1.
@@ -249,16 +276,19 @@ Out of scope:
   Collection, in the entry colour, and the switcher under them. A component is dragged
   out of it onto the sheet: a chip follows the pointer until the sheet shows a ghost where
   the component would land; released there, it is added, 720 wide (a Table 200 high with
-  3 rows, a Collection 120 high with 3 columns across), showing nothing yet, and selected.
+  3 rows, numbered, compact, lined between rows, striped and not fixed, a Collection 120
+  high with 3 columns across), showing nothing yet, and selected.
   A click adds nothing. The palette shares the node palette's open state, so collapsing it
   in either view collapses both; collapsed, it is the reveal strip with the compact
   switcher under it.
 - **The properties panel.** Selecting a component opens its panel on the right, Haute's
   side panel resized from its left edge, where the Git and Assistant panels open while
-  they are closed: the component's kind and its title; once it shows a field, its layout,
-  a Table's rows (1 to 50) or a Collection's columns across (1 to 12), a value outside the
-  range refused at the field, and the order of the fields it shows, moved by dragging or
-  Alt+Up and Alt+Down, each with a cross that stops showing it; and its fields, ticked from
+  they are closed: the component's kind and its title; its Show when (below); once it shows a field, its layout,
+  a Table's rows (1 to 50) and whether they are fixed, or a Collection's columns across (1
+  to 12), a value outside the range refused at the field, a Table's look (its density, its
+  gridlines, its row numbers and its stripes), and the order of the fields it shows, moved
+  by dragging or Alt+Up and Alt+Down, each with a cross that stops showing it; and its
+  fields, ticked from
   the schema tables of its
   kind, many-row tables for a Table and one-row tables for a Collection, each table
   collapsible with its role and how many of its columns show, each column with its type's
@@ -267,7 +297,24 @@ Out of scope:
   field, tables whose rows do not line up with it (keyed by other columns, or keyless) are
   greyed out with their unticked columns disabled; an input table and an output table
   keyed alike line up. With no table of the component's kind in the schema, the panel
-  says so and offers the schema.
+  says so and offers the schema. While building, the showing sheet's tab has a settings
+  mark beside its cross that opens the sheet's own panel in the same place, with its
+  title and its Show when; pressing the empty sheet, Escape, the panel's close, or
+  selecting a component closes it. Show when reads "Always" while there are no
+  conditions, and Add condition adds one on the first column of a one-row input table,
+  with the first test its type takes and no value yet; each condition is a row of its
+  column (a select of the one-row input tables' columns, by table, each by its label), its
+  test (for True/false "is ticked" and "is not ticked"; for Text "equals", "does not
+  equal", "is one of", "is not one of", "is filled" and "is empty"; for a number those and
+  "is greater than", "is at least", "is less than" and "is at most"; for a Date "is on",
+  "is not on", "is after", "is on or after", "is before", "is on or before", "is filled"
+  and "is empty"), its value, the control the column's cell is (a dropdown of the allowed
+  values, a date picker, else a text field, committing on blur or Enter), or for "is one
+  of" and "is not one of" a tick box per allowed value, or the values typed comma-separated
+  when the column allows any, and a cross that removes it. Choosing another column keeps
+  the test while the column's type takes it, else the type's first, and the values while
+  they fit the test; with two or more conditions the section reads "Show when [all|any] of
+  these are true". Each change is one undo step.
 - **The sheet's keyboard.** While the sheets show and a component is selected: Escape
   deselects it, Delete or Backspace removes it, Ctrl/Cmd+D duplicates it (16px below and
   to the right, selected), and the arrow keys nudge it by a grid step, or a pixel with
@@ -275,10 +322,11 @@ Out of scope:
   field or a select, whose own keys pick an option.
 - **The sample.** Typing into a component's input columns while building types the form's
   sample. A Collection's boxes hold its one-row tables' one row; a Table's grid holds its
-  many-row tables' rows, row by row, with Add row and a delete on each row adding and
-  deleting a row in every input table the grid shows at once, so their cells stay side by
-  side; a one-row table's column in a grid shows that table's one value on every row, and a
-  grid shows at least its rows. Each cell is the control its column calls for: a tick box
+  many-row tables' rows, row by row, with Add row and a delete on each row, unless its rows
+  are fixed, adding and deleting a row in every input table the grid shows at once, so
+  their cells stay side by side; a one-row table's column in a grid shows that table's one
+  value on every row, and a grid shows at least its rows and every row the values hold,
+  its rows fixed or not. Each cell is the control its column calls for: a tick box
   for True/false, a dropdown of the allowed values, a date picker, else a text field, a
   number's right-aligned. A text field commits on blur or Enter, a dropdown, a tick box and
   a date on change, each commit one undo step. Values are held as typed, text or a tick, by
@@ -287,9 +335,10 @@ Out of scope:
   is part of the form: saved with it, undone like any edit, and dropped with a column or
   table removed from the schema.
 - **Priced live.** While the view shows, the sample is priced on the pipeline open in the
-  editor whenever the schema or the sample changes, once typing pauses for 300ms, and when
-  the sheets show, as the pipeline may have changed meanwhile; laying the sheet out
-  differently prices nothing. A pricing asks `POST /api/workbench/tables` for the tables
+  editor whenever the schema, the sample or which of the sample's values are left out
+  (Shown when, below) changes, once typing pauses for 300ms, and when the sheets show, as
+  the pipeline may have changed meanwhile; laying the sheet out differently prices
+  nothing. A pricing asks `POST /api/workbench/tables` for the tables
   and sample Haute takes from the form as it stands, then previews the Workbench Output a
   table at a time through the preview route on the document as the editor holds it, the
   whole pipeline even while a submodel is open, with the active source: the document's
@@ -297,8 +346,9 @@ Out of scope:
   request alone, as a fetch gives them, a workbench node inside a submodel keeps its copy,
   and the document itself is untouched. One pricing runs at a time; asked again meanwhile,
   it prices once more when it finishes, on the form as it is then. A Collection's output
-  column shows its table's value in the answer, formatted as the data preview formats a
-  value, dimmed while a newer answer is on its way, and a dash before the first answer, for
+  column shows its table's value in the answer in its column's format, or as the data
+  preview formats a value while that format is General with automatic decimal places,
+  dimmed while a newer answer is on its way, and a dash before the first answer, for
   a column nothing filled, and after pricing fails, when the toolbar says why ("Pricing
   failed: …") until a pricing succeeds. A Table's output column shows, on each grid row,
   the value of the row in the answer keyed like it: the output table's key columns hold
@@ -314,15 +364,15 @@ Out of scope:
   the same controls, and is kept apart from the sample: it lasts while the editor is open,
   through Build and back, is never saved with the form and never undone. Price is disabled
   while nothing is typed in the input tables the schema has now (a value typed in a column
-  since removed, or in a second row of a table now with one row per quote, counts for
-  nothing, as the server leaves it out of the quote), and refuses
+  since removed, in a second row of a table now with one row per quote, or in a column the
+  sheets hide, counts for nothing, as the server leaves it out of the quote), and refuses
   such a quote with "Type the quote first" however it is asked: a deployed request never
   holds a blank quote, and the server would read one as the null quote. Price checks the
   quote against the columns' rules first: a required cell left empty, text that is not a
   number in a number column or not a whole number in a whole-number column, a number
   outside the column's range, a value that is not one of the allowed values; a one-row
-  table's one row is always checked, a many-row table's filled rows only, and a tick box
-  and the index never fault. A quote that breaks a rule is not priced: each such cell is
+  table's one row is always checked, a many-row table's filled rows only, a cell the sheets
+  hide never, and a tick box and the index never fault. A quote that breaks a rule is not priced: each such cell is
   outlined, naming its problem on hover, the toolbar says how many cells need attention,
   and from then on the marks follow the cells as they are edited, until the quote is
   cleared. A quote that passes is priced as the sample is, on the pipeline open in the
@@ -334,6 +384,54 @@ Out of scope:
   answer to a pricing still on its way is dropped, as one is once the view has left.
   Ctrl/Cmd+S still saves the project in Preview and Ctrl/Cmd+1 fits the sheet; the sheet's
   editing keys and undo do nothing.
+- **Shown when.** A sheet or a component with conditions shows only while they hold on the
+  values typed into the sheets, the sample while building and the quote in Preview, and a
+  component on a sheet that does not show does not show either.
+  - **A condition holds** while its column is in a one-row input table and on a component
+    that shows, and the value typed into it passes the test, read as the server types it:
+    text without the spaces around it, compared exactly; a tick box ticked or not, one
+    never touched unticked; a number read as the sample's numbers are (a currency sign,
+    separators and spaces allowed) and compared as a number; a date as the day it names;
+    and a cell blank or untouched as empty. Of the tests other than the ticks, an empty
+    value passes `empty`, `not_equals` and `not_one_of` alone, and a value not of its
+    column's type (text in a number column, or a tick left in a column since retyped)
+    `filled`, `not_equals` and `not_one_of` alone. A condition that cannot hold as written
+    never holds: one naming a column that is not in a one-row input table (gone, an output
+    table's, a many-row table's), a test its column's type does not take, a number of
+    values its test does not take (none for the ticks, `filled` and `empty`, at least one
+    for `one_of` and `not_one_of`, else one), or a value its column could not hold (blank,
+    not a number, a fraction for an Integer, not a `YYYY-MM-DD` day).
+  - **Decided at once.** What shows is decided for the whole form together: everything
+    starts shown and anything whose conditions fail is hidden, which may hide a column another
+    condition tests, until nothing more hides. So a sheet that shows when a box on a
+    hidden sheet is ticked is hidden too, whatever the box holds, and the order of the
+    sheets and components decides nothing.
+  - **A quote is what the sheets show.** A value typed into an input column that is on
+    components, none of which shows, is left out of the quote, as if it had never been
+    typed: a row with nothing typed in it but such values is left out as an empty row is;
+    the index, which nothing is typed into, is never left out; and a column on no component
+    is not left out. The values are kept, not cleared: they stay in the sample and the
+    quote as typed, the sample saved with them, and are in the quote again once their
+    column shows. The server leaves them out where it makes a quote of the form's values,
+    so the sample priced live, the sample the Workbench Input's copy holds and the quote
+    priced in Preview leave out the same values.
+  - **While building** the sample decides: a hidden sheet's tab and a hidden component are
+    drawn faded, still shown, selected and edited like any other, and a sheet or a
+    component with conditions carries an eye, struck through while it is hidden, that
+    names its conditions on hover.
+  - **In Preview** the quote decides, as it is typed: a hidden sheet has no tab and a
+    hidden component is not drawn, its place left empty, since the components are placed
+    freely; while the sheet chosen is hidden, the first sheet that shows is shown in its
+    place, and while none shows the view says "No sheet shows for this quote." Fitting
+    takes the components that show.
+  - **Problems.** The view names, on the dashed frame of a component and in the warning
+    colour on a sheet's tab, on hover and to a screen reader, what stops a sheet's or a
+    component's conditions doing what they say: a condition that cannot hold as written,
+    saying why; a value that is not one of its column's allowed values; and a sheet or
+    component that nothing could show again once hidden, since each column its conditions
+    need is only on itself, on its own components or on components that cannot show
+    without it, as a tick box on the very sheet it shows is. None is refused: the form is
+    saved as it is.
 - **Saved.** A successful save of the form adopts the file's new revision; the project
   save then fetches the tables afresh, so the Workbench Input's and Workbench Output's
   copies follow the schema, as after any fetch, and saves the pipeline with them. A save refused
@@ -613,6 +711,28 @@ Out of scope:
   the typed sample the pricing answers with, not the text in the grid: the server leaves
   empty rows out and numbers the index as the grid does, so the filled grid rows are its
   typed rows in order, and a key typed as "$1,000" matches an output row holding 1000.
+- **What shows is what is priced.** A hidden value the pipeline still received would price
+  what the underwriter switched off unless the pipeline repeated every condition, and a
+  quote ticked, filled and unticked again would price differently from one never ticked.
+  Leaving hidden values out makes a quote what its sheets show, whatever order it was
+  typed in; keeping them, rather than clearing them, means hiding a section and showing it
+  again loses nothing. The server leaves them out where it makes the quote, the one place
+  the sample priced live, the Workbench Input's copy and Preview's quote all come from, and
+  the view, which hides and shows as each value is typed and checks the quote before it is
+  sent, applies the same rules, the two held to one set of cases both test against.
+- **Decided at once, by hiding.** Conditions test the values as typed, except that a
+  condition on a column no component that shows has never holds, so hiding only ever hides
+  more: starting from everything shown and hiding until nothing changes gives one answer
+  whatever the order of the sheets and components, a chain of conditions (a sheet shown by
+  a box on a sheet shown by another box) is followed without being written twice, and no
+  value the underwriter cannot see decides what they see.
+- **Problems, not refusals.** A condition is written against the schema, which changes
+  under it as columns are retyped, given other allowed values or their table moved between
+  one row and many, so a condition that no longer fits is reported where it is, as a field
+  showing a table of the other kind is, and never holds until it is fixed, rather than
+  refusing the form or quietly dropping the condition and showing what it hid. Removing a
+  column is the one change that takes its conditions with it, as it takes its fields,
+  after the schema editor has asked.
 - **The view's state is the view's.** Which sheet and section show, the selection, the
   zoom and the panel's width are neither saved with the form nor undone with it: they
   live in a store of their own, read against the form, so a sheet or a component that
@@ -782,6 +902,12 @@ Out of scope:
   writes the form as it is. The tables route then answers the structured 422 for a table
   the pipeline cannot take, which the tables fetch shows as one toast, so the problem is
   visible in both views until it is fixed.
+- A condition that cannot hold as written is refused nowhere: the form reads, saves and
+  serves its tables with it, the condition never holds, so what it is on stays hidden and
+  the values only hidden components show are left out of the quote, and the view names
+  the problem on the sheet or component while building. A `show_when`, a condition or a
+  test the form's shape does not have (an unknown `op`, a `values` entry that is not text)
+  is a form that does not fit, refused as any other.
 - `GET /api/workbench/tables` answers 404 while the workbench is not enabled; the editor
   never asks then. Tables or response tables the pipeline cannot take, such as a table named
   with a Python keyword, two tables of one name or two that differ only in case, answer the

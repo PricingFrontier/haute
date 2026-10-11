@@ -118,7 +118,11 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // Preview (the preview store, the sheet values and their rules, and the Table
 // output rows matched by key, all lazy) brings it to 1,627.1 KiB; 1,629 KiB
 // restores about 2 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1629
+// The Table's looks and the columns' display settings, then Show when (the
+// conditions' rules, their editor in the properties panel and the sheets' eyes, all
+// in the lazy workbench chunks) bring it to 1,636.2 KiB; 1,638 KiB restores about
+// 1.8 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1638
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

@@ -1,19 +1,25 @@
 /**
  * The sheets' tabs (specs/workbench): one per sheet, the showing one marked; a sheet
  * added, renamed by double-click, and deleted with a confirmation when components are on
- * it; and, read only in Preview, only switching sheets.
+ * it; a sheet's eye, its settings and its problems; and, read only in Preview, only
+ * switching between the sheets that show.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
+import { withSampleCell } from "../../utils/workbenchForm"
 import PageTabs from "../PageTabs"
-import { currentForm, loadForm } from "./fixtures"
+import { coverForm, currentForm, loadForm } from "./fixtures"
 
 const tabs = () => screen.getAllByRole("tab").map((tab) => [tab.textContent, tab.getAttribute("aria-selected")])
 
 describe("PageTabs", () => {
-  beforeEach(() => loadForm())
+  beforeEach(() => {
+    loadForm()
+    useWorkbenchPreviewStore.getState().clear()
+  })
 
   afterEach(() => {
     cleanup()
@@ -89,5 +95,49 @@ describe("PageTabs", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "Sheet 2" }))
     expect(useWorkbenchViewStore.getState()).toMatchObject({ pageId: "p2", section: "preview" })
+  })
+
+  it("marks a sheet with conditions with an eye, struck through and its tab faded while the sample hides it", () => {
+    loadForm(coverForm())
+    render(<PageTabs />)
+
+    const cover = () => screen.getByRole("tab", { name: /Cover$/ })
+    expect(cover()).toHaveAttribute("data-hidden", "true")
+    expect(within(cover()).getByRole("img")).toHaveAccessibleName("Hidden for the sample. Shows when Cover is ticked")
+    expect(within(screen.getByRole("tab", { name: "Sheet 1" })).queryByRole("img")).not.toBeInTheDocument()
+
+    act(() => useWorkbenchFormStore.getState().change((spec) => withSampleCell(spec, "policy", 0, "policy.cover", true)))
+    expect(cover()).not.toHaveAttribute("data-hidden")
+    expect(within(cover()).getByRole("img")).toHaveAccessibleName("Shows when Cover is ticked")
+  })
+
+  it("opens the showing sheet's own panel from its settings mark", () => {
+    useWorkbenchViewStore.setState({ selectedId: "w_grid" })
+    render(<PageTabs />)
+
+    expect(screen.queryByRole("button", { name: "Settings of sheet Sheet 2" })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Settings of sheet Sheet 1" }))
+    expect(useWorkbenchViewStore.getState()).toMatchObject({ sheetSelected: true, selectedId: null })
+  })
+
+  it("marks a sheet whose conditions have a problem, naming it", () => {
+    const form = coverForm()
+    // Tested on the sheet it shows alone: once hidden, nothing could show the sheet again.
+    form.pages[1].show_when.conditions = [{ table: "policy", column: "policy.year", op: "above", values: ["2020"] }]
+    loadForm(form)
+    render(<PageTabs />)
+
+    expect(screen.getByRole("img", { name: /^Sheet "Cover" waits on year, which is only on components that hide with it/ })).toBeInTheDocument()
+  })
+
+  it("in Preview offers only the sheets the quote shows, the first that does marked in place of a hidden one chosen", () => {
+    loadForm(coverForm())
+    useWorkbenchViewStore.setState({ section: "preview", pageId: "p2" })
+    render(<PageTabs readOnly />)
+
+    expect(tabs()).toEqual([["Sheet 1", "true"]])
+    act(() => useWorkbenchPreviewStore.getState().setCell("policy", 0, "policy.cover", true))
+    expect(tabs()).toEqual([["Sheet 1", "false"], ["Cover", "true"]])
+    expect(screen.queryByRole("img")).not.toBeInTheDocument()
   })
 })

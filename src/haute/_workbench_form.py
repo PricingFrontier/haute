@@ -28,6 +28,37 @@ from haute._workbench_config import WorkbenchConfig, WorkbenchError
 #: The column types of the Quote Input's tables (``haute._api_input_schema.ColumnType``).
 ColumnType = Literal["int", "float", "str", "bool", "date"]
 
+#: How a number column shows: the Explore pivot's number formats
+#: (``haute._explore_pivots.PIVOT_NUMBER_FORMATS``).
+ColumnFormat = Literal[
+    "general", "number", "percent", "currency_gbp", "currency_usd", "currency_eur"
+]
+
+#: How tall a Table's rows are: Haute's compact rows, or roomier ones.
+TableDensity = Literal["compact", "comfortable"]
+
+#: The lines a Table draws: between its rows and before each output column, between every
+#: column too, or none.
+TableGridlines = Literal["rows", "all", "none"]
+
+#: What a condition tests its column's value for: a tick box ticked or not; any other
+#: column filled or empty, or equal to a value or not; a Text or number column one of some
+#: values or none of them; a number or a Date above, at least, below or at most a value.
+ConditionTest = Literal[
+    "ticked",
+    "not_ticked",
+    "filled",
+    "empty",
+    "equals",
+    "not_equals",
+    "one_of",
+    "not_one_of",
+    "above",
+    "at_least",
+    "below",
+    "at_most",
+]
+
 
 #: A sample cell as typed: text, or a tick. Strict, so a number or a null is refused.
 Cell = Annotated[str, Strict()] | Annotated[bool, Strict()]
@@ -58,13 +89,45 @@ class FieldRef(_Strict):
     column: str
 
 
+class Condition(_Strict):
+    """A test of a schema column's value, the column by table and column id.
+
+    The shape is all the file holds a condition to. Whether its column, test and values
+    fit one another is ``haute._workbench_visibility.condition_fits``'s question, asked
+    where conditions are tested: retyping a column can unfit a condition the form holds.
+    """
+
+    table: str
+    column: str
+    op: ConditionTest
+    #: As typed: none for the ticks, ``filled`` and ``empty``, one or more for ``one_of``
+    #: and ``not_one_of``, else one.
+    values: list[Annotated[str, Strict()]] = Field(default_factory=list)
+
+
+class ShowWhen(_Strict):
+    """When a sheet or a widget shows: always, without conditions; else while all of them
+    hold, or any, as ``match`` says."""
+
+    match: Literal["all", "any"] = "all"
+    conditions: list[Condition] = Field(default_factory=list)
+
+
 class TableInputWidget(_Placed):
     """A Table: a grid of at least ``rows`` rows showing columns of many-row schema tables."""
 
     type: Literal["tableInput"]
     title: str = ""
     fields: list[FieldRef] = Field(default_factory=list)
+    show_when: ShowWhen = Field(default_factory=ShowWhen)
     rows: int = Field(default=3, ge=1, le=50)
+    # How the grid looks, and whether its rows are a set structure with no Add row and no
+    # delete: by default numbered, compact, lined between rows, striped and not fixed.
+    row_numbers: bool = True
+    density: TableDensity = "compact"
+    gridlines: TableGridlines = "rows"
+    striped: bool = True
+    fixed_rows: bool = False
 
 
 class CollectionWidget(_Placed):
@@ -73,6 +136,7 @@ class CollectionWidget(_Placed):
     type: Literal["collection"]
     title: str = ""
     fields: list[FieldRef] = Field(default_factory=list)
+    show_when: ShowWhen = Field(default_factory=ShowWhen)
     columns: int = Field(default=3, ge=1, le=12)
 
 
@@ -80,10 +144,11 @@ Widget = Annotated[TableInputWidget | CollectionWidget, Field(discriminator="typ
 
 
 class Page(_Strict):
-    """A sheet: its widgets, each placed freely on the canvas."""
+    """A sheet: when it shows, and its widgets, each placed freely on the canvas."""
 
     id: str
     title: str
+    show_when: ShowWhen = Field(default_factory=ShowWhen)
     widgets: list[Widget] = Field(default_factory=list)
 
 
@@ -103,6 +168,17 @@ class SchemaColumn(_Strict):
     #: The table's index: each row's number, from 1, as the rows stand. Nothing is typed
     #: into it, and it is an Integer.
     index: bool = False
+    #: Shown beside its label when the pointer rests on it; empty shows nothing.
+    help: str = ""
+    #: What an empty input cell shows, in place of the blank.
+    placeholder: str = ""
+    # How a number shows wherever the sheets show it, as an Explore pivot's values show:
+    # a percent is the value times 100, a currency's sign before it. ``general`` with no
+    # decimal places leaves an input as typed and an output as the data preview shows a
+    # value. Columns of other types ignore them.
+    number_format: ColumnFormat = "general"
+    decimal_places: int | None = Field(default=None, ge=0, le=10)
+    use_grouping: bool = True
 
 
 class SchemaTable(_Strict):

@@ -4,13 +4,15 @@
  * pipeline's tables.
  */
 import { describe, expect, it } from "vitest"
-import type { FormSpec, SchemaColumn, SchemaTable } from "../../api/types"
+import type { Condition, FormSpec, SchemaColumn, SchemaTable, ShowWhen } from "../../api/types"
 import {
   addPage,
   addSchemaColumn,
   addSchemaTable,
   addWidget,
   changeSchemaColumnType,
+  conditionText,
+  conditionUses,
   createIndexColumn,
   createPage,
   createSchemaColumn,
@@ -22,6 +24,7 @@ import {
   findWidget,
   moveField,
   moveSchemaColumn,
+  pageProblems,
   pricingBasis,
   readableName,
   removePage,
@@ -31,7 +34,10 @@ import {
   renamePage,
   rowsShown,
   schemaProblems,
+  setPageShowWhen,
   setSchemaTableRows,
+  showWhenText,
+  TABLE_OPTIONS,
   tableGrain,
   toggleField,
   uniqueName,
@@ -49,7 +55,7 @@ const blank = (): FormSpec => ({
   version: 1,
   name: "t",
   schema: { tables: [] },
-  pages: [{ id: "p", title: "Sheet 1", widgets: [] }],
+  pages: [{ id: "p", title: "Sheet 1", show_when: { match: "all", conditions: [] }, widgets: [] }],
   sample: {},
 })
 
@@ -64,6 +70,11 @@ const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {})
   max: null,
   options: [],
   index: false,
+  help: "",
+  placeholder: "",
+  number_format: "general",
+  decimal_places: null,
+  use_grouping: true,
   ...overrides,
 })
 
@@ -159,10 +170,31 @@ describe("problems", () => {
   })
 
   it("changes a column's type, dropping the rules the new type cannot have", () => {
-    let spec = withTable(column("a", "value", { type: "float", min: 1, max: 5, options: ["1", "2"] }))
+    let spec = withTable(
+      column("a", "value", { type: "float", min: 1, max: 5, options: ["1", "2"], number_format: "percent", decimal_places: 1, use_grouping: false }),
+    )
 
+    // Between Decimal and Integer, a number keeps its range, its allowed values and its format.
+    spec = changeSchemaColumnType(spec, "t", "a", "int")
+    expect(spec.schema.tables[0].columns[0]).toMatchObject({
+      type: "int",
+      min: 1,
+      max: 5,
+      options: ["1", "2"],
+      number_format: "percent",
+      decimal_places: 1,
+      use_grouping: false,
+    })
     spec = changeSchemaColumnType(spec, "t", "a", "str")
-    expect(spec.schema.tables[0].columns[0]).toMatchObject({ type: "str", min: null, max: null, options: ["1", "2"] })
+    expect(spec.schema.tables[0].columns[0]).toMatchObject({
+      type: "str",
+      min: null,
+      max: null,
+      options: ["1", "2"],
+      number_format: "general",
+      decimal_places: null,
+      use_grouping: true,
+    })
     spec = changeSchemaColumnType(spec, "t", "a", "date")
     expect(spec.schema.tables[0].columns[0]).toMatchObject({ type: "date", options: [] })
     spec = changeSchemaColumnType(spec, "t", "a", "int")
@@ -241,8 +273,9 @@ describe("what the sheets show", () => {
         {
           id: "p",
           title: "Sheet 1",
+          show_when: { match: "all", conditions: [] },
           widgets: [
-            { id: "w_boxes", type: "collection", x: 0, y: 0, w: 720, h: 120, title: "Policy", columns: 3, fields: [{ table: "policy", column: "policy.state" }] },
+            { id: "w_boxes", type: "collection", x: 0, y: 0, w: 720, h: 120, title: "Policy", columns: 3, fields: [{ table: "policy", column: "policy.state" }], show_when: { match: "all", conditions: [] } },
             {
               id: "w_grid",
               type: "tableInput",
@@ -252,7 +285,9 @@ describe("what the sheets show", () => {
               h: 200,
               title: "Equipment",
               rows: 3,
+              ...TABLE_OPTIONS,
               fields: [{ table: "equipment", column: "equipment.item" }, { table: "equipment", column: "equipment.value" }],
+              show_when: { match: "all", conditions: [] },
             },
           ],
         },
@@ -320,17 +355,20 @@ describe("what the sheets show", () => {
     let spec = blank()
     const grid = createWidget("tableInput", { x: 0, y: 0, w: 720, h: 200 })
     const boxes = createWidget("collection", { x: 0, y: 240, w: 720, h: 120 })
-    expect(grid).toMatchObject({ type: "tableInput", title: "", fields: [], rows: 3 })
+    // A Table as the server's defaults have it: numbered, compact, lined between rows, striped, not fixed.
+    expect(grid).toMatchObject({ type: "tableInput", title: "", fields: [], rows: 3, row_numbers: true, density: "compact", gridlines: "rows", striped: true, fixed_rows: false })
     expect(boxes).toMatchObject({ type: "collection", title: "", fields: [], columns: 3 })
     expect(grid).not.toHaveProperty("columns")
+    expect(boxes).not.toHaveProperty("density")
     // In the file's order, so a component the view made compares equal to it saved.
-    expect(Object.keys(grid)).toEqual(["id", "x", "y", "w", "h", "type", "title", "fields", "rows"])
+    expect(Object.keys(grid)).toEqual(["id", "x", "y", "w", "h", "type", "title", "fields", "show_when", "rows", "row_numbers", "density", "gridlines", "striped", "fixed_rows"])
 
     spec = addWidget(addWidget(spec, "p", grid), "p", boxes)
-    spec = updateWidget(spec, grid.id, { title: "Equipment", rows: 5, x: 16 })
-    expect(findWidget(spec, grid.id)).toMatchObject({ index: 0, widget: { title: "Equipment", rows: 5, x: 16 } })
+    spec = updateWidget(spec, grid.id, { title: "Equipment", rows: 5, x: 16, gridlines: "all", fixed_rows: true })
+    expect(findWidget(spec, grid.id)).toMatchObject({ index: 0, widget: { title: "Equipment", rows: 5, x: 16, gridlines: "all", fixed_rows: true } })
     expect(() => updateWidget(spec, grid.id, { columns: 2 })).toThrow("Only a Collection has columns")
     expect(() => updateWidget(spec, boxes.id, { rows: 2 })).toThrow("Only a Table has rows")
+    expect(() => updateWidget(spec, boxes.id, { density: "comfortable" })).toThrow("Only a Table has density")
     expect(() => updateWidget(spec, "missing", { title: "x" })).toThrow("No sheet has a component missing")
 
     const copied = duplicateWidget(spec, grid.id)
@@ -410,5 +448,124 @@ describe("what the sheets show", () => {
     expect(widgetProblems(updateSchemaColumn(spec, "premiums", "premiums.item", { key: false })).map((p) => p.message)).toEqual([
       'Table "Equipment" shows tables whose rows do not line up',
     ])
+  })
+})
+
+describe("when sheets and components show", () => {
+  const always = (): ShowWhen => ({ match: "all", conditions: [] })
+  const ticked: Condition = { table: "policy", column: "policy.bi", op: "ticked", values: [] }
+  const collection = (id: string, title: string, columns: [string, string][], showWhen: ShowWhen = always()) => ({
+    id,
+    type: "collection" as const,
+    x: 0,
+    y: 0,
+    w: 720,
+    h: 120,
+    title,
+    fields: columns.map(([tableId, columnId]) => ({ table: tableId, column: columnId })),
+    show_when: showWhen,
+    columns: 3,
+  })
+  /** A tick box and a class on the main sheet, and a sheet of business interruption shown while the box is ticked. */
+  const covered = (): FormSpec => ({
+    ...blank(),
+    schema: {
+      tables: [
+        table("policy", "policy", {
+          columns: [
+            column("policy.bi", "bi", { type: "bool", label: "BI cover" }),
+            column("policy.class", "class", { options: ["Motor", "Fleet"] }),
+            column("policy.start", "start", { type: "date" }),
+            column("policy.extra", "extra"),
+          ],
+        }),
+        table("bi", "bi", { columns: [column("bi.limit", "limit", { type: "float" })] }),
+      ],
+    },
+    pages: [
+      { id: "p", title: "Main", show_when: always(), widgets: [collection("w_policy", "Policy", [["policy", "policy.bi"], ["policy", "policy.class"]])] },
+      { id: "p_bi", title: "BI", show_when: { match: "all", conditions: [ticked] }, widgets: [collection("w_bi", "Limits", [["bi", "bi.limit"]])] },
+    ],
+    sample: { bi: [{ "bi.limit": "500,000" }] },
+  })
+
+  it("creates sheets and components always shown, each with a show_when of its own", () => {
+    const spec = covered()
+    expect(createPage(spec).show_when).toEqual(always())
+    const first = createWidget("collection", { x: 0, y: 0, w: 200, h: 100 })
+    const second = createWidget("tableInput", { x: 0, y: 0, w: 200, h: 100 })
+    expect([first.show_when, second.show_when]).toEqual([always(), always()])
+    expect(first.show_when).not.toBe(second.show_when)
+  })
+
+  it("sets when a sheet or a component shows, leaving its input untouched", () => {
+    const spec = covered()
+    const either: ShowWhen = { match: "any", conditions: [ticked, { table: "policy", column: "policy.class", op: "equals", values: ["Fleet"] }] }
+
+    const next = setPageShowWhen(spec, "p_bi", either)
+    expect(next.pages[1].show_when).toEqual(either)
+    expect(next.pages[1].show_when).not.toBe(either)
+    expect(spec.pages[1].show_when.conditions).toEqual([ticked])
+    expect(() => setPageShowWhen(spec, "missing", either)).toThrow("The form has no sheet missing")
+    expect(findWidget(updateWidget(spec, "w_bi", { show_when: either }), "w_bi")?.widget.show_when).toEqual(either)
+  })
+
+  it("takes the conditions testing a column or a table out with it, wherever they are", () => {
+    const onClass: Condition = { table: "policy", column: "policy.class", op: "equals", values: ["Fleet"] }
+    const spec = updateWidget(covered(), "w_bi", { show_when: { match: "all", conditions: [onClass] } })
+    expect(conditionUses(spec, "policy", "policy.bi").map((holder) => holder.id)).toEqual(["p_bi"])
+    expect(conditionUses(spec, "policy").map((holder) => holder.id)).toEqual(["p_bi", "w_bi"])
+    expect(conditionUses(spec, "bi")).toEqual([])
+
+    const withoutBox = removeSchemaColumn(spec, "policy", "policy.bi")
+    expect(withoutBox.pages[1].show_when.conditions).toEqual([])
+    expect(findWidget(withoutBox, "w_bi")?.widget.show_when.conditions).toEqual([onClass])
+
+    const withoutPolicy = removeSchemaTable(spec, "policy")
+    expect(withoutPolicy.pages[1].show_when.conditions).toEqual([])
+    expect(findWidget(withoutPolicy, "w_bi")?.widget.show_when.conditions).toEqual([])
+  })
+
+  it("says what stops a sheet's or a component's conditions doing what they say", () => {
+    const spec = covered()
+    expect([...pageProblems(spec), ...widgetProblems(spec)]).toEqual([])
+
+    // Retyped under its condition: the test no longer fits.
+    expect(pageProblems(changeSchemaColumnType(spec, "policy", "policy.bi", "str")).map((p) => p.message)).toEqual([
+      'Sheet "BI" tests bi with "is ticked", which a Text column cannot take',
+    ])
+    // A value no allowed value can match.
+    const property = updateWidget(spec, "w_bi", { show_when: { match: "all", conditions: [{ table: "policy", column: "policy.class", op: "one_of", values: ["Fleet", "Property"] }] } })
+    expect(widgetProblems(property).map((p) => p.message)).toEqual([
+      'Collection "Limits" tests class against "Property", which isn\'t one of its allowed values',
+    ])
+    // Tested only on the sheet it shows, or on no component: nothing could show the sheet again.
+    expect(pageProblems(setPageShowWhen(spec, "p_bi", { match: "all", conditions: [{ table: "bi", column: "bi.limit", op: "filled", values: [] }] })).map((p) => p.message)).toEqual([
+      'Sheet "BI" waits on limit, which is only on components that hide with it, so it could not show again once hidden',
+    ])
+    expect(pageProblems(setPageShowWhen(spec, "p_bi", { match: "all", conditions: [{ table: "policy", column: "policy.extra", op: "filled", values: [] }] })).map((p) => p.message)).toEqual([
+      'Sheet "BI" waits on extra, which is on no component',
+    ])
+  })
+
+  it("reads conditions as sentences by their columns' labels", () => {
+    const spec = covered()
+    const onClass: Condition = { table: "policy", column: "policy.class", op: "one_of", values: ["Motor", "Fleet"] }
+    expect(conditionText(spec, ticked)).toBe("BI cover is ticked")
+    expect(conditionText(spec, onClass)).toBe("Class is one of Motor, Fleet")
+    expect(conditionText(spec, { table: "policy", column: "policy.start", op: "above", values: ["2026-01-01"] })).toBe("Start is after 2026-01-01")
+    expect(conditionText(spec, { table: "policy", column: "policy.gone", op: "filled", values: [] })).toBe("A missing column is filled")
+
+    expect(showWhenText(spec, always())).toBe("Always shows")
+    expect(showWhenText(spec, { match: "all", conditions: [ticked] })).toBe("Shows when BI cover is ticked")
+    expect(showWhenText(spec, { match: "any", conditions: [ticked, onClass] })).toBe(
+      "Shows when any of these are true: BI cover is ticked; Class is one of Motor, Fleet",
+    )
+  })
+
+  it("prices what the sheets show: a condition that hides or shows a column changes the basis, a move does not", () => {
+    const spec = covered()
+    expect(pricingBasis(setPageShowWhen(spec, "p_bi", always()))).not.toBe(pricingBasis(spec))
+    expect(pricingBasis(updateWidget(spec, "w_bi", { x: 100 }))).toBe(pricingBasis(spec))
   })
 })

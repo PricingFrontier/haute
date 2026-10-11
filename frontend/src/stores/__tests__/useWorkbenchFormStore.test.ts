@@ -21,7 +21,7 @@ const blank: FormSpec = {
   version: 1,
   name: "motor",
   schema: { tables: [] },
-  pages: [{ id: "page_1", title: "Sheet 1", widgets: [] }],
+  pages: [{ id: "page_1", title: "Sheet 1", show_when: { match: "all", conditions: [] }, widgets: [] }],
   sample: {},
 }
 

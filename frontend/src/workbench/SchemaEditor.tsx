@@ -19,6 +19,7 @@ import {
   createIndexColumn,
   createSchemaColumn,
   createSchemaTable,
+  conditionUses,
   fieldUses,
   moveSchemaColumn,
   readableName,
@@ -29,6 +30,8 @@ import {
   updateSchemaColumn,
   updateSchemaTable,
 } from "../utils/workbenchForm"
+import { PIVOT_DECIMAL_PLACES_MAX, PIVOT_NUMBER_FORMATS } from "../panels/explore/pivotConfig"
+import { NUMBER_FORMAT_LABELS } from "../panels/explore/pivotNumberFormat"
 import { COLUMN_TYPES, COLUMN_TYPE_OPTIONS, isNumeric } from "./columnTypes"
 
 const ROLES: ReadonlyArray<{ value: SchemaTable["role"]; label: string; title: string }> = [
@@ -40,6 +43,8 @@ const ROWS: ReadonlyArray<{ value: SchemaTable["rows"]; label: string; title: st
   { value: "one", label: "One row", title: "One row per quote, such as policy details" },
   { value: "many", label: "Many rows", title: "Many rows per quote, such as an equipment schedule" },
 ]
+
+const DECIMAL_PLACES = Array.from({ length: PIVOT_DECIMAL_PLACES_MAX + 1 }, (_, places) => places)
 
 const FIELD_CLASS = "focus-ring min-w-0 rounded-md px-1.5 py-0.5 text-xs"
 const CHIP_CLASS = "focus-ring shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-semibold"
@@ -66,6 +71,13 @@ function rulesSummary(column: SchemaColumn): string {
 }
 
 const components = (n: number) => `${n} ${n === 1 ? "component" : "components"}`
+
+/** What removing a column or a table takes with it: the components showing it and the conditions testing it. */
+function usedBy(shown: number, tested: number): string {
+  const parts = shown > 0 ? [`shown in ${components(shown)}`] : []
+  if (tested > 0) parts.push(`tested by the conditions of ${tested} ${tested === 1 ? "sheet or component" : "sheets or components"}`)
+  return parts.join(" and ")
+}
 
 /** A new table or column gets a placeholder name; selecting it lets typing replace it. */
 const selectAll = (e: FocusEvent<HTMLInputElement>) => e.target.select()
@@ -144,7 +156,9 @@ interface TableBlockProps {
 
 function TableBlock({ form, table, added, setAdded, details, setDetails, collapsed, onToggleCollapsed, problems }: TableBlockProps) {
   const change = useWorkbenchFormStore((s) => s.change)
-  const uses = fieldUses(form, table.id).length
+  const shown = fieldUses(form, table.id).length
+  const tested = conditionUses(form, table.id).length
+  const uses = shown + tested
   const [confirming, setConfirming] = useState(false)
   const remove = () => change((f) => removeSchemaTable(f, table.id))
   const fresh = (id: string): Fresh => ({
@@ -231,7 +245,7 @@ function TableBlock({ form, table, added, setAdded, details, setDetails, collaps
       </div>
       {confirming && (
         <ConfirmBar
-          message={`Its columns are shown in ${components(uses)}; deleting it takes them out of ${uses === 1 ? "it" : "them"} too.`}
+          message={`Its columns are ${usedBy(shown, tested)}; deleting it takes them out of ${uses === 1 ? "it" : "them"} too.`}
           action="Delete"
           onConfirm={() => {
             setConfirming(false)
@@ -284,7 +298,9 @@ interface ColumnRowProps {
 
 function ColumnRow({ form, table, column, index, fresh, open, onToggleDetails, onInsertAfter }: ColumnRowProps) {
   const change = useWorkbenchFormStore((s) => s.change)
-  const uses = fieldUses(form, table.id, column.id).length
+  const shown = fieldUses(form, table.id, column.id).length
+  const tested = conditionUses(form, table.id, column.id).length
+  const uses = shown + tested
   const [confirming, setConfirming] = useState(false)
   const remove = () => change((f) => removeSchemaColumn(f, table.id, column.id))
   const { label, icon: Icon, color } = COLUMN_TYPES[column.type]
@@ -359,7 +375,7 @@ function ColumnRow({ form, table, column, index, fresh, open, onToggleDetails, o
           onClick={onToggleDetails}
           aria-expanded={open}
           aria-label={`Label and rules of ${column.name}`}
-          title="Label and rules"
+          title="Label, help, rules and format"
           className={`self-center ${open ? "" : HOVER_ONLY}`}
           style={{ color: open ? "var(--text-primary)" : "var(--text-muted)" }}
         />
@@ -373,7 +389,7 @@ function ColumnRow({ form, table, column, index, fresh, open, onToggleDetails, o
       </div>
       {confirming && (
         <ConfirmBar
-          message={`Shown in ${components(uses)}; removing it takes it out of ${uses === 1 ? "that" : "them"} too.`}
+          message={`${usedBy(shown, tested).replace(/^./, (first) => first.toUpperCase())}; removing it takes it out of ${uses === 1 ? "that" : "them"} too.`}
           action="Remove"
           onConfirm={() => {
             setConfirming(false)
@@ -388,16 +404,21 @@ function ColumnRow({ form, table, column, index, fresh, open, onToggleDetails, o
   )
 }
 
-/** A column's label and, in an input table, the rules its value must meet. */
+/**
+ * A column's label and help; in an input table, the rules its value must meet and what an
+ * empty cell shows; for a number, how the sheets show it.
+ */
 function ColumnDetails({ table, column, set }: { table: SchemaTable; column: SchemaColumn; set: (patch: Partial<SchemaColumn>) => void }) {
   // The index takes no rules: nothing is typed into it.
   const input = table.role === "input" && !column.index
+  // General with automatic decimal places shows a number as it is, separators and all.
+  const grouped = column.number_format !== "general" || column.decimal_places !== null
   const numberOrNothing = (text: string): string | null =>
     text.trim() === "" || Number.isFinite(Number(text)) ? null : "Enter a number."
   const bound = (text: string): number | null => (text.trim() === "" ? null : Number(text))
   return (
     <div
-      className="mr-12 ml-7 grid grid-cols-[4rem_minmax(0,1fr)] items-center gap-x-2 gap-y-1 rounded-md px-2 py-1.5 text-[11px]"
+      className="mr-12 ml-7 grid grid-cols-[4.75rem_minmax(0,1fr)] items-center gap-x-2 gap-y-1 rounded-md px-2 py-1.5 text-[11px]"
       style={{ border: "1px solid var(--border)", background: "var(--bg-base)" }}
     >
       <span style={{ color: "var(--text-muted)" }}>Label</span>
@@ -409,6 +430,69 @@ function ColumnDetails({ table, column, set }: { table: SchemaTable; column: Sch
         className={`${FIELD_CLASS} w-full`}
         style={INPUT_STYLE}
       />
+      <span style={{ color: "var(--text-muted)" }}>Help</span>
+      <CommittedTextField
+        aria-label={`Help of ${column.name}`}
+        value={column.help}
+        placeholder="Shown beside the label on the sheets"
+        onCommit={(help) => set({ help })}
+        className={`${FIELD_CLASS} w-full`}
+        style={INPUT_STYLE}
+      />
+      {isNumeric(column.type) && !column.index && (
+        <>
+          <span style={{ color: "var(--text-muted)" }}>Format</span>
+          <div className="flex items-center gap-1.5">
+            <select
+              aria-label={`Format of ${column.name}`}
+              value={column.number_format}
+              onChange={(e) => set({ number_format: e.target.value as SchemaColumn["number_format"] })}
+              className={FIELD_CLASS}
+              style={INPUT_STYLE}
+            >
+              {PIVOT_NUMBER_FORMATS.map((format) => (
+                <option key={format} value={format}>
+                  {NUMBER_FORMAT_LABELS[format]}
+                </option>
+              ))}
+            </select>
+            <select
+              aria-label={`Decimal places of ${column.name}`}
+              value={column.decimal_places ?? "automatic"}
+              onChange={(e) => set({ decimal_places: e.target.value === "automatic" ? null : Number(e.target.value) })}
+              title="Decimal places"
+              className={FIELD_CLASS}
+              style={INPUT_STYLE}
+            >
+              <option value="automatic">Auto decimals</option>
+              {DECIMAL_PLACES.map((places) => (
+                <option key={places} value={places}>
+                  {places} {places === 1 ? "decimal" : "decimals"}
+                </option>
+              ))}
+            </select>
+            <ConfigCheckbox
+              label="Separators (1,000)"
+              checked={grouped && column.use_grouping}
+              // Ticked under General, as an Explore pivot does, it becomes a Number.
+              onChange={(useGrouping) => set(useGrouping && !grouped ? { number_format: "number", use_grouping: true } : { use_grouping: useGrouping })}
+            />
+          </div>
+        </>
+      )}
+      {input && column.type !== "bool" && column.type !== "date" && (
+        <>
+          <span style={{ color: "var(--text-muted)" }}>Placeholder</span>
+          <CommittedTextField
+            aria-label={`Placeholder of ${column.name}`}
+            value={column.placeholder}
+            placeholder="What an empty cell shows"
+            onCommit={(placeholder) => set({ placeholder })}
+            className={`${FIELD_CLASS} w-full`}
+            style={INPUT_STYLE}
+          />
+        </>
+      )}
       {input && (
         <>
           <span style={{ color: "var(--text-muted)" }}>Required</span>

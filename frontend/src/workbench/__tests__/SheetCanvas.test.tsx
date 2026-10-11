@@ -9,9 +9,10 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
+import { TABLE_OPTIONS } from "../../utils/workbenchForm"
 import SheetCanvas from "../SheetCanvas"
 import WorkbenchPalette from "../WorkbenchPalette"
-import { currentForm, drag, loadForm, releasePointer, sheetForm, stubLayout } from "./fixtures"
+import { coverForm, currentForm, drag, loadForm, releasePointer, sheetForm, stubLayout } from "./fixtures"
 
 const widget = (id: string) => currentForm().pages[0].widgets.find((candidate) => candidate.id === id)
 const frame = (id: string) => screen.getByTestId(`sheet-widget-${id}`)
@@ -46,7 +47,7 @@ describe("SheetCanvas", () => {
   })
 
   it("marks a component that shows nothing or a column that is gone, naming the problem", () => {
-    loadForm({ ...sheetForm(), pages: [{ id: "p1", title: "Sheet 1", widgets: [{ id: "w", type: "collection", x: 0, y: 0, w: 200, h: 100, title: "", columns: 3, fields: [] }] }] })
+    loadForm({ ...sheetForm(), pages: [{ id: "p1", title: "Sheet 1", show_when: { match: "all" as const, conditions: [] }, widgets: [{ id: "w", type: "collection", x: 0, y: 0, w: 200, h: 100, title: "", columns: 3, fields: [], show_when: { match: "all" as const, conditions: [] } }] }] })
     render(<SheetCanvas />)
 
     expect(screen.getByTitle("A Collection shows no fields")).toBeInTheDocument()
@@ -133,7 +134,7 @@ describe("SheetCanvas", () => {
   })
 
   it("fits what is on the sheet to the viewport when it first shows, and sizes the sheet to hold its components", () => {
-    loadForm({ ...sheetForm(), pages: [{ id: "p1", title: "Sheet 1", widgets: [{ id: "w", type: "tableInput", x: 0, y: 0, w: 1968, h: 100, title: "", rows: 3, fields: [] }] }] })
+    loadForm({ ...sheetForm(), pages: [{ id: "p1", title: "Sheet 1", show_when: { match: "all" as const, conditions: [] }, widgets: [{ id: "w", type: "tableInput", x: 0, y: 0, w: 1968, h: 100, title: "", rows: 3, ...TABLE_OPTIONS, fields: [], show_when: { match: "all" as const, conditions: [] } }] }] })
     render(<SheetCanvas />)
 
     // 1000 wide less the padding, over the component's reach plus the edge, in steps of 5%.
@@ -142,7 +143,7 @@ describe("SheetCanvas", () => {
   })
 
   it("fits a very wide sheet at the zoom's minimum, never at nothing", () => {
-    loadForm({ ...sheetForm(), pages: [{ id: "p1", title: "Sheet 1", widgets: [{ id: "w", type: "tableInput", x: 0, y: 0, w: 100_000, h: 100, title: "", rows: 3, fields: [] }] }] })
+    loadForm({ ...sheetForm(), pages: [{ id: "p1", title: "Sheet 1", show_when: { match: "all" as const, conditions: [] }, widgets: [{ id: "w", type: "tableInput", x: 0, y: 0, w: 100_000, h: 100, title: "", rows: 3, ...TABLE_OPTIONS, fields: [], show_when: { match: "all" as const, conditions: [] } }] }] })
     render(<SheetCanvas />)
 
     expect(useWorkbenchViewStore.getState().zoom).toBe(0.25)
@@ -150,7 +151,7 @@ describe("SheetCanvas", () => {
   })
 
   it("keeps a zoom chosen since the sheets were fitted when they show again, until the form is read anew", () => {
-    const wide = { ...sheetForm(), pages: [{ id: "p1", title: "Sheet 1", widgets: [{ id: "w", type: "tableInput" as const, x: 0, y: 0, w: 1968, h: 100, title: "", rows: 3, fields: [] }] }] }
+    const wide = { ...sheetForm(), pages: [{ id: "p1", title: "Sheet 1", show_when: { match: "all" as const, conditions: [] }, widgets: [{ id: "w", type: "tableInput" as const, x: 0, y: 0, w: 1968, h: 100, title: "", rows: 3, ...TABLE_OPTIONS, fields: [], show_when: { match: "all" as const, conditions: [] } }] }] }
     loadForm(wide)
     const first = render(<SheetCanvas />)
     expect(useWorkbenchViewStore.getState().zoom).toBe(0.45)
@@ -198,5 +199,55 @@ describe("SheetCanvas", () => {
     fireEvent.change(within(frame("w_boxes")).getByRole("combobox", { name: "State" }), { target: { value: "NY" } })
     expect(useWorkbenchPreviewStore.getState().quote).toEqual({ policy: [{ "policy.state": "NY" }] })
     expect(currentForm().sample).toEqual({})
+  })
+
+  it("while building draws a component the sample hides faded with its eye struck through, and one that shows with its eye", () => {
+    const form = coverForm()
+    form.pages[0].widgets[1].show_when = { match: "all", conditions: [{ table: "policy", column: "policy.state", op: "equals", values: ["NY"] }] }
+    loadForm(form)
+    render(<SheetCanvas />)
+
+    const body = (id: string) => frame(id).querySelector("[data-hidden]")
+    expect(body("w_grid")).not.toBeNull()
+    expect(within(frame("w_grid")).getByRole("img", { name: "Hidden for the sample. Shows when State equals NY" })).toBeInTheDocument()
+    expect(within(frame("w_boxes")).queryByRole("img")).not.toBeInTheDocument()
+
+    fireEvent.change(within(frame("w_boxes")).getByRole("combobox", { name: "State" }), { target: { value: "NY" } })
+    expect(body("w_grid")).toBeNull()
+    expect(within(frame("w_grid")).getByRole("img", { name: "Shows when State equals NY" })).toBeInTheDocument()
+
+    // A component on a sheet the sample hides is hidden with it, and still drawn to edit.
+    act(() => useWorkbenchViewStore.getState().showPage("p2"))
+    expect(body("w_year")).not.toBeNull()
+  })
+
+  it("in Preview draws only what the quote shows, on the first sheet that shows in place of a hidden one chosen", () => {
+    const form = coverForm()
+    form.pages[0].widgets[1].show_when = { match: "all", conditions: [{ table: "policy", column: "policy.state", op: "equals", values: ["NY"] }] }
+    loadForm(form)
+    useWorkbenchViewStore.setState({ section: "preview", pageId: "p2" })
+    render(<SheetCanvas />)
+
+    // The quote leaves Cover unticked: Sheet 1 shows in its place, without the hidden Table.
+    expect(frame("w_boxes")).toBeInTheDocument()
+    expect(screen.queryByTestId("sheet-widget-w_grid")).not.toBeInTheDocument()
+    expect(within(frame("w_boxes")).queryByRole("img")).not.toBeInTheDocument()
+
+    fireEvent.change(within(frame("w_boxes")).getByRole("combobox", { name: "State" }), { target: { value: "NY" } })
+    expect(frame("w_grid")).toBeInTheDocument()
+    fireEvent.click(within(frame("w_boxes")).getByRole("checkbox", { name: "Cover" }))
+    expect(frame("w_year")).toBeInTheDocument()
+    expect(screen.queryByTestId("sheet-widget-w_boxes")).not.toBeInTheDocument()
+  })
+
+  it("in Preview says so while no sheet shows", () => {
+    const form = coverForm()
+    form.pages[0].show_when = { match: "all", conditions: [{ table: "policy", column: "policy.year", op: "filled", values: [] }] }
+    loadForm(form)
+    useWorkbenchViewStore.setState({ section: "preview" })
+    render(<SheetCanvas />)
+
+    expect(screen.getByText("No sheet shows for this quote.")).toBeInTheDocument()
+    expect(screen.queryByTestId("sheet")).not.toBeInTheDocument()
   })
 })

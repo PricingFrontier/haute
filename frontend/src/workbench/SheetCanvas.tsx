@@ -1,8 +1,8 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
-import useWorkbenchViewStore, { activePage } from "../stores/useWorkbenchViewStore"
+import useWorkbenchViewStore, { activePage, shownPage } from "../stores/useWorkbenchViewStore"
 import { GRID, SHEET_PADDING, sheetHeight, sheetWidth } from "../utils/sheetGeometry"
-import { shownFields, widgetProblems } from "../utils/workbenchForm"
+import { showWhenText, shownFields, widgetProblems } from "../utils/workbenchForm"
 import { dropAt } from "./sheetInteractions"
 import SheetWidget from "./SheetWidget"
 import { SheetValuesContext, usePreviewValues, useSampleValues } from "./useSheetValues"
@@ -13,7 +13,9 @@ import { WIDGET_KINDS } from "./widgetKinds"
  * the viewport across at the zoom and grows to hold its components, each a
  * `SheetWidget` given the sheet's values (the sample while building, the quote in
  * Preview), with, while building, a ghost where a component dragged out of the palette
- * would land. Pressing the empty sheet deselects. The sheet and its viewport are
+ * would land. While building every component is drawn, those the sample hides faded; in
+ * Preview only the components the quote shows, on the first sheet that shows when the
+ * chosen one does not. Pressing the empty sheet deselects. The sheet and its viewport are
  * registered with the view store, which places drops on them and fits the zoom to them;
  * what is on the sheet is fitted to the viewport when the sheets first show for a form,
  * and a zoom chosen since is kept across a trip to the schema or the pipeline editor.
@@ -56,9 +58,12 @@ export default function SheetCanvas() {
     return byWidget
   }, [form])
   if (form === null) throw new Error("The sheet needs the form loaded")
-  const page = activePage(form, pageId)
-  const width = sheetWidth(viewportWidth - SHEET_PADDING * 2, zoom, page.widgets)
-  const height = sheetHeight(page.widgets)
+  const values = previewing ? preview : sample
+  const { visibility } = values
+  const page = previewing ? shownPage(form, pageId, visibility.pages) : activePage(form, pageId)
+  const widgets = page === null ? [] : previewing ? page.widgets.filter((widget) => visibility.widgets.has(widget.id)) : page.widgets
+  const width = sheetWidth(viewportWidth - SHEET_PADDING * 2, zoom, widgets)
+  const height = sheetHeight(widgets)
 
   return (
     <div
@@ -68,40 +73,48 @@ export default function SheetCanvas() {
       style={{ background: "var(--bg-canvas)" }}
       onPointerDown={() => select(null)}
     >
-      <div className="relative" style={{ width: width * zoom + SHEET_PADDING * 2, height: height * zoom + SHEET_PADDING * 2 }}>
-        <div
-          ref={setSheet}
-          data-testid="sheet"
-          data-zoom={zoom}
-          className="absolute select-none rounded-lg"
-          style={{
-            left: SHEET_PADDING,
-            top: SHEET_PADDING,
-            width,
-            height,
-            transform: `scale(${zoom})`,
-            transformOrigin: "0 0",
-            background: "var(--bg-base)",
-            boxShadow: "0 0 0 1px var(--border)",
-            backgroundImage: "radial-gradient(circle, var(--border) 1px, transparent 1px)",
-            backgroundSize: `${GRID * 2}px ${GRID * 2}px`,
-          }}
-        >
-          <SheetValuesContext value={previewing ? preview : sample}>
-            {page.widgets.map((widget) => (
-              <SheetWidget
-                key={widget.id}
-                widget={widget}
-                fields={shownFields(form, widget)}
-                selected={!previewing && selectedId === widget.id}
-                problem={problems.get(widget.id) ?? null}
-                editable={!previewing}
-              />
-            ))}
-          </SheetValuesContext>
-          {!previewing && <DropGhost />}
+      {page === null ? (
+        <div className="grid h-full place-items-center text-xs" style={{ color: "var(--text-muted)" }}>
+          No sheet shows for this quote.
         </div>
-      </div>
+      ) : (
+        <div className="relative" style={{ width: width * zoom + SHEET_PADDING * 2, height: height * zoom + SHEET_PADDING * 2 }}>
+          <div
+            ref={setSheet}
+            data-testid="sheet"
+            data-zoom={zoom}
+            className="absolute select-none rounded-lg"
+            style={{
+              left: SHEET_PADDING,
+              top: SHEET_PADDING,
+              width,
+              height,
+              transform: `scale(${zoom})`,
+              transformOrigin: "0 0",
+              background: "var(--bg-base)",
+              boxShadow: "0 0 0 1px var(--border)",
+              backgroundImage: "radial-gradient(circle, var(--border) 1px, transparent 1px)",
+              backgroundSize: `${GRID * 2}px ${GRID * 2}px`,
+            }}
+          >
+            <SheetValuesContext value={values}>
+              {widgets.map((widget) => (
+                <SheetWidget
+                  key={widget.id}
+                  widget={widget}
+                  fields={shownFields(form, widget)}
+                  selected={!previewing && selectedId === widget.id}
+                  problem={problems.get(widget.id) ?? null}
+                  editable={!previewing}
+                  hidden={!visibility.widgets.has(widget.id)}
+                  conditions={previewing || widget.show_when.conditions.length === 0 ? null : showWhenText(form, widget.show_when)}
+                />
+              ))}
+            </SheetValuesContext>
+            {!previewing && <DropGhost />}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

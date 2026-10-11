@@ -1,20 +1,24 @@
 /**
  * Pure operations on the workbench's form (specs/workbench): the schema's tables and
  * columns, the sheets and the components on them, what the components show of the
- * schema, and what would stop the schema being the pipeline's tables or a component
- * showing what it should. Each operation returns a new form and leaves its input untouched.
+ * schema and when they show, and what would stop the schema being the pipeline's tables
+ * or a sheet or a component showing what it should. Each operation returns a new form and
+ * leaves its input untouched.
  */
-import type { FieldRef, FormSpec, Page, SchemaColumn, SchemaTable } from "../api/types"
+import type { Condition, FieldRef, FormSpec, Page, SchemaColumn, SchemaTable, ShowWhen } from "../api/types"
 import { ASCII_IDENTIFIER_RE, apiInputLabelIssue, apiInputLabelIssueMessage } from "./apiInputPorts"
 import { PYTHON_KEYWORDS } from "./globalConstants"
 import type { Rect } from "./sheetGeometry"
-import { valuesBasis } from "./sheetValues"
+import { parseTypedNumber, valuesBasis } from "./sheetValues"
+import { conditionFault, neverShown, quotedSchema, sheetVisibility, testLabel } from "./sheetVisibility"
 
 /** A sheet's widget: a Table or a Collection. */
 export type Widget = Page["widgets"][number]
 export type WidgetType = Widget["type"]
 /** A column's type: the Quote Input's column types. */
 export type ColumnType = SchemaColumn["type"]
+/** How a Table's grid looks, and whether its rows are fixed: no Add row and no delete. */
+export type TableOptions = Pick<Extract<Widget, { type: "tableInput" }>, "row_numbers" | "density" | "gridlines" | "striped" | "fixed_rows">
 
 export const newId = (prefix: string): string => `${prefix}_${crypto.randomUUID().slice(0, 8)}`
 
@@ -70,6 +74,11 @@ export const createSchemaColumn = (spec: FormSpec, tableId: string): SchemaColum
   max: null,
   options: [],
   index: false,
+  help: "",
+  placeholder: "",
+  number_format: "general",
+  decimal_places: null,
+  use_grouping: true,
 })
 
 /** A table's index: a column holding each row's number, from 1, as the rows stand. */
@@ -95,11 +104,22 @@ const dropFields = (draft: FormSpec, drop: (field: FieldRef) => boolean): void =
   for (const widget of allWidgets(draft)) widget.fields = widget.fields.filter((field) => !drop(field))
 }
 
-/** Removing a table removes its columns from the widgets that show them, and its sample rows. */
+/** Take the conditions `drop` matches out of every sheet and widget that tests them. */
+const dropConditions = (draft: FormSpec, drop: (condition: Condition) => boolean): void => {
+  for (const holder of [...draft.pages, ...allWidgets(draft)]) {
+    holder.show_when.conditions = holder.show_when.conditions.filter((condition) => !drop(condition))
+  }
+}
+
+/**
+ * Removing a table removes its columns from the widgets that show them and the conditions
+ * that test them, and its sample rows.
+ */
 export const removeSchemaTable = (spec: FormSpec, id: string): FormSpec =>
   edit(spec, (draft) => {
     draft.schema.tables = draft.schema.tables.filter((table) => table.id !== id)
     dropFields(draft, (field) => field.table === id)
+    dropConditions(draft, (condition) => condition.table === id)
     delete draft.sample[id]
   })
 
@@ -151,9 +171,9 @@ export const updateSchemaColumn = (
 export const takesOptions = (type: SchemaColumn["type"]): boolean => type !== "bool" && type !== "date"
 
 /**
- * Change a column's type, dropping the rules the new type cannot have: the range of a
- * column no longer a number, and the allowed values of one now a tick box or a date,
- * which would otherwise still rule its cells.
+ * Change a column's type, dropping the rules the new type cannot have: the range and the
+ * number format of a column no longer a number, and the allowed values of one now a tick
+ * box or a date, which would otherwise still rule its cells.
  */
 export const changeSchemaColumnType = (
   spec: FormSpec,
@@ -167,16 +187,23 @@ export const changeSchemaColumnType = (
     if (type !== "int" && type !== "float") {
       column.min = null
       column.max = null
+      column.number_format = "general"
+      column.decimal_places = null
+      column.use_grouping = true
     }
     if (!takesOptions(type)) column.options = []
   })
 
-/** Removing a column removes it from the widgets that show it, and its sample values. */
+/**
+ * Removing a column removes it from the widgets that show it and the conditions that
+ * test it, and its sample values.
+ */
 export const removeSchemaColumn = (spec: FormSpec, tableId: string, columnId: string): FormSpec =>
   edit(spec, (draft) => {
     const table = schemaTableOf(draft, tableId)
     table.columns = table.columns.filter((column) => column.id !== columnId)
     dropFields(draft, (field) => field.table === tableId && field.column === columnId)
+    dropConditions(draft, (condition) => condition.table === tableId && condition.column === columnId)
     for (const row of draft.sample[tableId] ?? []) delete row[columnId]
   })
 
@@ -184,6 +211,14 @@ export const removeSchemaColumn = (spec: FormSpec, tableId: string, columnId: st
 export const fieldUses = (spec: FormSpec, tableId: string, columnId?: string): Widget[] =>
   allWidgets(spec).filter((widget) =>
     widget.fields.some((field) => field.table === tableId && (columnId === undefined || field.column === columnId)),
+  )
+
+/** The sheets and widgets whose conditions test a schema table's columns, or just one of them. */
+export const conditionUses = (spec: FormSpec, tableId: string, columnId?: string): (Page | Widget)[] =>
+  [...spec.pages, ...allWidgets(spec)].filter((holder) =>
+    holder.show_when.conditions.some(
+      (condition) => condition.table === tableId && (columnId === undefined || condition.column === columnId),
+    ),
   )
 
 /** The schema table and column a field names, or null when it is no longer in the schema. */
@@ -211,9 +246,13 @@ function pageOf(spec: FormSpec, id: string): Page {
   return page
 }
 
+/** When a new sheet or component shows: always, with no conditions. */
+const alwaysShown = (): ShowWhen => ({ match: "all", conditions: [] })
+
 export const createPage = (spec: FormSpec): Page => ({
   id: newId("page"),
   title: uniqueName(`Sheet ${spec.pages.length + 1}`, spec.pages.map((page) => page.title)),
+  show_when: alwaysShown(),
   widgets: [],
 })
 
@@ -225,6 +264,11 @@ export const addPage = (spec: FormSpec, page: Page): FormSpec =>
 export const renamePage = (spec: FormSpec, id: string, title: string): FormSpec =>
   edit(spec, (draft) => {
     pageOf(draft, id).title = title
+  })
+
+export const setPageShowWhen = (spec: FormSpec, id: string, showWhen: ShowWhen): FormSpec =>
+  edit(spec, (draft) => {
+    pageOf(draft, id).show_when = structuredClone(showWhen)
   })
 
 /** Remove a sheet with its components; the schema and the sample stay. The last sheet stays. */
@@ -250,12 +294,15 @@ function widgetOf(spec: FormSpec, id: string): Widget {
   return found.widget
 }
 
-/** A new component of `type` at `rect`, showing nothing yet. */
+/** A new Table's options: numbered, compact, lined between rows, striped and not fixed. */
+export const TABLE_OPTIONS: Readonly<TableOptions> = { row_numbers: true, density: "compact", gridlines: "rows", striped: true, fixed_rows: false }
+
+/** A new component of `type` at `rect`, showing nothing yet, and always. */
 export function createWidget(type: WidgetType, rect: Rect): Widget {
   // In the file's order, so a component the view made compares equal to it saved.
   const { x, y, w, h } = rect
-  const placed = { id: newId("w"), x, y, w, h, type, title: "", fields: [] as FieldRef[] }
-  return type === "collection" ? { ...placed, type, columns: 3 } : { ...placed, type, rows: 3 }
+  const placed = { id: newId("w"), x, y, w, h, type, title: "", fields: [] as FieldRef[], show_when: alwaysShown() }
+  return type === "collection" ? { ...placed, type, columns: 3 } : { ...placed, type, rows: 3, ...TABLE_OPTIONS }
 }
 
 export const addWidget = (spec: FormSpec, pageId: string, widget: Widget): FormSpec =>
@@ -263,13 +310,16 @@ export const addWidget = (spec: FormSpec, pageId: string, widget: Widget): FormS
     pageOf(draft, pageId).widgets.push(widget)
   })
 
-/** What any component can be given; `rows` is a Table's alone and `columns` a Collection's. */
-export type WidgetPatch = Partial<Rect> & { title?: string; fields?: FieldRef[]; rows?: number; columns?: number }
+/** What any component can be given; `rows` and the options are a Table's alone and `columns` a Collection's. */
+export type WidgetPatch = Partial<Rect> & { title?: string; fields?: FieldRef[]; show_when?: ShowWhen; rows?: number; columns?: number } & Partial<TableOptions>
+
+const TABLE_ONLY = ["rows", ...Object.keys(TABLE_OPTIONS)]
 
 export const updateWidget = (spec: FormSpec, id: string, patch: WidgetPatch): FormSpec =>
   edit(spec, (draft) => {
     const widget = widgetOf(draft, id)
-    if ("rows" in patch && widget.type !== "tableInput") throw new Error("Only a Table has rows")
+    const tableOnly = TABLE_ONLY.find((key) => key in patch)
+    if (tableOnly !== undefined && widget.type !== "tableInput") throw new Error(`Only a Table has ${tableOnly}`)
     if ("columns" in patch && widget.type !== "collection") throw new Error("Only a Collection has columns")
     Object.assign(widget, patch)
   })
@@ -359,13 +409,14 @@ export const withSampleRows = (spec: FormSpec, rowsByTable: Record<string, Sampl
 const bases = new WeakMap<FormSpec, string>()
 
 /**
- * What pricing the sample depends on, the schema and the sample, as one string to compare:
- * a sheet laid out differently prices the same.
+ * What pricing the sample depends on, the schema as the sample's quote reads it (without
+ * the columns the sheets hide) and the sample, as one string to compare: a sheet laid out
+ * differently prices the same, while a condition that hides or shows a column does not.
  */
 export function pricingBasis(spec: FormSpec): string {
   let basis = bases.get(spec)
   if (basis === undefined) {
-    basis = valuesBasis(spec.schema, spec.sample)
+    basis = valuesBasis(quotedSchema(spec.schema, sheetVisibility(spec, spec.sample).hidden), spec.sample)
     bases.set(spec, basis)
   }
   return basis
@@ -386,10 +437,12 @@ export const widgetName = (widget: Widget): string =>
 /**
  * What stops a component showing what it should: no fields, a column no longer in the
  * schema, a table of the other kind (as when a table is switched between one row and
- * many after its columns were chosen), or tables whose rows do not line up.
+ * many after its columns were chosen), or tables whose rows do not line up; and what
+ * stops its conditions doing what they say (`conditionProblems`).
  */
 export function widgetProblems(spec: FormSpec): WidgetProblem[] {
   const problems: WidgetProblem[] = []
+  const never = neverShown(spec)
   for (const widget of allWidgets(spec)) {
     const name = widgetName(widget)
     const problem = (message: string) => problems.push({ widgetId: widget.id, message: `${name} ${message}` })
@@ -402,8 +455,87 @@ export function widgetProblems(spec: FormSpec): WidgetProblem[] {
     }
     const grains = new Set(found.flatMap((shown) => (shown !== null && shown.table.rows === rows ? [tableGrain(shown.table)] : [])))
     if (grains.size > 1) problem("shows tables whose rows do not line up")
+    for (const message of conditionProblems(spec, widget, never)) problem(message)
   }
   return problems
+}
+
+/** What stops a sheet's conditions doing what they say, by the sheet it is about. */
+export interface PageProblem {
+  pageId: string
+  message: string
+}
+
+/** `Sheet "Business interruption"`. */
+export const pageName = (page: Page): string => `Sheet "${page.title}"`
+
+/** What stops a sheet's conditions doing what they say (`conditionProblems`). */
+export function pageProblems(spec: FormSpec): PageProblem[] {
+  const never = neverShown(spec)
+  return spec.pages.flatMap((page) =>
+    conditionProblems(spec, page, never).map((message) => ({ pageId: page.id, message: `${pageName(page)} ${message}` })),
+  )
+}
+
+/** The tests that compare a value with the condition's own, which allowed values should be. */
+const EQUALITY_TESTS: ReadonlySet<Condition["op"]> = new Set(["equals", "not_equals", "one_of", "not_one_of"])
+
+/** Whether `value` is one of `column`'s allowed values, a number's read as numbers. */
+function allowed(column: SchemaColumn, value: string): boolean {
+  if (column.type === "int" || column.type === "float") {
+    const number = parseTypedNumber(value)
+    return column.options.some((option) => number !== null && parseTypedNumber(option) === number)
+  }
+  return column.options.some((option) => option.trim() === value.trim())
+}
+
+/**
+ * What stops a sheet's or a component's conditions doing what they say: a condition that
+ * cannot hold as written (`conditionFault`); a value tested for equality that is not one of
+ * its column's allowed values, which no value chosen from them can match; and, while
+ * neither, nothing able to show the sheet or component again once hidden (`neverShown`).
+ */
+function conditionProblems(spec: FormSpec, holder: Page | Widget, never: ReadonlyMap<string, Condition>): string[] {
+  const problems: string[] = []
+  for (const condition of holder.show_when.conditions) {
+    const fault = conditionFault(spec, condition)
+    if (fault !== null) {
+      problems.push(fault)
+      continue
+    }
+    // A condition that fits names a column the schema has.
+    const column = fieldColumn(spec, condition)?.column
+    if (!column?.options.length || !EQUALITY_TESTS.has(condition.op)) continue
+    for (const value of condition.values) {
+      if (!allowed(column, value)) problems.push(`tests ${column.name} against "${value}", which isn't one of its allowed values`)
+    }
+  }
+  const waiting = never.get(holder.id)
+  if (waiting !== undefined) {
+    const name = fieldColumn(spec, waiting)?.column.name ?? waiting.column
+    problems.push(
+      fieldUses(spec, waiting.table, waiting.column).length === 0
+        ? `waits on ${name}, which is on no component`
+        : `waits on ${name}, which is only on components that hide with it, so it could not show again once hidden`,
+    )
+  }
+  return problems
+}
+
+/** A condition read by its column's label: `Cover BI is ticked`, `Class of business is one of Motor, Fleet`. */
+export function conditionText(spec: FormSpec, condition: Condition): string {
+  const found = fieldColumn(spec, condition)
+  const label = found === null ? "A missing column" : found.column.label || readableName(found.column.name)
+  const test = testLabel(condition.op, found?.column.type ?? "str")
+  return condition.values.length === 0 ? `${label} ${test}` : `${label} ${test} ${condition.values.join(", ")}`
+}
+
+/** When a sheet or a component shows, as its eye's title says it. */
+export function showWhenText(spec: FormSpec, showWhen: ShowWhen): string {
+  const parts = showWhen.conditions.map((condition) => conditionText(spec, condition))
+  if (parts.length === 0) return "Always shows"
+  if (parts.length === 1) return `Shows when ${parts[0]}`
+  return `Shows when ${showWhen.match} of these are true: ${parts.join("; ")}`
 }
 
 // ─── Problems ────────────────────────────────────────────────────────────

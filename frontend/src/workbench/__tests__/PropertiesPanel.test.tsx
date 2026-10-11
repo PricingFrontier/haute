@@ -1,13 +1,15 @@
 /**
- * The properties panel (specs/workbench): the selected component's title and layout, the
- * order of its fields, and the fields ticked from the schema tables of its kind, with
- * tables whose rows do not line up greyed out.
+ * The properties panel (specs/workbench): the selected component's title, Show when and
+ * layout, a Table's fixed rows and look, the order of its fields, and the fields ticked
+ * from the schema tables of its kind, with tables whose rows do not line up greyed out;
+ * and the showing sheet's own panel, its title and its Show when.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
+import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import PropertiesPanel from "../PropertiesPanel"
-import { column, currentForm, loadForm, sheetForm, table } from "./fixtures"
+import { column, coverForm, currentForm, loadForm, sheetForm, table } from "./fixtures"
 
 const grid = () => currentForm().pages[0].widgets[1]
 const select = (id: string | null) => useWorkbenchViewStore.setState({ selectedId: id })
@@ -40,6 +42,24 @@ describe("PropertiesPanel", () => {
 
     fireEvent.click(screen.getByTitle("Close"))
     expect(useWorkbenchViewStore.getState().selectedId).toBeNull()
+  })
+
+  it("sets a Table's fixed rows and its look, which a Collection does not have", () => {
+    select("w_grid")
+    const { rerender } = render(<PropertiesPanel />)
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Fixed rows" }))
+    const look = screen.getByRole("region", { name: "Look" })
+    fireEvent.change(within(look).getByRole("combobox", { name: "Density" }), { target: { value: "comfortable" } })
+    fireEvent.change(within(look).getByRole("combobox", { name: "Gridlines" }), { target: { value: "none" } })
+    fireEvent.click(within(look).getByRole("checkbox", { name: "Row numbers" }))
+    fireEvent.click(within(look).getByRole("checkbox", { name: "Striped rows" }))
+    expect(grid()).toMatchObject({ fixed_rows: true, density: "comfortable", gridlines: "none", row_numbers: false, striped: false })
+
+    select("w_boxes")
+    rerender(<PropertiesPanel />)
+    expect(screen.queryByRole("region", { name: "Look" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("checkbox", { name: "Fixed rows" })).not.toBeInTheDocument()
   })
 
   it("ticks the fields from the schema tables of the component's kind, in the order ticked", () => {
@@ -95,5 +115,43 @@ describe("PropertiesPanel", () => {
     expect(screen.getByText(/The schema has no one-row tables yet/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Open the schema" }))
     expect(useWorkbenchViewStore.getState().section).toBe("schema")
+  })
+
+  it("sets when a component shows, each change one undo step", () => {
+    select("w_grid")
+    render(<PropertiesPanel />)
+    const showWhen = screen.getByRole("region", { name: "Show when" })
+
+    expect(within(showWhen).getByText("Always")).toBeInTheDocument()
+    fireEvent.click(within(showWhen).getByRole("button", { name: "Add condition" }))
+    fireEvent.change(within(showWhen).getByRole("combobox", { name: "Condition 1 value" }), { target: { value: "NY" } })
+
+    expect(grid().show_when).toEqual({ match: "all", conditions: [{ table: "policy", column: "policy.state", op: "equals", values: ["NY"] }] })
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(2)
+  })
+
+  it("is the showing sheet's own panel while the sheet is selected: its title and when it shows", () => {
+    loadForm(coverForm())
+    useWorkbenchViewStore.setState({ pageId: "p2", sheetSelected: true })
+    render(<PropertiesPanel />)
+    const sheet = () => currentForm().pages[1]
+
+    expect(screen.getByTestId("workbench-properties")).toHaveTextContent("Sheet")
+    const title = screen.getByRole("textbox", { name: "Sheet title" })
+    expect(title).toHaveValue("Cover")
+    fireEvent.change(title, { target: { value: "  " } })
+    fireEvent.blur(title)
+    expect(sheet().title).toBe("Cover")
+    fireEvent.change(title, { target: { value: " Business interruption " } })
+    fireEvent.blur(title)
+    expect(sheet().title).toBe("Business interruption")
+
+    const showWhen = screen.getByRole("region", { name: "Show when" })
+    fireEvent.change(within(showWhen).getByRole("combobox", { name: "Condition 1 test" }), { target: { value: "not_ticked" } })
+    expect(sheet().show_when.conditions).toEqual([{ table: "policy", column: "policy.cover", op: "not_ticked", values: [] }])
+
+    act(() => useWorkbenchViewStore.getState().select("w_year"))
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Year")
+    expect(useWorkbenchViewStore.getState().sheetSelected).toBe(false)
   })
 })

@@ -61,6 +61,16 @@ describe("useWorkbenchShortcuts on the sheets", () => {
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
   })
 
+  it("closes the sheet's own panel on Escape, and deletes nothing on Delete while it is open", () => {
+    useWorkbenchViewStore.getState().selectSheet()
+    key({ key: "Delete" })
+    expect(widgets()).toHaveLength(2)
+    expect(useWorkbenchViewStore.getState().sheetSelected).toBe(true)
+
+    key({ key: "Escape" })
+    expect(useWorkbenchViewStore.getState()).toMatchObject({ sheetSelected: false, selectedId: null })
+  })
+
   it("duplicates the selected component on Ctrl+D and selects the copy", () => {
     key({ key: "d", ctrlKey: true })
 

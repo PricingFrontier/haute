@@ -26,7 +26,7 @@ from haute._workbench_form import ColumnType
 from haute.errors import HauteError
 
 if TYPE_CHECKING:
-    from haute._workbench_form import FormSpec, SchemaTable
+    from haute._workbench_form import FormSpec, SchemaColumn, SchemaTable
 
 #: Each column type's dtype in a frame. ``tests/test_workbench_tables.py`` holds it equal to
 #: the Quote Input's, so a step reads either input's columns alike.
@@ -205,32 +205,41 @@ def sample_quote(spec: FormSpec) -> dict[str, Any]:
 
     An input table with values is an object under its name when it has one row per quote, and
     a list of objects when it has many; rows with nothing typed are left out, and so is a table
-    with none. Values take their column's type: a number typed with a currency sign or
-    separators becomes a number, and an unticked box in a filled row is false. A value that
-    isn't of its column's type stays as typed, for the Workbench Input to report.
+    with none. A value in a column the sheets hide is left out, as if it had never been typed.
+    Values take their column's type: a number typed with a currency sign or separators becomes
+    a number, and an unticked box in a filled row is false. A value that isn't of its column's
+    type stays as typed, for the Workbench Input to report.
     """
+    # Imported here: the visibility rules read cells as this module types them.
+    from haute._workbench_visibility import visibility
+
+    hidden = visibility(spec, spec.sample).hidden
     sample: dict[str, Any] = {}
     for table in spec.data_schema.tables:
         if table.role != "input":
             continue
         rows = spec.sample.get(table.id, [])
+        columns = [column for column in table.columns if (table.id, column.id) not in hidden]
         # Numbered as the rows stand, from 1, so deleting a row renumbers those after it.
         records = [
             record
             for number, row in enumerate(rows if table.rows == "many" else rows[:1], 1)
-            if (record := _record(table, row, number))
+            if (record := _record(columns, row, number))
         ]
         if records:
             sample[table.name] = records if table.rows == "many" else records[0]
     return sample
 
 
-def _record(table: SchemaTable, row: dict[str, str | bool], number: int) -> dict[str, Any]:
-    """Row *number*'s values by column name, or nothing when nothing was typed in it."""
-    if not any(_filled(row.get(column.id)) for column in table.columns if not column.index):
+def _record(
+    columns: Sequence[SchemaColumn], row: dict[str, str | bool], number: int
+) -> dict[str, Any]:
+    """Row *number*'s values in *columns* by column name, or nothing when nothing was typed
+    in them."""
+    if not any(_filled(row.get(column.id)) for column in columns if not column.index):
         return {}
     record: dict[str, Any] = {}
-    for column in table.columns:
+    for column in columns:
         raw = row.get(column.id)
         if column.index:
             record[column.name] = number

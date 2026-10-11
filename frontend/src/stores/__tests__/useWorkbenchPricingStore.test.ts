@@ -24,6 +24,11 @@ const column = (id: string, name: string, type: SchemaColumn["type"]): SchemaCol
   label: "",
   key: false,
   index: false,
+  help: "",
+  placeholder: "",
+  number_format: "general",
+  decimal_places: null,
+  use_grouping: true,
   required: false,
   min: null,
   max: null,
@@ -35,7 +40,7 @@ const form: FormSpec = {
   version: 1,
   name: "t",
   schema: { tables: [policy, pricing] },
-  pages: [{ id: "p", title: "Sheet 1", widgets: [] }],
+  pages: [{ id: "p", title: "Sheet 1", show_when: { match: "all", conditions: [] }, widgets: [] }],
   sample: { t1: [{ c1: "100000" }] },
 }
 

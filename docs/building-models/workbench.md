@@ -50,9 +50,15 @@ The tables the sheets work with, and the pipeline's tables. Each table has a nam
 row** per quote, such as policy details, or **Many rows**, such as an equipment schedule.
 Each column has a type (Text, Integer, Decimal, True/false or Date, drawn as the step editor
 draws a value of that kind and changed from its marker), a name and, in a many-row table,
-whether it is a **key**, part of what says which row is which. **Label and rules** beside a
-column opens its label and, in an input table, the rules an underwriter's value must meet:
-required, a range for a number, the allowed values.
+whether it is a **key**, part of what says which row is which. **Label, help, rules and
+format** beside a column opens its details: its label; its **help**, shown as a small mark
+beside the label on the sheets; for an Integer or a Decimal, its **format** (General,
+Number, Percentage or a currency), decimal places and thousands separators, as the Explore
+pivot offers them; and, in an input table, its **placeholder**, what an empty cell shows
+(any type but True/false and Date), and the rules an underwriter's value must meet:
+required, a range for a number, the allowed values. A number shows in its format wherever
+the sheets show it, a percentage as the value times 100, so you type 0.125 for 12.5%;
+while you type into a cell it shows as typed, and what is typed is what is saved and priced.
 
 - Enter in a column's name adds the next column; Alt+Up and Alt+Down move one.
 - **Add index** on a many-row table adds a column first in the table, `row_number` until
@@ -62,7 +68,7 @@ required, a range for a number, the allowed values.
   whatever its case), a column's name is an identifier that is not a Python keyword, unique
   in its table, a many-row table needs a key, an input column's range must not be inverted
   and its allowed values must be of its type, and a True/false or Date column can have none.
-  Changing a column's type drops the rules the new type cannot have.
+  Changing a column's type drops the rules and the format the new type cannot have.
 - Removing a column or a table a sheet shows asks first, and takes it off the sheet.
 
 A table or a column you add reaches the pipeline when you save: the editor fetches the
@@ -79,9 +85,12 @@ where it lands):
 - A **Collection** shows columns of one-row tables as boxes with their labels above, its
   number of boxes across.
 
-Select a component to open its properties on the right: its title, its layout (a Table's
-rows, a Collection's columns across), the **order** of the fields it shows (drag, or Alt+Up
-and Alt+Down), and its **fields**, ticked from the schema tables of its kind. A grid holds
+Select a component to open its properties on the right: its title, when it shows (see
+[Showing sheets and components conditionally](#showing-sheets-and-components-conditionally)), its layout (a Table's
+rows and whether they are **fixed**, with no Add row or delete, or a Collection's columns
+across), a Table's **look** (compact or comfortable rows; gridlines between the rows, a full
+grid or none; row numbers; striped rows), the **order** of the fields it shows (drag, or
+Alt+Up and Alt+Down), and its **fields**, ticked from the schema tables of its kind. A grid holds
 one kind of row, so once a Table shows a field, tables whose rows do not line up with it
 (keyed differently) are greyed out; an input table and an output table with the same key
 line up, so each row can show its premium. Output columns are shaded.
@@ -93,17 +102,53 @@ deselects it; Ctrl+Z and Ctrl+Y undo and redo. Ctrl+1 fits the sheet to the wind
 the zoom runs from 25% to 200%. A component with a problem — no fields, a column no longer in the schema, a table
 of the other kind — gets a dashed frame that names the problem.
 
-Sheets have tabs along the top: **+** adds one, double-click (or F2) renames one, and the cross on
-the showing tab deletes it (asking first when components are on it; the schema and the
-sample stay).
+Sheets have tabs along the top: **+** adds one, double-click (or F2) renames one, the
+settings mark on the showing tab opens the sheet's own panel (its title and when it shows),
+and the cross beside it deletes it (asking first when components are on it; the schema and
+the sample stay).
+
+## Showing sheets and components conditionally
+
+A sheet or a component can show only when the quote calls for it: a business interruption
+sheet only while its cover is ticked, a fleet schedule only while the class of business is
+Fleet, a referral note only while the sum insured is above a limit. Set it under **Show
+when**, in a component's properties or in a sheet's own panel. **Add condition** tests a
+column of a one-row input table:
+
+- a tick box **is ticked** or **is not ticked**;
+- any other column **is filled** or **is empty**, and **equals** or **does not equal** a
+  value;
+- a text or number column **is one of** or **is not one of** some values, ticked from its
+  allowed values or typed comma-separated;
+- a number **is greater than**, **is at least**, **is less than** or **is at most** a
+  value, and a date **is after**, **is on or after**, **is before** or **is on or before**
+  one.
+
+With two or more conditions, choose whether **all** or **any** of them must hold. A
+component on a hidden sheet is hidden too, and a sheet waiting on a box that sits on a
+hidden sheet is hidden with it, so a cover and its extensions hide and show in a chain.
+
+While building, the sample decides: a hidden sheet's tab and a hidden component are faded,
+their eye struck through (hover it to read the conditions), and you can still select and
+edit them. In Preview the quote decides as it is typed: a hidden sheet has no tab, and a
+hidden component is not drawn; its space stays empty, since components are placed freely.
+
+A quote is what the sheets show. Values typed into hidden cells are left out of what is
+priced, as if they had never been typed, for the sample priced live (and the Workbench
+Input's copy of it) and for the quote in Preview, and a hidden required cell never stops
+**Price**. The values are kept, so ticking the cover again brings them back. A condition
+that cannot work (its column gone or retyped, a missing value) and a sheet nothing could
+show again once hidden (its tick box only on that very sheet) are named on the sheet's tab
+or the component's dashed frame.
 
 ## The sample
 
 Type a sample quote straight into the components while building: a Collection's boxes
 hold its tables' one row, and a Table's grid holds its tables' rows, with **Add row** and a
-delete on each row (they add and delete the row in every input table the grid shows, so
-the cells stay side by side). Each cell is the control its column calls for: a tick box, a
-dropdown of the allowed values, a date picker, or a text field. The sample is part of what
+delete on each row unless its rows are fixed (they add and delete the row in every input
+table the grid shows, so the cells stay side by side). Each cell is the control its column
+calls for: a tick box, a dropdown of the allowed values, a date picker, or a text field. An
+empty cell is blank, or shows its column's placeholder. The sample is part of what
 **Save** writes, undone like any other edit, and it is what the
 [Workbench Input](nodes/workbench-input.md)'s previews run on once saved.
 
@@ -119,7 +164,8 @@ Table's output columns show the row in the answer keyed like each grid row.
 **Preview** shows the sheets as an underwriter uses them: the same components at the same
 positions, with nothing to move or lay out. Type a quote into the cells, kept apart from
 the sample (it is never saved, and stays while you switch to Build and back), and press
-**Price**, enabled once something is typed into the tables the schema has. Haute first checks every cell against its column's rules: a required cell left
+**Price**, enabled once something is typed into the tables the schema has, in cells the
+sheets show. Haute first checks every cell the sheets show against its column's rules: a required cell left
 empty, a number that is not one, a whole number that is not whole, a number outside its
 range, a value that is not one of the allowed ones. A cell that breaks a rule is outlined,
 naming the problem when you hover, and the toolbar says how many need attention; the marks

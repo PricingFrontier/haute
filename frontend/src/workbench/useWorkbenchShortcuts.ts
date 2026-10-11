@@ -13,11 +13,12 @@ const NUDGE_BURST_MS = 800
  * Ctrl+S saves the project through the host, as the toolbar's Save does, with a focused
  * field's edit included; while building, Ctrl+Z and Ctrl+Shift+Z (or Ctrl+Y) undo and
  * redo an edit outside a text field. While the sheets show, building or in Preview,
- * Ctrl+1 fits the sheet to its viewport; while building, with a component selected,
- * Escape deselects it, Delete or Backspace removes it, Ctrl+D duplicates it and the
- * arrow keys nudge it by a grid step (Shift: a pixel), a burst of nudges being one undo
- * step; none of that from a control, whose own keys pick an option. Keys in a modal
- * dialog are the dialog's, as they are for the pipeline editor's shortcuts.
+ * Ctrl+1 fits the sheet to its viewport; while building, Escape closes the sheet's own
+ * panel and, with a component selected, Escape deselects it, Delete or Backspace removes
+ * it, Ctrl+D duplicates it and the arrow keys nudge it by a grid step (Shift: a pixel),
+ * a burst of nudges being one undo step; none of that from a control, whose own keys
+ * pick an option. Keys in a modal dialog are the dialog's, as they are for the pipeline
+ * editor's shortcuts.
  */
 export default function useWorkbenchShortcuts(onSave: () => void): void {
   // The component being nudged, when its burst ends, and the form the last nudge made:
@@ -54,6 +55,11 @@ export default function useWorkbenchShortcuts(onSave: () => void): void {
         return
       }
       if (previewing) return
+      if (view.sheetSelected && e.key === "Escape") {
+        e.preventDefault()
+        view.select(null)
+        return
+      }
       const selected = view.selectedId === null ? null : findWidget(forms.form, view.selectedId)?.widget ?? null
       if (selected === null) return
       if (e.key === "Escape") {

@@ -50,7 +50,7 @@ vi.mock("../api/workbench", () => ({
   fetchWorkbenchStatus: vi.fn(() => Promise.resolve({ enabled: false, form: null })),
   fetchWorkbenchTables: vi.fn(() => Promise.resolve({ tables: [], sample: {}, response_tables: [] })),
   fetchWorkbenchForm: vi.fn(() => Promise.resolve({
-    form: { version: 1, name: "motor", schema: { tables: [] }, pages: [{ id: "page_1", title: "Sheet 1", widgets: [] }], sample: {} },
+    form: { version: 1, name: "motor", schema: { tables: [] }, pages: [{ id: "page_1", title: "Sheet 1", show_when: { match: "all", conditions: [] }, widgets: [] }], sample: {} },
     revision: "form-rev-0",
   })),
   saveWorkbenchForm: vi.fn((form: unknown) => Promise.resolve({ form, revision: "form-rev-1" })),

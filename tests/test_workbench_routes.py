@@ -183,6 +183,11 @@ def test_the_form_is_served_with_its_revision_and_saved_against_it(project: Path
         "max": None,
         "options": [],
         "index": False,
+        "help": "",
+        "placeholder": "",
+        "number_format": "general",
+        "decimal_places": None,
+        "use_grouping": True,
     }
     revision = body["revision"]
     assert isinstance(revision, str) and len(revision) == 16
@@ -436,6 +441,50 @@ def test_the_tables_of_an_unsaved_form_are_served_without_writing_it(project: Pa
     assert [t["name"] for t in client().get("/api/workbench/tables").json()["tables"]] == [
         "policy_details"
     ]
+
+
+def test_a_value_typed_on_a_sheet_that_does_not_show_is_left_out_of_the_sample(
+    project: Path,
+) -> None:
+    enable(project)
+    policy = {**POLICY, "columns": [*POLICY["columns"], column("bi_cover", "bool")]}
+    # The second sheet shows only while the box on the first is ticked.
+    shown = {"id": "w_policy", "type": "collection", "x": 0, "y": 0, "w": 720, "h": 120}
+    typed = {"c_state": "CA", "c_exposure": "1,000", "c_bi_cover": False}
+    unsaved = {
+        **form(policy, sample={"t1": [typed]}),
+        "pages": [
+            {
+                "id": "p_main",
+                "title": "Main",
+                "widgets": [
+                    {
+                        **shown,
+                        "fields": [
+                            {"table": "t1", "column": "c_state"},
+                            {"table": "t1", "column": "c_bi_cover"},
+                        ],
+                    }
+                ],
+            },
+            {
+                "id": "p_bi",
+                "title": "Business interruption",
+                "show_when": {
+                    "conditions": [{"table": "t1", "column": "c_bi_cover", "op": "ticked"}]
+                },
+                "widgets": [
+                    {**shown, "id": "w_bi", "fields": [{"table": "t1", "column": "c_exposure"}]}
+                ],
+            },
+        ],
+    }
+
+    posted = client().post("/api/workbench/tables", json={"form": unsaved})
+
+    assert posted.status_code == 200, posted.text
+    # The box is unticked, so it is false, and the exposure on the hidden sheet is left out.
+    assert posted.json()["sample"] == {"policy_details": {"state": "CA", "bi_cover": False}}
 
 
 def test_an_unsaved_form_the_pipeline_cannot_take_answers_the_structured_422(

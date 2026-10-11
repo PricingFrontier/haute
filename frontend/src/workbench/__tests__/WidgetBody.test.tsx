@@ -1,6 +1,7 @@
 /**
  * A component's cells (specs/workbench): the sample typed into a Collection's boxes and a
- * Table's grid while building, rows added and deleted across the tables a grid shows,
+ * Table's grid while building, rows added and deleted across the tables a grid shows, a
+ * grid drawn as its Table's options say,
  * an output box showing what pricing the sample gave, dimmed once the sample has moved
  * on, a Table's output columns matched to its rows by key, and in Preview the quote
  * typed apart from the sample with the cells that break their column's rules marked.
@@ -13,11 +14,11 @@ import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore from "../../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { valuesBasis } from "../../utils/sheetValues"
-import { pricingBasis, shownFields, toggleField } from "../../utils/workbenchForm"
+import { pricingBasis, shownFields, toggleField, updateSchemaColumn, updateWidget } from "../../utils/workbenchForm"
 import SheetCanvas from "../SheetCanvas"
 import { SheetValuesContext, usePreviewValues, useSampleValues } from "../useSheetValues"
 import WidgetBody from "../WidgetBody"
-import { currentForm, loadForm, releasePointer, sheetForm, stubLayout } from "./fixtures"
+import { column, currentForm, loadForm, releasePointer, sheetForm, stubLayout } from "./fixtures"
 
 const widget = (id: string) => {
   const found = currentForm().pages[0].widgets.find((candidate) => candidate.id === id)
@@ -93,6 +94,86 @@ describe("WidgetBody", () => {
     expect(screen.getAllByRole("row")).toHaveLength(4)
   })
 
+  it("draws a Table as its options say, and with its rows fixed shows every row typed but no Add row or delete", () => {
+    const bodyRows = () => screen.getAllByRole("row").slice(1)
+    const cellOf = (name: string) => screen.getByRole("textbox", { name }).closest("td")
+
+    // By default: numbered, compact rows lined between them, every other one shaded, each
+    // with a delete at its end.
+    renderBody("w_grid")
+    expect(screen.getAllByRole("columnheader")).toHaveLength(4)
+    expect(screen.getAllByRole("columnheader")[0]).toHaveTextContent("#")
+    expect(bodyRows()[0].children).toHaveLength(4)
+    expect(bodyRows()[0].children[0]).toHaveTextContent("1")
+    expect(bodyRows()[0]).toHaveClass("even:bg-[var(--chip-rest)]")
+    expect(bodyRows()[0].style.borderBottom).toBe("1px solid var(--border-subtle)")
+    expect(screen.getByRole("textbox", { name: "Item row 1" })).toHaveClass("h-7")
+    expect(cellOf("Value row 1")?.style.borderLeft).toBe("")
+    cleanup()
+
+    const form = updateWidget(sheetForm(), "w_grid", { row_numbers: false, density: "comfortable", gridlines: "all", striped: false, fixed_rows: true })
+    form.sample = { equipment: [{ "equipment.item": "A" }, {}, {}, { "equipment.item": "D" }] }
+    loadForm(form)
+    renderBody("w_grid")
+    expect(screen.getAllByRole("columnheader").map((header) => header.textContent)).toEqual(["Item", "Value"])
+    expect(bodyRows()[0].children).toHaveLength(2)
+    expect(bodyRows()[0]).not.toHaveClass("even:bg-[var(--chip-rest)]")
+    expect(screen.getByRole("textbox", { name: "Item row 1" })).toHaveClass("h-9")
+    // A line between the columns as well as the rows, but none at the grid's left edge.
+    expect(cellOf("Value row 1")?.style.borderLeft).toBe("1px solid var(--border-subtle)")
+    expect(cellOf("Item row 1")?.style.borderLeft).toBe("")
+    // Every row typed shows, one more than the grid's 3, though none can be added or deleted.
+    expect(bodyRows()).toHaveLength(4)
+    expect(screen.getByRole("textbox", { name: "Item row 4" })).toHaveValue("D")
+    expect(screen.queryByRole("button", { name: "Add row" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Delete row 1" })).not.toBeInTheDocument()
+    cleanup()
+
+    // No gridlines: no line between the rows, nor before an output column.
+    loadForm(updateWidget(toggleField(sheetForm(), "w_grid", { table: "premiums", column: "premiums.premium" }), "w_grid", { gridlines: "none" }))
+    renderBody("w_grid")
+    expect(bodyRows()[0].style.borderBottom).toBe("")
+    expect(screen.getByTestId("priced-premiums:premiums.premium-1").style.borderLeft).toBe("")
+  })
+
+  it("gives a checkbox's cell in a grid its row's height at either density", () => {
+    const form = sheetForm()
+    form.schema.tables[1].columns.push(column("equipment.insured", "insured", { type: "bool" }))
+    const grid = toggleField(form, "w_grid", { table: "equipment", column: "equipment.insured" })
+    loadForm(grid)
+    renderBody("w_grid")
+    expect(screen.getByRole("checkbox", { name: "Insured row 1" }).closest("td")).toHaveClass("h-7")
+    cleanup()
+
+    loadForm(updateWidget(grid, "w_grid", { density: "comfortable" }))
+    renderBody("w_grid")
+    expect(screen.getByRole("checkbox", { name: "Insured row 1" }).closest("td")).toHaveClass("h-9")
+  })
+
+  it("leaves an empty dropdown blank or showing its column's placeholder, and shows a number's allowed values in its format", () => {
+    const options = (name: string) => within(screen.getByRole("combobox", { name })).getAllByRole("option")
+    renderBody("w_boxes")
+    expect(options("State").map((option) => option.textContent)).toEqual(["", "CA", "NY"])
+    cleanup()
+
+    let form = updateSchemaColumn(sheetForm(), "policy", "policy.state", { placeholder: "Pick a state" })
+    form = updateSchemaColumn(form, "equipment", "equipment.value", { options: ["1000", "250000"], number_format: "currency_gbp", decimal_places: 0 })
+    loadForm(form)
+    renderBody("w_boxes")
+    expect(options("State")[0]).toHaveTextContent("Pick a state")
+    cleanup()
+
+    // Each allowed value shows in the format but is held as typed.
+    renderBody("w_grid")
+    expect(options("Value row 1").map((option) => [option.getAttribute("value"), option.textContent])).toEqual([
+      ["", ""],
+      ["1000", "£1,000"],
+      ["250000", "£250,000"],
+    ])
+    fireEvent.change(screen.getByRole("combobox", { name: "Value row 1" }), { target: { value: "250000" } })
+    expect(currentForm().sample.equipment).toEqual([{ "equipment.value": "250000" }])
+  })
+
   it("shows what pricing the sample gave an output box, dimmed once the sample has moved on", () => {
     const form = toggleField(sheetForm(), "w_boxes", { table: "premiums", column: "premiums.premium" })
     loadForm(form)
@@ -114,6 +195,58 @@ describe("WidgetBody", () => {
     rerender(body("w_boxes"))
     expect(box()).toHaveTextContent("—")
     expect(box()).not.toHaveAttribute("data-stale")
+
+    // In its column's format, once it has one.
+    loadForm(updateSchemaColumn(currentForm(), "premiums", "premiums.premium", { number_format: "currency_gbp" }))
+    useWorkbenchPricingStore.setState({ price: { basis: pricingBasis(currentForm()), sample: {}, tables: { premiums: [{ premium: 1234.5 }] } } })
+    rerender(body("w_boxes"))
+    expect(box()).toHaveTextContent("£1,234.50")
+  })
+
+  it("shows numbers in their column's format, a cell as typed while typing, and a column's placeholder and help", () => {
+    let form = toggleField(sheetForm(), "w_grid", { table: "premiums", column: "premiums.premium" })
+    form = updateSchemaColumn(form, "equipment", "equipment.value", { number_format: "number", decimal_places: 0, help: "Replacement value" })
+    form = updateSchemaColumn(form, "equipment", "equipment.item", { placeholder: "e.g. Crane" })
+    form = updateSchemaColumn(form, "premiums", "premiums.premium", { number_format: "currency_gbp" })
+    form.sample = { equipment: [{ "equipment.item": "Crane", "equipment.value": "1234567.4" }] }
+    loadForm(form)
+    useWorkbenchPricingStore.setState({
+      price: { basis: pricingBasis(form), sample: { equipment: [{ item: "Crane" }] }, tables: { premiums: [{ item: "Crane", premium: 1234.5 }] } },
+    })
+    renderBody("w_grid")
+
+    const premium = screen.getByTestId("priced-premiums:premiums.premium-1")
+    expect(premium).toHaveTextContent("£1,234.50")
+    // An output column is lined off from the inputs and tinted green.
+    expect(premium.style.borderLeft).toBe("1px solid var(--border)")
+    expect(premium.style.background).toBe("var(--workbench-output-cell-bg)")
+    // An empty number cell is blank, with no hint that reads as a value.
+    expect(screen.getByRole("textbox", { name: "Value row 2" })).not.toHaveAttribute("placeholder")
+    const value = screen.getByRole("textbox", { name: "Value row 1" })
+    expect(value).toHaveValue("1,234,567")
+    fireEvent.focus(value)
+    expect(value).toHaveValue("1234567.4")
+    fireEvent.change(value, { target: { value: "2500" } })
+    fireEvent.blur(value)
+    expect(currentForm().sample.equipment).toEqual([{ "equipment.item": "Crane", "equipment.value": "2500" }])
+    expect(value).toHaveValue("2,500")
+
+    expect(screen.getByRole("textbox", { name: "Item row 2" })).toHaveAttribute("placeholder", "e.g. Crane")
+    expect(screen.getByTitle("Replacement value")).toHaveTextContent("Replacement value")
+  })
+
+  it("takes a percent as the fraction typed, 0.125, and shows it as 12.5% once typed", () => {
+    loadForm(updateSchemaColumn(sheetForm(), "equipment", "equipment.value", { number_format: "percent", decimal_places: 1 }))
+    renderBody("w_grid")
+    const value = screen.getByRole("textbox", { name: "Value row 1" })
+
+    fireEvent.focus(value)
+    fireEvent.change(value, { target: { value: "0.125" } })
+    fireEvent.blur(value)
+    expect(currentForm().sample.equipment).toEqual([{ "equipment.value": "0.125" }])
+    expect(value).toHaveValue("12.5%")
+    fireEvent.focus(value)
+    expect(value).toHaveValue("0.125")
   })
 
   it("shows a Table's output columns matched to its rows by key, as the server typed the keys", () => {

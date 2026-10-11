@@ -1,20 +1,20 @@
 /**
  * How a component looks on a sheet (specs/workbench): a Collection's fields as labelled
- * boxes and a Table's as the columns of a grid. An input column takes the values the
+ * boxes and a Table's as the columns of a grid, drawn as its options say. An input column takes the values the
  * sheet holds, the sample while building or an underwriter's quote in Preview, through
  * the control its type calls for, marked when the value breaks the column's rules; an
  * output column is shaded and shows what pricing those values gave its row, dimmed until
  * the next answer. Pressing a cell types there and selects the component rather than
  * moving it.
  */
-import { Plus, Trash2 } from "lucide-react"
-import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react"
+import { Info, Plus, Trash2 } from "lucide-react"
+import { useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react"
 import { CommittedTextField } from "../components/form"
 import { INPUT_STYLE } from "../panels/editors/_shared"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
 import { formatValue } from "../utils/formatValue"
-import { cellKey, pricedRows, type PricedRows } from "../utils/sheetValues"
-import { readableName, tableGrain, type SampleRow, type SampleValue, type ShownField, type Widget } from "../utils/workbenchForm"
+import { cellKey, formattedNumber, pricedRows, type PricedRows } from "../utils/sheetValues"
+import { readableName, tableGrain, type SampleRow, type SampleValue, type ShownField, type TableOptions, type Widget } from "../utils/workbenchForm"
 import { isNumeric } from "./columnTypes"
 import { useSheetValues } from "./useSheetValues"
 
@@ -35,45 +35,65 @@ const fieldTitle = (found: Found): string =>
 const fieldLabel = (found: Found): string =>
   found === null ? "Missing column" : found.column.label || readableName(found.column.name)
 
-/** A field's label, with a star when an input must be filled in. */
+/** A field's label, with a star when an input must be filled in and a mark naming its help. */
 function FieldLabel({ found }: { found: Found }) {
   return (
     <>
       {fieldLabel(found)}
       {found?.table.role === "input" && found.column.required && <span style={{ color: "var(--danger)" }}> *</span>}
+      {found?.column.help && (
+        <span title={found.column.help} className="ml-1 inline-flex align-[-1px] normal-case" style={{ color: "var(--text-secondary)" }}>
+          <Info size={11} aria-hidden="true" />
+          <span className="sr-only">{found.column.help}</span>
+        </span>
+      )}
     </>
   )
 }
 
 const BOX_CLASS = "focus-ring h-9 w-full rounded-md px-2.5 text-xs"
-const GRID_CELL_CLASS = "focus-ring h-8 w-full rounded-none border-0 bg-transparent px-2.5 text-xs"
+/** A grid cell reads as part of the sheet until focused, then fills and rings inside its edges; it is as tall as its row. */
+const GRID_CELL_CLASS =
+  "w-full rounded-none border-0 bg-transparent px-2.5 text-xs outline-none hover:bg-[var(--accent-soft-whisper)] focus:bg-[var(--accent-soft-faint)] focus:shadow-[inset_0_0_0_1px_var(--accent-outline)]"
+/** A grid row's height at each density: Haute's compact rows, or roomier ones. */
+const ROW_HEIGHT: Record<TableOptions["density"], string> = { compact: "h-7", comfortable: "h-9" }
 /** A cell whose value breaks its column's rules: outlined as a field in error is, naming the problem. */
 const PROBLEM_STYLE: CSSProperties = { boxShadow: "inset 0 0 0 1px var(--danger-border-strong)" }
 
-/** What an output cell shows: a dash before the first answer, for a column nothing filled, and after pricing fails. */
-const shown = (value: unknown): string => (value === undefined || value === null ? "—" : formatValue(value))
+/**
+ * What an output cell shows: its column's format of the value, a dash before the first
+ * answer, for a column nothing filled, and after pricing fails.
+ */
+const shown = (value: unknown, found: Found): string =>
+  value === undefined || value === null ? "—" : ((found && formattedNumber(found.column, value)) ?? formatValue(value))
 
-/** The control a field's type calls for, holding what the sheet has for it. */
+/**
+ * The control a field's type calls for, holding what the sheet has for it, or its
+ * column's placeholder while empty. A number column's format shows a number while the
+ * cell is not being typed in, the text as typed while it is.
+ */
 function Cell({
   found,
   value,
   onChange,
   label,
-  compact,
+  height,
   problem,
 }: {
   found: Fillable
   value: SampleValue | undefined
   onChange: (value: SampleValue) => void
   label: string
-  compact: boolean
+  /** In a Table's grid, its rows' height class; in a Collection's box, null. */
+  height: string | null
   /** What breaks the column's rules in the value, or null. */
   problem: string | null
 }) {
+  const [typing, setTyping] = useState(false)
   const { column } = found
   const text = typeof value === "string" ? value : ""
-  const className = compact ? GRID_CELL_CLASS : BOX_CLASS
-  const style = { ...(compact ? {} : INPUT_STYLE), ...(problem === null ? {} : PROBLEM_STYLE) }
+  const className = height === null ? BOX_CLASS : `${GRID_CELL_CLASS} ${height}`
+  const style = { ...(height === null ? INPUT_STYLE : {}), ...(problem === null ? {} : PROBLEM_STYLE) }
   const marked = problem === null ? {} : { "aria-invalid": true as const, title: problem }
   if (column.type === "bool") {
     return (
@@ -90,10 +110,10 @@ function Cell({
   if (column.options.length > 0) {
     return (
       <select {...marked} aria-label={label} value={text} onChange={(event) => onChange(event.target.value)} className={className} style={style}>
-        <option value="">{compact ? "" : "Select…"}</option>
+        <option value="">{column.placeholder}</option>
         {column.options.map((option) => (
           <option key={option} value={option}>
-            {option}
+            {formattedNumber(column, option) ?? option}
           </option>
         ))}
       </select>
@@ -106,10 +126,12 @@ function Cell({
     <CommittedTextField
       {...marked}
       aria-label={label}
-      value={text}
+      value={typing ? text : (formattedNumber(column, text) ?? text)}
       onCommit={onChange}
+      onFocus={() => setTyping(true)}
+      onBlur={() => setTyping(false)}
+      placeholder={column.placeholder || undefined}
       inputMode={isNumeric(column.type) ? "decimal" : undefined}
-      placeholder={isNumeric(column.type) ? "0" : undefined}
       className={`${className} ${isNumeric(column.type) ? "text-right tabular-nums" : ""}`}
       style={style}
     />
@@ -144,7 +166,7 @@ export default function WidgetBody({ widget, fields }: { widget: Widget; fields:
       ) : widget.type === "collection" ? (
         <FieldBoxes widgetId={widget.id} fields={fields} columns={widget.columns} />
       ) : (
-        <FieldGrid widgetId={widget.id} fields={fields} rows={widget.rows} />
+        <FieldGrid widgetId={widget.id} fields={fields} rows={widget.rows} options={widget} />
       )}
     </div>
   )
@@ -178,7 +200,7 @@ function FieldBoxes({ widgetId, fields, columns }: { widgetId: string; fields: S
                   value={rows[found.table.id]?.[0]?.[found.column.id]}
                   onChange={(value) => setCell(found.table.id, 0, found.column.id, value)}
                   label={fieldLabel(found)}
-                  compact={false}
+                  height={null}
                   problem={problems[cellKey(found.table.id, 0, found.column.id)] ?? null}
                 />
               </div>
@@ -194,7 +216,7 @@ function FieldBoxes({ widgetId, fields, columns }: { widgetId: string; fields: S
                   opacity: stale ? 0.5 : 1,
                 }}
               >
-                <span className="truncate">{found?.column.index ? "1" : shown(priced)}</span>
+                <span className="truncate">{found?.column.index ? "1" : shown(priced, found)}</span>
               </div>
             )}
           </div>
@@ -216,10 +238,13 @@ const padRows = (rows: readonly SampleRow[], length: number): SampleRow[] => [
  * their cells stay side by side; a one-row table's column, which the checks flag here,
  * shows that table's one value on every row. An output column shows what pricing gave
  * the row keyed like each grid row, through the first input table the grid shows that
- * is keyed alike, dimmed while the price is for other values.
+ * is keyed alike, dimmed while the price is for other values. Its options say whether
+ * the rows are numbered, how tall they are, which lines it draws, whether every other row
+ * is shaded and whether rows can be added and deleted; fixed or not, it shows every row
+ * the values hold.
  */
-function FieldGrid({ widgetId, fields, rows }: { widgetId: string; fields: ShownField[]; rows: number }) {
-  const { rows: held, setCell, setRows, price, basis, problems } = useSheetValues()
+function FieldGrid({ widgetId, fields, rows, options }: { widgetId: string; fields: ShownField[]; rows: number; options: TableOptions }) {
+  const { rows: held, setCell, setRows, price, basis, problems, quoted } = useSheetValues()
   const typeHere = useTypeHere(widgetId)
   const oneRow = (found: Fillable) => found.table.rows === "one"
   const inputTables = [...new Set(fields.flatMap(({ found }) => (fillable(found) && !oneRow(found) ? [found.table.id] : [])))]
@@ -236,51 +261,73 @@ function FieldGrid({ widgetId, fields, rows }: { widgetId: string; fields: Shown
       const input = fields.flatMap(({ found: shownField }) =>
         fillable(shownField) && !oneRow(shownField) && tableGrain(shownField.table) === tableGrain(output) ? [shownField.table] : [],
       )[0]
-      if (input === undefined) continue
+      // The input table as the values' quote reads it: a column the sheets hide fills no row,
+      // so the grid's filled rows are the quote's typed rows.
+      const read = quoted.tables.find((table) => table.id === input?.id)
+      if (input === undefined || read === undefined) continue
       const typed = price.sample[input.name]
       const grid = Array.from({ length: count }, (_, row) => held[input.id]?.[row])
-      matched.set(output.id, pricedRows(input, grid, Array.isArray(typed) ? (typed as PricedRows) : [], price.tables[output.name] ?? []))
+      matched.set(output.id, pricedRows(read, grid, Array.isArray(typed) ? (typed as PricedRows) : [], price.tables[output.name] ?? []))
     }
   }
   const pricedAt = (found: NonNullable<Found>, row: number): unknown =>
     found.table.rows === "one" ? price?.tables[found.table.name]?.[0]?.[found.column.name] : matched.get(found.table.id)?.[row]?.[found.column.name]
 
+  const { row_numbers: numbered, gridlines, striped, fixed_rows: fixed } = options
+  const height = ROW_HEIGHT[options.density]
+  // The line before a field's column: an output's, and every column's in a full grid; none
+  // without gridlines, or at the grid's left edge.
+  const ruleBefore = (found: Found, position: number): string | undefined => {
+    if (gridlines === "none" || (position === 0 && !numbered)) return undefined
+    if (found?.table.role === "output") return "1px solid var(--border)"
+    return gridlines === "all" ? "1px solid var(--border-subtle)" : undefined
+  }
+
+  const headRule = { borderBottom: "1px solid var(--border-bright)" }
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="min-h-0 flex-1 overflow-auto">
         <table className="w-full border-collapse text-xs">
-          <thead className="sticky top-0 z-10">
-            <tr style={{ background: "var(--bg-elevated)" }} className="text-left">
-              <th className="w-9 px-2 py-2 text-center font-normal" style={{ color: "var(--text-muted)" }}>
-                #
-              </th>
-              {fields.map(({ key, found }) => (
+          <thead className="sticky top-0 z-10" style={{ background: "var(--bg-elevated)" }}>
+            <tr className="text-left text-[11px] font-semibold tracking-wider uppercase">
+              {numbered && (
+                <th className="h-7 w-8 px-2 text-center font-semibold" style={{ ...headRule, color: "var(--text-disabled)" }}>
+                  #
+                </th>
+              )}
+              {fields.map(({ key, found }, position) => (
                 <th
                   key={key}
                   title={fieldTitle(found)}
-                  className={`min-w-32 px-2.5 py-2 font-medium ${found !== null && isNumeric(found.column.type) ? "text-right" : ""}`}
-                  style={{ color: labelColor(found) }}
+                  className={`h-7 min-w-32 truncate px-2.5 ${found !== null && isNumeric(found.column.type) ? "text-right" : ""}`}
+                  style={{ ...headRule, color: labelColor(found), borderLeft: ruleBefore(found, position) }}
                 >
                   <FieldLabel found={found} />
                 </th>
               ))}
-              <th className="w-9" />
+              {!fixed && <th className="w-8" style={headRule} />}
             </tr>
           </thead>
           <tbody>
             {Array.from({ length: count }, (_, row) => (
-              <tr key={row} className="group/row" style={{ borderTop: "1px solid var(--border)" }}>
-                <td className="text-center" style={{ color: "var(--text-secondary)" }}>
-                  {row + 1}
-                </td>
-                {fields.map(({ key, found }) => {
+              <tr
+                key={row}
+                className={`group/row transition-colors ${striped ? "even:bg-[var(--chip-rest)] " : ""}hover:bg-[var(--bg-hover)]`}
+                style={{ borderBottom: gridlines === "none" ? undefined : "1px solid var(--border-subtle)" }}
+              >
+                {numbered && (
+                  <td className="text-center text-[11px] tabular-nums" style={{ color: "var(--text-disabled)" }}>
+                    {row + 1}
+                  </td>
+                )}
+                {fields.map(({ key, found }, position) => {
                   if (fillable(found)) {
                     const at = oneRow(found) ? 0 : row
                     return (
                       <td
                         key={key}
-                        className={`pointer-events-auto p-0 ${found.column.type === "bool" ? "text-center" : ""}`}
-                        style={{ borderLeft: "1px solid var(--border)" }}
+                        className={`pointer-events-auto p-0 ${found.column.type === "bool" ? `${height} text-center` : ""}`}
+                        style={{ borderLeft: ruleBefore(found, position) }}
                         onPointerDown={typeHere}
                       >
                         <Cell
@@ -288,7 +335,7 @@ function FieldGrid({ widgetId, fields, rows }: { widgetId: string; fields: Shown
                           value={held[found.table.id]?.[at]?.[found.column.id]}
                           onChange={(value) => setCell(found.table.id, at, found.column.id, value)}
                           label={`${fieldLabel(found)} row ${row + 1}`}
-                          compact
+                          height={height}
                           problem={problems[cellKey(found.table.id, at, found.column.id)] ?? null}
                         />
                       </td>
@@ -301,50 +348,50 @@ function FieldGrid({ widgetId, fields, rows }: { widgetId: string; fields: Shown
                       key={key}
                       data-testid={output ? `priced-${key}-${row + 1}` : undefined}
                       data-stale={output && stale && priced !== undefined ? "true" : undefined}
-                      className="h-8 px-2.5 text-right tabular-nums transition-opacity"
+                      className={`${height} px-2.5 text-right tabular-nums transition-opacity`}
                       style={{
-                        borderLeft: "1px solid var(--border)",
-                        background: output ? "var(--bg-elevated)" : undefined,
+                        borderLeft: ruleBefore(found, position),
+                        background: output ? "var(--workbench-output-cell-bg)" : undefined,
                         color: priced === undefined || priced === null ? "var(--text-secondary)" : "var(--text-primary)",
                         opacity: output && stale ? 0.5 : 1,
                       }}
                     >
-                      {found?.column.index ? row + 1 : output ? shown(priced) : null}
+                      {found?.column.index ? row + 1 : output ? shown(priced, found) : null}
                     </td>
                   )
                 })}
-                <td className="text-center">
-                  {inputTables.length > 0 && (
-                    <button
-                      type="button"
-                      aria-label={`Delete row ${row + 1}`}
-                      title="Delete row"
-                      onClick={() => deleteRow(row)}
-                      onPointerDown={typeHere}
-                      className="icon-danger-btn focus-ring pointer-events-auto rounded p-1 opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100"
-                    >
-                      <Trash2 size={13} aria-hidden="true" />
-                    </button>
-                  )}
-                </td>
+                {!fixed && (
+                  <td className="text-center">
+                    {inputTables.length > 0 && (
+                      <button
+                        type="button"
+                        aria-label={`Delete row ${row + 1}`}
+                        title="Delete row"
+                        onClick={() => deleteRow(row)}
+                        onPointerDown={typeHere}
+                        className="icon-danger-btn focus-ring pointer-events-auto rounded p-1 opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100"
+                      >
+                        <Trash2 size={13} aria-hidden="true" />
+                      </button>
+                    )}
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>
         </table>
-      </div>
-      {inputTables.length > 0 && (
-        <div className="px-2 py-1.5" style={{ borderTop: "1px solid var(--border)" }}>
+        {inputTables.length > 0 && !fixed && (
           <button
             type="button"
             onClick={addRow}
             onPointerDown={typeHere}
-            className="quiet-action focus-ring pointer-events-auto inline-flex items-center gap-1 rounded px-1 py-0.5 text-[11px] font-medium"
+            className={`focus-ring pointer-events-auto flex ${height} w-full items-center gap-1.5 px-2.5 text-[11px] font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-accent)]`}
           >
-            <Plus size={11} aria-hidden="true" />
+            <Plus size={12} aria-hidden="true" />
             Add row
           </button>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   )
 }

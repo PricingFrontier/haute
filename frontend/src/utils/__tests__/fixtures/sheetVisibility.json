@@ -1,0 +1,1818 @@
+{
+  "description": "The cases the workbench's visibility rules are held to, on the server (src/haute/_workbench_visibility.py, tests/test_workbench_visibility.py) and in the view (frontend/src/utils/sheetVisibility.ts, sheetVisibility.test.ts) alike (specs/workbench). Each case names a form, replaces the show_when of the sheets and components it lists, and says, for the values typed (rows by table id, cells by column id), which sheets, components and input columns are hidden; a component on a hidden sheet is hidden too.",
+  "forms": {
+    "quote": {
+      "version": 1,
+      "name": "quote",
+      "schema": {
+        "tables": [
+          {
+            "id": "t_policy",
+            "name": "policy",
+            "role": "input",
+            "rows": "one",
+            "columns": [
+              {
+                "id": "c_bi",
+                "name": "bi_cover",
+                "type": "bool",
+                "label": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_class",
+                "name": "class_of_business",
+                "type": "str",
+                "label": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": ["Motor", "Fleet", "Property"],
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_name",
+                "name": "assured_name",
+                "type": "str",
+                "label": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_si",
+                "name": "sum_insured",
+                "type": "float",
+                "label": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_ref",
+                "name": "quote_reference",
+                "type": "str",
+                "label": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              }
+            ]
+          },
+          {
+            "id": "t_bi",
+            "name": "business_interruption",
+            "role": "input",
+            "rows": "one",
+            "columns": [
+              {
+                "id": "c_bi_si",
+                "name": "bi_sum_insured",
+                "type": "float",
+                "label": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_bi_more",
+                "name": "bi_extensions",
+                "type": "bool",
+                "label": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              }
+            ]
+          },
+          {
+            "id": "t_ext",
+            "name": "extensions",
+            "role": "input",
+            "rows": "one",
+            "columns": [
+              {
+                "id": "c_ext_days",
+                "name": "extension_days",
+                "type": "int",
+                "label": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              }
+            ]
+          },
+          {
+            "id": "t_items",
+            "name": "items",
+            "role": "input",
+            "rows": "many",
+            "columns": [
+              {
+                "id": "c_row",
+                "name": "row_number",
+                "type": "int",
+                "label": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "index": true,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_item",
+                "name": "item",
+                "type": "str",
+                "label": "",
+                "key": true,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_value",
+                "name": "value",
+                "type": "float",
+                "label": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              }
+            ]
+          },
+          {
+            "id": "t_out",
+            "name": "pricing",
+            "role": "output",
+            "rows": "one",
+            "columns": [
+              {
+                "id": "c_premium",
+                "name": "premium",
+                "type": "float",
+                "label": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              }
+            ]
+          }
+        ]
+      },
+      "pages": [
+        {
+          "id": "p_main",
+          "title": "Main",
+          "show_when": {"match": "all", "conditions": []},
+          "widgets": [
+            {
+              "id": "w_policy",
+              "x": 0,
+              "y": 0,
+              "w": 720,
+              "h": 120,
+              "type": "collection",
+              "title": "",
+              "fields": [
+                {"table": "t_policy", "column": "c_bi"},
+                {"table": "t_policy", "column": "c_class"},
+                {"table": "t_policy", "column": "c_name"},
+                {"table": "t_policy", "column": "c_si"}
+              ],
+              "show_when": {"match": "all", "conditions": []},
+              "columns": 3
+            },
+            {
+              "id": "w_premium",
+              "x": 0,
+              "y": 160,
+              "w": 720,
+              "h": 120,
+              "type": "collection",
+              "title": "",
+              "fields": [{"table": "t_out", "column": "c_premium"}],
+              "show_when": {"match": "all", "conditions": []},
+              "columns": 3
+            }
+          ]
+        },
+        {
+          "id": "p_bi",
+          "title": "Business interruption",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_policy", "column": "c_bi", "op": "ticked", "values": []}]
+          },
+          "widgets": [
+            {
+              "id": "w_bi",
+              "x": 0,
+              "y": 0,
+              "w": 720,
+              "h": 120,
+              "type": "collection",
+              "title": "",
+              "fields": [{"table": "t_bi", "column": "c_bi_si"}, {"table": "t_bi", "column": "c_bi_more"}],
+              "show_when": {"match": "all", "conditions": []},
+              "columns": 3
+            }
+          ]
+        },
+        {
+          "id": "p_ext",
+          "title": "Extensions",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_bi", "column": "c_bi_more", "op": "ticked", "values": []}]
+          },
+          "widgets": [
+            {
+              "id": "w_ext",
+              "x": 0,
+              "y": 0,
+              "w": 720,
+              "h": 120,
+              "type": "collection",
+              "title": "",
+              "fields": [{"table": "t_ext", "column": "c_ext_days"}],
+              "show_when": {"match": "all", "conditions": []},
+              "columns": 3
+            }
+          ]
+        },
+        {
+          "id": "p_items",
+          "title": "Items",
+          "show_when": {"match": "all", "conditions": []},
+          "widgets": [
+            {
+              "id": "w_items",
+              "x": 0,
+              "y": 0,
+              "w": 720,
+              "h": 200,
+              "type": "tableInput",
+              "title": "",
+              "fields": [
+                {"table": "t_items", "column": "c_row"},
+                {"table": "t_items", "column": "c_item"},
+                {"table": "t_items", "column": "c_value"}
+              ],
+              "show_when": {
+                "match": "all",
+                "conditions": [{"table": "t_policy", "column": "c_class", "op": "one_of", "values": ["Property"]}]
+              },
+              "rows": 3,
+              "row_numbers": true,
+              "density": "compact",
+              "gridlines": "rows",
+              "striped": true,
+              "fixed_rows": false
+            },
+            {
+              "id": "w_fleet",
+              "x": 0,
+              "y": 240,
+              "w": 720,
+              "h": 120,
+              "type": "collection",
+              "title": "",
+              "fields": [{"table": "t_policy", "column": "c_name"}],
+              "show_when": {
+                "match": "all",
+                "conditions": [{"table": "t_policy", "column": "c_class", "op": "equals", "values": ["Fleet"]}]
+              },
+              "columns": 3
+            }
+          ]
+        }
+      ],
+      "sample": {}
+    },
+    "tests": {
+      "version": 1,
+      "name": "tests",
+      "schema": {
+        "tables": [
+          {
+            "id": "t_in",
+            "name": "inputs",
+            "role": "input",
+            "rows": "one",
+            "columns": [
+              {
+                "id": "c_tick",
+                "name": "tick",
+                "type": "bool",
+                "label": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_text",
+                "name": "text",
+                "type": "str",
+                "label": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_choice",
+                "name": "choice",
+                "type": "str",
+                "label": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": ["A", "B", "C"],
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_int",
+                "name": "count",
+                "type": "int",
+                "label": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_num",
+                "name": "amount",
+                "type": "float",
+                "label": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_day",
+                "name": "day",
+                "type": "date",
+                "label": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              }
+            ]
+          },
+          {
+            "id": "t_many",
+            "name": "lines",
+            "role": "input",
+            "rows": "many",
+            "columns": [
+              {
+                "id": "c_key",
+                "name": "key",
+                "type": "str",
+                "label": "",
+                "key": true,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_v",
+                "name": "v",
+                "type": "float",
+                "label": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              }
+            ]
+          },
+          {
+            "id": "t_out",
+            "name": "outputs",
+            "role": "output",
+            "rows": "one",
+            "columns": [
+              {
+                "id": "c_o",
+                "name": "o",
+                "type": "float",
+                "label": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              }
+            ]
+          },
+          {
+            "id": "t_target",
+            "name": "target",
+            "role": "input",
+            "rows": "one",
+            "columns": [
+              {
+                "id": "c_x",
+                "name": "x",
+                "type": "str",
+                "label": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              }
+            ]
+          }
+        ]
+      },
+      "pages": [
+        {
+          "id": "p_main",
+          "title": "Main",
+          "show_when": {"match": "all", "conditions": []},
+          "widgets": [
+            {
+              "id": "w_in",
+              "x": 0,
+              "y": 0,
+              "w": 720,
+              "h": 120,
+              "type": "collection",
+              "title": "",
+              "fields": [
+                {"table": "t_in", "column": "c_tick"},
+                {"table": "t_in", "column": "c_text"},
+                {"table": "t_in", "column": "c_choice"},
+                {"table": "t_in", "column": "c_int"},
+                {"table": "t_in", "column": "c_num"},
+                {"table": "t_in", "column": "c_day"}
+              ],
+              "show_when": {"match": "all", "conditions": []},
+              "columns": 3
+            },
+            {
+              "id": "w_many",
+              "x": 0,
+              "y": 160,
+              "w": 720,
+              "h": 200,
+              "type": "tableInput",
+              "title": "",
+              "fields": [{"table": "t_many", "column": "c_key"}, {"table": "t_many", "column": "c_v"}],
+              "show_when": {"match": "all", "conditions": []},
+              "rows": 3,
+              "row_numbers": true,
+              "density": "compact",
+              "gridlines": "rows",
+              "striped": true,
+              "fixed_rows": false
+            },
+            {
+              "id": "w_out",
+              "x": 0,
+              "y": 400,
+              "w": 720,
+              "h": 120,
+              "type": "collection",
+              "title": "",
+              "fields": [{"table": "t_out", "column": "c_o"}],
+              "show_when": {"match": "all", "conditions": []},
+              "columns": 3
+            }
+          ]
+        },
+        {
+          "id": "p_target",
+          "title": "Target",
+          "show_when": {"match": "all", "conditions": []},
+          "widgets": [
+            {
+              "id": "w_target",
+              "x": 0,
+              "y": 0,
+              "w": 720,
+              "h": 120,
+              "type": "collection",
+              "title": "",
+              "fields": [{"table": "t_target", "column": "c_x"}],
+              "show_when": {"match": "all", "conditions": []},
+              "columns": 3
+            }
+          ]
+        }
+      ],
+      "sample": {}
+    }
+  },
+  "cases": [
+    {
+      "name": "nothing typed hides what waits on a value, but not the index or a column also shown elsewhere",
+      "form": "quote",
+      "values": {},
+      "hidden_pages": ["p_bi", "p_ext"],
+      "hidden_widgets": ["w_bi", "w_ext", "w_fleet", "w_items"],
+      "hidden_columns": [
+        ["t_bi", "c_bi_more"],
+        ["t_bi", "c_bi_si"],
+        ["t_ext", "c_ext_days"],
+        ["t_items", "c_item"],
+        ["t_items", "c_value"]
+      ]
+    },
+    {
+      "name": "a ticked box shows the sheet waiting on it",
+      "form": "quote",
+      "values": {"t_policy": [{"c_bi": true}]},
+      "hidden_pages": ["p_ext"],
+      "hidden_widgets": ["w_ext", "w_fleet", "w_items"],
+      "hidden_columns": [["t_ext", "c_ext_days"], ["t_items", "c_item"], ["t_items", "c_value"]]
+    },
+    {
+      "name": "an unticked box hides as an untouched one does",
+      "form": "quote",
+      "values": {"t_policy": [{"c_bi": false}]},
+      "hidden_pages": ["p_bi", "p_ext"],
+      "hidden_widgets": ["w_bi", "w_ext", "w_fleet", "w_items"],
+      "hidden_columns": [
+        ["t_bi", "c_bi_more"],
+        ["t_bi", "c_bi_si"],
+        ["t_ext", "c_ext_days"],
+        ["t_items", "c_item"],
+        ["t_items", "c_value"]
+      ]
+    },
+    {
+      "name": "a chain of boxes shows each sheet in turn",
+      "form": "quote",
+      "values": {"t_policy": [{"c_bi": true}], "t_bi": [{"c_bi_more": true}]},
+      "hidden_pages": [],
+      "hidden_widgets": ["w_fleet", "w_items"],
+      "hidden_columns": [["t_items", "c_item"], ["t_items", "c_value"]]
+    },
+    {
+      "name": "a sheet waiting on a box on a hidden sheet is hidden whatever the box holds",
+      "form": "quote",
+      "values": {"t_policy": [{"c_bi": false}], "t_bi": [{"c_bi_more": true}]},
+      "hidden_pages": ["p_bi", "p_ext"],
+      "hidden_widgets": ["w_bi", "w_ext", "w_fleet", "w_items"],
+      "hidden_columns": [
+        ["t_bi", "c_bi_more"],
+        ["t_bi", "c_bi_si"],
+        ["t_ext", "c_ext_days"],
+        ["t_items", "c_item"],
+        ["t_items", "c_value"]
+      ]
+    },
+    {
+      "name": "a component hides on a sheet that shows, and its column also on a component that shows stays",
+      "form": "quote",
+      "values": {"t_policy": [{"c_class": "Motor", "c_name": "Acme"}]},
+      "hidden_pages": ["p_bi", "p_ext"],
+      "hidden_widgets": ["w_bi", "w_ext", "w_fleet", "w_items"],
+      "hidden_columns": [
+        ["t_bi", "c_bi_more"],
+        ["t_bi", "c_bi_si"],
+        ["t_ext", "c_ext_days"],
+        ["t_items", "c_item"],
+        ["t_items", "c_value"]
+      ]
+    },
+    {
+      "name": "a component shows while its conditions hold",
+      "form": "quote",
+      "values": {"t_policy": [{"c_class": "Property"}]},
+      "hidden_pages": ["p_bi", "p_ext"],
+      "hidden_widgets": ["w_bi", "w_ext", "w_fleet"],
+      "hidden_columns": [["t_bi", "c_bi_more"], ["t_bi", "c_bi_si"], ["t_ext", "c_ext_days"]]
+    },
+    {
+      "name": "a component whose conditions hold is hidden with its sheet",
+      "form": "quote",
+      "show_when": {
+        "w_bi": {
+          "match": "all",
+          "conditions": [{"table": "t_policy", "column": "c_class", "op": "equals", "values": ["Motor"]}]
+        }
+      },
+      "values": {"t_policy": [{"c_class": "Motor"}]},
+      "hidden_pages": ["p_bi", "p_ext"],
+      "hidden_widgets": ["w_bi", "w_ext", "w_fleet", "w_items"],
+      "hidden_columns": [
+        ["t_bi", "c_bi_more"],
+        ["t_bi", "c_bi_si"],
+        ["t_ext", "c_ext_days"],
+        ["t_items", "c_item"],
+        ["t_items", "c_value"]
+      ]
+    },
+    {
+      "name": "a condition on a column no component has never holds, and that column is never hidden",
+      "form": "quote",
+      "show_when": {
+        "p_items": {
+          "match": "all",
+          "conditions": [{"table": "t_policy", "column": "c_ref", "op": "filled", "values": []}]
+        }
+      },
+      "values": {"t_policy": [{"c_ref": "Q-1", "c_class": "Property"}]},
+      "hidden_pages": ["p_bi", "p_ext", "p_items"],
+      "hidden_widgets": ["w_bi", "w_ext", "w_fleet", "w_items"],
+      "hidden_columns": [
+        ["t_bi", "c_bi_more"],
+        ["t_bi", "c_bi_si"],
+        ["t_ext", "c_ext_days"],
+        ["t_items", "c_item"],
+        ["t_items", "c_value"]
+      ]
+    },
+    {
+      "name": "a sheet testing a column only on itself shows while the value passes",
+      "form": "quote",
+      "show_when": {
+        "p_bi": {
+          "match": "all",
+          "conditions": [{"table": "t_bi", "column": "c_bi_more", "op": "ticked", "values": []}]
+        }
+      },
+      "values": {"t_bi": [{"c_bi_more": true}]},
+      "hidden_pages": [],
+      "hidden_widgets": ["w_fleet", "w_items"],
+      "hidden_columns": [["t_items", "c_item"], ["t_items", "c_value"]]
+    },
+    {
+      "name": "a sheet testing a column only on itself hides while the value fails",
+      "form": "quote",
+      "show_when": {
+        "p_bi": {
+          "match": "all",
+          "conditions": [{"table": "t_bi", "column": "c_bi_more", "op": "ticked", "values": []}]
+        }
+      },
+      "values": {},
+      "hidden_pages": ["p_bi", "p_ext"],
+      "hidden_widgets": ["w_bi", "w_ext", "w_fleet", "w_items"],
+      "hidden_columns": [
+        ["t_bi", "c_bi_more"],
+        ["t_bi", "c_bi_si"],
+        ["t_ext", "c_ext_days"],
+        ["t_items", "c_item"],
+        ["t_items", "c_value"]
+      ]
+    },
+    {
+      "name": "any: one condition holding is enough, a failed one on a hidden sheet included",
+      "form": "quote",
+      "show_when": {
+        "p_ext": {
+          "match": "any",
+          "conditions": [
+            {"table": "t_bi", "column": "c_bi_more", "op": "ticked", "values": []},
+            {"table": "t_policy", "column": "c_class", "op": "equals", "values": ["Fleet"]}
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_class": "Fleet"}]},
+      "hidden_pages": ["p_bi"],
+      "hidden_widgets": ["w_bi", "w_items"],
+      "hidden_columns": [["t_bi", "c_bi_more"], ["t_bi", "c_bi_si"], ["t_items", "c_item"], ["t_items", "c_value"]]
+    },
+    {
+      "name": "all: every condition must hold",
+      "form": "quote",
+      "show_when": {
+        "p_ext": {
+          "match": "all",
+          "conditions": [
+            {"table": "t_policy", "column": "c_bi", "op": "ticked", "values": []},
+            {"table": "t_policy", "column": "c_class", "op": "equals", "values": ["Fleet"]}
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_bi": true, "c_class": "Fleet"}]},
+      "hidden_pages": [],
+      "hidden_widgets": ["w_items"],
+      "hidden_columns": [["t_items", "c_item"], ["t_items", "c_value"]]
+    },
+    {
+      "name": "all: one failing condition hides",
+      "form": "quote",
+      "show_when": {
+        "p_ext": {
+          "match": "all",
+          "conditions": [
+            {"table": "t_policy", "column": "c_bi", "op": "ticked", "values": []},
+            {"table": "t_policy", "column": "c_class", "op": "equals", "values": ["Fleet"]}
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_bi": true, "c_class": "Motor"}]},
+      "hidden_pages": ["p_ext"],
+      "hidden_widgets": ["w_ext", "w_fleet", "w_items"],
+      "hidden_columns": [["t_ext", "c_ext_days"], ["t_items", "c_item"], ["t_items", "c_value"]]
+    },
+    {
+      "name": "no conditions show whatever the match",
+      "form": "quote",
+      "show_when": {"p_bi": {"match": "any", "conditions": []}},
+      "values": {},
+      "hidden_pages": ["p_ext"],
+      "hidden_widgets": ["w_ext", "w_fleet", "w_items"],
+      "hidden_columns": [["t_ext", "c_ext_days"], ["t_items", "c_item"], ["t_items", "c_value"]]
+    },
+    {
+      "name": "ticked passes a tick",
+      "form": "tests",
+      "show_when": {
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_tick", "op": "ticked", "values": []}]}
+      },
+      "values": {"t_in": [{"c_tick": true}]},
+      "hidden_pages": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "ticked fails an untouched box",
+      "form": "tests",
+      "show_when": {
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_tick", "op": "ticked", "values": []}]}
+      },
+      "values": {"t_in": [{}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "ticked fails an unticked box",
+      "form": "tests",
+      "show_when": {
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_tick", "op": "ticked", "values": []}]}
+      },
+      "values": {"t_in": [{"c_tick": false}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "not_ticked passes an untouched box",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_tick", "op": "not_ticked", "values": []}]
+        }
+      },
+      "values": {},
+      "hidden_pages": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "not_ticked fails a tick",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_tick", "op": "not_ticked", "values": []}]
+        }
+      },
+      "values": {"t_in": [{"c_tick": true}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "filled passes text",
+      "form": "tests",
+      "show_when": {
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_text", "op": "filled", "values": []}]}
+      },
+      "values": {"t_in": [{"c_text": "x"}]},
+      "hidden_pages": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "filled fails blank text",
+      "form": "tests",
+      "show_when": {
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_text", "op": "filled", "values": []}]}
+      },
+      "values": {"t_in": [{"c_text": "   "}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "filled passes a value not of its column's type",
+      "form": "tests",
+      "show_when": {
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_num", "op": "filled", "values": []}]}
+      },
+      "values": {"t_in": [{"c_num": "abc"}]},
+      "hidden_pages": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "empty passes blank text",
+      "form": "tests",
+      "show_when": {
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_text", "op": "empty", "values": []}]}
+      },
+      "values": {"t_in": [{"c_text": "   "}]},
+      "hidden_pages": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "empty passes an untouched cell",
+      "form": "tests",
+      "show_when": {
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_text", "op": "empty", "values": []}]}
+      },
+      "values": {"t_in": [{}]},
+      "hidden_pages": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "empty fails text",
+      "form": "tests",
+      "show_when": {
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_text", "op": "empty", "values": []}]}
+      },
+      "values": {"t_in": [{"c_text": "x"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "equals compares text without the spaces around it",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_text", "op": "equals", "values": ["Motor"]}]
+        }
+      },
+      "values": {"t_in": [{"c_text": "  Motor "}]},
+      "hidden_pages": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "equals compares text exactly",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_text", "op": "equals", "values": ["Motor"]}]
+        }
+      },
+      "values": {"t_in": [{"c_text": "motor"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "not_equals passes an empty value",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_text", "op": "not_equals", "values": ["Motor"]}]
+        }
+      },
+      "values": {"t_in": [{}]},
+      "hidden_pages": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "not_equals fails the value",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_text", "op": "not_equals", "values": ["Motor"]}]
+        }
+      },
+      "values": {"t_in": [{"c_text": "Motor"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "one_of passes any of its values",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_choice", "op": "one_of", "values": ["A", "B"]}]
+        }
+      },
+      "values": {"t_in": [{"c_choice": "B"}]},
+      "hidden_pages": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "one_of fails another value",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_choice", "op": "one_of", "values": ["A", "B"]}]
+        }
+      },
+      "values": {"t_in": [{"c_choice": "C"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "one_of fails an empty value",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_choice", "op": "one_of", "values": ["A", "B"]}]
+        }
+      },
+      "values": {"t_in": [{}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "not_one_of passes an empty value",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_choice", "op": "not_one_of", "values": ["A", "B"]}]
+        }
+      },
+      "values": {"t_in": [{}]},
+      "hidden_pages": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "not_one_of fails one of its values",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_choice", "op": "not_one_of", "values": ["A", "B"]}]
+        }
+      },
+      "values": {"t_in": [{"c_choice": "A"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a value outside the allowed values is still tested",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_choice", "op": "equals", "values": ["Z"]}]
+        }
+      },
+      "values": {"t_in": [{"c_choice": "Z"}]},
+      "hidden_pages": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "equals reads a number typed with a currency sign and separators",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_num", "op": "equals", "values": ["1000"]}]
+        }
+      },
+      "values": {"t_in": [{"c_num": "£1,000.00"}]},
+      "hidden_pages": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "equals reads the condition's number as typed too",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_num", "op": "equals", "values": ["1,000"]}]
+        }
+      },
+      "values": {"t_in": [{"c_num": "1000"}]},
+      "hidden_pages": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "equals fails a value not of its column's type",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_num", "op": "equals", "values": ["1000"]}]
+        }
+      },
+      "values": {"t_in": [{"c_num": "abc"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "not_equals passes a value not of its column's type",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_num", "op": "not_equals", "values": ["1000"]}]
+        }
+      },
+      "values": {"t_in": [{"c_num": "abc"}]},
+      "hidden_pages": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "above passes a greater number",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_num", "op": "above", "values": ["1000"]}]
+        }
+      },
+      "values": {"t_in": [{"c_num": "1500"}]},
+      "hidden_pages": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "above fails an equal number",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_num", "op": "above", "values": ["1000"]}]
+        }
+      },
+      "values": {"t_in": [{"c_num": "1000"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "at_least passes an equal number",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_num", "op": "at_least", "values": ["1000"]}]
+        }
+      },
+      "values": {"t_in": [{"c_num": "1000"}]},
+      "hidden_pages": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "below passes a smaller number",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_num", "op": "below", "values": ["1000"]}]
+        }
+      },
+      "values": {"t_in": [{"c_num": "999.5"}]},
+      "hidden_pages": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "at_most fails a greater number",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_num", "op": "at_most", "values": ["1000"]}]
+        }
+      },
+      "values": {"t_in": [{"c_num": "1000.5"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "above fails a value not of its column's type",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_num", "op": "above", "values": ["1000"]}]
+        }
+      },
+      "values": {"t_in": [{"c_num": "abc"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "above fails an empty value",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_num", "op": "above", "values": ["1000"]}]
+        }
+      },
+      "values": {"t_in": [{}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "below fails an empty value",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_num", "op": "below", "values": ["1000"]}]
+        }
+      },
+      "values": {"t_in": [{}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "above reads an exponent",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_num", "op": "above", "values": ["1e3"]}]
+        }
+      },
+      "values": {"t_in": [{"c_num": "1001"}]},
+      "hidden_pages": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "above compares whole numbers",
+      "form": "tests",
+      "show_when": {
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_int", "op": "above", "values": ["2"]}]}
+      },
+      "values": {"t_in": [{"c_int": "3"}]},
+      "hidden_pages": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "one_of reads a whole number typed with a point",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_int", "op": "one_of", "values": ["1", "2"]}]
+        }
+      },
+      "values": {"t_in": [{"c_int": "2.0"}]},
+      "hidden_pages": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a number too large to be finite is no number",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_num", "op": "above", "values": ["1e999"]}]
+        }
+      },
+      "values": {"t_in": [{"c_num": "5"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a cell too large to be finite is no number",
+      "form": "tests",
+      "show_when": {
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_num", "op": "above", "values": ["1"]}]}
+      },
+      "values": {"t_in": [{"c_num": "1e999"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "above is after a day",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_day", "op": "above", "values": ["2026-04-01"]}]
+        }
+      },
+      "values": {"t_in": [{"c_day": "2026-05-01"}]},
+      "hidden_pages": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "below is before a day",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_day", "op": "below", "values": ["2026-04-01"]}]
+        }
+      },
+      "values": {"t_in": [{"c_day": "2026-05-01"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "equals compares a day without the spaces around it",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_day", "op": "equals", "values": ["2026-05-01"]}]
+        }
+      },
+      "values": {"t_in": [{"c_day": " 2026-05-01 "}]},
+      "hidden_pages": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "at_least passes the same day",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_day", "op": "at_least", "values": ["2026-05-01"]}]
+        }
+      },
+      "values": {"t_in": [{"c_day": "2026-05-01"}]},
+      "hidden_pages": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "above fails a cell that is not a day",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_day", "op": "above", "values": ["2026-04-01"]}]
+        }
+      },
+      "values": {"t_in": [{"c_day": "01/05/2026"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "not_equals passes a cell that is not a day",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_day", "op": "not_equals", "values": ["2026-04-01"]}]
+        }
+      },
+      "values": {"t_in": [{"c_day": "01/05/2026"}]},
+      "hidden_pages": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a column gone never holds",
+      "form": "tests",
+      "show_when": {
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_gone", "op": "empty", "values": []}]}
+      },
+      "values": {"t_in": [{}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a table gone never holds",
+      "form": "tests",
+      "show_when": {
+        "p_target": {"match": "all", "conditions": [{"table": "t_gone", "column": "c_x", "op": "empty", "values": []}]}
+      },
+      "values": {"t_in": [{}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a many-row table's column never holds",
+      "form": "tests",
+      "show_when": {
+        "p_target": {"match": "all", "conditions": [{"table": "t_many", "column": "c_v", "op": "filled", "values": []}]}
+      },
+      "values": {"t_in": [{}], "t_many": [{"c_key": "a", "c_v": "1"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "an output table's column never holds",
+      "form": "tests",
+      "show_when": {
+        "p_target": {"match": "all", "conditions": [{"table": "t_out", "column": "c_o", "op": "empty", "values": []}]}
+      },
+      "values": {"t_in": [{}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a comparison on a tick box never holds",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_tick", "op": "above", "values": ["1"]}]
+        }
+      },
+      "values": {"t_in": [{"c_tick": true}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a tick on a text column never holds",
+      "form": "tests",
+      "show_when": {
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_text", "op": "ticked", "values": []}]}
+      },
+      "values": {"t_in": [{"c_text": "x"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "one_of on a day never holds",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_day", "op": "one_of", "values": ["2026-01-01"]}]
+        }
+      },
+      "values": {"t_in": [{"c_day": "2026-01-01"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "filled on a tick box never holds",
+      "form": "tests",
+      "show_when": {
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_tick", "op": "filled", "values": []}]}
+      },
+      "values": {"t_in": [{"c_tick": true}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a comparison on text never holds",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_text", "op": "above", "values": ["a"]}]
+        }
+      },
+      "values": {"t_in": [{"c_text": "b"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "equals with no value never holds",
+      "form": "tests",
+      "show_when": {
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_text", "op": "equals", "values": []}]}
+      },
+      "values": {"t_in": [{}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "one_of with no value never holds",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_choice", "op": "one_of", "values": []}]
+        }
+      },
+      "values": {"t_in": [{"c_choice": "A"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a tick with a value never holds",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_tick", "op": "ticked", "values": ["x"]}]
+        }
+      },
+      "values": {"t_in": [{"c_tick": true}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a comparison with two values never holds",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_num", "op": "above", "values": ["1", "2"]}]
+        }
+      },
+      "values": {"t_in": [{"c_num": "5"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "filled with a value never holds",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_text", "op": "filled", "values": ["x"]}]
+        }
+      },
+      "values": {"t_in": [{"c_text": "x"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a blank value never holds",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_text", "op": "equals", "values": ["  "]}]
+        }
+      },
+      "values": {"t_in": [{}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a value not of its column's type never holds, not_equals included",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_num", "op": "not_equals", "values": ["abc"]}]
+        }
+      },
+      "values": {"t_in": [{"c_num": "5"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a fraction for an Integer never holds",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_int", "op": "above", "values": ["2.5"]}]
+        }
+      },
+      "values": {"t_in": [{"c_int": "3"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a day that is not one never holds",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_day", "op": "equals", "values": ["2026-02-30"]}]
+        }
+      },
+      "values": {"t_in": [{"c_day": "2026-02-30"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a day not written YYYY-MM-DD never holds",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_day", "op": "above", "values": ["2026-1-5"]}]
+        }
+      },
+      "values": {"t_in": [{"c_day": "2026-05-01"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "the year 0 is no day",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_day", "op": "below", "values": ["0000-01-01"]}]
+        }
+      },
+      "values": {"t_in": [{"c_day": "2026-05-01"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a tick in a number column is filled",
+      "form": "tests",
+      "show_when": {
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_int", "op": "filled", "values": []}]}
+      },
+      "values": {"t_in": [{"c_int": true}]},
+      "hidden_pages": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a tick in a number column equals no number",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_int", "op": "equals", "values": ["1"]}]
+        }
+      },
+      "values": {"t_in": [{"c_int": true}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a tick in a number column is not at least a number",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_int", "op": "at_least", "values": ["0"]}]
+        }
+      },
+      "values": {"t_in": [{"c_int": true}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a tick in a number column is none of the numbers",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_in", "column": "c_int", "op": "not_one_of", "values": ["1"]}]
+        }
+      },
+      "values": {"t_in": [{"c_int": true}]},
+      "hidden_pages": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "any holds while one fitting condition holds",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "any",
+          "conditions": [
+            {"table": "t_in", "column": "c_tick", "op": "above", "values": ["1"]},
+            {"table": "t_in", "column": "c_tick", "op": "ticked", "values": []}
+          ]
+        }
+      },
+      "values": {"t_in": [{"c_tick": true}]},
+      "hidden_pages": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "any with no condition holding hides",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "any",
+          "conditions": [
+            {"table": "t_in", "column": "c_tick", "op": "ticked", "values": []},
+            {"table": "t_in", "column": "c_text", "op": "filled", "values": []}
+          ]
+        }
+      },
+      "values": {"t_in": [{}]},
+      "hidden_pages": ["p_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    }
+  ]
+}

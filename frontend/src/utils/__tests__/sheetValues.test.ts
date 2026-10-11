@@ -5,7 +5,8 @@
  */
 import { describe, expect, it } from "vitest"
 import type { SchemaColumn, SchemaTable } from "../../api/types"
-import { cellKey, cellProblem, filled, parseTypedNumber, pricedRows, quoteProblems, rowFilled, valuesBasis } from "../sheetValues"
+import { cellKey, cellProblem, filled, formattedNumber, parseTypedNumber, pricedRows, quoteFilled, quoteProblems, rowFilled, valuesBasis } from "../sheetValues"
+import { columnKey, quotedSchema } from "../sheetVisibility"
 import { pricingBasis, type SampleRow } from "../workbenchForm"
 
 const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {}): SchemaColumn => ({
@@ -19,6 +20,11 @@ const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {})
   max: null,
   options: [],
   index: false,
+  help: "",
+  placeholder: "",
+  number_format: "general",
+  decimal_places: null,
+  use_grouping: true,
   ...overrides,
 })
 
@@ -58,12 +64,30 @@ describe("filled rows", () => {
   })
 })
 
+describe("formattedNumber", () => {
+  it("shows a number column's values in its format, as an Explore pivot does, typed text read as the server reads it", () => {
+    const money = column("c", "premium", { type: "float", number_format: "currency_gbp" })
+    expect(formattedNumber(money, 1234.5)).toBe("£1,234.50")
+    expect(formattedNumber(money, "£1,234.5")).toBe("£1,234.50")
+    expect(formattedNumber(column("c", "rate", { type: "float", number_format: "percent", decimal_places: 1 }), "0.125")).toBe("12.5%")
+    expect(formattedNumber(column("c", "count", { type: "int", decimal_places: 0, use_grouping: false }), 12345.6)).toBe("12346")
+  })
+
+  it("leaves a value as it is in General, outside a number column, or when it is not a number", () => {
+    expect(formattedNumber(column("c", "premium", { type: "float" }), "1000")).toBeNull()
+    expect(formattedNumber(column("c", "name", { number_format: "number" }), "1000")).toBeNull()
+    expect(formattedNumber(column("c", "premium", { type: "float", number_format: "number" }), "lots")).toBeNull()
+  })
+})
+
 describe("cellProblem", () => {
   it("reads numbers as the server does, a currency sign, separators and spaces allowed", () => {
     expect(parseTypedNumber("$1,250,000.50")).toBe(1250000.5)
     expect(parseTypedNumber(" -3e2 ")).toBe(-300)
     expect(parseTypedNumber(".5")).toBe(0.5)
     expect([parseTypedNumber("lots"), parseTypedNumber("$"), parseTypedNumber("1_000"), parseTypedNumber("0x10"), parseTypedNumber("1.2.3")]).toEqual([null, null, null, null, null])
+    // The server keeps a number too large to be finite as the text typed.
+    expect(parseTypedNumber("1e999")).toBeNull()
   })
 
   it("requires a value, a number of the column's type within its range, and one of the allowed values", () => {
@@ -148,5 +172,27 @@ describe("pricedRows", () => {
     expect(pricedRows(keyedByItem, [{ item: "Crane", value: "1" }], [{ item: "Crane", value: 1 }], [{ item: "Crane", premium: 3 }, { item: "Crane", value: null, premium: 4 }])).toEqual([undefined])
     expect(pricedRows({ ...equipment, columns: [column("item", "item")] }, grid, typed, output)).toEqual([undefined, undefined, undefined, undefined])
     expect(pricedRows(equipment, grid, [], output)).toEqual([undefined, undefined, undefined, undefined])
+  })
+})
+
+describe("reading through a quoted schema", () => {
+  // The values the sheets hide are left out of the quote, as if never typed.
+  const quoted = quotedSchema({ tables: [policy, equipment, premiums] }, new Set([columnKey("policy", "state"), columnKey("equipment", "value")]))
+
+  it("does not count a value typed only in a hidden column", () => {
+    expect(quoteFilled(quoted, { equipment: [{ value: "100" }] })).toBe(false)
+    expect(quoteFilled(quoted, { equipment: [{ value: "100", item: "Crane" }] })).toBe(true)
+  })
+
+  it("never checks a hidden cell, a required one included", () => {
+    expect(quoteProblems(quoted, { policy: [{ years: "5" }], equipment: [{ item: "Crane", value: "lots" }] })).toEqual({})
+  })
+
+  it("does not line up a grid row filled only in a hidden column", () => {
+    const input = quoted.tables[1]
+    expect(pricedRows(input, [{ value: "100" }, { item: "Crane" }], [{ row_number: 2, item: "Crane" }], [{ row_number: 2, premium: 20 }])).toEqual([
+      undefined,
+      { row_number: 2, premium: 20 },
+    ])
   })
 })

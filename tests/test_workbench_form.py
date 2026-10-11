@@ -5,12 +5,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 
+from haute._explore_pivots import PIVOT_NUMBER_FORMATS
 from haute._workbench_config import WorkbenchConfig
 from haute._workbench_form import (
+    ColumnFormat,
     FormDocument,
     FormSpec,
     WorkbenchFormError,
@@ -35,12 +37,19 @@ def column(name: str, type_: str = "str", **rest: Any) -> dict[str, Any]:
         "max": None,
         "options": [],
         "index": False,
+        "help": "",
+        "placeholder": "",
+        "number_format": "general",
+        "decimal_places": None,
+        "use_grouping": True,
         **rest,
     }
 
 
 # The test project's shape: one-row and many-row input tables, an index column, an output
-# table, a Collection and a Table, and a sample typed into the Collection.
+# table, a Collection and a Table, the Table shown while a condition holds, and a sample
+# typed into the Collection.
+ALWAYS: dict[str, Any] = {"match": "all", "conditions": []}
 FORM: dict[str, Any] = {
     "version": 1,
     "name": "Contractors' equipment",
@@ -53,7 +62,15 @@ FORM: dict[str, Any] = {
                 "rows": "one",
                 "columns": [
                     column("state", options=["CA", "NY"], required=True, label="State"),
-                    column("exposure", "float", min=0.0),
+                    column(
+                        "exposure",
+                        "float",
+                        min=0.0,
+                        help="Sum insured",
+                        placeholder="e.g. 250,000",
+                        number_format="currency_gbp",
+                        decimal_places=0,
+                    ),
                 ],
             },
             {
@@ -79,6 +96,7 @@ FORM: dict[str, Any] = {
         {
             "id": "page_1",
             "title": "Sheet 1",
+            "show_when": ALWAYS,
             "widgets": [
                 {
                     "id": "w_policy",
@@ -92,6 +110,7 @@ FORM: dict[str, Any] = {
                         {"table": "t_policy", "column": "c_state"},
                         {"table": "t_pricing", "column": "c_premium"},
                     ],
+                    "show_when": ALWAYS,
                     "columns": 2,
                 },
                 {
@@ -103,7 +122,24 @@ FORM: dict[str, Any] = {
                     "h": 200,
                     "title": "Layers",
                     "fields": [{"table": "t_layers", "column": "c_limit"}],
+                    "show_when": {
+                        "match": "any",
+                        "conditions": [
+                            {
+                                "table": "t_policy",
+                                "column": "c_state",
+                                "op": "one_of",
+                                "values": ["CA", "NY"],
+                            }
+                        ],
+                    },
                     "rows": 5,
+                    # The layer index numbers the rows, and the layers are a set structure.
+                    "row_numbers": False,
+                    "density": "comfortable",
+                    "gridlines": "all",
+                    "striped": False,
+                    "fixed_rows": True,
                 },
             ],
         }
@@ -123,7 +159,7 @@ def test_the_blank_form_is_one_empty_sheet_named_after_the_project() -> None:
         "version": 1,
         "name": "motor",
         "schema": {"tables": []},
-        "pages": [{"id": "page_1", "title": "Sheet 1", "widgets": []}],
+        "pages": [{"id": "page_1", "title": "Sheet 1", "show_when": ALWAYS, "widgets": []}],
         "sample": {},
     }
     assert text.endswith("}\n")
@@ -166,14 +202,23 @@ def test_the_file_keeps_text_as_typed(tmp_path: Path) -> None:
 
 
 def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> None:
-    # A file written without the index flags and the sample, as a builder that leaves
-    # defaults out would write it.
+    # A file written without the index flags, the columns' display, the Table's options, the
+    # sheet's and the Collection's show_when and the sample, as a builder that leaves defaults
+    # out would write it.
+    display = ("help", "placeholder", "number_format", "decimal_places", "use_grouping")
+    options = ("row_numbers", "density", "gridlines", "striped", "fixed_rows")
     sparse = json.loads(json.dumps(FORM))
     del sparse["sample"]
     for table in sparse["schema"]["tables"]:
         for col in table["columns"]:
             del col["index"]
+            for field in display:
+                del col[field]
     sparse["schema"]["tables"][1]["columns"][0]["index"] = True
+    for field in options:
+        del sparse["pages"][0]["widgets"][1][field]
+    del sparse["pages"][0]["show_when"]
+    del sparse["pages"][0]["widgets"][0]["show_when"]
     (tmp_path / "forms").mkdir()
     (tmp_path / "forms" / "form.json").write_text(json.dumps(sparse), encoding="utf-8")
 
@@ -184,6 +229,18 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
     written = json.loads(render_form(spec))
     assert written["sample"] == {}
     assert all("index" in c for t in written["schema"]["tables"] for c in t["columns"])
+    assert written["schema"]["tables"][0]["columns"][1] == column("exposure", "float", min=0.0)
+    grid = written["pages"][0]["widgets"][1]
+    assert {field: grid[field] for field in options} == {
+        "row_numbers": True,
+        "density": "compact",
+        "gridlines": "rows",
+        "striped": True,
+        "fixed_rows": False,
+    }
+    # Always shown.
+    assert written["pages"][0]["show_when"] == ALWAYS
+    assert written["pages"][0]["widgets"][0]["show_when"] == ALWAYS
 
 
 @pytest.mark.parametrize(
@@ -192,9 +249,31 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         (lambda f: f.update(colour="red"), "colour"),
         (lambda f: f["pages"][0]["widgets"][0].update(rows=3), "rows"),
         (lambda f: f["pages"][0]["widgets"][1].update(rows=51), "rows"),
+        (lambda f: f["pages"][0]["widgets"][1].update(density="roomy"), "density"),
+        (lambda f: f["pages"][0]["widgets"][1].update(gridlines="dotted"), "gridlines"),
+        # A Collection has none of a Table's options.
+        (lambda f: f["pages"][0]["widgets"][0].update(striped=True), "striped"),
         (lambda f: f["schema"]["tables"][0]["columns"][0].update(type="money"), "type"),
+        (
+            lambda f: f["schema"]["tables"][0]["columns"][1].update(number_format="yen"),
+            "number_format",
+        ),
+        (
+            lambda f: f["schema"]["tables"][0]["columns"][1].update(decimal_places=11),
+            "decimal_places",
+        ),
         (lambda f: f.update(pages=[]), "pages"),
         (lambda f: f["pages"][0]["widgets"][0].update(type="chart"), "type"),
+        (lambda f: f["pages"][0]["show_when"].update(match="none"), "match"),
+        (
+            lambda f: f["pages"][0]["widgets"][1]["show_when"]["conditions"][0].update(op="has"),
+            "op",
+        ),
+        # A condition's values are text as typed, as the sample's cells are.
+        (
+            lambda f: f["pages"][0]["widgets"][1]["show_when"]["conditions"][0].update(values=[1]),
+            "values",
+        ),
         # A cell is held as typed, text or a tick: a number is another client's shape.
         (lambda f: f.update(sample={"t1": [{"c1": 1}]}), "sample"),
         (lambda f: f.update(sample={"t1": [{"c1": None}]}), "sample"),
@@ -213,6 +292,12 @@ def test_an_unknown_field_or_a_value_outside_the_shape_is_refused(
     ) as caught:
         read_form_document(config(tmp_path))
     assert where in str(caught.value)
+
+
+def test_a_column_takes_the_explore_pivot_s_number_formats() -> None:
+    """The sheets show a number as an Explore pivot does, and the Schema tab offers the
+    pivot's formats, so the file must accept exactly those."""
+    assert frozenset(get_args(ColumnFormat)) == PIVOT_NUMBER_FORMATS
 
 
 def test_a_form_that_is_not_utf8_names_the_file(tmp_path: Path) -> None:

@@ -30,6 +30,11 @@ const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {})
   max: null,
   options: [],
   index: false,
+  help: "",
+  placeholder: "",
+  number_format: "general",
+  decimal_places: null,
+  use_grouping: true,
   ...overrides,
 })
 const policy: SchemaTable = {
@@ -44,7 +49,7 @@ const form: FormSpec = {
   version: 1,
   name: "t",
   schema: { tables: [policy, pricing] },
-  pages: [{ id: "p", title: "Sheet 1", widgets: [] }],
+  pages: [{ id: "p", title: "Sheet 1", show_when: { match: "all", conditions: [] }, widgets: [] }],
   sample: { t1: [{ c1: "100000" }] },
 }
 
@@ -134,6 +139,42 @@ describe("useWorkbenchPreviewStore", () => {
       expect(store()).toMatchObject({ checked: true, error: "Type the quote first", price: null })
     }
     expect(quoteProblems(form.schema, {})).toEqual({ [cellKey("t1", 0, "c1")]: "Required" })
+  })
+
+  it("reads the quote without the cells the sheets hide: a hidden required cell faults nothing, and hidden values alone are blank", async () => {
+    const pricer = vi.fn((_workbench: WorkbenchTablesResponse) => Promise.resolve(priced(5000)))
+    useWorkbenchPricingStore.setState({ pricer })
+    const always = { match: "all" as const, conditions: [] }
+    const boxes = (id: string, columns: string[]) => ({
+      id, type: "collection" as const, x: 0, y: 0, w: 400, h: 100, title: "", columns: 2, show_when: always,
+      fields: columns.map((columnId) => ({ table: "t1", column: columnId })),
+    })
+    // The required exposure is on a sheet shown only while the box, cover, is ticked.
+    useWorkbenchFormStore.setState({
+      form: {
+        ...form,
+        schema: { tables: [{ ...policy, columns: [...policy.columns, column("c3", "cover", { type: "bool" }), column("c4", "name")] }, pricing] },
+        pages: [
+          { id: "p", title: "Main", show_when: always, widgets: [boxes("w_main", ["c3", "c4"])] },
+          { id: "p2", title: "Exposure", show_when: { match: "all", conditions: [{ table: "t1", column: "c3", op: "ticked", values: [] }] }, widgets: [boxes("w_exposure", ["c1"])] },
+        ],
+      },
+    })
+    const store = useWorkbenchPreviewStore.getState
+
+    store().setCell("t1", 0, "c1", "-5")
+    await store().priceQuote()
+    expect(store()).toMatchObject({ checked: true, error: "Type the quote first" })
+
+    useWorkbenchPreviewStore.setState({ quote: { t1: [{ c4: "Acme" }] }, error: null, checked: false })
+    await store().priceQuote()
+    expect(pricer).toHaveBeenCalledTimes(1)
+    expect(store()).toMatchObject({ error: null, price: { tables: { pricing_output: [{ model_premium: 5000 }] } } })
+
+    store().setCell("t1", 0, "c3", true)
+    await store().priceQuote()
+    expect(pricer).toHaveBeenCalledTimes(1)
+    expect(store()).toMatchObject({ error: "1 cell needs attention" })
   })
 
   it("drops an answer that arrives after Clear, or after the view replaced its pricer", async () => {

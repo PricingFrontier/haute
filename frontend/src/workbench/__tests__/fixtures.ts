@@ -7,6 +7,7 @@ import { vi } from "vitest"
 import type { FormSpec, SchemaColumn, SchemaTable } from "../../api/types"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
+import { TABLE_OPTIONS } from "../../utils/workbenchForm"
 
 export const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {}): SchemaColumn => ({
   id,
@@ -19,6 +20,11 @@ export const column = (id: string, name: string, overrides: Partial<SchemaColumn
   max: null,
   options: [],
   index: false,
+  help: "",
+  placeholder: "",
+  number_format: "general",
+  decimal_places: null,
+  use_grouping: true,
   ...overrides,
 })
 
@@ -52,8 +58,9 @@ export const sheetForm = (): FormSpec => ({
     {
       id: "p1",
       title: "Sheet 1",
+      show_when: { match: "all", conditions: [] },
       widgets: [
-        { id: "w_boxes", type: "collection", x: 16, y: 16, w: 400, h: 120, title: "Policy", columns: 2, fields: [{ table: "policy", column: "policy.state" }] },
+        { id: "w_boxes", type: "collection", x: 16, y: 16, w: 400, h: 120, title: "Policy", columns: 2, fields: [{ table: "policy", column: "policy.state" }], show_when: { match: "all", conditions: [] } },
         {
           id: "w_grid",
           type: "tableInput",
@@ -63,14 +70,46 @@ export const sheetForm = (): FormSpec => ({
           h: 200,
           title: "Equipment",
           rows: 3,
+          ...TABLE_OPTIONS,
           fields: [{ table: "equipment", column: "equipment.item" }, { table: "equipment", column: "equipment.value" }],
+          show_when: { match: "all", conditions: [] },
         },
       ],
     },
-    { id: "p2", title: "Sheet 2", widgets: [] },
+    { id: "p2", title: "Sheet 2", show_when: { match: "all", conditions: [] }, widgets: [] },
   ],
   sample: {},
 })
+
+/**
+ * `sheetForm` with a tick box, cover, among the policy's boxes, and its second sheet,
+ * "Cover", holding a Collection of the policy's year and shown only while cover is ticked.
+ */
+export const coverForm = (): FormSpec => {
+  const form = sheetForm()
+  form.schema.tables[0].columns.push(column("policy.cover", "cover", { type: "bool" }))
+  form.pages[0].widgets[0].fields.push({ table: "policy", column: "policy.cover" })
+  form.pages[1] = {
+    id: "p2",
+    title: "Cover",
+    show_when: { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [] }] },
+    widgets: [
+      {
+        id: "w_year",
+        type: "collection",
+        x: 16,
+        y: 16,
+        w: 400,
+        h: 120,
+        title: "Year",
+        fields: [{ table: "policy", column: "policy.year" }],
+        show_when: { match: "all", conditions: [] },
+        columns: 2,
+      },
+    ],
+  }
+  return form
+}
 
 /** Load `form` into the form store as read at `rev-0`, and reset the view store. */
 export function loadForm(form: FormSpec = sheetForm()): void {
@@ -86,7 +125,7 @@ export function loadForm(form: FormSpec = sheetForm()): void {
     stale: false,
     saving: false,
   })
-  useWorkbenchViewStore.setState({ section: "sheets", pageId: null, selectedId: null, zoom: 1, fitted: false, creating: null, sheet: null, viewport: null })
+  useWorkbenchViewStore.setState({ section: "sheets", pageId: null, selectedId: null, sheetSelected: false, zoom: 1, fitted: false, creating: null, sheet: null, viewport: null })
 }
 
 export const currentForm = (): FormSpec => {

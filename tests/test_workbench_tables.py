@@ -4,6 +4,7 @@ typed columns; the sample quote as a request holds it; and the tables the pipeli
 
 from __future__ import annotations
 
+import copy
 import re
 from typing import Any
 
@@ -27,18 +28,24 @@ from haute._workbench_tables import (
 )
 
 
-def form(*tables: dict[str, Any]) -> FormSpec:
+def form(*tables: dict[str, Any], pages: list[dict[str, Any]] | None = None) -> FormSpec:
     return FormSpec.model_validate(
         {
             "name": "x",
             "schema": {"tables": list(tables)},
-            "pages": [{"id": "p", "title": "Sheet 1"}],
+            "pages": pages or [{"id": "p", "title": "Sheet 1"}],
         }
     )
 
 
 def column(name: str, type_: str = "str", **rules: object) -> dict[str, Any]:
     return {"id": f"c_{name}", "name": name, "type": type_, **rules}
+
+
+def widget(id_: str, type_: str, *fields: str) -> dict[str, Any]:
+    """A component showing *fields*, each ``table.column`` by id."""
+    refs = [dict(zip(("table", "column"), field.split("."), strict=True)) for field in fields]
+    return {"id": id_, "type": type_, "x": 0, "y": 0, "w": 720, "h": 120, "fields": refs}
 
 
 def dumped(tables: tuple[WorkbenchTable, ...]) -> list[dict[str, Any]]:
@@ -358,6 +365,83 @@ def test_a_tables_index_is_an_integer_column_numbering_the_rows_as_they_stand() 
     # Each row's number as the rows stand: the empty second row is not sent.
     assert sample_quote(spec) == {
         "equipment": [{"line": 1, "item_id": "A"}, {"line": 3, "item_id": "B", "value": 5.0}]
+    }
+
+
+def test_a_value_in_a_column_the_sheets_hide_is_left_out_of_the_sample() -> None:
+    spec = form(
+        {
+            "id": "t1",
+            "name": "policy",
+            "role": "input",
+            "rows": "one",
+            "columns": [column("bi_cover", "bool"), column("assured")],
+        },
+        {
+            "id": "t2",
+            "name": "interruption",
+            "role": "input",
+            "rows": "one",
+            "columns": [column("bi_limit", "float"), column("extended", "bool")],
+        },
+        {
+            "id": "t3",
+            "name": "equipment",
+            "role": "input",
+            "rows": "many",
+            "columns": [
+                {**column("line", "int"), "index": True},
+                column("item_id"),
+                column("value", "float"),
+                column("leased", "bool"),
+            ],
+        },
+        pages=[
+            {
+                "id": "p_main",
+                "title": "Main",
+                "widgets": [
+                    widget("w_policy", "collection", "t1.c_bi_cover", "t1.c_assured"),
+                    widget("w_items", "tableInput", "t3.c_line", "t3.c_item_id"),
+                ],
+            },
+            {
+                "id": "p_bi",
+                "title": "Business interruption",
+                "show_when": {
+                    "conditions": [{"table": "t1", "column": "c_bi_cover", "op": "ticked"}]
+                },
+                "widgets": [
+                    widget("w_bi", "collection", "t2.c_bi_limit", "t2.c_extended"),
+                    widget("w_values", "tableInput", "t3.c_value", "t3.c_leased"),
+                ],
+            },
+        ],
+    )
+    spec.sample = {
+        "t1": [{"c_bi_cover": False, "c_assured": "Acme"}],
+        "t2": [{"c_bi_limit": "500,000", "c_extended": True}],
+        "t3": [{"c_value": "10", "c_leased": True}, {"c_item_id": "B", "c_value": "5"}],
+    }
+    typed = copy.deepcopy(spec.sample)
+
+    # The box is unticked, so the second sheet hides: its text and tick are left out, its
+    # unticked box is not made false, the first item row, holding nothing else, is left
+    # out as an empty row is, and the second keeps its number as the rows stand.
+    assert sample_quote(spec) == {
+        "policy": {"bi_cover": False, "assured": "Acme"},
+        "equipment": [{"line": 2, "item_id": "B"}],
+    }
+    # The values are kept as typed, and are in the quote again once their sheet shows.
+    assert spec.sample == typed
+    spec.sample["t1"][0]["c_bi_cover"] = True
+    assert sample_quote(spec) == {
+        "policy": {"bi_cover": True, "assured": "Acme"},
+        "interruption": {"bi_limit": 500000.0, "extended": True},
+        "equipment": [
+            {"line": 1, "value": 10.0, "leased": True},
+            {"line": 2, "item_id": "B", "value": 5.0, "leased": False},
+        ],
     }
 
 

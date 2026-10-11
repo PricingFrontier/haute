@@ -14,7 +14,7 @@ import type {
   PivotNumberFormat,
   PivotValuePlacement,
 } from "../../explore/pivotConfig"
-import { effectivePivotNumberFormat } from "../../explore/pivotNumberFormat"
+import { NUMBER_FORMAT_LABELS, effectivePivotNumberFormat } from "../../explore/pivotNumberFormat"
 import { INPUT_STYLE } from "../_shared"
 import type { Column } from "./placements"
 
@@ -39,15 +39,6 @@ const DECIMAL_PLACE_OPTIONS = Array.from(
   { length: PIVOT_DECIMAL_PLACES_MAX + 1 },
   (_, decimalPlaces) => decimalPlaces,
 )
-
-const NUMBER_FORMAT_LABELS: Readonly<Record<PivotNumberFormat, string>> = {
-  general: "General",
-  number: "Number",
-  percent: "Percentage",
-  currency_gbp: "Currency (£ GBP)",
-  currency_usd: "Currency (US$ USD)",
-  currency_eur: "Currency (€ EUR)",
-}
 
 function isNumericProducingValue(
   placement: PivotValuePlacement,

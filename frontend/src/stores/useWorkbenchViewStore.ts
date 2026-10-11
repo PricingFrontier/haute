@@ -1,16 +1,18 @@
 /**
  * Zustand store for the workbench view's own state while it shows (specs/workbench):
  * which section shows (the sheets or the schema while building, or Preview), which
- * sheet, the selected component, the sheet's zoom, a component being dragged out of the
- * palette, the properties panel's width, and the sheet and viewport elements that drops
- * are placed on and the zoom fits to. None of it is part of the form, so none is saved
- * or undone.
+ * sheet, the selected component or the sheet's own panel, the sheet's zoom, a component
+ * being dragged out of the palette, the properties panel's width, and the sheet and
+ * viewport elements that drops are placed on and the zoom fits to. None of it is part of
+ * the form, so none is saved or undone.
  */
 import { create } from "zustand"
 import type { FormSpec, Page } from "../api/types"
 import { SHEET_PADDING, fitZoom as zoomToFit } from "../utils/sheetGeometry"
+import { sheetVisibility } from "../utils/sheetVisibility"
 import type { WidgetType } from "../utils/workbenchForm"
 import useWorkbenchFormStore from "./useWorkbenchFormStore"
+import useWorkbenchPreviewStore from "./useWorkbenchPreviewStore"
 
 /** The sheets and the schema are Build's; Preview shows the sheets as an underwriter sees them. */
 export type WorkbenchSection = "sheets" | "schema" | "preview"
@@ -33,12 +35,23 @@ export function activePage(form: FormSpec, pageId: string | null): Page {
   return form.pages.find((page) => page.id === pageId) ?? form.pages[0]
 }
 
+/**
+ * The sheet Preview shows of those that show (`shown`): the one `pageId` names while it
+ * shows, else the first that does, else none.
+ */
+export function shownPage(form: FormSpec, pageId: string | null, shown: ReadonlySet<string>): Page | null {
+  const chosen = activePage(form, pageId)
+  return shown.has(chosen.id) ? chosen : (form.pages.find((page) => shown.has(page.id)) ?? null)
+}
+
 interface WorkbenchViewState {
   section: WorkbenchSection
   /** The sheet showing; null until one is chosen, which `activePage` reads as the first. */
   pageId: string | null
   /** The selected component, whose properties panel is open. */
   selectedId: string | null
+  /** The showing sheet's own panel is open; never with a component selected. */
+  sheetSelected: boolean
   zoom: number
   /** The sheets have been fitted to the viewport since the form was read: a zoom chosen since is kept. */
   fitted: boolean
@@ -51,10 +64,16 @@ interface WorkbenchViewState {
   showSection: (section: WorkbenchSection) => void
   /** Show a sheet, with nothing selected: in Preview as before, else on the sheets section. */
   showPage: (pageId: string) => void
+  /** Select a component, or nothing; either closes the sheet's panel. */
   select: (id: string | null) => void
+  /** Open the showing sheet's own panel, no component selected. */
+  selectSheet: () => void
   setZoom: (zoom: number) => void
   zoomBy: (step: number) => void
-  /** Zoom so everything on the sheet fits the viewport across, never past 100%, and count the sheets fitted. */
+  /**
+   * Zoom so what is on the sheet fits the viewport across, never past 100%, and count the
+   * sheets fitted: in Preview, the components that show on the sheet that shows.
+   */
   fitZoom: () => void
   setCreating: (creating: Creating | null) => void
   setPanelWidth: (width: number) => void
@@ -66,24 +85,32 @@ const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
   section: "sheets",
   pageId: null,
   selectedId: null,
+  sheetSelected: false,
   zoom: 1,
   fitted: false,
   creating: null,
   panelWidth: DEFAULT_PANEL_WIDTH,
   sheet: null,
   viewport: null,
-  showSection: (section) => set({ section, selectedId: null }),
-  showPage: (pageId) => set((s) => ({ section: s.section === "preview" ? "preview" : "sheets", pageId, selectedId: null })),
-  select: (selectedId) => set({ selectedId }),
+  showSection: (section) => set({ section, selectedId: null, sheetSelected: false }),
+  showPage: (pageId) =>
+    set((s) => ({ section: s.section === "preview" ? "preview" : "sheets", pageId, selectedId: null, sheetSelected: false })),
+  select: (selectedId) => set({ selectedId, sheetSelected: false }),
+  selectSheet: () => set({ selectedId: null, sheetSelected: true }),
   setZoom: (zoom) => set({ zoom: Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom)) }),
   zoomBy: (step) => get().setZoom(get().zoom + step),
   fitZoom: () => {
-    const { viewport, pageId } = get()
+    const { viewport, pageId, section } = get()
     const { form } = useWorkbenchFormStore.getState()
     if (viewport === null || form === null) return
+    let widgets = activePage(form, pageId).widgets
+    if (section === "preview") {
+      const visibility = sheetVisibility(form, useWorkbenchPreviewStore.getState().quote)
+      widgets = (shownPage(form, pageId, visibility.pages)?.widgets ?? []).filter((widget) => visibility.widgets.has(widget.id))
+    }
     // Through the same bounds as the other zoom controls: a very wide sheet fits at the
     // minimum, never at nothing.
-    get().setZoom(zoomToFit(viewport.clientWidth - SHEET_PADDING * 2, activePage(form, pageId).widgets))
+    get().setZoom(zoomToFit(viewport.clientWidth - SHEET_PADDING * 2, widgets))
     set({ fitted: true })
   },
   setCreating: (creating) => set({ creating }),

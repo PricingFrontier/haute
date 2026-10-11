@@ -21,7 +21,7 @@ const blank: FormSpec = {
   version: 1,
   name: "motor",
   schema: { tables: [] },
-  pages: [{ id: "page_1", title: "Sheet 1", widgets: [] }],
+  pages: [{ id: "page_1", title: "Sheet 1", show_when: { match: "all", conditions: [] }, widgets: [] }],
   sample: {},
 }
 
@@ -35,7 +35,7 @@ const form: FormSpec = {
         name: "policy",
         role: "input",
         rows: "one",
-        columns: [{ id: "c1", name: "limit", type: "str", label: "", key: false, required: false, min: null, max: null, options: [], index: false }],
+        columns: [{ id: "c1", name: "limit", type: "str", label: "", key: false, required: false, min: null, max: null, options: [], index: false, help: "", placeholder: "", number_format: "general", decimal_places: null, use_grouping: true }],
       },
     ],
   },
@@ -135,6 +135,22 @@ describe("WorkbenchToolbar", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Build" }))
     expect(useWorkbenchViewStore.getState().section).toBe("sheets")
+  })
+
+  it("prices nothing while the only values typed are in cells the sheets hide, though Clear clears them", () => {
+    const boxes = { id: "w", type: "collection" as const, x: 0, y: 0, w: 400, h: 100, title: "", columns: 2, fields: [{ table: "t1", column: "c1" }], show_when: { match: "all" as const, conditions: [] } }
+    useWorkbenchFormStore.setState({
+      form: {
+        ...form,
+        pages: [{ ...blank.pages[0], show_when: { match: "all", conditions: [{ table: "t1", column: "c1", op: "equals", values: ["never"] }] }, widgets: [boxes] }],
+      },
+    })
+    useWorkbenchViewStore.setState({ section: "preview" })
+    useWorkbenchPreviewStore.setState({ quote: { t1: [{ c1: "x" }] } })
+    renderToolbar()
+
+    expect(screen.getByRole("button", { name: "Price" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Clear" })).toBeEnabled()
   })
 
   it("zooms the sheet in and out by a step", () => {

@@ -1,64 +1,109 @@
 /**
  * The properties panel (specs/workbench): what opens on the right, on Haute's side panel,
- * when a component on the sheet is selected. Its title, its layout (a Table's rows, a
- * Collection's columns), the order of the fields it shows, and the fields themselves,
- * ticked from the schema tables of its kind: many-row tables for a Table, one-row tables
- * for a Collection. A grid holds one kind of row, so once a Table shows a field, tables
- * whose rows do not line up with it are greyed out.
+ * when a component on the sheet is selected. Its title, when it shows, its layout (a
+ * Table's rows and whether they are fixed, a Collection's columns), a Table's look (its
+ * density, gridlines, row numbers and stripes), the order of the fields it shows, and the
+ * fields themselves, ticked from the schema tables of its kind: many-row tables for a
+ * Table, one-row tables for a Collection. A grid holds one kind of row, so once a Table
+ * shows a field, tables whose rows do not line up with it are greyed out. Opened from the
+ * showing sheet's tab instead, it is the sheet's panel: its title and when it shows.
  */
-import { ChevronDown, ChevronRight, GripVertical, X } from "lucide-react"
+import { ChevronDown, ChevronRight, GripVertical, Sheet, X } from "lucide-react"
 import { useState, type KeyboardEvent, type ReactNode } from "react"
-import type { FieldRef, FormSpec, SchemaTable } from "../api/types"
-import { CommittedTextField, EditorLabel, ValidatedTextField } from "../components/form"
+import type { FieldRef, FormSpec, Page, SchemaTable } from "../api/types"
+import { CommittedTextField, ConfigCheckbox, EditorLabel, ValidatedTextField } from "../components/form"
 import { SidePanel } from "../haute-ui"
 import useListReorder, { type RowDrag } from "../hooks/useListReorder"
 import { INPUT_STYLE } from "../panels/editors/_shared"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
-import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
+import useWorkbenchViewStore, { activePage } from "../stores/useWorkbenchViewStore"
 import {
   fieldColumn,
   findWidget,
   moveField,
   readableName,
+  renamePage,
   rowsShown,
+  setPageShowWhen,
   tableGrain,
   toggleField,
   updateWidget,
+  type TableOptions,
   type Widget,
 } from "../utils/workbenchForm"
 import { COLUMN_TYPES } from "./columnTypes"
+import { ShowWhenEditor } from "./ShowWhenEditor"
 import { COMPONENT_COLOR, WIDGET_KINDS } from "./widgetKinds"
 
 const MIN_WIDTH = 320
 /** At most half the window, so the sheet stays in view. */
 const maxWidth = () => Math.max(MIN_WIDTH, Math.floor(window.innerWidth / 2))
 const FIELD_CLASS = "focus-ring min-w-0 rounded-md px-1.5 py-1 text-xs"
+const DENSITIES: ReadonlyArray<{ value: TableOptions["density"]; label: string }> = [
+  { value: "compact", label: "Compact" },
+  { value: "comfortable", label: "Comfortable" },
+]
+const GRIDLINES: ReadonlyArray<{ value: TableOptions["gridlines"]; label: string }> = [
+  { value: "rows", label: "Between rows" },
+  { value: "all", label: "Full grid" },
+  { value: "none", label: "None" },
+]
 
 const fieldKey = (field: FieldRef) => `${field.table}:${field.column}`
 
 export default function PropertiesPanel() {
   const form = useWorkbenchFormStore((s) => s.form)
   const selectedId = useWorkbenchViewStore((s) => s.selectedId)
+  const sheetSelected = useWorkbenchViewStore((s) => s.sheetSelected)
+  const pageId = useWorkbenchViewStore((s) => s.pageId)
   const select = useWorkbenchViewStore((s) => s.select)
   const panelWidth = useWorkbenchViewStore((s) => s.panelWidth)
   const setPanelWidth = useWorkbenchViewStore((s) => s.setPanelWidth)
-  const found = form !== null && selectedId !== null ? findWidget(form, selectedId) : null
-  if (form === null || found === null) return null
+  if (form === null) return null
+  const found = selectedId !== null ? findWidget(form, selectedId) : null
+  const panel = { width: panelWidth, onWidthChange: setPanelWidth, minWidth: MIN_WIDTH, maxWidth, onClose: () => select(null), testId: "workbench-properties" }
+  if (sheetSelected) {
+    return (
+      <SidePanel {...panel} title="Sheet" icon={<Sheet size={14} style={{ color: COMPONENT_COLOR }} />}>
+        <SheetSettings form={form} page={activePage(form, pageId)} />
+      </SidePanel>
+    )
+  }
+  if (found === null) return null
   const { label, icon: Icon } = WIDGET_KINDS[found.widget.type]
 
   return (
-    <SidePanel
-      width={panelWidth}
-      onWidthChange={setPanelWidth}
-      minWidth={MIN_WIDTH}
-      maxWidth={maxWidth}
-      title={label}
-      onClose={() => select(null)}
-      icon={<Icon size={14} style={{ color: COMPONENT_COLOR }} />}
-      testId="workbench-properties"
-    >
+    <SidePanel {...panel} title={label} icon={<Icon size={14} style={{ color: COMPONENT_COLOR }} />}>
       <FieldsSettings form={form} widget={found.widget} />
     </SidePanel>
+  )
+}
+
+/** The showing sheet's panel: its title (a blank one kept out) and when it shows. */
+function SheetSettings({ form, page }: { form: FormSpec; page: Page }) {
+  const change = useWorkbenchFormStore((s) => s.change)
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto px-3 py-3 text-xs">
+      <Section title="Title">
+        <CommittedTextField
+          aria-label="Sheet title"
+          value={page.title}
+          onCommit={(title) => {
+            const trimmed = title.trim()
+            if (trimmed) change((spec) => renamePage(spec, page.id, trimmed))
+          }}
+          className={`${FIELD_CLASS} w-full`}
+          style={INPUT_STYLE}
+        />
+      </Section>
+      <Section title="Show when">
+        <ShowWhenEditor
+          form={form}
+          showWhen={page.show_when}
+          onChange={(next) => change((spec) => setPageShowWhen(spec, page.id, next))}
+        />
+      </Section>
+    </div>
   )
 }
 
@@ -110,6 +155,13 @@ function FieldsSettings({ form, widget }: { form: FormSpec; widget: Widget }) {
           style={INPUT_STYLE}
         />
       </Section>
+      <Section title="Show when">
+        <ShowWhenEditor
+          form={form}
+          showWhen={widget.show_when}
+          onChange={(next) => change((spec) => updateWidget(spec, widget.id, { show_when: next }))}
+        />
+      </Section>
       {widget.fields.length > 0 && (
         <Section title="Layout">
           <label className="flex items-center gap-2">
@@ -141,6 +193,72 @@ function FieldsSettings({ form, widget }: { form: FormSpec; widget: Widget }) {
               {widget.type === "collection" ? "boxes across; the rows follow" : "rows the grid shows"}
             </span>
           </label>
+          {widget.type === "tableInput" && (
+            <div className="flex items-center gap-2">
+              <span className="w-14 shrink-0" aria-hidden="true" />
+              <ConfigCheckbox
+                label="Fixed rows"
+                checked={widget.fixed_rows}
+                onChange={(fixed_rows) => change((spec) => updateWidget(spec, widget.id, { fixed_rows }))}
+              />
+              <span style={{ color: "var(--text-muted)" }}>no Add row or delete</span>
+            </div>
+          )}
+        </Section>
+      )}
+      {widget.type === "tableInput" && widget.fields.length > 0 && (
+        <Section title="Look">
+          <label className="flex items-center gap-2">
+            <span className="w-14" style={{ color: "var(--text-muted)" }}>
+              Density
+            </span>
+            <select
+              aria-label="Density"
+              value={widget.density}
+              onChange={(event) => change((spec) => updateWidget(spec, widget.id, { density: event.target.value as TableOptions["density"] }))}
+              className={FIELD_CLASS}
+              style={INPUT_STYLE}
+            >
+              {DENSITIES.map(({ value, label }) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex items-center gap-2">
+            <span className="w-14" style={{ color: "var(--text-muted)" }}>
+              Gridlines
+            </span>
+            <select
+              aria-label="Gridlines"
+              value={widget.gridlines}
+              onChange={(event) => change((spec) => updateWidget(spec, widget.id, { gridlines: event.target.value as TableOptions["gridlines"] }))}
+              className={FIELD_CLASS}
+              style={INPUT_STYLE}
+            >
+              {GRIDLINES.map(({ value, label }) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="flex items-center gap-2">
+            <span className="w-14 shrink-0" aria-hidden="true" />
+            <div className="flex items-center gap-4">
+              <ConfigCheckbox
+                label="Row numbers"
+                checked={widget.row_numbers}
+                onChange={(row_numbers) => change((spec) => updateWidget(spec, widget.id, { row_numbers }))}
+              />
+              <ConfigCheckbox
+                label="Striped rows"
+                checked={widget.striped}
+                onChange={(striped) => change((spec) => updateWidget(spec, widget.id, { striped }))}
+              />
+            </div>
+          </div>
         </Section>
       )}
       {widget.fields.length > 0 && (

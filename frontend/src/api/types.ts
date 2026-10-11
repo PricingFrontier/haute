@@ -519,12 +519,14 @@ export type {
 
 export type {
   CollectionWidget,
+  Condition,
   FieldRef,
   FormSchema,
   FormSpec,
   Page,
   SchemaColumn,
   SchemaTable,
+  ShowWhen,
   TableInputWidget,
   WorkbenchColumn,
   WorkbenchFormResponse,
