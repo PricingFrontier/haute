@@ -212,9 +212,10 @@ describe("ChartBody", () => {
     expect(figure).toHaveAttribute("data-stale", "true")
     expect(figure).toHaveStyle({ opacity: "0.5" })
 
+    // The runtime loaded once, each new option is set as the price arrives, not after another import.
     act(() => useWorkbenchPricingStore.setState({ price: { basis: pricingBasis(currentForm()), sample: {}, tables: { premiums: [{ item: "Crane", premium: 12 }] } } }))
     expect(figure).not.toHaveAttribute("data-stale")
-    await waitFor(() => expect(plotted()).toEqual([[12]]))
+    expect(plotted()).toEqual([[12]])
   })
 
   it("resizes the chart as its host does", async () => {

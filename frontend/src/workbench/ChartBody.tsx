@@ -1,15 +1,15 @@
 /**
  * A Chart on a sheet (specs/workbench, Charts): its fields' values as the sheet holds them,
  * the sample while building or the quote in Preview, plotted through Explore's lazy chart
- * runtime in the page's chart theme. One chart is drawn per mount and per change of theme
- * or reduced motion, and each new option is merged into it, so a series moves to its new
- * values rather than being drawn again. It is dimmed while it plots a price for other
+ * runtime, imported once, in the page's chart theme. One chart is drawn per mount and per
+ * change of theme or reduced motion, and each new option is merged into it, so a series
+ * moves to its new values rather than being drawn again. It is dimmed while it plots a price for other
  * values, says "Nothing to chart yet" with nothing to plot, and gives a screen reader its
  * values as a table.
  */
 import { useEffect, useId, useMemo, useRef, useState } from "react"
 import type { ChartWidget } from "../api/types"
-import type { ComboChartInstance } from "../panels/explore/chartRuntime"
+import type { ComboChartInstance, createComboChart } from "../panels/explore/chartRuntime"
 import { chartThemeTokens } from "../panels/explore/chartTheme"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import { hasValues, sheetChartData, sheetChartOptions } from "../utils/sheetChart"
@@ -17,6 +17,30 @@ import { useSheetValues } from "./useSheetValues"
 
 /** What a new option replaces whole rather than merges: what a change of type, orientation or legend adds or drops. */
 const REPLACED = ["series", "xAxis", "yAxis", "grid", "legend"]
+
+/**
+ * The lazy runtime's chart maker, once imported: every later draw sets its option as the
+ * values change rather than after another import.
+ */
+let makeChart: typeof createComboChart | null = null
+/**
+ * The one import of the runtime in flight, which every draw waiting for it shares, as two
+ * Charts mounting together or a draw overlapping the last would otherwise each import it.
+ * One that fails is forgotten, so the next draw tries again.
+ */
+let loadingChart: Promise<typeof createComboChart> | null = null
+
+const loadChartMaker = (): Promise<typeof createComboChart> =>
+  (loadingChart ??= import("../panels/explore/chartRuntime").then(
+    (runtime) => {
+      makeChart = runtime.createComboChart
+      return makeChart
+    },
+    (cause: unknown) => {
+      loadingChart = null
+      throw cause
+    },
+  ))
 
 const reducedMotion = (): boolean =>
   typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches
@@ -64,11 +88,11 @@ export default function ChartBody({ widget }: { widget: ChartWidget }) {
     let cancelled = false
     const draw = async () => {
       try {
-        const { createComboChart } = await import("../panels/explore/chartRuntime")
+        const make = makeChart ?? (await loadChartMaker())
         if (cancelled) return
         let chart = chartRef.current
         if (chart === null) {
-          const made = createComboChart(host)
+          const made = make(host)
           chart = made
           chartRef.current = made
           if (typeof ResizeObserver !== "undefined") {
