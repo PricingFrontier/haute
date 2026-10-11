@@ -276,6 +276,38 @@ describe("SectionHeaders", () => {
     expect([heightOf("s_policy"), heightOf("s_flood"), heightOf("s_notes")]).toEqual([152, 232, 72])
   })
 
+  it("records nothing for a drag of the handle held at the least its section can be, or brought back where it began, keeping redo", () => {
+    const form = emptyNotes()
+    form.pages[0].sections[2].height = 48
+    loadForm(form)
+    render(<SheetCanvas />)
+    const redoSteps = () => useWorkbenchFormStore.getState().redoStack.length
+
+    // An edit undone, to redo.
+    fireEvent.click(bar("s_flood"))
+    act(() => drag(edge("s_flood"), [500, 432], [500, 475]))
+    undo()
+    expect([undoSteps(), redoSteps()]).toEqual([0, 1])
+
+    // Notes, empty and 48 tall, its handle under 456 + 48: dragged up, it stays at 48.
+    fireEvent.click(bar("s_notes"))
+    act(() => drag(edge("s_notes"), [500, 504], [500, 400]))
+    expect(heightOf("s_notes")).toBe(48)
+    expect([undoSteps(), redoSteps()]).toEqual([0, 1])
+
+    // Dragged down, then back before it is released.
+    pointer("pointerdown", 500, 504, edge("s_notes"))
+    pointer("pointermove", 500, 560)
+    expect(heightOf("s_notes")).toBe(104)
+    pointer("pointermove", 500, 504)
+    pointer("pointerup", 500, 504)
+    expect(heightOf("s_notes")).toBe(48)
+    expect([undoSteps(), redoSteps()]).toEqual([0, 1])
+
+    act(() => useWorkbenchFormStore.getState().redo())
+    expect(heightOf("s_flood")).toBe(272)
+  })
+
   it("fits the selected section on a double-click on its handle: 16 below its lowest component, or 48 with none", () => {
     const form = emptyNotes()
     form.pages[0].sections[0].height = 400

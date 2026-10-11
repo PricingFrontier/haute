@@ -66,12 +66,19 @@ interface WorkbenchFormState {
   /** An edit that undo reverses: `update` returns the next form, or the same one for no edit. */
   change: (update: (form: FormSpec) => FormSpec) => void
   /**
-   * Record the form for undo before a run of `setFormRaw` updates, a drag's first move:
-   * the whole gesture is then one undo step.
+   * Record the form for undo before a run of `setFormRaw` updates, a burst of nudges' first:
+   * the whole burst is then one undo step.
    */
   pushSnapshot: () => void
   /** Replace the form without recording history, for each step of a gesture. */
   setFormRaw: (form: FormSpec) => void
+  /**
+   * Record `before`, the form as a gesture found it, for undo once the gesture's
+   * `setFormRaw` steps are done, so the whole gesture is one undo step; a gesture that
+   * leaves the form as it found it (held at a limit, or back where it began) records
+   * nothing and keeps redo.
+   */
+  commitGesture: (before: FormSpec) => void
   undo: () => void
   redo: () => void
   /**
@@ -191,6 +198,11 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
     },
     setFormRaw: (form) => {
       set({ form, dirty: serialise(form) !== get().savedForm })
+    },
+    commitGesture: (before) => {
+      const { form, undoStack } = get()
+      if (form === null || serialise(form) === serialise(before)) return
+      set({ undoStack: appendHistoryEntry(undoStack, before), redoStack: [] })
     },
     undo: () => {
       const { form, undoStack, redoStack, savedForm } = get()

@@ -306,7 +306,7 @@ describe("WidgetBody", () => {
     useWorkbenchPricingStore.setState({ price: { basis: pricingBasis(currentForm()), sample: {}, tables: { premiums: [{ premium: 1 }] } } })
     useWorkbenchPreviewStore.setState({
       quote: { policy: [{ "policy.state": "CA" }] },
-      price: { basis: valuesBasis(currentForm().schema, { policy: [{ "policy.state": "CA" }] }), sample: {}, tables: { premiums: [{ premium: 777 }] } },
+      price: { basis: valuesBasis(currentForm().schema, new Set(), { policy: [{ "policy.state": "CA" }] }), sample: {}, tables: { premiums: [{ premium: 777 }] } },
     })
     cleanup()
     renderBody("w_boxes", true)

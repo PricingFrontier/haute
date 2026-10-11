@@ -14,7 +14,7 @@ vi.mock("../../api/workbench", async (importOriginal) => ({
 import type { CollectionWidget, FormSchema, FormSpec, SchemaColumn, SchemaTable, ShowWhen, WorkbenchTablesResponse } from "../../api/types"
 import { fetchWorkbenchFormTables } from "../../api/workbench"
 import { cellKey, quoteProblems, valuesBasis } from "../../utils/sheetValues"
-import { columnKey, quotedSchema } from "../../utils/sheetVisibility"
+import { columnKey } from "../../utils/sheetVisibility"
 import type { PricedSample } from "../../utils/workbenchTables"
 import { section, sheet } from "../../workbench/__tests__/fixtures"
 import useWorkbenchFormStore from "../useWorkbenchFormStore"
@@ -118,11 +118,11 @@ describe("useWorkbenchPreviewStore", () => {
       checked: true,
       error: null,
       pricing: false,
-      price: { basis: valuesBasis(form.schema, { t1: [{ c1: "$250,000" }] }), tables: { pricing_output: [{ model_premium: 5000 }] } },
+      price: { basis: valuesBasis(form.schema, new Set(), { t1: [{ c1: "$250,000" }] }), tables: { pricing_output: [{ model_premium: 5000 }] } },
     })
     // The basis moves on with the quote, so the price reads as out of date until Price again.
     store().setCell("t1", 0, "c1", "1")
-    expect(store().price?.basis).not.toBe(valuesBasis(form.schema, store().quote))
+    expect(store().price?.basis).not.toBe(valuesBasis(form.schema, new Set(), store().quote))
   })
 
   it("marks the cells that break their column's rules instead of pricing, and says how many", async () => {
@@ -215,8 +215,12 @@ describe("useWorkbenchPreviewStore", () => {
     expect(fetchWorkbenchFormTables).toHaveBeenCalledWith({ ...sectioned, sample: quote })
     expect(pricer).toHaveBeenCalledTimes(1)
     expect(store()).toMatchObject({ error: null, price: { tables: { pricing_output: [{ model_premium: 5000 }] } } })
-    expect(store().price?.basis).toBe(valuesBasis(quotedSchema(covered, new Set([columnKey("t1", "c1")])), quote))
-    expect(store().price?.basis).not.toBe(valuesBasis(covered, quote))
+    const hidden = new Set([columnKey("t1", "c1")])
+    expect(store().price?.basis).toBe(valuesBasis(covered, hidden, quote))
+    expect(store().price?.basis).not.toBe(valuesBasis(covered, new Set(), quote))
+    // The hidden column is still declared to the pipeline: renamed, the price is out of date.
+    const renamed = { tables: covered.tables.map((table) => ({ ...table, columns: table.columns.map((c) => (c.id === "c1" ? { ...c, name: "exposure_si" } : c)) })) }
+    expect(store().price?.basis).not.toBe(valuesBasis(renamed, hidden, quote))
 
     // Cover ticked: the section shows, and its exposure is read and checked again.
     store().setCell("t1", 0, "c3", true)

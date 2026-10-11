@@ -197,6 +197,7 @@ function HeadingBody({ widget }: { widget: HeadingWidget }) {
 }
 
 export default function WidgetBody({ widget, fields }: { widget: Widget; fields: ShownField[] }) {
+  const previewing = useWorkbenchViewStore((s) => s.section === "preview")
   if (widget.type === "heading") return <HeadingBody widget={widget} />
   return (
     <div className="flex h-full flex-col overflow-hidden rounded-lg" style={{ border: "1px solid var(--border)", background: "var(--bg-panel)" }}>
@@ -206,12 +207,15 @@ export default function WidgetBody({ widget, fields }: { widget: Widget; fields:
         </div>
       )}
       {fields.length === 0 ? (
-        <div
-          className="m-3 grid flex-1 place-items-center rounded-md text-center text-[11px]"
-          style={{ border: "1px dashed var(--border)", color: "var(--text-secondary)" }}
-        >
-          Choose its fields from the schema in the panel on the right
-        </div>
+        // Fields are chosen while building: in Preview, which has no panel, it is its frame alone.
+        previewing ? null : (
+          <div
+            className="m-3 grid flex-1 place-items-center rounded-md text-center text-[11px]"
+            style={{ border: "1px dashed var(--border)", color: "var(--text-secondary)" }}
+          >
+            Choose its fields from the schema in the panel on the right
+          </div>
+        )
       ) : widget.type === "chart" ? (
         <ChartBody widget={widget} />
       ) : widget.type === "collection" ? (

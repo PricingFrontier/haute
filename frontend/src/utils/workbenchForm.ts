@@ -10,7 +10,7 @@ import { ASCII_IDENTIFIER_RE, apiInputLabelIssue, apiInputLabelIssueMessage } fr
 import { PYTHON_KEYWORDS } from "./globalConstants"
 import { BLANK_SECTION_HEIGHT, NEW_SECTION_HEIGHT, fittedSectionHeight, leastSectionHeight, type Rect } from "./sheetGeometry"
 import { parseTypedNumber, pricedRows, valuesBasis, type PricedRows, type RowsByTable } from "./sheetValues"
-import { columnKey, conditionFault, fieldKeys, neverShown, quotedSchema, sheetVisibility, testLabel } from "./sheetVisibility"
+import { columnKey, conditionFault, fieldKeys, neverShown, sheetVisibility, testLabel } from "./sheetVisibility"
 
 /** A section's widget: a Table, a Collection, a Chart or a Heading. */
 export type Widget = Section["widgets"][number]
@@ -689,14 +689,14 @@ export const withSampleRows = (spec: FormSpec, rowsByTable: Record<string, Sampl
 const bases = new WeakMap<FormSpec, string>()
 
 /**
- * What pricing the sample depends on, the schema as the sample's quote reads it (without
- * the columns the sheets hide) and the sample, as one string to compare: a sheet laid out
+ * What pricing the sample depends on, as one string to compare (`valuesBasis`): the schema,
+ * the columns the sheets hide as the sample sets them, and the sample. A sheet laid out
  * differently prices the same, while a condition that hides or shows a column does not.
  */
 export function pricingBasis(spec: FormSpec): string {
   let basis = bases.get(spec)
   if (basis === undefined) {
-    basis = valuesBasis(quotedSchema(spec.schema, sheetVisibility(spec, spec.sample).hidden), spec.sample)
+    basis = valuesBasis(spec.schema, sheetVisibility(spec, spec.sample).hidden, spec.sample)
     bases.set(spec, basis)
   }
   return basis

@@ -65,7 +65,8 @@ const useWorkbenchPreviewStore = create<WorkbenchPreviewState>()((set, get) => (
     const { pricer } = useWorkbenchPricingStore.getState()
     if (get().pricing || form === null || status !== "ready" || pricer === null) return
     const { quote } = get()
-    const quoted = quotedSchema(form.schema, sheetVisibility(form, quote).hidden)
+    const { hidden } = sheetVisibility(form, quote)
+    const quoted = quotedSchema(form.schema, hidden)
     if (!quoteFilled(quoted, quote)) {
       set({ checked: true, price: null, error: "Type the quote first" })
       return
@@ -75,7 +76,7 @@ const useWorkbenchPreviewStore = create<WorkbenchPreviewState>()((set, get) => (
       set({ checked: true, error: `${problems} ${problems === 1 ? "cell needs" : "cells need"} attention` })
       return
     }
-    const basis = valuesBasis(quoted, quote)
+    const basis = valuesBasis(form.schema, hidden, quote)
     const attempt = ++asked
     set({ checked: true, pricing: true, error: null })
     // Cleared meanwhile, or the view left: the answer is nobody's.

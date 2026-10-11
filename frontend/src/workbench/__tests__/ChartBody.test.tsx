@@ -103,6 +103,7 @@ describe("ChartBody", () => {
     loadForm()
     useWorkbenchPricingStore.setState({ price: null, error: null })
     useWorkbenchPreviewStore.setState({ quote: {}, checked: false, price: null, error: null, pricing: false })
+    useWorkbenchViewStore.setState({ section: "sheets" })
   })
 
   afterEach(() => {
@@ -142,7 +143,7 @@ describe("ChartBody", () => {
     expect(createComboChart).not.toHaveBeenCalled()
   })
 
-  it("points at the schema while a Chart plots no fields", async () => {
+  it("points at the schema while a Chart plots no fields, and in Preview, which has no panel, shows nothing", async () => {
     loadForm(chartForm([]))
     renderChart()
 
@@ -150,6 +151,33 @@ describe("ChartBody", () => {
     expect(screen.queryByRole("figure")).not.toBeInTheDocument()
     await act(async () => {})
     expect(createComboChart).not.toHaveBeenCalled()
+
+    cleanup()
+    useWorkbenchViewStore.setState({ section: "preview" })
+    renderChart(true)
+    expect(screen.queryByText(/panel on the right/)).not.toBeInTheDocument()
+    expect(screen.queryByRole("figure")).not.toBeInTheDocument()
+  })
+
+  it("says why a pie cannot be drawn, a value below 0 or every value 0, making no chart until it can be", async () => {
+    const form = chartForm([VALUE], { chart_type: "pie" })
+    form.sample = { equipment: [{ "equipment.item": "Crane", "equipment.value": "100" }, { "equipment.item": "Drill", "equipment.value": "-20" }] }
+    loadForm(form)
+    renderChart()
+
+    expect(screen.getByText(/^A pie can't show a value below 0: 2 is /)).toBeInTheDocument()
+    expect(screen.queryByTestId("chart-host-w_chart")).not.toBeInTheDocument()
+    await act(async () => {})
+    expect(createComboChart).not.toHaveBeenCalled()
+
+    typeSample("equipment", 1, "equipment.value", "20")
+    await waitFor(() => expect(plotted()).toEqual([[expect.objectContaining({ value: 100 }), expect.objectContaining({ value: 20 })]]))
+
+    typeSample("equipment", 0, "equipment.value", "0")
+    typeSample("equipment", 1, "equipment.value", "0")
+    expect(screen.getByText("Every value is 0, so there is no pie to draw")).toBeInTheDocument()
+    expect(screen.queryByTestId("chart-host-w_chart")).not.toBeInTheDocument()
+    expect(dispose).toHaveBeenCalledTimes(1)
   })
 
   it("gives a screen reader its values as a table: each category and each value in its column's format", async () => {

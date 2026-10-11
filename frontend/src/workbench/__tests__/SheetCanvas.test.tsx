@@ -19,7 +19,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
-import { CHART_OPTIONS, findWidget, HEADING_OPTIONS, TABLE_OPTIONS, updateWidget } from "../../utils/workbenchForm"
+import { CHART_OPTIONS, findSection, findWidget, HEADING_OPTIONS, TABLE_OPTIONS, updateWidget } from "../../utils/workbenchForm"
 import PropertiesPanel from "../PropertiesPanel"
 import SheetCanvas from "../SheetCanvas"
 import WorkbenchPalette from "../WorkbenchPalette"
@@ -382,6 +382,68 @@ describe("SheetCanvas", () => {
     expect(widget("w_boxes")).toMatchObject({ title: "Policy details", x: 72, y: 40, w: 440, h: 152 })
   })
 
+  it("keeps a section's title or height typed in its panel, not yet committed, as a Section is dragged out of the palette or its handle dragged, each its own undo step", () => {
+    render(
+      <>
+        <WorkbenchPalette />
+        <SheetCanvas />
+        <PropertiesPanel />
+      </>,
+    )
+    /** Type `text` into `field`, leaving it focused and uncommitted. */
+    const typeInto = (field: HTMLElement, text: string) => {
+      act(() => field.focus())
+      fireEvent.change(field, { target: { value: text } })
+    }
+    const undoSteps = () => useWorkbenchFormStore.getState().undoStack.length
+
+    act(() => useWorkbenchViewStore.getState().selectSection("s_p1"))
+    typeInto(screen.getByRole("textbox", { name: "Section title" }), "Cover")
+    // A Section dropped below the last: the new one selected, its panel in place of the first's.
+    pointer("pointerdown", 10, 10, screen.getByTestId("palette-item-section"))
+    pointer("pointermove", 300, 700)
+    pointer("pointerup", 300, 700)
+    const [first, added] = currentForm().pages[0].sections
+    expect(first.title).toBe("Cover")
+    expect(useWorkbenchViewStore.getState().sectionId).toBe(added.id)
+    expect(undoSteps()).toBe(2)
+
+    // Its height typed, then its handle, under its bottom (608 + 160), dragged 16 down: from what was typed.
+    typeInto(screen.getByTestId("section-height"), "304")
+    pointer("pointerdown", 500, 766, screen.getByTestId(`section-edge-${added.id}`))
+    pointer("pointermove", 500, 782)
+    pointer("pointerup", 500, 782)
+    const heightOf = () => findSection(currentForm(), added.id)?.section.height
+    expect(heightOf()).toBe(320)
+    expect(undoSteps()).toBe(4)
+    act(() => useWorkbenchFormStore.getState().undo())
+    expect(heightOf()).toBe(304)
+    act(() => useWorkbenchFormStore.getState().undo())
+    act(() => useWorkbenchFormStore.getState().undo())
+    expect(currentForm().pages[0].sections.map((section) => section.title)).toEqual(["Cover"])
+  })
+
+  it("records nothing for a component dragged away and back where it began, keeping redo", () => {
+    render(<SheetCanvas />)
+    const history = () => {
+      const { undoStack, redoStack } = useWorkbenchFormStore.getState()
+      return { undo: undoStack.length, redo: redoStack.length }
+    }
+    act(() => useWorkbenchFormStore.getState().change((spec) => updateWidget(spec, "w_boxes", { title: "Cover" })))
+    act(() => useWorkbenchFormStore.getState().undo())
+    expect(history()).toEqual({ undo: 0, redo: 1 })
+
+    pointer("pointerdown", 100, 100, frame("w_boxes"))
+    pointer("pointermove", 180, 180)
+    expect(widget("w_boxes")).toMatchObject({ x: 96, y: 96 })
+    pointer("pointermove", 100, 100)
+    pointer("pointerup", 100, 100)
+    expect(widget("w_boxes")).toMatchObject({ x: 16, y: 16 })
+    expect(history()).toEqual({ undo: 0, redo: 1 })
+    act(() => useWorkbenchFormStore.getState().redo())
+    expect(widget("w_boxes")).toMatchObject({ title: "Cover" })
+  })
+
   it("adds a component dragged out of the palette where it is dropped, selecting it; a click adds nothing", () => {
     render(
       <>
@@ -681,6 +743,51 @@ describe("SheetCanvas", () => {
     expect(below.widgets).toEqual([expect.objectContaining({ id: "w_grid", y: 0 })])
     expect(heights()).toEqual([160, 400])
     expect(selectedSection()).toBe(below.id)
+  })
+
+  it("never starts a Section less than the least a section can be down one: nearer its top, in before it or at the first clear line that far down, whichever is nearer, the line drawn where it starts", () => {
+    withPalette()
+
+    // 8 down the one section, above its boxes, 16 to 136 down it: a section above would be
+    // under 48, and the first clear line from 48 down is the boxes' bottom, 136, further
+    // than the top, so it goes in before the section, the line along its bar's top.
+    dragSection(300, 32)
+    expect(ghost()).toHaveTextContent(/^New section$/)
+    expect(ghost()).toHaveStyle({ top: "-1px" })
+    pointer("pointerup", 300, 32)
+    const [added, kept] = sections()
+    expect(added.widgets).toEqual([])
+    expect(kept.id).toBe("s_p1")
+    expect(kept.widgets.map(({ id, y }) => ({ id, y }))).toEqual([
+      { id: "w_boxes", y: 16 },
+      { id: "w_grid", y: 160 },
+    ])
+    expect(heights()).toEqual([160, 560])
+    act(() => useWorkbenchFormStore.getState().undo())
+
+    // With the boxes 56 down the section, 32 down it is nearer 48, clear of them, than the
+    // top: the section splits at 48, the line 72 down the sheet, and the boxes are 8 down
+    // the new section, where they were on the sheet.
+    act(() => useWorkbenchFormStore.getState().setFormRaw(updateWidget(currentForm(), "w_boxes", { y: 56 })))
+    dragSection(300, 56)
+    expect(ghost()).toHaveTextContent("New section from here")
+    expect(ghost()).toHaveStyle({ top: "71px" })
+    pointer("pointerup", 300, 56)
+    const [above, below] = sections()
+    expect(above.widgets).toEqual([])
+    expect(below.widgets.map(({ id, y }) => ({ id, y }))).toEqual([
+      { id: "w_boxes", y: 8 },
+      { id: "w_grid", y: 112 },
+    ])
+    expect(heights()).toEqual([48, 512])
+    // Under its bar, which starts where the line was drawn.
+    expect(band(below.id)).toHaveStyle({ top: "96px" })
+
+    // 16 down it, nearer the top: in before it.
+    act(() => useWorkbenchFormStore.getState().undo())
+    dragSection(300, 40)
+    expect(ghost()).toHaveTextContent(/^New section$/)
+    expect(ghost()).toHaveStyle({ top: "-1px" })
   })
 
   it("puts a Section dropped on a section's bar, or at its very top, in before it, empty, a new section's height, named and selected, as one undo step", () => {

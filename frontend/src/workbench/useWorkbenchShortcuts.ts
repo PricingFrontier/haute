@@ -81,12 +81,18 @@ export default function useWorkbenchShortcuts(onSave: () => void): void {
         const dx = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0
         const dy = e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0
         if (dx === 0 && dy === 0) return
+        const nudged = moveWidget(forms.form, selected.id, { x: selected.x + dx, y: selected.y + dy })
+        const moved = findWidget(nudged, selected.id)?.widget
+        // Held at its section's edge or the sheet's left: nothing moves, so nothing is recorded.
+        if (moved !== undefined && moved.x === selected.x && moved.y === selected.y) {
+          e.preventDefault()
+          return
+        }
         const now = Date.now()
         const burst = nudging.current
         if (burst === null || burst.id !== selected.id || now > burst.until || burst.form !== forms.form) {
           forms.pushSnapshot()
         }
-        const nudged = moveWidget(forms.form, selected.id, { x: selected.x + dx, y: selected.y + dy })
         nudging.current = { id: selected.id, until: now + NUDGE_BURST_MS, form: nudged }
         forms.setFormRaw(nudged)
       } else {

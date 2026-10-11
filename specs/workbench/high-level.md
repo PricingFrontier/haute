@@ -305,7 +305,9 @@ Out of scope:
   has eight handles that resize it, no smaller than its kind's minimum and never above its
   section's top, a resize past its bottom growing the section. Positions snap to the grid, pointer movement is
   divided by the zoom, and a move or a resize is one undo step, a click that does not
-  move recording nothing. Pressing the empty sheet deselects. A component takes the
+  move, or a drag held at a limit or brought back where it began, recording nothing, so
+  redo still stands. A field in the panel typed into and not yet committed commits, as an
+  undo step of its own, as any drag on the sheet or out of the palette starts. Pressing the empty sheet deselects. A component takes the
   keyboard's focus too: reached by Tab, it is selected, so the sheet's keys work without a
   pointer. The components are read, and reached by Tab, in the order they sit on the sheet,
   section by section and, within a section, row by row from the top and left to right along
@@ -317,7 +319,9 @@ Out of scope:
   of the other kind, tables whose rows do not line up, a Chart's field that is not a number
   or is an index, a pie of many rows with more than one field, or one of its conditions',
   Shown when below) gets a dashed frame in the warning colour naming the problem, on hover and to
-  a screen reader. The zoom runs from 25% to
+  a screen reader. One with no fields asks for them, while building, from the panel on
+  the right; in Preview, which has no panel, it is its frame alone, as a Heading with no
+  text is. The zoom runs from 25% to
   200% in steps of 10%; what is on the sheet is fitted to the viewport, never past 100%,
   when the sheets first show for a form read (a zoom chosen since is kept across a trip to
   the schema or the pipeline editor) and on Ctrl/Cmd+1.
@@ -326,7 +330,10 @@ Out of scope:
   in the structure colour, and the switcher under them. A Section dragged onto the sheet
   shows a line across it where the new section would start, and released there starts it:
   inside a section, at the grid line nearest the pointer, moved to the nearer edge of any
-  component the line would cut through, so it never runs through one, it splits that
+  component the line would cut through, so it never runs through one, and never less than
+  48px down the section, the least the section above can be (nearer its top than that,
+  before the section or at the first clear line that far down, whichever is nearer the
+  pointer), so the line drawn is where the section starts, it splits that
   section there, the components below the line moving into the new one and keeping their
   places on the sheet, the section above keeping the height above the line; on a
   section's bar or at its very top it goes in before it, at its very bottom after it, and
@@ -396,7 +403,8 @@ Out of scope:
 - **The sheet's keyboard.** While the sheets show and a component is selected: Escape
   deselects it, Delete or Backspace removes it, Ctrl/Cmd+D duplicates it (16px below and
   to the right, selected), and the arrow keys nudge it by a grid step, or a pixel with
-  Shift, a burst of nudges within 800ms being one undo step, kept inside its section. With a section's bar focused: Enter or Space
+  Shift, a burst of nudges within 800ms being one undo step, kept inside its section, a
+  nudge that cannot move it recording nothing. With a section's bar focused: Enter or Space
   opens its panel, Alt+Up and Alt+Down move the section, and Delete or Backspace deletes it,
   asking first when components are in it, while another section remains on the sheet; with
   the section's panel open, Escape closes it. None of that from a text
@@ -443,7 +451,7 @@ Out of scope:
   that number; text that is not a number, a cell left blank and a value the sheets hide
   (Shown when, below) are gaps. An output column's value is the last answer's, nothing
   before the first answer and after a pricing fails, and the whole chart is dimmed while it
-  plots a price for other values, as an output cell is. Of one-row tables, each field is a
+  plots a price for other values, or names its rows by one, as an output cell is. Of one-row tables, each field is a
   column, a point of the line or the area, or a slice of the pie, named by its label, in
   the fields' order. Of many-row tables, each field is a series over the rows: while it
   shows an input table, the rows typed into the input tables it shows, a row counting while
@@ -457,7 +465,11 @@ Out of scope:
   columns share, or a compact number when they differ. Columns, lines and areas stack while
   `stacked` is set and run across while `orientation` is `horizontal`, the first row at the
   top; the legend is drawn where `legend` says while there are two series or more, and for
-  a pie. A Chart with nothing to plot says "Nothing to chart yet". While building, a Chart
+  a pie. A Chart with nothing to plot says "Nothing to chart yet". A pie shares out a
+  whole, so it draws no slices that would misstate its values: given a value below 0 it
+  says so, naming the first and its value as its column shows it, and
+  given nothing above 0, "Every value is 0, so there is no pie to draw"; a 0 or a gap
+  beside others is no slice. While building, a Chart
   is laid out like any component; in Preview pointing at a column, a point or a slice names
   it and its value.
 - **Headings.** A Heading is text placed on a sheet to name a section of it, or the sheet
@@ -819,9 +831,11 @@ Out of scope:
 - **Commit on blur.** The schema editor's fields commit as Haute's editors commit, once
   per edit, so an undo step is an edit rather than a keystroke and no timer decides where
   one edit ends and the next begins.
-- **A gesture is one step.** A drag records the form when the pointer first moves and
-  replaces it on each move without history, as the graph store's raw setters do for the
-  canvas, so undo reverses the whole drag; a burst of nudges is grouped the same way.
+- **A gesture is one step.** A drag replaces the form on each move without history, as
+  the graph store's raw setters do for the canvas, and records the form as pressed once
+  it is released, so undo reverses the whole drag, and a drag that changed nothing, held
+  at a limit or brought back, records nothing and leaves redo standing; a burst of nudges
+  is grouped the same way.
 - **One reorder.** The step editor's cards, a component's fields and the sheets' tabs are
   dragged into order through one hook, a row dropped on another put there, rather than a
   second drag model with markers of its own.

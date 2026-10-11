@@ -88,7 +88,7 @@ export function usePreviewValues(): SheetValues {
       setCell,
       setRows,
       price,
-      basis: form === null ? "" : valuesBasis(quoted, quote),
+      basis: form === null ? "" : valuesBasis(form.schema, visibility.hidden, quote),
       problems: checked && form !== null ? quoteProblems(quoted, quote) : NO_PROBLEMS,
       visibility,
       quoted,

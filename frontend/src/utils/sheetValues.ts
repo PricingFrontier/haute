@@ -111,11 +111,14 @@ export function quoteProblems(schema: FormSchema, rows: RowsByTable): Record<str
 }
 
 /**
- * What pricing the values depends on, the schema and the values, as one string to
- * compare: a sheet laid out differently prices the same, and a price for another basis
- * is out of date.
+ * What pricing the values depends on, as one string to compare: the whole schema (the
+ * server declares a column the sheets hide too, its value left out), which columns the
+ * sheets hide, and the values. A sheet laid out differently prices the same; a column
+ * renamed or retyped, hidden or shown, or a value typed does not, and a price for another
+ * basis is out of date.
  */
-export const valuesBasis = (schema: FormSchema, rows: RowsByTable): string => JSON.stringify([schema, rows])
+export const valuesBasis = (schema: FormSchema, hidden: ReadonlySet<string>, rows: RowsByTable): string =>
+  JSON.stringify([schema, [...hidden].sort(), rows])
 
 /** A priced table's rows, as the Workbench Output's preview gives them. */
 export type PricedRows = readonly Record<string, unknown>[]

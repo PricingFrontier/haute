@@ -106,7 +106,9 @@ export function sheetChartData(spec: FormSpec, widget: ChartWidget, values: Char
   // A column the quote leaves out: the sheets hide it, so it was never typed.
   const quotedColumns = new Set(quoted.tables.flatMap((table) => table.columns.map((column) => `${table.id}:${column.id}`)))
   const inQuote = ({ table, column }: Found): boolean => quotedColumns.has(`${table.id}:${column.id}`)
-  const stale = price !== null && price.basis !== basis && plotted.some(({ table }) => table.role === "output")
+  // Priced values plotted, or rows named by priced values, are for other values once the basis moves on.
+  const priced = plotted.some(({ table }) => table.role === "output") || label?.table.role === "output"
+  const stale = price !== null && price.basis !== basis && priced
   const axis = sharedFormat(plotted.map(({ column }) => column))
 
   if (grain === "one") {
@@ -209,6 +211,20 @@ export function sheetChartData(spec: FormSpec, widget: ChartWidget, values: Char
 
 /** Whether a Chart has a number to plot. */
 export const hasValues = (data: ChartData): boolean => data.series.some((entry) => entry.values.some((value) => value !== null))
+
+/**
+ * What a Chart says in place of its plot, or null while it plots: "Nothing to chart yet"
+ * with no number to plot, and for a pie, whose slices share out a whole, the first value
+ * below 0, named, or that every value is 0, rather than slices that would misstate them.
+ */
+export function chartMessage(widget: ChartWidget, data: ChartData): string | null {
+  if (!hasValues(data)) return "Nothing to chart yet"
+  const [slices] = data.series
+  if (widget.chart_type !== "pie" || slices === undefined) return null
+  const negative = slices.values.findIndex((value) => value !== null && value < 0)
+  if (negative >= 0) return `A pie can't show a value below 0: ${data.categories[negative]} is ${slices.labels[negative]}`
+  return slices.values.some((value) => value !== null && value > 0) ? null : "Every value is 0, so there is no pie to draw"
+}
 
 /** Where the legend sits around the plot. */
 const LEGEND_PLACES = {

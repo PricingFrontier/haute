@@ -171,7 +171,7 @@ describe("useWorkbenchFormStore", () => {
     expect(store().undoStack.map((form) => form.name)).toEqual(["motor", "home"])
   })
 
-  it("records a gesture as one undo step: a snapshot, then raw updates without history", async () => {
+  it("records a burst as one undo step: a snapshot, then raw updates without history", async () => {
     server({ form: blank, revision: "rev-0" })
     const store = useWorkbenchFormStore.getState
     await store().load()
@@ -185,6 +185,27 @@ describe("useWorkbenchFormStore", () => {
     store().undo()
     expect(store()).toMatchObject({ form: blank, dirty: false })
     expect(store().redoStack.map((form) => form.name)).toEqual(["ab"])
+  })
+
+  it("records a gesture once it is done, as one undo step, and nothing for one that leaves the form as it found it, keeping redo", async () => {
+    server({ form: blank, revision: "rev-0" })
+    const store = useWorkbenchFormStore.getState
+    await store().load()
+    store().change((form) => ({ ...form, name: "kept" }))
+    store().undo()
+
+    // Out and back: nothing recorded, so the redo stands.
+    const pressed = store().form!
+    store().setFormRaw({ ...pressed, name: "a" })
+    store().setFormRaw(structuredClone(pressed))
+    store().commitGesture(pressed)
+    expect(store()).toMatchObject({ undoStack: [], dirty: false })
+    expect(store().redoStack.map((form) => form.name)).toEqual(["kept"])
+
+    store().setFormRaw({ ...pressed, name: "ab" })
+    store().commitGesture(pressed)
+    expect(store()).toMatchObject({ form: named("ab"), dirty: true, redoStack: [] })
+    expect(store().undoStack).toEqual([pressed])
   })
 
   it("keeps the sample typed while building as part of the form: unsaved until saved, undone like any edit", async () => {

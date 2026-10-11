@@ -93,7 +93,8 @@ ghost:
   number of boxes across.
 - A **Chart** plots number columns, typed or priced. Of one-row tables it gives a point per
   field; of many-row tables, a series per field over the rows, each row labelled by a
-  column you choose or numbered.
+  column you choose or numbered. A pie shows parts of a whole, so given a value below 0, or
+  only 0s, it says so instead of drawing slices.
 - A **Heading** names a section of the sheet, or the sheet itself, in text on the sheet:
   **Large** for a title, **Medium** for a section's heading, **Small** for a label, with an
   optional description under it saying what the section is for, aligned left, centre or
@@ -130,7 +131,9 @@ section, then row by row from the top and left to right along each row, whatever
 added them in.
 
 To add a section, drag **Section** from the palette onto the sheet: a line shows where it
-will start, never through a component (it moves to the nearer edge of one). Dropped
+will start, never through a component (it moves to the nearer edge of one) and never in
+the top 48px of a section, too little for the section above (it goes above the section, or
+further down). Dropped
 inside a section, it splits it there, and what sits below the line moves into the new
 section, keeping its place; dropped on a section's bar it goes in above
 that section, and below the last section it adds an empty one at the end. While building,

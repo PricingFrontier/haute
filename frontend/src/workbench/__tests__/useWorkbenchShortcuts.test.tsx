@@ -7,10 +7,10 @@
  * section, nor in Preview, where only Ctrl+1 applies.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { cleanup, renderHook, waitFor } from "@testing-library/react"
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
-import { findWidget } from "../../utils/workbenchForm"
+import { findWidget, updateWidget } from "../../utils/workbenchForm"
 import useWorkbenchShortcuts from "../useWorkbenchShortcuts"
 import { currentForm, loadForm, sectionedForm, widgetsOf } from "./fixtures"
 
@@ -172,6 +172,27 @@ describe("useWorkbenchShortcuts on the sheets", () => {
     key({ key: "z", ctrlKey: true })
     expect(grid()?.widget).toMatchObject({ x: 16, y: 16 })
     expect(heights()).toEqual([152, 232, 72])
+  })
+
+  it("records nothing for a nudge held at its section's top or the sheet's left, keeping redo", () => {
+    const form = sectionedForm()
+    const flood = form.pages[0].sections[1]
+    flood.widgets = flood.widgets.map((placed) => ({ ...placed, x: 0, y: 0 }))
+    loadForm(form)
+    useWorkbenchViewStore.setState({ selectedId: "w_grid" })
+    const forms = useWorkbenchFormStore.getState
+    act(() => forms().change((spec) => updateWidget(spec, "w_grid", { title: "Plant" })))
+    act(() => forms().undo())
+
+    key({ key: "ArrowUp" })
+    key({ key: "ArrowLeft", shiftKey: true })
+    expect(findWidget(currentForm(), "w_grid")?.widget).toMatchObject({ x: 0, y: 0 })
+    expect([forms().undoStack.length, forms().redoStack.length]).toEqual([0, 1])
+
+    // A nudge that moves it is recorded, as ever.
+    key({ key: "ArrowDown" })
+    expect(findWidget(currentForm(), "w_grid")?.widget).toMatchObject({ x: 0, y: 8 })
+    expect([forms().undoStack.length, forms().redoStack.length]).toEqual([1, 0])
   })
 
   it("fits the sheet on Ctrl+1", () => {

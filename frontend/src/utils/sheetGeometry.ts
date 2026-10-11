@@ -104,11 +104,11 @@ export function stackSections<T extends { height: number }>(sections: readonly T
 }
 
 /**
- * The line across a section nearest `y` that cuts through none of `rects`, the section's
- * components: `y` itself when it is clear, else the nearer edge, the top on a tie, of the run
- * of overlapping components it would cut through. A line along a component's edge is clear.
+ * The run of overlapping components among `rects`, a section's, that a line across the
+ * section at `y` would cut through: from the top of the highest to the bottom of the lowest,
+ * or `y` to `y` while it cuts through none. A line along a component's edge cuts nothing.
  */
-export function clearLine(rects: readonly Rect[], y: number): number {
+export function cutRun(rects: readonly Rect[], y: number): { top: number; bottom: number } {
   let top = y
   let bottom = y
   // Widen the run until no component reaches across either of its edges.
@@ -122,7 +122,16 @@ export function clearLine(rects: readonly Rect[], y: number): number {
       }
     }
   }
-  if (top === y || bottom === y) return y
+  return { top, bottom }
+}
+
+/**
+ * The line across a section nearest `y` that cuts through none of `rects`, the section's
+ * components: `y` itself when it is clear, else the nearer edge, the top on a tie, of the run
+ * of overlapping components it would cut through (`cutRun`).
+ */
+export function clearLine(rects: readonly Rect[], y: number): number {
+  const { top, bottom } = cutRun(rects, y)
   return y - top <= bottom - y ? top : bottom
 }
 

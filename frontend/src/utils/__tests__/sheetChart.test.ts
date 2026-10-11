@@ -7,7 +7,7 @@
 import { describe, expect, it } from "vitest"
 import type { ChartWidget, FieldRef, FormSpec, SchemaColumn, SchemaTable, ShowWhen } from "../../api/types"
 import type { ChartThemeTokens } from "../../panels/explore/chartOptions"
-import { hasValues, sheetChartData, sheetChartOptions, type ChartData, type ChartValues } from "../sheetChart"
+import { chartMessage, hasValues, sheetChartData, sheetChartOptions, type ChartData, type ChartValues } from "../sheetChart"
 import type { PricedRows, RowsByTable } from "../sheetValues"
 import { quotedSchema, sheetVisibility } from "../sheetVisibility"
 import { addWidget, createWidget, TABLE_OPTIONS, type SampleRow } from "../workbenchForm"
@@ -279,15 +279,19 @@ describe("a Chart's axis and freshness", () => {
     expect(sheetChartData(mixed.spec, mixed.widget, valuesOf(mixed.spec, {})).axis).toBeNull()
   })
 
-  it("is stale only while it plots an output priced for other values", () => {
+  it("is stale only while it plots an output, or names its rows by one, priced for other values", () => {
     const outputs = charted([field("policy", "sum_insured"), field("quote", "premium")])
     const inputs = charted([field("policy", "sum_insured")])
+    const namedByPrice = charted([field("equipment", "value")], { category: field("premiums", "premium") })
     const stale = (chart: { spec: FormSpec; widget: ChartWidget }, price: Price | null) =>
       sheetChartData(chart.spec, chart.widget, valuesOf(chart.spec, {}, price, "now")).stale
     expect(stale(outputs, priced({}, {}, "before"))).toBe(true)
     expect(stale(outputs, priced({}, {}, "now"))).toBe(false)
     expect(stale(outputs, null)).toBe(false)
     expect(stale(inputs, priced({}, {}, "before"))).toBe(false)
+    // Typed values named by what an earlier pricing gave: the names are for other values.
+    expect(stale(namedByPrice, priced({}, {}, "before"))).toBe(true)
+    expect(stale(namedByPrice, priced({}, {}, "now"))).toBe(false)
   })
 
   it("has values while any series has a number", () => {
@@ -296,6 +300,26 @@ describe("a Chart's axis and freshness", () => {
     expect(hasValues(data([]))).toBe(false)
     expect(hasValues(data([[null, null]]))).toBe(false)
     expect(hasValues(data([[null], [null, 0]]))).toBe(true)
+  })
+
+  it("says why it plots nothing, and why a pie cannot share out a value below 0 or values that are all 0", () => {
+    const message = (chart_type: ChartWidget["chart_type"], values: (number | null)[]) => {
+      const { widget } = charted([], { chart_type })
+      const labels = values.map((value) => (value === null ? null : `£${value}`))
+      return chartMessage(widget, { rows: "one", categories: ["Premium", "Discount"], series: [{ key: "points", name: "", values, labels }], axis: null, stale: false })
+    }
+    expect(message("column", [null, null])).toBe("Nothing to chart yet")
+    expect(message("pie", [null, null])).toBe("Nothing to chart yet")
+    expect(message("pie", [100, 20])).toBeNull()
+    // A slice of 0 beside others, or a gap, is drawn as no slice.
+    expect(message("pie", [100, 0])).toBeNull()
+    expect(message("pie", [null, 20])).toBeNull()
+    expect(message("pie", [100, -20])).toBe("A pie can't show a value below 0: Discount is £-20")
+    expect(message("pie", [0, 0])).toBe("Every value is 0, so there is no pie to draw")
+    expect(message("pie", [0, null])).toBe("Every value is 0, so there is no pie to draw")
+    // Columns, lines and areas draw below 0 and at 0 along their axis.
+    expect(message("column", [100, -20])).toBeNull()
+    expect(message("line", [0, 0])).toBeNull()
   })
 })
 

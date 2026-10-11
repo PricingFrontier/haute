@@ -75,6 +75,7 @@ import {
   withSampleRows,
   type Widget,
 } from "../workbenchForm"
+import { columnKey, sheetVisibility } from "../sheetVisibility"
 
 /** A section `height` tall holding `widgets`, always shown unless `showWhen` says otherwise. */
 const section = (id: string, title: string, height: number, widgets: Widget[] = [], showWhen: ShowWhen = { match: "all", conditions: [] }): Section => ({
@@ -1138,6 +1139,11 @@ describe("when sheets and components show", () => {
     const onFleet: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "policy.class", op: "equals", values: ["Fleet"] }] }
     expect(pricingBasis(setSectionShowWhen(spec, "s_main", onFleet))).not.toBe(pricingBasis(spec))
     expect(pricingBasis(setSectionHeight(spec, "s_main", 400))).toBe(pricingBasis(spec))
+    // A column the sheets hide is still declared to the pipeline, so one renamed or retyped
+    // is priced anew, though the quote reads the same.
+    expect(sheetVisibility(spec, spec.sample).hidden).toContain(columnKey("bi", "bi.limit"))
+    expect(pricingBasis(updateSchemaColumn(spec, "bi", "bi.limit", { name: "cover_limit" }))).not.toBe(pricingBasis(spec))
+    expect(pricingBasis(updateSchemaColumn(spec, "bi", "bi.limit", { type: "int" }))).not.toBe(pricingBasis(spec))
   })
 })
 

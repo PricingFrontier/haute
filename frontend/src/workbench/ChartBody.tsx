@@ -4,15 +4,15 @@
  * runtime, imported once, in the page's chart theme. One chart is drawn per mount and per
  * change of theme or reduced motion, and each new option is merged into it, so a series
  * moves to its new values rather than being drawn again. It is dimmed while it plots a price for other
- * values, says "Nothing to chart yet" with nothing to plot, and gives a screen reader its
- * values as a table.
+ * values, says "Nothing to chart yet" with nothing to plot, or why a pie cannot be drawn
+ * (`chartMessage`), and gives a screen reader its values as a table.
  */
 import { useEffect, useId, useMemo, useRef, useState } from "react"
 import type { ChartWidget } from "../api/types"
 import type { ComboChartInstance, createComboChart } from "../panels/explore/chartRuntime"
 import { chartThemeTokens } from "../panels/explore/chartTheme"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
-import { hasValues, sheetChartData, sheetChartOptions } from "../utils/sheetChart"
+import { chartMessage, sheetChartData, sheetChartOptions } from "../utils/sheetChart"
 import { useSheetValues } from "./useSheetValues"
 
 /** What a new option replaces whole rather than merges: what a change of type, orientation or legend adds or drops. */
@@ -49,7 +49,8 @@ export default function ChartBody({ widget }: { widget: ChartWidget }) {
   const form = useWorkbenchFormStore((s) => s.form)
   const values = useSheetValues()
   const data = useMemo(() => (form === null ? null : sheetChartData(form, widget, values)), [form, widget, values])
-  const drawn = data !== null && hasValues(data)
+  const message = data === null ? null : chartMessage(widget, data)
+  const drawn = data !== null && message === null
   const hostRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<ComboChartInstance | null>(null)
   const observerRef = useRef<ResizeObserver | null>(null)
@@ -136,7 +137,7 @@ export default function ChartBody({ widget }: { widget: ChartWidget }) {
           className="m-3 grid flex-1 place-items-center rounded-md text-center text-[11px]"
           style={{ border: "1px dashed var(--border)", color: "var(--text-secondary)" }}
         >
-          Nothing to chart yet
+          {message}
         </div>
       )}
       <table className="sr-only" aria-label={`${name} values`}>

@@ -18,6 +18,7 @@ import {
   clearLine,
   contentBottom,
   contentRight,
+  cutRun,
   fittedSectionHeight,
   fitZoom,
   leastSectionHeight,
@@ -164,6 +165,14 @@ describe("sheetGeometry", () => {
     expect(clearLine([boxes, grid], 400)).toBe(400)
     // Along a component's top or bottom.
     expect([clearLine([boxes, grid], 16), clearLine([boxes, grid], 136), clearLine([boxes, grid], 160), clearLine([boxes, grid], 360)]).toEqual([16, 136, 160, 360])
+  })
+
+  it("gives the run of overlapping components a line would cut through, or the line itself where it cuts none", () => {
+    const chain = [band(16, 120), band(100, 100), band(180, 120)]
+    expect(cutRun(chain, 190)).toEqual({ top: 16, bottom: 300 })
+    expect(cutRun(chain, 48)).toEqual({ top: 16, bottom: 300 })
+    expect(cutRun([band(16, 120)], 136)).toEqual({ top: 136, bottom: 136 })
+    expect(cutRun([], 48)).toEqual({ top: 48, bottom: 48 })
   })
 
   it("moves a line cutting through components to the nearer edge of the run of them it cuts, the top on a tie", () => {

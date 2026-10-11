@@ -133,10 +133,13 @@ describe("quoteProblems", () => {
 })
 
 describe("valuesBasis", () => {
-  it("is what pricing the sample depends on, the schema and the values", () => {
+  it("is what pricing the sample depends on, the schema, the columns hidden and the values", () => {
     const form = { version: 1 as const, name: "x", schema: { tables: [policy] }, pages: [], sample: { policy: [{ state: "NY" }] } }
-    expect(pricingBasis(form)).toBe(valuesBasis(form.schema, form.sample))
-    expect(valuesBasis(form.schema, { policy: [{ state: "CA" }] })).not.toBe(pricingBasis(form))
+    expect(pricingBasis(form)).toBe(valuesBasis(form.schema, new Set(), form.sample))
+    expect(valuesBasis(form.schema, new Set(), { policy: [{ state: "CA" }] })).not.toBe(pricingBasis(form))
+    expect(valuesBasis(form.schema, new Set(["policy:state"]), form.sample)).not.toBe(pricingBasis(form))
+    // The columns hidden are a set: the order they were found in changes nothing.
+    expect(valuesBasis(form.schema, new Set(["b", "a"]), {})).toBe(valuesBasis(form.schema, new Set(["a", "b"]), {}))
   })
 })
 

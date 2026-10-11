@@ -15,6 +15,8 @@ import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore, { activePage } from "../stores/useWorkbenchViewStore"
 import {
   clearLine,
+  cutRun,
+  MIN_SECTION_HEIGHT,
   moveRect,
   placeAt,
   resizeRect,
@@ -107,8 +109,11 @@ export function dropAt(type: WidgetType, clientX: number, clientY: number): Drop
 /**
  * Where dropping a section at this pointer position would start it, or null off the sheet:
  * inside a section, a split at the grid line nearest the pointer, moved to the nearer edge of
- * any component it would cut through (`clearLine`); on a section's bar or at its very top,
- * in before it; at its very bottom, in after it; below the last section, at the end.
+ * any component it would cut through (`clearLine`) and never less than `MIN_SECTION_HEIGHT`
+ * down it, the least the section above can be (nearer its top than that, in before it or at
+ * the first clear line that far down, whichever is nearer the pointer); on a section's bar
+ * or at its very top, in before it; at its very bottom, in after it; below the last section,
+ * at the end. The line drawn while dragging is where the section starts once dropped.
  */
 export function sectionDropAt(clientX: number, clientY: number): SectionDrop | null {
   const point = onSheet(clientX, clientY)
@@ -118,7 +123,13 @@ export function sectionDropAt(clientX: number, clientY: number): SectionDrop | n
   const target = point.py >= bottom ? undefined : sectionAt(stack, point.py)
   if (target === undefined || target === null) return { line: bottom, place: { index: stack.length } }
   const index = stack.indexOf(target)
-  const at = clearLine(target.section.widgets, snap(point.py - target.top))
+  const { widgets } = target.section
+  const y = snap(point.py - target.top)
+  let at = clearLine(widgets, y)
+  if (at > 0 && at < MIN_SECTION_HEIGHT) {
+    const below = cutRun(widgets, MIN_SECTION_HEIGHT).bottom
+    at = y <= below - y ? 0 : below
+  }
   if (at <= 0) return { line: target.top - SECTION_HEADER, place: { index } }
   if (at >= target.section.height) return { line: target.top + target.section.height, place: { index: index + 1 } }
   return { line: target.top + at, place: { split: target.section.id, at } }
@@ -154,6 +165,17 @@ function track(
 }
 
 /**
+ * Commit a field being typed into before a gesture reads the form. A press whose default is
+ * prevented does not move the focus, so the field would keep what was typed, lost when the
+ * panel it is in goes or written over by the gesture; a field left commits what was typed
+ * into it as it blurs, so the form is read after that, and the edit is an undo step apart
+ * from the gesture's.
+ */
+function leaveField(pressed: EventTarget): void {
+  if (document.activeElement instanceof HTMLElement && document.activeElement !== pressed) document.activeElement.blur()
+}
+
+/**
  * Drag a palette item onto the sheet; released there, a component is added to its section
  * and selected, or a section is started where it was dropped and selected. A click adds
  * nothing.
@@ -161,6 +183,7 @@ function track(
 export function startCreate(e: ReactPointerEvent, type: PaletteType): void {
   if (e.button !== 0) return
   e.preventDefault()
+  leaveField(e.currentTarget)
   const { setCreating } = useWorkbenchViewStore.getState()
   track(
     e,
@@ -201,12 +224,8 @@ export function startTransform(e: ReactPointerEvent, id: string, handle?: Handle
   if (e.button !== 0) return
   e.stopPropagation()
   e.preventDefault()
-  // The press does not move the focus (its default is prevented): a cell focused earlier
-  // would otherwise keep taking the keys meant for the selected component. A field left
-  // commits what was typed into it as it blurs, so the form is read after that.
-  if (document.activeElement instanceof HTMLElement && document.activeElement !== e.currentTarget) {
-    document.activeElement.blur()
-  }
+  // A cell focused earlier would otherwise keep taking the keys meant for the selected component.
+  leaveField(e.currentTarget)
   const { zoom, select } = useWorkbenchViewStore.getState()
   const { form } = useWorkbenchFormStore.getState()
   const found = form === null ? null : findWidget(form, id)
@@ -220,17 +239,12 @@ export function startTransform(e: ReactPointerEvent, id: string, handle?: Handle
   const { min } = WIDGET_KINDS[found.widget.type]
   const stack = buildStack(found.page)
   const top = stack.find((stacked) => stacked.section.id === found.section.id)?.top ?? 0
-  let started = false
   track(
     e,
     handle ? `${handle}-resize` : "grabbing",
     (dx, dy) => {
       const store = useWorkbenchFormStore.getState()
       if (store.form === null) return
-      if (!started) {
-        store.pushSnapshot()
-        started = true
-      }
       if (handle) {
         store.setFormRaw(updateWidget(pressed, id, resizeRect(original, handle, dx / zoom, dy / zoom, min)))
         return
@@ -238,35 +252,35 @@ export function startTransform(e: ReactPointerEvent, id: string, handle?: Handle
       const landed = landing(stack, moveRect({ ...original, y: top + original.y }, dx / zoom, dy / zoom))
       if (landed !== null) store.setFormRaw(placeWidget(pressed, id, landed.section.section.id, landed.rect))
     },
-    () => {},
+    // Released or cancelled where it is: one undo step, none for a gesture that changed nothing.
+    () => useWorkbenchFormStore.getState().commitGesture(pressed),
   )
 }
 
-/** Drag a section's edge to set its height, on the grid and never under what it holds; a click sets nothing. */
+/**
+ * Drag a section's edge to set its height, on the grid and never under what it holds, one
+ * undo step; a click, or a drag held at the least it can be, sets nothing.
+ */
 export function startSectionResize(e: ReactPointerEvent, sectionId: string): void {
   if (e.button !== 0) return
   e.stopPropagation()
   e.preventDefault()
+  leaveField(e.currentTarget)
   const { zoom } = useWorkbenchViewStore.getState()
   const { form } = useWorkbenchFormStore.getState()
   const found = form === null ? null : findSection(form, sectionId)
   if (form === null || found === null) return
   const pressed = form
   const { height } = found.section
-  let started = false
   track(
     e,
     "row-resize",
     (_dx, dy) => {
       const store = useWorkbenchFormStore.getState()
       if (store.form === null) return
-      if (!started) {
-        store.pushSnapshot()
-        started = true
-      }
       store.setFormRaw(setSectionHeight(pressed, sectionId, snap(height + dy / zoom)))
     },
-    () => {},
+    () => useWorkbenchFormStore.getState().commitGesture(pressed),
   )
 }
 
@@ -283,6 +297,7 @@ export const sectionPlace = (stack: readonly Stacked<{ height: number }>[], from
  */
 export function startSectionMove(e: ReactPointerEvent, sectionId: string): void {
   if (e.button !== 0) return
+  leaveField(e.currentTarget)
   const { form } = useWorkbenchFormStore.getState()
   const found = form === null ? null : findSection(form, sectionId)
   if (form === null || found === null) return
