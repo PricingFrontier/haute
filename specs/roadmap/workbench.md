@@ -98,86 +98,75 @@ deployed pipeline prices with); `src/haute/hosted.py::create_app` and
 ### WB-08 — The workbench project's CI/CD
 **Why:** `haute init --workbench` writes the `[workbench]` table and a blank form and
 generates the target's ordinary workflows: Validate (a dry-run deploy scoring the test
-quotes), Deploy → Staging, Smoke Test Staging, Impact Analysis, approval, Deploy →
-Production, except that the workflows for Azure Container Apps, AWS ECS and GCP Cloud Run
-leave the smoke and impact out, since those targets build and push an image and update no
-service; the generic container target, which also only builds and pushes, keeps them.
-Nothing in them differs for a workbench project, and what a workbench project releases is
-not a scoring endpoint but the app of WB-07, which underwriters use by hand. Pricing
-analysts work on their own machines: Save writes the save branch, Commit makes a milestone,
-Push publishes it, a pull request to `main` is opened and merged on the provider, and the
-merge is the release. Against that flow: GitHub's and Azure DevOps' deploy triggers list the
-pipeline, `haute.toml`, data, models and test quotes, so a change to the form or to the
-dependency lockfiles alone releases nothing; nothing checks the form against the pipeline
-before a deploy, so a form committed with a column the Workbench Input's copy does not hold
-deploys without a word; the deployed manifest carries the pruned graph whole, the Workbench
-Input's sample with it, so a quote an analyst typed in the builder ships in the bundle; the
-smoke sends a test-quote file as one request, which a pipeline reading one quote per request
-refuses when the file holds more than one, and checks no expected output; impact sends
-batches of a flat portfolio sample, which such a pipeline refuses for the batch and could
-not read for the shape, and its report compares top-level numeric columns, so a price inside
-a response table is never compared; production runs `haute deploy` again rather than
-promoting what staging tested, and the image is tagged with the commit's short hash, which a
-rebuild can point at other bytes; and the Azure Container Apps target pushes an image and
-rolls no service to it. A milestone Commit sweeps tracked files only, so a file the
-workbench adds, the test quotes of WB-12 or the store's migrations, needs tracking from the
-start.
+quotes, which also holds the Workbench nodes' copies of the tables to the form), Deploy →
+Staging, Smoke Test Staging (each test quote a request of its own, held to its expected
+output), Impact Analysis, approval, Deploy → Production, except that the workflows for Azure
+Container Apps, AWS ECS and GCP Cloud Run leave the smoke and impact out, since those
+targets build and push an image and update no service; the generic container target, which
+also only builds and pushes, keeps them. A push to `main` that changes the pipeline, its
+data, models or test quotes, `haute.toml`, the dependency files or, for a workbench project,
+the form starts the deploy. What a workbench project releases is not a scoring endpoint but
+the app of WB-07, which underwriters use by hand, and nothing in the workflows builds, tests
+or deploys it. Pricing analysts work on their own machines: Save writes the save branch,
+Commit makes a milestone, Push publishes it, a pull request to `main` is opened and merged
+on the provider, and the merge is the release. Against that flow: impact sends batches of a
+flat portfolio sample, which a pipeline reading one quote per request refuses for the batch
+and could not read for the shape, and its report compares top-level numeric columns, so a
+price inside a response table is never compared; production runs `haute deploy` again rather
+than promoting what staging tested, and the image is tagged with the commit's short hash,
+which a rebuild can point at other bytes; and the Azure Container Apps target pushes an
+image and rolls no service to it. A milestone Commit sweeps tracked files only, so a file
+the workbench adds, the test quotes of WB-12 or the store's migrations, needs tracking from
+the start.
 
 **Plan:** The fork is at `haute init --workbench`, which generates a workbench project's
 workflows; the behaviour lives in Haute's commands, which read the workbench settings, so
 the YAML stays thin and alike across providers, and a refresh command regenerates a
 project's workflows without rewriting its pipeline or form, as `haute init --force` would.
-First, what needs nothing from WB-07: the deploy triggers cover every release input, the
-form and the dependency lockfiles now, and the app's entry point, the store's migrations and
-the export templates as each arrives, where its specification puts it; Validate reads the
-form strictly and checks its input and output tables against the Workbench Input's and
-Workbench Output's copies, failing with the table and column that disagree; the bundle
-carries no sample; and the smoke sends each test quote as a request of its own and compares
-its expected tables. Then the app's delivery, each release built once. On every pull
-request, Validate and the packaged app tested in the CI runner before any host sees it,
-against SQLite and once against the server engine IT's instance runs (a service container),
-since SQLite proves neither that engine's migrations nor its types: the test quotes of WB-12
-re-priced one request each against their accepted outputs, a quote saved, reopened and, once
-WB-11's formats exist, exported through the app, and the sheets driven in a browser. On the
-merge to `main` alone, never on a push of the save branch: the merge commit built once, the
-packaged app's tests run again on that build, the image published to the registry and its
-digest recorded; the staging database migrated and the staging app rolled to that digest,
-never to a tag; a hosted check that the expected release runs, that a request without
-sign-in is refused and that the app reaches its database; impact re-pricing a bounded sample
-of saved quotes from the store, through a read-only identity, on the candidate and the
-production app, comparing within each quote's response tables (a premium inside a table, a
-schedule's rows matched by key) and naming a quote whose shape no longer compares; for a
-first release, with no production app or no saved quotes, impact reports that there is no
-baseline and the candidate answers for the committed test quotes alone, while a production
-app that fails fails the check; approval; then production migrated and rolled to the same
-digest, checked the same way, and the release that runs recorded. Rollouts take a
-maintenance window: the old revision stops, the migrations run, the new revision starts, and
-no traffic is split; a new revision that fails to start or fails its check after the
-migrations is replaced by the previous release, started again on the migrated schema, which
-the migrations of WB-10 keep it able to read and write, and the run fails. The host step is
-small, and the project's IT team provides what it deploys onto (the Container App, the
-registry, the identities and the database): it publishes, rolls the environment to the
-release, waits until the release runs and reports it, and creates nothing. Azure Container
-Apps first; other hosts follow with the same commands.
+The deploy triggers gain each release input as it arrives, where its specification puts it:
+the app's entry point, the store's migrations and the export templates. The app's delivery
+builds each release once. On every pull request, Validate and the packaged app tested in the
+CI runner before any host sees it, against SQLite and once against the server engine IT's
+instance runs (a service container), since SQLite proves neither that engine's migrations
+nor its types: the test quotes of WB-12 re-priced one request each against their accepted
+outputs, a quote saved, reopened and, once WB-11's formats exist, exported through the app,
+and the sheets driven in a browser. On the merge to `main` alone, never on a push of the
+save branch: the merge commit built once, the packaged app's tests run again on that build,
+the image published to the registry and its digest recorded; the staging database migrated
+and the staging app rolled to that digest, never to a tag; a hosted check that the expected
+release runs, that a request without sign-in is refused and that the app reaches its
+database; impact re-pricing a bounded sample of saved quotes from the store, through a
+read-only identity, on the candidate and the production app, comparing within each quote's
+response tables (a premium inside a table, a schedule's rows matched by key) and naming a
+quote whose shape no longer compares; for a first release, with no production app or no
+saved quotes, impact reports that there is no baseline and the candidate answers for the
+committed test quotes alone, while a production app that fails fails the check; approval;
+then production migrated and rolled to the same digest, checked the same way, and the
+release that runs recorded. Rollouts take a maintenance window: the old revision stops, the
+migrations run, the new revision starts, and no traffic is split; a new revision that fails
+to start or fails its check after the migrations is replaced by the previous release,
+started again on the migrated schema, which the migrations of WB-10 keep it able to read and
+write, and the run fails. The host step is small, and the project's IT team provides what it
+deploys onto (the Container App, the registry, the identities and the database): it
+publishes, rolls the environment to the release, waits until the release runs and reports
+it, and creates nothing. Azure Container Apps first; other hosts follow with the same
+commands.
 
 **Acceptance:** A project initialised by `haute init --workbench` for Azure Container Apps
 and merged to `main` runs its generated workflow to a staging app and, after approval, to
 production, with the digest CI tested deployed to both, a re-run of the workflow included, a
 maintenance window around each rollout and the release that runs recorded; a change confined
-to the form or to a dependency lockfile starts the workflow; a form that names a column the
-pipeline's copy does not hold fails Validate naming the column; a test-quote file of several
-quotes is priced one request per quote with each expected table checked; the deployed bundle
-holds no sample; the packaged app passes the same tests against SQLite and the server engine
-before any host sees it; a push of the save branch releases nothing; a request to the hosted
-app without sign-in is refused; impact reports a change to a premium inside a response
-table; the first release, onto an empty database with no production app, reports that there
-is no baseline and still waits for approval; a candidate that fails after the migrations
-leaves the previous release running on the migrated schema and the run failed.
+to a migration or an export template starts the workflow; the packaged app passes the same
+tests against SQLite and the server engine before any host sees it; a push of the save
+branch releases nothing; a request to the hosted app without sign-in is refused; impact
+reports a change to a premium inside a response table; the first release, onto an empty
+database with no production app, reports that there is no baseline and still waits for
+approval; a candidate that fails after the migrations leaves the previous release running on
+the migrated schema and the run failed.
 
 **Dependencies:** WB-07 (the app), WB-10 (the store and its migrations), WB-11 (the export
-the app's tests make, once its formats are decided) and WB-12 (the test quotes), none needed
-by the first slices. The Azure resources and identities, provided by the project's IT team.
-Shared ground with
+the app's tests make, once its formats are decided) and WB-12 (the test quotes). The Azure
+resources and identities, provided by the project's IT team. Shared ground with
 [BUG-23](bugs.md#bug-23--the-impact-steps-portfolio-sample-is-in-the-repository) (impact's
 input) and [BUG-24](bugs.md#bug-24--container-deploys-log-in-to-their-registry) (the
 registry login before a push).
@@ -186,15 +175,13 @@ registry login before a push).
 `::gitlab_ci_yml`, `::azure_devops_yml` and `::_build_only_notice` (the generated workflows,
 their triggers, production's second deploy, and the smoke and impact left out for Azure
 Container Apps, AWS ECS and GCP Cloud Run); `src/haute/cli/_init_cmd.py::handle_init`
-(`--workbench` writes the table and the blank form and changes nothing in CI);
-`src/haute/cli/_smoke.py::_smoke_databricks` and `::_smoke_http` (a file's quotes as one
-request); `src/haute/deploy/_impact.py::score_endpoint_batched` and `::build_report`
+(`--workbench` writes the table, the blank form and the form's deploy trigger, and nothing
+of an app); `src/haute/deploy/_impact.py::score_endpoint_batched` and `::build_report`
 (batches, and top-level numeric columns compared); `src/haute/cli/_impact.py::handle_impact`
 (a first deploy reported as such); `src/haute/_workbench_input.py::workbench_request_frames`
 (one quote per request); `src/haute/deploy/_validators.py::score_test_quotes` (each case a
-request of its own); `src/haute/deploy/_utils.py::build_manifest` (the pruned graph whole);
-`src/haute/deploy/_container.py::build_and_push_image` and `::deploy_to_platform_container`
-(a short-hash tag, built and pushed only);
+request of its own); `src/haute/deploy/_container.py::build_and_push_image` and
+`::deploy_to_platform_container` (a short-hash tag, built and pushed only);
 `src/haute/_git_transactions.py::_residual_tracked_changes` (a milestone sweeps tracked
 files only).
 
