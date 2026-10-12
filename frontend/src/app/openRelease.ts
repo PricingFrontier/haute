@@ -8,9 +8,9 @@ import { canonicalJson } from "../utils/canonicalJson"
 /**
  * Put the underwriter app's release (specs/workbench) in the stores Preview draws from:
  * the form read as at `revision`, Preview showing, and the quote priced through the app's
- * own route on that revision rather than on a pipeline in an editor.
+ * own route on that revision of release `release` rather than on a pipeline in an editor.
  */
-export function openRelease(form: FormSpec, revision: string): void {
+export function openRelease(form: FormSpec, revision: string, release: string): void {
   useWorkbenchFormStore.setState({
     form,
     revision,
@@ -23,7 +23,7 @@ export function openRelease(form: FormSpec, revision: string): void {
   })
   useWorkbenchViewStore.getState().showSection("preview")
   useWorkbenchPricingStore.getState().setQuotePricer(async (_form, quote) => {
-    const { tables, request } = await priceAppQuote(revision, quote)
+    const { tables, request } = await priceAppQuote(revision, release, quote)
     return { tables, sample: request }
   })
 }

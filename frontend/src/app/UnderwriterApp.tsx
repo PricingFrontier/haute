@@ -30,7 +30,7 @@ export default function UnderwriterApp() {
     Promise.all([fetchAppRelease(), fetchAppForm()])
       .then(([release, { form, revision }]) => {
         if (!live) return
-        openRelease(form, revision)
+        openRelease(form, revision, release.id)
         setLoaded({ release })
       })
       .catch((error: unknown) => {

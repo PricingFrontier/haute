@@ -48,7 +48,7 @@ const field = (tableId: string, columnId: string): FieldRef => ({ table: tableId
  * shown while cover is ticked.
  */
 const motorForm = (): FormSpec => ({
-  version: 1,
+  version: 1, quote_list: { title: null, fields: [], headline: null },
   name: "motor",
   schema: {
     tables: [

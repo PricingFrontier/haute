@@ -33,12 +33,13 @@ export async function fetchAppForm(): Promise<WorkbenchAppFormResponse> {
   )
 }
 
-/** The quote typed into the sheets drawn from form revision `revision`, priced. */
+/** The quote typed into the sheets drawn from form revision `revision` of release `release`, priced. */
 export async function priceAppQuote(
   revision: string,
+  release: string,
   values: Record<string, SampleRow[]>,
 ): Promise<WorkbenchAppPriceResponse> {
-  const data = await post<unknown>("/api/app/price", { form_revision: revision, values }, { timeout: PRICE_TIMEOUT_MS })
+  const data = await post<unknown>("/api/app/price", { form_revision: revision, release, values }, { timeout: PRICE_TIMEOUT_MS })
   return expectGeneratedContract(
     "WorkbenchAppPriceResponse",
     (await workbenchValidators()).validateWorkbenchAppPriceResponse,

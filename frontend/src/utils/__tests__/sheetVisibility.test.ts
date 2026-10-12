@@ -133,7 +133,7 @@ const sectioned = (id: string, sections: Section[], showWhen: ShowWhen = ALWAYS)
 /** A sheet of one section, `s_` and its id, holding `widgets`. */
 const page = (id: string, widgets: Widget[], showWhen: ShowWhen = ALWAYS): Page => sectioned(id, [section(`s_${id}`, widgets)], showWhen)
 const formOf = (pages: Page[], tables: SchemaTable[] = [policy, items, premium]): FormSpec => ({
-  version: 1,
+  version: 1, quote_list: { title: null, fields: [], headline: null },
   name: "form",
   schema: { tables },
   pages,

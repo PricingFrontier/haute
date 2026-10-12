@@ -88,7 +88,7 @@ const section = (id: string, title: string, height: number, widgets: Widget[] = 
 
 /** A blank form: one sheet, `p`, holding one empty section, `s`, 560 tall. */
 const blank = (): FormSpec => ({
-  version: 1,
+  version: 1, quote_list: { title: null, fields: [], headline: null },
   name: "t",
   schema: { tables: [] },
   pages: [{ id: "p", title: "Sheet 1", show_when: { match: "all", conditions: [] }, sections: [section("s", "Section 1", 560)] }],

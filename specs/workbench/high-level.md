@@ -101,8 +101,11 @@ Out of scope:
   underwriter app runs: its one key, `host`, is `azure-container-apps`, and any other key
   or host is refused by name.
 - **The form file.** `forms/form.json` is one JSON document: `version` (1), `name`, `schema`
-  (its tables), `pages` (its sheets, at least one) and `sample` (the quote typed while
-  building, `{}` for none). Every field has one canonical spelling and an unknown field is
+  (its tables), `pages` (its sheets, at least one), `sample` (the quote typed while
+  building, `{}` for none) and `quote_list` (what the underwriter app's Quotes page shows
+  of each quote: a `title`, up to three summary `fields` and a `headline`, each a column
+  by its table's and its own id or null, the title and fields of one-row input tables and
+  the headline a number of a one-row output table; none of them by default). Every field has one canonical spelling and an unknown field is
   refused. A schema table has an id, a name, a `role` (`input`, sent to the pricing engine,
   or `output`, returned by it), `rows` (`one` per quote, such as policy details, or `many`,
   such as an equipment schedule) and its columns, each with an id, a name, a `type` of the
@@ -605,15 +608,19 @@ Out of scope:
   With `[deploy.container] base_image` set, pinned as a container deploy pins it, the
   release is also the image's build context, the container's Dockerfile copying it,
   and `haute app build --image TAG` builds the image with Docker; the image installs
-  what a scoring container installs, nothing more. The app
+  what a scoring container installs and the quote store's packages, SQLAlchemy and
+  Alembic, pinned as the scoring runtime is, nothing more; a release whose quote list
+  names a column the schema does not have, or one it cannot show, is refused as a deploy
+  refuses it. The app
   serves the sheets on a page of their own, drawn as Preview draws them, with the same
   components filled from the app's routes rather than the builder's and nothing of the
   builder mounted: the sheets' tabs, the sheet showing, Price and Clear, the release and
   who is signed in. A quote keyed in is checked against the columns' rules as Preview
   checks it, then priced by the app through `POST /api/app/price`, which takes the values
-  and the form revision the page was loaded with. A revision that is not the release's is
-  refused (409), so a page loaded from an earlier release reloads rather than price on a
-  newer contract. The request is built as Price builds it and priced through the deployed
+  and the form revision and release the page was loaded with. A page drawn for another
+  revision or another release is refused (409), so a page loaded from an earlier release
+  reloads rather than price on a newer contract or model, a release that changed the
+  model alone included. The request is built as Price builds it and priced through the deployed
   pipeline's engine, one quote per request, off the server's event loop, under the deploy's
   admission limit and a timeout, and answered whole: each output table's rows, with the
   request priced. `GET /api/app/release` and `GET /api/app/form` serve the release and the
@@ -625,6 +632,35 @@ Out of scope:
   `haute app serve` builds a release of the project as it is saved and serves it on the
   analyst's machine, the principal the analyst's git identity, so the sheets underwriters
   will see are checked before a merge. No credential reaches the page.
+  Given a quote store, the app keeps the quotes saved in it in the store's app records
+  (the quote store, below). A hosted app reads the store's SQLAlchemy URL from
+  `HAUTE_QUOTE_STORE_URL`, which the host supplies at runtime, and does not start on a
+  store not migrated, which `haute app migrate` migrates before a release that needs it
+  starts; `haute app serve` keeps its quotes in `.haute/app/quotes.sqlite`, beside the
+  release rather than in it, migrated as it starts, so a rebuild keeps them. Without a
+  store the app keeps nothing, says so on `GET /api/app/release` (`quotes`), and answers
+  its quote routes 503. As it starts, the app projects again every quote projected by
+  another quote list setting than its release's. Its quote routes list a page of quotes
+  (`GET /api/app/quotes`: the list, stage, search, assignee, order, cursor and size),
+  create one (`POST /api/app/quotes`, made from another quote's revision when it names
+  one), open one's newest revision or another (`GET /api/app/quotes/{id}` and
+  `/api/app/quotes/{id}/revisions/{n}`), with the sheets that revision was keyed into when
+  they are not the release's, carry a revision's values onto the release's sheets
+  (`/api/app/quotes/{id}/revisions/{n}/carry`), save its next revision (`POST
+  /api/app/quotes/{id}/revisions`), rename, assign, note, archive, restore, mark final
+  and reopen it (`POST /api/app/quotes/{id}/name`, `assignee`, `note`, `archive`,
+  `restore`, `final` and `reopen`), and read its history (`GET
+  /api/app/quotes/{id}/history`) and the people quotes are with (`GET /api/app/people`).
+  A save names the sheets' revision and the release it was drawn for, refused (409) for
+  another, and an operation key; it saves the quote unpriced, or, given the prices the
+  page showed, prices it again on the server and keeps that pricing, saying whether it
+  moved from what the page showed, so a price kept is always the release's own. Each
+  change names the quote's version and is refused (409) with the quote as it is now when
+  the quote has moved on, or (409) naming what would let it when the quote does not take
+  it as it stands; a quote the app does not keep is 404. A write whose browser says it
+  came from another site, or whose origin is not the app's host, is refused (403). The
+  app's pages, `/`, `/quotes/new`, `/quotes/{id}` and `/quotes/{id}/revisions/{n}`, are
+  its one page, which reads its route in the browser.
 - **Shown when.** A sheet, a section or a component with conditions shows only while they
   hold on the values typed into the sheets, the sample while building and the quote in
   Preview; a section on a sheet that does not show does not show either, nor does a

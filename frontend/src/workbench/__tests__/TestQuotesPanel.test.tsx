@@ -12,7 +12,7 @@ import useWorkbenchTestQuotesStore, { currentBasis, type QuoteRun } from "../../
 import { sheet } from "./fixtures"
 import TestQuotesPanel from "../TestQuotesPanel"
 
-const form: FormSpec = { version: 1, name: "t", schema: { tables: [] }, pages: [sheet("p", "Sheet 1")], sample: {} }
+const form: FormSpec = { version: 1, quote_list: { title: null, fields: [], headline: null }, name: "t", schema: { tables: [] }, pages: [sheet("p", "Sheet 1")], sample: {} }
 const summary = (id: string, name: string): WorkbenchTestQuoteSummary => ({
   id, name, number: 1, saved_by: "ana@example.com", saved_at: "2026-10-12T09:00:00", priced: true,
 })

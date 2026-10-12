@@ -30,6 +30,7 @@ const release: WorkbenchAppReleaseResponse = {
   created_at: "2026-10-12T09:00:00+00:00",
   host: "azure-container-apps",
   principal: "uw@example.com",
+  quotes: false,
 }
 
 async function opened() {
@@ -81,7 +82,7 @@ describe("UnderwriterApp", () => {
     fireEvent.click(screen.getByRole("button", { name: "Price" }))
 
     await vi.waitFor(() => expect(useWorkbenchPreviewStore.getState().price).not.toBeNull())
-    expect(priceAppQuote).toHaveBeenCalledWith("rev-9", { policy: [{ "policy.state": "NY" }] })
+    expect(priceAppQuote).toHaveBeenCalledWith("rev-9", "0a1b2c3d4e5f", { policy: [{ "policy.state": "NY" }] })
     expect(useWorkbenchPreviewStore.getState().price).toMatchObject({
       tables: { premiums: [{ item: "Crane", premium: 120 }] },
       sample: { policy: { state: "NY" } },

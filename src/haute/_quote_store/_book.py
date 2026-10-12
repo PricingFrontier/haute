@@ -17,7 +17,7 @@ import base64
 import json
 import re
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
 
@@ -57,6 +57,7 @@ from haute._quote_store._tables import (
     QUOTES,
 )
 from haute._workbench_form import FormSpec
+from haute._workbench_quote_list import Projection
 
 #: A quote's stage: saved without a price on its newest revision, saved priced, or final.
 Stage = Literal["draft", "priced", "final"]
@@ -100,24 +101,6 @@ class QuoteLockedError(QuoteStoreError):
     finalised. The message says what would let it."""
 
     error_code = "quote_locked"
-
-
-@dataclass(frozen=True, slots=True)
-class Projection:
-    """What the Quotes page shows of a quote, projected from a revision by the quote list
-    setting of the sheets it is listed under."""
-
-    #: The title field's value as text; None when blank, or when the setting names none.
-    title: str | None = None
-    #: Each summary field's value as saved, in the setting's order; None where blank.
-    fields: list[Any] = field(default_factory=list)
-    #: The headline output's value; None when unpriced or blank.
-    headline: Any = None
-    #: What identifies the setting it was projected with; a different one is reprojected.
-    key: str = ""
-
-    def summary(self) -> dict[str, Any]:
-        return {"title": self.title, "fields": self.fields, "headline": self.headline}
 
 
 @dataclass(frozen=True, slots=True)

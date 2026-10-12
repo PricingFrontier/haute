@@ -49,7 +49,7 @@ const policy: SchemaTable = {
 }
 const pricing: SchemaTable = { id: "t2", name: "pricing_output", role: "output", rows: "one", columns: [column("c2", "model_premium", { type: "float" })] }
 const form: FormSpec = {
-  version: 1,
+  version: 1, quote_list: { title: null, fields: [], headline: null },
   name: "t",
   schema: { tables: [policy, pricing] },
   pages: [sheet("p", "Sheet 1")],

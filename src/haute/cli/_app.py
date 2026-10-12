@@ -3,15 +3,19 @@
 Split into:
 
 * :class:`AppBuildConfig` and :class:`AppServeConfig` — the typed bags of CLI inputs.
-* :func:`handle_app_build` and :func:`handle_app_serve` — the functions that do the work.
-* :func:`app` and its ``build`` and ``serve`` — the thin ``@click`` entry points.
+* :func:`handle_app_build`, :func:`handle_app_serve` and :func:`handle_app_migrate` — the
+  functions that do the work.
+* :func:`app` and its ``build``, ``serve`` and ``migrate`` — the thin ``@click`` entry
+  points.
 
 ``build`` writes the project's release into a directory, ``.haute/app/release`` unless
 another is named: the pipeline bundled as ``haute deploy`` bundles it, after the same
 validation and test quotes, with the sheets, what the release is and its entry point.
 ``serve`` builds the release there and serves it on the analyst's machine, on loopback
 alone, signed in as the analyst's git identity, so the sheets underwriters will see are
-checked before a merge.
+checked before a merge; the quotes saved there are kept in a SQLite file beside the release,
+not in it, so a rebuild keeps them. ``migrate`` brings a hosted app's quote store to the
+schema this Haute writes, before a release that needs it starts.
 """
 
 from __future__ import annotations
@@ -24,6 +28,8 @@ import click
 #: Where ``build`` writes a release unless told otherwise, and ``serve`` always: the
 #: clone's own state directory, which git ignores, model files and all.
 RELEASE_DIR = Path(".haute") / "app" / "release"
+#: Where ``serve`` keeps the quotes saved in it: beside the release, which a build replaces.
+QUOTES_FILE = Path(".haute") / "app" / "quotes.sqlite"
 #: ``serve`` binds this address alone: everyone reaching it is signed in as the analyst.
 SERVE_HOST = "127.0.0.1"
 
@@ -93,10 +99,46 @@ def handle_app_serve(config: AppServeConfig) -> None:
         )
     release_dir = (project_dir / RELEASE_DIR).resolve()
     _built(project_dir, release_dir)
-    application = create_app(release_dir, local_principal=principal, static_dir=config.static_dir)
+    url = _local_store(project_dir)
+    application = create_app(
+        release_dir, local_principal=principal, static_dir=config.static_dir, store_url=url
+    )
     click.echo(f"  ✓ Signed in as {principal} (your git identity)")
+    click.echo(f"  ✓ Quotes kept in {QUOTES_FILE.as_posix()}")
     click.echo(f"\nThe underwriter app: http://{SERVE_HOST}:{config.port}/")
     uvicorn.run(application, host=SERVE_HOST, port=config.port, log_level="warning")
+
+
+def _local_store(project_dir: Path) -> str:
+    """The URL of ``serve``'s own quote store, made and migrated as it starts."""
+    from haute._quote_store import QuoteStoreError, migrate_store, store_url
+
+    path = project_dir / QUOTES_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    url = store_url(path)
+    try:
+        migrate_store(url)
+    except QuoteStoreError as exc:
+        raise click.ClickException(str(exc)) from exc
+    return url
+
+
+def handle_app_migrate(url: str | None) -> None:
+    """Bring the quote store at *url*, else at ``HAUTE_QUOTE_STORE_URL``, to the newest
+    schema."""
+    from haute._quote_store import QuoteStoreError, migrate_store
+    from haute._workbench_app import STORE_URL_ENV, quote_store_url
+
+    target = url or quote_store_url()
+    if target is None:
+        raise click.ClickException(
+            f"Name the quote store: pass --url or set {STORE_URL_ENV} to its SQLAlchemy URL."
+        )
+    try:
+        migrate_store(target)
+    except QuoteStoreError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo("  ✓ The quote store is at the newest schema")
 
 
 @click.group(name="app")
@@ -130,3 +172,15 @@ def build(output: Path, image: str | None) -> None:
 def serve(port: int, static_dir: Path | None) -> None:
     """Build the project's release and serve it here, signed in as your git identity."""
     handle_app_serve(AppServeConfig(port=port, static_dir=static_dir))
+
+
+@app.command()
+@click.option(
+    "--url",
+    default=None,
+    help="The quote store's SQLAlchemy URL; HAUTE_QUOTE_STORE_URL when not given.",
+)
+def migrate(url: str | None) -> None:
+    """Bring the app's quote store to the schema this Haute writes, before a release that
+    needs it starts."""
+    handle_app_migrate(url)

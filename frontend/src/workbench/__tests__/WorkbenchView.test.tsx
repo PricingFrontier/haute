@@ -169,6 +169,7 @@ describe("WorkbenchView", () => {
   it("gives the pricing store a pricer while it shows, and prices the sample when its basis changes on the sheets", () => {
     const form = {
       version: 1 as const,
+      quote_list: { title: null, fields: [], headline: null },
       name: "motor",
       schema: { tables: [] },
       pages: [

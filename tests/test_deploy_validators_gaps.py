@@ -355,7 +355,13 @@ def _output_copy() -> list[dict[str, Any]]:
     return [{"name": "pricing", "rows": "one", "columns": [_column("premium", "float")]}]
 
 
-def _workbench_project(root: Path, *, enabled: bool = True, form: bool = True) -> None:
+def _workbench_project(
+    root: Path,
+    *,
+    enabled: bool = True,
+    form: bool = True,
+    quote_list: dict[str, Any] | None = None,
+) -> None:
     from haute._workbench_form import FormSpec, render_form
 
     (root / "haute.toml").write_text(
@@ -373,6 +379,7 @@ def _workbench_project(root: Path, *, enabled: bool = True, form: bool = True) -
                         "sections": [{"id": "s", "title": "s", "height": 120, "widgets": []}],
                     }
                 ],
+                "quote_list": quote_list or {},
             }
         )
         (root / "forms").mkdir()
@@ -490,6 +497,13 @@ class TestValidateDeployWorkbenchForm:
         assert error.startswith(f"{owner} does not match forms/form.json: ")
         assert named in error
         assert "Save the project in Haute's editor" in error
+
+    def test_a_quote_list_naming_a_column_the_schema_lacks_is_refused(self, tmp_path: Path) -> None:
+        _workbench_project(tmp_path, quote_list={"title": {"table": "nope", "column": "x"}})
+
+        [error] = _form_check_errors(tmp_path, _input_copy(), _output_copy())
+
+        assert error.startswith("forms/form.json: The quote list's title names column 'x'")
 
     def test_a_form_file_that_does_not_exist_is_refused(self, tmp_path: Path) -> None:
         _workbench_project(tmp_path, form=False)

@@ -273,6 +273,17 @@ class FormSchema(_Strict):
     tables: list[SchemaTable] = Field(default_factory=list)
 
 
+class QuoteList(_Strict):
+    """What the underwriter app's Quotes page shows of each quote: a title, up to three
+    summary fields and a headline output, each a column of a one-row table, the title and
+    summary fields of input tables, the headline a number of an output table. Each is
+    optional; ``haute._workbench_quote_list`` checks they name such columns."""
+
+    title: FieldRef | None = None
+    fields: list[FieldRef] = Field(default_factory=list, max_length=3)
+    headline: FieldRef | None = None
+
+
 class FormSpec(_Strict):
     """The form: what the workbench edits and ``forms/form.json`` stores."""
 
@@ -287,6 +298,8 @@ class FormSpec(_Strict):
     #: id, each value as typed (text, or a tick). The Workbench Input's previews run on it.
     #: Held as typed, strictly: a number or a null for a cell is not a form the view writes.
     sample: dict[str, list[dict[str, Cell]]] = Field(default_factory=dict)
+    #: What the underwriter app's Quotes page shows of each quote.
+    quote_list: QuoteList = Field(default_factory=QuoteList)
 
 
 @dataclass(frozen=True, slots=True)

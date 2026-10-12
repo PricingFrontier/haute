@@ -18,7 +18,7 @@ import useWorkbenchFormStore from "../useWorkbenchFormStore"
 import useWorkbenchStore from "../useWorkbenchStore"
 
 const blank: FormSpec = {
-  version: 1,
+  version: 1, quote_list: { title: null, fields: [], headline: null },
   name: "motor",
   schema: { tables: [] },
   pages: [

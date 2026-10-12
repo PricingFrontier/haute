@@ -795,6 +795,7 @@ class TestInitWorkbench:
                 }
             ],
             "sample": {},
+            "quote_list": {"title": None, "fields": [], "headline": None},
         }
         assert "forms/form.json" in result.output
         assert "workbench config" in result.output

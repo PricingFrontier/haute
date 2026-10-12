@@ -21,6 +21,7 @@ from haute._test_quotes import TEST_QUOTES_FILE
 from haute._types import GLOBAL_CONSTANTS_FILE, NodeType, PipelineGraph
 from haute._workbench_config import WorkbenchConfigError, read_workbench_config
 from haute._workbench_form import WorkbenchFormError, read_form_document
+from haute._workbench_quote_list import quote_list_problems
 from haute._workbench_tables import (
     WorkbenchTablesError,
     input_tables,
@@ -553,6 +554,7 @@ def _workbench_form_errors(resolved: ResolvedDeploy) -> list[str]:
                 f"{owner} {node.id!r} does not match {config.form}: {'; '.join(found)}. Save "
                 "the project in Haute's editor to bring its copy of the tables up to date."
             )
+    errors.extend(f"{config.form}: {problem}" for problem in quote_list_problems(document.spec))
     return errors
 
 

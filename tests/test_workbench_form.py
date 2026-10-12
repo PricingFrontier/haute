@@ -210,6 +210,7 @@ FORM: dict[str, Any] = {
         }
     ],
     "sample": {"t_policy": [{"c_state": "NY", "c_exposure": "$100,000"}]},
+    "quote_list": {"title": None, "fields": [], "headline": None},
 }
 
 
@@ -242,6 +243,7 @@ def test_the_blank_form_is_one_empty_sheet_named_after_the_project() -> None:
             }
         ],
         "sample": {},
+        "quote_list": {"title": None, "fields": [], "headline": None},
     }
     assert text.endswith("}\n")
 
