@@ -17,7 +17,7 @@ Preview; and the actions that fill the sheets from databases and APIs.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| WB-07 | Planned | P2 | An underwriter signs in to the project's hosted app, sees the deployed form's sheets and nothing of the builder, keys a quote in and is given the price of the pipeline packed into the same app. |
+| WB-07 | Planned | P3 | The underwriter app runs on a Databricks App, on AWS or on an internal platform as it runs on Azure Container Apps, each signing underwriters in its own way. |
 | WB-08 | Planned | P2 | A merge to `main` takes a workbench project's form, pipeline and app, tested together in CI, to staging and, after approval, to production on the project's host, Azure Container Apps first. |
 | WB-09 | Decision | P2 | A Button on a sheet, or a lookup beside a key cell, runs an action the project declares against a database or an API and fills input cells with what comes back, through the server with no credential in the browser, while pricing stays as pure as it is. |
 | WB-10 | Planned | P2 | An underwriter's quotes are saved to and reopened from the SQL instance the project's IT team provides, with the form and the release that priced each one, through the same store an analyst's machine runs on SQLite. |
@@ -26,74 +26,45 @@ Preview; and the actions that fill the sheets from databases and APIs.
 
 ## Planned improvements
 
-### WB-07 — The underwriter app
-**Why:** The sheets reach an underwriter only inside Haute's own server. Preview prices a
-quote by patching the pipeline open in the editor with the form's tables and the typed quote
-and previewing each Workbench Output port through the dev server's worker pool, so it needs
-`haute serve`, the pipeline's source and the editor's graph, and it sits inside the
-builder's chrome; the sheet canvas itself reads the builder's form and view stores, which
-Preview fills for an underwriter's quote, with nothing selected or moved. Underwriters have
-no Haute, and the builder (the nodes, the schema editor, the sample) is not theirs to see.
-Pricing analysts build the rates and the sheets on their own machines with `haute serve`;
-what underwriters use is an app that a merge to `main` puts in front of them, and where it
-runs varies by project: Azure, AWS, a Databricks App or the company's own platform. What a
-host has today: the container target generates a FastAPI scoring app and a Dockerfile and
-builds and pushes the image, and no target rolls a running service to it; the hosted
-Databricks factory puts the builder's server behind the workspace proxy, which is not an
-underwriter's app; and a deploy carries the Workbench Input's tables, not the form's pages,
-so the sheets an underwriter would see are not versioned with the pipeline they price on.
+### WB-07 — The underwriter app on other hosts
+**Why:** The underwriter app runs on Azure Container Apps. `[workbench.app] host =
+"azure-container-apps"` names the host whose sign-in fronts it; `haute app build` writes a
+release of the sheets and the pipeline, with an id taken from what prices a quote, and, with
+a pinned `[deploy.container] base_image`, the image's build context, which `--image` builds;
+the app signs in the principal Azure's built-in authentication sets on each request and
+refuses a request without one; and `haute app serve` runs the same app on an analyst's
+machine. That host is the only value the setting takes, so a project on a Databricks App,
+AWS or the company's own platform cannot run the app. A Databricks App runs a source bundle,
+not an image, with a per-file size limit a model can pass, and signs users in through the
+workspace's proxy; a load balancer's sign-in on AWS asserts the user in a token it signs,
+which the app would have to verify; an internal platform's proxy asserts the user its own
+way. The principal Azure asserts is trusted because the app is reachable only through
+Azure's front, which strips those headers from what a client sends: a property of each
+Container App's ingress that the project's IT team confirms, not one the app can check.
 
-**Plan:** The hosting decisions are recorded: one app for every host, Azure Container Apps
-first; pricing inside the app; the host's infrastructure and sign-in provided by the
-project's IT team. The app is a FastAPI app factory Haute maintains, holding the sheet
-renderer without the builder's chrome, the deployed form's schema and pages, the pipeline's
-scorer, the quote store of WB-10 and the exports of WB-11, with a small entry point
-generated per project; the sample stays in the builder. Pricing runs in the app, one quote
-per request, through the engine a deployed pipeline uses, and answers with the whole
-response, never cut to a display limit as Preview's is, off the server's event loop with an
-admission limit and a timeout, since one quote can hold a long schedule. A workbench project
-deploys no separate scoring endpoint unless something else calls one and its configuration
-says so. Form, sheets and pipeline are one artifact, so form v12 prices on pipeline v12 by
-construction, and a browser holding an older form is refused rather than priced on a newer
-contract. Packaging: a container image for Azure Container Apps, then AWS and internal
-platforms; a source bundle for a Databricks App, which does not run images. Sign-in: the
-host's own authentication fronts the app (Azure's built-in authentication first); the app
-reads the principal the host asserts, verifying it where the host signs it, and is reachable
-only through that front; sign-in built into the app is not part of the first increment. The
-app's host is a setting beside the workbench's (for example `[workbench.app]`), apart from
-`[deploy] target`, which keeps meaning a separately deployed scoring API. The app draws the
-sheets as Preview does, the same components over the same stores, which it fills from its
-own routes, and mounts nothing of the builder. The slices: the app factory with pricing
-inside and the release it reports; `haute app serve`, which runs the same app on an
-analyst's machine against a local SQLite store, so the sheets underwriters will see are
-checked before a merge; then the image for Azure Container Apps.
+**Plan:** Each host is a value of `[workbench.app] host`, with the identity that host
+asserts read, verified where the host signs it, and a request without it refused, as for
+`azure-container-apps`; the release and the app stay the same. A Databricks App first, when
+a project asks for one: the release packed as the App's source bundle, its `app.yaml`
+starting the same entry point; models past the per-file limit held in storage the App reads,
+checked against the digest the release records; and the user the workspace proxy asserts,
+inside the trust boundary of hosted-databricks-app. Then AWS behind a load balancer's
+sign-in, its token verified against the region's published keys, and an internal platform's
+proxy, configured by the header it sets.
 
-**Acceptance:** An underwriter with no Haute installed, signed in through the host's
-authentication, opens the app on Azure Container Apps, sees the deployed form's sheets and
-nothing of the builder, keys a quote in and is given in full the tables the pipeline gives
-for the same quote on the same pipeline version, which the builder's Preview shows up to its
-display limits, with no request leaving the app to price it; a value that breaks its
-column's rule is marked before pricing, as Preview marks it; a request without the host's
-sign-in, or with an identity the host did not assert, is refused; no database or deploy
-credential reaches the browser; `haute app serve` runs the same app on an analyst's machine
-and prices the same quote the same way.
+**Acceptance:** For each host added, a release built for it runs there from what `haute app
+build` writes; an underwriter the host signed in prices a quote as on Azure Container Apps;
+a request without the host's sign-in, or with an identity the host did not assert, is
+refused; and a release built for one host refuses the identity another host's headers carry.
 
-**Dependencies:** WB-10 for saving and reopening quotes and WB-11 for exports, neither
-needed by the first slices. The host's infrastructure and authentication, provided by the
-project's IT team. On Databricks,
-[hosted-databricks-app](../hosted-databricks-app/high-level.md) for the proxy's trust
-boundary; elsewhere, the container target ([deploy](../deploy/high-level.md)).
+**Dependencies:** The host and its sign-in, provided by the project's IT team. On
+Databricks, [hosted-databricks-app](../hosted-databricks-app/high-level.md) for the proxy's
+trust boundary.
 
-**Evidence:** `frontend/src/workbench/priceSample.ts::priceSample` (Preview's pricing
-through the preview route); `frontend/src/workbench/SheetCanvas.tsx`,
-`frontend/src/workbench/WidgetBody.tsx`, `frontend/src/workbench/PageTabs.tsx` (the
-renderer, wired to the view's stores); `frontend/src/utils/sheetValues.ts::quoteFilled` and
-`::pricedRows`; `src/haute/deploy/_container.py::prepare_build_directory`,
-`::_generate_app_source` and `::deploy_to_platform_container` (the scoring app, built and
-pushed, no service rolled); `src/haute/deploy/_scorer.py::score_graph` (the engine a
-deployed pipeline prices with); `src/haute/hosted.py::create_app` and
-`::PlatformProxyBoundary` (the builder behind a workspace proxy);
-`src/haute/deploy/_utils.py::build_manifest` (what a deploy carries).
+**Evidence:** `src/haute/_workbench_config.py::read_workbench_config` (the one host
+`[workbench.app]` takes); `src/haute/_workbench_app.py::create_app` (the identity read by
+host) and `::build_release` (the release and the image's build context);
+`src/haute/deploy/_container.py::prepare_build_directory` (the image's Dockerfile).
 
 ### WB-08 — The workbench project's CI/CD
 **Why:** `haute init --workbench` writes the `[workbench]` table and a blank form and
@@ -106,8 +77,8 @@ targets build and push an image and update no service; the generic container tar
 also only builds and pushes, keeps them. A push to `main` that changes the pipeline, its
 data, models or test quotes, `haute.toml`, the dependency files or, for a workbench project,
 the form starts the deploy. What a workbench project releases is not a scoring endpoint but
-the app of WB-07, which underwriters use by hand, and nothing in the workflows builds, tests
-or deploys it. Pricing analysts work on their own machines: Save writes the save branch,
+the underwriter app, which `haute app build` writes and underwriters use by hand, and
+nothing in the workflows builds, tests or deploys it. Pricing analysts work on their own machines: Save writes the save branch,
 Commit makes a milestone, Push publishes it, a pull request to `main` is opened and merged
 on the provider, and the merge is the release. Against that flow: impact sends batches of a
 flat portfolio sample, which a pipeline reading one quote per request refuses for the batch
@@ -164,7 +135,7 @@ production app, reports that there is no baseline and still waits for approval; 
 that fails after the migrations leaves the previous release running on the migrated schema
 and the run failed.
 
-**Dependencies:** WB-07 (the app), WB-10 (the store and its migrations), WB-11 (the export
+**Dependencies:** WB-10 (the store and its migrations), WB-11 (the export
 the app's tests make, once its formats are decided) and WB-12 (the test quotes). The Azure
 resources and identities, provided by the project's IT team. Shared ground with
 [BUG-23](bugs.md#bug-23--the-impact-steps-portfolio-sample-is-in-the-repository) (impact's
@@ -227,7 +198,7 @@ sample's shape; the Button component, the first component that is neither a Tabl
 Collection, so the kinds, the factory, the problems check and the strict reader
 generalise with it, and a bound column that leaves the schema is flagged on the Button as
 a missing column is on a component; a lookup beside a key cell as the same action from a
-column property; and the underwriter app of WB-07 running the same actions on its server.
+column property; and the underwriter app running the same actions on its server.
 
 **Acceptance:** With a source declared in `haute.toml` and an action in the form, pressing
 its Button in Preview fills the bound input cells with the query's values, typed by their
@@ -240,7 +211,7 @@ longer in the schema are each refused naming the cause; a project with no action
 exactly as now.
 
 **Dependencies:** The decisions above, recorded here before the first slice. For
-production, WB-07 (the app must run actions on its server) and, on Databricks,
+production, the underwriter app, which runs the actions on its server, and, on Databricks,
 [hosted-databricks-app](../hosted-databricks-app/high-level.md), whose secret handling
 the sources follow. The Host, Origin and session checks of
 [sandbox-security](../sandbox-security/high-level.md) apply to the new route as to any
@@ -298,8 +269,8 @@ tests pass against SQLite and the server engine; the previous release's store te
 against the schema a candidate's migrations leave; no connection value appears in the form
 file, `haute.toml`, an API response or a log; the app's identity cannot change the schema.
 
-**Dependencies:** WB-07 (the app that saves). The SQL instance and its identities, provided
-by the project's IT team, and the choice of engine above.
+**Dependencies:** The SQL instance and its identities, provided by the project's IT team,
+and the choice of engine above.
 
 **Evidence:** `src/haute/_quote_store/_store.py::open_store`, `::migrate_store`,
 `::QuoteStore` and `::carry_values` (the store on SQLite);
@@ -330,8 +301,7 @@ holds the quote's values and prices and names the release that priced them; an u
 is not exported as priced; each export is recorded against its quote; a change to a template
 starts the workflow, and the template's output for the test quotes is checked in CI.
 
-**Dependencies:** The decision above. WB-10 (the saved revision an export reads) and WB-07
-(the app it runs in).
+**Dependencies:** The decision above. WB-10 (the saved revision an export reads).
 
 **Evidence:** `frontend/src/utils/sheetValues.ts::pricedRows` (the priced rows the sheets
 show); `frontend/src/workbench/useSheetValues.ts` (the one path for a sheet's values);

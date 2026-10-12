@@ -16,6 +16,8 @@ import { openRelease } from "./openRelease"
 
 type Loaded = { release: WorkbenchAppReleaseResponse } | { error: string }
 
+const BRAND_STYLE = { width: "auto", minWidth: 165, maxWidth: 360, paddingRight: 8 } as const
+
 /**
  * The underwriter app (specs/workbench): the release's sheets drawn as Preview draws them,
  * with nothing of the builder, under a bar holding the pipeline and the release, Price over
@@ -79,9 +81,12 @@ function AppBar({ release }: { release: WorkbenchAppReleaseResponse }) {
 
   return (
     <header role="toolbar" aria-label="Quote toolbar" className="toolbar flex-wrap gap-y-2 [&>div]:shrink-0">
-      <div className="toolbar-brand" data-testid="app-release">
-        <div className="toolbar-brand-mark">
-          <h1 className="toolbar-brand-name">{release.pipeline_name || "Quote"}</h1>
+      {/* As wide as the pipeline's name, unlike Haute's own brand, within bounds. */}
+      <div className="toolbar-brand" style={BRAND_STYLE} data-testid="app-release">
+        <div className="toolbar-brand-mark min-w-0">
+          <h1 className="toolbar-brand-name max-w-full truncate" style={{ lineHeight: 1.2 }} title={release.pipeline_name}>
+            {release.pipeline_name || "Quote"}
+          </h1>
           <span className="toolbar-brand-version" title={`Built ${release.created_at} by Haute ${release.haute_version}`}>
             release {release.id}
           </span>

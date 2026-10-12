@@ -66,6 +66,8 @@ Out of scope:
   ([sandbox-security](../sandbox-security/high-level.md)), which apply to the workbench
   routes exactly as to any other `/api/` route.
 - How a deployed pipeline reads a request into its tables ([deploy](../deploy/high-level.md)).
+- The underwriter app on hosts other than Azure Container Apps
+  ([WB-07](../roadmap/workbench.md#wb-07--the-underwriter-app-on-other-hosts)).
 - The underwriter app's host-side delivery: rolling a host to a release and checking it
   there ([WB-08](../roadmap/workbench.md#wb-08--the-workbench-projects-cicd)).
 - Where a deployment's quote store is configured and migrated, the server databases it

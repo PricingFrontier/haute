@@ -259,3 +259,35 @@ accepted. On a pull request, a project set up with `haute init --workbench` repo
 the change does to the test quotes: GitHub posts the report on the pull request, and
 GitLab and Azure DevOps keep it with the run. `haute test-quotes report` writes the same
 report on your machine.
+
+## The underwriter app
+
+Underwriters use the sheets in an app of their own, apart from Haute: the sheets drawn as
+Preview draws them, priced by the pipeline packed into the same app, with nothing of the
+builder on screen.
+
+- `haute app serve` builds the app from the project as it is saved and serves it at
+  `http://127.0.0.1:8001/`, signed in as your git identity, so you can see the sheets as
+  underwriters will before you merge. Only your machine can reach it.
+- `haute app build` writes a **release** to `build/app`: the pipeline, checked and bundled
+  as `haute deploy` does it (the test quotes included), with the sheets and an `app.py` that
+  serves them. The release's id changes when anything that prices a quote changes, and the
+  app names it in its bar.
+- Say where the app runs in `haute.toml`. Azure Container Apps is the host so far; its
+  built-in authentication signs underwriters in, and the app refuses anyone it has not:
+
+  ```toml
+  [workbench.app]
+  host = "azure-container-apps"
+  ```
+
+- To build the app's image, pin its base image as the container target does. The release is
+  then the image's build context, and `haute app build --image <tag>` builds it with Docker:
+
+  ```toml
+  [deploy.container]
+  base_image = "python:3.11.9-slim"
+  ```
+
+A page opened before a new release is refused when it prices, and reloading it picks up the
+new sheets.
