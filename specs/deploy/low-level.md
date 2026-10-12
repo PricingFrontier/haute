@@ -12,7 +12,7 @@
 | `src/haute/deploy/_batch_scoring.py` | Multi-row `/quote` scoring in a hard-capped spawn worker: the picklable `BatchScoreRequest`/`BatchScoreOutcome` pair, the child entrypoint `score_batch_worker`, and the parent supervisor helpers `prepare_batch_scoring` / `accept_batch_outcome` / `deploy_batch_timeout_seconds`. |
 | `src/haute/deploy/_scorer.py` | Runtime scoring engine (`score_graph`, `score_graph_lazy`, taking a frame or a Workbench Input's `QuoteRequest`, the quotes as their records; `reads_one_quote_per_request`) shared by every deploy target; `NodeBuildHooks` interception for live-input injection and artefact-path remapping; stat-gated model/contract caches; execution admission. |
 | `src/haute/deploy/_project_modules.py` | Project-module resolution for the bundle (`resolve_project_modules`): the project-local `utility` package the preamble resolves, which deploy ships, and every other project-local static import, which validation refuses. |
-| `src/haute/deploy/_validators.py` | Pre-deploy validation (`validate_deploy`): structural checks + exactly one test-quote scoring pass, returning successful per-file results to its caller; golden test-quote parsing and expected-output tolerance comparison, walked into a Workbench Output's tables (`_first_mismatch`); `score_test_quotes`. |
+| `src/haute/deploy/_validators.py` | Pre-deploy validation (`validate_deploy`): structural checks + exactly one test-quote scoring pass, returning successful per-file results to its caller; golden test-quote parsing and expected-output tolerance comparison, walked into a Workbench Output's tables (`_first_mismatch`); `score_test_quotes`; `_workbench_form_errors`, each Workbench node's copy of its tables against the form in a project whose workbench is enabled. |
 | `src/haute/deploy/_utils.py` | Shared helpers: `get_user`, `get_haute_version`, `build_manifest` (the canonical deploy-manifest schema). |
 | `src/haute/deploy/_mlflow.py` | Databricks target: `deploy_to_mlflow`, `get_deploy_status`, MLflow signature building (each rendered dtype parsed by `_polars_dtypes.parse_rendered_dtype` and mapped by `rendered_dtype_mlflow_type_name`; a struct a `Map` of `AnyType` and a list an `Array` of its inner type, a table's column not required, since the Workbench Input's reader holds the request to the table's columns and leaves others unread where MLflow's typed object would refuse them), conda-env building, Databricks Model Serving endpoint create/update, connectivity pre-check, and the MLflow destination check (`_resolve_mlflow_databricks`) that binds its logging and registry calls. |
 | `src/haute/deploy/_model_code.py` | MLflow models-from-code entry point: `HauteModel` (`mlflow.pyfunc.PythonModel` subclass) wrapping `score_graph`; `_request` hands a Workbench Input its quotes as the records MLflow passed (`QuoteRequest`, numpy's values made plain by `_plain`), never a frame inferred from them, and any other request input the frame. |
@@ -262,7 +262,14 @@ schemas), refuses a pruned graph that reads a global constant with no `live` val
 undefined constant, or any constant while the constants file failed to load
 (`_global_constant_errors`, naming the constant or the file; a constant read only on a pruned
 branch needs no `live` value), adds every `project_modules` import message (a project-local
-import the bundle does not carry), rechecks the projected output-field invariant, then — if
+import the bundle does not carry), rechecks the projected output-field invariant, checks
+a workbench project's Workbench nodes against its form (`_workbench_form_errors`: with
+a Workbench node in the pruned graph and `[workbench] enabled = true`, the form is read
+by `read_form_document`, a file that does not exist refused, and each node's
+`tables` config compared with `input_tables` or `output_tables` of the form by
+`table_disagreements`, one error per node naming every difference and the Save that
+brings the copy up to date; a node's copy or a form that cannot be read is reported as
+its reader words it), then — if
 `config.test_quotes_dir` is configured — requires an existing directory containing at
 least one `*.json` file and, for a Quote Input, pre-checks every quote's rows
 against the required input-schema columns (catching a missing column before scoring even
@@ -274,7 +281,7 @@ runtime and collect per-file errors (a Quote Input's cases as one request, a Wor
 Input's one request each, since it reads one quote per request, each case's expected output
 compared with its own request's one row and reported by its row in the file;
 [workbench](../workbench/low-level.md)). All
-structural + test-quote errors are combined into one `DeployError` if any exist.
+structural, form + test-quote errors are combined into one `DeployError` if any exist.
 On success, `validate_deploy()` returns that exact per-file result list so a
 presentation caller can render timings/status without executing the scorer again.
 `score_test_quotes()` remains a result-producing helper and returns an empty list when
@@ -781,7 +788,12 @@ what they cover:
 - **`test_deploy_mlflow_gaps.py`**, **`test_deploy_validators_gaps.py`** — targeted
   gap-filling for branches not hit by the main suites (progress callbacks, artefact copy,
   version selection, build-dir cleanup-on-error for MLflow; unparseable test-quote files,
-  guard clauses in `score_test_quotes`).
+  guard clauses in `score_test_quotes`); `test_deploy_validators_gaps.py` also holds the
+  workbench form check: copies equal to the form pass, each kind of difference (a table
+  or column on one side only, rows per quote, a column's type, table and column order, an
+  output copy) is named with the Save that fixes it, a form file that does not exist or
+  is not JSON and a copy not as the workbench writes it are reported, and a project whose
+  workbench is off is not checked.
 - **`test_deploy_scorer_artifact_cache.py`** — `StatGatedCache` behaviour specific to
   deploy: model loaded once per artefact across repeated scoring calls, cache
   invalidation on stat-gate (mtime/size) change, deploy artefact-path fingerprint

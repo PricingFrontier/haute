@@ -109,17 +109,24 @@ document, alike for either ([workbench](../workbench/high-level.md)).
 exist on disk, schemas are non-empty, configured `output_fields` are distinct non-empty
 column names present in the inferred output schema, and every retained Data Input has a
 validated, deploy-ready direct Parquet source or snapshot), and every global constant the
-pruned graph reads has a `live` value, since deployed scoring runs under `live`. When
-`test_quotes.dir` is configured,
-the path must exist, be a directory, and contain at least one `*.json` quote; otherwise
-validation fails rather than silently disabling the gate. Every quote is scored through the
-resolved graph. Every test-quote row wraps its request as `input`, with an optional
-`expected` output and `tolerance_pct` and any `_`-prefixed notes; a row without `input`, or
-with any other top-level key, is refused naming the row, and any row whose actual output
-falls outside tolerance fails the deploy. The starter quote `haute init` writes takes that
-shape, so a new project's test quotes parse before the analyst replaces them. All failures — structural and test-quote — are collected and
-raised together as one `DeployError` so an operator sees the whole picture in one pass,
-not a fix-rerun-fix cycle.
+pruned graph reads has a `live` value, since deployed scoring runs under `live`. In a
+project whose workbench is enabled, each Workbench Input and Workbench Output in the pruned
+graph must hold the tables the form defines for it, its input tables and its output tables as
+the editor copies them, read from the form strictly: a form file that does not exist is
+refused, not read as the blank form the editor starts from, and a table or a column the form
+has and the copy lacks, or the copy has and the form lacks, a table's rows per quote, a
+column's type and their order are each named, with the way to bring the copies up to date, a
+Save in the editor. A project whose workbench is off, or a pipeline with no Workbench node, is
+not checked against a form. When `test_quotes.dir` is configured, the path must exist, be a
+directory, and contain at least one `*.json` quote; otherwise validation fails rather than
+silently disabling the gate. Every quote is scored through the resolved graph. Every
+test-quote row wraps its request as `input`, with an optional `expected` output and
+`tolerance_pct` and any `_`-prefixed notes; a row without `input`, or with any other
+top-level key, is refused naming the row, and any row whose actual output falls outside
+tolerance fails the deploy. The starter quote `haute init` writes takes that shape, so a new
+project's test quotes parse before the analyst replaces them. All failures — structural,
+form and test-quote — are collected and raised together as one `DeployError` so an
+operator sees the whole picture in one pass, not a fix-rerun-fix cycle.
 
 **Scoring.** The runtime scorer (`score_graph` / `score_graph_lazy`) executes the pruned
 graph with a live-injected input `DataFrame` in place of the API input node's file read.

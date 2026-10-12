@@ -154,6 +154,60 @@ def port_tables(tables: Iterable[WorkbenchTable]) -> tuple[WorkbenchTable, ...]:
     return tuple(table for table in tables if table.columns)
 
 
+def table_disagreements(
+    defined: Sequence[WorkbenchTable], copied: Sequence[WorkbenchTable]
+) -> list[str]:
+    """Where a node's *copied* tables differ from the tables the form *defined* for it.
+
+    Each difference names its table, or its column as ``table.column``: one the form has and
+    the copy lacks, or the copy has and the form lacks, a table's rows per quote and a
+    column's type. The copy is written in the form's order, so a copy whose tables or columns
+    are otherwise the same in another order differs too. Nothing when the two are equal.
+    """
+    found: list[str] = []
+    held = {table.name: table for table in copied}
+    for table in defined:
+        copy = held.get(table.name)
+        if copy is None:
+            found.append(f"table {table.name!r} is in the form but not in the copy")
+            continue
+        before = len(found)
+        if copy.rows != table.rows:
+            found.append(
+                f"table {table.name!r} is {table.rows} rows per quote in the form and "
+                f"{copy.rows} in the copy"
+            )
+        copy_columns = {column.name: column for column in copy.columns}
+        form_columns = {column.name for column in table.columns}
+        for column in table.columns:
+            spot = f"{table.name}.{column.name}"
+            other = copy_columns.get(column.name)
+            if other is None:
+                found.append(f"column {spot!r} is in the form but not in the copy")
+            elif other.type != column.type:
+                found.append(
+                    f"column {spot!r} is {column.type} in the form and {other.type} in the copy"
+                )
+        found.extend(
+            f"column {f'{table.name}.{column.name}'!r} is in the copy but not in the form"
+            for column in copy.columns
+            if column.name not in form_columns
+        )
+        if len(found) == before and copy.columns != table.columns:
+            found.append(
+                f"the columns of table {table.name!r} are in a different order in the copy"
+            )
+    form_tables = {table.name for table in defined}
+    found.extend(
+        f"table {table.name!r} is in the copy but not in the form"
+        for table in copied
+        if table.name not in form_tables
+    )
+    if not found and tuple(copied) != tuple(defined):
+        found.append("the tables are in a different order in the copy")
+    return found
+
+
 def quote_schema(tables: Iterable[WorkbenchTable]) -> pl.Schema:
     """The schema of one quote holding *tables*: each under its name, as a quote holds it."""
     return pl.Schema({table.name: table.quote_dtype for table in tables})

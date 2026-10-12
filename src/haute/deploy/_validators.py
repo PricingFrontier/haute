@@ -16,6 +16,15 @@ import polars as pl
 from haute._io import read_user_text
 from haute._logging import get_logger
 from haute._types import GLOBAL_CONSTANTS_FILE, NodeType, PipelineGraph
+from haute._workbench_config import WorkbenchConfigError, read_workbench_config
+from haute._workbench_form import WorkbenchFormError, read_form_document
+from haute._workbench_tables import (
+    WorkbenchTablesError,
+    input_tables,
+    output_tables,
+    parse_workbench_tables,
+    table_disagreements,
+)
 from haute.deploy._config import ResolvedDeploy
 from haute.deploy._scorer import QuoteRequest, reads_one_quote_per_request, score_graph
 
@@ -351,6 +360,54 @@ def _validate_expected_outputs_per_case(
         raise ValueError("expected-output validation failed: " + "; ".join(errors))
 
 
+def _workbench_form_errors(resolved: ResolvedDeploy) -> list[str]:
+    """Each Workbench node's copy of its tables against the form, when the workbench is on.
+
+    The editor copies the form's input tables into the Workbench Input and its output tables
+    into the Workbench Output, so the pipeline runs without the form; a copy that no longer
+    matches the form would deploy tables the sheets do not ask for. The form is read
+    strictly: one that does not exist is refused, not read as the blank form.
+    """
+    nodes = [
+        node
+        for node in resolved.pruned_graph.nodes
+        if node.data.nodeType in (NodeType.WORKBENCH_INPUT, NodeType.WORKBENCH_OUTPUT)
+    ]
+    if not nodes:
+        return []
+    project_root = (resolved.config.project_dir or resolved.config.pipeline_file.parent).resolve()
+    try:
+        config = read_workbench_config(project_root)
+        if not config.enabled:
+            return []
+        document = read_form_document(config)
+    except (WorkbenchConfigError, WorkbenchFormError) as exc:
+        return [str(exc)]
+    if document.revision is None:
+        return [
+            f"The workbench is enabled but {config.form} does not exist, so the pipeline's "
+            "Workbench nodes cannot be checked against the form. Save the project in Haute's "
+            "editor to write it, or turn the workbench off in haute.toml."
+        ]
+    errors: list[str] = []
+    for node in nodes:
+        reads_quotes = node.data.nodeType == NodeType.WORKBENCH_INPUT
+        owner = "Workbench Input" if reads_quotes else "Workbench Output"
+        try:
+            defined = input_tables(document.spec) if reads_quotes else output_tables(document.spec)
+            copied = parse_workbench_tables(node.data.config.get("tables"), owner=owner)
+        except WorkbenchTablesError as exc:
+            errors.append(str(exc))
+            continue
+        found = table_disagreements(defined, copied)
+        if found:
+            errors.append(
+                f"{owner} {node.id!r} does not match {config.form}: {'; '.join(found)}. Save "
+                "the project in Haute's editor to bring its copy of the tables up to date."
+            )
+    return errors
+
+
 def _global_constant_errors(graph: PipelineGraph) -> list[str]:
     """Why the deployed *graph*'s constant reads cannot resolve: it scores under ``live``."""
     from haute._global_constants import graph_constant_reads
@@ -469,6 +526,9 @@ def validate_deploy(resolved: ResolvedDeploy) -> list[TestQuoteResult]:
 
     # 8. Every global constant the deployed graph reads has a live value.
     errors.extend(_global_constant_errors(resolved.pruned_graph))
+
+    # 9. A workbench project's Workbench nodes hold the tables its form defines.
+    errors.extend(_workbench_form_errors(resolved))
 
     # Project-local imports the bundle does not carry would fail on import in
     # the served bundle, although they resolve from the project here.
