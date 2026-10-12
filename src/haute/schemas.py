@@ -320,6 +320,39 @@ class WorkbenchTestQuoteCompareResponse(BaseModel):
     changes: list[WorkbenchTestQuoteChange]
 
 
+class WorkbenchAppReleaseResponse(BaseModel):
+    """The underwriter app's release, and who the host signed in."""
+
+    id: str
+    form_revision: str
+    pipeline_name: str
+    haute_version: str
+    created_at: str
+    host: str | None = None
+    principal: str
+
+
+class WorkbenchAppFormResponse(BaseModel):
+    """The release's form, without its sample, with the revision a price quotes."""
+
+    form: FormSpec
+    revision: str
+
+
+class WorkbenchAppPriceRequest(BaseModel):
+    """A quote typed into the app's sheets, with the form revision the page was drawn from."""
+
+    form_revision: str
+    values: WorkbenchValues
+
+
+class WorkbenchAppPriceResponse(BaseModel):
+    """The quote priced: each output table's rows by name, and the request that was priced."""
+
+    tables: WorkbenchPricedTables
+    request: dict[str, Any]
+
+
 # ---------------------------------------------------------------------------
 # Assistant HTTP request/response models
 # ---------------------------------------------------------------------------

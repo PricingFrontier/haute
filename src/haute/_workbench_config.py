@@ -8,9 +8,13 @@ other facts, versioned and reviewed with them::
     enabled = true
     form = "forms/form.json"   # optional; this is the default
 
+    [workbench.app]
+    host = "azure-container-apps"   # optional; where the underwriter app runs
+
 Without the table the project has no workbench. With it, ``enabled`` is required and
-``form`` is a path relative to the project root that stays inside it. The table is read
-from disk whenever a workbench route needs it, so an edit reaches the next request.
+``form`` is a path relative to the project root that stays inside it; ``app``, when given,
+holds ``host`` alone, one of ``APP_HOSTS``. The table is read from disk whenever a workbench
+route needs it, so an edit reaches the next request.
 """
 
 from __future__ import annotations
@@ -24,7 +28,9 @@ from haute.errors import ConfigError, HauteError, PathOutsideProjectError
 
 #: The keys the table may hold. ``haute deploy``'s whole-file check of ``haute.toml``
 #: (``haute.deploy._config``) accepts exactly these under ``[workbench]``.
-WORKBENCH_TOML_KEYS: frozenset[str] = frozenset({"enabled", "form"})
+WORKBENCH_TOML_KEYS: frozenset[str] = frozenset({"enabled", "form", "app"})
+#: Where the underwriter app can run: the host whose sign-in fronts it.
+APP_HOSTS: frozenset[str] = frozenset({"azure-container-apps"})
 DEFAULT_FORM_PATH = "forms/form.json"
 
 _TABLE = "workbench"
@@ -50,6 +56,8 @@ class WorkbenchConfig:
     #: The form's path as ``haute.toml`` names it, or the default, relative to the project root.
     form: str
     project_root: Path
+    #: Where the underwriter app runs (``[workbench.app] host``); None when unsaid.
+    app_host: str | None = None
 
     @property
     def form_path(self) -> Path:
@@ -90,14 +98,37 @@ def read_workbench_config(project_root: Path) -> WorkbenchConfig:
     unknown = sorted(set(table) - WORKBENCH_TOML_KEYS)
     if unknown:
         raise WorkbenchConfigError(
-            f"[workbench] has unknown key(s): {', '.join(unknown)}; the keys are enabled and form",
+            f"[workbench] has unknown key(s): {', '.join(unknown)}; the keys are enabled, form "
+            "and app",
             path=str(toml_path),
         )
     enabled = table.get("enabled")
     if not isinstance(enabled, bool):
         raise WorkbenchConfigError("[workbench].enabled must be true or false", path=str(toml_path))
     form = _form(table.get("form"), project_root, toml_path)
-    return WorkbenchConfig(enabled=enabled, form=form, project_root=project_root)
+    app_host = _app_host(table.get("app"), toml_path)
+    return WorkbenchConfig(enabled=enabled, form=form, project_root=project_root, app_host=app_host)
+
+
+def _app_host(raw: object, toml_path: Path) -> str | None:
+    """``[workbench.app] host``, one of ``APP_HOSTS``; None without the table."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise WorkbenchConfigError("[workbench.app] must be a TOML table", path=str(toml_path))
+    unknown = sorted(set(raw) - {"host"})
+    if unknown:
+        raise WorkbenchConfigError(
+            f"[workbench.app] has unknown key(s): {', '.join(unknown)}; the key is host",
+            path=str(toml_path),
+        )
+    host = raw.get("host")
+    if host not in APP_HOSTS:
+        raise WorkbenchConfigError(
+            f"[workbench.app].host must be one of {', '.join(sorted(APP_HOSTS))}; got {host!r}",
+            path=str(toml_path),
+        )
+    return str(host)
 
 
 def _form(raw: object, project_root: Path, toml_path: Path) -> str:

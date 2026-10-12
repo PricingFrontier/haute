@@ -4,8 +4,9 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/_workbench_config.py` | The `[workbench]` table of `haute.toml`: `WORKBENCH_TOML_KEYS` (`enabled`, `form`), `DEFAULT_FORM_PATH` (`forms/form.json`), `WorkbenchError` (the base of every workbench problem the analyst fixes in the project), `WorkbenchConfigError`, the frozen `WorkbenchConfig` record (`enabled`, `form` as `haute.toml` names it, `project_root`, and `form_path`) and `read_workbench_config` (the table read and checked from the project root's `haute.toml`: disabled without the file or the table). |
+| `src/haute/_workbench_config.py` | The `[workbench]` table of `haute.toml`: `WORKBENCH_TOML_KEYS` (`enabled`, `form`, `app`), `APP_HOSTS` (where the underwriter app can run: `azure-container-apps`), `DEFAULT_FORM_PATH` (`forms/form.json`), `WorkbenchError` (the base of every workbench problem the analyst fixes in the project), `WorkbenchConfigError`, the frozen `WorkbenchConfig` record (`enabled`, `form` as `haute.toml` names it, `project_root`, `app_host` from the nested `[workbench.app]` table through `_app_host`, and `form_path`) and `read_workbench_config` (the table read and checked from the project root's `haute.toml`: disabled without the file or the table). |
 | `src/haute/_test_quotes.py` | The project's test-quote file: `TEST_QUOTES_FILE`, `DEFAULT_TEST_QUOTES_DIR`, `project_test_quotes_path` (the `[test_quotes] dir` of `haute.toml` through `contained_path`, or the default), `ACCEPTED_TOLERANCE`, `quote_request` (the request Price builds from a form's values, through `sample_quote`), `response_document` (priced output tables as a deployed pipeline answers them), `GIT_DRIVER` and `ensure_test_quote_git` (the clone's `diff` and `merge` drivers in its local git config, run as `python -m haute.cli._test_quotes`, and the file's line in `.gitattributes`, appended on a line of its own; whether `.gitattributes` changed; nothing outside a repository) and `WorkbenchTestQuoteError`. |
+| `src/haute/_workbench_app.py` | The underwriter app. `write_release` writes, beside a bundle already in a release directory (`MANIFEST_FILE` and its artifacts), the form rendered without its sample (`FORM_FILE`, written as rendered so its revision is the one recorded), the `Release` record (`RELEASE_FILE`: an id hashed from the form and the manifest without when and by whom it was built, the form's revision, the pipeline's name, the Haute version, when, and the host) and the entry point `APP_ENTRY` (`app.py`); `read_release` reads the three back, refusing an unreadable file as `WorkbenchAppError`. `create_app` serves a release: a middleware signs in every request but `GET /health` (the `local_principal` given, else, for `azure-container-apps`, the `EASY_AUTH_NAME` or `EASY_AUTH_ID` header) and answers 401 without one, worded for a release with no host; `GET /api/app/release` (the release and the principal), `GET /api/app/form` (the form and its revision) and `POST /api/app/price` (409 for another form revision, 422 for an empty quote, else the request through `quote_request`, admitted through `admit_deploy_execution` and priced through `score_graph` as a `QuoteRequest` of one, rendered through `render_output_document` and `to_json_safe`, in an executor bounded by `PRICE_TIMEOUT_SECONDS`: 504 past it, 503 refused admission, 507 over the memory limit, 422 a public contract error), `GET /` (`APP_PAGE` from Haute's built frontend, 503 while it is not built) and the built assets. |
 | `src/haute/_quote_store/__init__.py` | The quote store's surface: `open_store`, `migrate_store`, `store_url`, `carry_values`, `QuoteStore`, `QuoteRevision`, `QuoteSummary`, `CarriedValues` and the errors `QuoteStoreError`, `QuoteStoreNotMigratedError`, `QuoteNotFoundError`, `StaleQuoteError`. Imported where a store is used, never on the scorer's import path. |
 | `src/haute/_quote_store/_tables.py` | The schema as SQLAlchemy Core tables in `METADATA`: `QUOTE_FORMS` (each form under its revision), `QUOTES` (the id, name, owner, when it was made and its newest revision's number, indexed by owner) and `QUOTE_REVISIONS` (keyed by quote and number: the form's revision, the values, the request, the response and the release, the last two nullable, and who saved it and when); `UtcDateTime`, a moment held in UTC on every engine; `VERSION_TABLE`, Alembic's version table for the store. Every table's name starts haute_. |
 | `src/haute/_quote_store/_store.py` | `store_url` (a SQLite path as a SQLAlchemy URL), `_engine` (SQLite's `PRAGMA foreign_keys=ON` on every connection), `migrate_store` (Alembic's `upgrade head` on one connection), `open_store` (refuses a database whose version is not the head), `QuoteStore` (`create`, `save_revision`, `revision`, `form`, `quotes`, `delete`, `histories` and `put_history` (a quote whole, as `QuoteHistory`: its row, its revisions and the forms they name, read and put in place of what the store holds of it, for a merge), `close`; a context manager) and `carry_values`. |
@@ -59,7 +60,9 @@
 | `frontend/src/workbench/useSheetValues.ts` | `SheetValues`, what a sheet's cells hold and show (`rows`, `setCell`, `setRows`, `price`, `basis`, `problems` by cell key, `visibility`, the values' `sheetVisibility`, and `quoted`, the schema as the values' quote reads it, `quotedSchema`), given to the components through `SheetValuesContext` and read with `useSheetValues`; `useSampleValues`, the form's sample edited through `change` with `withSampleCell` and `withSampleRows`, the pricing store's `price`, `pricingBasis` and no problems; `usePreviewValues`, the preview store's `quote`, `setCell` and `setRows`, its `price`, `valuesBasis` of the schema, the columns the quote hides and the quote, and `quoteProblems` of the quoted schema and the quote once `checked`; `useSheetVisibility(previewing)`, the visibility of the sample or the quote for what draws outside the sheet, the tabs. |
 
 `src/haute/schemas.py` defines `WorkbenchStatusResponse`, `WorkbenchTablesResponse`,
-`WorkbenchFormResponse`, `WorkbenchFormSaveRequest` and `WorkbenchFormTablesRequest`; `scripts/generate_api_contracts.py`
+`WorkbenchFormResponse`, `WorkbenchFormSaveRequest` and `WorkbenchFormTablesRequest`, and
+the underwriter app's `WorkbenchAppReleaseResponse`, `WorkbenchAppFormResponse`,
+`WorkbenchAppPriceRequest` and `WorkbenchAppPriceResponse`; `scripts/generate_api_contracts.py`
 lists the four responses as the `workbench` response group, so the form's models are
 generated types too; `frontend/src/api/types.ts` re-exports them.
 `src/haute/routes/_error_handlers.py` answers a `WorkbenchError` as 409. `src/haute/deploy/_config.py` lists the `[workbench]` table,
@@ -185,13 +188,15 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   current form has a place for) and `dropped` (each filled value's `table.column` that it
   has not, by the saved form's names, in that form's order).
 - **`WorkbenchConfig`** (`src/haute/_workbench_config.py`): `enabled`, `form` (the path as
-  written in `haute.toml`, or `DEFAULT_FORM_PATH`), `project_root`, and `form_path`
+  written in `haute.toml`, or `DEFAULT_FORM_PATH`), `project_root`, `app_host` (the
+  `[workbench.app]` table's `host`, `None` without the table) and `form_path`
   (`project_root / form`). `read_workbench_config(project_root)` returns a disabled config
   when `haute.toml` or its `[workbench]` table is absent, and raises `WorkbenchConfigError`
   (a `WorkbenchError` and a `ConfigError`) when the file cannot be read, is not UTF-8 text or
   cannot be parsed, the table is not a table, holds a key outside `WORKBENCH_TOML_KEYS`, lacks
-  `enabled`, gives `enabled` a non-boolean, or gives `form` anything but a non-empty relative
-  path whose resolution stays inside the project root; the default path is resolved and checked
+  `enabled`, gives `enabled` a non-boolean, gives `form` anything but a non-empty relative
+  path whose resolution stays inside the project root, or gives `app` anything but a table
+  holding `host` alone, one of `APP_HOSTS`; the default path is resolved and checked
   the same way, so a `forms` symlink or junction leading outside the project is refused.
 - **`FormSpec`** (`src/haute/_workbench_form.py`): `version` (the literal 1), `name`,
   `data_schema` (written and read as `schema`; a `Schema` of `tables`), `pages` (at least
@@ -247,6 +252,13 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   status says otherwise), `formPath`, `activeView` (an `EditorView`: `"pipeline"` or
   `"workbench"`) and `tables` (`WorkbenchTables | null`: `tables`, `sample`,
   `responseTables` and `fetch`, the fetch's number).
+- **`Release`** (`src/haute/_workbench_app.py`): `id`, `form_revision`, `pipeline_name`,
+  `haute_version`, `created_at` and `host`, as `release.json` holds them.
+  **`WorkbenchAppReleaseResponse`** (`src/haute/schemas.py`): the same with `principal`, who
+  the host signed in. **`WorkbenchAppFormResponse`**: `form` and `revision`.
+  **`WorkbenchAppPriceRequest`**: `form_revision` and `values` (each input table's rows by
+  id, as Preview's quote holds them). **`WorkbenchAppPriceResponse`**: `tables` (each output
+  table's rows by name) and `request` (the request priced).
 - **`FormDocument`** (`src/haute/_workbench_form.py`): `spec` and `revision` (`str | None`).
   **`WorkbenchFormResponse`** (`src/haute/schemas.py`): `form` (a `FormSpec`) and
   `revision` (the file's content hash, `null` while the form has never been saved).
@@ -1141,8 +1153,20 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   and disabled, the default and a configured form path, and each refusal (not a table, an
   unknown key, `enabled` missing or not a boolean, `form` empty, not a string, absolute or
   escaping the project, the default path through a `forms` symlink to somewhere outside the
-  project, malformed TOML, a `haute.toml` that is not UTF-8), and that `DeployConfig.from_toml`'s
-  whole-file check accepts the table and refuses an unknown key under it.
+  project, malformed TOML, a `haute.toml` that is not UTF-8, `app` not a table, a key beside
+  `host`, a host outside `APP_HOSTS`), `[workbench.app] host` read, and that
+  `DeployConfig.from_toml`'s whole-file check accepts the table, with `app`, and refuses an
+  unknown key under it.
+- `tests/test_workbench_app.py` covers a release holding the form without its sample (its
+  revision the written file's), what it is and its entry point; the release id unchanged by
+  a rebuild by someone else later or by another sample, and changed by another form; the
+  health check without sign-in; Azure's principal by name or by id, and a request without
+  it refused 401; a release with no host refusing everything but the health check; a local
+  principal signing every request in; the form served without its sample; a quote priced
+  through the release's pipeline, typed as Price reads it; another form revision refused
+  409; an empty quote refused 422; a pricing past the timeout answered 504 and one refused
+  admission 503; and the page and its assets served once built, 503 before, and an asset
+  refused without sign-in.
 - `tests/test_workbench_form.py` covers the blank form's text, a saved form round-tripping
   through `write_form` and `read_form_document` with the file's revision (the test project's
   shape: one-row and many-row tables, an index column, Tables, Collections, a Chart and a
