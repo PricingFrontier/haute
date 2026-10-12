@@ -10,8 +10,9 @@ reads a quote in the workbench's shape is specified in [the deploy
 specification](../deploy/high-level.md). The packages below are what neither covers: the
 underwriter app, which carries the sheets and the pipeline to the host a project uses; the
 delivery of a workbench project through CI, from a merge to `main` to that app; the store
-the app saves quotes to; exports from the app; the test quotes analysts keep and re-price in
-Preview; and the actions that fill the sheets from databases and APIs.
+the app saves quotes to on the server; how underwriters manage their quotes in the app;
+exports from the app; the test quotes analysts keep and re-price in Preview; and the actions
+that fill the sheets from databases and APIs.
 
 ## Priorities
 
@@ -20,9 +21,10 @@ Preview; and the actions that fill the sheets from databases and APIs.
 | WB-07 | Planned | P3 | The underwriter app runs on a Databricks App, on AWS or on an internal platform as it runs on Azure Container Apps, each signing underwriters in its own way. |
 | WB-08 | Planned | P2 | A merge to `main` takes a workbench project's form, pipeline and app, tested together in CI, to staging and, after approval, to production on the project's host, Azure Container Apps first. |
 | WB-09 | Decision | P2 | A Button on a sheet, or a lookup beside a key cell, runs an action the project declares against a database or an API and fills input cells with what comes back, through the server with no credential in the browser, while pricing stays as pure as it is. |
-| WB-10 | Planned | P2 | An underwriter's quotes are saved to and reopened from the SQL instance the project's IT team provides, with the form and the release that priced each one, through the same store an analyst's machine runs on SQLite. |
+| WB-10 | Planned | P2 | The quote store runs on the SQL instance the project's IT team provides, migrated by the deploy under an identity of its own, with the release before a candidate proved to work on the schema the candidate leaves. |
 | WB-11 | Decision | P2 | An underwriter exports a saved quote from the app in the formats the project needs, naming the release that priced it. |
 | WB-12 | Planned | P3 | A test quote whose response runs past what Preview shows is saved, run and compared in full, as every other test quote is. |
+| WB-13 | Planned | P1 | The underwriter app opens on its quotes: an underwriter finds, opens, saves, hands over, marks final, archives, renews and offers alternatives to quotes, each with a reference, a history and the release that priced it. |
 
 ## Planned improvements
 
@@ -230,56 +232,42 @@ Databricks extra); `docs/deployment/targets/databricks.md` (credentials as CI se
 and the editor's data-access pair).
 
 ### WB-10 — The quote store
-**Why:** Underwriters save the quotes they price and come back to them, and the business
-keeps what was quoted and on which rates. The ruling is one store with two databases: on the
-underwriter app, a SQL instance the project's IT team provides; on an analyst's machine and
-in CI, a SQLite file, which the test quotes of WB-12 use. The store runs on SQLite
+**Why:** Underwriters' quotes are kept on a SQL instance the project's IT team provides,
+apart from the app, and the same store runs on SQLite on an analyst's machine and in CI
 ([workbench](../workbench/high-level.md)): quotes with numbered revisions written whole,
-each keeping the form it was keyed into, a revision that names one its quote has moved past
-refused, a saved quote's values carried onto the current form by the stable ids, and Haute's
-numbered migrations, which the store refuses to open without. What the underwriter app needs
-of it does not exist: a backend for the server engine IT's instance runs, the connection
-configured per environment, the migrations run by a deploy under an identity of their own,
-and the app's Save, Open and list of quotes.
+each keeping the form it was keyed into, and Haute's numbered migrations, which the store
+refuses to open a database without. Nothing of the server side exists: no backend for the
+engine IT's instance runs, no step in a deploy that migrates the instance before a release
+starts on it, and no proof that the release before a candidate still reads and writes the
+schema the candidate's migrations leave, which rolling a failed release back depends on.
 
 **Plan:** Which engine, Azure SQL or Azure Database for PostgreSQL, is the IT team's to name
-and is recorded here before the server backend's slice. The backend is that engine's driver
-behind an optional extra, as the Databricks clients are, with the store's tests run against
-SQLite and that engine alike (a service container in CI), and the form copies kept once
-through that engine's own insert-if-absent. Who sees whose quotes, each underwriter their
-own or a team's, is recorded before the app's list of quotes. The connection is configured
-per environment by name, its value supplied by the host at runtime (a managed identity or a
-secret) and never written to a file the ledger pushes. The deploy's migrate step applies the
-migrations under an identity that owns the schema, while the app's own identity reads and
-writes data only. A release's migrations keep the previous release's reads and writes
-working (a column added as nullable or with a default, no constraint the previous release's
-writes would break, nothing dropped), proved by running the previous release's store tests
-against the schema the migrations leave, so the previous release can be started again after
-a failed rollout; removing a column is a step of its own after the release that stops using
-it. Then the app's Save and Open and the list of quotes on the sheets: a quote saved under
-an older form opens on that form, read-only, and re-pricing it on the current form makes a
-new revision, naming what no longer fits.
+and is recorded here before the backend's slice. The backend is that engine's driver behind
+an optional extra, as the Databricks clients are, signing in with the app's managed identity
+where the engine allows it, with the store's tests run against SQLite and that engine alike
+(a service container in CI), and the form copies kept once through that engine's own
+insert-if-absent. The deploy's migrate step runs `haute app migrate` under an identity that
+owns the schema, before the release rolls out, while the app's own identity reads and writes
+data only. A release's migrations keep the previous release's reads and writes working (a
+column or table added, nullable or with a default, no constraint the previous release's
+writes would break, nothing dropped), and each records the oldest Haute that can still use
+the database; that is proved by running the previous release's store tests against the
+schema the migrations leave, so the previous release can be started again after a failed
+rollout; removing a column is a step of its own after the release that stops using it.
 
-**Acceptance:** An underwriter saves a priced quote in the app, closes it, finds it in their
-list and reopens it with its values, its prices and the release that priced them; a second
-save makes a revision and leaves the first as it was; after a release removes one field and
-renames another, a quote saved before it opens read-only with its original labels and
-values, and re-pricing it names the column the current form no longer has; the same store
-tests pass against SQLite and the server engine; the previous release's store tests pass
-against the schema a candidate's migrations leave; no connection value appears in the form
-file, `haute.toml`, an API response or a log; the app's identity cannot change the schema.
+**Acceptance:** The same store tests pass against SQLite and the server engine; a deploy
+migrates IT's instance under the schema's identity before the release starts, and the app's
+identity cannot change the schema; the previous release's store tests pass against the
+schema a candidate's migrations leave, and the previous release starts on it; no connection
+value appears in the form file, `haute.toml`, an API response or a log.
 
 **Dependencies:** The SQL instance and its identities, provided by the project's IT team,
-and the choice of engine above.
+and the choice of engine above. WB-08 (the deploy that runs the migrate step).
 
-**Evidence:** `src/haute/_quote_store/_store.py::open_store`, `::migrate_store`,
-`::QuoteStore` and `::carry_values` (the store on SQLite);
-`src/haute/_quote_store/_tables.py::METADATA` (Haute's schema);
-`src/haute/_quote_store/_store.py::_keep_form` (a form kept once, by SQLite's
-insert-if-absent and otherwise a read first);
-`frontend/src/stores/useWorkbenchPreviewStore.ts::priceQuote` (Preview's quote, held in the
-browser alone); `src/haute/_workbench_config.py::read_workbench_config` (the workbench's
-settings, with no store in them).
+**Evidence:** `src/haute/_quote_store/_store.py::open_store`, `::migrate_store` and
+`::QuoteStore` (the store on SQLite); `src/haute/_quote_store/_tables.py::METADATA` (Haute's
+schema); `src/haute/_quote_store/_store.py::_keep_form` (a form kept once, by SQLite's
+insert-if-absent and otherwise a read first).
 
 ### WB-11 — Exports from the app
 **Why:** Underwriters take what they need out of the app themselves: a quote's tables for a
@@ -301,7 +289,7 @@ holds the quote's values and prices and names the release that priced them; an u
 is not exported as priced; each export is recorded against its quote; a change to a template
 starts the workflow, and the template's output for the test quotes is checked in CI.
 
-**Dependencies:** The decision above. WB-10 (the saved revision an export reads).
+**Dependencies:** The decision above. WB-13 (the saved revision an export reads).
 
 **Evidence:** `frontend/src/utils/sheetValues.ts::pricedRows` (the priced rows the sheets
 show); `frontend/src/workbench/useSheetValues.ts` (the one path for a sheet's values);
@@ -337,3 +325,71 @@ limit, and a table cut short refused); `src/haute/executor.py::_preview_row_limi
 whole, as a deployed pipeline gives it);
 `src/haute/deploy/_validators.py::score_test_quotes` (the dry run's pricing of each quote
 alone).
+
+### WB-13 — Managing quotes in the underwriter app
+**Why:** The underwriter app opens on a blank quote: an underwriter keys it into the sheets,
+prices it and loses it on a reload, with nothing saved, nothing listed and nothing to come
+back to. The store keeps quotes and their revisions, but the app has no place for it: no
+list of quotes, no save, no reference an underwriter can quote back, no way to hand a quote
+to a colleague, to mark the revision that was offered as final, to archive what is done
+with, or to start a renewal or an alternative from a quote. The store's schema holds a
+quote's name and owner alone, with no stage, no reference, no record of who did what and no
+list a page can search and page through; `open_store` refuses any database not at the exact
+newest schema it knows, so a release rolled back after a migration could not open its
+quotes; the app's pricing checks the sheets' revision but not the release, so a release that
+changes the model alone prices on the old one unnoticed; and the sheets have no read-only
+mode, so a quote that must not change can still be typed into.
+
+**Plan:** Decided with the project owner: every underwriter the deployment signs in sees and
+edits every quote, the assignee saying whose it is; Final pins one priced revision for good,
+and any underwriter may reopen it, giving a reason, as an amendment under the same reference
+with the final kept in its history; Price stays free for trying terms, and Save prices the
+quote again on the server and keeps that price, saying so when it moved; renewals and
+alternatives are in the first release; referrals are not. In slices, each usable on
+`haute app serve`. First, the store's second migration: a record for each of the app's
+quotes, apart from the test quotes of WB-12, holding a reference taken from a counter in the
+transaction that creates the quote, the title and summary the list shows, the assignee,
+whether its newest revision is priced, the final revision, the archive, a version every
+change moves and the quote it came from; an events table of who did what; an operation key
+per save so a retried save writes once; and the oldest Haute that can use the database,
+which `open_store` accepts in place of the exact newest. Second, the app's routes to list,
+create, open and save quotes and change them, every change naming the version it was made on
+and refused when the quote has moved on; the pages at `/quotes/...`; the release named on
+pricing; `haute app serve` keeping its quotes beside the release, not in it; and the
+deployed app reading its store's URL from `HAUTE_QUOTE_STORE_URL`, refusing to start on a
+database not migrated, which `haute app migrate` migrates. Third, the Quotes page the app
+opens on and the quote's bar above the sheets. Fourth, the quote list setting in the form,
+chosen in the Schema section: a title, up to three summary fields and a headline output from
+one-row tables, projected onto each quote as it is saved and again when a release changes
+the setting. Fifth, assigning, the handover note, archiving and restoring, duplicating,
+renewing and alternatives, marking final and reopening, and the history, with
+`[workbench.app] edit_role` making readers of those the host signs in without that role.
+Sixth, surviving releases: a quote saved on earlier sheets opens on them read only and moves
+onto the current sheets with what no longer fits named, and unsaved work is kept in the
+browser across a reload.
+
+**Acceptance:** The app opens on the Quotes page; an underwriter creates a quote, saves it
+unpriced and priced, finds it again by its reference, its name or a summary field, reopens
+it from a link after a reload and sees its revisions; a save made over a quote a colleague
+saved since is refused, with the underwriter's work kept and an offer to open the newest or
+save theirs as a new quote; a retried save writes one revision; marking final needs the
+newest revision priced on the running release, and a final quote cannot be saved until it is
+reopened with a reason, its final kept in its history; an archived quote leaves the default
+views and opens read only until restored; a duplicate, a renewal or an alternative is a new
+quote with its own reference, unpriced, naming the quote and revision it came from; two
+quotes created at once take different references; a reader with no edit role is refused
+every change; a release that changes the model alone refuses a page priced on the one
+before; a quote saved on earlier sheets opens on them read only and moves onto the current
+ones naming each value that no longer fits; a previous Haute that the database names as able
+to use it opens it.
+
+**Dependencies:** None on an analyst's machine. For the deployed app, the SQL instance of
+WB-10.
+
+**Evidence:** `frontend/src/app/UnderwriterApp.tsx::UnderwriterApp` (one page, no save, no
+list); `src/haute/_quote_store/_tables.py::QUOTES` (a quote's name and owner alone);
+`src/haute/_quote_store/_store.py::open_store` (the exact newest schema) and `::QuoteStore`
+(no stage, archive or list a page can page through);
+`src/haute/_workbench_app.py::create_app` (pricing checks the sheets' revision alone; no
+store); `frontend/src/workbench/useSheetValues.ts::usePreviewValues` (the sheets always
+editable).

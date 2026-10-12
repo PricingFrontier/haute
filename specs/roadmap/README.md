@@ -34,7 +34,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Server API](server-api.md) | Domain errors, generated browser contract | `API-R02` |
 | [Submodels](submodels.md) | Submodels registered by import, one reuse mechanism | `SUB-R02` |
 | [t-boost](t-boost.md) | What rating-table models make possible: cell-level holdout A/E, unfolding into rating steps, model comparison with premium attribution, measured analyst adjustments (all awaiting a decision) | `TBOOST-02` |
-| [Workbench](workbench.md) | The underwriter app on hosts past Azure Container Apps (a Databricks App, AWS, internal platforms); a workbench project's CI/CD: a merge to `main` takes form, pipeline and app, tested together, to staging and production; the quote store underwriters save to (its server engine awaiting IT); exports from the app (awaiting a decision on formats); test quotes past what Preview shows kept in full; actions that fill the sheets from databases and APIs (awaiting decisions on auth and sources) | `WB-08` |
+| [Workbench](workbench.md) | The underwriter app on hosts past Azure Container Apps (a Databricks App, AWS, internal platforms); a workbench project's CI/CD: a merge to `main` takes form, pipeline and app, tested together, to staging and production; the quote store on the server (its engine awaiting IT); managing quotes in the app: the Quotes page, saving, handing over, final, archive, renewals; exports from the app (awaiting a decision on formats); test quotes past what Preview shows kept in full; actions that fill the sheets from databases and APIs (awaiting decisions on auth and sources) | `WB-13` |
 
 ## Delivery plan — 24 September 2026
 
