@@ -44,7 +44,7 @@ from haute.schemas import (
 RELEASE_FILE = "release.json"
 FORM_FILE = "form.json"
 MANIFEST_FILE = "deploy_manifest.json"
-#: The page Haute's frontend builds for the app, beside the builder's.
+#: The page Haute's frontend builds for the app, apart from the builder's, in ``_STATIC``.
 APP_PAGE = "app.html"
 #: How long one pricing may take before the app answers that it timed out.
 PRICE_TIMEOUT_SECONDS = 60.0
@@ -62,7 +62,8 @@ from haute._workbench_app import create_app
 app = create_app(Path(__file__).parent)
 '''
 
-_STATIC = Path(__file__).parent / "static"
+#: The app's built page and its assets (``frontend/vite.app.config.ts``).
+_STATIC = Path(__file__).parent / "static" / "app"
 
 
 class WorkbenchAppError(HauteError):

@@ -11,7 +11,7 @@ import { quoteFilled, quoteProblems, valuesBasis } from "../utils/sheetValues"
 import { quotedSchema, sheetVisibility } from "../utils/sheetVisibility"
 import { withCell, type SampleRow, type SampleValue } from "../utils/workbenchForm"
 import useWorkbenchFormStore from "./useWorkbenchFormStore"
-import useWorkbenchPricingStore, { priceForm, type SamplePrice } from "./useWorkbenchPricingStore"
+import useWorkbenchPricingStore, { priceForm, type QuotePricer, type SamplePrice } from "./useWorkbenchPricingStore"
 
 interface WorkbenchPreviewState {
   /** The quote, by table id, rows keyed by column id, as typed. */
@@ -34,8 +34,9 @@ interface WorkbenchPreviewState {
   clear: () => void
   /**
    * Check the quote against the columns' rules and, when every cell passes, price it on
-   * the pipeline through the pricer the view gave the pricing store; one pricing at a
-   * time, a press meanwhile doing nothing. The quote is read as the server makes it, the
+   * the pipeline through the pricer the view gave the pricing store, or through the quote
+   * pricer a host set there, the underwriter app's; one pricing at a time, a press
+   * meanwhile doing nothing. The quote is read as the server makes it, the
    * cells the sheets hide left out: they are neither checked nor counted. A quote with
    * nothing typed in the tables the schema has now is not priced: a deployed request never
    * holds a blank quote, and the server would read one as the null quote. An answer that
@@ -62,8 +63,11 @@ const useWorkbenchPreviewStore = create<WorkbenchPreviewState>()((set, get) => (
   },
   priceQuote: async () => {
     const { form, status } = useWorkbenchFormStore.getState()
-    const { pricer } = useWorkbenchPricingStore.getState()
-    if (get().pricing || form === null || status !== "ready" || pricer === null) return
+    const { pricer, quotePricer } = useWorkbenchPricingStore.getState()
+    // The host's quote pricer, the underwriter app's, else the pipeline open in the editor.
+    const priceWith: QuotePricer | null =
+      quotePricer ?? (pricer === null ? null : (sheets, typed) => priceForm({ ...sheets, sample: typed }, pricer))
+    if (get().pricing || form === null || status !== "ready" || priceWith === null) return
     const { quote } = get()
     const { hidden } = sheetVisibility(form, quote)
     const quoted = quotedSchema(form.schema, hidden)
@@ -80,9 +84,12 @@ const useWorkbenchPreviewStore = create<WorkbenchPreviewState>()((set, get) => (
     const attempt = ++asked
     set({ checked: true, pricing: true, error: null })
     // Cleared meanwhile, or the view left: the answer is nobody's.
-    const current = () => attempt === asked && useWorkbenchPricingStore.getState().pricer === pricer
+    const current = () => {
+      const now = useWorkbenchPricingStore.getState()
+      return attempt === asked && now.pricer === pricer && now.quotePricer === quotePricer
+    }
     try {
-      const priced = await priceForm({ ...form, sample: quote }, pricer)
+      const priced = await priceWith(form, quote)
       if (current()) set({ price: { basis, ...priced } })
     } catch (error: unknown) {
       if (current()) set({ price: null, error: `Pricing failed: ${apiErrorMessage(error)}` })

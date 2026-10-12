@@ -3,7 +3,7 @@
  * back onto the sheets, run one request each on a pipeline fixed when the run starts, a
  * change accepted after the revision the run read, and a quote deleted.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest"
 
 vi.mock("../../api/workbench", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../api/workbench")>()),
@@ -33,7 +33,7 @@ import useGraphStore from "../useGraphStore"
 import useSettingsStore from "../useSettingsStore"
 import useWorkbenchFormStore from "../useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../useWorkbenchPreviewStore"
-import useWorkbenchPricingStore from "../useWorkbenchPricingStore"
+import useWorkbenchPricingStore, { type Pricer } from "../useWorkbenchPricingStore"
 import useWorkbenchTestQuotesStore, { runIsStale } from "../useWorkbenchTestQuotesStore"
 
 const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {}): SchemaColumn => ({
@@ -76,12 +76,12 @@ const opened = (id: string, exposure: string, dropped: string[] = []) => ({
 const store = useWorkbenchTestQuotesStore.getState
 
 describe("useWorkbenchTestQuotesStore", () => {
-  let pricer: ReturnType<typeof vi.fn>
+  let pricer: Mock<Pricer>
   let snapshots: number
 
   beforeEach(() => {
     snapshots = 0
-    pricer = vi.fn((_workbench: WorkbenchTablesResponse) => Promise.resolve(priced(500)))
+    pricer = vi.fn<Pricer>((_workbench: WorkbenchTablesResponse) => Promise.resolve(priced(500)))
     vi.mocked(fetchWorkbenchFormTables).mockResolvedValue(workbench)
     vi.mocked(fetchTestQuotes).mockResolvedValue({ quotes: [summary("a", "Northern"), summary("b", "Southern")] })
     vi.mocked(saveTestQuote).mockResolvedValue(written)

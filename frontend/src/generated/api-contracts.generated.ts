@@ -2683,3 +2683,35 @@ export interface WorkbenchTestQuoteChange {
     [k: string]: unknown;
   };
 }
+/**
+ * The underwriter app's release, and who the host signed in.
+ */
+export interface WorkbenchAppReleaseResponse {
+  created_at: string;
+  form_revision: string;
+  haute_version: string;
+  host: string | null;
+  id: string;
+  pipeline_name: string;
+  principal: string;
+}
+/**
+ * The release's form, without its sample, with the revision a price quotes.
+ */
+export interface WorkbenchAppFormResponse {
+  form: FormSpec;
+  revision: string;
+}
+/**
+ * The quote priced: each output table's rows by name, and the request that was priced.
+ */
+export interface WorkbenchAppPriceResponse {
+  request: {
+    [k: string]: unknown;
+  };
+  tables: {
+    [k: string]: {
+      [k: string]: unknown;
+    }[];
+  };
+}

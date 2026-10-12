@@ -14482,6 +14482,103 @@
       "title": "WarehouseListResponse",
       "type": "object"
     },
+    "WorkbenchAppFormResponse": {
+      "description": "The release's form, without its sample, with the revision a price quotes.",
+      "properties": {
+        "form": {
+          "$ref": "#/$defs/FormSpec"
+        },
+        "revision": {
+          "title": "Revision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "form",
+        "revision"
+      ],
+      "title": "WorkbenchAppFormResponse",
+      "type": "object"
+    },
+    "WorkbenchAppPriceResponse": {
+      "description": "The quote priced: each output table's rows by name, and the request that was priced.",
+      "properties": {
+        "request": {
+          "additionalProperties": true,
+          "title": "Request",
+          "type": "object"
+        },
+        "tables": {
+          "additionalProperties": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "title": "Tables",
+          "type": "object"
+        }
+      },
+      "required": [
+        "tables",
+        "request"
+      ],
+      "title": "WorkbenchAppPriceResponse",
+      "type": "object"
+    },
+    "WorkbenchAppReleaseResponse": {
+      "description": "The underwriter app's release, and who the host signed in.",
+      "properties": {
+        "created_at": {
+          "title": "Created At",
+          "type": "string"
+        },
+        "form_revision": {
+          "title": "Form Revision",
+          "type": "string"
+        },
+        "haute_version": {
+          "title": "Haute Version",
+          "type": "string"
+        },
+        "host": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Host"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "pipeline_name": {
+          "title": "Pipeline Name",
+          "type": "string"
+        },
+        "principal": {
+          "title": "Principal",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "form_revision",
+        "pipeline_name",
+        "haute_version",
+        "created_at",
+        "host",
+        "principal"
+      ],
+      "title": "WorkbenchAppReleaseResponse",
+      "type": "object"
+    },
     "WorkbenchColumn": {
       "additionalProperties": false,
       "description": "A column of a table: its name in the frame and its type.",
@@ -15135,6 +15232,15 @@
     "WarehouseListResponse": {
       "$ref": "#/$defs/WarehouseListResponse"
     },
+    "WorkbenchAppFormResponse": {
+      "$ref": "#/$defs/WorkbenchAppFormResponse"
+    },
+    "WorkbenchAppPriceResponse": {
+      "$ref": "#/$defs/WorkbenchAppPriceResponse"
+    },
+    "WorkbenchAppReleaseResponse": {
+      "$ref": "#/$defs/WorkbenchAppReleaseResponse"
+    },
     "WorkbenchFormResponse": {
       "$ref": "#/$defs/WorkbenchFormResponse"
     },
@@ -15233,6 +15339,9 @@
     "WorkbenchTestQuoteWriteResponse",
     "WorkbenchTestQuoteOpenResponse",
     "WorkbenchTestQuoteCompareResponse",
+    "WorkbenchAppReleaseResponse",
+    "WorkbenchAppFormResponse",
+    "WorkbenchAppPriceResponse",
     "SessionStatusResponse",
     "BrowseFilesResponse",
     "ModelFileInspectionResponse",
@@ -15363,7 +15472,10 @@
       "WorkbenchTestQuotesResponse",
       "WorkbenchTestQuoteWriteResponse",
       "WorkbenchTestQuoteOpenResponse",
-      "WorkbenchTestQuoteCompareResponse"
+      "WorkbenchTestQuoteCompareResponse",
+      "WorkbenchAppReleaseResponse",
+      "WorkbenchAppFormResponse",
+      "WorkbenchAppPriceResponse"
     ]
   }
 }

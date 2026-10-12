@@ -58,6 +58,11 @@ def _seed_frontend_inputs(root: Path) -> Path:
     (frontend / "package.json").write_text('{"private": true}\n', encoding="utf-8")
     (frontend / "package-lock.json").write_text('{"lockfileVersion": 3}\n', encoding="utf-8")
     (frontend / "vite.config.ts").write_text("export default {}\n", encoding="utf-8")
+    (frontend / "app.html").write_text(
+        '<div id="root"></div><script type="module" src="/src/app/entry.tsx"></script>',
+        encoding="utf-8",
+    )
+    (frontend / "vite.app.config.ts").write_text("export default {}\n", encoding="utf-8")
     (frontend / "tsconfig.json").write_text(
         '{"files":[],"references":[{"path":"./tsconfig.app.json"},'
         '{"path":"./tsconfig.node.json"}]}\n',
@@ -104,6 +109,18 @@ def _write_coherent_bundle(
                 },
             }
         ),
+        encoding="utf-8",
+    )
+    # The underwriter app's page, built apart under static/app with its own manifest.
+    app = static / "app"
+    (app / "assets").mkdir(parents=True, exist_ok=True)
+    (app / "app.html").write_text(
+        '<!doctype html><script type="module" src="/assets/app.js"></script>',
+        encoding="utf-8",
+    )
+    (app / "assets" / "app.js").write_text("export default 1\n", encoding="utf-8")
+    (app / "manifest.json").write_text(
+        json.dumps({"app.html": {"file": "assets/app.js", "isEntry": True}}),
         encoding="utf-8",
     )
     if record_inputs:
@@ -233,6 +250,8 @@ def test_explicit_build_rejects_inputs_changed_while_vite_runs(
         "frontend/public/vite.svg",
         "frontend/src/main.tsx",
         "frontend/vite.config.ts",
+        "frontend/app.html",
+        "frontend/vite.app.config.ts",
         "frontend/tsconfig.node.json",
         "frontend/.npmrc",
         "frontend/package.json",
@@ -456,6 +475,22 @@ def test_validation_accepts_a_coherent_output_graph_and_matching_fingerprint(
     _write_coherent_bundle(module, tmp_path)
 
     _hook(module, tmp_path).initialize("standard", {})
+
+
+@pytest.mark.parametrize("missing", ["app.html", "manifest.json", "assets/app.js"])
+def test_validation_rejects_a_build_without_the_underwriter_apps_page(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    missing: str,
+) -> None:
+    module = _load_hatch_build(monkeypatch)
+    _seed_frontend_inputs(tmp_path)
+    static, _ = _write_coherent_bundle(module, tmp_path)
+    (static / "app" / missing).unlink()
+
+    with pytest.raises(RuntimeError) as refused:
+        _hook(module, tmp_path).initialize("standard", {})
+    assert "haute/static/app" in str(refused.value).replace("\\", "/")
 
 
 def test_readiness_ignores_navigation_links_that_are_not_asset_references(

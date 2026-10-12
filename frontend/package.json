@@ -9,7 +9,8 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && vite build --config vite.app.config.ts",
+    "dev:app": "vite --config vite.app.config.ts",
     "analyze:bundle": "tsc -b && vite build --sourcemap && node scripts/analyze-bundle-sourcemaps.mjs",
     "generate:contracts": "cd .. && uv run python scripts/generate_api_contracts.py && cd frontend && node scripts/generate-api-contracts.mjs",
     "check:contracts": "node --test scripts/generate-api-contracts.test.mjs && node scripts/generate-api-contracts.mjs --check",

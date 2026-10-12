@@ -9,7 +9,7 @@ import { create } from "zustand"
 import { apiErrorMessage } from "../api/errors"
 import type { FormSpec, WorkbenchTablesResponse } from "../api/types"
 import { fetchWorkbenchFormTables } from "../api/workbench"
-import { pricingBasis } from "../utils/workbenchForm"
+import { pricingBasis, type SampleRow } from "../utils/workbenchForm"
 import type { PricedSample } from "../utils/workbenchTables"
 import useWorkbenchFormStore from "./useWorkbenchFormStore"
 
@@ -30,6 +30,13 @@ export interface PricedValues extends PricedSample {
    */
   sample: Readonly<Record<string, unknown>>
 }
+
+/**
+ * Prices a quote typed into a form's sheets in place of the pipeline open in the editor:
+ * the underwriter app's, through its own route. Preview's quote is priced through it when
+ * one is set.
+ */
+export type QuotePricer = (form: FormSpec, quote: Record<string, SampleRow[]>) => Promise<PricedValues>
 
 /** A priced sample, with the basis (the schema and the sample) it was priced for. */
 export interface SamplePrice extends PricedValues {
@@ -55,6 +62,9 @@ interface WorkbenchPricingState {
   /** The view host's fixed pricers while the view shows, for test quotes; null otherwise. */
   snapshot: Snapshot | null
   setSnapshot: (snapshot: Snapshot | null) => void
+  /** The quote pricer the host set, which Preview's quote is priced through; null for the pipeline's. */
+  quotePricer: QuotePricer | null
+  setQuotePricer: (quotePricer: QuotePricer | null) => void
   /** What the last pricing gave; output columns show it, dimmed once the basis has moved on. */
   price: SamplePrice | null
   /** Why the last pricing failed, until one succeeds. */
@@ -79,6 +89,8 @@ const useWorkbenchPricingStore = create<WorkbenchPricingState>()((set, get) => (
   pricer: null,
   snapshot: null,
   setSnapshot: (snapshot) => set({ snapshot }),
+  quotePricer: null,
+  setQuotePricer: (quotePricer) => set({ quotePricer }),
   price: null,
   error: null,
   pricing: false,
