@@ -904,16 +904,41 @@ Out of scope:
   keyed into, by its revision, the form's canonical text kept once for every quote that
   names it. A new revision names the one it follows and is refused, with nothing
   written, when the quote has moved on since. The owner is recorded and the list of
-  quotes can be read for one owner; who may see whose quotes is decided with the app. A
+  quotes can be read for one owner. A quote the underwriter app keeps has the app's
+  record beside it, which a test quote never has: a reference, `Q-` and six digits,
+  taken from a counter in the transaction that creates the quote, so two quotes made at
+  once take two and one whose creation fails keeps none; the title, summary fields and
+  headline the app's list shows and the text it is searched by, projected from the
+  newest revision; who the quote is assigned to, at first who made it; whether its
+  newest revision is priced; the revision it was marked final at, by whom and when;
+  when it was archived and by whom; a handover note; the quote and revision it was made
+  from and how, a duplicate, a renewal or an alternative; who saved it last and when;
+  and a version every change moves. Each change names the version it was made on and is
+  refused, with nothing written, when the quote has moved on, naming who moved it; each
+  writes an event of who did what and when in the transaction that makes it; a save
+  carries an operation key, and one repeated with a key already written answers what
+  that key wrote and writes nothing more. A final quote takes no new revision until it
+  is reopened, giving a reason, its final kept among its events; marking one final
+  needs its newest revision priced on the running release; an archived quote takes no
+  change but being restored, and a final one stays final through both. The app's lists
+  are read a page at a time: the quotes assigned to the signed-in underwriter, the
+  team's, or the archive, of one stage when asked, matching every word searched for in
+  the reference, name, title or summary fields, newest saved first, newest reference
+  first or by title, with each list's count and each stage's. When the setting the
+  list is projected by changes, each quote is projected again from its newest revision
+  without moving its version, its time saved or its events. A
   saved quote opens on its own form, and its values are carried onto the current form
   through the stable ids: a renamed table or column keeps its values, and each filled
   value whose table or column the current form no longer has is named as
   `table.column`, by the names it was saved under. A database is brought to the schema by
   the store's migrations, numbered and shipped with Haute, so a Haute upgrade carries
-  them; the store refuses to open a database that is not at the newest, naming what to
-  run, and nothing migrates as it opens. A migration keeps the previous release's reads
-  and writes working: a column it adds is nullable or has a default, and it drops
-  nothing. A SQLite store keeps foreign keys on and its rollback journal, never
+  them; the store refuses to open a database behind the newest, naming what to run, and
+  nothing migrates as it opens. A migration keeps the previous release's reads and
+  writes working: a column it adds is nullable or has a default, and it drops nothing;
+  and the database records the oldest schema whose Haute can still use it, so a Haute
+  behind the database's schema opens it when its own newest is at least that, as a
+  release rolled back after a migration does, and refuses it, naming the upgrade, when
+  it is not. A SQLite store keeps foreign keys on and its rollback journal, never
   write-ahead logging, so the file stands alone between writes.
 
 ## Design rationale
