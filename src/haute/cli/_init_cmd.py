@@ -570,6 +570,13 @@ def handle_init(config: InitConfig) -> None:
         starter_test_quote(),
         encoding="utf-8",
     )
+    if config.workbench:
+        # The test quotes an analyst keeps in Preview: empty, at the store's newest schema,
+        # so a milestone's sweep tracks the file from the start.
+        from haute._quote_store import migrate_store, store_url
+        from haute._test_quotes import project_test_quotes_path
+
+        migrate_store(store_url(project_test_quotes_path(project_dir)))
     (tests_dir / "test_pipeline.py").write_text(
         starter_test(name),
         encoding="utf-8",
@@ -649,6 +656,7 @@ def handle_init(config: InitConfig) -> None:
     if config.workbench:
         click.echo("  haute.toml            - project, deploy, safety, CI & workbench config")
         click.echo("  forms/form.json       - the workbench's blank form")
+        click.echo("  tests/quotes/test_quotes.sqlite - the test quotes kept in Preview")
     else:
         click.echo("  haute.toml            - project, deploy, safety & CI config")
     click.echo(f"  .env.example         - {target} credentials template")

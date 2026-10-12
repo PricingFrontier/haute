@@ -236,6 +236,62 @@ def _first_mismatch(actual: Any, expected: Any, tolerance_pct: float) -> _Mismat
     return _Mismatch("", actual, expected)
 
 
+class ResponseChange(NamedTuple):
+    """One place a priced response differs from the response it was accepted with."""
+
+    #: Into the response: ``pricing.premium``, ``items[1].value``, ``items[3]``.
+    path: str
+    #: ``changed`` where both hold a value, ``added`` where the priced response alone does,
+    #: ``removed`` where the accepted one alone does.
+    kind: str
+    accepted: Any
+    priced: Any
+
+
+def response_changes(priced: Any, accepted: Any, tolerance_pct: float) -> list[ResponseChange]:
+    """Every place *priced* differs from *accepted*, in the accepted response's order.
+
+    The walk is :func:`_first_mismatch`'s, into objects and lists, a leaf compared by
+    :func:`_expected_value_matches` within *tolerance_pct*; but both sides are whole
+    responses, so a key or a list item on one side only is a difference too.
+    """
+    changes: list[ResponseChange] = []
+    _walk_changes(priced, accepted, tolerance_pct, "", changes)
+    return changes
+
+
+def _walk_changes(
+    priced: Any, accepted: Any, tolerance_pct: float, path: str, changes: list[ResponseChange]
+) -> None:
+    if isinstance(accepted, dict) and isinstance(priced, dict):
+        for key, value in accepted.items():
+            place = f"{path}.{key}" if path else str(key)
+            if key in priced:
+                _walk_changes(priced[key], value, tolerance_pct, place, changes)
+            else:
+                changes.append(ResponseChange(place, "removed", value, None))
+        changes.extend(
+            ResponseChange(f"{path}.{key}" if path else str(key), "added", None, value)
+            for key, value in priced.items()
+            if key not in accepted
+        )
+        return
+    if isinstance(accepted, list) and isinstance(priced, list):
+        for index, (item, wanted) in enumerate(zip(priced, accepted, strict=False)):
+            _walk_changes(item, wanted, tolerance_pct, f"{path}[{index}]", changes)
+        changes.extend(
+            ResponseChange(f"{path}[{index}]", "removed", wanted, None)
+            for index, wanted in enumerate(accepted[len(priced) :], start=len(priced))
+        )
+        changes.extend(
+            ResponseChange(f"{path}[{index}]", "added", None, item)
+            for index, item in enumerate(priced[len(accepted) :], start=len(accepted))
+        )
+        return
+    if not _expected_value_matches(priced, accepted, tolerance_pct):
+        changes.append(ResponseChange(path, "changed", accepted, priced))
+
+
 def _format_expected_mismatch(
     *,
     row_index: int,

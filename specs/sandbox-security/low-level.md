@@ -77,7 +77,7 @@
 - **`GITIGNORE_GUARD_ENTRIES: tuple[str, ...]`** (`_gitignore_guard.py`) — the
   ordered, fixed set of paths every project's `.gitignore` must contain:
   `.env`, `.haute/`, `impact_report.md`, `.haute_cache/`, `mlruns/`, `data/`,
-  `.venv/`.
+  `.venv/`, `*.sqlite-journal`, `*.sqlite-wal`, `*.sqlite-shm`.
 
 ## Control flow
 

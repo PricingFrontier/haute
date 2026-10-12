@@ -2614,3 +2614,72 @@ export interface WorkbenchFormSaveResponse {
   revision: string | null;
   warnings: string[];
 }
+/**
+ * The project's test quotes, the most recently saved first.
+ */
+export interface WorkbenchTestQuotesResponse {
+  quotes: WorkbenchTestQuoteSummary[];
+}
+/**
+ * A test quote as the list shows it: its newest revision's number, saver and time.
+ */
+export interface WorkbenchTestQuoteSummary {
+  id: string;
+  name: string;
+  number: number;
+  priced: boolean;
+  saved_at: string;
+  saved_by: string;
+}
+/**
+ * A test-quote write and its capture on the save ledger.
+ *
+ * ``quote`` is the test quote as written, null after a delete; the capture fields mean what
+ * they mean on the form save's response.
+ */
+export interface WorkbenchTestQuoteWriteResponse {
+  git_sha: string | null;
+  identity_required: boolean;
+  quote: WorkbenchTestQuoteSummary | null;
+  warnings: string[];
+}
+/**
+ * A test quote's newest revision, its values carried onto the view's form.
+ *
+ * ``dropped`` names each filled value with no place on that form, ``table.column`` by the
+ * names it was saved under; ``response`` is the response the quote was accepted with.
+ */
+export interface WorkbenchTestQuoteOpenResponse {
+  dropped: string[];
+  id: string;
+  name: string;
+  number: number;
+  response: {
+    [k: string]: unknown;
+  } | null;
+  values: {
+    [k: string]: {
+      [k: string]: string | boolean;
+    }[];
+  };
+}
+/**
+ * Every place a run's response differs from the revision it read; none: unchanged.
+ */
+export interface WorkbenchTestQuoteCompareResponse {
+  changes: WorkbenchTestQuoteChange[];
+  number: number;
+}
+/**
+ * One place the priced response differs from the accepted one.
+ */
+export interface WorkbenchTestQuoteChange {
+  accepted: {
+    [k: string]: unknown;
+  };
+  kind: 'changed' | 'added' | 'removed';
+  path: string;
+  priced: {
+    [k: string]: unknown;
+  };
+}

@@ -20,6 +20,8 @@ class TestGuardEntryList:
         assert "mlruns/" in GITIGNORE_GUARD_ENTRIES
         assert "impact_report.md" in GITIGNORE_GUARD_ENTRIES
         assert ".venv/" in GITIGNORE_GUARD_ENTRIES  # matches the *.py seed pathspec otherwise
+        # SQLite's side files never reach git beside a committed test-quote file.
+        assert {"*.sqlite-journal", "*.sqlite-wal", "*.sqlite-shm"} <= set(GITIGNORE_GUARD_ENTRIES)
 
     def test_stable_layer_json_is_not_ignored(self) -> None:
         """<pipeline>.haute.json is stable-layer (tracked) — must NOT be ignored."""

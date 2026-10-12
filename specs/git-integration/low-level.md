@@ -97,7 +97,9 @@ In steady state a clone-state read performs one marker `stat` plus cache lookup,
 repository with no callers leaves no permanent registry entry.
 
 **Gitignore guards** (`_gitignore_guard.py`): `GITIGNORE_GUARD_ENTRIES` is exactly
-`.env`, `.haute/`, `impact_report.md`, `.haute_cache/`, `mlruns/`, `data/`, and `.venv/`.
+`.env`, `.haute/`, `impact_report.md`, `.haute_cache/`, `mlruns/`, `data/`, `.venv/`, and
+SQLite's side files `*.sqlite-journal`, `*.sqlite-wal` and `*.sqlite-shm`, which never sit
+beside a committed test-quote file ([workbench](../workbench/high-level.md)).
 `ensure_gitignore_guards(project_dir)` creates `.gitignore` with those lines when absent or
 appends only missing exact lines under a `# Haute` block. Existing non-UTF-8 bytes are decoded
 with replacement for membership testing. It deliberately does not ignore `*.haute.json`,

@@ -54,6 +54,8 @@ In scope:
   editor keeps current and shows, and whose ports take the frames that fill them.
 - The quote store: saved quotes and their revisions, each with the form it was keyed
   into, on a SQLite file, its schema and the migrations that bring a database to it.
+- The test quotes an analyst keeps in Preview, in the project's test-quote file, and the
+  routes that save, list, open, compare, accept and delete them.
 
 Out of scope:
 
@@ -69,8 +71,9 @@ Out of scope:
   is those sheets inside the builder, priced on the pipeline open in the editor.
 - Where a deployment's quote store is configured and migrated, the server databases it
   will run on, and the app's Save, Open and list of quotes
-  ([WB-10](../roadmap/workbench.md#wb-10--the-quote-store)); the test quotes kept in
-  Preview ([WB-12](../roadmap/workbench.md#wb-12--test-quotes-in-preview)).
+  ([WB-10](../roadmap/workbench.md#wb-10--the-quote-store)); the test-quote file's
+  history in git and its check in CI
+  ([WB-12](../roadmap/workbench.md#wb-12--test-quotes-in-preview)).
 - `haute init`'s other scaffolding ([cli](../cli/high-level.md),
   [pipeline-config](../pipeline-config/high-level.md)).
 
@@ -524,6 +527,44 @@ Out of scope:
   answer to a pricing still on its way is dropped, as one is once the view has left.
   Ctrl/Cmd+S still saves the project in Preview and Ctrl/Cmd+1 fits the sheet; the sheet's
   editing keys and undo do nothing.
+- **Test quotes.** An analyst keeps test quotes in Preview, in the project's test-quote
+  file: `test_quotes.sqlite` in the test-quote directory (`[test_quotes] dir` of
+  `haute.toml`, `tests/quotes` when absent), held by the quote store. The toolbar's Test
+  quotes, in Preview, opens a panel beside the sheets that lists them, the most recently
+  saved first:
+  - **Saved.** The quote on the sheets, under a name, with its values, the request built
+    from them as Price builds it (the cells the sheets hide left out), and the response its
+    pricing gave as a deployed pipeline answers it: each output table under its name, a
+    one-row table as an object of its columns and a many-row table as a list of them. A
+    response that Preview cut short, past its row or cell limit, is refused naming the
+    table and its rows, and so is a one-row table priced with other than one row. The form
+    as the view holds it is kept with the quote.
+  - **Opened.** A test quote's values replace the quote on the sheets, carried onto the
+    form as the view holds it by the stable ids; each filled value with no place on it is
+    named, by the names it was saved under.
+  - **Run.** Run prices every test quote, or those ticked, one request each, on the
+    pipeline, the data source and the form as they were when the run started, and compares
+    each answer with the response the quote was accepted with: a number matches within one
+    part in a billion and anything else exactly, walked into the response's tables, every
+    difference listed by its place (`table.column`, `table[row].column`), the accepted
+    value beside the new, a value on one side only as added or removed. Each quote shows
+    unchanged, changed or failed with its reason, and a change to the pipeline, the source
+    or the form after the run started marks the run's results stale.
+  - **Accepted.** Accepting a changed quote saves its new response as a new revision,
+    after the revision the run read; a quote saved since is refused, with nothing written,
+    to be run again.
+  - **Deleted.** Deleting a test quote, after a confirmation, removes it and its revisions.
+
+  Every write to the file runs under the project's save lock and the repository's lock,
+  which a commit, a branch switch and a merge hold, with the file opened for that write
+  alone and closed before the lock is let go, and is captured on the save ledger as a save
+  of the file, so a commit or a switch never meets the file half-written or open. A read
+  holds the repository's lock alone. A file an older Haute wrote is brought to the newest
+  schema by the next write and refused by a read until then, naming the save that brings
+  it up to date; a project with no file lists no test quotes, and a read creates none.
+  `haute init --workbench` writes the file empty, at the newest schema, so a milestone's
+  sweep tracks it from the start, and the `.gitignore` guards keep SQLite's journal files
+  out of the repository.
 - **Shown when.** A sheet, a section or a component with conditions shows only while they
   hold on the values typed into the sheets, the sample while building and the quote in
   Preview; a section on a sheet that does not show does not show either, nor does a

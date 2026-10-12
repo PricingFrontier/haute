@@ -23,7 +23,17 @@ from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from pydantic import TypeAdapter, ValidationError
-from sqlalchemy import Connection, Engine, create_engine, event, func, insert, select, update
+from sqlalchemy import (
+    Connection,
+    Engine,
+    create_engine,
+    delete,
+    event,
+    func,
+    insert,
+    select,
+    update,
+)
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from haute._quote_store._tables import QUOTE_FORMS, QUOTE_REVISIONS, QUOTES, VERSION_TABLE
@@ -81,13 +91,15 @@ class QuoteRevision:
 
 @dataclass(frozen=True, slots=True)
 class QuoteSummary:
-    """A quote as a list shows it: its newest revision's number, time and whether priced."""
+    """A quote as a list shows it: its newest revision's number, saver, time and whether
+    it was priced."""
 
     id: str
     name: str
     owner: str
     created_at: datetime
     latest: int
+    saved_by: str
     saved_at: datetime
     priced: bool
 
@@ -306,6 +318,7 @@ class QuoteStore:
         query = (
             select(
                 QUOTES,
+                QUOTE_REVISIONS.c.saved_by,
                 QUOTE_REVISIONS.c.saved_at,
                 QUOTE_REVISIONS.c.response.is_not(None).label("priced"),
             )
@@ -327,11 +340,25 @@ class QuoteStore:
                 owner=row["owner"],
                 created_at=row["created_at"],
                 latest=row["latest"],
+                saved_by=row["saved_by"],
                 saved_at=row["saved_at"],
                 priced=bool(row["priced"]),
             )
             for row in rows
         ]
+
+    def delete(self, quote_id: str) -> None:
+        """Remove quote *quote_id* and its revisions; the forms they name stay kept.
+
+        Raises :class:`QuoteNotFoundError` when there is no such quote.
+        """
+        with self._engine.begin() as connection:
+            connection.execute(
+                delete(QUOTE_REVISIONS).where(QUOTE_REVISIONS.c.quote_id == quote_id)
+            )
+            removed = connection.execute(delete(QUOTES).where(QUOTES.c.id == quote_id))
+            if removed.rowcount != 1:
+                raise QuoteNotFoundError(f"The quote store holds no quote {quote_id!r}.")
 
     def _write_revision(
         self,

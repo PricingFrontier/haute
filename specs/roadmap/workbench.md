@@ -353,40 +353,41 @@ for the save rather than taken from Preview's display, which stops at a row and 
 limit; open one back onto the sheets; and run them all, or a selection, against the pipeline
 open in the editor, each a request of its own answered in full, with each quote's new tables
 beside its accepted ones, the changed values marked, and a change accepted where it was
-meant. A run prices on one basis taken when it starts, the editor's graph, the data source
-and the form, and the selected quotes' revisions; its results keep that basis and are marked
-stale once the editor changes, and accepting a result never overwrites a quote or an
-accepted output changed since the run. A response too large to keep is refused, naming its
-size, rather than kept cut. The comparison is deploy's, the same tolerance and the same walk
-into the response's tables, so a change Preview shows is a change CI fails on. The file in
-git: a commit takes a consistent snapshot of it, with the store's writes held while the
-snapshot is taken, so a Save or an Accept waits, and the commit fails naming the file if it
-cannot get one; its journal and write-ahead files are ignored; the server closes the file
-before a checkout or a merge replaces it and opens it again after, so a running
-`haute serve` never writes into a file git has swapped; the specification settles the lock;
-tracks it from `haute init --workbench`, because a milestone Commit sweeps tracked files
-only; registers a text diff of its quotes for local diffs; and merges it quote by quote when
-an analyst's branch takes `main`, flagging a quote changed on both sides. The provider's
-merge button cannot merge a binary file, so a pull request in conflict over it is brought up
-to date locally, where that merge runs. In CI, Validate re-prices every test quote against
-its accepted outputs and posts on the pull request a summary of the quotes added, changed
-and removed and of the outputs that moved, since the provider shows the file as binary. For
-a workbench project the file stands where the hand-written test-quote files stand now, each
+meant; and delete one that is no longer wanted. A run prices on one basis taken when it
+starts, the editor's graph, the data source and the form, and the selected quotes'
+revisions; its results keep that basis and are marked stale once the editor changes, and
+accepting a result never overwrites a quote or an accepted output changed since the run. A
+response too large to keep is refused, naming its size, rather than kept cut. The comparison
+is deploy's, the same tolerance and the same walk into the response's tables, so a change
+Preview shows is a change CI fails on. The file in git: a commit takes a consistent snapshot
+of it, with the store's writes held while the snapshot is taken, so a Save or an Accept
+waits, and the commit fails naming the file if it cannot get one; its journal and
+write-ahead files are ignored; the server closes the file before a checkout or a merge
+replaces it and opens it again after, so a running `haute serve` never writes into a file
+git has swapped; the specification settles the lock; tracks it from
+`haute init --workbench`, because a milestone Commit sweeps tracked files only; registers a
+text diff of its quotes for local diffs; and merges it quote by quote when an analyst's
+branch takes `main`, flagging a quote changed on both sides. The provider's merge button
+cannot merge a binary file, so a pull request in conflict over it is brought up to date
+locally, where that merge runs. In CI, Validate re-prices every test quote against its
+accepted outputs and posts on the pull request a summary of the quotes added, changed and
+removed and of the outputs that moved, since the provider shows the file as binary. For a
+workbench project the file stands where the hand-written test-quote files stand now, each
 quote an `input` with the outputs `expected` of it, as those files hold them.
 
 **Acceptance:** An analyst saves the quote on the sheets as a test quote, reopens it after
 restarting `haute serve`, changes a rate, runs all the test quotes and sees which outputs
-moved and by how much, accepts one change and commits; the file goes to the pull request
-with the rate change, and the summary on the pull request names the quotes whose outputs
-moved; CI fails on an output that moved beyond tolerance and was not accepted; two analysts
-who added different quotes on separate branches merge both without a conflict, and two who
-changed the same quote are told so; a rate edit while a run is under way leaves every result
-priced on the rates the run started with and marks them stale, and accepting a result for a
-quote edited since the run is refused; a test quote whose response passes Preview's display
-limits is saved and compared in full; a Save or an Accept during a commit waits, or the
-commit fails naming the file, and no torn file and no journal or write-ahead file is ever
-committed; a checkout or a merge with `haute serve` open leaves the server reading the new
-file.
+moved and by how much, accepts one change, deletes another quote and commits; the file goes
+to the pull request with the rate change, and the summary on the pull request names the
+quotes whose outputs moved; CI fails on an output that moved beyond tolerance and was not
+accepted; two analysts who added different quotes on separate branches merge both without a
+conflict, and two who changed the same quote are told so; a rate edit while a run is under
+way leaves every result priced on the rates the run started with and marks them stale, and
+accepting a result for a quote edited since the run is refused; a test quote whose response
+passes Preview's display limits is saved and compared in full; a Save or an Accept during a
+commit waits, or the commit fails naming the file, and no torn file and no journal or
+write-ahead file is ever committed; a checkout or a merge with `haute serve` open leaves the
+server reading the new file.
 
 **Dependencies:** WB-10 (the store and its SQLite backend) and WB-08 for the half that runs
 in CI.

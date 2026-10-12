@@ -822,6 +822,18 @@ class TestInitWorkbench:
         runner.invoke(cli, ["init", "--force", "--ci", ci], catch_exceptions=False)
         assert entry not in (tmp_path / workflow).read_text(encoding="utf-8")
 
+    def test_writes_the_test_quote_file_empty_at_the_newest_schema(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from haute._quote_store import open_store, store_url
+
+        monkeypatch.chdir(tmp_path)
+        runner.invoke(cli, ["init", "--workbench"], catch_exceptions=False)
+
+        path = tmp_path / "tests" / "quotes" / "test_quotes.sqlite"
+        with open_store(store_url(path)) as store:
+            assert store.quotes() == []
+
     def test_a_plain_init_writes_neither(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
@@ -833,6 +845,7 @@ class TestInitWorkbench:
             assert "workbench" not in tomllib.load(fh)
         assert not (tmp_path / "forms").exists()
         assert "forms/form.json" not in result.output
+        assert not (tmp_path / "tests" / "quotes" / "test_quotes.sqlite").exists()
 
     def test_force_reinit_keeps_the_table_only_when_asked_again(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
