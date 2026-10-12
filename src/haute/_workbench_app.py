@@ -25,9 +25,10 @@ from starlette.middleware.base import RequestResponseEndpoint
 
 from haute._execution_admission import ExecutionAdmissionError
 from haute._execution_context import ExecutionMemoryLimitExceededError
-from haute._hashing import content_hash_bytes
+from haute._hashing import content_hash, content_hash_bytes
 from haute._json_safe import to_json_safe
 from haute._output_assembler import render_output_document
+from haute._sandbox import set_project_root
 from haute._test_quotes import quote_request
 from haute._types import PipelineGraph
 from haute._workbench_form import FormSpec, form_revision, render_form
@@ -83,19 +84,39 @@ class Release:
     host: str | None
 
 
+#: What of a bundle's manifest prices a quote, and so names the release; when, by whom, from
+#: which file and for which target it was built do not.
+_PRICING_KEYS = (
+    "haute_version",
+    "input_node_ids",
+    "output_node_id",
+    "output_fields",
+    "input_schema",
+    "output_schema",
+    "pruned_graph",
+)
+
+
+def _release_id(release_dir: Path, shipped: bytes, manifest: dict[str, Any]) -> str:
+    """The form as shipped, what of the manifest prices a quote and each artifact's bytes, so
+    the same project builds the same id and a retrained model under the same name another."""
+    pricing = {key: manifest.get(key) for key in _PRICING_KEYS}
+    pricing["artifacts"] = {
+        name: content_hash(release_dir / path)
+        for name, path in sorted(manifest["artifacts"].items())
+    }
+    return content_hash_bytes(shipped + json.dumps(pricing, sort_keys=True).encode("utf-8"))[:12]
+
+
 def write_release(release_dir: Path, form: FormSpec, host: str | None) -> Release:
     """Beside the bundle already in *release_dir*: the form without its sample, what the
-    release is and the entry point. The id is taken from the form and the bundle, so the same
-    project builds the same id."""
+    release is and the entry point."""
     shipped = render_form(form.model_copy(update={"sample": {}})).encode("utf-8")
     # Written as rendered, so the file's revision is the one the release records.
     (release_dir / FORM_FILE).write_bytes(shipped)
     manifest = json.loads((release_dir / MANIFEST_FILE).read_text(encoding="utf-8"))
-    # When and by whom it was built are left out, so the same project builds the same id.
-    contents = {key: manifest[key] for key in manifest.keys() - {"created_at", "created_by"}}
-    digest = content_hash_bytes(shipped + json.dumps(contents, sort_keys=True).encode("utf-8"))
     release = Release(
-        id=digest[:12],
+        id=_release_id(release_dir, shipped, manifest),
         form_revision=form_revision(shipped),
         pipeline_name=str(manifest.get("pipeline_name") or ""),
         haute_version=str(manifest.get("haute_version") or ""),
@@ -106,6 +127,68 @@ def write_release(release_dir: Path, form: FormSpec, host: str | None) -> Releas
     (release_dir / RELEASE_FILE).write_bytes(described.encode("utf-8"))
     (release_dir / "app.py").write_bytes(APP_ENTRY.encode("utf-8"))
     return release
+
+
+def build_release(project_dir: Path, release_dir: Path) -> Release:
+    """Build the project's release into *release_dir*: its pipeline resolved, validated and
+    bundled as ``haute deploy`` does it, test quotes included, then the release beside it.
+
+    *release_dir* is replaced when it holds an earlier release and refused when it holds
+    anything else. Raises :class:`WorkbenchAppError` for a project without a workbench, sheets
+    never saved, a directory that is not a release, or a pipeline that does not validate.
+    """
+    import shutil
+
+    from haute._project import resolve_pipeline_file
+    from haute._workbench_config import read_workbench_config
+    from haute._workbench_form import read_form_document
+    from haute.deploy._config import DeployConfig, resolve_config
+    from haute.deploy._container import write_bundle
+    from haute.deploy._validators import validate_deploy
+    from haute.errors import DeployError
+
+    project_dir = project_dir.resolve()
+    set_project_root(project_dir)
+    config = read_workbench_config(project_dir)
+    if not config.enabled:
+        raise WorkbenchAppError(
+            "This project has no workbench: add [workbench] enabled = true to haute.toml."
+        )
+    document = read_form_document(config)
+    if document.revision is None:
+        raise WorkbenchAppError(f"{config.form} has never been saved: save the sheets first.")
+    if release_dir.exists() and any(release_dir.iterdir()):
+        if not (release_dir / RELEASE_FILE).is_file():
+            raise WorkbenchAppError(
+                f"{release_dir} holds files that are not a release: name an empty directory."
+            )
+        shutil.rmtree(release_dir)
+
+    deploy_config = DeployConfig.from_toml(project_dir / "haute.toml")
+    deploy_config.pipeline_file = resolve_pipeline_file(project_dir)
+    resolved = resolve_config(deploy_config)
+    try:
+        try:
+            results = validate_deploy(resolved)
+        except DeployError as exc:
+            context = exc.context if isinstance(exc.context, dict) else {}
+            details = [
+                *(context.get("structural_errors") or []),
+                *(context.get("test_quote_errors") or []),
+            ] or [str(exc)]
+            raise WorkbenchAppError(
+                "The pipeline did not validate:\n" + "\n".join(f"  - {line}" for line in details)
+            ) from exc
+        failed = [result for result in results if result["status"] != "ok"]
+        if failed:
+            raise WorkbenchAppError(
+                "Test quotes failed:\n"
+                + "\n".join(f"  - {result['file']}: {result['error']}" for result in failed)
+            )
+        write_bundle(resolved, release_dir)
+    finally:
+        resolved.close()
+    return write_release(release_dir, document.spec, config.app_host)
 
 
 def _read_json(path: Path) -> Any:
@@ -123,13 +206,19 @@ def read_release(release_dir: Path) -> tuple[Release, FormSpec, dict[str, Any]]:
     return release, form, manifest
 
 
-def create_app(release_dir: Path, *, local_principal: str | None = None) -> FastAPI:
+def create_app(
+    release_dir: Path, *, local_principal: str | None = None, static_dir: Path | None = None
+) -> FastAPI:
     """The app serving the release in *release_dir*.
 
     *local_principal*, given by ``haute app serve`` on an analyst's machine, signs every
-    request in as that name; otherwise the release's host says who is signed in.
+    request in as that name; otherwise the release's host says who is signed in. The page and
+    its assets come from *static_dir*, Haute's built frontend unless given.
     """
     release, form, manifest = read_release(release_dir)
+    # The pipeline reads what it ships from the release, wherever the host starts the app.
+    set_project_root(release_dir)
+    static = _STATIC if static_dir is None else static_dir
     graph = PipelineGraph.model_validate(manifest["pruned_graph"])
     input_node_ids: list[str] = manifest["input_node_ids"]
     output_node_id: str = manifest["output_node_id"]
@@ -233,7 +322,7 @@ def create_app(release_dir: Path, *, local_principal: str | None = None) -> Fast
 
     @app.get("/", include_in_schema=False)
     async def page() -> Response:
-        built = _STATIC / APP_PAGE
+        built = static / APP_PAGE
         if not built.is_file():
             return JSONResponse(
                 status_code=503,
@@ -241,5 +330,5 @@ def create_app(release_dir: Path, *, local_principal: str | None = None) -> Fast
             )
         return FileResponse(built)
 
-    app.mount("/assets", StaticFiles(directory=_STATIC / "assets", check_dir=False), name="assets")
+    app.mount("/assets", StaticFiles(directory=static / "assets", check_dir=False), name="assets")
     return app

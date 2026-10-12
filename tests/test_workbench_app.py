@@ -18,11 +18,13 @@ from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute._workbench_app import (
     APP_ENTRY,
     EASY_AUTH_NAME,
+    WorkbenchAppError,
+    build_release,
     create_app,
     read_release,
     write_release,
 )
-from haute._workbench_form import FormSpec, form_revision
+from haute._workbench_form import FormSpec, form_revision, render_form
 from haute.deploy._utils import shipped_graph
 from haute.execution import ExecutionProfile
 from tests.test_workbench_routes import POLICY, PRICING, form
@@ -67,10 +69,10 @@ def _graph() -> PipelineGraph:
 
 @pytest.fixture()
 def release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
-    """A release directory holding a bundle as a deploy writes it; call it with a host."""
+    """A release directory holding a bundle as a deploy writes it; call it with a host. The
+    app sets the project root to the release; the root is put back after."""
     original = _get_project_root()
     monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
 
     def build(host: str | None = "azure-container-apps", spec: dict[str, Any] = FORM) -> Path:
         directory = tmp_path / "release"
@@ -128,19 +130,47 @@ def test_a_release_holds_the_form_without_its_sample_what_it_is_and_its_entry(re
 def test_the_release_id_is_taken_from_the_form_and_the_bundle(release: Any) -> None:
     first = read_release(release())[0].id
 
-    # Built again later, by someone else, the same project is the same release.
-    manifest_path = Path("release/deploy_manifest.json")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest.update(created_at="2026-10-13T09:00:00+00:00", created_by="other")
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    write_release(Path("release"), FormSpec.model_validate(FORM), "azure-container-apps")
-    assert read_release(Path("release"))[0].id == first
+    def rebuilt(**changes: Any) -> str:
+        manifest_path = Path("release/deploy_manifest.json")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest.update(changes)
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        return write_release(Path("release"), FormSpec.model_validate(FORM), None).id
+
+    # Built again later, by someone else, from another checkout and for another target, the
+    # same project is the same release.
+    assert (
+        rebuilt(
+            created_at="2026-10-13T09:00:00+00:00",
+            created_by="other",
+            pipeline_file="C:/elsewhere/main.py",
+            target="container",
+        )
+        == first
+    )
 
     # The sample is not shipped, so a different sample is the same release too.
     assert read_release(release(spec={**FORM, "sample": {}}))[0].id == first
 
     renamed = {**FORM, "name": "renamed"}
     assert read_release(release(spec=renamed))[0].id != first
+
+    # A model retrained under the same name is another release.
+    release()
+    model = Path("release/artifacts/model.cbm")
+    model.parent.mkdir()
+    model.write_bytes(b"trained")
+    trained = rebuilt(artifacts={"model": "artifacts/model.cbm"})
+    model.write_bytes(b"retrained")
+    assert rebuilt() not in (first, trained)
+
+
+def test_the_app_reads_what_the_pipeline_ships_from_the_release(release: Any) -> None:
+    directory = release()
+
+    create_app(directory)
+
+    assert _get_project_root() == directory.resolve()
 
 
 # ── Sign-in ───────────────────────────────────────────────────────────────
@@ -267,12 +297,9 @@ def test_a_pricing_the_app_cannot_admit_answers_that_it_is_busy(
 # ── The page ──────────────────────────────────────────────────────────────
 
 
-def test_the_page_is_the_apps_own_built_page(
-    release: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_the_page_is_the_apps_own_built_page(release: Any, tmp_path: Path) -> None:
     static = tmp_path / "static"
-    monkeypatch.setattr(workbench_app, "_STATIC", static)
-    client = _client(release())
+    client = _client(release(), static_dir=static)
 
     unbuilt = client.get("/", headers=SIGNED_IN)
     assert unbuilt.status_code == 503
@@ -284,3 +311,159 @@ def test_the_page_is_the_apps_own_built_page(
     assert client.get("/", headers=SIGNED_IN).text == "<div id=app></div>"
     assert client.get("/assets/app.js", headers=SIGNED_IN).text == "export {}"
     assert client.get("/assets/app.js").status_code == 401
+
+
+# ── Building a project's release ──────────────────────────────────────────
+
+
+def _form_table(
+    tid: str, name: str, role: str, *columns: tuple[str, str], many: bool = False
+) -> dict[str, Any]:
+    return {
+        "id": tid,
+        "name": name,
+        "role": role,
+        "rows": "many" if many else "one",
+        "columns": [
+            {"id": f"c_{column}", "name": column, "type": kind} for column, kind in columns
+        ],
+    }
+
+
+#: The sheets of the pipeline `tests/test_workbench_output.py` prices.
+PROJECT_TABLES = [
+    _form_table("t_policy", "policy", "input", ("state", "str"), ("limit", "int")),
+    _form_table("t_items", "items", "input", ("item_id", "str"), ("value", "float"), many=True),
+    _form_table(
+        "t_pricing",
+        "pricing",
+        "output",
+        ("premium", "float"),
+        ("limit", "float"),
+        ("referral", "str"),
+    ),
+    _form_table(
+        "t_item_prices",
+        "item_prices",
+        "output",
+        ("item_id", "str"),
+        ("premium", "float"),
+        many=True,
+    ),
+]
+PROJECT_VALUES = {
+    "t_policy": [{"c_state": "NY", "c_limit": "1,000"}],
+    "t_items": [{"c_item_id": "A", "c_value": "10"}, {"c_item_id": "B", "c_value": "30"}],
+}
+
+
+@pytest.fixture()
+def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """A workbench project whose sheets price through a generated pipeline, its working
+    directory; the project root is put back after."""
+    from tests.test_workbench_output import _priced, _write
+
+    original = _get_project_root()
+    monkeypatch.chdir(tmp_path)
+    set_project_root(tmp_path)
+    (tmp_path / "haute.toml").write_text(
+        '[project]\nname = "motor"\npipeline = "main.py"\n\n[workbench]\nenabled = true\n\n'
+        '[workbench.app]\nhost = "azure-container-apps"\n',
+        encoding="utf-8",
+    )
+    _write(_priced(), tmp_path, "main")
+    (tmp_path / "forms").mkdir()
+    write_sheets(tmp_path, PROJECT_TABLES)
+    yield tmp_path
+    set_project_root(original)
+
+
+def write_sheets(project: Path, tables: list[dict[str, Any]]) -> None:
+    spec = FormSpec.model_validate({**form(), "name": "motor", "schema": {"tables": tables}})
+    (project / "forms" / "form.json").write_bytes(render_form(spec).encode("utf-8"))
+
+
+def test_a_project_builds_a_release_that_prices_as_its_pipeline(project: Path) -> None:
+    built = build_release(project, project / "build" / "app")
+
+    assert built.host == "azure-container-apps"
+    assert built.pipeline_name == "main"
+    client = _client(project / "build" / "app", local_principal="analyst@example.com")
+    priced = _price(client, PROJECT_VALUES)
+    assert priced.status_code == 200, priced.text
+    assert priced.json()["tables"] == {
+        "pricing": [{"premium": 100.0, "limit": 1000.0, "referral": "none"}],
+        "item_prices": [{"item_id": "A", "premium": 20.0}, {"item_id": "B", "premium": 60.0}],
+    }
+
+    # Built again, into the same directory or another, it is the same release.
+    assert build_release(project, project / "build" / "app").id == built.id
+    assert build_release(project, project / "elsewhere").id == built.id
+
+
+def test_a_release_is_refused_for_what_the_project_cannot_ship(project: Path) -> None:
+    def refused() -> str:
+        with pytest.raises(WorkbenchAppError) as caught:
+            build_release(project, project / "build" / "app")
+        return str(caught.value)
+
+    other = project / "build" / "app"
+    other.mkdir(parents=True)
+    (other / "notes.txt").write_text("mine", encoding="utf-8")
+    assert "not a release" in refused()
+    assert (other / "notes.txt").is_file()
+    (other / "notes.txt").unlink()
+
+    # A form disagreeing with the pipeline's Workbench nodes does not validate.
+    pricing = _form_table("t_pricing", "pricing", "output", ("premium", "float"), ("tax", "float"))
+    write_sheets(project, [*PROJECT_TABLES[:2], pricing, PROJECT_TABLES[3]])
+    assert "The pipeline did not validate" in refused()
+    assert "tax" in refused()
+
+    (project / "forms" / "form.json").unlink()
+    assert "has never been saved" in refused()
+
+    (project / "haute.toml").write_text("[workbench]\nenabled = false\n", encoding="utf-8")
+    assert "has no workbench" in refused()
+
+
+def test_haute_app_build_writes_the_release(project: Path) -> None:
+    from click.testing import CliRunner
+
+    from haute.cli import cli
+
+    result = CliRunner().invoke(cli, ["app", "build", "out"])
+
+    assert result.exit_code == 0, result.output
+    assert f"Release {read_release(project / 'out')[0].id} of main" in result.output
+    assert (project / "out" / "app.py").is_file()
+
+
+def test_haute_app_serve_serves_the_release_on_loopback_as_the_analyst(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import uvicorn
+    from click.testing import CliRunner
+
+    import haute._git_setup as git_setup
+    from haute.cli import cli
+
+    served: dict[str, Any] = {}
+    monkeypatch.setattr(
+        uvicorn, "run", lambda application, **options: served.update(app=application, **options)
+    )
+    monkeypatch.setattr(git_setup, "get_identity", lambda cwd=None: ("Ana", "ana@example.com"))
+
+    result = CliRunner().invoke(cli, ["app", "serve", "--port", "8123"])
+
+    assert result.exit_code == 0, result.output
+    assert "Signed in as ana@example.com" in result.output
+    assert (served["host"], served["port"]) == ("127.0.0.1", 8123)
+    assert (project / ".haute" / "app" / "release" / "release.json").is_file()
+    signed_in = TestClient(served["app"]).get("/api/app/release")
+    assert signed_in.json()["principal"] == "ana@example.com"
+
+    monkeypatch.setattr(git_setup, "get_identity", lambda cwd=None: (None, None))
+    unnamed = CliRunner().invoke(cli, ["app", "serve"])
+    assert unnamed.exit_code != 0
+    assert "Set your git identity first" in unnamed.output
