@@ -15303,9 +15303,26 @@
     "WorkbenchAppReleaseResponse": {
       "description": "The underwriter app's release, and who the host signed in.",
       "properties": {
+        "can_edit": {
+          "default": true,
+          "title": "Can Edit",
+          "type": "boolean"
+        },
         "created_at": {
           "title": "Created At",
           "type": "string"
+        },
+        "edit_role": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Edit Role"
         },
         "form_revision": {
           "title": "Form Revision",
@@ -15353,7 +15370,9 @@
         "created_at",
         "host",
         "principal",
-        "quotes"
+        "quotes",
+        "edit_role",
+        "can_edit"
       ],
       "title": "WorkbenchAppReleaseResponse",
       "type": "object"

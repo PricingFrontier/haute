@@ -52,6 +52,17 @@ def test_the_app_table_names_where_the_underwriter_app_runs(tmp_path: Path) -> N
         tmp_path, '[workbench]\nenabled = true\n\n[workbench.app]\nhost = "azure-container-apps"\n'
     )
     assert read_workbench_config(tmp_path).app_host == "azure-container-apps"
+    assert read_workbench_config(tmp_path).app_edit_role is None
+
+
+def test_the_app_table_names_the_role_that_may_change_quotes(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        '[workbench]\nenabled = true\n\n[workbench.app]\nhost = "azure-container-apps"\n'
+        'edit_role = " Quotes.Edit "\n',
+    )
+
+    assert read_workbench_config(tmp_path).app_edit_role == "Quotes.Edit"
 
 
 def test_the_table_can_disable_the_workbench_and_name_its_form(tmp_path: Path) -> None:
@@ -84,7 +95,18 @@ def test_the_table_can_disable_the_workbench_and_name_its_form(tmp_path: Path) -
         (
             "[workbench]\nenabled = true\n[workbench.app]\nhost = 'azure-container-apps'\n"
             "port = 1\n",
-            "[workbench.app] has unknown key(s): port; the key is host",
+            "[workbench.app] has unknown key(s): port; the keys are host and edit_role",
+        ),
+        (
+            "[workbench]\nenabled = true\n[workbench.app]\nhost = 'azure-container-apps'\n"
+            "edit_role = ' '\n",
+            "[workbench.app].edit_role must be the name of a role the host signs underwriters in "
+            "with; got ' '",
+        ),
+        (
+            "[workbench]\nenabled = true\n[workbench.app]\nhost = 'azure-container-apps'\n"
+            "edit_role = 3\n",
+            "[workbench.app].edit_role must be the name of a role",
         ),
         (
             "[workbench]\nenabled = true\n[workbench.app]\nhost = 'heroku'\n",

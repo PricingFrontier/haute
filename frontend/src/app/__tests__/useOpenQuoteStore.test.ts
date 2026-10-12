@@ -363,4 +363,19 @@ describe("useOpenQuoteStore", () => {
     store().dismiss("conflict")
     expect(store()).toMatchObject({ error: null, moved: false, dropped: [], conflict: null })
   })
+
+  it("holds every quote read only for one who may only read quotes, and changes nothing", async () => {
+    useAppStore.setState({ release: { ...release, can_edit: false, edit_role: "Quotes.Edit" } })
+    vi.mocked(openAppQuote).mockResolvedValue(answer())
+    await store().openQuote("q1", null)
+
+    expect(readOnlyReason(store())).toBe("reader")
+    expect(preview().readOnly).toBe(true)
+    expect(await store().save()).toBeNull()
+    expect(await store().change("archive")).toBeNull()
+    expect(await store().saveAsNew()).toBeNull()
+    await store().openNew(null)
+    expect(preview().readOnly).toBe(true)
+    expect(changeAppQuote).not.toHaveBeenCalled()
+  })
 })

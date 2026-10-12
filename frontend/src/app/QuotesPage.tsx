@@ -112,6 +112,8 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
   const searchBox = useRef<HTMLInputElement>(null)
   const columns = listColumns(form)
   const principal = release?.principal ?? ""
+  // One who may only read quotes is offered nothing that changes them.
+  const editor = release?.can_edit ?? true
 
   const go = (change: Partial<QuotesQuery>, options: { replace?: boolean } = {}) => {
     void navigate(quotesPath({ ...query, ...change }), options)
@@ -147,14 +149,14 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
       if (event.key === "/") {
         event.preventDefault()
         searchBox.current?.focus()
-      } else if (event.key === "n" || event.key === "N") {
+      } else if ((event.key === "n" || event.key === "N") && editor) {
         event.preventDefault()
         void navigate(newQuotePath())
       }
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
-  }, [])
+  }, [editor])
 
   const archive = async (quote: WorkbenchAppQuote) => {
     try {
@@ -266,9 +268,11 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
             <button type="button" className={ICON_BUTTON} onClick={() => void load(query, true)} title="Refresh the list" aria-label="Refresh the list">
               <RotateCw size={12} />
             </button>
-            <a href={newQuotePath()} onClick={(event) => followLink(event, newQuotePath())} className={FILL_BUTTON} style={FILL_STYLE} title="Start a new quote (N)" data-testid="new-quote">
-              <Plus size={13} aria-hidden="true" /> New quote
-            </a>
+            {editor && (
+              <a href={newQuotePath()} onClick={(event) => followLink(event, newQuotePath())} className={FILL_BUTTON} style={FILL_STYLE} title="Start a new quote (N)" data-testid="new-quote">
+                <Plus size={13} aria-hidden="true" /> New quote
+              </a>
+            )}
           </div>
         </div>
 
@@ -324,7 +328,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
                     ) : (
                       <>
                         {view.empty}{" "}
-                        {query.view !== "archived" && (
+                        {query.view !== "archived" && editor && (
                           <a href={newQuotePath()} onClick={(event) => followLink(event, newQuotePath())} className={BUTTON}>
                             <Plus size={12} /> New quote
                           </a>
@@ -380,6 +384,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
                         <button type="button" className={ICON_BUTTON} onClick={() => void navigate(quotePath(quote.id))} title={`Open ${quote.reference}`} aria-label={`Open ${quote.reference}`}>
                           <FolderOpen size={12} />
                         </button>
+                        {editor && (
                         <button
                           type="button"
                           className={ICON_BUTTON}
@@ -389,7 +394,8 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
                         >
                           <Copy size={12} />
                         </button>
-                        {quote.archived_at === null ? (
+                        )}
+                        {!editor ? null : quote.archived_at === null ? (
                           <button type="button" className={ICON_BUTTON} onClick={() => void archive(quote)} title={`Archive ${quote.reference}`} aria-label={`Archive ${quote.reference}`}>
                             <Archive size={12} />
                           </button>

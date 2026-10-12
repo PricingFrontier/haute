@@ -14,6 +14,8 @@ another site is refused.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import contextlib
 import contextvars
 import copy
@@ -70,6 +72,11 @@ PRICE_TIMEOUT_SECONDS = 60.0
 #: strips from what a client sends.
 EASY_AUTH_NAME = "x-ms-client-principal-name"
 EASY_AUTH_ID = "x-ms-client-principal-id"
+#: The principal Azure's authentication passes whole: base64 JSON of its claims, with
+#: ``role_typ`` naming the claim type its roles are under.
+EASY_AUTH_PRINCIPAL = "x-ms-client-principal"
+#: The claim types an app role is under when the principal names none.
+_ROLE_CLAIMS = frozenset({"roles", "http://schemas.microsoft.com/ws/2008/06/identity/claims/role"})
 #: The environment variable a hosted app reads its quote store's SQLAlchemy URL from, which
 #: the host supplies at runtime; without it the app keeps no quotes.
 STORE_URL_ENV = "HAUTE_QUOTE_STORE_URL"
@@ -111,6 +118,8 @@ class Release:
     created_at: str
     #: Where the release runs, whose sign-in fronts it; None for a release built with none.
     host: str | None
+    #: The role that may change quotes; None lets everyone signed in change them.
+    edit_role: str | None = None
 
 
 #: What of a bundle's manifest prices a quote, and so names the release; when, by whom, from
@@ -174,7 +183,31 @@ def _release_id(release_dir: Path, shipped: bytes, manifest: dict[str, Any]) -> 
     return content_hash_bytes(shipped + canonical_json(pricing).encode("utf-8"))[:12]
 
 
-def write_release(release_dir: Path, form: FormSpec, host: str | None) -> Release:
+def easy_auth_roles(header: str) -> frozenset[str]:
+    """The roles in the principal Azure's authentication passes (``EASY_AUTH_PRINCIPAL``):
+    the values of its claims of the type its ``role_typ`` names, or of an app role's claim
+    types when it names none. Raises :class:`ValueError` for a header that is not one."""
+    try:
+        payload = json.loads(base64.b64decode(header, validate=True))
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("the principal is not base64 JSON") from exc
+    claims = payload.get("claims") if isinstance(payload, dict) else None
+    if not isinstance(claims, list):
+        raise ValueError("the principal holds no claims")
+    role_typ = payload.get("role_typ")
+    types = {role_typ} if isinstance(role_typ, str) and role_typ else set(_ROLE_CLAIMS)
+    return frozenset(
+        claim["val"]
+        for claim in claims
+        if isinstance(claim, dict)
+        and claim.get("typ") in types
+        and isinstance(claim.get("val"), str)
+    )
+
+
+def write_release(
+    release_dir: Path, form: FormSpec, host: str | None, edit_role: str | None = None
+) -> Release:
     """Beside the bundle already in *release_dir*: the form without its sample, what the
     release is and the entry point."""
     shipped = render_form(form.model_copy(update={"sample": {}})).encode("utf-8")
@@ -188,6 +221,7 @@ def write_release(release_dir: Path, form: FormSpec, host: str | None) -> Releas
         haute_version=str(manifest.get("haute_version") or ""),
         created_at=str(manifest.get("created_at") or ""),
         host=host,
+        edit_role=edit_role,
     )
     described = json.dumps(asdict(release), indent=2) + "\n"
     (release_dir / RELEASE_FILE).write_bytes(described.encode("utf-8"))
@@ -279,7 +313,7 @@ def build_release(
             write_bundle(resolved, release_dir)
     finally:
         resolved.close()
-    return write_release(release_dir, document.spec, config.app_host)
+    return write_release(release_dir, document.spec, config.app_host, config.app_edit_role)
 
 
 def build_image(release_dir: Path, tag: str) -> None:
@@ -347,11 +381,14 @@ def create_app(
     local_principal: str | None = None,
     static_dir: Path | None = None,
     store_url: str | None = None,
+    local_reader: bool = False,
 ) -> FastAPI:
     """The app serving the release in *release_dir*.
 
     *local_principal*, given by ``haute app serve`` on an analyst's machine, signs every
-    request in as that name; otherwise the release's host says who is signed in. The page and
+    request in as that name, able to change quotes unless *local_reader*; otherwise the
+    release's host says who is signed in and, for a release with an ``edit_role``, whether
+    they hold it. The page and
     its assets come from *static_dir*, Haute's built frontend unless given. *store_url* names
     the quote store the app keeps quotes in, which must be migrated: the app does not start on
     one that is not, and keeps no quotes without one.
@@ -383,6 +420,21 @@ def create_app(
         if release.host == "azure-container-apps":
             return request.headers.get(EASY_AUTH_NAME) or request.headers.get(EASY_AUTH_ID)
         return None
+
+    def may_edit(request: Request) -> bool | None:
+        """Whether the request's principal may change quotes; None when the host passed
+        no roles that can be read and the release needs one."""
+        if local_principal is not None:
+            return not local_reader
+        if release.edit_role is None:
+            return True
+        header = request.headers.get(EASY_AUTH_PRINCIPAL)
+        if header is None:
+            return None
+        try:
+            return release.edit_role in easy_auth_roles(header)
+        except ValueError:
+            return None
 
     def refusal() -> str:
         if release.host is None:
@@ -423,7 +475,18 @@ def create_app(
                 status_code=403,
                 content={"detail": "A change to the app's quotes comes from the app's own page."},
             )
+        can_edit = may_edit(request)
+        if can_edit is None:
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "detail": f"This app lets the {release.edit_role} role change quotes, and "
+                    "Azure's built-in authentication passed no roles it can read "
+                    f"({EASY_AUTH_PRINCIPAL}): check the app's authentication settings."
+                },
+            )
         request.state.principal = who
+        request.state.can_edit = can_edit
         return await call_next(request)
 
     @app.get("/health")
@@ -433,7 +496,10 @@ def create_app(
     @app.get("/api/app/release", response_model=WorkbenchAppReleaseResponse)
     async def get_release(request: Request) -> WorkbenchAppReleaseResponse:
         return WorkbenchAppReleaseResponse(
-            **asdict(release), principal=request.state.principal, quotes=book is not None
+            **asdict(release),
+            principal=request.state.principal,
+            quotes=book is not None,
+            can_edit=request.state.can_edit,
         )
 
     @app.get("/api/app/form", response_model=WorkbenchAppFormResponse)

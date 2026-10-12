@@ -2713,7 +2713,9 @@ export interface WorkbenchTestQuoteChange {
  * The underwriter app's release, and who the host signed in.
  */
 export interface WorkbenchAppReleaseResponse {
+  can_edit: boolean;
   created_at: string;
+  edit_role: string | null;
   form_revision: string;
   haute_version: string;
   host: string | null;

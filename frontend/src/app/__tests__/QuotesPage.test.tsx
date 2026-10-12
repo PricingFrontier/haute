@@ -210,4 +210,21 @@ describe("QuotesPage", () => {
     fireEvent.keyDown(document.body, { key: "n" })
     await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/new"))
   })
+
+  it("offers one who may only read quotes nothing that changes them", async () => {
+    useAppStore.setState({ release: { ...release, can_edit: false, edit_role: "Quotes.Edit" } })
+    vi.mocked(fetchAppQuotes).mockResolvedValueOnce(page([appQuote()])).mockResolvedValueOnce(page([]))
+    const view = show()
+
+    await screen.findByTestId("quote-row-Q-000001")
+    expect(screen.queryByTestId("new-quote")).toBeNull()
+    expect(screen.queryByRole("button", { name: "Archive Q-000001" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "Duplicate Q-000001" })).toBeNull()
+    expect(screen.getByRole("button", { name: "Open Q-000001" })).toBeInTheDocument()
+    fireEvent.keyDown(document.body, { key: "n" })
+    expect(window.location.pathname).toBe("/")
+
+    view.rerender(<QuotesPage query={quotesQueryOf("?view=team")} />)
+    expect(await screen.findByTestId("quotes-empty")).not.toHaveTextContent("New quote")
+  })
 })

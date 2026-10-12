@@ -38,7 +38,7 @@ import { basisOf, fullTime, relativeTime, valuesKey, writeDraft } from "./quoteV
 import { followLink, navigate, newQuotePath, quotePath, revisionPath, setLeaveGuard, type AppRoute } from "./route"
 import { BUTTON, Menu, Notice, StageChip, type MenuItem } from "./ui"
 import useAppStore, { confirm } from "./useAppStore"
-import useOpenQuoteStore, { openDraftKey, readOnlyReason } from "./useOpenQuoteStore"
+import useOpenQuoteStore, { canEdit, openDraftKey, readOnlyReason } from "./useOpenQuoteStore"
 
 type QuoteRoute = Extract<AppRoute, { page: "new" } | { page: "quote" }>
 
@@ -208,6 +208,7 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
   const zoomBy = useWorkbenchViewStore((s) => s.zoomBy)
   const addToast = useToastStore((s) => s.addToast)
   const reason = readOnlyReason({ quote, past, olderSheets })
+  const editor = release?.can_edit ?? true
   const ready = status === "ready" && form !== null
   const typed = form !== null && quoteFilled(form.schema, values)
   const shownTyped = form !== null && quoteFilled(quotedSchema(form.schema, sheetVisibility(form, values).hidden), values)
@@ -224,8 +225,9 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
         ? "Save the quote with its price (Ctrl+S)"
         : "Save the quote unpriced: price it first to keep its price (Ctrl+S)"
 
-  const finalBlock =
-    quote === null
+  const finalBlock = !editor
+    ? "Changing quotes needs the app's edit role"
+    : quote === null
       ? "Save the quote first"
       : dirty
         ? "Save your changes first"
@@ -281,12 +283,12 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
   }
 
   const items: MenuItem[] = [
-    { label: "Duplicate", icon: Copy, run: () => derive("duplicate"), disabled: quote === null, title: "A new quote with this revision's values" },
-    { label: "Renew", icon: RefreshCcw, run: () => derive("renewal"), disabled: quote === null, title: "A new quote renewing this one, from this revision's values" },
-    { label: "Create alternative", icon: GitBranchPlus, run: () => derive("alternative"), disabled: quote === null, title: "A new quote offering other terms, from this revision's values" },
+    { label: "Duplicate", icon: Copy, run: () => derive("duplicate"), disabled: quote === null || !editor, title: "A new quote with this revision's values" },
+    { label: "Renew", icon: RefreshCcw, run: () => derive("renewal"), disabled: quote === null || !editor, title: "A new quote renewing this one, from this revision's values" },
+    { label: "Create alternative", icon: GitBranchPlus, run: () => derive("alternative"), disabled: quote === null || !editor, title: "A new quote offering other terms, from this revision's values" },
     quote?.archived_at
-      ? { label: "Restore", icon: ArchiveRestore, run: () => void change("restore"), disabled: changing }
-      : { label: "Archive", icon: Archive, run: () => void archive(), disabled: quote === null || changing },
+      ? { label: "Restore", icon: ArchiveRestore, run: () => void change("restore"), disabled: changing || !editor }
+      : { label: "Archive", icon: Archive, run: () => void archive(), disabled: quote === null || changing || !editor },
     { label: "Copy link", icon: Link2, run: () => void copyLink(), disabled: quote === null },
   ]
 
@@ -319,7 +321,7 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
           aria-label="Quote name"
           value={quote === null ? newName : quote.name}
           placeholder={quote === null ? (source === null ? "Name this quote" : `${RELATION_LABEL[source.relation]} of ${source.reference}`) : quote.title}
-          disabled={!ready || (quote !== null && (quote.archived_at !== null || changing))}
+          disabled={!ready || !editor || (quote !== null && (quote.archived_at !== null || changing))}
           onCommit={(name) => {
             if (quote === null) setNewName(name)
             else if (name.trim() !== quote.name) void change("name", { name: name.trim() })
@@ -351,7 +353,7 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
           {saving ? "Saving…" : priced || locked ? "Save" : "Save unpriced"}
         </button>
         {quote?.stage === "final" ? (
-          <ToolbarButton icon={LockOpen} onClick={() => void reopen()} disabled={changing || past || olderSheets !== null || quote.archived_at !== null} title="Reopen the quote for an amendment, giving a reason">
+          <ToolbarButton icon={LockOpen} onClick={() => void reopen()} disabled={changing || !editor || past || olderSheets !== null || quote.archived_at !== null} title="Reopen the quote for an amendment, giving a reason">
             Reopen
           </ToolbarButton>
         ) : (
@@ -457,7 +459,7 @@ function QuoteLine() {
             <select
               aria-label="Assigned to"
               value={quote.assignee}
-              disabled={changing || quote.archived_at !== null}
+              disabled={changing || quote.archived_at !== null || !canEdit()}
               onChange={(event) => void assign(event.target.value)}
               className="focus-ring rounded px-1 py-0.5 text-[11px]"
               style={{ border: "1px solid var(--border)", color: "var(--text-primary)" }}
@@ -562,13 +564,18 @@ function QuoteNotices({ unkept }: { unkept: boolean }) {
         </Notice>
       )}
       {reason === "older-sheets" && (
-        <Notice tone="info" testId="notice-older-sheets" actions={<button type="button" className={BUTTON} onClick={() => void moveToCurrentSheets()}>Move to current sheets</button>}>
+        <Notice tone="info" testId="notice-older-sheets" actions={canEdit() && <button type="button" className={BUTTON} onClick={() => void moveToCurrentSheets()}>Move to current sheets</button>}>
           Saved on earlier sheets: it shows as it was keyed in, read only. Move it to the current sheets to change it.
         </Notice>
       )}
       {reason === "archived" && quote?.archived_at && (
-        <Notice tone="info" testId="notice-archived" actions={<button type="button" className={BUTTON} onClick={() => void change("restore")}>Restore</button>}>
+        <Notice tone="info" testId="notice-archived" actions={canEdit() && <button type="button" className={BUTTON} onClick={() => void change("restore")}>Restore</button>}>
           Archived by {quote.archived_by} {relativeTime(quote.archived_at)}, read only. Restore it to change it.
+        </Notice>
+      )}
+      {!canEdit() && (
+        <Notice tone="info" testId="notice-reader">
+          You can read quotes in this app; changing them needs the {useAppStore.getState().release?.edit_role ?? "edit"} role.
         </Notice>
       )}
       {reason === "final" && quote !== null && quote.final_at !== null && (

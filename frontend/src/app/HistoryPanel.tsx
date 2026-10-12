@@ -11,7 +11,7 @@ import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
 import { RELATION_TEXT as RELATION, eventText, fullTime, relativeTime } from "./quoteValues"
 import { followLink, quotePath, revisionPath } from "./route"
 import { BUTTON } from "./ui"
-import useOpenQuoteStore from "./useOpenQuoteStore"
+import useOpenQuoteStore, { canEdit } from "./useOpenQuoteStore"
 
 const MIN_WIDTH = 300
 const maxWidth = () => Math.max(MIN_WIDTH, Math.floor(window.innerWidth / 2))
@@ -40,7 +40,7 @@ function NoteEditor({ quote }: { quote: WorkbenchAppQuote }) {
     setEditedFrom(quote.note)
     setNote(quote.note)
   }
-  const locked = quote.archived_at !== null
+  const locked = quote.archived_at !== null || !canEdit()
   return (
     <div className="flex flex-col gap-1">
       <textarea

@@ -49,6 +49,8 @@ class AppServeConfig:
 
     port: int
     static_dir: Path | None = None
+    #: Sign in as a reader, who may not change quotes, to see the app as one sees it.
+    reader: bool = False
 
 
 def _built(project_dir: Path, release_dir: Path) -> None:
@@ -101,9 +103,14 @@ def handle_app_serve(config: AppServeConfig) -> None:
     _built(project_dir, release_dir)
     url = _local_store(project_dir)
     application = create_app(
-        release_dir, local_principal=principal, static_dir=config.static_dir, store_url=url
+        release_dir,
+        local_principal=principal,
+        static_dir=config.static_dir,
+        store_url=url,
+        local_reader=config.reader,
     )
-    click.echo(f"  ✓ Signed in as {principal} (your git identity)")
+    reading = ", reading quotes only" if config.reader else ""
+    click.echo(f"  ✓ Signed in as {principal} (your git identity){reading}")
     click.echo(f"  ✓ Quotes kept in {QUOTES_FILE.as_posix()}")
     click.echo(f"\nThe underwriter app: http://{SERVE_HOST}:{config.port}/")
     uvicorn.run(application, host=SERVE_HOST, port=config.port, log_level="warning")
@@ -169,9 +176,14 @@ def build(output: Path, image: str | None) -> None:
     default=None,
     help="A built frontend to serve the page from, in place of Haute's own.",
 )
-def serve(port: int, static_dir: Path | None) -> None:
+@click.option(
+    "--reader",
+    is_flag=True,
+    help="Sign in as an underwriter who may read quotes but not change them.",
+)
+def serve(port: int, static_dir: Path | None, reader: bool) -> None:
     """Build the project's release and serve it here, signed in as your git identity."""
-    handle_app_serve(AppServeConfig(port=port, static_dir=static_dir))
+    handle_app_serve(AppServeConfig(port=port, static_dir=static_dir, reader=reader))
 
 
 @app.command()

@@ -36,6 +36,8 @@ const release: WorkbenchAppReleaseResponse = {
   host: "azure-container-apps",
   principal: "uw@example.com",
   quotes: false,
+  edit_role: null,
+  can_edit: true,
 }
 
 async function opened() {

@@ -332,4 +332,21 @@ describe("QuoteView", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("The quote could not be opened: The app keeps no quote 'q1'.")
     expect(screen.getByRole("link", { name: "Back to Quotes" })).toHaveAttribute("href", "/")
   })
+
+  it("shows one who may only read quotes the quote, saying so, with nothing that changes it", async () => {
+    useAppStore.setState({ release: { ...release, can_edit: false, edit_role: "Quotes.Edit" } })
+    vi.mocked(openAppQuote).mockResolvedValue(answer())
+    await opened()
+
+    expect(screen.getByTestId("notice-reader")).toHaveTextContent("changing them needs the Quotes.Edit role")
+    expect(screen.getByTestId("save-quote")).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Mark final" })).toHaveAttribute("title", "Changing quotes needs the app's edit role")
+    expect(screen.getByLabelText("Quote name")).toBeDisabled()
+    expect(screen.getByLabelText("Assigned to")).toBeDisabled()
+    expect(screen.getByRole("combobox", { name: "State" })).toBeDisabled()
+    fireEvent.click(screen.getByTestId("quote-more"))
+    for (const item of ["Duplicate", "Renew", "Create alternative", "Archive"]) {
+      expect(screen.getByRole("menuitem", { name: item })).toBeDisabled()
+    }
+  })
 })

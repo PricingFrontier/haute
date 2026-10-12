@@ -98,8 +98,10 @@ Out of scope:
   `haute init --force` rewrites `haute.toml`, so the table stays only when `--workbench`
   is given again, while `forms/` is left as `data/` is. An existing project enables its
   workbench by adding the table by hand. A nested `[workbench.app]` table says where the
-  underwriter app runs: its one key, `host`, is `azure-container-apps`, and any other key
-  or host is refused by name.
+  underwriter app runs: `host` is `azure-container-apps`, and `edit_role`, when given, is
+  the role the host signs underwriters in with that may change quotes, every other
+  underwriter reading them; any other key, host or role that is not a name is refused by
+  name.
 - **The form file.** `forms/form.json` is one JSON document: `version` (1), `name`, `schema`
   (its tables), `pages` (its sheets, at least one), `sample` (the quote typed while
   building, `{}` for none) and `quote_list` (what the underwriter app's Quotes page shows
@@ -633,10 +635,17 @@ Out of scope:
   needs the principal the host signed in. The identity follows `[workbench.app] host`:
   `azure-container-apps` reads the principal Azure's built-in authentication sets on each
   request, which the host strips from what a client sends, and refuses a request without
-  it (401); a release built with no host refuses every request but the health check.
-  `haute app serve` builds a release of the project as it is saved and serves it on the
-  analyst's machine, the principal the analyst's git identity, so the sheets underwriters
-  will see are checked before a merge. No credential reaches the page.
+  it (401); a release built with no host refuses every request but the health check. A
+  release with an `edit_role` reads the roles from the principal Azure passes whole
+  (`X-MS-CLIENT-PRINCIPAL`, its claims of the type its `role_typ` names, an app role's
+  when it names none): one holding the role may change quotes and any other reads them,
+  `GET /api/app/release` saying which (`can_edit`), every change and save refused to a
+  reader (403); a request whose roles cannot be read is refused (401), naming the header,
+  since who may change quotes cannot be told. `haute app serve` builds a release of the
+  project as it is saved and serves it on the analyst's machine, the principal the
+  analyst's git identity, able to change quotes unless `--reader` signs them in as a
+  reader, so the sheets underwriters will see are checked before a merge. No credential
+  reaches the page.
   Given a quote store, the app keeps the quotes saved in it in the store's app records
   (the quote store, below). A hosted app reads the store's SQLAlchemy URL from
   `HAUTE_QUOTE_STORE_URL`, which the host supplies at runtime, and does not start on a
@@ -710,7 +719,9 @@ Out of scope:
   revisions, each opened as it was, what was done to the quote, by whom and when, and
   the quotes it came from or that were made from it. Ctrl+S saves and Ctrl+Enter prices.
   Without a quote store the app opens on a blank quote with Price and Clear, and says it
-  keeps no quotes.
+  keeps no quotes. One who may only read quotes is offered nothing that changes them: no
+  New quote, Duplicate, Archive or Restore on the Quotes page, and every quote read only,
+  saying that changing it needs the app's edit role.
 - **Shown when.** A sheet, a section or a component with conditions shows only while they
   hold on the values typed into the sheets, the sample while building and the quote in
   Preview; a section on a sheet that does not show does not show either, nor does a

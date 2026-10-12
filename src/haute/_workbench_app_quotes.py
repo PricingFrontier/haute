@@ -186,6 +186,20 @@ async def _call(app: QuoteApp, work: Callable[[], T], quote_id: str | None = Non
         raise _refusal(422, exc) from None
 
 
+def _editor(http: Request) -> str:
+    """The principal changing a quote; refused (403) when they may only read quotes."""
+    if not http.state.can_edit:
+        raise HTTPException(
+            403,
+            detail={
+                "message": "You can read quotes in this app; changing them needs its edit role.",
+                "error_code": "quote_read_only",
+            },
+        )
+    principal: str = http.state.principal
+    return principal
+
+
 async def _body(http: Request, model: type[M]) -> M:
     """The request's body, read within the deployed quote route's limit, as *model*."""
     try:
@@ -274,9 +288,9 @@ def quote_router(app: QuoteApp) -> APIRouter:
 
     @router.post("/quotes", response_model=WorkbenchAppQuoteResponse)
     async def create_quote(http: Request) -> WorkbenchAppQuoteResponse:
+        actor = _editor(http)
         body = await _body(http, WorkbenchAppQuoteCreateRequest)
         request, tables, moved = await _priced_save(app, body)
-        actor: str = http.state.principal
         source = (
             None
             if body.source is None
@@ -331,9 +345,9 @@ def quote_router(app: QuoteApp) -> APIRouter:
 
     @router.post("/quotes/{quote_id}/revisions", response_model=WorkbenchAppQuoteResponse)
     async def save_quote(quote_id: str, http: Request) -> WorkbenchAppQuoteResponse:
+        actor = _editor(http)
         body = await _body(http, WorkbenchAppQuoteReviseRequest)
         request, tables, moved = await _priced_save(app, body)
-        actor: str = http.state.principal
 
         def save() -> WorkbenchAppQuoteResponse:
             quote = book.save(
@@ -358,8 +372,8 @@ def quote_router(app: QuoteApp) -> APIRouter:
         apply: Callable[[str, Any, str], AppQuote],
     ) -> None:
         async def route(quote_id: str, http: Request) -> WorkbenchAppQuoteChangeResponse:
+            actor = _editor(http)
             body = await _body(http, model)
-            actor: str = http.state.principal
             quote = await _call(app, lambda: apply(quote_id, body, actor), quote_id)
             return WorkbenchAppQuoteChangeResponse(quote=quote_model(quote))
 

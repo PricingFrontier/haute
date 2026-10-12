@@ -359,6 +359,10 @@ class WorkbenchAppReleaseResponse(BaseModel):
     principal: str
     #: The app keeps quotes: it has a quote store. Without one it prices and saves nothing.
     quotes: bool = False
+    #: The role that may change quotes, when the release names one.
+    edit_role: str | None = None
+    #: Whoever is signed in may change quotes; one who may not reads them.
+    can_edit: bool = True
 
 
 class WorkbenchAppFormResponse(BaseModel):

@@ -35,7 +35,7 @@ export interface QuoteSource {
 }
 
 /** Why the quote's values may not change, or null when they may. */
-export type ReadOnlyReason = "final" | "archived" | "past" | "older-sheets" | null
+export type ReadOnlyReason = "final" | "archived" | "past" | "older-sheets" | "reader" | null
 
 interface OpenQuoteState {
   status: "idle" | "loading" | "ready" | "error"
@@ -117,8 +117,12 @@ export function readOnlyReason(state: Pick<OpenQuoteState, "quote" | "past" | "o
   if (state.olderSheets !== null) return "older-sheets"
   if (state.quote?.archived_at) return "archived"
   if (state.quote?.stage === "final") return "final"
+  if (!canEdit()) return "reader"
   return null
 }
+
+/** Whoever is signed in may change quotes: false for one who may only read them. */
+export const canEdit = (): boolean => useAppStore.getState().release?.can_edit ?? true
 
 /** The open quote's draft key in this browser. */
 export function openDraftKey(state: Pick<OpenQuoteState, "quote" | "source">): string | null {
@@ -237,7 +241,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
       const { form } = useAppStore.getState()
       if (form === null) return
       installSheets(form)
-      useWorkbenchPreviewStore.getState().open({}, null, false)
+      useWorkbenchPreviewStore.getState().open({}, null, !canEdit())
       set({ ...CLOSED, status: from === null ? "ready" : "loading", loadError: null })
       if (from === null) {
         offerDraft()
@@ -246,7 +250,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
       try {
         const [origin, carried] = await Promise.all([openAppQuote(from.quoteId, from.revision), carryAppQuote(from.quoteId, from.revision)])
         if (attempt !== opening) return
-        useWorkbenchPreviewStore.getState().open(carried.values as Values, null, false)
+        useWorkbenchPreviewStore.getState().open(carried.values as Values, null, !canEdit())
         set({
           status: "ready",
           source: { ...from, reference: origin.quote.reference },
@@ -301,7 +305,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
     saveAsNew: async () => {
       const { conflict, quote } = get()
       const origin = conflict?.latest ?? quote
-      if (origin === null) return null
+      if (origin === null || !canEdit()) return null
       const prepared = saveBody()
       if (prepared === null) return null
       set({ saving: true, error: null })
@@ -319,7 +323,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
 
     change: async (change, fields = {}) => {
       const { quote, changing } = get()
-      if (quote === null || changing) return null
+      if (quote === null || changing || !canEdit()) return null
       set({ changing: true, error: null })
       try {
         const { quote: changed } = await changeAppQuote(quote.id, change, quote.version, fields)

@@ -5,6 +5,7 @@ every change names, the release a page was drawn for, writes from other sites re
 
 from __future__ import annotations
 
+import base64
 import json
 from collections.abc import Iterator
 from pathlib import Path
@@ -23,9 +24,11 @@ from haute._quote_store import (
 from haute._sandbox import _get_project_root, set_project_root
 from haute._workbench_app import (
     EASY_AUTH_NAME,
+    EASY_AUTH_PRINCIPAL,
     STORE_URL_ENV,
     WorkbenchAppError,
     create_app,
+    easy_auth_roles,
     write_release,
 )
 from haute._workbench_form import FormSpec
@@ -45,7 +48,9 @@ LISTED = {
 FORM = {**form(POLICY, PRICING), "quote_list": LISTED}
 
 
-def _write_release(directory: Path, spec: dict[str, Any] = FORM) -> Path:
+def _write_release(
+    directory: Path, spec: dict[str, Any] = FORM, edit_role: str | None = None
+) -> Path:
     directory.mkdir(exist_ok=True)
     manifest = {
         "haute_version": "9.9.9",
@@ -59,7 +64,7 @@ def _write_release(directory: Path, spec: dict[str, Any] = FORM) -> Path:
         "pruned_graph": shipped_graph(_graph()),
     }
     (directory / "deploy_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-    write_release(directory, FormSpec.model_validate(spec), "azure-container-apps")
+    write_release(directory, FormSpec.model_validate(spec), "azure-container-apps", edit_role)
     return directory
 
 
@@ -380,6 +385,101 @@ def test_the_app_projects_quotes_again_when_a_release_changes_the_quote_list(
     assert quote["version"] == 1
     with QuoteBook(open_store(url)) as book:
         assert [e.kind for e in book.timeline(quote["id"]).events] == ["created"]
+
+
+# ── Who may change quotes ─────────────────────────────────────────────────
+
+
+def _principal(*roles: str, role_typ: str | None = "roles") -> str:
+    """The principal Azure's authentication passes, holding *roles*."""
+    typ = role_typ or "roles"
+    payload: dict[str, Any] = {
+        "auth_typ": "aad",
+        "name_typ": "name",
+        "claims": [{"typ": "name", "val": "someone"}, *({"typ": typ, "val": r} for r in roles)],
+    }
+    if role_typ is not None:
+        payload["role_typ"] = role_typ
+    return base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
+
+
+def test_the_roles_are_read_from_the_principal_azure_passes() -> None:
+    assert easy_auth_roles(_principal("Quotes.Edit", "Other")) == {"Quotes.Edit", "Other"}
+    custom = _principal("Quotes.Edit", role_typ="http://schemas.example/role")
+    assert easy_auth_roles(custom) == {"Quotes.Edit"}
+    assert easy_auth_roles(_principal("Quotes.Edit", role_typ=None)) == {"Quotes.Edit"}
+    for broken in (
+        "not base64!",
+        base64.b64encode(b"[]").decode(),
+        base64.b64encode(b"{}").decode(),
+    ):
+        with pytest.raises(ValueError):
+            easy_auth_roles(broken)
+
+
+def test_with_an_edit_role_only_those_holding_it_change_quotes(tmp_path: Path, url: str) -> None:
+    directory = _write_release(tmp_path / "roles", edit_role="Quotes.Edit")
+    editor = {**ANA, EASY_AUTH_PRINCIPAL: _principal("Quotes.Edit")}
+    reader = {**JO, EASY_AUTH_PRINCIPAL: _principal("Quotes.Read")}
+    original = _get_project_root()
+    try:
+        with TestClient(create_app(directory, store_url=url)) as client:
+            release = client.get("/api/app/release", headers=reader).json()
+            assert (release["edit_role"], release["can_edit"]) == ("Quotes.Edit", False)
+            assert client.get("/api/app/release", headers=editor).json()["can_edit"] is True
+            body = {
+                "operation": "operation-000001",
+                "form_revision": release["form_revision"],
+                "release": release["id"],
+                "values": VALUES,
+                "shown": None,
+            }
+
+            made = client.post("/api/app/quotes", json=body, headers=editor)
+            refused = client.post("/api/app/quotes", json=body, headers=reader)
+            quote = made.json()["quote"]
+            change = client.post(
+                f"/api/app/quotes/{quote['id']}/archive", json={"version": 1}, headers=reader
+            )
+            priced = client.post(
+                "/api/app/price",
+                json={k: body[k] for k in ("form_revision", "release", "values")},
+                headers=reader,
+            )
+
+            assert made.status_code == 200
+            for each in (refused, change):
+                assert each.status_code == 403
+                assert each.json()["detail"]["error_code"] == "quote_read_only"
+            assert client.get("/api/app/quotes?view=team", headers=reader).status_code == 200
+            assert priced.status_code == 200
+            for headers in (ANA, {**ANA, EASY_AUTH_PRINCIPAL: "%%%"}):
+                unread = client.get("/api/app/release", headers=headers)
+                assert unread.status_code == 401
+                assert EASY_AUTH_PRINCIPAL in unread.json()["detail"]
+    finally:
+        set_project_root(original)
+
+
+def test_serving_locally_as_a_reader_changes_no_quote(release_dir: Path, url: str) -> None:
+    app = create_app(
+        release_dir, local_principal="ana@example.com", store_url=url, local_reader=True
+    )
+    with TestClient(app) as client:
+        release = client.get("/api/app/release").json()
+        refused = client.post(
+            "/api/app/quotes",
+            json={
+                "operation": "operation-000001",
+                "form_revision": release["form_revision"],
+                "release": release["id"],
+                "values": VALUES,
+                "shown": None,
+            },
+        )
+
+    assert release["can_edit"] is False
+    assert refused.status_code == 403
 
 
 # ── The commands ──────────────────────────────────────────────────────────

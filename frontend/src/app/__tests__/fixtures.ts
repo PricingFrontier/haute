@@ -10,6 +10,8 @@ export const release: WorkbenchAppReleaseResponse = {
   host: null,
   principal: "ana@example.com",
   quotes: true,
+  edit_role: null,
+  can_edit: true,
 }
 export const VALUES = { policy: [{ "policy.state": "NY" }] }
 export const TABLES = { premiums: [{ item: "Crane", premium: 120 }] }

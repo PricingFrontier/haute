@@ -599,6 +599,12 @@ def test_haute_app_serve_serves_the_release_on_loopback_as_the_analyst(
         signed_in = client.get("/api/app/release").json()
     assert (signed_in["principal"], signed_in["quotes"]) == ("ana@example.com", True)
 
+    reading = CliRunner().invoke(cli, ["app", "serve", "--reader"])
+    assert reading.exit_code == 0, reading.output
+    assert "reading quotes only" in reading.output
+    with TestClient(served["app"]) as client:
+        assert client.get("/api/app/release").json()["can_edit"] is False
+
     monkeypatch.setattr(git_setup, "get_identity", lambda cwd=None: (None, None))
     unnamed = CliRunner().invoke(cli, ["app", "serve"])
     assert unnamed.exit_code != 0
