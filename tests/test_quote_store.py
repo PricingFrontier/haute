@@ -251,7 +251,7 @@ def test_a_revision_after_one_the_quote_has_moved_past_is_refused_with_nothing_w
         assert raw.execute("SELECT COUNT(*) FROM haute_quote_forms").fetchone() == (1,)
 
 
-def test_a_revision_saved_apart_under_the_same_number_is_refused_by_its_token(
+def test_a_revision_saved_apart_under_the_same_number_is_refused_by_its_digest(
     store: QuoteStore,
 ) -> None:
     first = _create(store)
@@ -264,16 +264,16 @@ def test_a_revision_saved_apart_under_the_same_number_is_refused_by_its_token(
         "release": None,
     }
     second = store.save_revision(first.quote_id, after=1, **fields)
-    # The token names the revision by what was saved, beyond its number.
-    assert second.token == store.revision(first.quote_id, 2).token
-    assert second.token != first.token
+    # The digest names the revision by what was saved, beyond its number.
+    assert second.digest == store.revision(first.quote_id, 2).digest
+    assert second.digest != first.digest
 
     # A run read revision 2 as another branch saved it.
     with pytest.raises(StaleQuoteError, match="saved apart, on another branch"):
-        store.save_revision(first.quote_id, after=2, after_token=first.token, **fields)
+        store.save_revision(first.quote_id, after=2, after_digest=first.digest, **fields)
     assert store.revision(first.quote_id).number == 2
 
-    third = store.save_revision(first.quote_id, after=2, after_token=second.token, **fields)
+    third = store.save_revision(first.quote_id, after=2, after_digest=second.digest, **fields)
     assert third.number == 3
 
 

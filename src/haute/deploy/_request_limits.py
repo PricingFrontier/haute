@@ -15,7 +15,9 @@ DEPLOY_QUOTE_REQUEST_BODY_LIMIT_MB_ENV = "HAUTE_DEPLOY_QUOTE_REQUEST_BODY_LIMIT_
 
 
 class RequestLike(Protocol):
-    headers: Mapping[str, str]
+    # Read-only, as a Starlette request's are.
+    @property
+    def headers(self) -> Mapping[str, str]: ...
 
     def stream(self) -> AsyncIterator[bytes]: ...
 

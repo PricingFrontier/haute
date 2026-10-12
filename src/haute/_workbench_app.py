@@ -20,8 +20,10 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import ValidationError
 from starlette.middleware.base import RequestResponseEndpoint
 
 from haute._execution_admission import ExecutionAdmissionError
@@ -33,6 +35,13 @@ from haute._sandbox import set_project_root
 from haute._test_quotes import quote_request
 from haute._types import PipelineGraph
 from haute._workbench_form import FormSpec, form_revision, render_form
+from haute.deploy._request_limits import (
+    RequestBodyHeaderError,
+    RequestBodyLimitError,
+    RequestBodyParseError,
+    deploy_quote_request_body_limit_bytes,
+    read_limited_json_body,
+)
 from haute.deploy._scorer import QuoteRequest, admit_deploy_execution, score_graph
 from haute.errors import HauteError, is_public_contract_error
 from haute.schemas import (
@@ -361,8 +370,26 @@ def create_app(
     async def get_form() -> WorkbenchAppFormResponse:
         return WorkbenchAppFormResponse(form=form, revision=release.form_revision)
 
+    # A quote's request is read within the deployed /quote route's body limit, before it is
+    # parsed: an oversized body is refused before it is held in memory whole.
+    body_limit = deploy_quote_request_body_limit_bytes()
+
     @app.post("/api/app/price", response_model=WorkbenchAppPriceResponse)
-    async def price(body: WorkbenchAppPriceRequest) -> WorkbenchAppPriceResponse:
+    async def price(http: Request) -> Any:
+        try:
+            raw = await read_limited_json_body(
+                http, operation="workbench_app_price", limit_bytes=body_limit
+            )
+        except RequestBodyLimitError as exc:
+            return JSONResponse(status_code=413, content=exc.to_payload())
+        except RequestBodyHeaderError as exc:
+            return JSONResponse(status_code=400, content=exc.to_payload())
+        except RequestBodyParseError as exc:
+            return JSONResponse(status_code=422, content=exc.to_payload())
+        try:
+            body = WorkbenchAppPriceRequest.model_validate(raw)
+        except ValidationError as exc:
+            raise RequestValidationError(exc.errors()) from None
         if body.form_revision != release.form_revision:
             raise HTTPException(
                 409,

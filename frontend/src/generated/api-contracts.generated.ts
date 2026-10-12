@@ -2657,7 +2657,7 @@ export interface WorkbenchTestQuoteOpenResponse {
   response: {
     [k: string]: unknown;
   } | null;
-  token: string;
+  revision_digest: string;
   values: {
     [k: string]: {
       [k: string]: string | boolean;
@@ -2671,7 +2671,7 @@ export interface WorkbenchTestQuoteOpenResponse {
 export interface WorkbenchTestQuoteCompareResponse {
   changes: WorkbenchTestQuoteChange[];
   number: number;
-  token: string;
+  revision_digest: string;
 }
 /**
  * One place the priced response differs from the accepted one.

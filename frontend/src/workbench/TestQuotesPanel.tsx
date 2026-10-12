@@ -82,6 +82,7 @@ export default function TestQuotesPanel() {
   const form = useWorkbenchFormStore((s) => s.form)
   // Read so the panel redraws when what a run priced on changes.
   useGraphStore((s) => s.structuralFingerprint)
+  useGraphStore((s) => s.submodels)
   useSettingsStore((s) => s.activeSource)
   const [name, setName] = useState("")
   const [expanded, setExpanded] = useState<string | null>(null)

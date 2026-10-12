@@ -123,7 +123,7 @@ def _app_host(raw: object, toml_path: Path) -> str | None:
             path=str(toml_path),
         )
     host = raw.get("host")
-    if host not in APP_HOSTS:
+    if not isinstance(host, str) or host not in APP_HOSTS:
         raise WorkbenchConfigError(
             f"[workbench.app].host must be one of {', '.join(sorted(APP_HOSTS))}; got {host!r}",
             path=str(toml_path),

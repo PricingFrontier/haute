@@ -14823,14 +14823,14 @@
           "title": "Number",
           "type": "integer"
         },
-        "token": {
-          "title": "Token",
+        "revision_digest": {
+          "title": "Revision Digest",
           "type": "string"
         }
       },
       "required": [
         "number",
-        "token",
+        "revision_digest",
         "changes"
       ],
       "title": "WorkbenchTestQuoteCompareResponse",
@@ -14871,8 +14871,8 @@
           "default": null,
           "title": "Response"
         },
-        "token": {
-          "title": "Token",
+        "revision_digest": {
+          "title": "Revision Digest",
           "type": "string"
         },
         "values": {
@@ -14900,7 +14900,7 @@
         "id",
         "name",
         "number",
-        "token",
+        "revision_digest",
         "values",
         "dropped",
         "response"

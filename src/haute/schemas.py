@@ -256,12 +256,12 @@ class WorkbenchTestQuoteSaveRequest(BaseModel):
 class WorkbenchTestQuoteAcceptRequest(BaseModel):
     """A test quote's new response, accepted as the revision after ``after``.
 
-    ``token`` is the token of revision ``after`` as the run read it: a revision ``after``
-    saved apart, on another branch, is refused.
+    ``revision_digest`` is the digest of revision ``after`` as the run read it: a
+    revision ``after`` saved apart, on another branch, is refused.
     """
 
     after: int = Field(ge=1)
-    token: str = Field(min_length=1)
+    revision_digest: str = Field(min_length=1)
     form: FormSpec
     values: WorkbenchValues
     tables: WorkbenchPricedTables
@@ -297,7 +297,7 @@ class WorkbenchTestQuoteOpenResponse(BaseModel):
     name: str
     number: int
     #: What the revision is, beyond its number, for an accept to name.
-    token: str
+    revision_digest: str
     values: WorkbenchValues
     dropped: list[str]
     response: dict[str, Any] | None = None
@@ -305,12 +305,17 @@ class WorkbenchTestQuoteOpenResponse(BaseModel):
 
 class WorkbenchTestQuoteCompareRequest(BaseModel):
     """A run's priced tables for a test quote, compared with revision ``number``'s response,
-    and the request its ``values`` make on ``form`` with the request that revision keeps."""
+    and the request its ``values`` make on ``form`` with the request that revision keeps.
+
+    ``revision_digest`` is the digest of revision ``number`` as the run opened it: a
+    revision ``number`` saved apart since (another branch's) is refused rather than compared.
+    """
 
     form: FormSpec
     values: WorkbenchValues
     tables: WorkbenchPricedTables
     number: int = Field(ge=1)
+    revision_digest: str = Field(min_length=1)
 
 
 class WorkbenchTestQuoteChange(BaseModel):
@@ -327,7 +332,7 @@ class WorkbenchTestQuoteCompareResponse(BaseModel):
     read, a request's places under ``request.``; none: unchanged."""
 
     number: int
-    token: str
+    revision_digest: str
     changes: list[WorkbenchTestQuoteChange]
 
 

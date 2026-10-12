@@ -8,7 +8,7 @@
  * one request each, its values carried onto that form, then asks the server what changed
  * since the revision it read; a change to any of the three afterwards makes the run stale.
  * Accepting a change saves the run's response after that revision, the one the run read
- * (its token), never while a run is under way or once the run is stale, and never over a
+ * (its digest), never while a run is under way or once the run is stale, and never over a
  * run started since. A run is forgotten when the pipeline's document is adopted anew (a
  * branch switched): its results were read on another branch's test quotes. Each write's
  * capture on the save ledger is reported as a save's is, and one the ledger did not take
@@ -29,6 +29,7 @@ import {
 } from "../api/workbench"
 import { apiErrorMessage } from "../api/errors"
 import type { FormSpec, WorkbenchTestQuoteSummary, WorkbenchTestQuoteWriteResponse } from "../api/types"
+import { canonicalJson } from "../utils/canonicalJson"
 import { quoteFilled, quoteProblems } from "../utils/sheetValues"
 import { quotedSchema, sheetVisibility } from "../utils/sheetVisibility"
 import { reportSaveCapture } from "./saveCapture"
@@ -44,9 +45,9 @@ export type RunStatus = "running" | "unchanged" | "changed" | "failed"
 /** A test quote as the last run left it. */
 export interface QuoteRun {
   status: RunStatus
-  /** The revision the run read, which an accept follows, and what it is beyond its number. */
+  /** The revision the run read, which an accept follows, and its digest: what it is beyond its number. */
   number: number | null
-  token: string | null
+  digest: string | null
   /** The quote's values carried onto the run's form, and what had no place on it. */
   values: SheetQuote | null
   dropped: string[]
@@ -99,10 +100,21 @@ interface WorkbenchTestQuotesState {
   flush: () => Promise<void>
 }
 
+/** The submodels' definitions as text, kept while the graph store keeps the same ones. */
+let submodelsSeen: { submodels: Record<string, unknown>; text: string } | null = null
+
+function submodelsText(submodels: Record<string, unknown>): string {
+  if (submodelsSeen?.submodels !== submodels) submodelsSeen = { submodels, text: canonicalJson(submodels) }
+  return submodelsSeen.text
+}
+
 /** What a run of the form as it is now would price on. */
 export function currentBasis(form: FormSpec): RunBasis {
+  const graph = useGraphStore.getState()
   return {
-    pipeline: useGraphStore.getState().structuralFingerprint,
+    // The root's structure leaves the submodels' definitions out: an edit inside one prices
+    // differently, so it counts too.
+    pipeline: `${graph.structuralFingerprint}|${submodelsText(graph.submodels)}`,
     source: useSettingsStore.getState().activeSource,
     // What decides the request: the tables and the conditions that hide their cells.
     form: JSON.stringify([form.schema, form.pages]),
@@ -134,6 +146,18 @@ function quoteRefusal(form: FormSpec, quote: SheetQuote): string | null {
 /** The run asked for last: an answer for an earlier one is nobody's. */
 let generation = 0
 
+/** The writes under way (a save, an accept, a delete), which a project save waits for. */
+const writing = new Set<Promise<unknown>>()
+
+/** *work* tracked while it is under way, so `flush` settles it first. */
+function tracked<T>(work: () => Promise<T>): Promise<T> {
+  const running = work()
+  const settled = running.then(() => undefined, () => undefined)
+  writing.add(settled)
+  void settled.then(() => writing.delete(settled))
+  return running
+}
+
 /** Report a write's capture as a save's is; whether the ledger has yet to take it. */
 function uncapturedAfter(written: WorkbenchTestQuoteWriteResponse): boolean {
   reportSaveCapture(written)
@@ -143,7 +167,7 @@ function uncapturedAfter(written: WorkbenchTestQuoteWriteResponse): boolean {
 const runOf = (patch: Partial<QuoteRun>): QuoteRun => ({
   status: "running",
   number: null,
-  token: null,
+  digest: null,
   values: null,
   dropped: [],
   tables: null,
@@ -180,7 +204,7 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
       set({ loading: false })
     }
   },
-  save: async (name) => {
+  save: (name) => tracked(async () => {
     const { form } = useWorkbenchFormStore.getState()
     const { quote } = useWorkbenchPreviewStore.getState()
     if (form === null || get().saving) return false
@@ -189,9 +213,16 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
       set({ error: refusal })
       return false
     }
+    // The document the quote is priced on: one adopted meanwhile (a branch switched) holds
+    // another branch's test quotes, which this quote is not saved into.
+    const document = useDocumentStatusStore.getState().executionGeneration
     set({ saving: true, error: null, notice: null })
     try {
       const { tables } = await priceForm({ ...form, sample: quote }, fixedPricer())
+      if (useDocumentStatusStore.getState().executionGeneration !== document) {
+        set({ error: "Not saved: the branch changed while the quote was priced. Save it again on this one." })
+        return false
+      }
       const written = await saveTestQuote(name, form, quote, tables as PricedTables)
       set({ uncaptured: uncapturedAfter(written) })
       await get().load()
@@ -202,7 +233,7 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
     } finally {
       set({ saving: false })
     }
-  },
+  }),
   openQuote: async (id) => {
     const { form } = useWorkbenchFormStore.getState()
     if (form === null) return
@@ -252,12 +283,13 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
       }
       try {
         const opened = await openTestQuote(id, form)
-        done({ number: opened.number, token: opened.token, values: opened.values, dropped: opened.dropped })
+        done({ number: opened.number, digest: opened.revision_digest, values: opened.values, dropped: opened.dropped })
         const { tables } = await priceForm({ ...form, sample: opened.values }, pricer)
-        const compared = await compareTestQuote(id, form, opened.values, tables as PricedTables, opened.number)
+        // Compared with the revision the run opened, by its digest: one saved apart since
+        // (another branch's under the same number) is refused, not compared.
+        const compared = await compareTestQuote(id, form, opened.values, tables as PricedTables, opened.number, opened.revision_digest)
         done({
           status: compared.changes.length === 0 ? "unchanged" : "changed",
-          token: compared.token,
           tables: tables as PricedTables,
           changes: compared.changes,
         })
@@ -270,7 +302,9 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
   accept: async (id) => {
     const { runs, runForm, runBasis, running, accepting } = get()
     const run = runs[id]
-    if (run === undefined || runForm === null || run.number === null || run.token === null || run.values === null || run.tables === null) return
+    if (run === undefined || runForm === null) return
+    const { number, digest, values, tables } = run
+    if (number === null || digest === null || values === null || tables === null) return
     if (running || accepting) return
     if (runIsStale(runBasis, useWorkbenchFormStore.getState().form)) {
       set({ error: "The pipeline, the data source or the form has changed since this run: run again before accepting." })
@@ -279,14 +313,14 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
     const mine = generation
     set({ accepting: true })
     try {
-      const written = await acceptTestQuote(id, run.number, run.token, runForm, run.values, run.tables)
+      const written = await tracked(() => acceptTestQuote(id, number, digest, runForm, values, tables))
       set({ uncaptured: uncapturedAfter(written) })
       // A run started since, or forgotten since, holds its own result for the quote.
       if (generation === mine) {
         set((s) => ({
           error: null,
-          // The accepted revision's token is the server's to give: the next run reads it.
-          runs: { ...s.runs, [id]: { ...run, status: "unchanged", changes: [], number: run.number === null ? null : run.number + 1, token: null } },
+          // The accepted revision's digest is the server's to give: the next run reads it.
+          runs: { ...s.runs, [id]: { ...run, status: "unchanged", changes: [], number: number + 1, digest: null } },
         }))
       }
       await get().load()
@@ -303,7 +337,7 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
   },
   remove: async (id) => {
     try {
-      const written = await deleteTestQuote(id)
+      const written = await tracked(() => deleteTestQuote(id))
       set({ uncaptured: uncapturedAfter(written) })
       set((s) => {
         const runs = { ...s.runs }
@@ -321,6 +355,8 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
     if (get().open) void get().load()
   },
   flush: async () => {
+    // A write under way lands, or fails, first: its capture is the one to take.
+    await Promise.all(writing)
     if (!get().uncaptured) return
     try {
       set({ uncaptured: uncapturedAfter(await captureTestQuotes()) })

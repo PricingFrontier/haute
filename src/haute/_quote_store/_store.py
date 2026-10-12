@@ -90,7 +90,7 @@ class QuoteRevision:
     saved_at: datetime
 
     @property
-    def token(self) -> str:
+    def digest(self) -> str:
         """What this revision is, beyond its number: two branches can each hold a revision 2
         of one quote, saved apart. A content hash of who saved what, when."""
         from haute._cache import canonical_json
@@ -307,7 +307,7 @@ class QuoteStore:
         quote_id: str,
         *,
         after: int,
-        after_token: str | None = None,
+        after_digest: str | None = None,
         saved_by: str,
         form: FormSpec,
         inputs: Values,
@@ -318,7 +318,7 @@ class QuoteStore:
         """The revision following revision *after* of quote *quote_id*.
 
         Raises :class:`StaleQuoteError` when the quote's newest revision is not *after*, or,
-        given *after_token*, is a revision *after* other than the one that token names (one
+        given *after_digest*, is a revision *after* other than the one that digest names (one
         saved apart on another branch); :class:`QuoteNotFoundError` when there is no such
         quote. Nothing is written either way.
         """
@@ -338,8 +338,8 @@ class QuoteStore:
                     f"Quote {quote_id!r} has moved on since revision {after}: its newest is "
                     f"{latest}. Open it again to save over the newest."
                 )
-            if after_token is not None and _read_revision(connection, quote_id, after).token != (
-                after_token
+            if after_digest is not None and _read_revision(connection, quote_id, after).digest != (
+                after_digest
             ):
                 # Raised inside the transaction, so the move above is rolled back.
                 raise StaleQuoteError(

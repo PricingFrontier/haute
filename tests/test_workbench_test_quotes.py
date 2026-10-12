@@ -4,6 +4,7 @@ them, each write captured on the save ledger as the form's saves are."""
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -81,35 +82,51 @@ def test_the_file_is_in_the_test_quote_directory(project: Path) -> None:
         project_test_quotes_path(project)
 
 
-def _link_file(link: Path, target: Path) -> None:
-    try:
-        link.symlink_to(target)
-    except OSError:
-        pytest.skip("this account cannot make a file symlink here")
+def _link_outside(link: Path, outside: Path) -> None:
+    """A link at *link* to a new folder in *outside*: a junction on Windows, which anyone
+    can make, a symlink elsewhere."""
+    target = outside / f"{link.name}-target"
+    target.mkdir()
+    if os.name == "nt":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        os.symlink(target, link, target_is_directory=True)
 
 
-def test_a_test_quote_file_or_gitattributes_leading_outside_the_project_is_refused(
+def test_a_test_quote_file_leading_outside_the_project_is_refused_and_nothing_written(
     project: Path, tmp_path_factory: pytest.TempPathFactory
 ) -> None:
     enable(project)
     outside = tmp_path_factory.mktemp("outside")
-    target = outside / "elsewhere.sqlite"
-    migrate_store(store_url(target))
-    before = target.read_bytes()
     (project / "tests" / "quotes").mkdir(parents=True)
-    _link_file(project / PATH, target)
+    _link_outside(project / PATH, outside)
 
     with pytest.raises(WorkbenchTestQuoteError, match="a file inside it"):
         project_test_quotes_path(project)
     refused = save()
-    assert refused.status_code == 409, refused.text
-    assert target.read_bytes() == before
 
-    (project / PATH).unlink()
-    _link_file(project / ".gitattributes", outside / "attributes")
+    assert refused.status_code == 409, refused.text
+    assert [entry.name for entry in outside.rglob("*")] == ["test_quotes.sqlite-target"]
+
+
+def test_a_gitattributes_leading_outside_the_project_refuses_the_write_before_it_is_made(
+    project: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    enable(project)
+    outside = tmp_path_factory.mktemp("outside")
+    _link_outside(project / ".gitattributes", outside)
+
     with pytest.raises(WorkbenchTestQuoteError, match=".gitattributes leads outside"):
         project_gitattributes_path(project)
-    assert not (outside / "attributes").exists()
+    refused = save()
+
+    # Refused before the quote was written: nothing to save twice on a retry.
+    assert refused.status_code == 409, refused.text
+    assert ".gitattributes leads outside" in refused.json()["detail"]
+    assert not (project / PATH).exists()
+    assert [entry.name for entry in outside.rglob("*")] == [".gitattributes-target"]
 
 
 def test_a_test_quote_folder_with_a_space_keeps_its_drivers(project: Path) -> None:
@@ -235,11 +252,17 @@ def test_a_compare_lists_what_changed_since_the_revision_the_run_read(project: P
 
     compared = client().post(
         f"/api/workbench/test-quotes/{quote_id}/compare",
-        json={"form": FORM, "values": VALUES, "tables": repriced, "number": 1},
+        json={
+            "form": FORM,
+            "values": VALUES,
+            "tables": repriced,
+            "number": 1,
+            "revision_digest": opened(quote_id)["revision_digest"],
+        },
     )
 
     assert compared.status_code == 200, compared.text
-    assert compared.json()["token"] == opened(quote_id)["token"]
+    assert compared.json()["revision_digest"] == opened(quote_id)["revision_digest"]
     assert compared.json()["changes"] == [
         {
             "path": "pricing_output.premium",
@@ -254,6 +277,27 @@ def opened(quote_id: str) -> dict[str, Any]:
     answered = client().post(f"/api/workbench/test-quotes/{quote_id}/open", json={"form": FORM})
     assert answered.status_code == 200, answered.text
     return dict(answered.json())
+
+
+def test_a_compare_of_a_revision_the_run_did_not_open_is_refused(project: Path) -> None:
+    # The run opened revision 1 as another branch saved it.
+    enable(project)
+    quote_id = save().json()["quote"]["id"]
+
+    refused = client().post(
+        f"/api/workbench/test-quotes/{quote_id}/compare",
+        json={
+            "form": FORM,
+            "values": VALUES,
+            "tables": TABLES,
+            "number": 1,
+            "revision_digest": "another-branch",
+        },
+    )
+
+    assert refused.status_code == 409
+    assert "stale_quote_revision" in refused.text
+    assert "not the one the run opened" in refused.text
 
 
 def test_a_compare_asks_for_an_accept_when_the_request_a_deploy_prices_has_moved(
@@ -277,7 +321,13 @@ def test_a_compare_asks_for_an_accept_when_the_request_a_deploy_prices_has_moved
 
     compared = client().post(
         f"/api/workbench/test-quotes/{quote_id}/compare",
-        json={"form": renamed, "values": carried["values"], "tables": TABLES, "number": 1},
+        json={
+            "form": renamed,
+            "values": carried["values"],
+            "tables": TABLES,
+            "number": 1,
+            "revision_digest": carried["revision_digest"],
+        },
     )
 
     assert compared.status_code == 200, compared.text
@@ -289,7 +339,7 @@ def test_a_compare_asks_for_an_accept_when_the_request_a_deploy_prices_has_moved
         f"/api/workbench/test-quotes/{quote_id}/accept",
         json={
             "after": 1,
-            "token": compared.json()["token"],
+            "revision_digest": compared.json()["revision_digest"],
             "form": renamed,
             "values": carried["values"],
             "tables": TABLES,
@@ -306,12 +356,19 @@ def test_an_accept_follows_the_newest_and_a_stale_one_writes_nothing(project: Pa
     enable(project)
     quote_id = save().json()["quote"]["id"]
     repriced = {**TABLES, "pricing_output": [{"premium": 530.0}]}
-    token = opened(quote_id)["token"]
-    body = {"after": 1, "token": token, "form": FORM, "values": VALUES, "tables": repriced}
+    digest = opened(quote_id)["revision_digest"]
+    body = {
+        "after": 1,
+        "revision_digest": digest,
+        "form": FORM,
+        "values": VALUES,
+        "tables": repriced,
+    }
 
     # A revision 1 read as another branch saved it is not the one here.
     other = client().post(
-        f"/api/workbench/test-quotes/{quote_id}/accept", json={**body, "token": "elsewhere"}
+        f"/api/workbench/test-quotes/{quote_id}/accept",
+        json={**body, "revision_digest": "elsewhere"},
     )
     assert other.status_code == 409
     assert "saved apart, on another branch" in other.text
@@ -391,9 +448,13 @@ def test_every_test_quote_route_is_404_while_the_workbench_is_off(project: Path)
         (
             "POST",
             "/api/workbench/test-quotes/q/compare",
-            {"form": FORM, "values": VALUES, "tables": TABLES, "number": 1},
+            {"form": FORM, "values": VALUES, "tables": TABLES, "number": 1, "revision_digest": "d"},
         ),
-        ("POST", "/api/workbench/test-quotes/q/accept", {"after": 1, "token": "t", **write}),
+        (
+            "POST",
+            "/api/workbench/test-quotes/q/accept",
+            {"after": 1, "revision_digest": "t", **write},
+        ),
         ("DELETE", "/api/workbench/test-quotes/q", None),
         ("POST", "/api/workbench/test-quotes/capture", None),
     ):

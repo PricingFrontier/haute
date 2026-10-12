@@ -149,13 +149,17 @@ export async function openTestQuote(id: string, form: FormSpec): Promise<Workben
 }
 
 /** Every place a run's priced tables differ from what revision `number` accepted. */
+/**
+ * Compare a run's response and request with revision `number`, the one `digest` names: a
+ * revision `number` saved apart since it was opened (another branch's) answers 409.
+ */
 export async function compareTestQuote(
-  id: string, form: FormSpec, values: SheetQuote, tables: PricedTables, number: number,
-): Promise<{ number: number; token: string; changes: TestQuoteChange[] }> {
+  id: string, form: FormSpec, values: SheetQuote, tables: PricedTables, number: number, digest: string,
+): Promise<{ number: number; digest: string; changes: TestQuoteChange[] }> {
   const data = await request<unknown>(`/api/workbench/test-quotes/${encodeURIComponent(id)}/compare`, {
     method: "POST",
     headers: JSON_HEADERS,
-    body: JSON.stringify({ form, values, tables, number }),
+    body: JSON.stringify({ form, values, tables, number, revision_digest: digest }),
   })
   const compared: WorkbenchTestQuoteCompareResponse = expectGeneratedContract(
     "WorkbenchTestQuoteCompareResponse",
@@ -165,23 +169,23 @@ export async function compareTestQuote(
   // The generated type reads an any-valued field as an object; a value may be any JSON.
   return {
     number: compared.number,
-    token: compared.token,
+    digest: compared.revision_digest,
     changes: compared.changes as unknown as TestQuoteChange[],
   }
 }
 
 /**
- * Accept a run's response as the test quote's revision after `after`, the one `token` names.
+ * Accept a run's response as the test quote's revision after `after`, the one `digest` names.
  * A quote saved since, or a revision `after` saved apart on another branch, answers 409 with
  * a `stale_quote_revision` detail and nothing is written.
  */
 export async function acceptTestQuote(
-  id: string, after: number, token: string, form: FormSpec, values: SheetQuote, tables: PricedTables,
+  id: string, after: number, digest: string, form: FormSpec, values: SheetQuote, tables: PricedTables,
 ): Promise<WorkbenchTestQuoteWriteResponse> {
   const data = await request<unknown>(`/api/workbench/test-quotes/${encodeURIComponent(id)}/accept`, {
     method: "POST",
     headers: JSON_HEADERS,
-    body: JSON.stringify({ after, token, form, values, tables }),
+    body: JSON.stringify({ after, revision_digest: digest, form, values, tables }),
     retry: { maxRetries: 0 },
   })
   return writeResponse(data)

@@ -275,6 +275,37 @@ def test_an_empty_quote_is_refused(release: Any) -> None:
     assert refused.json()["detail"] == "Type the quote first"
 
 
+def test_a_request_past_the_deploy_body_limit_is_refused_before_it_is_read_whole(
+    release: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HAUTE_DEPLOY_QUOTE_REQUEST_BODY_LIMIT_BYTES", "200")
+    client = _client(release())
+    monkeypatch.setattr(workbench_app, "quote_request", _never)
+    revision = client.get("/api/app/form", headers=SIGNED_IN).json()["revision"]
+    oversized = {"t1": [{"c_state": "NY", "c_exposure": "1" * 400}]}
+
+    refused = client.post(
+        "/api/app/price",
+        json={"form_revision": revision, "values": oversized},
+        headers=SIGNED_IN,
+    )
+
+    assert refused.status_code == 413
+    assert refused.json()["error_code"] == "request_body_too_large"
+    malformed = client.post(
+        "/api/app/price",
+        content=b"{not json",
+        headers={**SIGNED_IN, "content-type": "application/json"},
+    )
+    assert malformed.status_code == 422
+    unshaped = client.post("/api/app/price", json={"values": {}}, headers=SIGNED_IN)
+    assert unshaped.status_code == 422
+
+
+def _never(*_: Any, **__: Any) -> Any:
+    raise AssertionError("a refused request reached the pricing")
+
+
 def test_a_pricing_that_runs_too_long_answers_that_it_timed_out(
     release: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

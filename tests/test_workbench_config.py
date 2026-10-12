@@ -90,6 +90,14 @@ def test_the_table_can_disable_the_workbench_and_name_its_form(tmp_path: Path) -
             "[workbench]\nenabled = true\n[workbench.app]\nhost = 'heroku'\n",
             "[workbench.app].host must be one of azure-container-apps; got 'heroku'",
         ),
+        (
+            "[workbench]\nenabled = true\n[workbench.app]\nhost = []\n",
+            "[workbench.app].host must be one of azure-container-apps; got []",
+        ),
+        (
+            "[workbench]\nenabled = true\n[workbench.app]\nhost = { name = 'azure' }\n",
+            "[workbench.app].host must be one of azure-container-apps; got {'name': 'azure'}",
+        ),
     ],
 )
 def test_a_bad_table_is_refused_naming_what_to_set(

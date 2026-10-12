@@ -234,9 +234,13 @@ def _write_test_quotes(
     when *create*), under the repository's lock, then the write captured on the ledger."""
     from haute._git_setup import get_identity
     from haute._quote_store import QuoteNotFoundError, migrate_store, open_store, store_url
+    from haute._test_quotes import project_gitattributes_path
 
     with repository_mutation(config.project_root):
         path, relative = _test_quotes_file(config)
+        # Refused before anything is written: a write the capture then refuses would be
+        # reported as not saved though it was.
+        project_gitattributes_path(config.project_root)
         if not create and not path.is_file():
             raise QuoteNotFoundError(f"{relative} holds no test quotes yet.")
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -354,7 +358,7 @@ async def open_test_quote(
             id=quote_id,
             name=summary.name,
             number=revision.number,
-            token=revision.token,
+            revision_digest=revision.digest,
             values=carried.values,
             dropped=carried.dropped,
             response=revision.response,
@@ -376,7 +380,7 @@ async def compare_test_quote(
     """Every place a run's response differs from the one revision ``number`` accepted, and
     every place the request the run priced differs from the one that revision keeps, which a
     deploy prices: a column renamed since asks for an accept, so the two price alike."""
-    from haute._quote_store import QuoteNotFoundError, QuoteStoreError
+    from haute._quote_store import QuoteNotFoundError, QuoteStoreError, StaleQuoteError
     from haute._test_quotes import ACCEPTED_TOLERANCE, quote_request, response_document
     from haute.deploy._validators import response_changes
 
@@ -391,6 +395,13 @@ async def compare_test_quote(
         raise _store_error(exc) from None
     if revision is None:
         raise _store_error(QuoteNotFoundError(f"The quote store holds no quote {quote_id!r}."))
+    if revision.digest != body.revision_digest:
+        raise _store_error(
+            StaleQuoteError(
+                f"Quote {quote_id!r} revision {body.number} is not the one the run opened: it "
+                "was saved apart, on another branch. Run it again."
+            )
+        )
     changes = [
         *response_changes(priced, revision.response or {}, ACCEPTED_TOLERANCE),
         *(
@@ -400,7 +411,7 @@ async def compare_test_quote(
     ]
     return WorkbenchTestQuoteCompareResponse(
         number=revision.number,
-        token=revision.token,
+        revision_digest=revision.digest,
         changes=[WorkbenchTestQuoteChange(**change._asdict()) for change in changes],
     )
 
@@ -421,7 +432,7 @@ async def accept_test_quote(
         revision = store.save_revision(
             quote_id,
             after=body.after,
-            after_token=body.token,
+            after_digest=body.revision_digest,
             saved_by=saved_by,
             form=body.form,
             inputs=body.values,

@@ -17,7 +17,7 @@ const summary = (id: string, name: string): WorkbenchTestQuoteSummary => ({
   id, name, number: 1, saved_by: "ana@example.com", saved_at: "2026-10-12T09:00:00", priced: true,
 })
 const result = (patch: Partial<QuoteRun>): QuoteRun => ({
-  status: "unchanged", number: 1, token: "read-1", values: {}, dropped: [], tables: {}, changes: [], error: null, ...patch,
+  status: "unchanged", number: 1, digest: "read-1", values: {}, dropped: [], tables: {}, changes: [], error: null, ...patch,
 })
 
 const actions = {
