@@ -618,6 +618,33 @@ def _github_trigger(document: dict[object, object]) -> dict[str, object]:
     return trigger
 
 
+def _deploy_trigger_paths(provider: str, *, workbench: bool) -> list[str]:
+    if provider == "github":
+        push = _github_trigger(yaml.safe_load(github_deploy_yml("databricks", workbench=workbench)))
+        paths = push["push"]["paths"]  # type: ignore[index]
+    else:
+        document = yaml.safe_load(azure_devops_yml("databricks", workbench=workbench))
+        paths = document["trigger"]["paths"]["include"]
+    assert isinstance(paths, list)
+    return paths
+
+
+@pytest.mark.parametrize("provider", ["github", "azure-devops"])
+class TestDeployTriggers:
+    """A push to main that changes a release input starts the deploy; GitLab filters no paths."""
+
+    def test_a_dependency_change_starts_a_deploy(self, provider: str) -> None:
+        paths = _deploy_trigger_paths(provider, workbench=False)
+        assert {"pyproject.toml", "uv.lock"} <= set(paths)
+
+    def test_a_form_change_starts_a_workbench_projects_deploy(self, provider: str) -> None:
+        workbench = _deploy_trigger_paths(provider, workbench=True)
+        plain = _deploy_trigger_paths(provider, workbench=False)
+        assert [path for path in workbench if path not in plain] == [
+            "forms/**" if provider == "github" else "forms/"
+        ]
+
+
 class TestCompleteYamlParity:
     """Complete CI documents preserve their release flow and secret consumers."""
 

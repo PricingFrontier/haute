@@ -209,7 +209,12 @@ provider is chosen, the generated workflow
 encodes the same fixed release flow: a validate job (lint, type check, test, pipeline lint,
 `haute deploy --dry-run`), an automatic deploy-to-staging job, a smoke test against staging
 (scores `tests/quotes/*.json`), an impact-analysis job comparing staging against production,
-and a production-deploy job gated behind a provider-specific approval mechanism. A
+and a production-deploy job gated behind a provider-specific approval mechanism. The
+deploy starts on a push to the default branch that changes a release input: the
+pipeline (`rating/`), `data/`, `models/`, the test quotes, `haute.toml`, the dependency
+files `pyproject.toml` and `uv.lock`, and in a project initialised with `--workbench` the
+form's directory, `forms/`. GitHub and Azure DevOps filter the push on those paths;
+GitLab's pipeline runs on every default-branch commit and filters none. A
 build-and-push-only target's workflow has no smoke-test or impact-analysis job (its production
 job follows staging directly): nothing runs the pushed image until someone updates the service
 by hand, so those checks would test the old service. The production job tags the release in git:

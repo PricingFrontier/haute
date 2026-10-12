@@ -83,7 +83,8 @@ Out of scope:
   is optional, a path relative to the project root that stays inside it, `forms/form.json`
   when absent; any other key is refused by name. `haute deploy`'s whole-file check of
   `haute.toml` accepts the table with those two keys. `haute init --workbench` writes the
-  table and a blank form; `haute init --force` rewrites `haute.toml`, so the table stays only
+  table and a blank form, and the deploy workflow it generates for GitHub or Azure DevOps
+  also starts when a file under `forms/` changes; `haute init --force` rewrites `haute.toml`, so the table stays only
   when `--workbench` is given again, while `forms/` is left as `data/` is. An existing project
   enables its workbench by adding the table by hand.
 - **The form file.** `forms/form.json` is one JSON document: `version` (1), `name`, `schema`

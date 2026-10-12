@@ -7,6 +7,7 @@ project name, deploy target, and CI provider.
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import PurePosixPath
 
 from haute._workbench_config import DEFAULT_FORM_PATH
 from haute._workbench_form import blank_form, render_form
@@ -178,6 +179,33 @@ BUILD_AND_PUSH_ONLY_TARGETS = ("azure-container-apps", "aws-ecs", "gcp-run")
 # Targets whose deploy builds a container image. ``haute status`` reads the
 # MLflow registry, so these have no registered version to tag a release with.
 _CONTAINER_BASED_TARGETS = ("container", *BUILD_AND_PUSH_ONLY_TARGETS)
+
+
+# What a release is built from: a push to main that changes none of these deploys
+# nothing. The dependency files change what the deployed image or model installs.
+_RELEASE_INPUT_DIRS = ("rating", "data", "models", "tests/quotes")
+_RELEASE_INPUT_FILES = ("haute.toml", "pyproject.toml", "uv.lock")
+
+
+def _release_input_dirs(workbench: bool) -> tuple[str, ...]:
+    """The release's input directories; a workbench project's form directory with them."""
+    if not workbench:
+        return _RELEASE_INPUT_DIRS
+    return (*_RELEASE_INPUT_DIRS, PurePosixPath(DEFAULT_FORM_PATH).parent.as_posix())
+
+
+def _github_trigger_paths(workbench: bool) -> str:
+    """The deploy workflow's ``on.push.paths`` entries, one per release input."""
+    dirs = [f'      - "{name}/**"' for name in _release_input_dirs(workbench)]
+    files = [f'      - "{name}"' for name in _RELEASE_INPUT_FILES]
+    return "\n".join([*dirs, *files])
+
+
+def _azure_devops_trigger_paths(workbench: bool) -> str:
+    """The pipeline's ``trigger.paths.include`` entries, one per release input."""
+    dirs = [f"      - {name}/" for name in _release_input_dirs(workbench)]
+    files = [f"      - {name}" for name in _RELEASE_INPUT_FILES]
+    return "\n".join([*dirs, *files])
 
 
 def _release_tag_script(target: str, indent: str) -> str:
@@ -439,7 +467,7 @@ jobs:
 """
 
 
-def github_deploy_yml(target: str) -> str:
+def github_deploy_yml(target: str, *, workbench: bool = False) -> str:
     """Merge-to-main deploy workflow for GitHub Actions.
 
     Runs automatically: validate → staging → smoke test → impact analysis.
@@ -510,11 +538,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "rating/**"
-      - "haute.toml"
-      - "data/**"
-      - "models/**"
-      - "tests/quotes/**"
+{_github_trigger_paths(workbench)}
   workflow_dispatch:
 
 concurrency:
@@ -749,7 +773,7 @@ deploy-production:
 # ── Azure DevOps ─────────────────────────────────────────────────────
 
 
-def azure_devops_yml(target: str) -> str:
+def azure_devops_yml(target: str, *, workbench: bool = False) -> str:
     """Combined CI + deploy pipeline for Azure DevOps.
 
     Uses stages to enforce ordering.  The ``DeployProduction`` stage
@@ -833,11 +857,7 @@ trigger:
     include: [main]
   paths:
     include:
-      - rating/
-      - haute.toml
-      - data/
-      - models/
-      - tests/quotes/
+{_azure_devops_trigger_paths(workbench)}
 
 pr:
   branches:

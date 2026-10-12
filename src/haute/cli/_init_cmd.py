@@ -587,7 +587,7 @@ def handle_init(config: InitConfig) -> None:
         workflows_dir.mkdir(parents=True, exist_ok=True)
         (workflows_dir / "ci.yml").write_text(github_ci_yml(), encoding="utf-8")
         (workflows_dir / "deploy-staging.yml").write_text(
-            github_deploy_yml(target),
+            github_deploy_yml(target, workbench=config.workbench),
             encoding="utf-8",
         )
         (workflows_dir / "deploy-production.yml").write_text(
@@ -607,7 +607,7 @@ def handle_init(config: InitConfig) -> None:
         ci_files = [".gitlab-ci.yml"]
     elif ci == "azure-devops":
         (project_dir / "azure-pipelines.yml").write_text(
-            azure_devops_yml(target),
+            azure_devops_yml(target, workbench=config.workbench),
             encoding="utf-8",
         )
         ci_files = ["azure-pipelines.yml"]

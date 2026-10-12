@@ -341,7 +341,12 @@ workbench's by `haute._workbench_config`, so deployment parsing and each reader 
 `github_deploy_prod_yml`, `gitlab_ci_yml`, `azure_devops_yml`) all pull the same `secrets`
 list out of `TARGETS` through provider-specific formatters (`_github_secrets_env`,
 `_gitlab_secrets_env`, `_azure_devops_secrets_env`) so a target's credential list is defined
-once and rendered three ways. `handle_init` calls exactly the generator(s) for the chosen
+once and rendered three ways. The release inputs that start a deploy are listed once
+too (`_RELEASE_INPUT_DIRS`, `_RELEASE_INPUT_FILES`, and `DEFAULT_FORM_PATH`'s directory
+through `_release_input_dirs` when `workbench` is set) and rendered by
+`_github_trigger_paths` and `_azure_devops_trigger_paths`; `github_deploy_yml` and
+`azure_devops_yml` take `workbench`, which `handle_init` passes from `--workbench`.
+`handle_init` calls exactly the generator(s) for the chosen
 `ci` value (`"none"` calls none of them); on `--force` it first calls
 `_prune_stale_ci_files(project_dir, keep=ci)` (defined in `src/haute/cli/_init_cmd.py`),
 which deletes every other provider's known artifact paths (from that module's `_CI_ARTIFACTS` map)

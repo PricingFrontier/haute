@@ -799,6 +799,29 @@ class TestInitWorkbench:
         assert "forms/form.json" in result.output
         assert "workbench config" in result.output
 
+    @pytest.mark.parametrize(
+        ("ci", "workflow", "entry"),
+        [
+            ("github", ".github/workflows/deploy-staging.yml", '- "forms/**"'),
+            ("azure-devops", "azure-pipelines.yml", "- forms/"),
+        ],
+    )
+    def test_a_form_change_starts_the_generated_deploy(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        ci: str,
+        workflow: str,
+        entry: str,
+    ):
+        monkeypatch.chdir(tmp_path)
+        runner.invoke(cli, ["init", "--workbench", "--ci", ci], catch_exceptions=False)
+        assert entry in (tmp_path / workflow).read_text(encoding="utf-8")
+
+        runner.invoke(cli, ["init", "--force", "--ci", ci], catch_exceptions=False)
+        assert entry not in (tmp_path / workflow).read_text(encoding="utf-8")
+
     def test_a_plain_init_writes_neither(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
