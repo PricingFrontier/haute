@@ -452,6 +452,22 @@ def test_a_project_builds_a_release_that_prices_as_its_pipeline(project: Path) -
     assert build_release(project, project / "elsewhere").id == built.id
 
 
+def test_a_project_naming_an_edit_role_builds_a_release_that_records_it(project: Path) -> None:
+    toml = project / "haute.toml"
+    toml.write_text(
+        toml.read_text(encoding="utf-8").replace(
+            'host = "azure-container-apps"\n',
+            'host = "azure-container-apps"\nedit_role = "Quotes.Edit"\n',
+        ),
+        encoding="utf-8",
+    )
+
+    built = build_release(project, project / "build" / "app")
+
+    assert built.edit_role == "Quotes.Edit"
+    assert read_release(project / "build" / "app")[0].edit_role == "Quotes.Edit"
+
+
 def test_the_same_project_checked_out_twice_builds_the_same_release(
     project: Path, tmp_path_factory: pytest.TempPathFactory
 ) -> None:

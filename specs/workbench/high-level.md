@@ -672,7 +672,8 @@ Out of scope:
   change names the quote's version and is refused (409) with the quote as it is now when
   the quote has moved on, or (409) naming what would let it when the quote does not take
   it as it stands; a quote the app does not keep is 404. A write whose browser says it
-  came from another site, or whose origin is not the app's host, is refused (403). The
+  came from another site, or, from a browser that does not say, whose origin is not the
+  app's host, is refused (403). The
   app's pages, `/`, `/quotes/new`, `/quotes/{id}` and `/quotes/{id}/revisions/{n}`, are
   its one page, which reads its route in the browser.
 - **The Quotes page.** With a quote store, the app opens on the Quotes page, at `/`. On

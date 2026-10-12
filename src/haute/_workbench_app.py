@@ -361,13 +361,14 @@ def quote_store_url() -> str | None:
 
 
 def _cross_site(request: Request) -> bool:
-    """A write sent by a page of another site: the browser says so, or its origin is not
-    this host."""
+    """A write sent by a page of another site: the browser says so or, from a browser that
+    does not say, its origin is not this host. What the browser says is taken as it is: a
+    proxy in front of the app may pass the app another host than the page's."""
     if request.method in ("GET", "HEAD", "OPTIONS"):
         return False
     site = request.headers.get("sec-fetch-site")
-    if site is not None and site not in _SAME_SITE:
-        return True
+    if site is not None:
+        return site not in _SAME_SITE
     origin = request.headers.get("origin")
     if origin is None:
         return False

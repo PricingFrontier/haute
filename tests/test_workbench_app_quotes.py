@@ -334,9 +334,14 @@ def test_a_write_from_a_page_of_another_site_is_refused(page: Page) -> None:
     cross = page.create(headers={**ANA, "sec-fetch-site": "cross-site"})
     foreign = page.create(headers={**ANA, "origin": "https://elsewhere.example"})
     origin = str(page.client.base_url).rstrip("/")
-    own = page.create(headers={**ANA, "sec-fetch-site": "same-origin", "origin": origin})
+    own = page.create(headers={**ANA, "origin": origin})
+    # Behind a proxy that passes the app another host, the browser's word is taken.
+    proxied = page.create(
+        headers={**ANA, "sec-fetch-site": "same-origin", "origin": "https://quotes.example.com"}
+    )
 
-    assert (cross.status_code, foreign.status_code, own.status_code) == (403, 403, 200), own.text
+    assert (cross.status_code, foreign.status_code) == (403, 403)
+    assert (own.status_code, proxied.status_code) == (200, 200), own.text
     read = page.client.get("/api/app/quotes", headers={**ANA, "sec-fetch-site": "cross-site"})
     assert read.status_code == 200
 
