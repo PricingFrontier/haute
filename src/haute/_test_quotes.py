@@ -9,6 +9,7 @@ from them and the response its pricing gave, shaped as a deployed pipeline answe
 
 from __future__ import annotations
 
+import sys
 import tomllib
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -54,6 +55,43 @@ def project_test_quotes_path(project_root: Path) -> Path:
         raise WorkbenchTestQuoteError(
             f"[test_quotes] dir {directory!r} must be a folder inside the project."
         ) from exc
+
+
+#: The git drivers' name for the test-quote file, in ``.gitattributes`` and the clone's config.
+GIT_DRIVER = "haute-test-quotes"
+
+
+def ensure_test_quote_git(project_root: Path, relative: str) -> bool:
+    """Give the clone at *project_root* git's drivers for the test-quote file at *relative*.
+
+    ``.gitattributes`` names the file with the drivers, and the clone's own config runs them
+    through the Python running Haute: ``dump`` for a diff and ``merge`` for a merge. Returns
+    whether ``.gitattributes`` changed, for the caller to capture; nothing outside a repository.
+    """
+    from haute._git_core import _run_git_ok
+
+    if not (project_root / ".git").exists():
+        return False
+    python = Path(sys.executable).as_posix()
+    wanted = {
+        f"diff.{GIT_DRIVER}.textconv": f'"{python}" -m haute.cli._test_quotes dump',
+        f"merge.{GIT_DRIVER}.name": "Haute's test quotes, merged quote by quote",
+        f"merge.{GIT_DRIVER}.driver": f'"{python}" -m haute.cli._test_quotes merge %O %A %B',
+    }
+    for key, value in wanted.items():
+        ok, current = _run_git_ok("config", "--local", "--get", key, cwd=project_root)
+        if not ok or current.strip() != value:
+            _run_git_ok("config", "--local", key, value, cwd=project_root)
+    attributes = project_root / ".gitattributes"
+    line = f"{relative} diff={GIT_DRIVER} merge={GIT_DRIVER}"
+    text = attributes.read_text(encoding="utf-8") if attributes.is_file() else ""
+    if line in text.splitlines():
+        return False
+    # A file that does not end its last line would run the two lines together.
+    lead = "\n" if text and not text.endswith("\n") else ""
+    with attributes.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(f"{lead}{line}\n")
+    return True
 
 
 def quote_request(spec: FormSpec, values: Mapping[str, Any]) -> dict[str, Any]:

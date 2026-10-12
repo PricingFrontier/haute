@@ -84,6 +84,12 @@ Out of scope, owned elsewhere:
   quotes added, removed and accepted anew, each with the outputs that moved; a file absent
   on either side reads as no test quotes, one an older Haute wrote is read through a
   migrated copy, and the report never fails the run.
+- `haute test-quotes dump FILE` writes the test-quote file at `FILE` as text, each quote by
+  name with its newest revision, who saved it and when, its request and its response, the
+  JSON with sorted keys, for git's diff driver.
+- `haute test-quotes merge BASE OURS THEIRS` merges the test-quote files of a three-way
+  merge quote by quote into `OURS`, git's merge driver contract: it exits 0 when every quote
+  merges and 1 naming the quotes in conflict, `OURS` then left as it was.
 - `haute status [model_name] [--version-only]` looks up a model's latest version/stage in the MLflow
   Model Registry.
 - `haute impact [--sample] [--batch-size] [--endpoint-suffix]` scores a configured safety dataset

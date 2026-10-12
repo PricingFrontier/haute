@@ -208,12 +208,14 @@ def _summary(summary: QuoteSummary) -> WorkbenchTestQuoteSummary:
 def _read_test_quotes(config: WorkbenchConfig, read: Callable[[QuoteStore], _T]) -> _T | None:
     """*read* on the test-quote file under the repository's lock; None while there is none."""
     from haute._quote_store import QuoteStoreNotMigratedError, open_store, store_url
-    from haute._test_quotes import WorkbenchTestQuoteError
+    from haute._test_quotes import WorkbenchTestQuoteError, ensure_test_quote_git
 
     with repository_mutation(config.project_root):
         path, relative = _test_quotes_file(config)
         if not path.is_file():
             return None
+        # The clone's drivers; .gitattributes, if it changes, rides the next write's capture.
+        ensure_test_quote_git(config.project_root, relative)
         try:
             store = open_store(store_url(path))
         except QuoteStoreNotMigratedError as exc:
@@ -232,6 +234,7 @@ def _write_test_quotes(
     when *create*), under the repository's lock, then the write captured on the ledger."""
     from haute._git_setup import get_identity
     from haute._quote_store import QuoteNotFoundError, migrate_store, open_store, store_url
+    from haute._test_quotes import ensure_test_quote_git
 
     with repository_mutation(config.project_root):
         path, relative = _test_quotes_file(config)
@@ -242,10 +245,13 @@ def _write_test_quotes(
         name, email = get_identity(config.project_root)
         with open_store(store_url(path)) as store:
             result = write(store, email or name or "")
+        # The file's drivers in .gitattributes ride the same capture.
+        ensure_test_quote_git(config.project_root, relative)
+        captured = [relative]
+        if (config.project_root / ".gitattributes").is_file():
+            captured.append(".gitattributes")
         warnings: list[str] = []
-        git_sha, identity_required = capture_save_in_ledger(
-            config.project_root, [relative], warnings
-        )
+        git_sha, identity_required = capture_save_in_ledger(config.project_root, captured, warnings)
     return result, WorkbenchTestQuoteWriteResponse(
         warnings=warnings, git_sha=git_sha, identity_required=identity_required
     )

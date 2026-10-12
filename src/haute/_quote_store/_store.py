@@ -104,6 +104,21 @@ class QuoteSummary:
     priced: bool
 
 
+@dataclass(frozen=True)
+class QuoteHistory:
+    """A quote whole, as its rows hold it: the quote, every revision in order and the forms
+    they name, so it can be compared with another file's and put into it."""
+
+    quote: dict[str, Any]
+    revisions: list[dict[str, Any]]
+    #: Each form a revision names, by its revision.
+    forms: dict[str, str]
+
+    @property
+    def name(self) -> str:
+        return str(self.quote["name"])
+
+
 @dataclass(frozen=True, slots=True)
 class CarriedValues:
     """A saved quote's values on the current form."""
@@ -346,6 +361,54 @@ class QuoteStore:
             )
             for row in rows
         ]
+
+    def histories(self) -> dict[str, QuoteHistory]:
+        """Every quote whole, by id."""
+        with self._engine.connect() as connection:
+            quotes = connection.execute(select(QUOTES)).mappings().all()
+            revisions = (
+                connection.execute(
+                    select(QUOTE_REVISIONS).order_by(
+                        QUOTE_REVISIONS.c.quote_id, QUOTE_REVISIONS.c.number
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            # Iterated, not passed to dict(): a result's keys() would make it read as a mapping.
+            forms = {
+                revision: document
+                for revision, document in connection.execute(
+                    select(QUOTE_FORMS.c.revision, QUOTE_FORMS.c.document)
+                ).tuples()
+            }
+        by_quote: dict[str, list[dict[str, Any]]] = {}
+        for revision in revisions:
+            by_quote.setdefault(revision["quote_id"], []).append(dict(revision))
+        histories: dict[str, QuoteHistory] = {}
+        for quote in quotes:
+            held = by_quote.get(quote["id"], [])
+            named = {revision["form_revision"] for revision in held}
+            histories[quote["id"]] = QuoteHistory(
+                quote=dict(quote),
+                revisions=held,
+                forms={key: forms[key] for key in sorted(named)},
+            )
+        return histories
+
+    def put_history(self, history: QuoteHistory) -> None:
+        """Put *history* in place of whatever this store holds of its quote, in one write."""
+        quote_id = history.quote["id"]
+        with self._engine.begin() as connection:
+            for revision, document in history.forms.items():
+                _keep_form(connection, revision, document)
+            connection.execute(
+                delete(QUOTE_REVISIONS).where(QUOTE_REVISIONS.c.quote_id == quote_id)
+            )
+            connection.execute(delete(QUOTES).where(QUOTES.c.id == quote_id))
+            connection.execute(insert(QUOTES).values(**history.quote))
+            if history.revisions:
+                connection.execute(insert(QUOTE_REVISIONS), history.revisions)
 
     def delete(self, quote_id: str) -> None:
         """Remove quote *quote_id* and its revisions; the forms they name stay kept.

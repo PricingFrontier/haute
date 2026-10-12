@@ -13,7 +13,7 @@
 | `src/haute/cli/_train.py` | `haute train` — `TrainConfig`, `handle_train`, loads a training script as a module, runs its `job`, prints a live progress bar. |
 | `src/haute/cli/_serve.py` | `haute serve` — `ServeConfig`, `handle_serve`, host-safety checks, working-directory/editable-checkout frontend selection, dev/prod mode dispatch, Vite and uvicorn launch/cleanup. |
 | `src/haute/cli/_deploy.py` | `haute deploy` — `DeployCliConfig`, `handle_deploy`, CI-gate check, resolve → validate-and-score-once → render quote results → deploy pipeline. |
-| `src/haute/cli/_test_quotes.py` | `haute test-quotes` — the `test_quotes` group and its `report` command: `ReportConfig`, `handle_report` (the file at `project_test_quotes_path`, the base's through `git show`, read through `_read_quotes` from a migrated copy), `report_markdown` (the counts, then the changed with `response_changes` between the base's and the branch's accepted responses, the added and the removed, by name). |
+| `src/haute/cli/_test_quotes.py` | `haute test-quotes` — the `test_quotes` group and its `report` command: `ReportConfig`, `handle_report` (the file at `project_test_quotes_path`, the base's through `git show`, read through `_read_quotes` from a migrated copy), `report_markdown` (the counts, then the changed with `response_changes` between the base's and the branch's accepted responses, the added and the removed, by name); `dump` (`dump_text`) and `merge` (`merge_files`: each side read through a migrated copy as `QuoteHistory` by id, a quote taken from the side that changed it against the base, a conflict where both did, the result written over a copy of OURS and moved into place only when nothing conflicts). |
 | `src/haute/cli/_smoke.py` | `haute smoke` — `SmokeConfig`, `handle_smoke`, sends each test quote to a live endpoint (Databricks or HTTP) as a request of its own through `_smoke_files`, which reports each file from `price_test_quotes_live`. |
 | `src/haute/cli/_status.py` | `haute status` — `StatusConfig`, `handle_status`, MLflow Model Registry lookup. |
 | `src/haute/cli/_impact.py` | `haute impact` — `ImpactConfig`, `handle_impact`, staging-vs-production comparison report; `_impact_databricks`/`_impact_http` transport backends. |
@@ -69,6 +69,8 @@ without validating required positional arguments.
 | `haute train TRAINING_SCRIPT` | Required positional path. | Omission is a Click exit-2 usage error. Missing/unsafe/unloadable script, missing `job`, script exception, or `job.run` failure exits 1; successful training exits 0. |
 | `haute serve` | `--host TEXT` (CLI → `[server].host` → `localhost`); `--port INTEGER` (effective default `8000`, not shown by current help); `--no-browser`. Port range is not Click-validated: negative/out-of-range integers reach socket setup and may raise rawly. | Port conflict or missing production static build exits 1; malformed `haute.toml` propagates `ConfigError`. A browser-launch failure prints the manual URL but leaves the running server path intact. |
 | `haute deploy [PIPELINE_FILE]` | Optional path; `--model-name TEXT`; `--dry-run`; `--endpoint-suffix TEXT`. | Non-dry-run outside recognised CI exits 1. Resolution, validation, either validation's quote pass or the separately printed quote pass, missing backend dependency, unimplemented target, and backend failure all exit 1. Dry-run success exits 0 before backend dispatch. |
+| `haute test-quotes dump` | `FILE`. | A file that cannot be read exits 1. |
+| `haute test-quotes merge` | `BASE OURS THEIRS` (git's `%O %A %B`). | Exits 1 naming each quote in conflict, `OURS` untouched; 0 once merged. |
 | `haute test-quotes report` | `--base TEXT` (default `origin/main`); `--output PATH` (default: stdout). | Never exits non-zero for what changed; a project outside git or a base without the file reports every test quote as added. |
 | `haute smoke` | `--endpoint-suffix TEXT`. | Missing config/quotes/endpoint, missing Databricks SDK, an installed SDK too old to expose the required `NotFound` error type, unsupported target, readiness timeout, health-request failure, any scoring request failure, an unreadable test-quote file, or an expected output the answer does not match exits 1. Missing and outdated SDKs produce distinct install/upgrade guidance. A quote without an `expected` output passes on any answer. |
 | `haute status [MODEL_NAME]` | Optional model name; `--version-only`. | Missing resolvable name or MLflow dependency exits 1. Normal mode prints “not found” and exits 0; `--version-only` prints only a version on success and raises `ClickException` (exit 1, stderr only) when no version exists. |
@@ -298,7 +300,9 @@ Key files and what they cover:
   exact resolved-object dispatch, dependency/unsupported-target errors, and suffix overrides.
 - `test_cli_test_quotes.py` — the report of a branch against its base: added, removed and
   accepted-anew quotes with the outputs that moved, nothing changed, no file on the base,
-  and the report written to a file.
+  and the report written to a file; the dump's text; the merge of quotes added on both
+  sides, changed on one, deleted on one, and a conflict named with OURS left alone; and a
+  real `git merge` of two branches running the registered driver.
 - `test_cli_smoke.py` — Databricks polling loop (including the "not ready" retry path), HTTP smoke
   path, the unsupported-target error, each test quote sent as a request of its own on both
   transports, an expected output checked within tolerance into a Workbench Output's tables

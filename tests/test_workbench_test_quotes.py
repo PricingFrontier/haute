@@ -130,7 +130,15 @@ def test_a_save_creates_the_file_at_the_newest_schema_and_captures_it(project: P
     assert body["quote"]["priced"] is True
     assert body["quote"]["saved_by"] == "test@example.com"
     assert body["git_sha"] is not None
-    assert PATH in git(project, "show", "--name-only", "--format=", LEDGER)
+    captured = git(project, "show", "--name-only", "--format=", LEDGER).splitlines()
+    assert sorted(captured) == [".gitattributes", PATH]
+    # The clone's drivers show the file as text in a diff and merge it quote by quote.
+    assert (project / ".gitattributes").read_text(encoding="utf-8") == (
+        f"{PATH} diff=haute-test-quotes merge=haute-test-quotes\n"
+    )
+    assert "haute.cli._test_quotes merge %O %A %B" in git(
+        project, "config", "--local", "merge.haute-test-quotes.driver"
+    )
     assert sorted(path.name for path in (project / "tests/quotes").iterdir()) == [
         "test_quotes.sqlite"
     ]

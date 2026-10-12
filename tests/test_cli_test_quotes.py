@@ -4,6 +4,7 @@ alone."""
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -12,9 +13,10 @@ import pytest
 from click.testing import CliRunner
 
 from haute._quote_store import QuoteStore, migrate_store, open_store, store_url
+from haute._test_quotes import ensure_test_quote_git
 from haute._workbench_form import FormSpec
 from haute.cli import cli
-from haute.cli._test_quotes import ReportConfig, handle_report
+from haute.cli._test_quotes import ReportConfig, dump_text, handle_report, merge_files
 
 FILE = "tests/quotes/test_quotes.sqlite"
 FORM = FormSpec.model_validate(
@@ -155,3 +157,146 @@ def test_a_base_that_cannot_be_read_is_said_and_the_report_still_written(
     report = written.read_text(encoding="utf-8")
     assert "_no-such-ref could not be read as a commit._" in report
     assert "2 added" in report
+
+
+# ── git's drivers: the dump and the merge ─────────────────────────────────
+
+
+def _file(directory: Path, name: str) -> Path:
+    path = directory / name
+    migrate_store(store_url(path))
+    return path
+
+
+def _names(path: Path) -> list[str]:
+    with open_store(store_url(path)) as store:
+        return sorted(quote.name for quote in store.quotes())
+
+
+def test_the_dump_shows_each_quote_by_name_with_its_newest_revision(tmp_path: Path) -> None:
+    path = _file(tmp_path, "q.sqlite")
+    with open_store(store_url(path)) as store:
+        create(store, "Northern fleet", {"pricing": {"premium": 512.4, "band": "A"}})
+
+    text = dump_text(path)
+
+    lines = text.splitlines()
+    assert lines[0].startswith("# Northern fleet (")
+    assert lines[1].startswith("revision 1, saved by ana at ")
+    assert "request: {}" in lines
+    # Keys sorted, so a diff of two dumps shows what changed and nothing else.
+    assert text.index('"band": "A"') < text.index('"premium": 512.4')
+
+
+def test_a_merge_takes_each_quote_from_the_side_that_changed_it(tmp_path: Path) -> None:
+    base = _file(tmp_path, "base.sqlite")
+    with open_store(store_url(base)) as store:
+        kept = create(store, "Kept", {"p": 1})
+        revised = create(store, "Revised", {"p": 1})
+        create(store, "Deleted", {"p": 1})
+    ours = tmp_path / "ours.sqlite"
+    theirs = tmp_path / "theirs.sqlite"
+    shutil.copyfile(base, ours)
+    shutil.copyfile(base, theirs)
+    with open_store(store_url(ours)) as store:
+        create(store, "Ours", {"p": 2})
+    with open_store(store_url(theirs)) as store:
+        create(store, "Theirs", {"p": 3})
+        store.save_revision(
+            revised,
+            after=1,
+            saved_by="ben",
+            form=FORM,
+            inputs={},
+            request={},
+            response={"p": 9},
+            release=None,
+        )
+        by_name = {quote.name: quote.id for quote in store.quotes()}
+        store.delete(by_name["Deleted"])
+
+    assert merge_files(base, ours, theirs) == []
+
+    assert _names(ours) == ["Kept", "Ours", "Revised", "Theirs"]
+    with open_store(store_url(ours)) as store:
+        assert store.revision(revised).response == {"p": 9}
+        assert store.revision(kept).number == 1
+
+
+def test_a_quote_both_sides_changed_is_a_conflict_and_ours_is_left_alone(
+    tmp_path: Path,
+) -> None:
+    base = _file(tmp_path, "base.sqlite")
+    with open_store(store_url(base)) as store:
+        both = create(store, "Northern fleet", {"p": 1})
+    ours = tmp_path / "ours.sqlite"
+    theirs = tmp_path / "theirs.sqlite"
+    shutil.copyfile(base, ours)
+    shutil.copyfile(base, theirs)
+    for path, premium in ((ours, 2), (theirs, 3)):
+        with open_store(store_url(path)) as store:
+            store.save_revision(
+                both,
+                after=1,
+                saved_by="ana",
+                form=FORM,
+                inputs={},
+                request={},
+                response={"p": premium},
+                release=None,
+            )
+    before = ours.read_bytes()
+
+    result = CliRunner().invoke(cli, ["test-quotes", "merge", str(base), str(ours), str(theirs)])
+
+    assert result.exit_code == 1
+    assert "both sides changed 'Northern fleet'" in result.output
+    assert ours.read_bytes() == before
+
+
+def test_a_merge_with_no_common_base_takes_both_sides_quotes(tmp_path: Path) -> None:
+    base = tmp_path / "base.sqlite"
+    base.write_bytes(b"")
+    ours = _file(tmp_path, "ours.sqlite")
+    theirs = _file(tmp_path, "theirs.sqlite")
+    with open_store(store_url(ours)) as store:
+        create(store, "Ours", {"p": 1})
+    with open_store(store_url(theirs)) as store:
+        create(store, "Theirs", {"p": 1})
+
+    assert merge_files(base, ours, theirs) == []
+    assert _names(ours) == ["Ours", "Theirs"]
+
+
+def test_git_merges_two_branches_quotes_through_the_registered_driver(project: Path) -> None:
+    assert ensure_test_quote_git(project, FILE) is True
+    assert ensure_test_quote_git(project, FILE) is False
+    git(project, "add", ".gitattributes")
+    git(project, "commit", "-m", "the test-quote drivers")
+    git(project, "branch", "coast")
+    with quotes(project) as store:
+        create(store, "Rates branch's quote", {"p": 1})
+    git(project, "commit", "-am", "a quote on rates")
+    git(project, "checkout", "coast")
+    with quotes(project) as store:
+        create(store, "Coast branch's quote", {"p": 2})
+    git(project, "commit", "-am", "a quote on coast")
+    git(project, "checkout", "rates")
+
+    git(project, "merge", "--no-edit", "coast")
+
+    assert _names(project / FILE) == [
+        "Coast branch's quote",
+        "Northern fleet",
+        "Rates branch's quote",
+        "Southern fleet",
+    ]
+    shown = subprocess.run(
+        ["git", "diff", "HEAD^1", "HEAD", "--", FILE],
+        cwd=project,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    # The diff driver shows the file as text: the quote the merge brought in, by name.
+    assert "+# Coast branch's quote (" in shown

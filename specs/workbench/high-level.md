@@ -71,9 +71,7 @@ Out of scope:
   is those sheets inside the builder, priced on the pipeline open in the editor.
 - Where a deployment's quote store is configured and migrated, the server databases it
   will run on, and the app's Save, Open and list of quotes
-  ([WB-10](../roadmap/workbench.md#wb-10--the-quote-store)); the test-quote file's
-  history in git, its diff and its merge
-  ([WB-12](../roadmap/workbench.md#wb-12--test-quotes-in-preview)).
+  ([WB-10](../roadmap/workbench.md#wb-10--the-quote-store)).
 - `haute init`'s other scaffolding ([cli](../cli/high-level.md),
   [pipeline-config](../pipeline-config/high-level.md)).
 
@@ -565,6 +563,25 @@ Out of scope:
   `haute init --workbench` writes the file empty, at the newest schema, so a milestone's
   sweep tracks it from the start, and the `.gitignore` guards keep SQLite's journal files
   out of the repository.
+
+  In git the file is a binary, so each clone is given two drivers whenever Haute reads or
+  writes its test quotes: `.gitattributes` names the file with
+  `diff=haute-test-quotes merge=haute-test-quotes`, written and captured with the file, and
+  the clone's own git configuration runs `haute test-quotes dump` to show the file as text
+  in a diff (each quote by name: its revision, who saved it and when, its request and its
+  response) and `haute test-quotes merge` to merge it, through the Python running Haute
+  (`python -m haute.cli._test_quotes`, without the CLI's start-up, whose log line would
+  join a diff's text).
+  The merge takes the two sides quote by quote, by id, against their common base: a quote
+  one side added, changed or deleted while the other left it as the base had it takes that
+  side's; a quote changed on both sides, or changed on one and deleted on the other, is a
+  conflict, named, the file left as it was on the branch being merged into. A provider's
+  merge button runs no driver, so a pull request in conflict over the file is brought up
+  to date where git runs it, on an analyst's machine (`git merge` of the target branch).
+  Before Haute commits the file, it settles a rollback journal a write that never finished
+  left beside it, as SQLite would on its next open: a hot journal is played back and
+  removed, and one the write never synced is left, harmless, never committed. A file
+  SQLite cannot open to settle refuses the commit, naming it.
 
   In CI, deploy's check prices every test quote in the file, one request each, and
   compares its answer with the response it was accepted with as a run compares it, so a

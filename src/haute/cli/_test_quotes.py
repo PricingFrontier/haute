@@ -11,6 +11,9 @@ as Markdown, the test quotes a branch added, removed and accepted anew, each wit
 that moved: what a pull request does to the test quotes. Both files are read through copies
 brought to the store's newest schema, so the project's own file is never written, and the
 report never fails the run.
+
+``dump`` and ``merge`` are git's drivers for the file, which is a binary to git: ``dump`` shows
+it as text in a diff, and ``merge`` merges two sides quote by quote against their base.
 """
 
 from __future__ import annotations
@@ -21,9 +24,12 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import click
+
+if TYPE_CHECKING:
+    from haute._quote_store import QuoteHistory
 
 
 @dataclass
@@ -74,6 +80,89 @@ def _base_file(project: Path, base: str, relative: str, scratch: Path) -> Path |
     path = scratch / "base-file.sqlite"
     path.write_bytes(shown.stdout)
     return path
+
+
+def _histories(path: Path, scratch: Path) -> dict[str, QuoteHistory]:
+    """The test quotes whole in the file at *path*, read through a migrated copy in *scratch*.
+
+    An empty file, as git gives a merge with no base, is a file with no test quotes.
+    """
+    from haute._quote_store import migrate_store, open_store, store_url
+
+    copy = scratch / f"{len(list(scratch.iterdir()))}.sqlite"
+    shutil.copyfile(path, copy)
+    migrate_store(store_url(copy))
+    with open_store(store_url(copy)) as store:
+        return store.histories()
+
+
+def dump_text(path: Path) -> str:
+    """The test-quote file at *path* as text: each quote by name, its newest revision, who
+    saved it and when, its request and its response, the JSON with sorted keys."""
+    lines: list[str] = []
+    with tempfile.TemporaryDirectory() as directory:
+        histories = _histories(path, Path(directory))
+    for history in sorted(histories.values(), key=lambda h: (h.name, h.quote["id"])):
+        newest = history.revisions[-1] if history.revisions else None
+        lines.append(f"# {history.name} ({history.quote['id']})")
+        if newest is None:
+            lines += ["no revisions", ""]
+            continue
+        lines.append(
+            f"revision {newest['number']}, saved by {newest['saved_by'] or 'nobody named'} "
+            f"at {newest['saved_at'].isoformat()}"
+        )
+        for field in ("request", "response"):
+            value = None if newest[field] is None else json.loads(newest[field])
+            lines.append(f"{field}: {json.dumps(value, sort_keys=True, indent=2)}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def merge_files(base: Path, ours: Path, theirs: Path) -> list[str]:
+    """Merge *theirs* into *ours* quote by quote against *base*; the quotes in conflict, by
+    name, when any are, *ours* then left as it was.
+
+    A quote one side changed (added, revised or deleted) while the other left it as the base
+    had it takes that side's; a quote both changed alike is kept; a quote both changed
+    otherwise is a conflict. The result is written over a copy of *ours*, at the store's
+    newest schema, and moved into place only when nothing conflicts.
+    """
+    from haute._quote_store import migrate_store, open_store, store_url
+
+    with tempfile.TemporaryDirectory() as directory:
+        scratch = Path(directory)
+        before = _histories(base, scratch)
+        mine = _histories(ours, scratch)
+        other = _histories(theirs, scratch)
+        conflicts: list[str] = []
+        taken: list[QuoteHistory] = []
+        dropped: list[str] = []
+        for quote_id in sorted(set(before) | set(mine) | set(other)):
+            was, kept, came = before.get(quote_id), mine.get(quote_id), other.get(quote_id)
+            if kept == came or came == was:
+                continue
+            if kept != was:
+                # The quote is on some side, or it would not be in the union.
+                named = kept or came or was
+                assert named is not None
+                conflicts.append(named.name)
+            elif came is None:
+                dropped.append(quote_id)
+            else:
+                taken.append(came)
+        if conflicts:
+            return sorted(conflicts)
+        merged = scratch / "merged.sqlite"
+        shutil.copyfile(ours, merged)
+        migrate_store(store_url(merged))
+        with open_store(store_url(merged)) as store:
+            for quote_id in dropped:
+                store.delete(quote_id)
+            for history in taken:
+                store.put_history(history)
+        shutil.copyfile(merged, ours)
+    return []
 
 
 def _shown(value: Any) -> str:
@@ -159,6 +248,28 @@ def test_quotes() -> None:
 
 
 @test_quotes.command()
+@click.argument("file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+def dump(file: Path) -> None:
+    """Write the test-quote FILE as text, for git's diff driver."""
+    click.echo(dump_text(file), nl=False)
+
+
+@test_quotes.command()
+@click.argument("base", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("ours", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("theirs", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+def merge(base: Path, ours: Path, theirs: Path) -> None:
+    """Merge the test-quote files BASE, OURS and THEIRS into OURS, for git's merge driver."""
+    conflicts = merge_files(base, ours, theirs)
+    if conflicts:
+        click.echo(
+            "The test quotes conflict: both sides changed " + ", ".join(repr(n) for n in conflicts),
+            err=True,
+        )
+        raise SystemExit(1)
+
+
+@test_quotes.command()
 @click.option(
     "--base",
     default="origin/main",
@@ -174,3 +285,9 @@ def test_quotes() -> None:
 def report(base: str, output: Path | None) -> None:
     """Report the test quotes this branch added, removed and accepted anew against BASE."""
     handle_report(ReportConfig(base=base, output=output))
+
+
+if __name__ == "__main__":
+    # git runs its drivers here: the group alone, without the CLI's process set-up, whose
+    # log line would join the text a diff shows.
+    test_quotes()
