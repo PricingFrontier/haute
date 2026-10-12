@@ -777,7 +777,22 @@ class TestInitWorkbench:
             "version": 1,
             "name": "motor",
             "schema": {"tables": []},
-            "pages": [{"id": "page_1", "title": "Sheet 1", "widgets": []}],
+            "pages": [
+                {
+                    "id": "page_1",
+                    "title": "Sheet 1",
+                    "show_when": {"match": "all", "conditions": []},
+                    "sections": [
+                        {
+                            "id": "section_1",
+                            "title": "Section 1",
+                            "height": 560,
+                            "show_when": {"match": "all", "conditions": []},
+                            "widgets": [],
+                        }
+                    ],
+                }
+            ],
             "sample": {},
         }
         assert "forms/form.json" in result.output

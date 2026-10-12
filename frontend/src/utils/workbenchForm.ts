@@ -1,20 +1,32 @@
 /**
  * Pure operations on the workbench's form (specs/workbench): the schema's tables and
- * columns, the sheets and the components on them, what the components show of the
- * schema, and what would stop the schema being the pipeline's tables or a component
- * showing what it should. Each operation returns a new form and leaves its input untouched.
+ * columns, the sheets, their sections and the components in them, what the components show
+ * or plot of the schema and when they show, and what would stop the schema being the
+ * pipeline's tables or a sheet, a section or a component showing what it should. Each
+ * operation returns a new form and leaves its input untouched.
  */
-import type { FieldRef, FormSpec, Page, SchemaColumn, SchemaTable } from "../api/types"
+import type { ChartWidget, Condition, FieldRef, FormSchema, FormSpec, HeadingWidget, Page, SchemaColumn, SchemaTable, Section, ShowWhen } from "../api/types"
 import { ASCII_IDENTIFIER_RE, apiInputLabelIssue, apiInputLabelIssueMessage } from "./apiInputPorts"
 import { PYTHON_KEYWORDS } from "./globalConstants"
-import type { Rect } from "./sheetGeometry"
-import { valuesBasis } from "./sheetValues"
+import { BLANK_SECTION_HEIGHT, NEW_SECTION_HEIGHT, fittedSectionHeight, leastSectionHeight, type Rect } from "./sheetGeometry"
+import { parseTypedNumber, pricedRows, valuesBasis, type PricedRows, type RowsByTable } from "./sheetValues"
+import { columnKey, conditionFault, fieldKeys, neverShown, sheetVisibility, testLabel } from "./sheetVisibility"
 
-/** A sheet's widget: a Table or a Collection. */
-export type Widget = Page["widgets"][number]
+/** A section's widget: a Table, a Collection, a Chart or a Heading. */
+export type Widget = Section["widgets"][number]
 export type WidgetType = Widget["type"]
+/** What the palette adds: a component of a kind, or a section. */
+export type PaletteType = WidgetType | "section"
+/** A component that shows schema columns: a Table, a Collection or a Chart. A Heading shows none. */
+export type FieldsWidget = Exclude<Widget, HeadingWidget>
 /** A column's type: the Quote Input's column types. */
 export type ColumnType = SchemaColumn["type"]
+/** How a Table's grid looks, and whether its rows are fixed: no Add row and no delete. */
+export type TableOptions = Pick<Extract<Widget, { type: "tableInput" }>, "row_numbers" | "density" | "gridlines" | "striped" | "fixed_rows">
+/** What names a Chart's rows, and how it draws. */
+export type ChartOptions = Pick<ChartWidget, "category" | "chart_type" | "orientation" | "stacked" | "legend" | "data_labels">
+/** How a Heading's text shows. */
+export type HeadingOptions = Pick<HeadingWidget, "size" | "align">
 
 export const newId = (prefix: string): string => `${prefix}_${crypto.randomUUID().slice(0, 8)}`
 
@@ -31,7 +43,15 @@ export function uniqueName(base: string, taken: Iterable<string>): string {
 export const readableName = (name: string): string =>
   name.replace(/_+/g, " ").trim().replace(/^./, (c) => c.toUpperCase())
 
-export const allWidgets = (spec: FormSpec): Widget[] => spec.pages.flatMap((page) => page.widgets)
+export const allSections = (spec: FormSpec): Section[] => spec.pages.flatMap((page) => page.sections)
+
+/** A sheet's components, section by section. */
+export const pageWidgets = (page: Page): Widget[] => page.sections.flatMap((section) => section.widgets)
+
+export const allWidgets = (spec: FormSpec): Widget[] => spec.pages.flatMap(pageWidgets)
+
+/** Whether a component shows schema columns: a Table, a Collection or a Chart, not a Heading. */
+export const showsFields = (widget: Widget): widget is FieldsWidget => widget.type !== "heading"
 
 const edit = (spec: FormSpec, change: (draft: FormSpec) => void): FormSpec => {
   const draft = structuredClone(spec)
@@ -70,6 +90,11 @@ export const createSchemaColumn = (spec: FormSpec, tableId: string): SchemaColum
   max: null,
   options: [],
   index: false,
+  help: "",
+  placeholder: "",
+  number_format: "general",
+  decimal_places: null,
+  use_grouping: true,
 })
 
 /** A table's index: a column holding each row's number, from 1, as the rows stand. */
@@ -90,16 +115,33 @@ export const updateSchemaTable = (spec: FormSpec, id: string, patch: Partial<Sch
     Object.assign(schemaTableOf(draft, id), patch)
   })
 
-/** Take the schema columns `drop` matches out of every widget that shows them. */
+/**
+ * Take the schema columns `drop` matches out of every widget that shows them, numbering
+ * again the rows of a Chart that one of them labelled.
+ */
 const dropFields = (draft: FormSpec, drop: (field: FieldRef) => boolean): void => {
-  for (const widget of allWidgets(draft)) widget.fields = widget.fields.filter((field) => !drop(field))
+  for (const widget of allWidgets(draft).filter(showsFields)) {
+    widget.fields = widget.fields.filter((field) => !drop(field))
+    if (widget.type === "chart" && widget.category !== null && drop(widget.category)) widget.category = null
+  }
 }
 
-/** Removing a table removes its columns from the widgets that show them, and its sample rows. */
+/** Take the conditions `drop` matches out of every sheet, section and widget that tests them. */
+const dropConditions = (draft: FormSpec, drop: (condition: Condition) => boolean): void => {
+  for (const holder of [...draft.pages, ...allSections(draft), ...allWidgets(draft)]) {
+    holder.show_when.conditions = holder.show_when.conditions.filter((condition) => !drop(condition))
+  }
+}
+
+/**
+ * Removing a table removes its columns from the widgets that show them, or label a Chart's
+ * rows, and the conditions that test them, and its sample rows.
+ */
 export const removeSchemaTable = (spec: FormSpec, id: string): FormSpec =>
   edit(spec, (draft) => {
     draft.schema.tables = draft.schema.tables.filter((table) => table.id !== id)
     dropFields(draft, (field) => field.table === id)
+    dropConditions(draft, (condition) => condition.table === id)
     delete draft.sample[id]
   })
 
@@ -151,9 +193,9 @@ export const updateSchemaColumn = (
 export const takesOptions = (type: SchemaColumn["type"]): boolean => type !== "bool" && type !== "date"
 
 /**
- * Change a column's type, dropping the rules the new type cannot have: the range of a
- * column no longer a number, and the allowed values of one now a tick box or a date,
- * which would otherwise still rule its cells.
+ * Change a column's type, dropping the rules the new type cannot have: the range and the
+ * number format of a column no longer a number, and the allowed values of one now a tick
+ * box or a date, which would otherwise still rule its cells.
  */
 export const changeSchemaColumnType = (
   spec: FormSpec,
@@ -167,23 +209,40 @@ export const changeSchemaColumnType = (
     if (type !== "int" && type !== "float") {
       column.min = null
       column.max = null
+      column.number_format = "general"
+      column.decimal_places = null
+      column.use_grouping = true
     }
     if (!takesOptions(type)) column.options = []
   })
 
-/** Removing a column removes it from the widgets that show it, and its sample values. */
+/**
+ * Removing a column removes it from the widgets that show it, or label a Chart's rows,
+ * and the conditions that test it, and its sample values.
+ */
 export const removeSchemaColumn = (spec: FormSpec, tableId: string, columnId: string): FormSpec =>
   edit(spec, (draft) => {
     const table = schemaTableOf(draft, tableId)
     table.columns = table.columns.filter((column) => column.id !== columnId)
     dropFields(draft, (field) => field.table === tableId && field.column === columnId)
+    dropConditions(draft, (condition) => condition.table === tableId && condition.column === columnId)
     for (const row of draft.sample[tableId] ?? []) delete row[columnId]
   })
 
-/** The widgets showing a schema table's columns, or just one of them. */
+/** The widgets showing a schema table's columns, or just one of them, a Chart labelling its rows by one included. */
 export const fieldUses = (spec: FormSpec, tableId: string, columnId?: string): Widget[] =>
-  allWidgets(spec).filter((widget) =>
-    widget.fields.some((field) => field.table === tableId && (columnId === undefined || field.column === columnId)),
+  allWidgets(spec).filter(showsFields).filter((widget) =>
+    [...widget.fields, ...(widget.type === "chart" && widget.category !== null ? [widget.category] : [])].some(
+      (field) => field.table === tableId && (columnId === undefined || field.column === columnId),
+    ),
+  )
+
+/** The sheets, sections and widgets whose conditions test a schema table's columns, or just one of them. */
+export const conditionUses = (spec: FormSpec, tableId: string, columnId?: string): (Page | Section | Widget)[] =>
+  [...spec.pages, ...allSections(spec), ...allWidgets(spec)].filter((holder) =>
+    holder.show_when.conditions.some(
+      (condition) => condition.table === tableId && (columnId === undefined || condition.column === columnId),
+    ),
   )
 
 /** The schema table and column a field names, or null when it is no longer in the schema. */
@@ -199,11 +258,11 @@ export interface ShownField {
   found: { table: SchemaTable; column: SchemaColumn } | null
 }
 
-/** The fields a component shows, each with its column, in the component's order. */
+/** The fields a component shows, each with its column, in the component's order; a Heading shows none. */
 export const shownFields = (spec: FormSpec, widget: Widget): ShownField[] =>
-  widget.fields.map((field) => ({ key: `${field.table}:${field.column}`, found: fieldColumn(spec, field) }))
+  showsFields(widget) ? widget.fields.map((field) => ({ key: `${field.table}:${field.column}`, found: fieldColumn(spec, field) })) : []
 
-// ─── Sheets and components ───────────────────────────────────────────────
+// ─── Sheets, sections and components ─────────────────────────────────────
 
 function pageOf(spec: FormSpec, id: string): Page {
   const page = spec.pages.find((candidate) => candidate.id === id)
@@ -211,11 +270,29 @@ function pageOf(spec: FormSpec, id: string): Page {
   return page
 }
 
-export const createPage = (spec: FormSpec): Page => ({
-  id: newId("page"),
-  title: uniqueName(`Sheet ${spec.pages.length + 1}`, spec.pages.map((page) => page.title)),
+/** When a new sheet, section or component shows: always, with no conditions. */
+const alwaysShown = (): ShowWhen => ({ match: "all", conditions: [] })
+
+/** A new section of `page`, named in turn on it, `height` tall, always shown and empty. */
+export const createSection = (page: Page, height: number = NEW_SECTION_HEIGHT): Section => ({
+  id: newId("section"),
+  title: uniqueName(`Section ${page.sections.length + 1}`, page.sections.map((section) => section.title)),
+  height,
+  show_when: alwaysShown(),
   widgets: [],
 })
+
+/** A new sheet, named in turn, always shown, holding one section `BLANK_SECTION_HEIGHT` tall: the whole sheet. */
+export function createPage(spec: FormSpec): Page {
+  const page: Page = {
+    id: newId("page"),
+    title: uniqueName(`Sheet ${spec.pages.length + 1}`, spec.pages.map((candidate) => candidate.title)),
+    show_when: alwaysShown(),
+    sections: [],
+  }
+  page.sections.push(createSection(page, BLANK_SECTION_HEIGHT))
+  return page
+}
 
 export const addPage = (spec: FormSpec, page: Page): FormSpec =>
   edit(spec, (draft) => {
@@ -227,6 +304,23 @@ export const renamePage = (spec: FormSpec, id: string, title: string): FormSpec 
     pageOf(draft, id).title = title
   })
 
+/** Move the sheet at `from` in the tabs' order to `to`; a move to where it is changes nothing. */
+export function movePage(spec: FormSpec, from: number, to: number): FormSpec {
+  if (from === to) return spec
+  if (spec.pages[from] === undefined || spec.pages[to] === undefined) {
+    throw new Error(`Cannot move the sheet at ${from} to ${to}: the form has ${spec.pages.length} sheets`)
+  }
+  return edit(spec, (draft) => {
+    const [page] = draft.pages.splice(from, 1)
+    draft.pages.splice(to, 0, page)
+  })
+}
+
+export const setPageShowWhen = (spec: FormSpec, id: string, showWhen: ShowWhen): FormSpec =>
+  edit(spec, (draft) => {
+    pageOf(draft, id).show_when = structuredClone(showWhen)
+  })
+
 /** Remove a sheet with its components; the schema and the sample stay. The last sheet stays. */
 export const removePage = (spec: FormSpec, id: string): FormSpec =>
   edit(spec, (draft) => {
@@ -235,13 +329,112 @@ export const removePage = (spec: FormSpec, id: string): FormSpec =>
     draft.pages = draft.pages.filter((page) => page.id !== id)
   })
 
-/** The component with `id`, with its sheet and its place on it, or null. */
-export function findWidget(spec: FormSpec, id: string): { widget: Widget; page: Page; index: number } | null {
+/** The section with `id`, with its sheet and its place on it, or null. */
+export function findSection(spec: FormSpec, id: string): { section: Section; page: Page; index: number } | null {
   for (const page of spec.pages) {
-    const index = page.widgets.findIndex((widget) => widget.id === id)
-    if (index >= 0) return { widget: page.widgets[index], page, index }
+    const index = page.sections.findIndex((section) => section.id === id)
+    if (index >= 0) return { section: page.sections[index], page, index }
   }
   return null
+}
+
+function sectionOf(spec: FormSpec, id: string): Section {
+  const found = findSection(spec, id)
+  if (found === null) throw new Error(`No sheet has a section ${id}`)
+  return found.section
+}
+
+/** Add a section to a sheet at `index`, or at the end. */
+export const addSection = (spec: FormSpec, pageId: string, section: Section, index?: number): FormSpec =>
+  edit(spec, (draft) => {
+    const { sections } = pageOf(draft, pageId)
+    sections.splice(index ?? sections.length, 0, section)
+  })
+
+/**
+ * Start `added` in a section at `at` down it: the components whose top is there or below
+ * move into `added`, under the section, keeping their places on the sheet, and the section
+ * keeps the height above the line, but never less than what stays in it reaches, which
+ * pushes what moved down by as much. `added` takes the rest of the height, but never less
+ * than what it holds reaches or `MIN_SECTION_HEIGHT`.
+ */
+export const splitSection = (spec: FormSpec, id: string, at: number, added: Section): FormSpec =>
+  edit(spec, (draft) => {
+    const found = findSection(draft, id)
+    if (found === null) throw new Error(`No sheet has a section ${id}`)
+    const { section, page, index } = found
+    const holds = [...added.widgets, ...section.widgets.filter((widget) => widget.y >= at).map((widget) => ({ ...widget, y: widget.y - at }))]
+    section.widgets = section.widgets.filter((widget) => widget.y < at)
+    const above = Math.max(at, leastSectionHeight(section.widgets))
+    page.sections.splice(index + 1, 0, { ...added, widgets: holds, height: Math.max(section.height - at, leastSectionHeight(holds)) })
+    section.height = above
+  })
+
+export const renameSection = (spec: FormSpec, id: string, title: string): FormSpec =>
+  edit(spec, (draft) => {
+    sectionOf(draft, id).title = title
+  })
+
+export const setSectionShowWhen = (spec: FormSpec, id: string, showWhen: ShowWhen): FormSpec =>
+  edit(spec, (draft) => {
+    sectionOf(draft, id).show_when = structuredClone(showWhen)
+  })
+
+/**
+ * A section's height set; the form as given while it is that already, so no edit is
+ * recorded, and for a height that is not a safe whole number, which the file cannot hold.
+ */
+function withSectionHeight(spec: FormSpec, id: string, height: number): FormSpec {
+  if (sectionOf(spec, id).height === height || !Number.isSafeInteger(height)) return spec
+  return edit(spec, (draft) => {
+    sectionOf(draft, id).height = height
+  })
+}
+
+/** Set a section's height in whole pixels, never under what its components reach or `MIN_SECTION_HEIGHT`. */
+export const setSectionHeight = (spec: FormSpec, id: string, height: number): FormSpec =>
+  withSectionHeight(spec, id, Math.max(Math.round(height), leastSectionHeight(sectionOf(spec, id).widgets)))
+
+/** Fit a section to its components (`fittedSectionHeight`). */
+export const fitSection = (spec: FormSpec, id: string): FormSpec => withSectionHeight(spec, id, fittedSectionHeight(sectionOf(spec, id).widgets))
+
+/** Move the section at `from` on a sheet to `to`; a move to where it is changes nothing. */
+export function moveSection(spec: FormSpec, pageId: string, from: number, to: number): FormSpec {
+  if (from === to) return spec
+  const { sections } = pageOf(spec, pageId)
+  if (sections[from] === undefined || sections[to] === undefined) {
+    throw new Error(`Cannot move the section at ${from} to ${to}: the sheet has ${sections.length} sections`)
+  }
+  return edit(spec, (draft) => {
+    const moved = pageOf(draft, pageId).sections
+    const [section] = moved.splice(from, 1)
+    moved.splice(to, 0, section)
+  })
+}
+
+/** Remove a section with its components; the schema and the sample stay. A sheet's last section stays. */
+export const removeSection = (spec: FormSpec, id: string): FormSpec =>
+  edit(spec, (draft) => {
+    const found = findSection(draft, id)
+    if (found === null) throw new Error(`No sheet has a section ${id}`)
+    if (found.page.sections.length === 1) throw new Error("A sheet's last section cannot be removed")
+    found.page.sections.splice(found.index, 1)
+  })
+
+/** The component with `id`, with its sheet, its section and its place in it, or null. */
+export function findWidget(spec: FormSpec, id: string): { widget: Widget; page: Page; section: Section; index: number } | null {
+  for (const page of spec.pages) {
+    for (const section of page.sections) {
+      const index = section.widgets.findIndex((widget) => widget.id === id)
+      if (index >= 0) return { widget: section.widgets[index], page, section, index }
+    }
+  }
+  return null
+}
+
+/** Grow a section, in a draft, to hold one of its components: as tall as the component reaches, at least. */
+const holdWidget = (section: Section, widget: Widget): void => {
+  section.height = Math.max(section.height, widget.y + widget.h)
 }
 
 function widgetOf(spec: FormSpec, id: string): Widget {
@@ -250,49 +443,157 @@ function widgetOf(spec: FormSpec, id: string): Widget {
   return found.widget
 }
 
-/** A new component of `type` at `rect`, showing nothing yet. */
+/** The component with `id`, one that shows fields: a Heading shows none. */
+function fieldsWidgetOf(spec: FormSpec, id: string): FieldsWidget {
+  const widget = widgetOf(spec, id)
+  if (!showsFields(widget)) throw new Error("A Heading shows no fields")
+  return widget
+}
+
+/** A new Table's options: numbered, compact, lined between rows, striped and not fixed. */
+export const TABLE_OPTIONS: Readonly<TableOptions> = { row_numbers: true, density: "compact", gridlines: "rows", striped: true, fixed_rows: false }
+
+/** A new Chart's options: its rows numbered, columns, upright, unstacked, its legend at the bottom and no data labels. */
+export const CHART_OPTIONS: Readonly<ChartOptions> = {
+  category: null,
+  chart_type: "column",
+  orientation: "vertical",
+  stacked: false,
+  legend: "bottom",
+  data_labels: false,
+}
+
+/** A new Heading's options: medium, a section's heading, aligned left. */
+export const HEADING_OPTIONS: Readonly<HeadingOptions> = { size: "medium", align: "left" }
+
+/** A new component of `type` at `rect`, showing nothing yet, and always. */
+export function createWidget<T extends WidgetType>(type: T, rect: Rect): Extract<Widget, { type: T }>
 export function createWidget(type: WidgetType, rect: Rect): Widget {
   // In the file's order, so a component the view made compares equal to it saved.
   const { x, y, w, h } = rect
-  const placed = { id: newId("w"), x, y, w, h, type, title: "", fields: [] as FieldRef[] }
-  return type === "collection" ? { ...placed, type, columns: 3 } : { ...placed, type, rows: 3 }
+  const placed = { id: newId("w"), x, y, w, h }
+  const showing = { title: "", fields: [] as FieldRef[], show_when: alwaysShown() }
+  switch (type) {
+    case "collection":
+      return { ...placed, type, ...showing, columns: 3 }
+    case "chart":
+      return { ...placed, type, ...showing, ...CHART_OPTIONS }
+    case "tableInput":
+      return { ...placed, type, ...showing, rows: 3, ...TABLE_OPTIONS }
+    case "heading":
+      return { ...placed, type, text: "", description: "", show_when: alwaysShown(), ...HEADING_OPTIONS }
+  }
 }
 
-export const addWidget = (spec: FormSpec, pageId: string, widget: Widget): FormSpec =>
+/** Add a component to a section, kept inside it (`keptInside`); only one taller than the section grows it. */
+export const addWidget = (spec: FormSpec, sectionId: string, widget: Widget): FormSpec =>
   edit(spec, (draft) => {
-    pageOf(draft, pageId).widgets.push(widget)
+    const section = sectionOf(draft, sectionId)
+    const kept = { ...widget, y: keptInside(widget.y, widget.h, section.height) }
+    section.widgets.push(kept)
+    holdWidget(section, kept)
   })
 
-/** What any component can be given; `rows` is a Table's alone and `columns` a Collection's. */
-export type WidgetPatch = Partial<Rect> & { title?: string; fields?: FieldRef[]; rows?: number; columns?: number }
+/**
+ * What any component can be given; `rows` and the Table's options are a Table's alone,
+ * `columns` a Collection's, the Chart's options a Chart's, and `text`, `description` and
+ * the Heading's options a Heading's, which has no `title` or `fields`.
+ */
+export type WidgetPatch = Partial<Rect> & {
+  title?: string
+  fields?: FieldRef[]
+  show_when?: ShowWhen
+  rows?: number
+  columns?: number
+  text?: string
+  description?: string
+} & Partial<TableOptions> &
+  Partial<ChartOptions> &
+  Partial<HeadingOptions>
 
+const TABLE_ONLY = ["rows", ...Object.keys(TABLE_OPTIONS)]
+const CHART_ONLY = Object.keys(CHART_OPTIONS)
+const HEADING_ONLY = ["text", "description", ...Object.keys(HEADING_OPTIONS)]
+/** What every component but a Heading has. */
+const NOT_HEADING = ["title", "fields"]
+
+/**
+ * Change a component as `patch` says; grown past its section's bottom, as a resize grows it,
+ * the section grows to hold it, pushing the sections under it down. Moves go through
+ * `placeWidget` and `moveWidget`, which keep a component inside its section.
+ */
 export const updateWidget = (spec: FormSpec, id: string, patch: WidgetPatch): FormSpec =>
   edit(spec, (draft) => {
-    const widget = widgetOf(draft, id)
-    if ("rows" in patch && widget.type !== "tableInput") throw new Error("Only a Table has rows")
+    const found = findWidget(draft, id)
+    if (found === null) throw new Error(`No sheet has a component ${id}`)
+    const { widget, section } = found
+    const tableOnly = TABLE_ONLY.find((key) => key in patch)
+    if (tableOnly !== undefined && widget.type !== "tableInput") throw new Error(`Only a Table has ${tableOnly}`)
     if ("columns" in patch && widget.type !== "collection") throw new Error("Only a Collection has columns")
+    const chartOnly = CHART_ONLY.find((key) => key in patch)
+    if (chartOnly !== undefined && widget.type !== "chart") throw new Error(`Only a Chart has ${chartOnly}`)
+    const headingOnly = HEADING_ONLY.find((key) => key in patch)
+    if (headingOnly !== undefined && widget.type !== "heading") throw new Error(`Only a Heading has ${headingOnly}`)
+    const notHeading = NOT_HEADING.find((key) => key in patch)
+    if (notHeading !== undefined && widget.type === "heading") throw new Error(`A Heading has no ${notHeading}`)
     Object.assign(widget, patch)
+    holdWidget(section, widget)
   })
+
+/**
+ * Where a component `h` tall may sit in a section `height` tall, as near `y` as it can:
+ * inside it, never across its top or its bottom. One taller than the section sits at its
+ * top, and the section grows to hold it (`holdWidget`).
+ */
+export const keptInside = (y: number, h: number, height: number): number => Math.max(0, Math.min(y, height - h))
+
+/**
+ * Move a component to `rect` in a section, its own or another, kept inside it
+ * (`keptInside`); into another it goes last, so it is drawn over the components there. Only
+ * a component taller than the section it lands in grows it; the one it left keeps its height.
+ */
+export const placeWidget = (spec: FormSpec, id: string, sectionId: string, rect: Rect): FormSpec =>
+  edit(spec, (draft) => {
+    const found = findWidget(draft, id)
+    if (found === null) throw new Error(`No sheet has a component ${id}`)
+    const target = sectionOf(draft, sectionId)
+    if (target !== found.section) {
+      found.section.widgets.splice(found.index, 1)
+      target.widgets.push(found.widget)
+    }
+    const { x, y, w, h } = rect
+    Object.assign(found.widget, { x, y: keptInside(y, h, target.height), w, h })
+    holdWidget(target, found.widget)
+  })
+
+/** Move a component within its section, kept inside it (`keptInside`): a nudge never crosses its section's top or bottom. */
+export function moveWidget(spec: FormSpec, id: string, to: { x: number; y: number }): FormSpec {
+  const found = findWidget(spec, id)
+  if (found === null) throw new Error(`No sheet has a component ${id}`)
+  const { section, widget } = found
+  return placeWidget(spec, id, section.id, { x: Math.max(0, to.x), y: to.y, w: widget.w, h: widget.h })
+}
 
 export const removeWidget = (spec: FormSpec, id: string): FormSpec =>
   edit(spec, (draft) => {
-    for (const page of draft.pages) page.widgets = page.widgets.filter((widget) => widget.id !== id)
+    for (const section of allSections(draft)) section.widgets = section.widgets.filter((widget) => widget.id !== id)
   })
 
-/** A copy of a component just below and to the right of it, on the same sheet. */
+/** A copy of a component just below and to the right of it, in the same section, kept inside it (`keptInside`). */
 export function duplicateWidget(spec: FormSpec, id: string): { spec: FormSpec; id: string } {
   const copyId = newId("w")
   const next = edit(spec, (draft) => {
     const found = findWidget(draft, id)
     if (found === null) throw new Error(`No sheet has a component ${id}`)
-    const copy = { ...structuredClone(found.widget), id: copyId, x: found.widget.x + 16, y: found.widget.y + 16 }
-    found.page.widgets.splice(found.index + 1, 0, copy)
+    const { x, y, h } = found.widget
+    const copy = { ...structuredClone(found.widget), id: copyId, x: x + 16, y: keptInside(y + 16, h, found.section.height) }
+    found.section.widgets.splice(found.index + 1, 0, copy)
   })
   return { spec: next, id: copyId }
 }
 
-/** Whose columns a component shows: a Table, many-row tables'; a Collection, one-row tables'. */
-export const rowsShown = (widget: Pick<Widget, "type">): SchemaTable["rows"] =>
+/** Whose columns a Table or a Collection shows: a Table, many-row tables'; a Collection, one-row tables'. A Chart plots either. */
+export const rowsShown = (widget: { type: "tableInput" | "collection" }): SchemaTable["rows"] =>
   widget.type === "collection" ? "one" : "many"
 
 /**
@@ -310,10 +611,39 @@ export const tableGrain = (table: SchemaTable): string =>
           .join(",") || table.id
       }`
 
+/**
+ * Which rows a Chart's columns fill (`tableGrain`): its first field's table's, else that of
+ * the column labelling its rows; null while it has neither. The rest line up with it.
+ */
+export function chartGrain(spec: FormSpec, widget: ChartWidget): string | null {
+  const refs = widget.category === null ? widget.fields : [...widget.fields, widget.category]
+  for (const field of refs) {
+    const found = fieldColumn(spec, field)
+    if (found !== null) return tableGrain(found.table)
+  }
+  return null
+}
+
+/** Whether a Chart can plot a column: a number column, other than an index, which numbers the rows. */
+export const plottable = (column: SchemaColumn): boolean => (column.type === "int" || column.type === "float") && !column.index
+
+/**
+ * The columns that can label a Chart's rows: those of the many-row tables of its grain,
+ * other than an index ("Row number" numbers the rows as an index does), by table.
+ */
+export function labelColumns(spec: FormSpec, widget: ChartWidget): { table: SchemaTable; columns: SchemaColumn[] }[] {
+  const grain = chartGrain(spec, widget)
+  if (grain === null || grain === "one") return []
+  return spec.schema.tables
+    .filter((table) => table.rows === "many" && tableGrain(table) === grain)
+    .map((table) => ({ table, columns: table.columns.filter((column) => !column.index) }))
+    .filter(({ columns }) => columns.length > 0)
+}
+
 /** Move a component's field from one place in its order to another. */
 export const moveField = (spec: FormSpec, widgetId: string, from: number, to: number): FormSpec =>
   edit(spec, (draft) => {
-    const { fields } = widgetOf(draft, widgetId)
+    const { fields } = fieldsWidgetOf(draft, widgetId)
     const [field] = fields.splice(from, 1)
     fields.splice(to, 0, field)
   })
@@ -321,7 +651,7 @@ export const moveField = (spec: FormSpec, widgetId: string, from: number, to: nu
 /** Show the field in the component if it does not, or stop showing it if it does. */
 export const toggleField = (spec: FormSpec, widgetId: string, field: FieldRef): FormSpec =>
   edit(spec, (draft) => {
-    const widget = widgetOf(draft, widgetId)
+    const widget = fieldsWidgetOf(draft, widgetId)
     const at = widget.fields.findIndex((shown) => shown.table === field.table && shown.column === field.column)
     if (at >= 0) widget.fields.splice(at, 1)
     else widget.fields.push(field)
@@ -359,16 +689,51 @@ export const withSampleRows = (spec: FormSpec, rowsByTable: Record<string, Sampl
 const bases = new WeakMap<FormSpec, string>()
 
 /**
- * What pricing the sample depends on, the schema and the sample, as one string to compare:
- * a sheet laid out differently prices the same.
+ * What pricing the sample depends on, as one string to compare (`valuesBasis`): the schema,
+ * the columns the sheets hide as the sample sets them, and the sample. A sheet laid out
+ * differently prices the same, while a condition that hides or shows a column does not.
  */
 export function pricingBasis(spec: FormSpec): string {
   let basis = bases.get(spec)
   if (basis === undefined) {
-    basis = valuesBasis(spec.schema, spec.sample)
+    basis = valuesBasis(spec.schema, sheetVisibility(spec, spec.sample).hidden, spec.sample)
     bases.set(spec, basis)
   }
   return basis
+}
+
+/** What a pricing gave: the values it priced, as the server typed them, and its output tables by name. */
+interface Priced {
+  readonly sample: Readonly<Record<string, unknown>>
+  readonly tables: Readonly<Record<string, PricedRows>>
+}
+
+/**
+ * Each many-row output table of `outputs` lined up with a grid's `count` rows, through the
+ * first of `inputs` (the many-row input tables shown, in order) keyed alike: on each grid
+ * row, the output row `pricedRows` finds for it, the input table read as the quote reads it
+ * (`quoted`), so its filled rows are the typed rows the pricing answers with. An output
+ * table no input table lines up with is left out, and every one while there is no price.
+ */
+export function linedUpOutputs(
+  inputs: readonly SchemaTable[],
+  outputs: readonly SchemaTable[],
+  held: RowsByTable,
+  count: number,
+  price: Priced | null,
+  quoted: FormSchema,
+): Map<string, (Record<string, unknown> | undefined)[]> {
+  const lined = new Map<string, (Record<string, unknown> | undefined)[]>()
+  if (price === null) return lined
+  for (const output of outputs) {
+    const input = inputs.find((table) => tableGrain(table) === tableGrain(output))
+    const read = quoted.tables.find((table) => table.id === input?.id)
+    if (input === undefined || read === undefined || lined.has(output.id)) continue
+    const typed = price.sample[input.name]
+    const grid = Array.from({ length: count }, (_, row) => held[input.id]?.[row])
+    lined.set(output.id, pricedRows(read, grid, Array.isArray(typed) ? (typed as PricedRows) : [], price.tables[output.name] ?? []))
+  }
+  return lined
 }
 
 /** What stops a component showing what it should, by the component it is about. */
@@ -377,33 +742,169 @@ export interface WidgetProblem {
   message: string
 }
 
-const KIND_NAMES: Record<WidgetType, string> = { tableInput: "Table", collection: "Collection" }
+const KIND_NAMES: Record<WidgetType, string> = { tableInput: "Table", collection: "Collection", chart: "Chart", heading: "Heading" }
 
-/** `Table "Layers"`, or `A Table` while it has no title. */
-export const widgetName = (widget: Widget): string =>
-  widget.title ? `${KIND_NAMES[widget.type]} "${widget.title}"` : `A ${KIND_NAMES[widget.type]}`
+/** `Table "Layers"`, a Heading by its text, `Heading "Cover"`, or `A Table` while it has no title. */
+export const widgetName = (widget: Widget): string => {
+  const name = widget.type === "heading" ? widget.text.trim() : widget.title
+  return name ? `${KIND_NAMES[widget.type]} "${name}"` : `A ${KIND_NAMES[widget.type]}`
+}
 
 /**
  * What stops a component showing what it should: no fields, a column no longer in the
  * schema, a table of the other kind (as when a table is switched between one row and
- * many after its columns were chosen), or tables whose rows do not line up.
+ * many after its columns were chosen), tables whose rows do not line up, or what stops
+ * a Chart plotting what it should (`chartProblems`); a Heading's blank text; and what
+ * stops its conditions doing what they say (`conditionProblems`).
  */
 export function widgetProblems(spec: FormSpec): WidgetProblem[] {
   const problems: WidgetProblem[] = []
+  const never = neverShown(spec)
   for (const widget of allWidgets(spec)) {
     const name = widgetName(widget)
     const problem = (message: string) => problems.push({ widgetId: widget.id, message: `${name} ${message}` })
-    if (widget.fields.length === 0) problem("shows no fields")
-    const found = widget.fields.map((field) => fieldColumn(spec, field))
-    if (found.includes(null)) problem("shows a column that is no longer in the schema")
-    const rows = rowsShown(widget)
-    if (found.some((shown) => shown !== null && shown.table.rows !== rows)) {
-      problem(rows === "many" ? "shows a one-row table; a Collection shows those" : "shows a many-row table; a Table shows those")
+    if (widget.type === "heading") {
+      if (widget.text.trim() === "") problem("has no text")
+    } else {
+      if (widget.fields.length === 0) problem("shows no fields")
+      const found = widget.fields.map((field) => fieldColumn(spec, field))
+      if (found.includes(null)) problem("shows a column that is no longer in the schema")
+      if (widget.type === "chart") {
+        for (const message of chartProblems(spec, widget)) problem(message)
+      } else {
+        const rows = rowsShown(widget)
+        if (found.some((shown) => shown !== null && shown.table.rows !== rows)) {
+          problem(rows === "many" ? "shows a one-row table; a Collection shows those" : "shows a many-row table; a Table shows those")
+        }
+        const grains = new Set(found.flatMap((shown) => (shown !== null && shown.table.rows === rows ? [tableGrain(shown.table)] : [])))
+        if (grains.size > 1) problem("shows tables whose rows do not line up")
+      }
     }
-    const grains = new Set(found.flatMap((shown) => (shown !== null && shown.table.rows === rows ? [tableGrain(shown.table)] : [])))
-    if (grains.size > 1) problem("shows tables whose rows do not line up")
+    for (const message of conditionProblems(spec, widget, never)) problem(message)
   }
   return problems
+}
+
+/**
+ * What stops a Chart plotting what it should: a field it cannot plot (not a number, or an
+ * index), the column labelling its rows gone, tables whose rows do not line up (its fields'
+ * and that column's), or a pie of many rows given more than one field, of which it plots
+ * the first.
+ */
+function chartProblems(spec: FormSpec, widget: ChartWidget): string[] {
+  const problems: string[] = []
+  const found = widget.fields.map((field) => fieldColumn(spec, field))
+  for (const shown of found) {
+    if (shown === null || plottable(shown.column)) continue
+    const label = shown.column.label || readableName(shown.column.name)
+    problems.push(`plots ${label}, which ${shown.column.index ? "numbers the rows" : "is not a number"}`)
+  }
+  const category = widget.category === null ? undefined : fieldColumn(spec, widget.category)
+  if (category === null) problems.push("labels its rows by a column that is no longer in the schema")
+  const lined = [...found, category ?? null].flatMap((shown) => (shown === null ? [] : [tableGrain(shown.table)]))
+  if (new Set(lined).size > 1) problems.push("shows tables whose rows do not line up")
+  const grain = chartGrain(spec, widget)
+  if (widget.chart_type === "pie" && grain !== null && grain !== "one" && widget.fields.length > 1) {
+    problems.push("is a pie of many rows, so it plots only its first field")
+  }
+  return problems
+}
+
+/** What stops a sheet's conditions doing what they say, by the sheet it is about. */
+export interface PageProblem {
+  pageId: string
+  message: string
+}
+
+/** `Sheet "Business interruption"`. */
+export const pageName = (page: Page): string => `Sheet "${page.title}"`
+
+/** What stops a sheet's conditions doing what they say (`conditionProblems`). */
+export function pageProblems(spec: FormSpec): PageProblem[] {
+  const never = neverShown(spec)
+  return spec.pages.flatMap((page) =>
+    conditionProblems(spec, page, never).map((message) => ({ pageId: page.id, message: `${pageName(page)} ${message}` })),
+  )
+}
+
+/** What stops a section's conditions doing what they say, by the section it is about. */
+export interface SectionProblem {
+  sectionId: string
+  message: string
+}
+
+/** `Section "Flood"`. */
+export const sectionName = (section: Section): string => `Section "${section.title}"`
+
+/** What stops a section's conditions doing what they say (`conditionProblems`). */
+export function sectionProblems(spec: FormSpec): SectionProblem[] {
+  const never = neverShown(spec)
+  return allSections(spec).flatMap((section) =>
+    conditionProblems(spec, section, never).map((message) => ({ sectionId: section.id, message: `${sectionName(section)} ${message}` })),
+  )
+}
+
+/** The tests that compare a value with the condition's own, which allowed values should be. */
+const EQUALITY_TESTS: ReadonlySet<Condition["op"]> = new Set(["equals", "not_equals", "one_of", "not_one_of"])
+
+/** Whether `value` is one of `column`'s allowed values, a number's read as numbers. */
+function allowed(column: SchemaColumn, value: string): boolean {
+  if (column.type === "int" || column.type === "float") {
+    const number = parseTypedNumber(value)
+    return column.options.some((option) => number !== null && parseTypedNumber(option) === number)
+  }
+  return column.options.some((option) => option.trim() === value.trim())
+}
+
+/**
+ * What stops a sheet's, a section's or a component's conditions doing what they say: a
+ * condition that cannot hold as written (`conditionFault`); a value tested for equality that
+ * is not one of its column's allowed values, which no value chosen from them can match; and,
+ * while neither, nothing able to show it again once hidden (`neverShown`).
+ */
+function conditionProblems(spec: FormSpec, holder: Page | Section | Widget, never: ReadonlyMap<string, Condition>): string[] {
+  const problems: string[] = []
+  for (const condition of holder.show_when.conditions) {
+    const fault = conditionFault(spec, condition)
+    if (fault !== null) {
+      problems.push(fault)
+      continue
+    }
+    // A condition that fits names a column the schema has.
+    const column = fieldColumn(spec, condition)?.column
+    if (!column?.options.length || !EQUALITY_TESTS.has(condition.op)) continue
+    for (const value of condition.values) {
+      if (!allowed(column, value)) problems.push(`tests ${column.name} against "${value}", which isn't one of its allowed values`)
+    }
+  }
+  const waiting = never.get(holder.id)
+  if (waiting !== undefined) {
+    const name = fieldColumn(spec, waiting)?.column.name ?? waiting.column
+    // Typed into a Table or a Collection: a Chart only plots and a Heading shows none, so neither counts.
+    const entered = allWidgets(spec).some((widget) => fieldKeys(widget).includes(columnKey(waiting.table, waiting.column)))
+    problems.push(
+      entered
+        ? `waits on ${name}, which is only on components that hide with it, so it could not show again once hidden`
+        : `waits on ${name}, which is on no Table or Collection`,
+    )
+  }
+  return problems
+}
+
+/** A condition read by its column's label: `Cover BI is ticked`, `Class of business is one of Motor, Fleet`. */
+export function conditionText(spec: FormSpec, condition: Condition): string {
+  const found = fieldColumn(spec, condition)
+  const label = found === null ? "A missing column" : found.column.label || readableName(found.column.name)
+  const test = testLabel(condition.op, found?.column.type ?? "str")
+  return condition.values.length === 0 ? `${label} ${test}` : `${label} ${test} ${condition.values.join(", ")}`
+}
+
+/** When a sheet, a section or a component shows, as its eye's title says it. */
+export function showWhenText(spec: FormSpec, showWhen: ShowWhen): string {
+  const parts = showWhen.conditions.map((condition) => conditionText(spec, condition))
+  if (parts.length === 0) return "Always shows"
+  if (parts.length === 1) return `Shows when ${parts[0]}`
+  return `Shows when ${showWhen.match} of these are true: ${parts.join("; ")}`
 }
 
 // ─── Problems ────────────────────────────────────────────────────────────

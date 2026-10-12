@@ -608,6 +608,128 @@
       "title": "ChartValueEncoding",
       "type": "object"
     },
+    "ChartWidget": {
+      "additionalProperties": false,
+      "description": "A Chart: number columns plotted, of one-row tables a point each, or of many-row tables\nwhose rows line up a series each over their rows. It takes nothing typed.",
+      "properties": {
+        "category": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FieldRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "chart_type": {
+          "default": "column",
+          "enum": [
+            "column",
+            "line",
+            "area",
+            "pie"
+          ],
+          "title": "Chart Type",
+          "type": "string"
+        },
+        "data_labels": {
+          "default": false,
+          "title": "Data Labels",
+          "type": "boolean"
+        },
+        "fields": {
+          "items": {
+            "$ref": "#/$defs/FieldRef"
+          },
+          "title": "Fields",
+          "type": "array"
+        },
+        "h": {
+          "exclusiveMinimum": 0,
+          "title": "H",
+          "type": "integer"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "legend": {
+          "default": "bottom",
+          "enum": [
+            "bottom",
+            "top",
+            "left",
+            "right",
+            "none"
+          ],
+          "title": "Legend",
+          "type": "string"
+        },
+        "orientation": {
+          "default": "vertical",
+          "enum": [
+            "vertical",
+            "horizontal"
+          ],
+          "title": "Orientation",
+          "type": "string"
+        },
+        "show_when": {
+          "$ref": "#/$defs/ShowWhen"
+        },
+        "stacked": {
+          "default": false,
+          "title": "Stacked",
+          "type": "boolean"
+        },
+        "title": {
+          "default": "",
+          "title": "Title",
+          "type": "string"
+        },
+        "type": {
+          "const": "chart",
+          "title": "Type",
+          "type": "string"
+        },
+        "w": {
+          "exclusiveMinimum": 0,
+          "title": "W",
+          "type": "integer"
+        },
+        "x": {
+          "minimum": 0,
+          "title": "X",
+          "type": "integer"
+        },
+        "y": {
+          "minimum": 0,
+          "title": "Y",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "x",
+        "y",
+        "w",
+        "h",
+        "type",
+        "title",
+        "fields",
+        "show_when",
+        "category",
+        "chart_type",
+        "orientation",
+        "stacked",
+        "legend",
+        "data_labels"
+      ],
+      "title": "ChartWidget",
+      "type": "object"
+    },
     "CollectionWidget": {
       "additionalProperties": false,
       "description": "A Collection: boxes showing columns of one-row schema tables, ``columns`` across.",
@@ -634,6 +756,9 @@
         "id": {
           "title": "Id",
           "type": "string"
+        },
+        "show_when": {
+          "$ref": "#/$defs/ShowWhen"
         },
         "title": {
           "default": "",
@@ -670,6 +795,7 @@
         "type",
         "title",
         "fields",
+        "show_when",
         "columns"
       ],
       "title": "CollectionWidget",
@@ -691,6 +817,53 @@
         "dtype"
       ],
       "title": "ColumnInfo",
+      "type": "object"
+    },
+    "Condition": {
+      "additionalProperties": false,
+      "description": "A test of a schema column's value, the column by table and column id.\n\nThe shape is all the file holds a condition to. Whether its column, test and values\nfit one another is ``haute._workbench_visibility.condition_fits``'s question, asked\nwhere conditions are tested: retyping a column can unfit a condition the form holds.",
+      "properties": {
+        "column": {
+          "title": "Column",
+          "type": "string"
+        },
+        "op": {
+          "enum": [
+            "ticked",
+            "not_ticked",
+            "filled",
+            "empty",
+            "equals",
+            "not_equals",
+            "one_of",
+            "not_one_of",
+            "above",
+            "at_least",
+            "below",
+            "at_most"
+          ],
+          "title": "Op",
+          "type": "string"
+        },
+        "table": {
+          "title": "Table",
+          "type": "string"
+        },
+        "values": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Values",
+          "type": "array"
+        }
+      },
+      "required": [
+        "table",
+        "column",
+        "op",
+        "values"
+      ],
+      "title": "Condition",
       "type": "object"
     },
     "DispersionEstimateResponse": {
@@ -7009,6 +7182,89 @@
       "title": "GpuFamilyStatus",
       "type": "object"
     },
+    "HeadingWidget": {
+      "additionalProperties": false,
+      "description": "A Heading: text naming a section of the sheet, or the sheet itself, with a line under\nit saying what the section is for. It shows no schema columns and takes nothing typed.",
+      "properties": {
+        "align": {
+          "default": "left",
+          "enum": [
+            "left",
+            "center",
+            "right"
+          ],
+          "title": "Align",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "h": {
+          "exclusiveMinimum": 0,
+          "title": "H",
+          "type": "integer"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "show_when": {
+          "$ref": "#/$defs/ShowWhen"
+        },
+        "size": {
+          "default": "medium",
+          "enum": [
+            "large",
+            "medium",
+            "small"
+          ],
+          "title": "Size",
+          "type": "string"
+        },
+        "text": {
+          "default": "",
+          "title": "Text",
+          "type": "string"
+        },
+        "type": {
+          "const": "heading",
+          "title": "Type",
+          "type": "string"
+        },
+        "w": {
+          "exclusiveMinimum": 0,
+          "title": "W",
+          "type": "integer"
+        },
+        "x": {
+          "minimum": 0,
+          "title": "X",
+          "type": "integer"
+        },
+        "y": {
+          "minimum": 0,
+          "title": "Y",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "x",
+        "y",
+        "w",
+        "h",
+        "type",
+        "text",
+        "description",
+        "show_when",
+        "size",
+        "align"
+      ],
+      "title": "HeadingWidget",
+      "type": "object"
+    },
     "InputPreparationRecordPayload": {
       "description": "One Data Input's automatic preparation record: digests and counts only.",
       "properties": {
@@ -11305,35 +11561,33 @@
     },
     "Page": {
       "additionalProperties": false,
-      "description": "A sheet: its widgets, each placed freely on the canvas.",
+      "description": "A sheet: when it shows, and its sections, stacked one under the next.",
       "properties": {
         "id": {
           "title": "Id",
           "type": "string"
         },
+        "sections": {
+          "items": {
+            "$ref": "#/$defs/Section"
+          },
+          "minItems": 1,
+          "title": "Sections",
+          "type": "array"
+        },
+        "show_when": {
+          "$ref": "#/$defs/ShowWhen"
+        },
         "title": {
           "title": "Title",
           "type": "string"
-        },
-        "widgets": {
-          "items": {
-            "oneOf": [
-              {
-                "$ref": "#/$defs/TableInputWidget"
-              },
-              {
-                "$ref": "#/$defs/CollectionWidget"
-              }
-            ]
-          },
-          "title": "Widgets",
-          "type": "array"
         }
       },
       "required": [
         "id",
         "title",
-        "widgets"
+        "show_when",
+        "sections"
       ],
       "title": "Page",
       "type": "object"
@@ -11820,6 +12074,25 @@
     "SchemaColumn": {
       "additionalProperties": false,
       "properties": {
+        "decimal_places": {
+          "anyOf": [
+            {
+              "maximum": 10,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Decimal Places"
+        },
+        "help": {
+          "default": "",
+          "title": "Help",
+          "type": "string"
+        },
         "id": {
           "title": "Id",
           "type": "string"
@@ -11867,12 +12140,30 @@
           "title": "Name",
           "type": "string"
         },
+        "number_format": {
+          "default": "general",
+          "enum": [
+            "general",
+            "number",
+            "percent",
+            "currency_gbp",
+            "currency_usd",
+            "currency_eur"
+          ],
+          "title": "Number Format",
+          "type": "string"
+        },
         "options": {
           "items": {
             "type": "string"
           },
           "title": "Options",
           "type": "array"
+        },
+        "placeholder": {
+          "default": "",
+          "title": "Placeholder",
+          "type": "string"
         },
         "required": {
           "default": false,
@@ -11890,6 +12181,11 @@
           ],
           "title": "Type",
           "type": "string"
+        },
+        "use_grouping": {
+          "default": true,
+          "title": "Use Grouping",
+          "type": "boolean"
         }
       },
       "required": [
@@ -11902,7 +12198,12 @@
         "min",
         "max",
         "options",
-        "index"
+        "index",
+        "help",
+        "placeholder",
+        "number_format",
+        "decimal_places",
+        "use_grouping"
       ],
       "title": "SchemaColumn",
       "type": "object"
@@ -11987,6 +12288,57 @@
         "columns"
       ],
       "title": "SchemaTable",
+      "type": "object"
+    },
+    "Section": {
+      "additionalProperties": false,
+      "description": "A section of a sheet: a strip across the sheet's whole width, ``height`` pixels tall,\nunder the sections before it; when it shows; and its widgets, each placed freely inside\nit.",
+      "properties": {
+        "height": {
+          "exclusiveMinimum": 0,
+          "title": "Height",
+          "type": "integer"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "show_when": {
+          "$ref": "#/$defs/ShowWhen"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "widgets": {
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/TableInputWidget"
+              },
+              {
+                "$ref": "#/$defs/CollectionWidget"
+              },
+              {
+                "$ref": "#/$defs/ChartWidget"
+              },
+              {
+                "$ref": "#/$defs/HeadingWidget"
+              }
+            ]
+          },
+          "title": "Widgets",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "height",
+        "show_when",
+        "widgets"
+      ],
+      "title": "Section",
       "type": "object"
     },
     "SessionStatusResponse": {
@@ -12236,16 +12588,68 @@
       "title": "SharedSnapshotSeedPayload",
       "type": "object"
     },
+    "ShowWhen": {
+      "additionalProperties": false,
+      "description": "When a sheet, a section or a widget shows: always, without conditions; else while all\nof them hold, or any, as ``match`` says.",
+      "properties": {
+        "conditions": {
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "title": "Conditions",
+          "type": "array"
+        },
+        "match": {
+          "default": "all",
+          "enum": [
+            "all",
+            "any"
+          ],
+          "title": "Match",
+          "type": "string"
+        }
+      },
+      "required": [
+        "match",
+        "conditions"
+      ],
+      "title": "ShowWhen",
+      "type": "object"
+    },
     "TableInputWidget": {
       "additionalProperties": false,
       "description": "A Table: a grid of at least ``rows`` rows showing columns of many-row schema tables.",
       "properties": {
+        "density": {
+          "default": "compact",
+          "enum": [
+            "compact",
+            "comfortable"
+          ],
+          "title": "Density",
+          "type": "string"
+        },
         "fields": {
           "items": {
             "$ref": "#/$defs/FieldRef"
           },
           "title": "Fields",
           "type": "array"
+        },
+        "fixed_rows": {
+          "default": false,
+          "title": "Fixed Rows",
+          "type": "boolean"
+        },
+        "gridlines": {
+          "default": "rows",
+          "enum": [
+            "rows",
+            "all",
+            "none"
+          ],
+          "title": "Gridlines",
+          "type": "string"
         },
         "h": {
           "exclusiveMinimum": 0,
@@ -12256,12 +12660,25 @@
           "title": "Id",
           "type": "string"
         },
+        "row_numbers": {
+          "default": true,
+          "title": "Row Numbers",
+          "type": "boolean"
+        },
         "rows": {
           "default": 3,
           "maximum": 50,
           "minimum": 1,
           "title": "Rows",
           "type": "integer"
+        },
+        "show_when": {
+          "$ref": "#/$defs/ShowWhen"
+        },
+        "striped": {
+          "default": true,
+          "title": "Striped",
+          "type": "boolean"
         },
         "title": {
           "default": "",
@@ -12298,7 +12715,13 @@
         "type",
         "title",
         "fields",
-        "rows"
+        "show_when",
+        "rows",
+        "row_numbers",
+        "density",
+        "gridlines",
+        "striped",
+        "fixed_rows"
       ],
       "title": "TableInputWidget",
       "type": "object"

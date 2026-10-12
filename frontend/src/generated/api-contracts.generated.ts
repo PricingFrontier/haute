@@ -2433,21 +2433,76 @@ export interface FormSpec {
   version: 1;
 }
 /**
- * A sheet: its widgets, each placed freely on the canvas.
+ * A sheet: when it shows, and its sections, stacked one under the next.
  */
 export interface Page {
   id: string;
+  /**
+   * @minItems 1
+   */
+  sections: Section[];
+  show_when: ShowWhen;
   title: string;
-  widgets: (TableInputWidget | CollectionWidget)[];
+}
+/**
+ * A section of a sheet: a strip across the sheet's whole width, ``height`` pixels tall,
+ * under the sections before it; when it shows; and its widgets, each placed freely inside
+ * it.
+ */
+export interface Section {
+  height: number;
+  id: string;
+  show_when: ShowWhen;
+  title: string;
+  widgets: (TableInputWidget | CollectionWidget | ChartWidget | HeadingWidget)[];
+}
+/**
+ * When a sheet, a section or a widget shows: always, without conditions; else while all
+ * of them hold, or any, as ``match`` says.
+ */
+export interface ShowWhen {
+  conditions: Condition[];
+  match: 'all' | 'any';
+}
+/**
+ * A test of a schema column's value, the column by table and column id.
+ *
+ * The shape is all the file holds a condition to. Whether its column, test and values
+ * fit one another is ``haute._workbench_visibility.condition_fits``'s question, asked
+ * where conditions are tested: retyping a column can unfit a condition the form holds.
+ */
+export interface Condition {
+  column: string;
+  op:
+    | 'ticked'
+    | 'not_ticked'
+    | 'filled'
+    | 'empty'
+    | 'equals'
+    | 'not_equals'
+    | 'one_of'
+    | 'not_one_of'
+    | 'above'
+    | 'at_least'
+    | 'below'
+    | 'at_most';
+  table: string;
+  values: string[];
 }
 /**
  * A Table: a grid of at least ``rows`` rows showing columns of many-row schema tables.
  */
 export interface TableInputWidget {
+  density: 'compact' | 'comfortable';
   fields: FieldRef[];
+  fixed_rows: boolean;
+  gridlines: 'rows' | 'all' | 'none';
   h: number;
   id: string;
+  row_numbers: boolean;
   rows: number;
+  show_when: ShowWhen;
+  striped: boolean;
   title: string;
   type: 'tableInput';
   w: number;
@@ -2469,8 +2524,47 @@ export interface CollectionWidget {
   fields: FieldRef[];
   h: number;
   id: string;
+  show_when: ShowWhen;
   title: string;
   type: 'collection';
+  w: number;
+  x: number;
+  y: number;
+}
+/**
+ * A Chart: number columns plotted, of one-row tables a point each, or of many-row tables
+ * whose rows line up a series each over their rows. It takes nothing typed.
+ */
+export interface ChartWidget {
+  category: FieldRef | null;
+  chart_type: 'column' | 'line' | 'area' | 'pie';
+  data_labels: boolean;
+  fields: FieldRef[];
+  h: number;
+  id: string;
+  legend: 'bottom' | 'top' | 'left' | 'right' | 'none';
+  orientation: 'vertical' | 'horizontal';
+  show_when: ShowWhen;
+  stacked: boolean;
+  title: string;
+  type: 'chart';
+  w: number;
+  x: number;
+  y: number;
+}
+/**
+ * A Heading: text naming a section of the sheet, or the sheet itself, with a line under
+ * it saying what the section is for. It shows no schema columns and takes nothing typed.
+ */
+export interface HeadingWidget {
+  align: 'left' | 'center' | 'right';
+  description: string;
+  h: number;
+  id: string;
+  show_when: ShowWhen;
+  size: 'large' | 'medium' | 'small';
+  text: string;
+  type: 'heading';
   w: number;
   x: number;
   y: number;
@@ -2489,6 +2583,8 @@ export interface SchemaTable {
   rows: 'one' | 'many';
 }
 export interface SchemaColumn {
+  decimal_places: number | null;
+  help: string;
   id: string;
   index: boolean;
   key: boolean;
@@ -2496,9 +2592,12 @@ export interface SchemaColumn {
   max: number | null;
   min: number | null;
   name: string;
+  number_format: 'general' | 'number' | 'percent' | 'currency_gbp' | 'currency_usd' | 'currency_eur';
   options: string[];
+  placeholder: string;
   required: boolean;
   type: 'int' | 'float' | 'str' | 'bool' | 'date';
+  use_grouping: boolean;
 }
 /**
  * The form as written, with its new revision and the save's version capture.

@@ -218,6 +218,10 @@
   --branch-restore-text: var(--success);
   --branch-restore-hover-bg: var(--success-soft);
 
+  /* A workbench Table's output cell (WidgetBody's grid): the faint green
+     tint behind a column the pricing engine fills, under its green header. */
+  --workbench-output-cell-bg: var(--success-soft-subtle);
+
   /* Diff highlight (read-only comparison view, S11): added / removed / changed
      components.  Aliased onto the semantic palette so they theme together.
      -soft is the added-state soft background behind comparison chips; the

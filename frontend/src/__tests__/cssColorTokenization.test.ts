@@ -830,6 +830,7 @@ describe("index.css - design-token contract", () => {
       "--cache-ready-bg": "var(--success-soft)",
       "--branch-restore-text": "var(--success)",
       "--branch-restore-hover-bg": "var(--success-soft)",
+      "--workbench-output-cell-bg": "var(--success-soft-subtle)",
       "--diff-added-soft": "var(--success-soft)",
     }
     const declared = findTokenDeclarationValues(CSS_CODE)

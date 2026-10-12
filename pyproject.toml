@@ -338,6 +338,7 @@ paths = [
     "src/haute/_workbench_tables.py",
     "src/haute/_workbench_input.py",
     "src/haute/_workbench_output.py",
+    "src/haute/_workbench_visibility.py",
 ]
 report_paths = ["src/haute"]
 

@@ -6,6 +6,7 @@ import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore from "../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore, { ZOOM_STEP } from "../stores/useWorkbenchViewStore"
 import { quoteFilled } from "../utils/sheetValues"
+import { quotedSchema, sheetVisibility } from "../utils/sheetVisibility"
 
 interface WorkbenchToolbarProps {
   /** Save: the host's project save, the one the pipeline toolbar's Save runs. */
@@ -39,11 +40,13 @@ export default function WorkbenchToolbar({ onSave, onCommit, editingDisabled = f
   const sampleError = useWorkbenchPricingStore((s) => s.error)
   const previewError = useWorkbenchPreviewStore((s) => s.error)
   const pricing = useWorkbenchPreviewStore((s) => s.pricing)
-  const schema = useWorkbenchFormStore((s) => s.form?.schema ?? null)
+  const form = useWorkbenchFormStore((s) => s.form)
   const quote = useWorkbenchPreviewStore((s) => s.quote)
   // Judged by the tables the schema has now: a value typed in a column since removed is
-  // nothing to price or to clear, as the server leaves it out of the quote.
-  const blank = schema === null || !quoteFilled(schema, quote)
+  // nothing to price or to clear, as the server leaves it out of the quote. Nor is one the
+  // sheets hide anything to price, though Clear still clears it.
+  const empty = form === null || !quoteFilled(form.schema, quote)
+  const blank = form === null || !quoteFilled(quotedSchema(form.schema, sheetVisibility(form, quote).hidden), quote)
   const priceQuote = useWorkbenchPreviewStore((s) => s.priceQuote)
   const clear = useWorkbenchPreviewStore((s) => s.clear)
   const previewing = section === "preview"
@@ -76,7 +79,7 @@ export default function WorkbenchToolbar({ onSave, onCommit, editingDisabled = f
             <ToolbarButton
               icon={Eraser}
               onClick={() => { if (window.confirm("Clear the quote? Every cell will be emptied.")) clear() }}
-              disabled={blank}
+              disabled={empty}
               title="Start a new quote"
             >
               Clear

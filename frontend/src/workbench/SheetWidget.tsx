@@ -2,6 +2,7 @@ import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
 import { HANDLES, type Handle } from "../utils/sheetGeometry"
 import { widgetName, type ShownField, type Widget } from "../utils/workbenchForm"
 import { startTransform } from "./sheetInteractions"
+import { ShowWhenMark } from "./ShowWhenEditor"
 import WidgetBody from "./WidgetBody"
 
 const HANDLE_CLASS: Record<Handle, string> = {
@@ -21,7 +22,10 @@ const HANDLE_CLASS: Record<Handle, string> = {
  * drags it and, once selected, grows eight handles that resize it. In Preview the frame
  * does nothing: the sheet is an underwriter's, the picture scrolls and only the cells
  * respond. A problem with what it shows draws the frame dashed in the warning colour,
- * naming the problem on hover and to a screen reader.
+ * naming the problem on hover and to a screen reader. While building, a component with
+ * conditions carries an eye naming them, top right, or top left on a right-aligned Heading
+ * so it never covers the end of the text, and one the sample hides is drawn faded and its
+ * eye struck through.
  */
 export default function SheetWidget({
   widget,
@@ -29,6 +33,9 @@ export default function SheetWidget({
   selected,
   problem,
   editable,
+  hidden,
+  conditions,
+  layer,
 }: {
   widget: Widget
   fields: ShownField[]
@@ -37,6 +44,15 @@ export default function SheetWidget({
   problem: string | null
   /** While building: selected, moved and resized by its frame. */
   editable: boolean
+  /** The sheet's values hide it: drawn faded while building (Preview does not draw it). */
+  hidden: boolean
+  /** Its conditions as a sentence, for its eye while building; null for none, or in Preview. */
+  conditions: string | null
+  /**
+   * Its place in the stack: what it covers where it overlaps another, the form's order of
+   * the components and the selected one above them, apart from the order they are read in.
+   */
+  layer: number
 }) {
   const frame = selected
     ? "border-[var(--accent)]"
@@ -57,14 +73,26 @@ export default function SheetWidget({
       data-testid={`sheet-widget-${widget.id}`}
       data-selected={selected ? "true" : undefined}
       className={`group focus-ring absolute ${editable ? "cursor-move" : ""}`}
-      style={{ left: widget.x, top: widget.y, width: widget.w, height: widget.h, zIndex: selected ? 5 : 1 }}
+      style={{ left: widget.x, top: widget.y, width: widget.w, height: widget.h, zIndex: layer }}
       onPointerDown={editable ? (event) => startTransform(event, widget.id) : undefined}
       onFocus={editable ? (event) => { if (event.target === event.currentTarget) select(widget.id) } : undefined}
     >
-      <div className={`h-full ${editable ? "pointer-events-none" : ""}`}>
+      <div
+        className={`h-full ${editable ? "pointer-events-none" : ""}`}
+        data-hidden={hidden ? "true" : undefined}
+        style={hidden ? { opacity: 0.45 } : undefined}
+      >
         <WidgetBody widget={widget} fields={fields} />
       </div>
       <div className={`pointer-events-none absolute -inset-1 rounded-md border ${frame}`} />
+      {conditions !== null && (
+        <ShowWhenMark
+          hidden={hidden}
+          title={conditions}
+          className={`absolute top-1 ${widget.type === "heading" && widget.align === "right" ? "left-1" : "right-1"} z-10 rounded p-0.5`}
+          style={{ background: "var(--bg-elevated)", boxShadow: "0 0 0 1px var(--border)" }}
+        />
+      )}
       {problem !== null && (
         <span id={problemId} className="sr-only">
           {problem}

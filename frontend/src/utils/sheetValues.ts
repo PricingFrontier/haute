@@ -1,10 +1,12 @@
 /**
  * The values typed into a sheet's cells (specs/workbench), the sample while building or
  * an underwriter's quote in Preview: which rows count as filled, as the server counts
- * them; what breaks a column's rules; what pricing the values depends on; and the rows of
- * a priced output table lined up with a grid's input rows by key.
+ * them; what breaks a column's rules; how a number column shows a value; what pricing the
+ * values depends on; and the rows of a priced output table lined up with a grid's input
+ * rows by key.
  */
 import type { FormSchema, SchemaColumn, SchemaTable } from "../api/types"
+import { formatPivotNumber } from "../panels/explore/pivotNumberFormat"
 import type { SampleRow, SampleValue } from "./workbenchForm"
 
 /** Rows by table id, as the sample and a quote hold them. */
@@ -41,10 +43,26 @@ export const quoteFilled = (schema: FormSchema, rows: RowsByTable): boolean =>
 /** A decimal number as the server reads one, once a currency sign, separators and spaces are gone. */
 const NUMBER = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/
 
-/** A typed number as the server types it, or null for text that is not a number. */
+/**
+ * A typed number as the server types it, or null for text that is not a number, one too
+ * large to be finite included, as the server keeps such text as typed.
+ */
 export function parseTypedNumber(text: string): number | null {
   const cleaned = text.replace(/[$£€,\s]/g, "")
-  return NUMBER.test(cleaned) ? Number(cleaned) : null
+  if (!NUMBER.test(cleaned)) return null
+  const number = Number(cleaned)
+  return Number.isFinite(number) ? number : null
+}
+
+/**
+ * A value as its number column's format shows it, as an Explore pivot shows a value (a
+ * percent the value times 100), typed text read as the server reads it; or null when the
+ * column shows numbers as they are, is not a number column, or the value is not a number.
+ */
+export function formattedNumber(column: SchemaColumn, value: unknown): string | null {
+  if (column.type !== "int" && column.type !== "float") return null
+  if (column.number_format === "general" && column.decimal_places === null) return null
+  return formatPivotNumber(typeof value === "string" ? parseTypedNumber(value) : value, column)
 }
 
 /**
@@ -93,11 +111,14 @@ export function quoteProblems(schema: FormSchema, rows: RowsByTable): Record<str
 }
 
 /**
- * What pricing the values depends on, the schema and the values, as one string to
- * compare: a sheet laid out differently prices the same, and a price for another basis
- * is out of date.
+ * What pricing the values depends on, as one string to compare: the whole schema (the
+ * server declares a column the sheets hide too, its value left out), which columns the
+ * sheets hide, and the values. A sheet laid out differently prices the same; a column
+ * renamed or retyped, hidden or shown, or a value typed does not, and a price for another
+ * basis is out of date.
  */
-export const valuesBasis = (schema: FormSchema, rows: RowsByTable): string => JSON.stringify([schema, rows])
+export const valuesBasis = (schema: FormSchema, hidden: ReadonlySet<string>, rows: RowsByTable): string =>
+  JSON.stringify([schema, [...hidden].sort(), rows])
 
 /** A priced table's rows, as the Workbench Output's preview gives them. */
 export type PricedRows = readonly Record<string, unknown>[]

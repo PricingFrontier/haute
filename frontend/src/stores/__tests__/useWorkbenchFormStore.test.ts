@@ -21,7 +21,14 @@ const blank: FormSpec = {
   version: 1,
   name: "motor",
   schema: { tables: [] },
-  pages: [{ id: "page_1", title: "Sheet 1", widgets: [] }],
+  pages: [
+    {
+      id: "page_1",
+      title: "Sheet 1",
+      show_when: { match: "all", conditions: [] },
+      sections: [{ id: "section_1", title: "Section 1", height: 560, show_when: { match: "all", conditions: [] }, widgets: [] }],
+    },
+  ],
   sample: {},
 }
 
@@ -164,7 +171,7 @@ describe("useWorkbenchFormStore", () => {
     expect(store().undoStack.map((form) => form.name)).toEqual(["motor", "home"])
   })
 
-  it("records a gesture as one undo step: a snapshot, then raw updates without history", async () => {
+  it("records a burst as one undo step: a snapshot, then raw updates without history", async () => {
     server({ form: blank, revision: "rev-0" })
     const store = useWorkbenchFormStore.getState
     await store().load()
@@ -178,6 +185,66 @@ describe("useWorkbenchFormStore", () => {
     store().undo()
     expect(store()).toMatchObject({ form: blank, dirty: false })
     expect(store().redoStack.map((form) => form.name)).toEqual(["ab"])
+  })
+
+  it("records a gesture once it is done, as one undo step, and nothing for one that leaves the form as it found it, keeping redo", async () => {
+    server({ form: blank, revision: "rev-0" })
+    const store = useWorkbenchFormStore.getState
+    await store().load()
+    store().change((form) => ({ ...form, name: "kept" }))
+    store().undo()
+
+    // Out and back: nothing recorded, so the redo stands.
+    const pressed = store().form!
+    const stop = vi.fn()
+    store().beginGesture(pressed, stop)
+    store().setFormRaw({ ...pressed, name: "a" })
+    store().setFormRaw(structuredClone(pressed))
+    store().endGesture()
+    expect(stop).toHaveBeenCalledTimes(1)
+    expect(store()).toMatchObject({ undoStack: [], dirty: false })
+    expect(store().redoStack.map((form) => form.name)).toEqual(["kept"])
+
+    store().beginGesture(pressed, stop)
+    store().setFormRaw({ ...pressed, name: "ab" })
+    store().endGesture()
+    expect(store()).toMatchObject({ form: named("ab"), dirty: true, redoStack: [] })
+    expect(store().undoStack).toEqual([pressed])
+    // Ended already: ending again records nothing more.
+    store().endGesture()
+    expect(store().undoStack).toEqual([pressed])
+  })
+
+  it("finishes a gesture under way before an edit, an undo or a redo, so its steps never write over them and its undo step comes first", async () => {
+    server({ form: blank, revision: "rev-0" })
+    const store = useWorkbenchFormStore.getState
+    await store().load()
+    store().change((form) => ({ ...form, name: "titled" }))
+
+    // An undo while a gesture is under way: the gesture is recorded and stopped, then undone.
+    const stop = vi.fn()
+    store().beginGesture(store().form!, stop)
+    store().setFormRaw({ ...store().form!, name: "dragged" })
+    store().undo()
+    expect(stop).toHaveBeenCalledTimes(1)
+    expect(store().form?.name).toBe("titled")
+    store().endGesture()
+    store().undo()
+    expect(store().form?.name).toBe("motor")
+    store().redo()
+    store().redo()
+    expect(store().form?.name).toBe("dragged")
+
+    // An edit while one is under way comes after it, and nothing is recorded for it twice.
+    const pressed = store().form!
+    store().beginGesture(pressed, stop)
+    store().setFormRaw({ ...pressed, name: "moved" })
+    store().change((form) => ({ ...form, name: `${form.name} and named` }))
+    expect(stop).toHaveBeenCalledTimes(2)
+    expect(store().undoStack.slice(-2).map((form) => form.name)).toEqual(["dragged", "moved"])
+    store().endGesture()
+    expect(store().form?.name).toBe("moved and named")
+    expect(store().undoStack.slice(-2).map((form) => form.name)).toEqual(["dragged", "moved"])
   })
 
   it("keeps the sample typed while building as part of the form: unsaved until saved, undone like any edit", async () => {
@@ -428,12 +495,15 @@ describe("useWorkbenchFormStore", () => {
     api.refusePut(() => {
       const body = JSON.parse(String(vi.mocked(fetch).mock.calls.at(-1)?.[1]?.body)) as { form: FormSpec }
       const page = body.form.pages[0]
-      const reordered = page.widgets.map((widget) => Object.fromEntries(Object.entries(widget).reverse()))
-      return saved({ ...body.form, pages: [{ ...page, widgets: reordered as typeof page.widgets }] }, "rev-1")
+      const sections = page.sections.map((section) => ({
+        ...section,
+        widgets: section.widgets.map((widget) => Object.fromEntries(Object.entries(widget).reverse())) as typeof section.widgets,
+      }))
+      return saved({ ...body.form, pages: [{ ...page, sections }] }, "rev-1")
     })
     const store = useWorkbenchFormStore.getState
     await store().load()
-    store().change((form) => addWidget(form, "page_1", createWidget("collection", { x: 0, y: 0, w: 720, h: 120 })))
+    store().change((form) => addWidget(form, "section_1", createWidget("collection", { x: 0, y: 0, w: 720, h: 120 })))
     expect(store().dirty).toBe(true)
 
     await expect(store().save()).resolves.toBe(true)

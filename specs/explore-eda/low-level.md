@@ -257,7 +257,8 @@
   magnitude < 1, and the literal `0` at zero — e.g. `1234567.891` → `1,234,567.89`,
   `1234.5` → `1,234.5`, `12` → `12`, `0.12345` → `0.1235`, `-0.000123` → `-0.000123`,
   `0` → `0`.
-- `chartOptions.ts` is the only renderer-option builder. It maps the adapter's closed data to
+- `chartOptions.ts` is Explore's only renderer-option builder (the workbench's Chart builds its
+  own from a sheet's values). It maps the adapter's closed data to
   ECharts Bar/Line series, primary/secondary axes, explicit stacks on any mark, safe text
   tooltips,
   deterministic token colours, axis bounds, legend, reduced motion, and zero-inclusive automatic
@@ -269,10 +270,12 @@
   plot grid reserves space for every legend position and the title, and the secondary axis is
   hidden until at least one series uses it. It accepts no opaque persisted renderer objects or
   callbacks.
-- `ComboChart.tsx` owns runtime initialisation, theme redraw, ResizeObserver sizing, deterministic
+- `ComboChart.tsx` owns runtime initialisation, theme redraw (its tokens read by `chartTheme.ts`),
+  ResizeObserver sizing, deterministic
   disposal, a renderer-independent labelled summary region, and a toggleable semantic source-data
   table. The stable Haute summary remains available even when ECharts annotates its own nested SVG
-  host. The ECharts runtime is imported only beneath the already-lazy Charts pane.
+  host. Explore imports the ECharts runtime only beneath the already-lazy Charts pane, as the
+  workbench imports it only beneath its lazy view.
 - `useExplorePivotActions.ts` owns the one Pivot run/status/cancel write lifecycle shared by the
   Pivots and Charts result panes; a chart never creates a parallel execution path.
 

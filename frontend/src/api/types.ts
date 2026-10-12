@@ -518,13 +518,18 @@ export type {
 // ---------------------------------------------------------------------------
 
 export type {
+  ChartWidget,
   CollectionWidget,
+  Condition,
   FieldRef,
   FormSchema,
   FormSpec,
+  HeadingWidget,
   Page,
   SchemaColumn,
   SchemaTable,
+  Section,
+  ShowWhen,
   TableInputWidget,
   WorkbenchColumn,
   WorkbenchFormResponse,

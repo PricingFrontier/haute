@@ -66,13 +66,19 @@ Two naming notes:
 
 - **workbench** — the project's view where a pricing team lays out the sheets an underwriter keys a quote into, enabled by `[workbench]` in `haute.toml`, with its sheets saved in `forms/form.json`. In user-facing text say "the workbench" (lower case) and "the sheets" or `forms/form.json`, never "the form".
 
-- **sheet** — one page of the workbench: a canvas the components are laid out on. `pages` in the file.
+- **sheet** — one page of the workbench: a canvas of sections the components are laid out in. `pages` in the file.
 
-- **component** — a Table or a Collection on a sheet. `widgets` in the file; say "component" in prose and in UI copy, never "widget".
+- **section (of a sheet)** — a strip across a sheet's whole width, one of the sheet's stack, holding components placed freely in it, with a height and its own Show when; hidden, it closes up in Preview. `sections` in the file. Not the view's sections (the sheets, the schema, Preview).
+
+- **component** — a Table, a Collection, a Chart or a Heading in a sheet's section. `widgets` in the file; say "component" in prose and in UI copy, never "widget".
 
 - **Table (component)** — a grid of rows showing columns of the schema's many-row tables (`tableInput` in the file). Not a schema table.
 
 - **Collection** — boxes showing columns of the schema's one-row tables (`collection` in the file).
+
+- **Chart (component)** — a chart plotting number columns of the schema's tables, typed or priced (`chart` in the file): a point per field of one-row tables, or a series per field over the rows of many-row tables.
+
+- **Heading (component)** — text naming a section of a sheet, or the sheet itself, large, medium or small, with an optional description under it (`heading` in the file). It shows no schema columns and takes nothing typed. Not a column's label.
 
 - **schema table** — a table of the workbench's schema: a name, a role (input, sent to the pricing engine, or output, returned by it), one row per quote or many, and typed columns. The input tables are the Workbench Input's ports and the output tables the Workbench Output's.
 

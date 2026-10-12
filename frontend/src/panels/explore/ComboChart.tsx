@@ -1,9 +1,9 @@
 import { useEffect, useId, useRef, useState } from "react"
 
-import { PIVOT_CHART_COLORS } from "../../theme/colors"
 import type { ExploreChartConfig } from "./chartConfig"
 import { chartExportFileName, type PivotChartData } from "./chartData"
-import { buildComboChartOptions, type ChartThemeTokens } from "./chartOptions"
+import { buildComboChartOptions } from "./chartOptions"
+import { chartThemeTokens } from "./chartTheme"
 
 type ComboChartProps = { chart: ExploreChartConfig; data: PivotChartData }
 type ComboChartRuntime = {
@@ -11,29 +11,6 @@ type ComboChartRuntime = {
   resize(): void
   dispose(): void
   getDataURL(): string
-}
-
-const FALLBACK_TOKENS: ChartThemeTokens = PIVOT_CHART_COLORS.fallback
-
-function cssValue(style: CSSStyleDeclaration, name: string, fallback: string): string {
-  return style.getPropertyValue(name).trim() || fallback
-}
-
-function themeTokens(element: HTMLElement): ChartThemeTokens {
-  const style = getComputedStyle(element)
-  return {
-    background: cssValue(
-      style,
-      "--bg-panel",
-      cssValue(style, "--bg-base", FALLBACK_TOKENS.background),
-    ),
-    text: cssValue(style, "--text-primary", FALLBACK_TOKENS.text),
-    muted: cssValue(style, "--text-muted", FALLBACK_TOKENS.muted),
-    grid: cssValue(style, "--border", FALLBACK_TOKENS.grid),
-    series: FALLBACK_TOKENS.series.map((fallback, index) =>
-      cssValue(style, `--chart-series-${index + 1}`, fallback),
-    ),
-  }
 }
 
 export default function ComboChart({ chart, data }: ComboChartProps) {
@@ -84,7 +61,7 @@ export default function ComboChart({ chart, data }: ComboChartProps) {
         const options = buildComboChartOptions({
           chart,
           data,
-          tokens: themeTokens(element),
+          tokens: chartThemeTokens(element),
           reducedMotion,
         })
         const { createComboChart } = await import("./chartRuntime")
@@ -142,7 +119,7 @@ export default function ComboChart({ chart, data }: ComboChartProps) {
         }
         // The SVG has a transparent backdrop: paint the resolved theme
         // background first so the PNG matches the on-screen rendering.
-        context.fillStyle = themeTokens(host).background
+        context.fillStyle = chartThemeTokens(host).background
         context.fillRect(0, 0, canvas.width, canvas.height)
         context.drawImage(image, 0, 0, canvas.width, canvas.height)
         const anchor = document.createElement("a")

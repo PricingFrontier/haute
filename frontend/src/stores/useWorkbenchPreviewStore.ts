@@ -8,6 +8,7 @@
 import { create } from "zustand"
 import { apiErrorMessage } from "../api/errors"
 import { quoteFilled, quoteProblems, valuesBasis } from "../utils/sheetValues"
+import { quotedSchema, sheetVisibility } from "../utils/sheetVisibility"
 import { withCell, type SampleRow, type SampleValue } from "../utils/workbenchForm"
 import useWorkbenchFormStore from "./useWorkbenchFormStore"
 import useWorkbenchPricingStore, { priceForm, type SamplePrice } from "./useWorkbenchPricingStore"
@@ -34,10 +35,11 @@ interface WorkbenchPreviewState {
   /**
    * Check the quote against the columns' rules and, when every cell passes, price it on
    * the pipeline through the pricer the view gave the pricing store; one pricing at a
-   * time, a press meanwhile doing nothing. A quote with nothing typed in the tables the
-   * schema has now is not priced: a deployed request never holds a blank quote, and the
-   * server would read one as the null quote. An answer that arrives after Clear, or after
-   * the view replaced or dropped its pricer, is nobody's.
+   * time, a press meanwhile doing nothing. The quote is read as the server makes it, the
+   * cells the sheets hide left out: they are neither checked nor counted. A quote with
+   * nothing typed in the tables the schema has now is not priced: a deployed request never
+   * holds a blank quote, and the server would read one as the null quote. An answer that
+   * arrives after Clear, or after the view replaced or dropped its pricer, is nobody's.
    */
   priceQuote: () => Promise<void>
 }
@@ -63,16 +65,18 @@ const useWorkbenchPreviewStore = create<WorkbenchPreviewState>()((set, get) => (
     const { pricer } = useWorkbenchPricingStore.getState()
     if (get().pricing || form === null || status !== "ready" || pricer === null) return
     const { quote } = get()
-    if (!quoteFilled(form.schema, quote)) {
+    const { hidden } = sheetVisibility(form, quote)
+    const quoted = quotedSchema(form.schema, hidden)
+    if (!quoteFilled(quoted, quote)) {
       set({ checked: true, price: null, error: "Type the quote first" })
       return
     }
-    const problems = Object.keys(quoteProblems(form.schema, quote)).length
+    const problems = Object.keys(quoteProblems(quoted, quote)).length
     if (problems > 0) {
       set({ checked: true, error: `${problems} ${problems === 1 ? "cell needs" : "cells need"} attention` })
       return
     }
-    const basis = valuesBasis(form.schema, quote)
+    const basis = valuesBasis(form.schema, hidden, quote)
     const attempt = ++asked
     set({ checked: true, pricing: true, error: null })
     // Cleared meanwhile, or the view left: the answer is nobody's.

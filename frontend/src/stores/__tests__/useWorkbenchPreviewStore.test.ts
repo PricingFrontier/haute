@@ -11,10 +11,12 @@ vi.mock("../../api/workbench", async (importOriginal) => ({
   fetchWorkbenchFormTables: vi.fn(),
 }))
 
-import type { FormSpec, SchemaColumn, SchemaTable, WorkbenchTablesResponse } from "../../api/types"
+import type { CollectionWidget, FormSchema, FormSpec, SchemaColumn, SchemaTable, ShowWhen, WorkbenchTablesResponse } from "../../api/types"
 import { fetchWorkbenchFormTables } from "../../api/workbench"
 import { cellKey, quoteProblems, valuesBasis } from "../../utils/sheetValues"
+import { columnKey } from "../../utils/sheetVisibility"
 import type { PricedSample } from "../../utils/workbenchTables"
+import { section, sheet } from "../../workbench/__tests__/fixtures"
 import useWorkbenchFormStore from "../useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../useWorkbenchPreviewStore"
 import useWorkbenchPricingStore from "../useWorkbenchPricingStore"
@@ -30,6 +32,11 @@ const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {})
   max: null,
   options: [],
   index: false,
+  help: "",
+  placeholder: "",
+  number_format: "general",
+  decimal_places: null,
+  use_grouping: true,
   ...overrides,
 })
 const policy: SchemaTable = {
@@ -44,9 +51,19 @@ const form: FormSpec = {
   version: 1,
   name: "t",
   schema: { tables: [policy, pricing] },
-  pages: [{ id: "p", title: "Sheet 1", widgets: [] }],
+  pages: [sheet("p", "Sheet 1")],
   sample: { t1: [{ c1: "100000" }] },
 }
+
+/** A Collection of the policy's columns, always shown. */
+const boxes = (id: string, columns: string[]): CollectionWidget => ({
+  id, type: "collection", x: 0, y: 0, w: 400, h: 100, title: "", columns: 2, show_when: { match: "all", conditions: [] },
+  fields: columns.map((columnId) => ({ table: "t1", column: columnId })),
+})
+/** The schema with a box, cover, and a name beside the policy's required exposure. */
+const covered: FormSchema = { tables: [{ ...policy, columns: [...policy.columns, column("c3", "cover", { type: "bool" }), column("c4", "name")] }, pricing] }
+/** Shown only while cover is ticked. */
+const whileCovered: ShowWhen = { match: "all", conditions: [{ table: "t1", column: "c3", op: "ticked", values: [] }] }
 
 const priced = (premium: number | null): PricedSample => ({ tables: { pricing_output: [{ model_premium: premium }] } })
 
@@ -101,11 +118,11 @@ describe("useWorkbenchPreviewStore", () => {
       checked: true,
       error: null,
       pricing: false,
-      price: { basis: valuesBasis(form.schema, { t1: [{ c1: "$250,000" }] }), tables: { pricing_output: [{ model_premium: 5000 }] } },
+      price: { basis: valuesBasis(form.schema, new Set(), { t1: [{ c1: "$250,000" }] }), tables: { pricing_output: [{ model_premium: 5000 }] } },
     })
     // The basis moves on with the quote, so the price reads as out of date until Price again.
     store().setCell("t1", 0, "c1", "1")
-    expect(store().price?.basis).not.toBe(valuesBasis(form.schema, store().quote))
+    expect(store().price?.basis).not.toBe(valuesBasis(form.schema, new Set(), store().quote))
   })
 
   it("marks the cells that break their column's rules instead of pricing, and says how many", async () => {
@@ -134,6 +151,82 @@ describe("useWorkbenchPreviewStore", () => {
       expect(store()).toMatchObject({ checked: true, error: "Type the quote first", price: null })
     }
     expect(quoteProblems(form.schema, {})).toEqual({ [cellKey("t1", 0, "c1")]: "Required" })
+  })
+
+  it("reads the quote without the cells the sheets hide: a hidden required cell faults nothing, and hidden values alone are blank", async () => {
+    const pricer = vi.fn((_workbench: WorkbenchTablesResponse) => Promise.resolve(priced(5000)))
+    useWorkbenchPricingStore.setState({ pricer })
+    // The required exposure is on a sheet shown only while the box, cover, is ticked.
+    useWorkbenchFormStore.setState({
+      form: {
+        ...form,
+        schema: covered,
+        pages: [sheet("p", "Main", [boxes("w_main", ["c3", "c4"])]), sheet("p2", "Exposure", [boxes("w_exposure", ["c1"])], whileCovered)],
+      },
+    })
+    const store = useWorkbenchPreviewStore.getState
+
+    store().setCell("t1", 0, "c1", "-5")
+    await store().priceQuote()
+    expect(store()).toMatchObject({ checked: true, error: "Type the quote first" })
+
+    useWorkbenchPreviewStore.setState({ quote: { t1: [{ c4: "Acme" }] }, error: null, checked: false })
+    await store().priceQuote()
+    expect(pricer).toHaveBeenCalledTimes(1)
+    expect(store()).toMatchObject({ error: null, price: { tables: { pricing_output: [{ model_premium: 5000 }] } } })
+
+    store().setCell("t1", 0, "c3", true)
+    await store().priceQuote()
+    expect(pricer).toHaveBeenCalledTimes(1)
+    expect(store()).toMatchObject({ error: "1 cell needs attention" })
+  })
+
+  it("leaves a value in a section the quote hides out of what is priced, and checks it nowhere", async () => {
+    const pricer = vi.fn((_workbench: WorkbenchTablesResponse) => Promise.resolve(priced(5000)))
+    useWorkbenchPricingStore.setState({ pricer })
+    // One sheet, whose second section holds the required exposure and shows only while the
+    // box, cover, in its first is ticked; the exposure's own Collection has no conditions.
+    const sectioned: FormSpec = {
+      ...form,
+      schema: covered,
+      pages: [
+        {
+          ...sheet("p", "Main"),
+          sections: [section("s_main", [boxes("w_main", ["c3", "c4"])]), section("s_exposure", [boxes("w_exposure", ["c1"])], { show_when: whileCovered })],
+        },
+      ],
+    }
+    useWorkbenchFormStore.setState({ form: sectioned })
+    const store = useWorkbenchPreviewStore.getState
+
+    // The exposure alone, below its minimum: the quote holds nothing typed.
+    store().setCell("t1", 0, "c1", "-5")
+    await store().priceQuote()
+    expect(pricer).not.toHaveBeenCalled()
+    expect(store()).toMatchObject({ checked: true, error: "Type the quote first", price: null })
+
+    // A name typed beside it: priced, the exposure neither checked nor counted. The quote
+    // goes to the server as typed, which leaves the exposure out where it makes the quote,
+    // and the price is for the schema without it.
+    store().setCell("t1", 0, "c4", "Acme")
+    await store().priceQuote()
+    const { quote } = store()
+    expect(quote).toEqual({ t1: [{ c1: "-5", c4: "Acme" }] })
+    expect(fetchWorkbenchFormTables).toHaveBeenCalledWith({ ...sectioned, sample: quote })
+    expect(pricer).toHaveBeenCalledTimes(1)
+    expect(store()).toMatchObject({ error: null, price: { tables: { pricing_output: [{ model_premium: 5000 }] } } })
+    const hidden = new Set([columnKey("t1", "c1")])
+    expect(store().price?.basis).toBe(valuesBasis(covered, hidden, quote))
+    expect(store().price?.basis).not.toBe(valuesBasis(covered, new Set(), quote))
+    // The hidden column is still declared to the pipeline: renamed, the price is out of date.
+    const renamed = { tables: covered.tables.map((table) => ({ ...table, columns: table.columns.map((c) => (c.id === "c1" ? { ...c, name: "exposure_si" } : c)) })) }
+    expect(store().price?.basis).not.toBe(valuesBasis(renamed, hidden, quote))
+
+    // Cover ticked: the section shows, and its exposure is read and checked again.
+    store().setCell("t1", 0, "c3", true)
+    await store().priceQuote()
+    expect(pricer).toHaveBeenCalledTimes(1)
+    expect(store()).toMatchObject({ error: "1 cell needs attention" })
   })
 
   it("drops an answer that arrives after Clear, or after the view replaced its pricer", async () => {

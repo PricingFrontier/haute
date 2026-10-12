@@ -9,6 +9,16 @@ export type PivotNumberFormatting = {
   use_grouping?: boolean
 }
 
+/** What each number format is called where it is chosen. */
+export const NUMBER_FORMAT_LABELS: Readonly<Record<PivotNumberFormat, string>> = {
+  general: "General",
+  number: "Number",
+  percent: "Percentage",
+  currency_gbp: "Currency (£ GBP)",
+  currency_usd: "Currency (US$ USD)",
+  currency_eur: "Currency (€ EUR)",
+}
+
 const DECIMAL_PARTS_PATTERN = /^(-?)([0-9]+)(?:\.([0-9]+))?(?:[eE]([+-]?[0-9]+))?$/
 const MAX_DECIMAL_SHIFT = 10_000
 

@@ -21,6 +21,11 @@ const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {})
   max: null,
   options: [],
   index: false,
+  help: "",
+  placeholder: "",
+  number_format: "general",
+  decimal_places: null,
+  use_grouping: true,
   ...overrides,
 })
 
@@ -37,7 +42,14 @@ const form = (...tables: SchemaTable[]): FormSpec => ({
   version: 1,
   name: "motor",
   schema: { tables },
-  pages: [{ id: "page_1", title: "Sheet 1", widgets: [] }],
+  pages: [
+    {
+      id: "page_1",
+      title: "Sheet 1",
+      show_when: { match: "all", conditions: [] },
+      sections: [{ id: "section_1", title: "Section 1", height: 560, show_when: { match: "all", conditions: [] }, widgets: [] }],
+    },
+  ],
   sample: {},
 })
 
@@ -179,10 +191,53 @@ describe("SchemaEditor", () => {
     expect(within(tableNamed("policy_details")).getByText("required · 0 to … · 2 values")).toBeInTheDocument()
   })
 
+  it("shows a column's help, placeholder and number format, each saved as it commits", () => {
+    load(form(POLICY, table("t_out", "pricing", { role: "output", columns: [column("c_premium", "premium", { type: "float" })] })))
+    render(<SchemaEditor />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of exposure" }))
+    commit(screen.getByRole("textbox", { name: "Help of exposure" }), "Sum insured")
+    commit(screen.getByRole("textbox", { name: "Placeholder of exposure" }), "e.g. 250,000")
+    // Separators ticked under General make it a Number, as an Explore pivot does.
+    fireEvent.click(screen.getByRole("checkbox", { name: "Separators (1,000)" }))
+    expect(current().schema.tables[0].columns[1]).toMatchObject({ number_format: "number", use_grouping: true })
+    fireEvent.change(screen.getByRole("combobox", { name: "Format of exposure" }), { target: { value: "currency_gbp" } })
+    fireEvent.change(screen.getByRole("combobox", { name: "Decimal places of exposure" }), { target: { value: "0" } })
+    fireEvent.click(screen.getByRole("checkbox", { name: "Separators (1,000)" }))
+    expect(current().schema.tables[0].columns[1]).toMatchObject({
+      help: "Sum insured",
+      placeholder: "e.g. 250,000",
+      number_format: "currency_gbp",
+      decimal_places: 0,
+      use_grouping: false,
+    })
+    fireEvent.change(screen.getByRole("combobox", { name: "Decimal places of exposure" }), { target: { value: "automatic" } })
+    expect(current().schema.tables[0].columns[1].decimal_places).toBeNull()
+
+    // A text column has no format; an output column takes a format but no placeholder.
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of state" }))
+    expect(screen.queryByRole("combobox", { name: "Format of state" })).not.toBeInTheDocument()
+    expect(screen.getByRole("textbox", { name: "Placeholder of state" })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of premium" }))
+    expect(screen.getByRole("combobox", { name: "Format of premium" })).toBeInTheDocument()
+    expect(screen.queryByRole("textbox", { name: "Placeholder of premium" })).not.toBeInTheDocument()
+
+    // A True/false or a Date column takes help but no placeholder.
+    cleanup()
+    load(form(table("t_flags", "flags", { columns: [column("c_ok", "ok", { type: "bool" }), column("c_on", "on", { type: "date" })] })))
+    render(<SchemaEditor />)
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of ok" }))
+    expect(screen.getByRole("textbox", { name: "Help of ok" })).toBeInTheDocument()
+    expect(screen.queryByRole("textbox", { name: "Placeholder of ok" })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of on" }))
+    expect(screen.getByRole("textbox", { name: "Help of on" })).toBeInTheDocument()
+    expect(screen.queryByRole("textbox", { name: "Placeholder of on" })).not.toBeInTheDocument()
+  })
+
   it("asks before removing a column or a table a sheet shows, and takes it off the sheet", () => {
     const shown = form(POLICY, LAYERS)
-    shown.pages[0].widgets = [
-      { id: "w", type: "collection", x: 0, y: 0, w: 400, h: 100, title: "Policy", columns: 2, fields: [{ table: "t_policy", column: "c_state" }] },
+    shown.pages[0].sections[0].widgets = [
+      { id: "w", type: "collection", x: 0, y: 0, w: 400, h: 100, title: "Policy", columns: 2, fields: [{ table: "t_policy", column: "c_state" }], show_when: { match: "all", conditions: [] } },
     ]
     load(shown)
     render(<SchemaEditor />)
@@ -197,10 +252,58 @@ describe("SchemaEditor", () => {
     fireEvent.click(screen.getByRole("button", { name: "Remove column state" }))
     fireEvent.click(screen.getByRole("button", { name: "Remove" }))
     expect(columnNames("policy_details")).toEqual([])
-    expect(current().pages[0].widgets[0].fields).toEqual([])
+    expect(current().pages[0].sections[0].widgets[0]).toMatchObject({ fields: [] })
 
     fireEvent.click(screen.getByRole("button", { name: "Delete table layers" }))
     expect(screen.queryByRole("region", { name: "Table layers" })).not.toBeInTheDocument()
+  })
+
+  it("asks before removing a column or a table a condition tests, and takes the condition with it", () => {
+    const tested = form(POLICY, LAYERS)
+    const condition = { table: "t_policy", column: "c_state", op: "filled" as const, values: [] }
+    tested.pages[0].show_when = { match: "all", conditions: [condition] }
+    tested.pages[0].sections[0].widgets = [
+      { id: "w", type: "collection", x: 0, y: 0, w: 400, h: 100, title: "Policy", columns: 2, fields: [{ table: "t_policy", column: "c_state" }], show_when: { match: "all", conditions: [] } },
+    ]
+    load(tested)
+    render(<SchemaEditor />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove column state" }))
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Shown in 1 component and tested by the conditions of 1 sheet, section or component; removing it takes it out of them too.",
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
+    fireEvent.click(screen.getByRole("button", { name: "Delete table policy_details" }))
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Its columns are shown in 1 component and tested by the conditions of 1 sheet, section or component; deleting it takes them out of them too.",
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }))
+    expect(current().pages[0].show_when.conditions).toEqual([])
+  })
+
+  it("counts a section whose conditions test a column or a table in the confirmation, and takes those conditions out of it", () => {
+    const tested = form(POLICY, LAYERS)
+    const state = { table: "t_policy", column: "c_state", op: "filled" as const, values: [] }
+    const exposure = { table: "t_policy", column: "c_exposure", op: "above" as const, values: ["100"] }
+    tested.pages[0].show_when = { match: "all", conditions: [state] }
+    tested.pages[0].sections.push({ id: "section_2", title: "Section 2", height: 160, show_when: { match: "all", conditions: [state, exposure] }, widgets: [] })
+    load(tested)
+    render(<SchemaEditor />)
+    const sectionConditions = () => current().pages[0].sections[1].show_when.conditions
+
+    // The state is tested by the sheet's conditions and the section's.
+    fireEvent.click(screen.getByRole("button", { name: "Remove column state" }))
+    expect(screen.getByRole("alert")).toHaveTextContent("Tested by the conditions of 2 sheets, sections or components; removing it takes it out of them too.")
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }))
+    expect(current().pages[0].show_when.conditions).toEqual([])
+    expect(sectionConditions()).toEqual([exposure])
+
+    // What is left of the table is tested by the section's alone.
+    fireEvent.click(screen.getByRole("button", { name: "Delete table policy_details" }))
+    expect(screen.getByRole("alert")).toHaveTextContent("Its columns are tested by the conditions of 1 sheet, section or component; deleting it takes them out of it too.")
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }))
+    expect(sectionConditions()).toEqual([])
+    expect(current().pages[0].sections.map((section) => section.id)).toEqual(["section_1", "section_2"])
   })
 
   it("adds a many-row table's index first, an Integer whose type cannot change", () => {
@@ -211,6 +314,10 @@ describe("SchemaEditor", () => {
     expect(columnNames("layers")).toEqual(["row_number", "layer", "limit"])
     expect(current().schema.tables[1].columns[0]).toMatchObject({ name: "row_number", type: "int", index: true })
     expect(screen.queryByRole("combobox", { name: "Type of row_number" })).not.toBeInTheDocument()
+    // Nothing is typed into the index, so it has no format to show.
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of row_number" }))
+    expect(screen.getByRole("textbox", { name: "Label of row_number" })).toBeInTheDocument()
+    expect(screen.queryByRole("combobox", { name: "Format of row_number" })).not.toBeInTheDocument()
     expect(screen.queryByRole("checkbox", { name: "Add index to policy_details" })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole("checkbox", { name: "Add index to layers" }))
